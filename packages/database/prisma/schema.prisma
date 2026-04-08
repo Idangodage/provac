@@ -1,0 +1,901 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTHENTICATION & USERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  password      String?   // Hashed, null for OAuth users
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  accounts          Account[]
+  sessions          Session[]
+  organizationUsers OrganizationUser[]
+  createdProjects   Project[]          @relation("ProjectCreator")
+  createdDrawings   Drawing[]          @relation("DrawingCreator")
+  createdProposals  Proposal[]         @relation("ProposalCreator")
+  uploadedFiles     FileUpload[]       @relation("FileUploader")
+  siteProgress      SiteProgress[]
+  faultReports      FaultReport[]
+  materialUsage     MaterialUsage[]
+  sentMessages      Message[]          @relation("MessageSender")
+
+  @@index([email])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ORGANIZATIONS (MULTI-TENANT)
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  logo        String?
+  address     String?
+  phone       String?
+  website     String?
+  timezone    String   @default("UTC")
+  currency    String   @default("USD")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  users              OrganizationUser[]
+  projects           Project[]
+  unitRates          UnitRate[]
+  subscription       Subscription?
+  usageRecords       UsageRecord[]
+  technicalDocuments TechnicalDocument[]
+  invitations        OrganizationInvitation[]
+
+  @@index([slug])
+}
+
+model OrganizationUser {
+  id             String           @id @default(cuid())
+  userId         String
+  organizationId String
+  role           OrganizationRole @default(MEMBER)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model OrganizationInvitation {
+  id             String           @id @default(cuid())
+  email          String
+  organizationId String
+  role           OrganizationRole @default(MEMBER)
+  token          String           @unique
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([token])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROJECTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Project {
+  id             String          @id @default(cuid())
+  organizationId String
+  createdById    String
+  name           String
+  description    String?
+  clientName     String?
+  clientEmail    String?
+  clientPhone    String?
+  location       String?
+  status         ProjectStatus   @default(DRAFT)
+  workflow       ProjectWorkflow @default(FULL)
+  layoutTemplate String?
+  layoutSettings Json?
+
+  // Default settings
+  taxRate         Float    @default(0)
+  validityDays    Int      @default(30)
+  warrantyMonths  Int      @default(12)
+  defaultTerms    String?  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy       User              @relation("ProjectCreator", fields: [createdById], references: [id])
+  drawings        Drawing[]
+  boqItems        BOQItem[]
+  pricingRules    PricingRule[]
+  proposals       Proposal[]
+  files           FileUpload[]
+  complianceSheet ComplianceSheet?
+  siteProgress    SiteProgress[]
+  faultReports    FaultReport[]
+  materialUsage   MaterialUsage[]
+  messages        Message[]
+
+  @@index([organizationId])
+  @@index([createdById])
+  @@index([status])
+}
+
+enum ProjectStatus {
+  DRAFT
+  IN_PROGRESS
+  SUBMITTED
+  APPROVED
+  REJECTED
+  COMPLETED
+  ARCHIVED
+}
+
+enum ProjectWorkflow {
+  FULL        // Drawing -> BOQ -> Pricing -> Letter -> Proposal
+  BOQ         // BOQ -> Pricing -> Letter -> Proposal
+  QUICK       // Letter -> Proposal (manual total)
+  IMPORT      // Import Excel -> Pricing -> Letter -> Proposal
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DRAWINGS
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Drawing {
+  id          String      @id @default(cuid())
+  projectId   String
+  createdById String
+  name        String
+  description String?
+  viewType    ViewType    @default(PLAN)
+  canvasData  Json        // Serialized Konva canvas state
+  thumbnail   String?     // Preview image URL
+  version     Int         @default(1)
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Relations
+  project    Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy  User               @relation("DrawingCreator", fields: [createdById], references: [id])
+  components DrawingComponent[]
+  cutLines   CutLine[]
+  detailAreas DetailArea[]
+
+  @@index([projectId])
+  @@index([createdById])
+}
+
+enum ViewType {
+  PLAN
+  SECTION
+  END_ELEVATION
+  DETAIL
+}
+
+model DrawingComponent {
+  id          String        @id @default(cuid())
+  drawingId   String
+  type        ComponentType
+  name        String?
+  properties  Json          // Size, material, specs, etc.
+  position    Json          // x, y, z, rotation
+  layerId     String?
+  groupId     String?
+  isLocked    Boolean       @default(false)
+  isVisible   Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  drawing       Drawing      @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+  boqItems      BOQItem[]
+  connectionsFrom Connection[] @relation("ConnectionFrom")
+  connectionsTo   Connection[] @relation("ConnectionTo")
+
+  @@index([drawingId])
+  @@index([type])
+}
+
+enum ComponentType {
+  // Ductwork
+  RECT_DUCT
+  ROUND_DUCT
+  FLAT_OVAL_DUCT
+  FLEX_DUCT
+
+  // Fittings
+  ELBOW_RECT
+  ELBOW_ROUND
+  REDUCER_RECT
+  REDUCER_ROUND
+  TRANSITION_RECT_ROUND
+  TRANSITION_ROUND_RECT
+  OFFSET_RECT
+  OFFSET_ROUND
+  TEE_RECT
+  TEE_ROUND
+  WYE_RECT
+  WYE_ROUND
+  END_CAP_RECT
+  END_CAP_ROUND
+
+  // Air Terminals
+  DIFFUSER_SQUARE
+  DIFFUSER_ROUND
+  DIFFUSER_LINEAR
+  DIFFUSER_PERFORATED
+  DIFFUSER_SWIRL
+  DIFFUSER_JET
+  GRILLE_RETURN
+  GRILLE_EXHAUST
+  GRILLE_TRANSFER
+  REGISTER
+
+  // VRF Components
+  BRANCH_KIT_Y
+  BRANCH_KIT_HEADER
+  REF_PIPE
+  REF_ELBOW
+  REF_TEE
+  VRF_OUTDOOR
+  VRF_INDOOR_DUCTED
+  VRF_INDOOR_CASSETTE
+  VRF_INDOOR_WALL
+
+  // Equipment
+  AHU
+  FCU
+  ERV
+  EXHAUST_FAN
+
+  // Accessories
+  DAMPER_VOLUME
+  DAMPER_FIRE
+  DAMPER_SMOKE
+  ACCESS_DOOR
+  FLEX_CONNECTOR
+  TEST_HOLE
+
+  // Insulation
+  INSULATION_DUCT_EXT
+  INSULATION_DUCT_INT
+  INSULATION_PIPE
+
+  // Supports
+  THREADED_ROD
+  TRAPEZE_C_CHANNEL
+  TRAPEZE_L_ANGLE
+  HANGER_STRAP
+  HANGER_CLEVIS
+  PIPE_CLAMP
+  ANCHOR_EXPANSION
+  VIBRATION_ISOLATOR
+
+  // Annotations
+  DIMENSION
+  TEXT_LABEL
+  LEADER
+  SYMBOL
+}
+
+model Connection {
+  id            String         @id @default(cuid())
+  drawingId     String
+  fromComponentId String
+  toComponentId   String
+  connectionType  ConnectionType
+  properties    Json?
+  createdAt     DateTime       @default(now())
+
+  fromComponent DrawingComponent @relation("ConnectionFrom", fields: [fromComponentId], references: [id], onDelete: Cascade)
+  toComponent   DrawingComponent @relation("ConnectionTo", fields: [toComponentId], references: [id], onDelete: Cascade)
+
+  @@index([drawingId])
+}
+
+enum ConnectionType {
+  DUCT_TO_DUCT
+  DUCT_TO_FITTING
+  FITTING_TO_FITTING
+  DUCT_TO_TERMINAL
+  PIPE_TO_PIPE
+  PIPE_TO_EQUIPMENT
+  EQUIPMENT_TO_DUCT
+}
+
+model CutLine {
+  id        String   @id @default(cuid())
+  drawingId String
+  name      String
+  startX    Float
+  startY    Float
+  endX      Float
+  endY      Float
+  direction String   @default("horizontal")
+  createdAt DateTime @default(now())
+
+  drawing Drawing @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+
+  @@index([drawingId])
+}
+
+model DetailArea {
+  id        String   @id @default(cuid())
+  drawingId String
+  name      String
+  x         Float
+  y         Float
+  width     Float
+  height    Float
+  scale     Float    @default(2)
+  createdAt DateTime @default(now())
+
+  drawing Drawing @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+
+  @@index([drawingId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BOQ (Bill of Quantities)
+// ═══════════════════════════════════════════════════════════════════════════
+
+model BOQItem {
+  id            String       @id @default(cuid())
+  projectId     String
+  componentId   String?
+  category      BOQCategory
+  itemNumber    String?
+  description   String
+  specification String?      @db.Text
+  unit          String
+  quantity      Float
+  unitRate      Float        @default(0)
+  materialCost  Float        @default(0)
+  labourCost    Float        @default(0)
+  totalCost     Float        @default(0)
+  notes         String?
+  sortOrder     Int          @default(0)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // Relations
+  project   Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  component DrawingComponent? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([category])
+}
+
+enum BOQCategory {
+  DUCTWORK
+  FITTINGS
+  TERMINALS
+  EQUIPMENT
+  VRF_PIPING
+  INSULATION
+  SUPPORTS
+  ACCESSORIES
+  ELECTRICAL
+  CONTROLS
+  TESTING
+  MISCELLANEOUS
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRICING
+// ═══════════════════════════════════════════════════════════════════════════
+
+model UnitRate {
+  id             String   @id @default(cuid())
+  organizationId String
+  category       BOQCategory
+  itemCode       String?
+  description    String
+  unit           String
+  materialRate   Float    @default(0)
+  labourRate     Float    @default(0)
+  totalRate      Float    @default(0)
+  currency       String   @default("USD")
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, itemCode])
+  @@index([organizationId])
+  @@index([category])
+}
+
+model PricingRule {
+  id        String        @id @default(cuid())
+  projectId String
+  name      String
+  type      PricingType
+  scope     PricingScope
+  category  BOQCategory?
+  value     Float
+  priority  Int           @default(0)
+  isActive  Boolean       @default(true)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+enum PricingType {
+  MARKUP_PERCENTAGE
+  MARKUP_FIXED
+  DISCOUNT_PERCENTAGE
+  DISCOUNT_FIXED
+  OVERHEAD
+  PROFIT
+  CONTINGENCY
+}
+
+enum PricingScope {
+  PROJECT
+  CATEGORY
+  ITEM
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROPOSALS
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Proposal {
+  id          String         @id @default(cuid())
+  projectId   String
+  createdById String
+  version     Int            @default(1)
+  status      ProposalStatus @default(DRAFT)
+
+  // Content
+  coverLetter String?  @db.Text
+  terms       String?  @db.Text
+  notes       String?  @db.Text
+
+  // Pricing
+  subtotal    Float    @default(0)
+  taxRate     Float    @default(0)
+  taxAmount   Float    @default(0)
+  total       Float    @default(0)
+
+  // Snapshots at time of proposal
+  boqSnapshot     Json?
+  drawingSnapshot String?
+
+  // Validity
+  validUntil  DateTime?
+  sentAt      DateTime?
+  viewedAt    DateTime?
+  respondedAt DateTime?
+
+  // PDF
+  pdfUrl     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User    @relation("ProposalCreator", fields: [createdById], references: [id])
+
+  @@index([projectId])
+  @@index([status])
+}
+
+enum ProposalStatus {
+  DRAFT
+  PENDING_REVIEW
+  SENT
+  VIEWED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  REVISED
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FILE UPLOADS
+// ═══════════════════════════════════════════════════════════════════════════
+
+model FileUpload {
+  id           String      @id @default(cuid())
+  projectId    String?
+  uploadedById String
+  filename     String
+  originalName String
+  mimeType     String
+  size         Int
+  url          String
+  purpose      FilePurpose
+  metadata     Json?
+  createdAt    DateTime    @default(now())
+
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  uploadedBy User     @relation("FileUploader", fields: [uploadedById], references: [id])
+
+  @@index([projectId])
+  @@index([purpose])
+}
+
+enum FilePurpose {
+  DRAWING_IMPORT
+  BOQ_IMPORT
+  TECHNICAL_MANUAL
+  PROPOSAL_PDF
+  SITE_PHOTO
+  DOCUMENT_ATTACHMENT
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TECHNICAL LIBRARY & AI
+// ═══════════════════════════════════════════════════════════════════════════
+
+model TechnicalDocument {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  type           DocumentType
+  manufacturer   String?
+  productLine    String?
+  fileUrl        String
+  pageCount      Int          @default(0)
+  indexed        Boolean      @default(false)
+  indexedAt      DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  chunks       DocumentChunk[]
+  products     ExtractedProduct[]
+
+  @@index([organizationId])
+  @@index([type])
+}
+
+enum DocumentType {
+  CATALOG
+  DATASHEET
+  STANDARD
+  SPECIFICATION
+  MANUAL
+}
+
+model DocumentChunk {
+  id         String   @id @default(cuid())
+  documentId String
+  pageNumber Int
+  content    String   @db.Text
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  document TechnicalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}
+
+model ExtractedProduct {
+  id             String   @id @default(cuid())
+  documentId     String
+  modelNumber    String
+  productName    String
+  manufacturer   String
+  specifications Json
+  pageReferences Int[]
+  createdAt      DateTime @default(now())
+
+  document TechnicalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, modelNumber])
+  @@index([manufacturer])
+}
+
+model ComplianceSheet {
+  id                  String   @id @default(cuid())
+  projectId           String   @unique
+  requirementsDocUrl  String?
+  items               Json     // ComplianceItem[]
+  summary             Json     // ComplianceSummary
+  generatedAt         DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUBSCRIPTIONS & USAGE (SaaS)
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Subscription {
+  id               String             @id @default(cuid())
+  organizationId   String             @unique
+  plan             Plan               @default(FREE)
+  status           SubscriptionStatus @default(ACTIVE)
+
+  // Stripe (future)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  stripePriceId        String?
+
+  // Billing cycle
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+
+  // Limits
+  maxUsers     Int   @default(5)
+  maxProjects  Int   @default(10)
+  maxStorageGB Float @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+enum Plan {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  TRIALING
+}
+
+model UsageRecord {
+  id             String      @id @default(cuid())
+  organizationId String
+  metric         UsageMetric
+  value          Float
+  period         DateTime    // Month period (2024-01-01)
+  createdAt      DateTime    @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, metric, period])
+  @@index([organizationId])
+}
+
+enum UsageMetric {
+  USERS_COUNT
+  PROJECTS_COUNT
+  STORAGE_BYTES
+  DRAWINGS_COUNT
+  PROPOSALS_GENERATED
+  OCR_PAGES_PROCESSED
+  API_CALLS
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM ADMIN & AUDIT
+// ═══════════════════════════════════════════════════════════════════════════
+
+model PlatformAdmin {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  name      String
+  password  String
+  role      AdminRole @default(SUPPORT)
+  isActive  Boolean   @default(true)
+  lastLogin DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  auditLogs AuditLog[]
+
+  @@index([email])
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  SUPPORT
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  adminId       String?
+  userId        String?
+  action        String
+  resource      String
+  resourceId    String?
+  details       Json?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+
+  admin PlatformAdmin? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([adminId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MOBILE APP - SITE PROGRESS TRACKING
+// ═══════════════════════════════════════════════════════════════════════════
+
+model SiteProgress {
+  id           String         @id @default(cuid())
+  projectId    String
+  componentId  String?
+  reportedById String
+  status       ProgressStatus
+  percentage   Int            @default(0)
+  notes        String?
+  latitude     Float?
+  longitude    Float?
+  photos       String[]
+  createdAt    DateTime       @default(now())
+
+  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reportedBy User    @relation(fields: [reportedById], references: [id])
+
+  @@index([projectId])
+  @@index([reportedById])
+}
+
+enum ProgressStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  PARTIALLY_COMPLETE
+  COMPLETE
+  ON_HOLD
+  ISSUE_REPORTED
+}
+
+model FaultReport {
+  id           String       @id @default(cuid())
+  projectId    String
+  componentId  String?
+  reportedById String
+  severity     FaultSeverity
+  description  String       @db.Text
+  photos       String[]
+  status       FaultStatus  @default(OPEN)
+  resolvedAt   DateTime?
+  latitude     Float?
+  longitude    Float?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reportedBy User    @relation(fields: [reportedById], references: [id])
+
+  @@index([projectId])
+  @@index([status])
+}
+
+enum FaultSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FaultStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+  WONT_FIX
+}
+
+model MaterialUsage {
+  id         String   @id @default(cuid())
+  projectId  String
+  materialId String?
+  usedById   String
+  quantity   Float
+  unit       String
+  location   String?
+  notes      String?
+  createdAt  DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  usedBy  User    @relation(fields: [usedById], references: [id])
+
+  @@index([projectId])
+}
+
+model Message {
+  id          String    @id @default(cuid())
+  projectId   String
+  senderId    String
+  recipientId String?   // Null for broadcast
+  content     String    @db.Text
+  attachments String[]
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sender  User    @relation("MessageSender", fields: [senderId], references: [id])
+
+  @@index([projectId])
+  @@index([senderId])
+  @@index([recipientId])
+}

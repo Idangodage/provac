@@ -1,0 +1,58 @@
+{
+  "name": "@provacx/drawing-engine",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./editor": {
+      "types": "./src/editor.ts",
+      "default": "./src/editor.ts"
+    },
+    "./types": {
+      "types": "./src/types/index.ts",
+      "default": "./src/types/index.ts"
+    },
+    "./store": {
+      "types": "./src/store/index.ts",
+      "default": "./src/store/index.ts"
+    },
+    "./utils": {
+      "types": "./src/utils/index.ts",
+      "default": "./src/utils/index.ts"
+    },
+    "./components": {
+      "types": "./src/components/index.ts",
+      "default": "./src/components/index.ts"
+    }
+  },
+  "scripts": {
+    "lint": "eslint src/",
+    "type-check": "tsc --noEmit",
+    "typecheck": "pnpm run type-check"
+  },
+  "dependencies": {
+    "@provacx/shared": "workspace:*",
+    "@turf/turf": "^7.3.4",
+    "fabric": "^6.0.0",
+    "lucide-react": "^0.378.0",
+    "three": "^0.183.1",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@provacx/eslint-config": "workspace:*",
+    "@provacx/typescript-config": "workspace:*",
+    "@types/react": "^18.2.0",
+    "@types/three": "^0.183.1",
+    "eslint": "^8.57.0",
+    "react": "^18.2.0",
+    "typescript": "^5.4.5"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  }
+}

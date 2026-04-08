@@ -1,0 +1,30 @@
+{
+  "name": "@provacx/ocr-engine",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "lint": "eslint src/",
+    "type-check": "tsc --noEmit",
+    "typecheck": "pnpm run type-check"
+  },
+  "dependencies": {
+    "tesseract.js": "^5.0.5",
+    "pdfjs-dist": "^4.0.379",
+    "@provacx/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@provacx/eslint-config": "workspace:*",
+    "@provacx/typescript-config": "workspace:*",
+    "@types/node": "^20.0.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.5"
+  }
+}
