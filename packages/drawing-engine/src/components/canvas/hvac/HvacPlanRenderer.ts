@@ -533,7 +533,8 @@ export class HvacPlanRenderer {
     switch (element.type) {
       case 'refrigerant-pipe': {
         const visual = buildRefrigerantPipeVisual(element);
-        const insulationStroke = options.valid ? 'rgba(214,226,236,0.92)' : 'rgba(254,226,226,0.86)';
+        const insulationEdgeStroke = options.valid ? 'rgba(171,184,196,0.98)' : 'rgba(220,38,38,0.28)';
+        const insulationStroke = options.valid ? '#e8eef3' : 'rgba(254,226,226,0.9)';
         const coreStroke = options.valid
           ? visual.lineKind === 'gas' ? '#c5894d' : '#dca25d'
           : visual.lineKind === 'gas' ? '#dc2626' : '#f97316';
@@ -546,6 +547,7 @@ export class HvacPlanRenderer {
           createPipeHaloPolyline(visual.localOuterPoints, visual.outerDiameterMm, palette.hover, 0.12, 'hvac-hover');
         }
 
+        renderPipePolyline(visual.localOuterPoints, insulationEdgeStroke, visual.outerDiameterMm + 3, 'hvac-detail');
         renderPipePolyline(visual.localOuterPoints, insulationStroke, visual.outerDiameterMm, 'hvac-detail');
         renderPipeRectSegment(visual.localStub, coreStroke, visual.coreRadiusMm * 2, 'hvac-detail');
         renderPipePolyline(corePoints, coreStroke, visual.coreRadiusMm * 2, 'hvac-detail');
@@ -570,7 +572,8 @@ export class HvacPlanRenderer {
             })
           : baseVisual;
         const toPx = (valueMm: number): number => valueMm * MM_TO_PX;
-        const insulationStroke = options.valid ? 'rgba(214,226,236,0.92)' : 'rgba(254,226,226,0.86)';
+        const insulationEdgeStroke = options.valid ? 'rgba(171,184,196,0.98)' : 'rgba(220,38,38,0.28)';
+        const insulationStroke = options.valid ? '#e8eef3' : 'rgba(254,226,226,0.9)';
         const gasCoreStroke = options.valid ? '#c5894d' : '#dc2626';
         const liquidCoreStroke = options.valid ? '#dca25d' : '#f97316';
 
@@ -662,6 +665,8 @@ export class HvacPlanRenderer {
           createPipeHaloPolyline(visual.liquidLocalOuterPoints, visual.liquidOuterDiameterMm, palette.hover, 0.12, 'hvac-hover');
         }
 
+        renderPolyline(visual.gasLocalOuterPoints, insulationEdgeStroke, visual.gasOuterDiameterMm + 3, 'hvac-detail');
+        renderPolyline(visual.liquidLocalOuterPoints, insulationEdgeStroke, visual.liquidOuterDiameterMm + 3, 'hvac-detail');
         renderPolyline(visual.gasLocalOuterPoints, insulationStroke, visual.gasOuterDiameterMm, 'hvac-detail');
         renderPolyline(visual.liquidLocalOuterPoints, insulationStroke, visual.liquidOuterDiameterMm, 'hvac-detail');
 

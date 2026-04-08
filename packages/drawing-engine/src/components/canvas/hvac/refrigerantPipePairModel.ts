@@ -9,7 +9,7 @@ import {
 } from './refrigerantPipeDimensions';
 
 export const ONE_INCH_MM = INCH_MM;
-export const DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM = 13;
+export const DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM = ONE_INCH_MM;
 export const DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM = 2600;
 
 export interface RefrigerantPipeBundleConnection {
@@ -279,6 +279,26 @@ function dedupeConsecutivePoints(points: Point2D[]): Point2D[] {
   return deduped;
 }
 
+function resolveInsulationThicknessMm(value: unknown): number {
+  return Math.max(
+    DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM,
+    readNumber(value, DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM),
+  );
+}
+
+function resolveInsulatedOuterDiameterMm(
+  pipeDiameterMm: number,
+  insulationThicknessMm: number,
+  explicitOuterDiameterMm?: unknown,
+): number {
+  const insulatedOuterDiameterMm = pipeDiameterMm + insulationThicknessMm * 2;
+  const minimumVisibleOuterDiameterMm = readNumber(
+    explicitOuterDiameterMm,
+    DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
+  );
+  return Math.max(insulatedOuterDiameterMm, minimumVisibleOuterDiameterMm);
+}
+
 function offsetPolyline(points: Point2D[], offsetMm: number): Point2D[] {
   if (points.length <= 1 || Math.abs(offsetMm) < 0.0001) {
     return [...points];
@@ -383,23 +403,16 @@ export function resolveRefrigerantPipePairSpec(
     properties.liquidPipeDiameterMm,
     DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
   );
-  const insulationThicknessMm = readNumber(
-    properties.insulationThicknessMm,
-    DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM,
-  );
-  const gasOuterDiameterMm = Math.max(
+  const insulationThicknessMm = resolveInsulationThicknessMm(properties.insulationThicknessMm);
+  const gasOuterDiameterMm = resolveInsulatedOuterDiameterMm(
     gasPipeDiameterMm,
-    readNumber(
-      properties.gasOuterDiameterMm,
-      DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
-    ),
+    insulationThicknessMm,
+    properties.gasOuterDiameterMm,
   );
-  const liquidOuterDiameterMm = Math.max(
+  const liquidOuterDiameterMm = resolveInsulatedOuterDiameterMm(
     liquidPipeDiameterMm,
-    readNumber(
-      properties.liquidOuterDiameterMm,
-      DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
-    ),
+    insulationThicknessMm,
+    properties.liquidOuterDiameterMm,
   );
 
   return {
@@ -444,22 +457,18 @@ export function resolveRefrigerantPipeSpec(
     properties.pipeDiameterMm,
     DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
   );
-  const outerDiameterMm = Math.max(
+  const insulationThicknessMm = resolveInsulationThicknessMm(properties.insulationThicknessMm);
+  const outerDiameterMm = resolveInsulatedOuterDiameterMm(
     pipeDiameterMm,
-    readNumber(
-      properties.outerDiameterMm,
-      DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
-    ),
+    insulationThicknessMm,
+    properties.outerDiameterMm,
   );
 
   return {
     routePoints: normalizePointArray(properties.routePoints),
     pipeDiameterMm,
     outerDiameterMm,
-    insulationThicknessMm: readNumber(
-      properties.insulationThicknessMm,
-      DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM,
-    ),
+    insulationThicknessMm,
     lineKind: normalizeLineKind(properties.lineKind),
     startConnection: normalizePipeConnection(properties.startConnection),
   };
@@ -527,11 +536,15 @@ function computeStartTakeoffLength(
   centerSpacingMm: number,
   maxOuterDiameterMm: number,
 ): number {
-  return Math.max(40, centerSpacingMm * 0.9, maxOuterDiameterMm * 2.1);
+  return Math.max(48, centerSpacingMm * 0.55, maxOuterDiameterMm * 0.9);
 }
 
 function computeConnectionOverlapLength(maxOuterDiameterMm: number): number {
   return Math.max(2.5, Math.min(6, maxOuterDiameterMm * 0.2));
+}
+
+function computeExposedConnectionTailLength(outerDiameterMm: number): number {
+  return Math.max(22, Math.min(38, outerDiameterMm * 0.45));
 }
 
 function buildFieldRoutePoints(
@@ -562,6 +575,61 @@ function buildFieldRoutePoints(
     adjustedFirstPoint,
     ...remaining.slice(1),
   ]);
+}
+
+function buildTakeoffTailPoints(
+  routePoints: Point2D[],
+  connectionPoint: Point2D,
+  direction: Point2D,
+  takeoffLengthMm: number,
+): Point2D[] {
+  const takeoffEnd = add(connectionPoint, scale(direction, takeoffLengthMm));
+  const dedupedRoutePoints = dedupeConsecutivePoints(routePoints);
+  const firstRoutePoint = dedupedRoutePoints[0];
+  const remaining = firstRoutePoint && Math.hypot(
+    firstRoutePoint.x - connectionPoint.x,
+    firstRoutePoint.y - connectionPoint.y,
+  ) <= 0.2
+    ? dedupedRoutePoints.slice(1)
+    : dedupedRoutePoints;
+
+  if (remaining.length === 0) {
+    return [takeoffEnd];
+  }
+
+  const firstPoint = remaining[0]!;
+  const projectedDistance = dot(subtract(firstPoint, connectionPoint), direction);
+  const adjustedFirstPoint = projectedDistance < takeoffLengthMm
+    ? add(firstPoint, scale(direction, takeoffLengthMm - projectedDistance))
+    : firstPoint;
+
+  return dedupeConsecutivePoints([
+    takeoffEnd,
+    adjustedFirstPoint,
+    ...remaining.slice(1),
+  ]);
+}
+
+function normalizeBundleGuideRoutePoints(
+  routePoints: Point2D[],
+  startBundleConnection: RefrigerantPipeBundleConnection | null,
+): Point2D[] {
+  const dedupedRoutePoints = dedupeConsecutivePoints(routePoints);
+  if (!startBundleConnection || dedupedRoutePoints.length === 0) {
+    return dedupedRoutePoints;
+  }
+
+  const firstPoint = dedupedRoutePoints[0]!;
+  const bundleCenterPoint = computeBundleCenter(
+    startBundleConnection.gasPoint,
+    startBundleConnection.liquidPoint,
+  );
+  const isStartSnapPoint =
+    Math.hypot(firstPoint.x - startBundleConnection.gasPoint.x, firstPoint.y - startBundleConnection.gasPoint.y) <= 1
+    || Math.hypot(firstPoint.x - startBundleConnection.liquidPoint.x, firstPoint.y - startBundleConnection.liquidPoint.y) <= 1
+    || Math.hypot(firstPoint.x - bundleCenterPoint.x, firstPoint.y - bundleCenterPoint.y) <= 1;
+
+  return isStartSnapPoint ? dedupedRoutePoints.slice(1) : dedupedRoutePoints;
 }
 
 function roundPolylineCorners(
@@ -678,12 +746,19 @@ export function buildRefrigerantPipeVisual(
     ? spec.startConnection.elevationMm - baseElevationMm
     : outerRadiusMm;
   const connectionOverlapMm = computeConnectionOverlapLength(spec.outerDiameterMm);
+  const exposedTailLengthMm = spec.startConnection
+    ? computeExposedConnectionTailLength(spec.outerDiameterMm)
+    : 0;
+  const renderedRoutePoints = dedupeConsecutivePoints(spec.routePoints);
+  const insulationStartPoint = spec.startConnection
+    ? add(spec.startConnection.portPoint, scale(spec.startConnection.direction, exposedTailLengthMm))
+    : null;
   const routeStartPoint = spec.startConnection
-    ? spec.startConnection.portPoint
-    : spec.routePoints[0] ?? null;
+    ? insulationStartPoint
+    : renderedRoutePoints[0] ?? null;
   const outerPoints = routeStartPoint
-    ? dedupeConsecutivePoints([routeStartPoint, ...spec.routePoints])
-    : [...spec.routePoints];
+    ? dedupeConsecutivePoints([routeStartPoint, ...renderedRoutePoints])
+    : [...renderedRoutePoints];
   const stubStart = spec.startConnection
     ? add(spec.startConnection.portPoint, scale(spec.startConnection.direction, -connectionOverlapMm))
     : null;
@@ -742,6 +817,8 @@ export function buildRefrigerantPipePairVisual(
     Math.max(gasOuterDiameterMm, liquidOuterDiameterMm) * 1.25,
     centerSpacingMm * 0.45,
   );
+  const gasExposedTailLengthMm = computeExposedConnectionTailLength(gasOuterDiameterMm);
+  const liquidExposedTailLengthMm = computeExposedConnectionTailLength(liquidOuterDiameterMm);
   const connectionOverlapMm = computeConnectionOverlapLength(
     Math.max(gasOuterDiameterMm, liquidOuterDiameterMm),
   );
@@ -765,32 +842,38 @@ export function buildRefrigerantPipePairVisual(
   const gasOffsetMm = -centerSpacingMm / 2;
   const liquidOffsetMm = centerSpacingMm / 2;
   const effectiveRoutePoints = spec.startBundleConnection && startFieldBundleCenter
-    ? buildFieldRoutePoints(
-        spec.routePoints,
+    ? buildTakeoffTailPoints(
+        normalizeBundleGuideRoutePoints(spec.routePoints, spec.startBundleConnection),
         startFieldBundleCenter,
         spec.startBundleConnection.direction,
         startTakeoffLengthMm,
       )
-    : spec.routePoints;
+    : dedupeConsecutivePoints(spec.routePoints);
 
-  const gasRoutePoints = effectiveRoutePoints.length >= 2
+  const gasRoutePoints = effectiveRoutePoints.length >= 1
     ? roundPolylineCorners(offsetPolyline(effectiveRoutePoints, gasOffsetMm), bendRadiusMm)
     : [];
-  const liquidRoutePoints = effectiveRoutePoints.length >= 2
+  const liquidRoutePoints = effectiveRoutePoints.length >= 1
     ? roundPolylineCorners(offsetPolyline(effectiveRoutePoints, liquidOffsetMm), bendRadiusMm)
     : [];
-  const gasOuterPoints = buildStartConnectedPath(
-    resolvedGasFieldPoint,
-    null,
-    0,
-    gasRoutePoints,
-  );
-  const liquidOuterPoints = buildStartConnectedPath(
-    resolvedLiquidFieldPoint,
-    null,
-    0,
-    liquidRoutePoints,
-  );
+  const gasInsulationStartPoint = resolvedGasFieldPoint && spec.startBundleConnection
+    ? add(
+        resolvedGasFieldPoint,
+        scale(spec.startBundleConnection.direction, gasExposedTailLengthMm),
+      )
+    : resolvedGasFieldPoint;
+  const liquidInsulationStartPoint = resolvedLiquidFieldPoint && spec.startBundleConnection
+    ? add(
+        resolvedLiquidFieldPoint,
+        scale(spec.startBundleConnection.direction, liquidExposedTailLengthMm),
+      )
+    : resolvedLiquidFieldPoint;
+  const gasOuterPoints = gasInsulationStartPoint
+    ? dedupeConsecutivePoints([gasInsulationStartPoint, ...gasRoutePoints])
+    : gasRoutePoints;
+  const liquidOuterPoints = liquidInsulationStartPoint
+    ? dedupeConsecutivePoints([liquidInsulationStartPoint, ...liquidRoutePoints])
+    : liquidRoutePoints;
 
   const boundsSourcePoints = [
     ...effectiveRoutePoints,
@@ -885,7 +968,14 @@ export function buildRefrigerantPipeElement(
   },
 ): Omit<Partial<HvacElement>, 'id'> &
   Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'> {
-  const outerRadiusMm = options.outerDiameterMm / 2;
+  const resolvedInsulationThicknessMm =
+    options.insulationThicknessMm ?? DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM;
+  const resolvedOuterDiameterMm = resolveInsulatedOuterDiameterMm(
+    options.pipeDiameterMm,
+    resolvedInsulationThicknessMm,
+    options.outerDiameterMm,
+  );
+  const outerRadiusMm = resolvedOuterDiameterMm / 2;
   const resolvedElevationMm =
     isFiniteNumber(options.elevationMm) ? options.elevationMm
       : options.startConnection
@@ -895,9 +985,8 @@ export function buildRefrigerantPipeElement(
   const properties = {
     routePoints: dedupeConsecutivePoints(routePoints),
     pipeDiameterMm: options.pipeDiameterMm,
-    outerDiameterMm: options.outerDiameterMm,
-    insulationThicknessMm:
-      options.insulationThicknessMm ?? DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM,
+    outerDiameterMm: resolvedOuterDiameterMm,
+    insulationThicknessMm: resolvedInsulationThicknessMm,
     lineKind: options.lineKind,
     startConnection: options.startConnection ?? null,
   };
@@ -921,7 +1010,7 @@ export function buildRefrigerantPipeElement(
     rotation: 0,
     width: visual.bounds.width,
     depth: visual.bounds.height,
-    height: Math.max(1, options.outerDiameterMm),
+    height: Math.max(1, resolvedOuterDiameterMm),
     elevation: resolvedElevationMm,
     mountType: 'ceiling',
     label: options.label ?? (options.lineKind === 'gas' ? 'Gas Pipe' : 'Liquid Pipe'),
@@ -945,8 +1034,16 @@ export function buildRefrigerantPipeElements(
 > {
   const gasPipeDiameterMm = options?.gasPipeDiameterMm ?? DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM;
   const liquidPipeDiameterMm = options?.liquidPipeDiameterMm ?? DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM;
-  const gasOuterDiameterMm = DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM;
-  const liquidOuterDiameterMm = DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM;
+  const insulationThicknessMm =
+    options?.insulationThicknessMm ?? DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM;
+  const gasOuterDiameterMm = resolveInsulatedOuterDiameterMm(
+    gasPipeDiameterMm,
+    insulationThicknessMm,
+  );
+  const liquidOuterDiameterMm = resolveInsulatedOuterDiameterMm(
+    liquidPipeDiameterMm,
+    insulationThicknessMm,
+  );
   const gasOuterRadiusMm = gasOuterDiameterMm / 2;
   const liquidOuterRadiusMm = liquidOuterDiameterMm / 2;
   const pipeGapMm = options?.pipeGapMm ?? DEFAULT_REFRIGERANT_PIPE_GAP_MM;
@@ -967,18 +1064,22 @@ export function buildRefrigerantPipeElements(
   const startFieldBundleCenter = resolvedGasFieldPoint && resolvedLiquidFieldPoint
     ? computeBundleCenter(resolvedGasFieldPoint, resolvedLiquidFieldPoint)
     : null;
+  const normalizedGuideRoutePoints = normalizeBundleGuideRoutePoints(
+    routePoints,
+    options?.startBundleConnection ?? null,
+  );
   const effectiveRoutePoints = options?.startBundleConnection && startFieldBundleCenter
-    ? buildFieldRoutePoints(
-        routePoints,
+    ? buildTakeoffTailPoints(
+        normalizedGuideRoutePoints,
         startFieldBundleCenter,
         options.startBundleConnection.direction,
         startTakeoffLengthMm,
       )
-    : dedupeConsecutivePoints(routePoints);
-  const gasRoutePoints = effectiveRoutePoints.length >= 2
+    : normalizedGuideRoutePoints;
+  const gasRoutePoints = effectiveRoutePoints.length >= 1
     ? roundPolylineCorners(offsetPolyline(effectiveRoutePoints, -centerSpacingMm / 2), bendRadiusMm)
     : [];
-  const liquidRoutePoints = effectiveRoutePoints.length >= 2
+  const liquidRoutePoints = effectiveRoutePoints.length >= 1
     ? roundPolylineCorners(offsetPolyline(effectiveRoutePoints, centerSpacingMm / 2), bendRadiusMm)
     : [];
 
@@ -988,7 +1089,7 @@ export function buildRefrigerantPipeElements(
       label: 'Gas Pipe',
       pipeDiameterMm: gasPipeDiameterMm,
       outerDiameterMm: gasOuterDiameterMm,
-      insulationThicknessMm: options?.insulationThicknessMm,
+      insulationThicknessMm,
       startConnection: options?.startBundleConnection
         ? {
             portPoint: options.startBundleConnection.gasPoint,
@@ -1003,7 +1104,7 @@ export function buildRefrigerantPipeElements(
       label: 'Liquid Pipe',
       pipeDiameterMm: liquidPipeDiameterMm,
       outerDiameterMm: liquidOuterDiameterMm,
-      insulationThicknessMm: options?.insulationThicknessMm,
+      insulationThicknessMm,
       startConnection: options?.startBundleConnection
         ? {
             portPoint: options.startBundleConnection.liquidPoint,
@@ -1029,8 +1130,16 @@ export function buildRefrigerantPipePairElement(
   },
 ): Omit<Partial<HvacElement>, 'id'> &
   Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'> {
-  const gasOuterDiameterMm = DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM;
-  const liquidOuterDiameterMm = DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM;
+  const insulationThicknessMm =
+    options?.insulationThicknessMm ?? DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM;
+  const gasOuterDiameterMm = resolveInsulatedOuterDiameterMm(
+    options?.gasPipeDiameterMm ?? DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
+    insulationThicknessMm,
+  );
+  const liquidOuterDiameterMm = resolveInsulatedOuterDiameterMm(
+    options?.liquidPipeDiameterMm ?? DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
+    insulationThicknessMm,
+  );
   const gasOuterRadiusMm = gasOuterDiameterMm / 2;
   const liquidOuterRadiusMm = liquidOuterDiameterMm / 2;
   const gasCenterElevationMm = options?.startBundleConnection?.gasElevationMm;
@@ -1057,8 +1166,7 @@ export function buildRefrigerantPipePairElement(
     liquidPipeDiameterMm: options?.liquidPipeDiameterMm ?? DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
     gasOuterDiameterMm,
     liquidOuterDiameterMm,
-    insulationThicknessMm:
-      options?.insulationThicknessMm ?? DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM,
+    insulationThicknessMm,
     pipeGapMm: options?.pipeGapMm ?? DEFAULT_REFRIGERANT_PIPE_GAP_MM,
     startBundleConnection: options?.startBundleConnection ?? null,
   };

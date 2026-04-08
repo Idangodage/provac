@@ -1398,9 +1398,27 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
     }
     case 'refrigerant-pipe-pair': {
       const visual = buildRefrigerantPipePairVisual(element);
-      const insulationColor = '#d6e2ec';
+      const insulationColor = '#1f2021';
       const gasColor = '#c5894d';
       const liquidColor = '#dca25d';
+      const buildContinuousCorePoints = (
+        stub: { start: Point2D; end: Point2D } | null,
+        points: Point2D[],
+      ): Point2D[] => {
+        if (!stub) {
+          return points;
+        }
+        if (points.length === 0) {
+          return [stub.end];
+        }
+        const firstPoint = points[0]!;
+        if (Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <= 0.2) {
+          return points;
+        }
+        return [stub.end, ...points];
+      };
+      const gasCorePoints = buildContinuousCorePoints(visual.gasLocalStub, visual.gasLocalOuterPoints);
+      const liquidCorePoints = buildContinuousCorePoints(visual.liquidLocalStub, visual.liquidLocalOuterPoints);
 
       const addRouteTube = (
         points: Point2D[],
@@ -1444,19 +1462,36 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         }
       };
 
-      addRouteTube(visual.gasLocalOuterPoints, visual.gasLocalZMm, visual.gasOuterRadiusMm, insulationColor, 0.96, 18);
-      addRouteTube(visual.liquidLocalOuterPoints, visual.liquidLocalZMm, visual.liquidOuterRadiusMm, insulationColor, 0.96, 18);
+      addRouteTube(visual.gasLocalOuterPoints, visual.gasLocalZMm, visual.gasOuterRadiusMm, insulationColor, 1, 18);
+      addRouteTube(visual.liquidLocalOuterPoints, visual.liquidLocalZMm, visual.liquidOuterRadiusMm, insulationColor, 1, 18);
 
       addStub(visual.gasLocalStub, visual.gasLocalZMm, visual.gasCoreRadiusMm, gasColor, 1, 19);
       addStub(visual.liquidLocalStub, visual.liquidLocalZMm, visual.liquidCoreRadiusMm, liquidColor, 1, 19);
-      addRouteTube(visual.gasLocalOuterPoints, visual.gasLocalZMm, visual.gasCoreRadiusMm, gasColor, 1, 19);
-      addRouteTube(visual.liquidLocalOuterPoints, visual.liquidLocalZMm, visual.liquidCoreRadiusMm, liquidColor, 1, 19);
+      addRouteTube(gasCorePoints, visual.gasLocalZMm, visual.gasCoreRadiusMm, gasColor, 1, 19);
+      addRouteTube(liquidCorePoints, visual.liquidLocalZMm, visual.liquidCoreRadiusMm, liquidColor, 1, 19);
       break;
     }
     case 'refrigerant-pipe': {
       const visual = buildRefrigerantPipeVisual(element);
-      const insulationColor = '#d6e2ec';
+      const insulationColor = '#e6edf2';
       const coreColor = visual.lineKind === 'gas' ? '#c5894d' : '#dca25d';
+      const buildContinuousCorePoints = (
+        stub: { start: Point2D; end: Point2D } | null,
+        points: Point2D[],
+      ): Point2D[] => {
+        if (!stub) {
+          return points;
+        }
+        if (points.length === 0) {
+          return [stub.end];
+        }
+        const firstPoint = points[0]!;
+        if (Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <= 0.2) {
+          return points;
+        }
+        return [stub.end, ...points];
+      };
+      const corePoints = buildContinuousCorePoints(visual.localStub, visual.localOuterPoints);
 
       const addRouteTube = (
         points: Point2D[],
@@ -1500,9 +1535,9 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         }
       };
 
-      addRouteTube(visual.localOuterPoints, visual.localZMm, visual.outerRadiusMm, insulationColor, 0.96, 18);
+      addRouteTube(visual.localOuterPoints, visual.localZMm, visual.outerRadiusMm, insulationColor, 1, 18);
       addStub(visual.localStub, visual.localZMm, visual.coreRadiusMm, coreColor, 1, 19);
-      addRouteTube(visual.localOuterPoints, visual.localZMm, visual.coreRadiusMm, coreColor, 1, 19);
+      addRouteTube(corePoints, visual.localZMm, visual.coreRadiusMm, coreColor, 1, 19);
       break;
     }
     case 'ceiling-suspended-ac': {
