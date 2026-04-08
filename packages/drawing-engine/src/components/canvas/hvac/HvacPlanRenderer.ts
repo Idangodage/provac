@@ -303,10 +303,15 @@ export class HvacPlanRenderer {
           liquidPoint,
           gasFieldPoint: gasPoint,
           liquidFieldPoint: liquidPoint,
+          gasOuterDiameterMm: gasPort.radius * 2,
+          liquidOuterDiameterMm: liquidPort.radius * 2,
+          gasDirection: direction,
+          liquidDirection: direction,
           direction,
           elevationMm: (gasElevationMm + liquidElevationMm) / 2,
           gasElevationMm,
           liquidElevationMm,
+          connectionKind: 'unit-port',
           sourceElementId: element.id,
         };
       }

@@ -3,11 +3,12 @@ import { useCallback, useEffect, useRef } from 'react';
 
 import type { HvacElement, Point2D } from '../../../types';
 import { MM_TO_PX } from '../scale';
-import { snapPointToGrid, applyOrthogonalConstraint } from '../snapping';
+import { snapPointToGrid, applyAngularConstraint, applyOrthogonalConstraint } from '../snapping';
 import type { HvacPlanRenderer } from '../hvac/HvacPlanRenderer';
 import {
   buildRefrigerantPipeElements,
   findNearestRefrigerantPipeBundleTarget,
+  type RefrigerantPipeConnectionKind,
   type RefrigerantPipeBundleConnection,
 } from '../hvac/refrigerantPipePairModel';
 
@@ -39,6 +40,12 @@ export interface UseRefrigerantPipeToolResult {
   cancelDrawing: () => void;
 }
 
+const PIPE_ROUTE_ANGLE_SNAP_DEG = 45;
+
+function createRefrigerantBundleId(): string {
+  return `refrigerant-bundle-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function distance(a: Point2D, b: Point2D): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -63,15 +70,18 @@ export function useRefrigerantPipeTool(
   const startBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
   const previewPointRef = useRef<Point2D | null>(null);
   const shiftPressedRef = useRef(false);
-  const snapMarkersRef = useRef<fabric.Circle[]>([]);
+  const snapMarkersRef = useRef<fabric.FabricObject[]>([]);
+  const snapMarkerKindRef = useRef<RefrigerantPipeConnectionKind | null>(null);
 
   const clearSnapMarkers = useCallback(() => {
     const canvas = fabricRef.current;
     if (!canvas || snapMarkersRef.current.length === 0) {
+      snapMarkerKindRef.current = null;
       return;
     }
     snapMarkersRef.current.forEach((marker) => canvas.remove(marker));
     snapMarkersRef.current = [];
+    snapMarkerKindRef.current = null;
     canvas.requestRenderAll();
   }, [fabricRef]);
 
@@ -86,44 +96,102 @@ export function useRefrigerantPipeTool(
     }
 
     const markerConfigs = [
-      { point: bundle.gasPoint },
-      { point: bundle.liquidPoint },
+      {
+        point: bundle.gasPoint,
+        diameterMm: bundle.gasOuterDiameterMm ?? 60,
+        direction: bundle.gasDirection ?? bundle.direction,
+      },
+      {
+        point: bundle.liquidPoint,
+        diameterMm: bundle.liquidOuterDiameterMm ?? 56,
+        direction: bundle.liquidDirection ?? bundle.direction,
+      },
     ];
-    const markerFill = 'rgba(37,99,235,0.28)';
+    const markerFill = 'rgba(37,99,235,0.2)';
     const markerStroke = 'rgba(29,78,216,0.98)';
-    const markerRadius = 10;
-    const markerStrokeWidth = 2.6;
+    const markerStrokeWidth = 2.4;
+    const createFieldPipeMarker = (
+      point: Point2D,
+      direction: Point2D,
+      diameterMm: number,
+    ): fabric.Circle => {
+      const markerRadius = Math.max(4, Math.min(6, diameterMm * MM_TO_PX * 0.16));
+      const insetMm = markerRadius / Math.max(MM_TO_PX, 0.0001);
+      const markerPoint = {
+        x: point.x - direction.x * insetMm,
+        y: point.y - direction.y * insetMm,
+      };
+      return new fabric.Circle({
+        left: markerPoint.x * MM_TO_PX,
+        top: markerPoint.y * MM_TO_PX,
+        radius: markerRadius,
+        originX: 'center',
+        originY: 'center',
+        fill: markerFill,
+        stroke: markerStroke,
+        strokeWidth: markerStrokeWidth,
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+      });
+    };
+    const createUnitPortMarker = (point: Point2D, diameterMm: number): fabric.Circle => new fabric.Circle({
+      left: point.x * MM_TO_PX,
+      top: point.y * MM_TO_PX,
+      radius: Math.max(4, Math.min(6, diameterMm * MM_TO_PX * 0.16)),
+      originX: 'center',
+      originY: 'center',
+      fill: markerFill,
+      stroke: markerStroke,
+      strokeWidth: markerStrokeWidth,
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+    });
 
-    if (snapMarkersRef.current.length !== markerConfigs.length) {
+    const shouldRecreateMarkers =
+      snapMarkersRef.current.length !== markerConfigs.length
+      || snapMarkerKindRef.current !== bundle.connectionKind;
+
+    if (shouldRecreateMarkers) {
       clearSnapMarkers();
-      snapMarkersRef.current = markerConfigs.map(({ point }) => {
-        const marker = new fabric.Circle({
-          left: point.x * MM_TO_PX,
-          top: point.y * MM_TO_PX,
-          radius: markerRadius,
-          originX: 'center',
-          originY: 'center',
-          fill: markerFill,
-          stroke: markerStroke,
-          strokeWidth: markerStrokeWidth,
-          selectable: false,
-          evented: false,
-          excludeFromExport: true,
-        });
+      snapMarkersRef.current = markerConfigs.map(({ point, diameterMm, direction }) => {
+        const marker = bundle.connectionKind === 'field-pipe'
+          ? createFieldPipeMarker(point, direction, diameterMm)
+          : createUnitPortMarker(point, diameterMm);
         canvas.add(marker);
         canvas.bringObjectToFront(marker);
         return marker;
       });
+      snapMarkerKindRef.current = bundle.connectionKind;
       canvas.requestRenderAll();
       return;
     }
 
     snapMarkersRef.current.forEach((marker, index) => {
       const config = markerConfigs[index]!;
+      const crossSizePx = 10;
+      const insetMm = bundle.connectionKind === 'field-pipe'
+        ? Math.min(
+            config.diameterMm * 0.22,
+            (crossSizePx * 0.5) / Math.max(MM_TO_PX, 0.0001),
+          )
+        : 0;
+      const markerPoint = bundle.connectionKind === 'field-pipe'
+        ? {
+            x: config.point.x - config.direction.x * insetMm,
+            y: config.point.y - config.direction.y * insetMm,
+          }
+        : config.point;
       marker.set({
-        left: config.point.x * MM_TO_PX,
-        top: config.point.y * MM_TO_PX,
+        left: markerPoint.x * MM_TO_PX,
+        top: markerPoint.y * MM_TO_PX,
       });
+      if (marker instanceof fabric.Circle) {
+        marker.set({
+          radius: Math.max(4, Math.min(6, config.diameterMm * MM_TO_PX * 0.16)),
+        });
+      }
       canvas.bringObjectToFront(marker);
     });
     canvas.requestRenderAll();
@@ -155,8 +223,11 @@ export function useRefrigerantPipeTool(
     if (snapToGrid && !bundle) {
       nextPoint = snapPointToGrid(nextPoint, gridSize);
     }
-    if (shiftPressedRef.current && routePointsRef.current.length > 0) {
-      nextPoint = applyOrthogonalConstraint(routePointsRef.current[routePointsRef.current.length - 1]!, nextPoint);
+    if (routePointsRef.current.length > 0) {
+      const previousPoint = routePointsRef.current[routePointsRef.current.length - 1]!;
+      nextPoint = shiftPressedRef.current
+        ? applyOrthogonalConstraint(previousPoint, nextPoint)
+        : applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG);
     }
 
     return { point: nextPoint, bundle };
@@ -203,6 +274,7 @@ export function useRefrigerantPipeTool(
     }
 
     const nextElements = buildRefrigerantPipeElements(dedupedPoints, {
+      bundleId: createRefrigerantBundleId(),
       startBundleConnection: startBundleRef.current,
     });
     const elementIds = addHvacElements(nextElements);
