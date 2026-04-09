@@ -1,19 +1,39 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as THREE from 'three';
-import { difference, featureCollection, polygon as turfPolygon } from '@turf/turf';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as THREE from "three";
+import {
+  difference,
+  featureCollection,
+  polygon as turfPolygon,
+} from "@turf/turf";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import type { ArchitecturalObjectDefinition } from '../../../data';
-import type { HvacElement, Point2D, Room, SymbolInstance2D, Wall } from '../../../types';
-import { buildIsometricWallBandsSignature } from './wallBands';
-import { buildIsometricWallBandsInBackground } from './isometricWallBandsWorkerClient';
-import { createWallOpenings3D, type OpeningRenderOptions } from './Opening3DRenderer';
-import { buildCeilingCassetteModel } from '../hvac/ceilingCassetteModel';
-import { buildRefrigerantPipePairVisual, buildRefrigerantPipeVisual } from '../hvac/refrigerantPipePairModel';
-import { hasRenderer } from '../object/FurnitureSymbolRenderer';
-import { createOptimizedFurnitureModel3D } from '../object/three3d/Furniture3DRenderer';
+import type { ArchitecturalObjectDefinition } from "../../../data";
+import type {
+  HvacElement,
+  Point2D,
+  Room,
+  SymbolInstance2D,
+  Wall,
+} from "../../../types";
+import { buildIsometricWallBandsSignature } from "./wallBands";
+import { buildIsometricWallBandsInBackground } from "./isometricWallBandsWorkerClient";
+import {
+  createWallOpenings3D,
+  type OpeningRenderOptions,
+} from "./Opening3DRenderer";
+import { buildCeilingCassetteModel } from "../hvac/ceilingCassetteModel";
+import {
+  buildDuctedIndoorUnitModel,
+  DUCTED_INDOOR_UNIT_COLOR_PALETTE,
+} from "../hvac/ductedIndoorUnitModel";
+import {
+  buildRefrigerantPipePairVisual,
+  buildRefrigerantPipeVisual,
+} from "../hvac/refrigerantPipePairModel";
+import { hasRenderer } from "../object/FurnitureSymbolRenderer";
+import { createOptimizedFurnitureModel3D } from "../object/three3d/Furniture3DRenderer";
 
 const VIEW_MARGIN = 1.14;
 const EPSILON = 0.001;
@@ -114,7 +134,10 @@ function sanitizeRing(points: Point2D[]): Point2D[] {
     }
 
     const previous = cleaned[cleaned.length - 1];
-    if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) > EPSILON) {
+    if (
+      !previous ||
+      Math.hypot(point.x - previous.x, point.y - previous.y) > EPSILON
+    ) {
       cleaned.push({ x: point.x, y: point.y });
     }
   }
@@ -187,11 +210,13 @@ function extractPolygonRings(geometry: any): Point2D[][][] {
   if (!geometry) {
     return [];
   }
-  if (geometry.type === 'Polygon') {
+  if (geometry.type === "Polygon") {
     return [geometry.coordinates.map(openRing)];
   }
-  if (geometry.type === 'MultiPolygon') {
-    return geometry.coordinates.map((polygon: number[][][]) => polygon.map(openRing));
+  if (geometry.type === "MultiPolygon") {
+    return geometry.coordinates.map((polygon: number[][][]) =>
+      polygon.map(openRing),
+    );
   }
   return [];
 }
@@ -223,7 +248,7 @@ function decomposePolygonForThree(rings: Point2D[][]): Point2D[][][] {
     }
 
     const differenceResult = difference(
-      featureCollection([outerFeature, ...holeFeatures] as any) as any
+      featureCollection([outerFeature, ...holeFeatures] as any) as any,
     ) as any;
     const polygons = extractPolygonRings(differenceResult?.geometry);
     if (polygons.length > 0) {
@@ -268,17 +293,23 @@ function buildShapeFromPolygon(polygon: Point2D[][]): THREE.Shape | null {
   return shape;
 }
 
-function readNumberProperty(properties: Record<string, unknown>, key: string): number | null {
+function readNumberProperty(
+  properties: Record<string, unknown>,
+  key: string,
+): number | null {
   const value = properties[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function readFlexibleNumberProperty(properties: Record<string, unknown>, key: string): number | null {
+function readFlexibleNumberProperty(
+  properties: Record<string, unknown>,
+  key: string,
+): number | null {
   const value = properties[key];
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
-  if (typeof value === 'string') {
+  if (typeof value === "string") {
     const parsed = Number.parseFloat(value);
     return Number.isFinite(parsed) ? parsed : null;
   }
@@ -301,7 +332,9 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   sharedSet.add(_wallCapMaskMaterial);
 
   if (Array.isArray(material)) {
-    material.forEach((entry) => { if (!sharedSet.has(entry)) entry.dispose(); });
+    material.forEach((entry) => {
+      if (!sharedSet.has(entry)) entry.dispose();
+    });
     return;
   }
   if (!sharedSet.has(material)) material.dispose();
@@ -344,7 +377,12 @@ function niceStep(target: number): number {
   return 10 * base;
 }
 
-function ensurePlanBounds(points: Point2D[]): { minX: number; maxX: number; minY: number; maxY: number } {
+function ensurePlanBounds(points: Point2D[]): {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+} {
   if (points.length === 0) {
     return { minX: -2000, maxX: 2000, minY: -2000, maxY: 2000 };
   }
@@ -362,7 +400,7 @@ function fitCameraToBox(
   box: THREE.Box3,
   width: number,
   height: number,
-  viewDirection: THREE.Vector3 = ISO_CAMERA_DIRECTION
+  viewDirection: THREE.Vector3 = ISO_CAMERA_DIRECTION,
 ): THREE.Vector3 {
   const aspect = Math.max(width / Math.max(height, 1), 0.1);
   camera.aspect = aspect;
@@ -386,11 +424,11 @@ function fitCameraToBox(
   const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * aspect);
   const limitingHalfFov = Math.max(
     Math.min(verticalHalfFov, horizontalHalfFov),
-    THREE.MathUtils.degToRad(5)
+    THREE.MathUtils.degToRad(5),
   );
   const distance = Math.max(
     (radius / Math.sin(limitingHalfFov)) * VIEW_MARGIN,
-    radius * 2.25
+    radius * 2.25,
   );
 
   camera.up.set(0, 0, 1);
@@ -406,7 +444,7 @@ function fitCameraToBox(
 function resizeCameraFrustum(
   camera: THREE.PerspectiveCamera,
   width: number,
-  height: number
+  height: number,
 ): void {
   camera.aspect = Math.max(width / Math.max(height, 1), 0.1);
   camera.updateProjectionMatrix();
@@ -414,7 +452,7 @@ function resizeCameraFrustum(
 
 function updateCameraClipping(
   camera: THREE.PerspectiveCamera,
-  box: THREE.Box3
+  box: THREE.Box3,
 ): void {
   if (box.isEmpty()) {
     return;
@@ -422,7 +460,10 @@ function updateCameraClipping(
 
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const radius = Math.max(sphere.radius, 1000);
-  const distance = Math.max(camera.position.distanceTo(sphere.center), radius * 0.5);
+  const distance = Math.max(
+    camera.position.distanceTo(sphere.center),
+    radius * 0.5,
+  );
   const near = Math.max(1, distance - radius * 3);
   const far = distance + radius * 6;
 
@@ -433,14 +474,20 @@ function updateCameraClipping(
   }
 }
 
-function updateControlDistanceLimits(controls: OrbitControls, box: THREE.Box3): void {
+function updateControlDistanceLimits(
+  controls: OrbitControls,
+  box: THREE.Box3,
+): void {
   if (box.isEmpty()) {
     controls.minDistance = MIN_CAMERA_DISTANCE;
     controls.maxDistance = MAX_CAMERA_DISTANCE;
     return;
   }
 
-  const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 1000);
+  const radius = Math.max(
+    box.getBoundingSphere(new THREE.Sphere()).radius,
+    1000,
+  );
   controls.minDistance = Math.max(MIN_CAMERA_DISTANCE, radius * 0.3);
   controls.maxDistance = Math.max(MAX_CAMERA_DISTANCE / 16, radius * 18);
 }
@@ -449,7 +496,7 @@ function projectLabels(
   anchors: LabelAnchor[],
   camera: THREE.Camera,
   width: number,
-  height: number
+  height: number,
 ): ScreenLabel[] {
   return anchors.flatMap((anchor) => {
     const projected = anchor.position.clone().project(camera);
@@ -463,35 +510,39 @@ function projectLabels(
       return [];
     }
 
-    return [{
-      key: anchor.key,
-      x: ((projected.x + 1) / 2) * width,
-      y: ((1 - projected.y) / 2) * height,
-      text: anchor.text,
-      color: anchor.color,
-    }];
+    return [
+      {
+        key: anchor.key,
+        x: ((projected.x + 1) / 2) * width,
+        y: ((1 - projected.y) / 2) * height,
+        text: anchor.text,
+        color: anchor.color,
+      },
+    ];
   });
 }
 
-function solidPalette(category: ArchitecturalObjectDefinition['category'] | 'hvac' | 'unknown'): SolidPalette {
+function solidPalette(
+  category: ArchitecturalObjectDefinition["category"] | "hvac" | "unknown",
+): SolidPalette {
   switch (category) {
-    case 'doors':
-      return { color: '#c79d74' };
-    case 'windows':
-      return { color: '#9ecdf5', opacity: 0.55 };
-    case 'fixtures':
-      return { color: '#96b8a8' };
-    case 'symbols':
-      return { color: '#c3b4db', opacity: 0.9 };
-    case 'furniture':
-      return { color: '#8db5c6' };
-    case 'my-library':
-      return { color: '#aab8c8' };
-    case 'hvac':
-      return { color: '#7fa5ef' };
-    case 'unknown':
+    case "doors":
+      return { color: "#c79d74" };
+    case "windows":
+      return { color: "#9ecdf5", opacity: 0.55 };
+    case "fixtures":
+      return { color: "#96b8a8" };
+    case "symbols":
+      return { color: "#c3b4db", opacity: 0.9 };
+    case "furniture":
+      return { color: "#8db5c6" };
+    case "my-library":
+      return { color: "#aab8c8" };
+    case "hvac":
+      return { color: "#7fa5ef" };
+    case "unknown":
     default:
-      return { color: '#aab8c8' };
+      return { color: "#aab8c8" };
   }
 }
 
@@ -512,7 +563,11 @@ const _wallCapMaskMaterial = new THREE.MeshBasicMaterial({
   toneMapped: false,
 });
 
-function getSharedWallMaterial(color: string, roughness: number, metalness: number): THREE.MeshStandardMaterial {
+function getSharedWallMaterial(
+  color: string,
+  roughness: number,
+  metalness: number,
+): THREE.MeshStandardMaterial {
   const key = `${color}|${roughness}|${metalness}`;
   let mat = _wallMaterialCache.get(key);
   if (!mat) {
@@ -539,7 +594,10 @@ function getSharedWallTopMaterial(color: string): THREE.MeshStandardMaterial {
   return mat;
 }
 
-function getSharedOutlineMaterial(color: string, opacity: number): THREE.LineBasicMaterial {
+function getSharedOutlineMaterial(
+  color: string,
+  opacity: number,
+): THREE.LineBasicMaterial {
   const key = `${color}|${opacity}`;
   let mat = _outlineMaterialCache.get(key);
   if (!mat) {
@@ -590,7 +648,7 @@ function createWallMesh(
   palette: WallPalette,
   showOutline = true,
   showTopCap = true,
-  topCapInsetMm = 0
+  topCapInsetMm = 0,
 ): THREE.Group | null {
   const polygons = decomposePolygonForThree(polygon);
   if (polygons.length === 0 || height <= EPSILON) {
@@ -637,11 +695,19 @@ function createWallMesh(
         return;
       }
 
-      const outlinePoints = points.map((point) => new THREE.Vector3(point.x, point.y, baseElevation + height + 4));
+      const outlinePoints = points.map(
+        (point) =>
+          new THREE.Vector3(point.x, point.y, baseElevation + height + 4),
+      );
       outlinePoints.push(outlinePoints[0].clone());
 
-      const outlineGeometry = new THREE.BufferGeometry().setFromPoints(outlinePoints);
-      const outlineMaterial = getSharedOutlineMaterial(palette.outline, ringIndex === 0 ? 0.6 : 0.42);
+      const outlineGeometry = new THREE.BufferGeometry().setFromPoints(
+        outlinePoints,
+      );
+      const outlineMaterial = getSharedOutlineMaterial(
+        palette.outline,
+        ringIndex === 0 ? 0.6 : 0.42,
+      );
       group.add(new THREE.Line(outlineGeometry, outlineMaterial));
     });
   });
@@ -671,12 +737,15 @@ function getSharedFloorMaterial(color: string): THREE.MeshStandardMaterial {
 }
 
 function createRoomFloor(room: Room): THREE.Object3D | null {
-  const polygons = decomposePolygonForThree([room.vertices, ...(room.holes ?? [])]);
+  const polygons = decomposePolygonForThree([
+    room.vertices,
+    ...(room.holes ?? []),
+  ]);
   if (polygons.length === 0) {
     return null;
   }
 
-  const material = getSharedFloorMaterial(room.fillColor || '#dbe6d9');
+  const material = getSharedFloorMaterial(room.fillColor || "#dbe6d9");
   const floorElevation = (room.properties3D.floorElevation ?? 0) + 2;
 
   if (polygons.length === 1) {
@@ -714,14 +783,14 @@ function createBoxMesh(
   depth: number,
   height: number,
   palette: SolidPalette,
-  rotationDeg: number
+  rotationDeg: number,
 ): THREE.Mesh {
   const isTransparent = palette.opacity !== undefined && palette.opacity < 1;
   const geometry = new THREE.BoxGeometry(width, depth, height);
   const material = getSharedBoxMaterial(
     palette.color,
     palette.opacity ?? 1,
-    isTransparent || (palette.opacity !== undefined),
+    isTransparent || palette.opacity !== undefined,
   );
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.copy(center);
@@ -799,18 +868,11 @@ function createCylinderBetweenPoints(
     return null;
   }
   const center = start.clone().add(end).multiplyScalar(0.5);
-  const mesh = createLocalCylinderMesh(
-    radius,
-    radius,
-    length,
-    color,
-    center,
-    {
-      opacity: options?.opacity,
-      renderOrder: options?.renderOrder,
-      radialSegments: options?.radialSegments ?? 18,
-    },
-  );
+  const mesh = createLocalCylinderMesh(radius, radius, length, color, center, {
+    opacity: options?.opacity,
+    renderOrder: options?.renderOrder,
+    radialSegments: options?.radialSegments ?? 18,
+  });
   mesh.quaternion.setFromUnitVectors(
     new THREE.Vector3(0, 1, 0),
     delta.normalize(),
@@ -869,7 +931,12 @@ function createLocalSphereMesh(
   radius: number,
   color: string,
   position: THREE.Vector3,
-  options?: { opacity?: number; renderOrder?: number; widthSegments?: number; heightSegments?: number },
+  options?: {
+    opacity?: number;
+    renderOrder?: number;
+    widthSegments?: number;
+    heightSegments?: number;
+  },
 ): THREE.Mesh {
   const opacity = options?.opacity ?? 1;
   const isTransparent = opacity < 1;
@@ -887,10 +954,17 @@ function createLocalSphereMesh(
   return mesh;
 }
 
-function createRoundedRectShape(width: number, depth: number, radius: number): THREE.Shape {
+function createRoundedRectShape(
+  width: number,
+  depth: number,
+  radius: number,
+): THREE.Shape {
   const halfWidth = width / 2;
   const halfDepth = depth / 2;
-  const safeRadius = Math.max(0, Math.min(radius, halfWidth - 1, halfDepth - 1));
+  const safeRadius = Math.max(
+    0,
+    Math.min(radius, halfWidth - 1, halfDepth - 1),
+  );
   const shape = new THREE.Shape();
 
   if (safeRadius <= 0.5) {
@@ -904,13 +978,41 @@ function createRoundedRectShape(width: number, depth: number, radius: number): T
 
   shape.moveTo(-halfWidth + safeRadius, -halfDepth);
   shape.lineTo(halfWidth - safeRadius, -halfDepth);
-  shape.absarc(halfWidth - safeRadius, -halfDepth + safeRadius, safeRadius, -Math.PI / 2, 0, false);
+  shape.absarc(
+    halfWidth - safeRadius,
+    -halfDepth + safeRadius,
+    safeRadius,
+    -Math.PI / 2,
+    0,
+    false,
+  );
   shape.lineTo(halfWidth, halfDepth - safeRadius);
-  shape.absarc(halfWidth - safeRadius, halfDepth - safeRadius, safeRadius, 0, Math.PI / 2, false);
+  shape.absarc(
+    halfWidth - safeRadius,
+    halfDepth - safeRadius,
+    safeRadius,
+    0,
+    Math.PI / 2,
+    false,
+  );
   shape.lineTo(-halfWidth + safeRadius, halfDepth);
-  shape.absarc(-halfWidth + safeRadius, halfDepth - safeRadius, safeRadius, Math.PI / 2, Math.PI, false);
+  shape.absarc(
+    -halfWidth + safeRadius,
+    halfDepth - safeRadius,
+    safeRadius,
+    Math.PI / 2,
+    Math.PI,
+    false,
+  );
   shape.lineTo(-halfWidth, -halfDepth + safeRadius);
-  shape.absarc(-halfWidth + safeRadius, -halfDepth + safeRadius, safeRadius, Math.PI, Math.PI * 1.5, false);
+  shape.absarc(
+    -halfWidth + safeRadius,
+    -halfDepth + safeRadius,
+    safeRadius,
+    Math.PI,
+    Math.PI * 1.5,
+    false,
+  );
   shape.closePath();
   return shape;
 }
@@ -935,9 +1037,16 @@ function createRoundedLocalExtrudedMesh(
 ): THREE.Mesh {
   const opacity = options?.opacity ?? 1;
   const isTransparent = opacity < 1;
-  const safeRadius = Math.max(0, Math.min(radius, width / 2 - 1, depth / 2 - 1));
-  const bevelEnabled = (options?.bevelEnabled ?? true) && safeRadius > 0.5 && height > 4;
-  const bevelSize = Math.min(options?.bevelSize ?? safeRadius * 0.34, safeRadius * 0.75);
+  const safeRadius = Math.max(
+    0,
+    Math.min(radius, width / 2 - 1, depth / 2 - 1),
+  );
+  const bevelEnabled =
+    (options?.bevelEnabled ?? true) && safeRadius > 0.5 && height > 4;
+  const bevelSize = Math.min(
+    options?.bevelSize ?? safeRadius * 0.34,
+    safeRadius * 0.75,
+  );
   const bevelThickness = Math.min(
     options?.bevelThickness ?? Math.min(height * 0.18, safeRadius * 0.42),
     Math.max(0.8, height / 2 - 0.4),
@@ -987,8 +1096,10 @@ function addHvacPipePort(
 ): void {
   const direction = options.direction ?? 1;
   const collarRadius = options.collarRadius ?? options.radius * 1.24;
-  const collarLength = options.collarLength ?? Math.max(10, options.length * 0.28);
-  const flangeThickness = options.flangeThickness ?? Math.max(4, collarLength * 0.24);
+  const collarLength =
+    options.collarLength ?? Math.max(10, options.length * 0.28);
+  const flangeThickness =
+    options.flangeThickness ?? Math.max(4, collarLength * 0.24);
   const radialSegments = options.radialSegments ?? 18;
   const rotation = new THREE.Euler(0, 0, Math.PI / 2);
 
@@ -997,7 +1108,7 @@ function addHvacPipePort(
       collarRadius * 1.12,
       collarRadius * 1.12,
       flangeThickness,
-      options.flangeColor ?? '#d7dde2',
+      options.flangeColor ?? "#d7dde2",
       new THREE.Vector3(
         options.anchor.x + direction * (flangeThickness / 2),
         options.anchor.y,
@@ -1011,9 +1122,10 @@ function addHvacPipePort(
       collarRadius,
       collarRadius,
       collarLength,
-      options.collarColor ?? '#1f2937',
+      options.collarColor ?? "#1f2937",
       new THREE.Vector3(
-        options.anchor.x + direction * (collarLength / 2 + flangeThickness * 0.35),
+        options.anchor.x +
+          direction * (collarLength / 2 + flangeThickness * 0.35),
         options.anchor.y,
         options.anchor.z,
       ),
@@ -1027,7 +1139,9 @@ function addHvacPipePort(
       options.length,
       options.color,
       new THREE.Vector3(
-        options.anchor.x + direction * (collarLength + options.length / 2 - flangeThickness * 0.15),
+        options.anchor.x +
+          direction *
+            (collarLength + options.length / 2 - flangeThickness * 0.15),
         options.anchor.y,
         options.anchor.z,
       ),
@@ -1038,43 +1152,43 @@ function addHvacPipePort(
 
 function hvacPaletteForElement(element: HvacElement): Hvac3DPalette {
   switch (element.type) {
-    case 'outdoor-unit':
+    case "outdoor-unit":
       return {
-        body: '#7d8b99',
-        trim: '#c8d1d9',
-        grille: '#3f4b57',
-        metal: '#5d6874',
-        accent: '#0f766e',
-        label: '#134e4a',
+        body: "#7d8b99",
+        trim: "#c8d1d9",
+        grille: "#3f4b57",
+        metal: "#5d6874",
+        accent: "#0f766e",
+        label: "#134e4a",
       };
-    case 'remote-controller':
-    case 'control-panel':
+    case "remote-controller":
+    case "control-panel":
       return {
-        body: '#f2f5f7',
-        trim: '#d7dee4',
-        grille: '#475569',
-        metal: '#94a3b8',
-        accent: '#b45309',
-        label: '#92400e',
+        body: "#f2f5f7",
+        trim: "#d7dee4",
+        grille: "#475569",
+        metal: "#94a3b8",
+        accent: "#b45309",
+        label: "#92400e",
       };
-    case 'filter':
-    case 'accessory':
+    case "filter":
+    case "accessory":
       return {
-        body: '#eef2f4',
-        trim: '#dbe3e8',
-        grille: '#64748b',
-        metal: '#94a3b8',
-        accent: '#475569',
-        label: '#334155',
+        body: "#eef2f4",
+        trim: "#dbe3e8",
+        grille: "#64748b",
+        metal: "#94a3b8",
+        accent: "#475569",
+        label: "#334155",
       };
     default:
       return {
-        body: '#f6f7f8',
-        trim: '#dbe4ec',
-        grille: '#7a8795',
-        metal: '#aab6c2',
-        accent: '#2f67c8',
-        label: '#1e3a8a',
+        body: "#f6f7f8",
+        trim: "#dbe4ec",
+        grille: "#7a8795",
+        metal: "#aab6c2",
+        accent: "#2f67c8",
+        label: "#1e3a8a",
       };
   }
 }
@@ -1148,8 +1262,8 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
   const bodyHeight = Math.max(height * 0.68, Math.min(height, 120));
 
   switch (element.type) {
-    case 'wall-mounted-ac':
-    case 'split-ac': {
+    case "wall-mounted-ac":
+    case "split-ac": {
       const mainHeight = Math.max(bodyHeight, height * 0.82);
       group.add(
         createLocalBoxMesh(
@@ -1192,7 +1306,7 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
       );
       break;
     }
-    case 'ceiling-cassette-ac': {
+    case "ceiling-cassette-ac": {
       const cassette = buildCeilingCassetteModel(element);
 
       // --- Main concealed body (inside ceiling void) ---
@@ -1202,8 +1316,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.hiddenBody.depth,
           cassette.hiddenBody.height,
           cassette.hiddenBody.cornerRadius,
-          '#bcc5ce',
-          new THREE.Vector3(cassette.hiddenBody.x, cassette.hiddenBody.y, cassette.hiddenBody.z),
+          "#bcc5ce",
+          new THREE.Vector3(
+            cassette.hiddenBody.x,
+            cassette.hiddenBody.y,
+            cassette.hiddenBody.z,
+          ),
         ),
       );
       // Top cap (sheet metal cover on top of body)
@@ -1213,8 +1331,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.topCap.depth,
           cassette.topCap.height,
           cassette.topCap.cornerRadius,
-          '#a8b3bd',
-          new THREE.Vector3(cassette.topCap.x, cassette.topCap.y, cassette.topCap.z),
+          "#a8b3bd",
+          new THREE.Vector3(
+            cassette.topCap.x,
+            cassette.topCap.y,
+            cassette.topCap.z,
+          ),
         ),
       );
       // Drain pump housing (small box on one side of body)
@@ -1224,8 +1346,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.drainPumpHousing.depth,
           cassette.drainPumpHousing.height,
           cassette.drainPumpHousing.cornerRadius,
-          '#8a949d',
-          new THREE.Vector3(cassette.drainPumpHousing.x, cassette.drainPumpHousing.y, cassette.drainPumpHousing.z),
+          "#8a949d",
+          new THREE.Vector3(
+            cassette.drainPumpHousing.x,
+            cassette.drainPumpHousing.y,
+            cassette.drainPumpHousing.z,
+          ),
           { bevelEnabled: false, curveSegments: 8, renderOrder: 18 },
         ),
       );
@@ -1237,8 +1363,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.facePanel.depth,
           cassette.facePanel.height,
           cassette.facePanel.cornerRadius,
-          '#fbfcfd',
-          new THREE.Vector3(cassette.facePanel.x, cassette.facePanel.y, cassette.facePanel.z),
+          "#fbfcfd",
+          new THREE.Vector3(
+            cassette.facePanel.x,
+            cassette.facePanel.y,
+            cassette.facePanel.z,
+          ),
           {
             bevelThickness: cassette.facePanel.bevelThickness,
             bevelSize: cassette.facePanel.bevelSize,
@@ -1253,8 +1383,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.innerPanel.depth,
           cassette.innerPanel.height,
           cassette.innerPanel.cornerRadius,
-          '#eef3f7',
-          new THREE.Vector3(cassette.innerPanel.x, cassette.innerPanel.y, cassette.innerPanel.z),
+          "#eef3f7",
+          new THREE.Vector3(
+            cassette.innerPanel.x,
+            cassette.innerPanel.y,
+            cassette.innerPanel.z,
+          ),
           {
             bevelThickness: cassette.innerPanel.bevelThickness,
             bevelSize: cassette.innerPanel.bevelSize,
@@ -1271,7 +1405,7 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
             slot.depth,
             slot.height,
             slot.cornerRadius,
-            '#1a2030',
+            "#1a2030",
             new THREE.Vector3(slot.x, slot.y, slot.z),
             { renderOrder: 18, bevelEnabled: false, curveSegments: 8 },
           ),
@@ -1285,7 +1419,7 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
             vane.width,
             vane.depth,
             vane.height,
-            '#d0d8e0',
+            "#d0d8e0",
             new THREE.Vector3(vane.x, vane.y, vane.z),
             { renderOrder: 19 },
           ),
@@ -1300,8 +1434,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.grille.size,
           cassette.grille.frameHeight,
           cassette.grille.cornerRadius,
-          '#cdd5dc',
-          new THREE.Vector3(cassette.grille.x, cassette.grille.y, cassette.grille.z),
+          "#cdd5dc",
+          new THREE.Vector3(
+            cassette.grille.x,
+            cassette.grille.y,
+            cassette.grille.z,
+          ),
           { bevelEnabled: false },
         ),
       );
@@ -1315,7 +1453,7 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         startY: -cassette.grille.slatInset,
         startZ: cassette.grille.horizontalSlatZ,
         stepY: cassette.grille.slatStep,
-        color: '#8a97a4',
+        color: "#8a97a4",
       });
       // Vertical grille slats (cross pattern)
       addVentSlats(group, {
@@ -1327,7 +1465,7 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         startY: 0,
         startZ: cassette.grille.verticalSlatZ,
         stepX: cassette.grille.slatStep,
-        color: '#96a3af',
+        color: "#96a3af",
       });
 
       // Brand accent bar (small indicator strip)
@@ -1337,7 +1475,11 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.accentBar.depth,
           cassette.accentBar.height,
           palette.accent,
-          new THREE.Vector3(cassette.accentBar.x, cassette.accentBar.y, cassette.accentBar.z),
+          new THREE.Vector3(
+            cassette.accentBar.x,
+            cassette.accentBar.y,
+            cassette.accentBar.z,
+          ),
           { renderOrder: 18 },
         ),
       );
@@ -1347,8 +1489,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.serviceTab.width,
           cassette.serviceTab.depth,
           cassette.serviceTab.height,
-          '#eef3f7',
-          new THREE.Vector3(cassette.serviceTab.x, cassette.serviceTab.y, cassette.serviceTab.z),
+          "#eef3f7",
+          new THREE.Vector3(
+            cassette.serviceTab.x,
+            cassette.serviceTab.y,
+            cassette.serviceTab.z,
+          ),
           { renderOrder: 18 },
         ),
       );
@@ -1360,8 +1506,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           cassette.connectionPod.depth,
           cassette.connectionPod.height,
           cassette.connectionPod.cornerRadius,
-          '#2d353d',
-          new THREE.Vector3(cassette.connectionPod.x, cassette.connectionPod.y, cassette.connectionPod.z),
+          "#2d353d",
+          new THREE.Vector3(
+            cassette.connectionPod.x,
+            cassette.connectionPod.y,
+            cassette.connectionPod.z,
+          ),
           { bevelEnabled: false, curveSegments: 8, renderOrder: 18 },
         ),
       );
@@ -1385,22 +1535,21 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
             port.bandRadius,
             3,
             port.bandColor,
-            new THREE.Vector3(
-              port.x + port.bandOffsetX,
-              port.y,
-              port.z,
-            ),
-            { rotation: new THREE.Euler(0, 0, Math.PI / 2), radialSegments: 16 },
+            new THREE.Vector3(port.x + port.bandOffsetX, port.y, port.z),
+            {
+              rotation: new THREE.Euler(0, 0, Math.PI / 2),
+              radialSegments: 16,
+            },
           ),
         );
       });
       break;
     }
-    case 'refrigerant-pipe-pair': {
+    case "refrigerant-pipe-pair": {
       const visual = buildRefrigerantPipePairVisual(element);
-      const insulationColor = '#1f2021';
-      const gasColor = '#c5894d';
-      const liquidColor = '#dca25d';
+      const insulationColor = "#1f2021";
+      const gasColor = "#c5894d";
+      const liquidColor = "#dca25d";
       const buildContinuousCorePoints = (
         stub: { start: Point2D; end: Point2D } | null,
         points: Point2D[],
@@ -1412,13 +1561,22 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           return [stub.end];
         }
         const firstPoint = points[0]!;
-        if (Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <= 0.2) {
+        if (
+          Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <=
+          0.2
+        ) {
           return points;
         }
         return [stub.end, ...points];
       };
-      const gasCorePoints = buildContinuousCorePoints(visual.gasLocalStub, visual.gasLocalOuterPoints);
-      const liquidCorePoints = buildContinuousCorePoints(visual.liquidLocalStub, visual.liquidLocalOuterPoints);
+      const gasCorePoints = buildContinuousCorePoints(
+        visual.gasLocalStub,
+        visual.gasLocalOuterPoints,
+      );
+      const liquidCorePoints = buildContinuousCorePoints(
+        visual.liquidLocalStub,
+        visual.liquidLocalOuterPoints,
+      );
 
       const addRouteTube = (
         points: Point2D[],
@@ -1462,19 +1620,61 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         }
       };
 
-      addRouteTube(visual.gasLocalOuterPoints, visual.gasLocalZMm, visual.gasOuterRadiusMm, insulationColor, 1, 18);
-      addRouteTube(visual.liquidLocalOuterPoints, visual.liquidLocalZMm, visual.liquidOuterRadiusMm, insulationColor, 1, 18);
+      addRouteTube(
+        visual.gasLocalOuterPoints,
+        visual.gasLocalZMm,
+        visual.gasOuterRadiusMm,
+        insulationColor,
+        1,
+        18,
+      );
+      addRouteTube(
+        visual.liquidLocalOuterPoints,
+        visual.liquidLocalZMm,
+        visual.liquidOuterRadiusMm,
+        insulationColor,
+        1,
+        18,
+      );
 
-      addStub(visual.gasLocalStub, visual.gasLocalZMm, visual.gasCoreRadiusMm, gasColor, 1, 19);
-      addStub(visual.liquidLocalStub, visual.liquidLocalZMm, visual.liquidCoreRadiusMm, liquidColor, 1, 19);
-      addRouteTube(gasCorePoints, visual.gasLocalZMm, visual.gasCoreRadiusMm, gasColor, 1, 19);
-      addRouteTube(liquidCorePoints, visual.liquidLocalZMm, visual.liquidCoreRadiusMm, liquidColor, 1, 19);
+      addStub(
+        visual.gasLocalStub,
+        visual.gasLocalZMm,
+        visual.gasCoreRadiusMm,
+        gasColor,
+        1,
+        19,
+      );
+      addStub(
+        visual.liquidLocalStub,
+        visual.liquidLocalZMm,
+        visual.liquidCoreRadiusMm,
+        liquidColor,
+        1,
+        19,
+      );
+      addRouteTube(
+        gasCorePoints,
+        visual.gasLocalZMm,
+        visual.gasCoreRadiusMm,
+        gasColor,
+        1,
+        19,
+      );
+      addRouteTube(
+        liquidCorePoints,
+        visual.liquidLocalZMm,
+        visual.liquidCoreRadiusMm,
+        liquidColor,
+        1,
+        19,
+      );
       break;
     }
-    case 'refrigerant-pipe': {
+    case "refrigerant-pipe": {
       const visual = buildRefrigerantPipeVisual(element);
-      const insulationColor = '#e6edf2';
-      const coreColor = visual.lineKind === 'gas' ? '#c5894d' : '#dca25d';
+      const insulationColor = "#e6edf2";
+      const coreColor = visual.lineKind === "gas" ? "#c5894d" : "#dca25d";
       const buildContinuousCorePoints = (
         stub: { start: Point2D; end: Point2D } | null,
         points: Point2D[],
@@ -1486,12 +1686,18 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           return [stub.end];
         }
         const firstPoint = points[0]!;
-        if (Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <= 0.2) {
+        if (
+          Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <=
+          0.2
+        ) {
           return points;
         }
         return [stub.end, ...points];
       };
-      const corePoints = buildContinuousCorePoints(visual.localStub, visual.localOuterPoints);
+      const corePoints = buildContinuousCorePoints(
+        visual.localStub,
+        visual.localOuterPoints,
+      );
 
       const addRouteTube = (
         points: Point2D[],
@@ -1535,12 +1741,33 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         }
       };
 
-      addRouteTube(visual.localOuterPoints, visual.localZMm, visual.outerRadiusMm, insulationColor, 1, 18);
-      addStub(visual.localStub, visual.localZMm, visual.coreRadiusMm, coreColor, 1, 19);
-      addRouteTube(corePoints, visual.localZMm, visual.coreRadiusMm, coreColor, 1, 19);
+      addRouteTube(
+        visual.localOuterPoints,
+        visual.localZMm,
+        visual.outerRadiusMm,
+        insulationColor,
+        1,
+        18,
+      );
+      addStub(
+        visual.localStub,
+        visual.localZMm,
+        visual.coreRadiusMm,
+        coreColor,
+        1,
+        19,
+      );
+      addRouteTube(
+        corePoints,
+        visual.localZMm,
+        visual.coreRadiusMm,
+        coreColor,
+        1,
+        19,
+      );
       break;
     }
-    case 'ceiling-suspended-ac': {
+    case "ceiling-suspended-ac": {
       const mainHeight = Math.max(bodyHeight, height * 0.8);
       group.add(
         createLocalBoxMesh(
@@ -1591,47 +1818,264 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
       );
       break;
     }
-    case 'ducted-ac': {
-      const trayHeight = Math.max(18, height * 0.14);
-      const mainHeight = Math.max(90, height - trayHeight);
-      const housingWidth = width * 0.86;
-      const housingDepth = depth * 0.94;
-      const serviceWidth = width * 0.11;
-      const serviceDepth = depth * 0.41;
-      const housingCenterX = -(serviceWidth * 0.52);
-      const serviceHeight = mainHeight * 0.54;
-      const serviceCenterX = housingCenterX + housingWidth / 2 + serviceWidth / 2 - width * 0.006;
-      const serviceCenterZ = trayHeight + mainHeight * 0.58;
-      const mouthFrameThickness = Math.max(12, height * 0.055);
-      const mouthFrameDepth = Math.max(10, depth * 0.018);
-      const mouthCavityDepth = Math.max(36, depth * 0.062);
-      const intakeWidth = Math.min(housingWidth * 0.94, width * 0.84);
-      const intakeHeight = Math.min(mainHeight * 0.76, height * 0.61);
-      const intakeCenterX = housingCenterX - serviceWidth * 0.16;
-      const intakeFrameY = -housingDepth / 2;
-      const intakeCenterZ = trayHeight + height * 0.5;
-      const supplyMouthWidth = Math.min(housingWidth * 0.96, width * 0.86);
-      const supplyMouthHeight = intakeHeight;
-      const supplyCenterX = intakeCenterX - width * 0.01;
-      const supplyFrameY = housingDepth / 2;
-      const supplyCenterZ = intakeCenterZ;
-      const cavityWallThickness = Math.max(6, mouthFrameThickness * 0.42);
-      const cavityBackDepth = Math.max(5, mouthFrameDepth * 0.55);
-      const addHollowMouthInterior = (
-        openingWidth: number,
-        openingHeight: number,
-        centerX: number,
-        faceY: number,
-        centerZ: number,
-        direction: 1 | -1,
-        shellColor: string,
-        backColor: string,
-      ): number => {
-        const cavityCenterY = faceY - direction * (mouthCavityDepth / 2 - mouthFrameDepth * 0.18);
-        const shellDepth = Math.max(mouthFrameDepth * 1.2, mouthCavityDepth * 0.9);
-        const shellWidth = openingWidth * 0.88;
-        const shellHeight = openingHeight * 0.76;
-        const backY = faceY - direction * (mouthCavityDepth - cavityBackDepth / 2 - mouthFrameDepth * 0.16);
+    case "ducted-ac": {
+      const ducted = buildDuctedIndoorUnitModel(element);
+      const shellCornerRadius =
+        Math.min(ducted.baseWidth, ducted.baseDepth) * 0.03;
+      const panelHeight = Math.max(8, ducted.unitHeight * 0.045);
+      const plateHeight = Math.max(5, ducted.unitHeight * 0.028);
+      const lineThickness = Math.max(4, Math.min(10, ducted.baseDepth * 0.015));
+      const lineHeight = Math.max(2, ducted.unitHeight * 0.012);
+      const topSurfaceZ = ducted.unitHeight - panelHeight * 0.55;
+      const lineSurfaceZ = ducted.unitHeight - lineHeight * 0.5 - 4;
+
+      const addRaisedPlate = (
+        spec: {
+          x: number;
+          y: number;
+          width: number;
+          depth: number;
+          cornerRadius: number;
+        },
+        color: string,
+        heightMm: number = panelHeight,
+        zMm: number = topSurfaceZ,
+        renderOrder: number = 18,
+      ): void => {
+        group.add(
+          createRoundedLocalExtrudedMesh(
+            spec.width,
+            spec.depth,
+            heightMm,
+            spec.cornerRadius,
+            color,
+            new THREE.Vector3(spec.x, spec.y, zMm),
+            {
+              bevelEnabled: false,
+              curveSegments: 8,
+              renderOrder,
+            },
+          ),
+        );
+      };
+
+      const addTopLine = (
+        line: { x1: number; y1: number; x2: number; y2: number },
+        color: string,
+        thicknessMm: number = lineThickness,
+      ): void => {
+        const dx = line.x2 - line.x1;
+        const dy = line.y2 - line.y1;
+        const lengthMm = Math.hypot(dx, dy);
+        if (lengthMm <= EPSILON) {
+          return;
+        }
+        const mesh = createLocalBoxMesh(
+          lengthMm,
+          thicknessMm,
+          lineHeight,
+          color,
+          new THREE.Vector3(
+            (line.x1 + line.x2) / 2,
+            (line.y1 + line.y2) / 2,
+            lineSurfaceZ,
+          ),
+          { renderOrder: 18 },
+        );
+        mesh.rotation.z = Math.atan2(dy, dx);
+        group.add(mesh);
+      };
+
+      const addInlineAirOpening = (
+        opening: (typeof ducted.airOpenings)[number],
+      ): void => {
+        const collarProjection = opening.collarProjection;
+        const collarOuterWidth =
+          opening.openingWidth + opening.collarThickness * 2;
+        const collarOuterHeight =
+          opening.openingHeight + opening.collarThickness * 2;
+        const shellFaceY =
+          -opening.cavityDirection * (ducted.baseDepth / 2 - 1);
+        const collarCenterY =
+          shellFaceY - opening.cavityDirection * collarProjection * 0.5;
+        const visibleCavityDepth = Math.max(
+          12,
+          Math.min(
+            opening.cavityDepth * 0.42,
+            Math.max(18, opening.frameDepth * 1.9),
+          ),
+        );
+        const cavityCenterY =
+          shellFaceY + opening.cavityDirection * visibleCavityDepth * 0.26;
+        const cavityWallThickness = Math.max(6, opening.frameThickness * 0.42);
+        const cavityBackDepth = Math.max(
+          5,
+          Math.min(visibleCavityDepth * 0.5, opening.frameDepth * 0.95),
+        );
+        const shellDepth = Math.max(
+          visibleCavityDepth,
+          opening.frameDepth * 0.92,
+        );
+        const shellWidth = opening.openingWidth * 0.88;
+        const shellHeight = opening.openingHeight * 0.76;
+        const coilDepth = Math.min(
+          opening.coilDepth,
+          visibleCavityDepth * 0.48,
+        );
+        const coilCenterY =
+          shellFaceY +
+          opening.cavityDirection *
+            Math.min(opening.coilOffset, visibleCavityDepth * 0.56);
+        const backY =
+          shellFaceY +
+          opening.cavityDirection *
+            (visibleCavityDepth * 0.54 - cavityBackDepth * 0.5);
+        const collarColor = DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCollar;
+        const shellColor =
+          opening.kind === "return"
+            ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCavityReturn
+            : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCavitySupply;
+        const backColor = DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingBack;
+        const mouthColor =
+          opening.kind === "return"
+            ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthReturn
+            : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthSupply;
+        const coilCoreColor = DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCoilCore;
+        const coilFinColor = DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCoilFin;
+        const mouthDepth = Math.max(18, opening.frameDepth * 1.3);
+        const mouthCenterY =
+          shellFaceY - opening.cavityDirection * mouthDepth * 0.34;
+        const mouthLipThickness = Math.max(4, opening.frameThickness * 0.28);
+        const mouthLipHeight = Math.max(
+          12,
+          opening.openingHeight - mouthLipThickness * 2.2,
+        );
+        const mouthLipWidth = Math.max(
+          12,
+          opening.openingWidth - mouthLipThickness * 2.2,
+        );
+
+        group.add(
+          createLocalBoxMesh(
+            collarOuterWidth,
+            collarProjection,
+            opening.collarThickness,
+            collarColor,
+            new THREE.Vector3(
+              opening.x,
+              collarCenterY,
+              opening.z +
+                opening.openingHeight / 2 +
+                opening.collarThickness / 2,
+            ),
+            { renderOrder: 19 },
+          ),
+        );
+        group.add(
+          createLocalBoxMesh(
+            collarOuterWidth,
+            collarProjection,
+            opening.collarThickness,
+            collarColor,
+            new THREE.Vector3(
+              opening.x,
+              collarCenterY,
+              opening.z -
+                opening.openingHeight / 2 -
+                opening.collarThickness / 2,
+            ),
+            { renderOrder: 19 },
+          ),
+        );
+        group.add(
+          createLocalBoxMesh(
+            opening.collarThickness,
+            collarProjection,
+            collarOuterHeight,
+            collarColor,
+            new THREE.Vector3(
+              opening.x -
+                opening.openingWidth / 2 -
+                opening.collarThickness / 2,
+              collarCenterY,
+              opening.z,
+            ),
+            { renderOrder: 19 },
+          ),
+        );
+        group.add(
+          createLocalBoxMesh(
+            opening.collarThickness,
+            collarProjection,
+            collarOuterHeight,
+            collarColor,
+            new THREE.Vector3(
+              opening.x +
+                opening.openingWidth / 2 +
+                opening.collarThickness / 2,
+              collarCenterY,
+              opening.z,
+            ),
+            { renderOrder: 19 },
+          ),
+        );
+
+        group.add(
+          createLocalBoxMesh(
+            opening.openingWidth * 0.96,
+            mouthDepth,
+            mouthLipThickness,
+            mouthColor,
+            new THREE.Vector3(
+              opening.x,
+              mouthCenterY,
+              opening.z + opening.openingHeight / 2 - mouthLipThickness / 2,
+            ),
+            { renderOrder: 21 },
+          ),
+        );
+        group.add(
+          createLocalBoxMesh(
+            opening.openingWidth * 0.96,
+            mouthDepth,
+            mouthLipThickness,
+            mouthColor,
+            new THREE.Vector3(
+              opening.x,
+              mouthCenterY,
+              opening.z - opening.openingHeight / 2 + mouthLipThickness / 2,
+            ),
+            { renderOrder: 21 },
+          ),
+        );
+        group.add(
+          createLocalBoxMesh(
+            mouthLipThickness,
+            mouthDepth,
+            mouthLipHeight,
+            mouthColor,
+            new THREE.Vector3(
+              opening.x - opening.openingWidth / 2 + mouthLipThickness / 2,
+              mouthCenterY,
+              opening.z,
+            ),
+            { renderOrder: 21 },
+          ),
+        );
+        group.add(
+          createLocalBoxMesh(
+            mouthLipThickness,
+            mouthDepth,
+            mouthLipHeight,
+            mouthColor,
+            new THREE.Vector3(
+              opening.x + opening.openingWidth / 2 - mouthLipThickness / 2,
+              mouthCenterY,
+              opening.z,
+            ),
+            { renderOrder: 21 },
+          ),
+        );
 
         group.add(
           createLocalBoxMesh(
@@ -1640,10 +2084,11 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
             cavityWallThickness,
             shellColor,
             new THREE.Vector3(
-              centerX,
+              opening.x,
               cavityCenterY,
-              centerZ + shellHeight / 2,
+              opening.z + shellHeight / 2,
             ),
+            { renderOrder: 18 },
           ),
         );
         group.add(
@@ -1653,10 +2098,11 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
             cavityWallThickness,
             shellColor,
             new THREE.Vector3(
-              centerX,
+              opening.x,
               cavityCenterY,
-              centerZ - shellHeight / 2,
+              opening.z - shellHeight / 2,
             ),
+            { renderOrder: 18 },
           ),
         );
         group.add(
@@ -1666,10 +2112,11 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
             shellHeight,
             shellColor,
             new THREE.Vector3(
-              centerX - shellWidth / 2,
+              opening.x - shellWidth / 2,
               cavityCenterY,
-              centerZ,
+              opening.z,
             ),
+            { renderOrder: 18 },
           ),
         );
         group.add(
@@ -1679,332 +2126,202 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
             shellHeight,
             shellColor,
             new THREE.Vector3(
-              centerX + shellWidth / 2,
+              opening.x + shellWidth / 2,
               cavityCenterY,
-              centerZ,
+              opening.z,
             ),
+            { renderOrder: 18 },
           ),
         );
         group.add(
           createLocalBoxMesh(
-            openingWidth * 0.74,
+            opening.coilWidth,
+            coilDepth,
+            opening.coilHeight,
+            coilCoreColor,
+            new THREE.Vector3(opening.x, coilCenterY, opening.z),
+            { renderOrder: 20 },
+          ),
+        );
+        for (let finIndex = 0; finIndex < opening.coilFinCount; finIndex += 1) {
+          group.add(
+            createLocalBoxMesh(
+              opening.coilWidth * 0.98,
+              Math.max(2.2, coilDepth * 0.22),
+              Math.max(1.2, opening.coilHeight * 0.028),
+              coilFinColor,
+              new THREE.Vector3(
+                opening.x,
+                coilCenterY -
+                  opening.cavityDirection * Math.max(0.6, coilDepth * 0.06),
+                opening.z -
+                  opening.coilHeight * 0.42 +
+                  finIndex *
+                    ((opening.coilHeight * 0.84) /
+                      Math.max(1, opening.coilFinCount - 1)),
+              ),
+              { renderOrder: 21 },
+            ),
+          );
+        }
+        group.add(
+          createLocalBoxMesh(
+            opening.openingWidth * 0.74,
             cavityBackDepth,
-            openingHeight * 0.56,
+            opening.openingHeight * 0.56,
             backColor,
-            new THREE.Vector3(centerX, backY, centerZ),
+            new THREE.Vector3(opening.x, backY, opening.z),
+            { renderOrder: 18 },
           ),
         );
-
-        return cavityCenterY;
       };
 
       group.add(
         createRoundedLocalExtrudedMesh(
-          width * 0.96,
-          depth * 0.8,
-          trayHeight,
-          Math.min(width, depth) * 0.018,
-          '#2e3338',
-          new THREE.Vector3(0, 0, trayHeight / 2),
+          ducted.baseWidth,
+          ducted.baseDepth,
+          ducted.unitHeight,
+          shellCornerRadius,
+          DUCTED_INDOOR_UNIT_COLOR_PALETTE.shell,
+          new THREE.Vector3(0, 0, ducted.unitHeight / 2),
           {
-            bevelEnabled: false,
-            curveSegments: 8,
+            bevelThickness: Math.min(ducted.unitHeight * 0.08, 8),
+            bevelSize: Math.min(ducted.baseWidth, ducted.baseDepth) * 0.012,
           },
         ),
       );
-      group.add(
-        createRoundedLocalExtrudedMesh(
-          housingWidth,
-          housingDepth,
-          mainHeight,
-          Math.min(housingWidth, housingDepth) * 0.022,
-          '#d1d7dc',
-          new THREE.Vector3(housingCenterX, 0, trayHeight + mainHeight / 2),
-          {
-            bevelThickness: Math.min(mainHeight * 0.08, 8),
-            bevelSize: Math.min(housingWidth, housingDepth) * 0.012,
-          },
-        ),
+      addRaisedPlate(
+        ducted.casingInset,
+        DUCTED_INDOOR_UNIT_COLOR_PALETTE.casingInset,
+        Math.max(10, ducted.unitHeight * 0.06),
+        ducted.unitHeight - Math.max(10, ducted.unitHeight * 0.06) / 2 - 6,
       );
-      group.add(
-        createRoundedLocalExtrudedMesh(
-          housingWidth * 0.96,
-          housingDepth * 0.84,
-          Math.max(10, mainHeight * 0.1),
-          Math.min(housingWidth, housingDepth) * 0.018,
-          '#edf1f4',
-          new THREE.Vector3(housingCenterX, 0, trayHeight + mainHeight * 0.92),
-          {
-            bevelEnabled: false,
-            curveSegments: 10,
-          },
-        ),
+      addRaisedPlate(
+        ducted.returnSection,
+        DUCTED_INDOOR_UNIT_COLOR_PALETTE.returnSection,
       );
-      group.add(
-        createRoundedLocalExtrudedMesh(
-          serviceWidth,
-          serviceDepth,
-          serviceHeight,
-          Math.min(serviceWidth, serviceDepth) * 0.04,
-          '#d9e0e5',
-          new THREE.Vector3(serviceCenterX, depth * 0.04, serviceCenterZ),
-          {
-            bevelThickness: Math.min(serviceHeight * 0.08, 6),
-            bevelSize: Math.min(serviceWidth, serviceDepth) * 0.018,
-          },
-        ),
+      addRaisedPlate(
+        ducted.fanSection,
+        DUCTED_INDOOR_UNIT_COLOR_PALETTE.fanSection,
       );
-      group.add(
-        createRoundedLocalExtrudedMesh(
-          serviceWidth * 0.64,
-          serviceDepth * 0.34,
-          serviceHeight * 0.28,
-          Math.min(serviceWidth, serviceDepth) * 0.02,
-          '#2d3742',
-          new THREE.Vector3(serviceCenterX - serviceWidth * 0.08, depth * 0.12, serviceCenterZ - serviceHeight * 0.1),
-          {
-            bevelEnabled: false,
-            curveSegments: 8,
-          },
-        ),
+      addRaisedPlate(
+        ducted.dischargeSection,
+        DUCTED_INDOOR_UNIT_COLOR_PALETTE.dischargeSection,
       );
-      group.add(
-        createLocalBoxMesh(
-          serviceWidth * 0.18,
-          serviceDepth * 0.56,
-          serviceHeight * 0.78,
-          '#343b43',
-          new THREE.Vector3(serviceCenterX - serviceWidth * 0.48, depth * 0.04, serviceCenterZ),
-        ),
+      addRaisedPlate(
+        ducted.dischargeOpening,
+        DUCTED_INDOOR_UNIT_COLOR_PALETTE.dischargeFace,
+        plateHeight,
+        ducted.unitHeight - plateHeight / 2 - 3,
+        19,
       );
-      group.add(
-        createLocalBoxMesh(
-          intakeWidth,
-          mouthFrameDepth,
-          mouthFrameThickness,
-          '#c6ced6',
-          new THREE.Vector3(
-            intakeCenterX,
-            intakeFrameY - mouthFrameDepth / 2,
-            intakeCenterZ + intakeHeight / 2 + mouthFrameThickness / 2,
+      addRaisedPlate(
+        ducted.serviceBox,
+        DUCTED_INDOOR_UNIT_COLOR_PALETTE.serviceBox,
+        Math.max(panelHeight, ducted.unitHeight * 0.06),
+        ducted.unitHeight -
+          Math.max(panelHeight, ducted.unitHeight * 0.06) / 2 -
+          4,
+      );
+      addRaisedPlate(
+        ducted.electricalCover,
+        DUCTED_INDOOR_UNIT_COLOR_PALETTE.electricalCover,
+        Math.max(4, plateHeight * 0.9),
+        ducted.unitHeight - Math.max(4, plateHeight * 0.9) / 2 - 2,
+        19,
+      );
+
+      ducted.hangerBrackets.forEach((bracket) => {
+        group.add(
+          createLocalBoxMesh(
+            bracket.width,
+            bracket.depth,
+            Math.max(10, bracket.height),
+            DUCTED_INDOOR_UNIT_COLOR_PALETTE.bracket,
+            new THREE.Vector3(
+              bracket.x,
+              bracket.y,
+              Math.max(10, bracket.height) / 2,
+            ),
+            { renderOrder: 17 },
           ),
-        ),
-      );
-      group.add(
-        createLocalBoxMesh(
-          intakeWidth,
-          mouthFrameDepth,
-          mouthFrameThickness,
-          '#c6ced6',
-          new THREE.Vector3(
-            intakeCenterX,
-            intakeFrameY - mouthFrameDepth / 2,
-            intakeCenterZ - intakeHeight / 2 - mouthFrameThickness / 2,
-          ),
-        ),
-      );
-      group.add(
-        createLocalBoxMesh(
-          mouthFrameThickness,
-          mouthFrameDepth,
-          intakeHeight + mouthFrameThickness * 2,
-          '#c6ced6',
-          new THREE.Vector3(
-            intakeCenterX - intakeWidth / 2 - mouthFrameThickness / 2,
-            intakeFrameY - mouthFrameDepth / 2,
-            intakeCenterZ,
-          ),
-        ),
-      );
-      group.add(
-        createLocalBoxMesh(
-          mouthFrameThickness,
-          mouthFrameDepth,
-          intakeHeight + mouthFrameThickness * 2,
-          '#c6ced6',
-          new THREE.Vector3(
-            intakeCenterX + intakeWidth / 2 + mouthFrameThickness / 2,
-            intakeFrameY - mouthFrameDepth / 2,
-            intakeCenterZ,
-          ),
-        ),
-      );
-      const returnCavityCenterY = addHollowMouthInterior(
-        intakeWidth * 0.92,
-        intakeHeight * 0.82,
-        intakeCenterX,
-        intakeFrameY,
-        intakeCenterZ,
-        -1,
-        '#2b3238',
-        '#151b22',
-      );
-      for (let slatIndex = 0; slatIndex < 6; slatIndex += 1) {
-        const slat = createLocalBoxMesh(
-          intakeWidth * 0.86,
-          Math.max(6, mouthFrameDepth * 0.78),
-          8,
-          '#aab4bc',
-          new THREE.Vector3(
-            intakeCenterX,
-            returnCavityCenterY - mouthCavityDepth * 0.18,
-            intakeCenterZ - intakeHeight * 0.28 + slatIndex * (intakeHeight * 0.11),
-          ),
-          { renderOrder: 18 },
         );
-        slat.rotation.x = -0.36;
-        group.add(slat);
-      }
-      group.add(
-        createRoundedLocalExtrudedMesh(
-          supplyMouthWidth * 0.92,
-          mouthFrameDepth * 1.6,
-          supplyMouthHeight * 0.9,
-          Math.min(supplyMouthWidth, supplyMouthHeight) * 0.03,
-          '#d7dde2',
-          new THREE.Vector3(
-            supplyCenterX,
-            supplyFrameY + mouthFrameDepth * 0.8,
-            supplyCenterZ,
-          ),
-          {
-            bevelEnabled: false,
-            curveSegments: 8,
-            renderOrder: 18,
-          },
-        ),
-      );
-      group.add(
-        createLocalBoxMesh(
-          supplyMouthWidth,
-          mouthFrameThickness,
-          mouthFrameDepth,
-          '#c6ced6',
-          new THREE.Vector3(
-            supplyCenterX,
-            supplyFrameY + mouthFrameDepth / 2,
-            supplyCenterZ + supplyMouthHeight / 2 + mouthFrameThickness / 2,
-          ),
-        ),
-      );
-      group.add(
-        createLocalBoxMesh(
-          supplyMouthWidth,
-          mouthFrameThickness,
-          mouthFrameDepth,
-          '#c6ced6',
-          new THREE.Vector3(
-            supplyCenterX,
-            supplyFrameY + mouthFrameDepth / 2,
-            supplyCenterZ - supplyMouthHeight / 2 - mouthFrameThickness / 2,
-          ),
-        ),
-      );
-      group.add(
-        createLocalBoxMesh(
-          mouthFrameThickness,
-          mouthFrameDepth,
-          supplyMouthHeight + mouthFrameThickness * 2,
-          '#c6ced6',
-          new THREE.Vector3(
-            supplyCenterX - supplyMouthWidth / 2 - mouthFrameThickness / 2,
-            supplyFrameY + mouthFrameDepth / 2,
-            supplyCenterZ,
-          ),
-        ),
-      );
-      group.add(
-        createLocalBoxMesh(
-          mouthFrameThickness,
-          mouthFrameDepth,
-          supplyMouthHeight + mouthFrameThickness * 2,
-          '#c6ced6',
-          new THREE.Vector3(
-            supplyCenterX + supplyMouthWidth / 2 + mouthFrameThickness / 2,
-            supplyFrameY + mouthFrameDepth / 2,
-            supplyCenterZ,
-          ),
-        ),
-      );
-      const supplyCavityCenterY = addHollowMouthInterior(
-        supplyMouthWidth * 0.9,
-        supplyMouthHeight * 0.8,
-        supplyCenterX,
-        supplyFrameY,
-        supplyCenterZ,
-        1,
-        '#232a30',
-        '#151b22',
-      );
-      for (let vaneIndex = 0; vaneIndex < 4; vaneIndex += 1) {
-        const vane = createLocalBoxMesh(
-          supplyMouthWidth * 0.82,
-          Math.max(6, mouthFrameDepth * 0.72),
-          Math.max(6, mouthFrameThickness * 0.5),
-          '#9aa5ad',
-          new THREE.Vector3(
-            supplyCenterX,
-            supplyCavityCenterY + mouthCavityDepth * 0.18,
-            supplyCenterZ - supplyMouthHeight * 0.22 + vaneIndex * (supplyMouthHeight * 0.14),
-          ),
-          { renderOrder: 18 },
+      });
+
+      ducted.sectionDividers.forEach((divider) => {
+        addTopLine(
+          divider,
+          DUCTED_INDOOR_UNIT_COLOR_PALETTE.sectionLine,
+          lineThickness,
         );
-        vane.rotation.x = 0.24;
-        group.add(vane);
-      }
+      });
+      ducted.filterRails.forEach((rail) => {
+        addTopLine(
+          rail,
+          DUCTED_INDOOR_UNIT_COLOR_PALETTE.sectionLine,
+          Math.max(3, lineThickness * 0.82),
+        );
+      });
+      ducted.fanRibs.forEach((rib, index) => {
+        addTopLine(
+          rib,
+          index === 0 || index === ducted.fanRibs.length - 1
+            ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.sectionLineSecondary
+            : DUCTED_INDOOR_UNIT_COLOR_PALETTE.sectionLine,
+          Math.max(3, lineThickness * 0.72),
+        );
+      });
+
+      ducted.airOpenings.forEach((opening) => {
+        addInlineAirOpening(opening);
+      });
+
       group.add(
-        createRoundedLocalExtrudedMesh(
-          serviceWidth * 0.16,
-          serviceDepth * 0.7,
-          serviceHeight * 0.72,
-          Math.min(serviceWidth, serviceDepth) * 0.018,
-          '#2b3138',
+        createLocalBoxMesh(
+          ducted.serviceBox.width * 0.68,
+          Math.max(4, ducted.serviceBox.depth * 0.08),
+          Math.max(2, plateHeight * 0.8),
+          DUCTED_INDOOR_UNIT_COLOR_PALETTE.serviceHighlight,
           new THREE.Vector3(
-            serviceCenterX + serviceWidth * 0.42,
-            depth * 0.07,
-            serviceCenterZ + serviceHeight * 0.03,
+            ducted.serviceBox.x,
+            ducted.serviceBox.y - ducted.serviceBox.depth * 0.18,
+            ducted.unitHeight - Math.max(2, plateHeight * 0.8) / 2 - 1,
           ),
-          {
-            bevelEnabled: false,
-            curveSegments: 8,
-            renderOrder: 18,
-          },
+          { renderOrder: 19 },
         ),
       );
-      addHvacPipePort(group, {
-        anchor: new THREE.Vector3(
-          serviceCenterX + serviceWidth * 0.5,
-          -serviceDepth * 0.05,
-          serviceCenterZ + serviceHeight * 0.2,
-        ),
-        radius: Math.max(10, serviceWidth * 0.09),
-        length: Math.max(40, serviceWidth * 0.42),
-        color: '#c68b4e',
-      });
-      addHvacPipePort(group, {
-        anchor: new THREE.Vector3(
-          serviceCenterX + serviceWidth * 0.5,
-          serviceDepth * 0.08,
-          serviceCenterZ + serviceHeight * 0.08,
-        ),
-        radius: Math.max(8, serviceWidth * 0.07),
-        length: Math.max(34, serviceWidth * 0.36),
-        color: '#d3a25f',
-      });
-      addHvacPipePort(group, {
-        anchor: new THREE.Vector3(
-          serviceCenterX + serviceWidth * 0.5,
-          serviceDepth * 0.18,
-          serviceCenterZ - serviceHeight * 0.16,
-        ),
-        radius: Math.max(7, serviceWidth * 0.06),
-        length: Math.max(34, serviceWidth * 0.34),
-        color: '#8ec5ea',
-        collarColor: '#4b5563',
+
+      ducted.pipePorts.forEach((port) => {
+        addHvacPipePort(group, {
+          anchor: new THREE.Vector3(port.x, port.y, port.z),
+          radius: port.radius,
+          length: port.length,
+          color: port.color,
+          collarColor: port.collarColor,
+          collarRadius: port.collarRadius,
+          collarLength: port.collarLength,
+          flangeColor: port.flangeColor,
+          flangeThickness: port.flangeThickness,
+        });
+        if (port.kind === "liquid") {
+          group.add(
+            createLocalCylinderMesh(
+              port.bandRadius,
+              port.bandRadius,
+              3,
+              port.bandColor,
+              new THREE.Vector3(port.x + port.bandOffsetX, port.y, port.z),
+              {
+                rotation: new THREE.Euler(0, 0, Math.PI / 2),
+                radialSegments: 16,
+              },
+            ),
+          );
+        }
       });
       break;
     }
-    case 'outdoor-unit': {
+    case "outdoor-unit": {
       const footHeight = Math.max(35, height * 0.12);
       const cabinetHeight = Math.max(120, height - footHeight);
       group.add(
@@ -2094,8 +2411,8 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
       );
       break;
     }
-    case 'remote-controller':
-    case 'control-panel': {
+    case "remote-controller":
+    case "control-panel": {
       const panelHeight = Math.max(80, height);
       group.add(
         createLocalBoxMesh(
@@ -2111,7 +2428,7 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           width * 0.74,
           depth * 0.12,
           panelHeight * 0.44,
-          '#202733',
+          "#202733",
           new THREE.Vector3(0, depth * 0.24, panelHeight * 0.62),
         ),
       );
@@ -2126,8 +2443,8 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
       );
       break;
     }
-    case 'filter':
-    case 'accessory':
+    case "filter":
+    case "accessory":
     default: {
       group.add(
         createLocalBoxMesh(
@@ -2175,7 +2492,10 @@ function createDetailedFurnitureMesh(
     return null;
   }
 
-  const model = createOptimizedFurnitureModel3D(definition.renderType, instance.properties);
+  const model = createOptimizedFurnitureModel3D(
+    definition.renderType,
+    instance.properties,
+  );
   model.rotation.x = Math.PI / 2;
 
   const rawBox = new THREE.Box3().setFromObject(model);
@@ -2198,20 +2518,20 @@ function createDetailedFurnitureMesh(
   model.position.set(
     -rawCenter.x * scaleX,
     -rawCenter.y * scaleY,
-    -rawBox.min.z * scaleZ
+    -rawBox.min.z * scaleZ,
   );
   model.updateMatrixWorld(true);
 
   const finalBox = new THREE.Box3().setFromObject(model);
   const finalSize = finalBox.getSize(new THREE.Vector3());
   if (
-    finalBox.isEmpty()
-    || !Number.isFinite(finalSize.x)
-    || !Number.isFinite(finalSize.y)
-    || !Number.isFinite(finalSize.z)
-    || finalSize.x < 1
-    || finalSize.y < 1
-    || finalSize.z < 1
+    finalBox.isEmpty() ||
+    !Number.isFinite(finalSize.x) ||
+    !Number.isFinite(finalSize.y) ||
+    !Number.isFinite(finalSize.z) ||
+    finalSize.x < 1 ||
+    finalSize.y < 1 ||
+    finalSize.z < 1
   ) {
     return null;
   }
@@ -2232,7 +2552,10 @@ function createDetailedFurnitureMesh(
   return group;
 }
 
-function createPlanGrid(points: Point2D[], elevation: number): THREE.GridHelper {
+function createPlanGrid(
+  points: Point2D[],
+  elevation: number,
+): THREE.GridHelper {
   const bounds = ensurePlanBounds(points);
   const spanX = bounds.maxX - bounds.minX;
   const spanY = bounds.maxY - bounds.minY;
@@ -2242,7 +2565,11 @@ function createPlanGrid(points: Point2D[], elevation: number): THREE.GridHelper 
   const divisions = Math.max(2, Math.round(size / step));
   const grid = new THREE.GridHelper(size, divisions, 0xd8cec0, 0xd8cec0);
   grid.rotation.x = Math.PI / 2;
-  grid.position.set((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2, elevation);
+  grid.position.set(
+    (bounds.minX + bounds.maxX) / 2,
+    (bounds.minY + bounds.maxY) / 2,
+    elevation,
+  );
 
   const material = grid.material;
   if (Array.isArray(material)) {
@@ -2272,14 +2599,14 @@ function mirrorXValue(x: number, pivotX: number): number {
 
 function mirrorLabelAnchors(
   anchors: LabelAnchor[],
-  pivotX: number
+  pivotX: number,
 ): LabelAnchor[] {
   return anchors.map((anchor) => ({
     ...anchor,
     position: new THREE.Vector3(
       mirrorXValue(anchor.position.x, pivotX),
       anchor.position.y,
-      anchor.position.z
+      anchor.position.z,
     ),
   }));
 }
@@ -2296,9 +2623,15 @@ function ensureDoubleSidedMaterials(root: THREE.Object3D): void {
       return;
     }
 
-    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    const materials = Array.isArray(object.material)
+      ? object.material
+      : [object.material];
     materials.forEach((material) => {
-      if (!material || !('side' in material) || material.side === THREE.DoubleSide) {
+      if (
+        !material ||
+        !("side" in material) ||
+        material.side === THREE.DoubleSide
+      ) {
         return;
       }
 
@@ -2308,28 +2641,30 @@ function ensureDoubleSidedMaterials(root: THREE.Object3D): void {
   });
 }
 
-function definitionFallback(definitionId: string): ArchitecturalObjectDefinition {
+function definitionFallback(
+  definitionId: string,
+): ArchitecturalObjectDefinition {
   return {
     id: definitionId,
-    name: 'Object',
-    category: 'my-library',
-    type: 'custom',
+    name: "Object",
+    category: "my-library",
+    type: "custom",
     widthMm: 900,
     depthMm: 600,
     heightMm: 900,
-    tags: ['custom'],
-    view: 'plan-2d',
+    tags: ["custom"],
+    view: "plan-2d",
   };
 }
 
 export function IsometricViewCanvas({
-  className = '',
+  className = "",
   walls,
   rooms,
   symbols,
   hvacElements,
   objectDefinitions,
-  viewLabel = 'ISOMETRIC VIEW',
+  viewLabel = "ISOMETRIC VIEW",
 }: IsometricViewCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -2341,47 +2676,67 @@ export function IsometricViewCanvas({
   const hasAutoFitRef = useRef(false);
   const isInteractingRef = useRef(false);
   const wallBandRequestIdRef = useRef(0);
-  const lastResolvedWallBandSignatureRef = useRef('');
-  const pendingWallBandSignatureRef = useRef('');
+  const lastResolvedWallBandSignatureRef = useRef("");
+  const pendingWallBandSignatureRef = useRef("");
   const [containerSize, setContainerSize] = useState(DEFAULT_EMPTY_SIZE);
   const [screenLabels, setScreenLabels] = useState<ScreenLabel[]>([]);
   const [isEmpty, setIsEmpty] = useState(false);
   const [webglInitError, setWebglInitError] = useState<string | null>(null);
   const [wallBands, setWallBands] = useState<WallBand[]>([]);
-  const [resolvedWallBandSignature, setResolvedWallBandSignature] = useState('');
+  const [resolvedWallBandSignature, setResolvedWallBandSignature] =
+    useState("");
   const [isWallBandsPending, setIsWallBandsPending] = useState(false);
 
   const definitionsById = useMemo(
-    () => new Map(objectDefinitions.map((definition) => [definition.id, definition])),
-    [objectDefinitions]
+    () =>
+      new Map(
+        objectDefinitions.map((definition) => [definition.id, definition]),
+      ),
+    [objectDefinitions],
   );
-  const openingRenderOptionsById = useMemo<Record<string, OpeningRenderOptions>>(() => {
+  const openingRenderOptionsById = useMemo<
+    Record<string, OpeningRenderOptions>
+  >(() => {
     const options: Record<string, OpeningRenderOptions> = {};
     symbols.forEach((instance) => {
-      const definition = definitionsById.get(instance.symbolId) ?? definitionFallback(instance.symbolId);
-      if (definition.category !== 'doors') {
+      const definition =
+        definitionsById.get(instance.symbolId) ??
+        definitionFallback(instance.symbolId);
+      if (definition.category !== "doors") {
         return;
       }
 
       options[instance.id] = {
-        swingDirection: instance.properties?.swingDirection === 'right' ? 'right' : 'left',
-        openSide: instance.properties?.doorOpenSide === 'negative' ? 'negative' : 'positive',
+        swingDirection:
+          instance.properties?.swingDirection === "right" ? "right" : "left",
+        openSide:
+          instance.properties?.doorOpenSide === "negative"
+            ? "negative"
+            : "positive",
       };
     });
     return options;
   }, [definitionsById, symbols]);
-  const wallsById = useMemo(() => new Map(walls.map((wall) => [wall.id, wall])), [walls]);
-  const wallBandSignature = useMemo(() => buildIsometricWallBandsSignature(walls), [walls]);
-  const activeWallBands = resolvedWallBandSignature === wallBandSignature ? wallBands : [];
-  const showPendingWallBands = isWallBandsPending && walls.length > 0 && activeWallBands.length === 0;
+  const wallsById = useMemo(
+    () => new Map(walls.map((wall) => [wall.id, wall])),
+    [walls],
+  );
+  const wallBandSignature = useMemo(
+    () => buildIsometricWallBandsSignature(walls),
+    [walls],
+  );
+  const activeWallBands =
+    resolvedWallBandSignature === wallBandSignature ? wallBands : [];
+  const showPendingWallBands =
+    isWallBandsPending && walls.length > 0 && activeWallBands.length === 0;
 
   useEffect(() => {
     if (walls.length === 0) {
       wallBandRequestIdRef.current += 1;
-      lastResolvedWallBandSignatureRef.current = '';
-      pendingWallBandSignatureRef.current = '';
+      lastResolvedWallBandSignatureRef.current = "";
+      pendingWallBandSignatureRef.current = "";
       setWallBands([]);
-      setResolvedWallBandSignature('');
+      setResolvedWallBandSignature("");
       setIsWallBandsPending(false);
       return;
     }
@@ -2400,25 +2755,27 @@ export function IsometricViewCanvas({
     void buildIsometricWallBandsInBackground({
       signature: wallBandSignature,
       walls,
-    }).then((nextWallBands) => {
-      if (requestId !== wallBandRequestIdRef.current) {
-        return;
-      }
+    })
+      .then((nextWallBands) => {
+        if (requestId !== wallBandRequestIdRef.current) {
+          return;
+        }
 
-      pendingWallBandSignatureRef.current = '';
-      lastResolvedWallBandSignatureRef.current = wallBandSignature;
-      setWallBands(nextWallBands);
-      setResolvedWallBandSignature(wallBandSignature);
-      setIsWallBandsPending(false);
-      renderRequestedRef.current = true;
-    }).catch(() => {
-      if (requestId !== wallBandRequestIdRef.current) {
-        return;
-      }
+        pendingWallBandSignatureRef.current = "";
+        lastResolvedWallBandSignatureRef.current = wallBandSignature;
+        setWallBands(nextWallBands);
+        setResolvedWallBandSignature(wallBandSignature);
+        setIsWallBandsPending(false);
+        renderRequestedRef.current = true;
+      })
+      .catch(() => {
+        if (requestId !== wallBandRequestIdRef.current) {
+          return;
+        }
 
-      pendingWallBandSignatureRef.current = '';
-      setIsWallBandsPending(false);
-    });
+        pendingWallBandSignatureRef.current = "";
+        setIsWallBandsPending(false);
+      });
   }, [wallBandSignature, walls]);
 
   const renderViewport = useCallback(() => {
@@ -2435,7 +2792,9 @@ export function IsometricViewCanvas({
     }
     renderer.render(scene, camera);
     if (!isInteractingRef.current) {
-      setScreenLabels(projectLabels(labelAnchorsRef.current, camera, width, height));
+      setScreenLabels(
+        projectLabels(labelAnchorsRef.current, camera, width, height),
+      );
     }
   }, []);
 
@@ -2465,12 +2824,35 @@ export function IsometricViewCanvas({
     setWebglInitError(null);
 
     const rendererConfigs: Array<
-      Pick<THREE.WebGLRendererParameters, 'antialias' | 'alpha' | 'powerPreference' | 'logarithmicDepthBuffer'>
+      Pick<
+        THREE.WebGLRendererParameters,
+        "antialias" | "alpha" | "powerPreference" | "logarithmicDepthBuffer"
+      >
     > = [
-      { antialias: true, alpha: false, powerPreference: 'high-performance', logarithmicDepthBuffer: false },
-      { antialias: false, alpha: false, powerPreference: 'high-performance', logarithmicDepthBuffer: false },
-      { antialias: false, alpha: false, powerPreference: 'default', logarithmicDepthBuffer: false },
-      { antialias: false, alpha: true, powerPreference: 'default', logarithmicDepthBuffer: false },
+      {
+        antialias: true,
+        alpha: false,
+        powerPreference: "high-performance",
+        logarithmicDepthBuffer: false,
+      },
+      {
+        antialias: false,
+        alpha: false,
+        powerPreference: "high-performance",
+        logarithmicDepthBuffer: false,
+      },
+      {
+        antialias: false,
+        alpha: false,
+        powerPreference: "default",
+        logarithmicDepthBuffer: false,
+      },
+      {
+        antialias: false,
+        alpha: true,
+        powerPreference: "default",
+        logarithmicDepthBuffer: false,
+      },
     ];
 
     let renderer: THREE.WebGLRenderer | null = null;
@@ -2488,52 +2870,62 @@ export function IsometricViewCanvas({
     }
 
     if (!renderer) {
-      console.error('Isometric renderer initialization failed:', rendererInitError);
+      console.error(
+        "Isometric renderer initialization failed:",
+        rendererInitError,
+      );
       sceneRef.current = null;
       boundsRef.current = null;
       labelAnchorsRef.current = [];
       setScreenLabels([]);
       setIsEmpty(true);
       setWebglInitError(
-        'Unable to create WebGL context. Close other 3D tabs or check browser hardware acceleration settings.'
+        "Unable to create WebGL context. Close other 3D tabs or check browser hardware acceleration settings.",
       );
       return;
     }
 
     const handleContextLost = (event: Event) => {
       event.preventDefault();
-      console.warn('[IsometricView] WebGL context lost — will attempt recovery');
-      setWebglInitError('WebGL context was lost. Attempting to recover…');
+      console.warn(
+        "[IsometricView] WebGL context lost — will attempt recovery",
+      );
+      setWebglInitError("WebGL context was lost. Attempting to recover…");
       setScreenLabels([]);
     };
 
     const handleContextRestored = () => {
-      console.info('[IsometricView] WebGL context restored');
+      console.info("[IsometricView] WebGL context restored");
       setWebglInitError(null);
       // Force full scene rebuild on next data change
       renderRequestedRef.current = true;
       hasAutoFitRef.current = false;
     };
 
-    canvas.addEventListener('webglcontextlost', handleContextLost, false);
-    canvas.addEventListener('webglcontextrestored', handleContextRestored, false);
+    canvas.addEventListener("webglcontextlost", handleContextLost, false);
+    canvas.addEventListener(
+      "webglcontextrestored",
+      handleContextRestored,
+      false,
+    );
 
     // Cap pixel ratio at 1.5 to reduce GPU fill-rate pressure.
     // Full retina (2x) causes 4x pixel count which is the top contributor to
     // GPU stalls and context-loss on integrated graphics.
-    const effectivePixelRatio = typeof window !== 'undefined'
-      ? Math.min(window.devicePixelRatio || 1, 1.5)
-      : 1;
+    const effectivePixelRatio =
+      typeof window !== "undefined"
+        ? Math.min(window.devicePixelRatio || 1, 1.5)
+        : 1;
     renderer.setPixelRatio(effectivePixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
-    renderer.setClearColor('#f5efe1', 1);
+    renderer.setClearColor("#f5efe1", 1);
     // Disable automatic info.reset() so we can monitor cumulative stats
     renderer.info.autoReset = false;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#f5efe1');
+    scene.background = new THREE.Color("#f5efe1");
 
     const camera = new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, 1, 1, 50000);
     camera.up.set(0, 0, 1);
@@ -2562,12 +2954,12 @@ export function IsometricViewCanvas({
       ONE: THREE.TOUCH.ROTATE,
       TWO: THREE.TOUCH.DOLLY_PAN,
     };
-    controls.cursorStyle = 'grab';
+    controls.cursorStyle = "grab";
     if (container) {
       controls.listenToKeyEvents(container);
     }
-    canvas.style.cursor = 'grab';
-    canvas.style.touchAction = 'none';
+    canvas.style.cursor = "grab";
+    canvas.style.touchAction = "none";
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
     const keyLight = new THREE.DirectionalLight(0xfff6ee, 1.15);
@@ -2583,20 +2975,20 @@ export function IsometricViewCanvas({
     scene.add(contentRoot);
 
     const preventContextMenu = (event: MouseEvent) => event.preventDefault();
-    canvas.addEventListener('contextmenu', preventContextMenu);
+    canvas.addEventListener("contextmenu", preventContextMenu);
 
-    controls.addEventListener('start', () => {
+    controls.addEventListener("start", () => {
       isInteractingRef.current = true;
-      canvas.style.cursor = 'grabbing';
+      canvas.style.cursor = "grabbing";
       setScreenLabels([]);
       renderRequestedRef.current = true;
     });
-    controls.addEventListener('change', () => {
+    controls.addEventListener("change", () => {
       renderRequestedRef.current = true;
     });
-    controls.addEventListener('end', () => {
+    controls.addEventListener("end", () => {
       isInteractingRef.current = false;
-      canvas.style.cursor = 'grab';
+      canvas.style.cursor = "grab";
       renderRequestedRef.current = true;
     });
 
@@ -2619,7 +3011,10 @@ export function IsometricViewCanvas({
       // With damping enabled, controls.update() returns true while damping is active
       const controlsChanged = controls.update();
 
-      const needsRender = controlsChanged || renderRequestedRef.current || isInteractingRef.current;
+      const needsRender =
+        controlsChanged ||
+        renderRequestedRef.current ||
+        isInteractingRef.current;
 
       if (needsRender) {
         renderRequestedRef.current = false;
@@ -2631,7 +3026,9 @@ export function IsometricViewCanvas({
         // After settling, re-project labels once if interaction just ended
         if (idleFrames === 2) {
           const { width, height } = sizeRef.current;
-          setScreenLabels(projectLabels(labelAnchorsRef.current, camera, width, height));
+          setScreenLabels(
+            projectLabels(labelAnchorsRef.current, camera, width, height),
+          );
         }
       }
     };
@@ -2641,9 +3038,13 @@ export function IsometricViewCanvas({
       window.cancelAnimationFrame(frameId);
       controls.stopListenToKeyEvents();
       controls.dispose();
-      canvas.removeEventListener('contextmenu', preventContextMenu);
-      canvas.removeEventListener('webglcontextlost', handleContextLost, false);
-      canvas.removeEventListener('webglcontextrestored', handleContextRestored, false);
+      canvas.removeEventListener("contextmenu", preventContextMenu);
+      canvas.removeEventListener("webglcontextlost", handleContextLost, false);
+      canvas.removeEventListener(
+        "webglcontextrestored",
+        handleContextRestored,
+        false,
+      );
       clearGroup(contentRoot);
       renderer.dispose();
       sceneRef.current = null;
@@ -2681,7 +3082,11 @@ export function IsometricViewCanvas({
     const { renderer, camera, controls } = sceneState;
     const width = Math.max(1, containerSize.width);
     const height = Math.max(1, containerSize.height);
-    renderer.setPixelRatio(typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 1.5) : 1);
+    renderer.setPixelRatio(
+      typeof window !== "undefined"
+        ? Math.min(window.devicePixelRatio || 1, 1.5)
+        : 1,
+    );
     renderer.setSize(width, height, false);
     resizeCameraFrustum(camera, width, height);
     controls.update();
@@ -2727,9 +3132,13 @@ export function IsometricViewCanvas({
       lowestElevation = Math.min(lowestElevation, floorElevation);
       labelAnchors.push({
         key: `room-${room.id}`,
-        position: new THREE.Vector3(room.centroid.x, room.centroid.y, floorElevation + 12),
+        position: new THREE.Vector3(
+          room.centroid.x,
+          room.centroid.y,
+          floorElevation + 12,
+        ),
         text: `${room.name} ${(room.area / 1_000_000).toFixed(1)}m2`,
-        color: '#334155',
+        color: "#334155",
       });
     });
 
@@ -2744,7 +3153,7 @@ export function IsometricViewCanvas({
         band.palette,
         band.showOutline ?? true,
         band.showTopCap ?? true,
-        band.topCapInsetMm ?? 0
+        band.topCapInsetMm ?? 0,
       );
       if (wallMesh) {
         wallMesh.name = band.name;
@@ -2762,7 +3171,10 @@ export function IsometricViewCanvas({
         return;
       }
 
-      const openingsGroup = createWallOpenings3D(wall, openingRenderOptionsById);
+      const openingsGroup = createWallOpenings3D(
+        wall,
+        openingRenderOptionsById,
+      );
       if (openingsGroup.children.length === 0) {
         return;
       }
@@ -2786,14 +3198,14 @@ export function IsometricViewCanvas({
           { x: meshBounds.min.x, y: meshBounds.min.y },
           { x: meshBounds.max.x, y: meshBounds.min.y },
           { x: meshBounds.max.x, y: meshBounds.max.y },
-          { x: meshBounds.min.x, y: meshBounds.max.y }
+          { x: meshBounds.min.x, y: meshBounds.max.y },
         );
         labelAnchors.push({
           key: `hvac-${element.id}`,
           position: new THREE.Vector3(
             (meshBounds.min.x + meshBounds.max.x) / 2,
             (meshBounds.min.y + meshBounds.max.y) / 2,
-            meshBounds.max.z + 30
+            meshBounds.max.z + 30,
           ),
           text: element.label || element.type,
           color: labelColor,
@@ -2805,15 +3217,18 @@ export function IsometricViewCanvas({
       planPoints.push(
         { x: element.position.x, y: element.position.y },
         { x: element.position.x + element.width, y: element.position.y },
-        { x: element.position.x + element.width, y: element.position.y + element.depth },
-        { x: element.position.x, y: element.position.y + element.depth }
+        {
+          x: element.position.x + element.width,
+          y: element.position.y + element.depth,
+        },
+        { x: element.position.x, y: element.position.y + element.depth },
       );
       labelAnchors.push({
         key: `hvac-${element.id}`,
         position: new THREE.Vector3(
           element.position.x + element.width / 2,
           element.position.y + element.depth / 2,
-          element.elevation + Math.max(80, element.height) + 30
+          element.elevation + Math.max(80, element.height) + 30,
         ),
         text: element.label || element.type,
         color: labelColor,
@@ -2821,46 +3236,60 @@ export function IsometricViewCanvas({
     });
 
     symbols.forEach((instance) => {
-      const definition = definitionsById.get(instance.symbolId) ?? definitionFallback(instance.symbolId);
-      const scaleFactor = Number.isFinite(instance.scale) && instance.scale > 0 ? instance.scale : 1;
-      const baseWidth = readNumberProperty(instance.properties, 'widthMm') ?? definition.widthMm;
-      const baseDepth = readNumberProperty(instance.properties, 'depthMm') ?? definition.depthMm;
-      const baseHeight = readNumberProperty(instance.properties, 'heightMm') ?? definition.heightMm;
-      const widthMm = Math.max(
-        60,
-        baseWidth * scaleFactor
-      );
-      let depthMm = Math.max(
-        40,
-        baseDepth * scaleFactor
-      );
+      const definition =
+        definitionsById.get(instance.symbolId) ??
+        definitionFallback(instance.symbolId);
+      const scaleFactor =
+        Number.isFinite(instance.scale) && instance.scale > 0
+          ? instance.scale
+          : 1;
+      const baseWidth =
+        readNumberProperty(instance.properties, "widthMm") ??
+        definition.widthMm;
+      const baseDepth =
+        readNumberProperty(instance.properties, "depthMm") ??
+        definition.depthMm;
+      const baseHeight =
+        readNumberProperty(instance.properties, "heightMm") ??
+        definition.heightMm;
+      const widthMm = Math.max(60, baseWidth * scaleFactor);
+      let depthMm = Math.max(40, baseDepth * scaleFactor);
       const heightMm = Math.max(
-        definition.category === 'symbols' ? 140 : 240,
-        baseHeight * scaleFactor
+        definition.category === "symbols" ? 140 : 240,
+        baseHeight * scaleFactor,
       );
-      const isOpeningCategory = definition.category === 'doors' || definition.category === 'windows';
-      const isDetailedFurnitureCategory = (
-        definition.category === 'furniture'
-        || definition.category === 'fixtures'
-        || definition.category === 'my-library'
-      ) && !!definition.renderType && hasRenderer(definition.renderType);
-      const baseElevationFromProps = readNumberProperty(instance.properties, 'baseElevationMm');
-      const baseElevation = baseElevationFromProps ?? (
-        definition.category === 'windows'
-          ? definition.sillHeightMm ?? 900
-          : 0
+      const isOpeningCategory =
+        definition.category === "doors" || definition.category === "windows";
+      const isDetailedFurnitureCategory =
+        (definition.category === "furniture" ||
+          definition.category === "fixtures" ||
+          definition.category === "my-library") &&
+        !!definition.renderType &&
+        hasRenderer(definition.renderType);
+      const baseElevationFromProps = readNumberProperty(
+        instance.properties,
+        "baseElevationMm",
       );
+      const baseElevation =
+        baseElevationFromProps ??
+        (definition.category === "windows"
+          ? (definition.sillHeightMm ?? 900)
+          : 0);
 
       // If this door/window is already rendered via wall opening geometry,
       // skip the simplified symbol box to avoid losing detail.
       if (isOpeningCategory && renderedOpeningIds.has(instance.id)) {
         lowestElevation = Math.min(lowestElevation, baseElevation);
-        if (definition.category !== 'symbols') {
+        if (definition.category !== "symbols") {
           labelAnchors.push({
             key: `object-${instance.id}`,
-            position: new THREE.Vector3(instance.position.x, instance.position.y, baseElevation + heightMm + 30),
+            position: new THREE.Vector3(
+              instance.position.x,
+              instance.position.y,
+              baseElevation + heightMm + 30,
+            ),
             text: definition.name,
-            color: '#334155',
+            color: "#334155",
           });
         }
         return;
@@ -2873,7 +3302,7 @@ export function IsometricViewCanvas({
           widthMm,
           depthMm,
           heightMm,
-          baseElevation
+          baseElevation,
         );
         if (detailedFurniture) {
           geometryRoot.add(detailedFurniture);
@@ -2881,42 +3310,63 @@ export function IsometricViewCanvas({
           const halfWidth = widthMm / 2;
           const halfDepth = depthMm / 2;
           planPoints.push(
-            { x: instance.position.x - halfWidth, y: instance.position.y - halfDepth },
-            { x: instance.position.x + halfWidth, y: instance.position.y - halfDepth },
-            { x: instance.position.x + halfWidth, y: instance.position.y + halfDepth },
-            { x: instance.position.x - halfWidth, y: instance.position.y + halfDepth }
+            {
+              x: instance.position.x - halfWidth,
+              y: instance.position.y - halfDepth,
+            },
+            {
+              x: instance.position.x + halfWidth,
+              y: instance.position.y - halfDepth,
+            },
+            {
+              x: instance.position.x + halfWidth,
+              y: instance.position.y + halfDepth,
+            },
+            {
+              x: instance.position.x - halfWidth,
+              y: instance.position.y + halfDepth,
+            },
           );
           labelAnchors.push({
             key: `object-${instance.id}`,
             position: new THREE.Vector3(
               instance.position.x,
               instance.position.y,
-              baseElevation + heightMm + 30
+              baseElevation + heightMm + 30,
             ),
             text: definition.name,
-            color: '#334155',
+            color: "#334155",
           });
           return;
         }
       }
 
       if (isOpeningCategory) {
-        const hostWallId = typeof instance.properties.hostWallId === 'string'
-          ? instance.properties.hostWallId
-          : null;
-        const hostWallThickness = readNumberProperty(instance.properties, 'hostWallThicknessMm')
-          ?? (hostWallId ? wallsById.get(hostWallId)?.thickness : null);
+        const hostWallId =
+          typeof instance.properties.hostWallId === "string"
+            ? instance.properties.hostWallId
+            : null;
+        const hostWallThickness =
+          readNumberProperty(instance.properties, "hostWallThicknessMm") ??
+          (hostWallId ? wallsById.get(hostWallId)?.thickness : null);
         const targetThickness = hostWallThickness ?? depthMm;
-        const inset = Math.min(OPENING_SURFACE_INSET_MM, Math.max(0.8, targetThickness * 0.05));
+        const inset = Math.min(
+          OPENING_SURFACE_INSET_MM,
+          Math.max(0.8, targetThickness * 0.05),
+        );
         depthMm = Math.max(10, targetThickness - inset * 2);
       }
       const mesh = createBoxMesh(
-        new THREE.Vector3(instance.position.x, instance.position.y, baseElevation + heightMm / 2),
+        new THREE.Vector3(
+          instance.position.x,
+          instance.position.y,
+          baseElevation + heightMm / 2,
+        ),
         widthMm,
         depthMm,
         heightMm,
         solidPalette(definition.category),
-        instance.rotation
+        instance.rotation,
       );
       geometryRoot.add(mesh);
 
@@ -2924,18 +3374,34 @@ export function IsometricViewCanvas({
       const halfWidth = widthMm / 2;
       const halfDepth = depthMm / 2;
       planPoints.push(
-        { x: instance.position.x - halfWidth, y: instance.position.y - halfDepth },
-        { x: instance.position.x + halfWidth, y: instance.position.y - halfDepth },
-        { x: instance.position.x + halfWidth, y: instance.position.y + halfDepth },
-        { x: instance.position.x - halfWidth, y: instance.position.y + halfDepth }
+        {
+          x: instance.position.x - halfWidth,
+          y: instance.position.y - halfDepth,
+        },
+        {
+          x: instance.position.x + halfWidth,
+          y: instance.position.y - halfDepth,
+        },
+        {
+          x: instance.position.x + halfWidth,
+          y: instance.position.y + halfDepth,
+        },
+        {
+          x: instance.position.x - halfWidth,
+          y: instance.position.y + halfDepth,
+        },
       );
 
-      if (definition.category !== 'symbols') {
+      if (definition.category !== "symbols") {
         labelAnchors.push({
           key: `object-${instance.id}`,
-          position: new THREE.Vector3(instance.position.x, instance.position.y, baseElevation + heightMm + 30),
+          position: new THREE.Vector3(
+            instance.position.x,
+            instance.position.y,
+            baseElevation + heightMm + 30,
+          ),
           text: definition.name,
-          color: '#334155',
+          color: "#334155",
         });
       }
     });
@@ -2979,7 +3445,16 @@ export function IsometricViewCanvas({
     }
     controls.update();
     renderRequestedRef.current = true;
-  }, [activeWallBands, definitionsById, hvacElements, openingRenderOptionsById, rooms, symbols, walls, wallsById]);
+  }, [
+    activeWallBands,
+    definitionsById,
+    hvacElements,
+    openingRenderOptionsById,
+    rooms,
+    symbols,
+    walls,
+    wallsById,
+  ]);
 
   return (
     <div
@@ -2989,8 +3464,8 @@ export function IsometricViewCanvas({
       onPointerDown={() => containerRef.current?.focus()}
       style={{
         minHeight: 220,
-        background: 'linear-gradient(180deg, #faf5ea 0%, #f1eadf 100%)',
-        outline: 'none',
+        background: "linear-gradient(180deg, #faf5ea 0%, #f1eadf 100%)",
+        outline: "none",
       }}
     >
       <canvas
@@ -3001,14 +3476,14 @@ export function IsometricViewCanvas({
       <div className="pointer-events-none absolute inset-0">
         <div
           className="absolute left-1/2 top-1 -translate-x-1/2 text-[12px] tracking-[0.18em] text-slate-600"
-          style={{ fontFamily: 'monospace' }}
+          style={{ fontFamily: "monospace" }}
         >
           {viewLabel}
         </div>
         {webglInitError && (
           <div
             className="absolute left-1/2 top-1/2 w-[min(92%,680px)] -translate-x-1/2 -translate-y-1/2 rounded border border-rose-300/70 bg-white/90 px-4 py-3 text-center text-sm text-rose-700 shadow"
-            style={{ fontFamily: 'monospace' }}
+            style={{ fontFamily: "monospace" }}
           >
             {webglInitError}
           </div>
@@ -3016,7 +3491,7 @@ export function IsometricViewCanvas({
         {showPendingWallBands && !webglInitError && (
           <div
             className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-sm text-slate-500"
-            style={{ fontFamily: 'monospace' }}
+            style={{ fontFamily: "monospace" }}
           >
             Preparing isometric wall geometry...
           </div>
@@ -3024,7 +3499,7 @@ export function IsometricViewCanvas({
         {isEmpty && !webglInitError && !showPendingWallBands && (
           <div
             className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-sm text-slate-500"
-            style={{ fontFamily: 'monospace' }}
+            style={{ fontFamily: "monospace" }}
           >
             No plan geometry available for isometric view
           </div>
@@ -3037,7 +3512,7 @@ export function IsometricViewCanvas({
               left: `${label.x}px`,
               top: `${label.y}px`,
               color: label.color,
-              fontFamily: 'monospace',
+              fontFamily: "monospace",
             }}
           >
             {label.text}
@@ -3046,7 +3521,7 @@ export function IsometricViewCanvas({
         {!isEmpty && !webglInitError && (
           <div
             className="absolute bottom-3 left-3 rounded border border-slate-300/55 bg-white/76 px-3 py-1.5 text-[11px] text-slate-600 shadow-sm"
-            style={{ fontFamily: 'monospace' }}
+            style={{ fontFamily: "monospace" }}
           >
             Drag rotate | Right-drag pan | Wheel zoom | Double-click reset
           </div>
@@ -3058,7 +3533,7 @@ export function IsometricViewCanvas({
           onClick={resetView}
           disabled={isEmpty || Boolean(webglInitError)}
           className="rounded border border-amber-300/80 bg-white/88 px-3 py-1.5 text-xs text-slate-700 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-          style={{ fontFamily: 'monospace' }}
+          style={{ fontFamily: "monospace" }}
         >
           Reset View
         </button>

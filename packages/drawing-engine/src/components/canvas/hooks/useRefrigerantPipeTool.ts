@@ -214,16 +214,22 @@ export function useRefrigerantPipeTool(
     bundle: RefrigerantPipeBundleConnection | null;
   } => {
     const thresholdMm = Math.max(10, 28 / Math.max(zoom * MM_TO_PX, 0.01));
-    const bundle = allowBundleSnap
-      ? hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(point, thresholdMm)
-        ?? findNearestRefrigerantPipeBundleTarget(hvacElements, point, thresholdMm)
-      : null;
+    let bundle: RefrigerantPipeBundleConnection | null = null;
+    if (allowBundleSnap) {
+      bundle = hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(point, thresholdMm)
+        ?? findNearestRefrigerantPipeBundleTarget(hvacElements, point, thresholdMm);
+      // When routing, exclude the source element to avoid snapping back to origin
+      if (bundle && startBundleRef.current?.sourceElementId
+        && bundle.sourceElementId === startBundleRef.current.sourceElementId) {
+        bundle = null;
+      }
+    }
 
     let nextPoint = bundle?.point ?? point;
     if (snapToGrid && !bundle) {
       nextPoint = snapPointToGrid(nextPoint, gridSize);
     }
-    if (routePointsRef.current.length > 0) {
+    if (!bundle && routePointsRef.current.length > 0) {
       const previousPoint = routePointsRef.current[routePointsRef.current.length - 1]!;
       nextPoint = shiftPressedRef.current
         ? applyOrthogonalConstraint(previousPoint, nextPoint)
@@ -284,7 +290,7 @@ export function useRefrigerantPipeTool(
   }, [addHvacElements, resetDrawing, setProcessingStatus, setSelectedIds]);
 
   const handleMouseDown = useCallback((point: Point2D) => {
-    const { point: snappedPoint, bundle } = snapPoint(point, routePointsRef.current.length === 0);
+    const { point: snappedPoint, bundle } = snapPoint(point, true);
 
     if (routePointsRef.current.length === 0) {
       routePointsRef.current = [snappedPoint];
@@ -300,20 +306,27 @@ export function useRefrigerantPipeTool(
       return;
     }
 
+    // If we snapped to a bundle endpoint, auto-commit the route
+    if (bundle) {
+      commitRoute(snappedPoint);
+      return;
+    }
+
     routePointsRef.current = [...routePointsRef.current, snappedPoint];
     previewPointRef.current = null;
     renderRoutePreview(routePointsRef.current);
-  }, [clearPreview, renderRoutePreview, snapPoint]);
+  }, [clearPreview, commitRoute, renderRoutePreview, renderSnapMarkers, snapPoint]);
 
   const handleMouseMove = useCallback((point: Point2D) => {
+    const { point: snappedPoint, bundle } = snapPoint(point, true);
+
     if (routePointsRef.current.length === 0) {
-      const { bundle } = snapPoint(point, true);
       renderSnapMarkers(bundle);
       return;
     }
 
-    const { point: snappedPoint } = snapPoint(point, false);
     previewPointRef.current = snappedPoint;
+    renderSnapMarkers(bundle);
     renderRoutePreview([...routePointsRef.current, snappedPoint]);
   }, [renderRoutePreview, renderSnapMarkers, snapPoint]);
 
