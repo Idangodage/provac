@@ -44,6 +44,7 @@ export type SectionLineDirection = 1 | -1;
 export type EditorViewMode = 'plan' | 'split' | 'front-elevation' | 'end-elevation' | 'isometric';
 export type HvacElementType =
   | 'ducted-ac'
+  | 'duct'
   | 'split-ac'
   | 'wall-mounted-ac'
   | 'ceiling-cassette-ac'

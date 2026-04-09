@@ -48,6 +48,20 @@ export interface DuctedIndoorUnitInlineOpeningSpec {
   slatThickness: number;
 }
 
+export interface DuctedIndoorUnitGIDuctSpec {
+  kind: "return" | "supply";
+  x: number;
+  faceY: number;
+  z: number;
+  width: number;
+  height: number;
+  length: number;
+  wallThickness: number;
+  direction: 1 | -1;
+  connectionOffset: number;
+  seamCount: number;
+}
+
 export interface DuctedIndoorUnitPipePortSpec {
   kind: "gas" | "liquid" | "drain";
   x: number;
@@ -87,7 +101,29 @@ export interface DuctedIndoorUnitModelSpec {
   fanRibs: DuctedIndoorUnitLineSpec[];
   sectionDividers: DuctedIndoorUnitLineSpec[];
   airOpenings: DuctedIndoorUnitInlineOpeningSpec[];
+  giDucts: DuctedIndoorUnitGIDuctSpec[];
   pipePorts: DuctedIndoorUnitPipePortSpec[];
+}
+
+export interface DuctedIndoorUnitOpeningPlanProjection {
+  shellFaceY: number;
+  outwardDirectionY: 1 | -1;
+  collarCenterY: number;
+  collarOuterEdgeY: number;
+  cavityCenterY: number;
+  cavityDepth: number;
+  mouthCenterY: number;
+  mouthDepth: number;
+  coilCenterY: number;
+  coilDepth: number;
+}
+
+export interface DuctedIndoorUnitGIDuctPlacement {
+  shellFaceY: number;
+  outwardDirectionY: 1 | -1;
+  startY: number;
+  centerY: number;
+  endY: number;
 }
 
 export const DUCTED_INDOOR_UNIT_COLOR_PALETTE = {
@@ -115,6 +151,10 @@ export const DUCTED_INDOOR_UNIT_COLOR_PALETTE = {
   openingBack: "#0f1215",
   openingCoilCore: "#6f7b86",
   openingCoilFin: "#bcc5cd",
+  giDuctBody: "#bcc4cb",
+  giDuctEdge: "#e4e8ec",
+  giDuctSeam: "#8b949c",
+  giDuctInterior: "#20262c",
   openingSlatReturn: "#7e858d",
   openingSlatSupply: "#b3b8bd",
   highlight: "#d9dee2",
@@ -442,6 +482,8 @@ export function buildDuctedIndoorUnitModel(
     },
   ];
 
+  const giDucts: DuctedIndoorUnitGIDuctSpec[] = [];
+
   const refrigerantPortRadius = Math.max(
     DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM / 2,
     gasPipeDiameterMm / 2,
@@ -526,6 +568,102 @@ export function buildDuctedIndoorUnitModel(
     fanRibs,
     sectionDividers,
     airOpenings,
+    giDucts,
     pipePorts,
+  };
+}
+
+export function getDuctedIndoorUnitPlanBounds(
+  model: Pick<
+    DuctedIndoorUnitModelSpec,
+    "baseWidth" | "baseDepth" | "airOpenings" | "giDucts"
+  >,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+  let minX = -model.baseWidth / 2;
+  let maxX = model.baseWidth / 2;
+  let minY = -model.baseDepth / 2;
+  let maxY = model.baseDepth / 2;
+
+  model.airOpenings.forEach((opening) => {
+    const projection = getDuctedIndoorUnitOpeningPlanProjection(model, opening);
+    const collarWidth = opening.openingWidth + opening.collarThickness * 2;
+    minX = Math.min(minX, opening.x - collarWidth / 2);
+    maxX = Math.max(maxX, opening.x + collarWidth / 2);
+    minY = Math.min(
+      minY,
+      projection.collarCenterY - opening.collarProjection / 2,
+    );
+    maxY = Math.max(
+      maxY,
+      projection.collarCenterY + opening.collarProjection / 2,
+    );
+  });
+
+  model.giDucts.forEach((duct) => {
+    const placement = getDuctedIndoorUnitGIDuctPlacement(model, duct);
+    minX = Math.min(minX, duct.x - duct.width / 2);
+    maxX = Math.max(maxX, duct.x + duct.width / 2);
+    minY = Math.min(minY, placement.centerY - duct.length / 2);
+    maxY = Math.max(maxY, placement.centerY + duct.length / 2);
+  });
+
+  return { minX, maxX, minY, maxY };
+}
+
+export function getDuctedIndoorUnitOpeningShellFaceY(
+  model: Pick<DuctedIndoorUnitModelSpec, "baseDepth">,
+  opening: Pick<DuctedIndoorUnitInlineOpeningSpec, "cavityDirection">,
+): number {
+  return -opening.cavityDirection * (model.baseDepth / 2 - 1);
+}
+
+export function getDuctedIndoorUnitOpeningPlanProjection(
+  model: Pick<DuctedIndoorUnitModelSpec, "baseDepth">,
+  opening: DuctedIndoorUnitInlineOpeningSpec,
+): DuctedIndoorUnitOpeningPlanProjection {
+  const shellFaceY = getDuctedIndoorUnitOpeningShellFaceY(model, opening);
+  const outwardDirectionY = -opening.cavityDirection as 1 | -1;
+  const outerDepth = opening.frameDepth + opening.cavityDepth * 0.44;
+  const cavityDepth = outerDepth * 0.7;
+  const mouthDepth = Math.max(8, opening.frameDepth * 0.6);
+  const coilDepth = Math.min(opening.coilDepth, cavityDepth * 0.48);
+
+  return {
+    shellFaceY,
+    outwardDirectionY,
+    collarCenterY:
+      shellFaceY + outwardDirectionY * opening.collarProjection * 0.5,
+    collarOuterEdgeY: shellFaceY + outwardDirectionY * opening.collarProjection,
+    cavityCenterY: shellFaceY + opening.cavityDirection * cavityDepth * 0.5,
+    cavityDepth,
+    mouthCenterY: shellFaceY + opening.cavityDirection * mouthDepth * 0.5,
+    mouthDepth,
+    coilCenterY:
+      shellFaceY +
+      opening.cavityDirection *
+        Math.min(opening.coilOffset, cavityDepth * 0.54),
+    coilDepth,
+  };
+}
+
+export function getDuctedIndoorUnitGIDuctPlacement(
+  model: Pick<DuctedIndoorUnitModelSpec, "baseDepth">,
+  duct: Pick<
+    DuctedIndoorUnitGIDuctSpec,
+    "connectionOffset" | "direction" | "length"
+  >,
+): DuctedIndoorUnitGIDuctPlacement {
+  const outwardDirectionY = -duct.direction as 1 | -1;
+  const shellFaceY = -duct.direction * (model.baseDepth / 2 - 1);
+  const startY = shellFaceY + outwardDirectionY * duct.connectionOffset;
+  return {
+    shellFaceY,
+    outwardDirectionY,
+    startY,
+    centerY:
+      shellFaceY +
+      outwardDirectionY * (duct.connectionOffset + duct.length * 0.5),
+    endY:
+      shellFaceY + outwardDirectionY * (duct.connectionOffset + duct.length),
   };
 }

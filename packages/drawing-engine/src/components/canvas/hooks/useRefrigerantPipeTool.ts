@@ -68,6 +68,7 @@ export function useRefrigerantPipeTool(
 
   const routePointsRef = useRef<Point2D[]>([]);
   const startBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
+  const endBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
   const previewPointRef = useRef<Point2D | null>(null);
   const shiftPressedRef = useRef(false);
   const snapMarkersRef = useRef<fabric.FabricObject[]>([]);
@@ -204,6 +205,7 @@ export function useRefrigerantPipeTool(
   const resetDrawing = useCallback(() => {
     routePointsRef.current = [];
     startBundleRef.current = null;
+    endBundleRef.current = null;
     previewPointRef.current = null;
     clearPreview();
     clearSnapMarkers();
@@ -282,6 +284,7 @@ export function useRefrigerantPipeTool(
     const nextElements = buildRefrigerantPipeElements(dedupedPoints, {
       bundleId: createRefrigerantBundleId(),
       startBundleConnection: startBundleRef.current,
+      endBundleConnection: endBundleRef.current,
     });
     const elementIds = addHvacElements(nextElements);
     setSelectedIds(elementIds);
@@ -308,6 +311,7 @@ export function useRefrigerantPipeTool(
 
     // If we snapped to a bundle endpoint, auto-commit the route
     if (bundle) {
+      endBundleRef.current = bundle;
       commitRoute(snappedPoint);
       return;
     }

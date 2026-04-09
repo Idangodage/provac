@@ -12,7 +12,10 @@ import { buildCeilingCassetteModel } from "./ceilingCassetteModel";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
+  getDuctedIndoorUnitOpeningPlanProjection,
+  getDuctedIndoorUnitPlanBounds,
 } from "./ductedIndoorUnitModel";
+import { buildGiDuctVisual, isGiDuctElementType } from "./giDuctModel";
 import {
   buildRefrigerantPipeVisual,
   buildRefrigerantPipePairVisual,
@@ -155,6 +158,7 @@ export class HvacPlanRenderer {
         };
       case "filter":
       case "accessory":
+      case "duct":
       case "refrigerant-pipe":
       case "refrigerant-pipe-pair":
         return {
@@ -260,7 +264,11 @@ export class HvacPlanRenderer {
   private bringPipeElementsToFront(): void {
     this.groups.forEach((group, id) => {
       const element = this.hvacData.get(id);
-      if (element && isRefrigerantPipeElementType(element.type)) {
+      if (
+        element &&
+        (isRefrigerantPipeElementType(element.type) ||
+          isGiDuctElementType(element.type))
+      ) {
         this.canvas.bringObjectToFront(group);
       }
     });
@@ -417,6 +425,7 @@ export class HvacPlanRenderer {
   ): fabric.FabricObject[] {
     const palette = this.getPalette(element, options.valid);
     const isPipeElement = isRefrigerantPipeElementType(element.type);
+    const isDuctElement = isGiDuctElementType(element.type);
     const baseWidthPx = Math.max(20, element.width * MM_TO_PX);
     const baseDepthPx = Math.max(12, element.depth * MM_TO_PX);
     const widthPx = baseWidthPx;
@@ -426,6 +435,11 @@ export class HvacPlanRenderer {
     const objects: fabric.FabricObject[] = [];
     const interactionUnderlays: fabric.FabricObject[] = [];
     const interactionOverlays: fabric.FabricObject[] = [];
+    let ductedModel: ReturnType<typeof buildDuctedIndoorUnitModel> | null =
+      null;
+    let ductedPlanBounds: ReturnType<
+      typeof getDuctedIndoorUnitPlanBounds
+    > | null = null;
 
     const background = new fabric.Rect({
       left: 0,
@@ -447,7 +461,7 @@ export class HvacPlanRenderer {
       background.set("strokeDashArray", [6, 4]);
     }
 
-    if (!isPipeElement) {
+    if (!isPipeElement && !isDuctElement) {
       this.annotate(background, element.id, "hvac-body");
       objects.push(background);
     }
@@ -1200,7 +1214,9 @@ export class HvacPlanRenderer {
         break;
       }
       case "ducted-ac": {
-        const ducted = buildDuctedIndoorUnitModel(element);
+        ductedModel = buildDuctedIndoorUnitModel(element);
+        ductedPlanBounds = getDuctedIndoorUnitPlanBounds(ductedModel);
+        const ducted = ductedModel;
         const shellFill = options.valid
           ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.shell
           : "rgba(254,242,242,0.92)";
@@ -1361,31 +1377,24 @@ export class HvacPlanRenderer {
             0.9,
           );
         });
-
         ducted.airOpenings.forEach((opening) => {
+          const projection = getDuctedIndoorUnitOpeningPlanProjection(
+            ducted,
+            opening,
+          );
           const collarDepthMm = opening.collarProjection;
           const collarWidthMm =
             opening.openingWidth + opening.collarThickness * 2;
-          const collarCenterYm =
-            opening.faceY + opening.cavityDirection * collarDepthMm * 0.5;
-          const outerDepthMm = opening.frameDepth + opening.cavityDepth * 0.44;
-          const mouthDepthMm = Math.max(8, opening.frameDepth * 0.6);
-          const mouthCenterYm =
-            opening.faceY + opening.cavityDirection * mouthDepthMm * 0.5;
-          const cavityDepthMm = outerDepthMm * 0.7;
-          const cavityCenterYm =
-            opening.faceY + opening.cavityDirection * cavityDepthMm * 0.5;
-          const coilDepthMm = Math.min(opening.coilDepth, cavityDepthMm * 0.48);
-          const coilCenterYm =
-            opening.faceY +
-            opening.cavityDirection *
-              Math.min(opening.coilOffset, cavityDepthMm * 0.54);
+          const mouthLipDepthMm = Math.max(4, opening.frameThickness * 0.34);
+          const mouthLipCenterYm =
+            projection.shellFaceY +
+            opening.cavityDirection * mouthLipDepthMm * 0.5;
           renderRect(
             {
               x: opening.x,
-              y: cavityCenterYm,
+              y: projection.cavityCenterY,
               width: opening.openingWidth * 0.94,
-              depth: cavityDepthMm,
+              depth: projection.cavityDepth,
               cornerRadius: Math.max(2, opening.cornerRadius * 0.7),
             },
             {
@@ -1403,9 +1412,9 @@ export class HvacPlanRenderer {
           renderRect(
             {
               x: opening.x,
-              y: coilCenterYm,
+              y: projection.coilCenterY,
               width: opening.coilWidth,
-              depth: coilDepthMm,
+              depth: projection.coilDepth,
               cornerRadius: Math.max(1, opening.cornerRadius * 0.34),
             },
             {
@@ -1424,10 +1433,11 @@ export class HvacPlanRenderer {
             finIndex += 1
           ) {
             const finY =
-              coilCenterYm -
-              coilDepthMm * 0.34 +
+              projection.coilCenterY -
+              projection.coilDepth * 0.34 +
               finIndex *
-                ((coilDepthMm * 0.68) / Math.max(1, opening.coilFinCount - 1));
+                ((projection.coilDepth * 0.68) /
+                  Math.max(1, opening.coilFinCount - 1));
             renderLine(
               {
                 x1: opening.x - opening.coilWidth * 0.46,
@@ -1444,13 +1454,17 @@ export class HvacPlanRenderer {
           renderRect(
             {
               x: opening.x,
-              y: mouthCenterYm,
+              y: projection.mouthCenterY,
               width: opening.openingWidth * 0.96,
-              depth: mouthDepthMm,
+              depth: projection.mouthDepth,
               cornerRadius: Math.max(2, opening.cornerRadius * 0.72),
             },
             {
-              fill: "rgba(255,255,255,0)",
+              fill: options.valid
+                ? opening.kind === "return"
+                  ? "rgba(108,115,123,0.22)"
+                  : "rgba(188,194,200,0.28)"
+                : "rgba(255,255,255,0.08)",
               stroke: options.valid
                 ? opening.kind === "return"
                   ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthReturn
@@ -1459,11 +1473,31 @@ export class HvacPlanRenderer {
               strokeWidth: 0.8,
             },
           );
+          renderRect(
+            {
+              x: opening.x,
+              y: mouthLipCenterYm,
+              width: opening.openingWidth * 0.98,
+              depth: mouthLipDepthMm,
+              cornerRadius: Math.max(1.5, opening.cornerRadius * 0.52),
+            },
+            {
+              fill: options.valid
+                ? opening.kind === "return"
+                  ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthReturn
+                  : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthSupply
+                : "rgba(255,255,255,0.28)",
+              stroke: options.valid
+                ? highlightStroke
+                : "rgba(255,255,255,0.32)",
+              strokeWidth: 0.45,
+            },
+          );
           if (opening.collarProjection > 0) {
             renderRect(
               {
                 x: opening.x,
-                y: collarCenterYm,
+                y: projection.collarCenterY,
                 width: collarWidthMm,
                 depth: collarDepthMm,
                 cornerRadius: Math.max(
@@ -1598,6 +1632,89 @@ export class HvacPlanRenderer {
         });
         break;
       }
+      case "duct": {
+        const ductVisual = buildGiDuctVisual(element);
+        const ductBodyFill = options.valid
+          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody
+          : "rgba(255,255,255,0.5)";
+        const ductEdgeStroke = options.valid
+          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge
+          : "rgba(185,28,28,0.48)";
+        const ductSeamStroke = options.valid
+          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctSeam
+          : "rgba(255,255,255,0.4)";
+
+        ductVisual.segments.forEach((segment, index) => {
+          const body = new fabric.Rect({
+            left: toPx(segment.localCenter.x),
+            top: toPx(segment.localCenter.y),
+            width: Math.max(toPx(segment.lengthMm), 1),
+            height: Math.max(toPx(ductVisual.outerWidthMm), 1),
+            angle: segment.angleDeg,
+            originX: "center",
+            originY: "center",
+            fill: ductBodyFill,
+            stroke: ductEdgeStroke,
+            strokeWidth: 0.8,
+            selectable: false,
+            evented: false,
+          });
+          this.annotate(body, element.id, "hvac-detail");
+          objects.push(body);
+
+          const direction = {
+            x: (segment.localEnd.x - segment.localStart.x) / segment.lengthMm,
+            y: (segment.localEnd.y - segment.localStart.y) / segment.lengthMm,
+          };
+          const normal = {
+            x: -direction.y,
+            y: direction.x,
+          };
+
+          segment.seamOffsetsMm.forEach((offsetMm) => {
+            const seamCenter = {
+              x: segment.localStart.x + direction.x * offsetMm,
+              y: segment.localStart.y + direction.y * offsetMm,
+            };
+            const seam = new fabric.Line(
+              [
+                toPx(seamCenter.x - normal.x * ductVisual.outerWidthMm * 0.48),
+                toPx(seamCenter.y - normal.y * ductVisual.outerWidthMm * 0.48),
+                toPx(seamCenter.x + normal.x * ductVisual.outerWidthMm * 0.48),
+                toPx(seamCenter.y + normal.y * ductVisual.outerWidthMm * 0.48),
+              ],
+              {
+                stroke: ductSeamStroke,
+                strokeWidth: 0.55,
+                selectable: false,
+                evented: false,
+              },
+            );
+            this.annotate(seam, element.id, "hvac-detail");
+            objects.push(seam);
+          });
+
+          if (index === ductVisual.segments.length - 1) {
+            const endFrame = new fabric.Line(
+              [
+                toPx(segment.localEnd.x - normal.x * ductVisual.outerWidthMm * 0.5),
+                toPx(segment.localEnd.y - normal.y * ductVisual.outerWidthMm * 0.5),
+                toPx(segment.localEnd.x + normal.x * ductVisual.outerWidthMm * 0.5),
+                toPx(segment.localEnd.y + normal.y * ductVisual.outerWidthMm * 0.5),
+              ],
+              {
+                stroke: ductEdgeStroke,
+                strokeWidth: 0.9,
+                selectable: false,
+                evented: false,
+              },
+            );
+            this.annotate(endFrame, element.id, "hvac-detail");
+            objects.push(endFrame);
+          }
+        });
+        break;
+      }
       case "outdoor-unit": {
         const fanRing = new fabric.Circle({
           left: 0,
@@ -1714,10 +1831,14 @@ export class HvacPlanRenderer {
       objects.push(...interactionOverlays);
     }
 
-    if (!isPipeElement) {
+    if (!isPipeElement && !isDuctElement) {
+      const labelTopPx =
+        ductedPlanBounds !== null
+          ? toPx(ductedPlanBounds.minY) - 8
+          : -halfD - 8;
       const label = new fabric.Text(element.label.toUpperCase(), {
         left: 0,
-        top: -halfD - 8,
+        top: labelTopPx,
         originX: "center",
         originY: "bottom",
         fontSize: clampFontSize(widthPx),
@@ -1736,38 +1857,69 @@ export class HvacPlanRenderer {
       !isPipeElement &&
       element.type !== "ceiling-cassette-ac"
     ) {
-      const selectionHalo = new fabric.Rect({
-        left: 0,
-        top: 0,
-        width: widthPx + 8,
-        height: depthPx + 8,
-        originX: "center",
-        originY: "center",
-        fill: "transparent",
-        stroke: palette.halo,
-        strokeWidth: 2,
-        selectable: false,
-        evented: false,
-        visible: this.selectedIds.has(element.id),
-      });
-      const hoverHalo = new fabric.Rect({
-        left: 0,
-        top: 0,
-        width: widthPx + 6,
-        height: depthPx + 6,
-        originX: "center",
-        originY: "center",
-        fill: "transparent",
-        stroke: palette.hover,
-        strokeWidth: 1.5,
-        selectable: false,
-        evented: false,
-        visible:
-          this.hoveredId === element.id && !this.selectedIds.has(element.id),
-      });
-      this.annotate(selectionHalo, element.id, "hvac-selection");
-      this.annotate(hoverHalo, element.id, "hvac-hover");
-      objects.push(selectionHalo, hoverHalo);
+      if (element.type === "ducted-ac" && ductedPlanBounds) {
+        createRectOutlineHalo(
+          {
+            leftMm: (ductedPlanBounds.minX + ductedPlanBounds.maxX) / 2,
+            topMm: (ductedPlanBounds.minY + ductedPlanBounds.maxY) / 2,
+            widthMm:
+              ductedPlanBounds.maxX - ductedPlanBounds.minX + 8 / MM_TO_PX,
+            heightMm:
+              ductedPlanBounds.maxY - ductedPlanBounds.minY + 8 / MM_TO_PX,
+          },
+          palette.halo,
+          2,
+          1,
+          "hvac-selection",
+        );
+        createRectOutlineHalo(
+          {
+            leftMm: (ductedPlanBounds.minX + ductedPlanBounds.maxX) / 2,
+            topMm: (ductedPlanBounds.minY + ductedPlanBounds.maxY) / 2,
+            widthMm:
+              ductedPlanBounds.maxX - ductedPlanBounds.minX + 6 / MM_TO_PX,
+            heightMm:
+              ductedPlanBounds.maxY - ductedPlanBounds.minY + 6 / MM_TO_PX,
+          },
+          palette.hover,
+          1.5,
+          1,
+          "hvac-hover",
+        );
+      } else {
+        const selectionHalo = new fabric.Rect({
+          left: 0,
+          top: 0,
+          width: widthPx + 8,
+          height: depthPx + 8,
+          originX: "center",
+          originY: "center",
+          fill: "transparent",
+          stroke: palette.halo,
+          strokeWidth: 2,
+          selectable: false,
+          evented: false,
+          visible: this.selectedIds.has(element.id),
+        });
+        const hoverHalo = new fabric.Rect({
+          left: 0,
+          top: 0,
+          width: widthPx + 6,
+          height: depthPx + 6,
+          originX: "center",
+          originY: "center",
+          fill: "transparent",
+          stroke: palette.hover,
+          strokeWidth: 1.5,
+          selectable: false,
+          evented: false,
+          visible:
+            this.hoveredId === element.id && !this.selectedIds.has(element.id),
+        });
+        this.annotate(selectionHalo, element.id, "hvac-selection");
+        this.annotate(hoverHalo, element.id, "hvac-hover");
+        objects.push(selectionHalo, hoverHalo);
+      }
     }
 
     return objects;
@@ -1796,6 +1948,7 @@ export class HvacPlanRenderer {
   ): HvacGroup {
     const center = toCanvas(elementCenter(element));
     const isPipeElement = isRefrigerantPipeElementType(element.type);
+    const isDuctElement = isGiDuctElementType(element.type);
     const isDuctedUnit = element.type === "ducted-ac";
     const usesPreciseHitTesting =
       isPipeElement || element.type === "ceiling-cassette-ac";
@@ -1812,7 +1965,7 @@ export class HvacPlanRenderer {
       originY: "center",
       selectable: options.selectable ?? true,
       evented: options.evented ?? true,
-      subTargetCheck: !isDuctedUnit,
+      subTargetCheck: !isDuctedUnit || isDuctElement,
       perPixelTargetFind: usesPreciseHitTesting,
       hasControls: false,
       hasBorders: false,

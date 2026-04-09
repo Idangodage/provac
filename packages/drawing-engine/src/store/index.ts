@@ -433,6 +433,7 @@ function inferHvacElementCategory(type: HvacElement['type']): HvacElement['categ
       return 'control';
     case 'filter':
     case 'accessory':
+    case 'duct':
     case 'refrigerant-pipe':
     case 'refrigerant-pipe-pair':
       return 'accessory';

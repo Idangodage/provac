@@ -27,7 +27,9 @@ import { buildCeilingCassetteModel } from "../hvac/ceilingCassetteModel";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
+  getDuctedIndoorUnitOpeningPlanProjection,
 } from "../hvac/ductedIndoorUnitModel";
+import { buildGiDuctVisual } from "../hvac/giDuctModel";
 import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
@@ -1173,6 +1175,7 @@ function hvacPaletteForElement(element: HvacElement): Hvac3DPalette {
       };
     case "filter":
     case "accessory":
+    case "duct":
       return {
         body: "#eef2f4",
         trim: "#dbe3e8",
@@ -1767,6 +1770,147 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
       );
       break;
     }
+    case "duct": {
+      const ductVisual = buildGiDuctVisual(element);
+      const halfHeight = ductVisual.outerHeightMm / 2;
+      const halfWidth = ductVisual.outerWidthMm / 2;
+      const wallThickness = ductVisual.wallThicknessMm;
+      const innerWidth = Math.max(12, ductVisual.innerWidthMm);
+      const innerHeight = Math.max(12, ductVisual.innerHeightMm);
+
+      ductVisual.segments.forEach((segment, index) => {
+        const segmentGroup = new THREE.Group();
+        segmentGroup.position.set(segment.localCenter.x, segment.localCenter.y, 0);
+        segmentGroup.rotation.z = THREE.MathUtils.degToRad(segment.angleDeg);
+
+        segmentGroup.add(
+          createLocalBoxMesh(
+            segment.lengthMm,
+            ductVisual.outerWidthMm,
+            wallThickness,
+            DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody,
+            new THREE.Vector3(0, 0, halfHeight - wallThickness / 2),
+            { renderOrder: 18 },
+          ),
+        );
+        segmentGroup.add(
+          createLocalBoxMesh(
+            segment.lengthMm,
+            ductVisual.outerWidthMm,
+            wallThickness,
+            DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody,
+            new THREE.Vector3(0, 0, wallThickness / 2),
+            { renderOrder: 18 },
+          ),
+        );
+        segmentGroup.add(
+          createLocalBoxMesh(
+            segment.lengthMm,
+            wallThickness,
+            ductVisual.outerHeightMm,
+            DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody,
+            new THREE.Vector3(0, -halfWidth + wallThickness / 2, halfHeight),
+            { renderOrder: 18 },
+          ),
+        );
+        segmentGroup.add(
+          createLocalBoxMesh(
+            segment.lengthMm,
+            wallThickness,
+            ductVisual.outerHeightMm,
+            DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody,
+            new THREE.Vector3(0, halfWidth - wallThickness / 2, halfHeight),
+            { renderOrder: 18 },
+          ),
+        );
+
+        segment.seamOffsetsMm.forEach((offsetMm) => {
+          segmentGroup.add(
+            createLocalBoxMesh(
+              Math.max(2.4, wallThickness * 2.8),
+              ductVisual.outerWidthMm + wallThickness * 0.8,
+              Math.max(1.4, wallThickness * 1.7),
+              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctSeam,
+              new THREE.Vector3(
+                offsetMm - segment.lengthMm / 2,
+                0,
+                halfHeight + wallThickness * 0.2,
+              ),
+              { renderOrder: 19 },
+            ),
+          );
+        });
+
+        if (index === ductVisual.segments.length - 1) {
+          const endFaceX = segment.lengthMm / 2 - wallThickness / 2;
+          segmentGroup.add(
+            createLocalBoxMesh(
+              wallThickness,
+              ductVisual.outerWidthMm,
+              wallThickness,
+              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
+              new THREE.Vector3(endFaceX, 0, halfHeight - wallThickness / 2),
+              { renderOrder: 19 },
+            ),
+          );
+          segmentGroup.add(
+            createLocalBoxMesh(
+              wallThickness,
+              ductVisual.outerWidthMm,
+              wallThickness,
+              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
+              new THREE.Vector3(endFaceX, 0, wallThickness / 2),
+              { renderOrder: 19 },
+            ),
+          );
+          segmentGroup.add(
+            createLocalBoxMesh(
+              wallThickness,
+              wallThickness,
+              innerHeight,
+              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
+              new THREE.Vector3(
+                endFaceX,
+                -halfWidth + wallThickness / 2,
+                halfHeight,
+              ),
+              { renderOrder: 19 },
+            ),
+          );
+          segmentGroup.add(
+            createLocalBoxMesh(
+              wallThickness,
+              wallThickness,
+              innerHeight,
+              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
+              new THREE.Vector3(
+                endFaceX,
+                halfWidth - wallThickness / 2,
+                halfHeight,
+              ),
+              { renderOrder: 19 },
+            ),
+          );
+          segmentGroup.add(
+            createLocalBoxMesh(
+              Math.max(1.2, wallThickness * 0.85),
+              innerWidth,
+              innerHeight,
+              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctInterior,
+              new THREE.Vector3(
+                segment.lengthMm / 2 - wallThickness * 0.7,
+                0,
+                halfHeight,
+              ),
+              { renderOrder: 17 },
+            ),
+          );
+        }
+
+        group.add(segmentGroup);
+      });
+      break;
+    }
     case "ceiling-suspended-ac": {
       const mainHeight = Math.max(bodyHeight, height * 0.8);
       group.add(
@@ -1894,10 +2038,12 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
           opening.openingWidth + opening.collarThickness * 2;
         const collarOuterHeight =
           opening.openingHeight + opening.collarThickness * 2;
-        const shellFaceY =
-          -opening.cavityDirection * (ducted.baseDepth / 2 - 1);
-        const collarCenterY =
-          shellFaceY - opening.cavityDirection * collarProjection * 0.5;
+        const projection = getDuctedIndoorUnitOpeningPlanProjection(
+          ducted,
+          opening,
+        );
+        const shellFaceY = projection.shellFaceY;
+        const collarCenterY = projection.collarCenterY;
         const visibleCavityDepth = Math.max(
           12,
           Math.min(

@@ -6,22 +6,40 @@
  */
 
 // Keyboard handling
-export { useCanvasKeyboard, type UseCanvasKeyboardOptions } from './useCanvasKeyboard';
+export {
+  useCanvasKeyboard,
+  type UseCanvasKeyboardOptions,
+} from "./useCanvasKeyboard";
 
 // Tool mode hooks
-export { useSelectMode, type UseSelectModeOptions } from './useSelectMode';
+export { useSelectMode, type UseSelectModeOptions } from "./useSelectMode";
 
 // Pan handling
-export { useMiddlePan, type UseMiddlePanOptions, type MiddlePanState } from './useMiddlePan';
+export {
+  useMiddlePan,
+  type UseMiddlePanOptions,
+  type MiddlePanState,
+} from "./useMiddlePan";
 
 // Wall tool
-export { useWallTool, type UseWallToolOptions, type UseWallToolResult } from './useWallTool';
+export {
+  useWallTool,
+  type UseWallToolOptions,
+  type UseWallToolResult,
+} from "./useWallTool";
 
 // Room tool
-export { useRoomTool, type UseRoomToolOptions, type UseRoomToolResult } from './useRoomTool';
+export {
+  useRoomTool,
+  type UseRoomToolOptions,
+  type UseRoomToolResult,
+} from "./useRoomTool";
 
 // Dimension tool
-export { useDimensionTool, type UseDimensionToolOptions } from './useDimensionTool';
+export {
+  useDimensionTool,
+  type UseDimensionToolOptions,
+} from "./useDimensionTool";
 
 // Symbol placement tool
 export {
@@ -30,47 +48,104 @@ export {
   type UseSymbolPlacementToolResult,
   type PlacementState,
   type WallSnapInfo,
-} from './useSymbolPlacementTool';
+} from "./useSymbolPlacementTool";
 
 // Offset tool
-export { useOffsetTool, type UseOffsetToolOptions, type UseOffsetToolResult } from './useOffsetTool';
+export {
+  useOffsetTool,
+  type UseOffsetToolOptions,
+  type UseOffsetToolResult,
+} from "./useOffsetTool";
 
 // Trim tool
-export { useTrimTool, type UseTrimToolOptions, type UseTrimToolResult } from './useTrimTool';
+export {
+  useTrimTool,
+  type UseTrimToolOptions,
+  type UseTrimToolResult,
+} from "./useTrimTool";
 
 // Extend tool
-export { useExtendTool, type UseExtendToolOptions, type UseExtendToolResult } from './useExtendTool';
+export {
+  useExtendTool,
+  type UseExtendToolOptions,
+  type UseExtendToolResult,
+} from "./useExtendTool";
 
 // Target resolvers
-export { useTargetResolvers, type UseTargetResolversResult } from './useTargetResolvers';
+export {
+  useTargetResolvers,
+  type UseTargetResolversResult,
+} from "./useTargetResolvers";
 
 // Context menu handlers
-export { useContextMenuHandlers, type UseContextMenuHandlersOptions, type UseContextMenuHandlersResult } from './useContextMenuHandlers';
+export {
+  useContextMenuHandlers,
+  type UseContextMenuHandlersOptions,
+  type UseContextMenuHandlersResult,
+} from "./useContextMenuHandlers";
 
 // Geometry helpers
-export { useGeometryHelpers, type UseGeometryHelpersOptions, type UseGeometryHelpersResult, type WallPlacementSnap, type PointProjection } from './useGeometryHelpers';
+export {
+  useGeometryHelpers,
+  type UseGeometryHelpersOptions,
+  type UseGeometryHelpersResult,
+  type WallPlacementSnap,
+  type PointProjection,
+} from "./useGeometryHelpers";
 
 // Opening placement
-export { useOpeningPlacement, type UseOpeningPlacementOptions, type UseOpeningPlacementResult } from './useOpeningPlacement';
+export {
+  useOpeningPlacement,
+  type UseOpeningPlacementOptions,
+  type UseOpeningPlacementResult,
+} from "./useOpeningPlacement";
 
 // HVAC placement
-export { useHvacPlacement, type UseHvacPlacementOptions, type UseHvacPlacementResult, type HvacPlacementResult } from './useHvacPlacement';
+export {
+  useHvacPlacement,
+  type UseHvacPlacementOptions,
+  type UseHvacPlacementResult,
+  type HvacPlacementResult,
+} from "./useHvacPlacement";
+
+// Duct tool
+export {
+  useDuctTool,
+  type UseDuctToolOptions,
+  type UseDuctToolResult,
+} from "./useDuctTool";
 
 // Refrigerant pipe tool
 export {
   useRefrigerantPipeTool,
   type UseRefrigerantPipeToolOptions,
   type UseRefrigerantPipeToolResult,
-} from './useRefrigerantPipeTool';
+} from "./useRefrigerantPipeTool";
 
 // Opening interaction
-export { useOpeningInteraction, type UseOpeningInteractionOptions, type UseOpeningInteractionResult } from './useOpeningInteraction';
+export {
+  useOpeningInteraction,
+  type UseOpeningInteractionOptions,
+  type UseOpeningInteractionResult,
+} from "./useOpeningInteraction";
 
 // Renderer synchronisation
-export { useRendererSync, type UseRendererSyncOptions, type UseRendererSyncResult } from './useRendererSync';
+export {
+  useRendererSync,
+  type UseRendererSyncOptions,
+  type UseRendererSyncResult,
+} from "./useRendererSync";
 
 // Canvas mouse handlers
-export { useCanvasMouseHandlers, type UseCanvasMouseHandlersOptions, type UseCanvasMouseHandlersResult } from './useCanvasMouseHandlers';
+export {
+  useCanvasMouseHandlers,
+  type UseCanvasMouseHandlersOptions,
+  type UseCanvasMouseHandlersResult,
+} from "./useCanvasMouseHandlers";
 
 // Canvas event binding
-export { useCanvasEventBinding, type UseCanvasEventBindingOptions, type UseCanvasEventBindingResult } from './useCanvasEventBinding';
+export {
+  useCanvasEventBinding,
+  type UseCanvasEventBindingOptions,
+  type UseCanvasEventBindingResult,
+} from "./useCanvasEventBinding";

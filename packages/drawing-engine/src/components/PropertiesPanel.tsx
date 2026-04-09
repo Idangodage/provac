@@ -2,11 +2,11 @@
  * Properties panel for wall + room 3D attributes and drawing defaults.
  */
 
-'use client';
+"use client";
 
-import { ChevronDown, ChevronUp, X } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
-import { shallow } from 'zustand/shallow';
+import { ChevronDown, ChevronUp, X } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { shallow } from "zustand/shallow";
 
 import {
   DEFAULT_HVAC_DESIGN_CONDITIONS,
@@ -15,8 +15,8 @@ import {
   calculateMaterialResistance,
   getArchitecturalMaterial,
   resolveWallMaterialFromLibrary,
-} from '../attributes';
-import { useSmartDrawingStore } from '../store';
+} from "../attributes";
+import { useSmartDrawingStore } from "../store";
 import type {
   CompassDirection,
   DimensionDisplayFormat,
@@ -27,7 +27,7 @@ import type {
   RoomOccupancySchedule,
   Wall,
   WallMaterial,
-} from '../types';
+} from "../types";
 import {
   MAX_U_VALUE,
   MAX_WALL_HEIGHT,
@@ -35,16 +35,26 @@ import {
   MIN_U_VALUE,
   MIN_WALL_HEIGHT,
   MIN_WALL_THICKNESS,
-} from '../types/wall';
+} from "../types/wall";
 
 import {
   circularMeetingFootprintMm,
   squareMeetingFootprintMm,
-} from './canvas/object/three3d/geometry/meeting-tables';
-import { fromMillimeters, toMillimeters } from './canvas/scale';
+} from "./canvas/object/three3d/geometry/meeting-tables";
+import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
+import { fromMillimeters, toMillimeters } from "./canvas/scale";
 
-type PropertyUnit = 'mm' | 'in' | 'ft';
-const COMPASS_DIRECTIONS: CompassDirection[] = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+type PropertyUnit = "mm" | "in" | "ft";
+const COMPASS_DIRECTIONS: CompassDirection[] = [
+  "N",
+  "NE",
+  "E",
+  "SE",
+  "S",
+  "SW",
+  "W",
+  "NW",
+];
 const OPENING_EDGE_MARGIN_MM = 50;
 const MIN_DOOR_WIDTH_MM = 500;
 const MAX_DOOR_WIDTH_MM = 4000;
@@ -72,27 +82,41 @@ function toMm(value: number, unit: PropertyUnit): number {
 
 function formatUnit(unit: PropertyUnit): string {
   switch (unit) {
-    case 'ft':
-      return 'ft';
-    case 'in':
-      return 'in';
-    case 'mm':
+    case "ft":
+      return "ft";
+    case "in":
+      return "in";
+    case "mm":
     default:
-      return 'mm';
+      return "mm";
   }
 }
 
-function propertyAsString(record: Record<string, unknown>, key: string, fallback = ''): string {
+function propertyAsString(
+  record: Record<string, unknown>,
+  key: string,
+  fallback = "",
+): string {
   const value = record[key];
-  return typeof value === 'string' ? value : fallback;
+  return typeof value === "string" ? value : fallback;
 }
 
-function propertyAsNumber(record: Record<string, unknown>, key: string, fallback = 0): number {
+function propertyAsNumber(
+  record: Record<string, unknown>,
+  key: string,
+  fallback = 0,
+): number {
   const value = record[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
+function PropertyRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex items-center justify-between gap-2 py-2 border-b border-amber-100/70 last:border-0">
       <span className="text-sm text-slate-600">{label}</span>
@@ -106,15 +130,15 @@ function computeOpeningWidthLimits(
   openingId: string,
   openingPositionMm: number,
   minWidthMm: number,
-  maxWidthMm: number
+  maxWidthMm: number,
 ): { min: number; max: number } {
   const wallLength = Math.hypot(
     wall.endPoint.x - wall.startPoint.x,
-    wall.endPoint.y - wall.startPoint.y
+    wall.endPoint.y - wall.startPoint.y,
   );
   const distanceToNearestEnd = Math.min(
     openingPositionMm - OPENING_EDGE_MARGIN_MM,
-    wallLength - openingPositionMm - OPENING_EDGE_MARGIN_MM
+    wallLength - openingPositionMm - OPENING_EDGE_MARGIN_MM,
   );
   let maxWidth = Math.max(0, distanceToNearestEnd * 2);
 
@@ -146,10 +170,11 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded border px-2 py-1 text-xs ${active
-          ? 'border-amber-400 bg-amber-200 text-amber-900'
-          : 'border-amber-200/80 bg-white text-slate-600 hover:bg-amber-50'
-        }`}
+      className={`rounded border px-2 py-1 text-xs ${
+        active
+          ? "border-amber-400 bg-amber-200 text-amber-900"
+          : "border-amber-200/80 bg-white text-slate-600 hover:bg-amber-50"
+      }`}
     >
       {label}
     </button>
@@ -173,8 +198,14 @@ function CollapsibleSection({
         onClick={() => setOpen((prev) => !prev)}
         className="w-full flex items-center justify-between px-3 py-2 text-left"
       >
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</span>
-        {open ? <ChevronUp size={14} className="text-slate-500" /> : <ChevronDown size={14} className="text-slate-500" />}
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          {title}
+        </span>
+        {open ? (
+          <ChevronUp size={14} className="text-slate-500" />
+        ) : (
+          <ChevronDown size={14} className="text-slate-500" />
+        )}
       </button>
       {open && <div className="px-3 pb-3">{children}</div>}
     </div>
@@ -188,10 +219,13 @@ function UnitSelector({
   propertyUnit: PropertyUnit;
   onPropertyUnitChange: (unit: PropertyUnit) => void;
 }) {
-  const { displayUnit, setDisplayUnit } = useSmartDrawingStore((state) => ({
-    displayUnit: state.displayUnit,
-    setDisplayUnit: state.setDisplayUnit,
-  }), shallow);
+  const { displayUnit, setDisplayUnit } = useSmartDrawingStore(
+    (state) => ({
+      displayUnit: state.displayUnit,
+      setDisplayUnit: state.setDisplayUnit,
+    }),
+    shallow,
+  );
   return (
     <div className="rounded-lg border border-amber-200/70 bg-white/80 p-3 space-y-2">
       <PropertyRow label="Display Unit">
@@ -230,21 +264,26 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     setWallSettings,
     updateWall,
     updateWall3DAttributes,
-  } = useSmartDrawingStore((state) => ({
-    selectedElementIds: state.selectedElementIds,
-    walls: state.walls,
-    materialLibrary: state.materialLibrary,
-    wallSettings: state.wallSettings,
-    setWallSettings: state.setWallSettings,
-    updateWall: state.updateWall,
-    updateWall3DAttributes: state.updateWall3DAttributes,
-  }), shallow);
-  const [tab, setTab] = useState<'general' | 'thermal' | 'openings'>('general');
+  } = useSmartDrawingStore(
+    (state) => ({
+      selectedElementIds: state.selectedElementIds,
+      walls: state.walls,
+      materialLibrary: state.materialLibrary,
+      wallSettings: state.wallSettings,
+      setWallSettings: state.setWallSettings,
+      updateWall: state.updateWall,
+      updateWall3DAttributes: state.updateWall3DAttributes,
+    }),
+    shallow,
+  );
+  const [tab, setTab] = useState<"general" | "thermal" | "openings">("general");
   const [dragLayerIndex, setDragLayerIndex] = useState<number | null>(null);
   const [dragMaterialId, setDragMaterialId] = useState<string | null>(null);
 
   const selectedWall = useMemo(() => {
-    const selectedFromCanvas = walls.find((wall) => selectedElementIds.includes(wall.id));
+    const selectedFromCanvas = walls.find((wall) =>
+      selectedElementIds.includes(wall.id),
+    );
     return selectedFromCanvas ?? walls[0] ?? null;
   }, [selectedElementIds, walls]);
 
@@ -254,13 +293,20 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 
   const length = Math.hypot(
     selectedWall.endPoint.x - selectedWall.startPoint.x,
-    selectedWall.endPoint.y - selectedWall.startPoint.y
-  );
-  const angle = (((Math.atan2(
     selectedWall.endPoint.y - selectedWall.startPoint.y,
-    selectedWall.endPoint.x - selectedWall.startPoint.x
-  ) * 180) / Math.PI) + 360) % 360;
-  const selectedMaterial = getArchitecturalMaterial(selectedWall.properties3D.materialId);
+  );
+  const angle =
+    ((Math.atan2(
+      selectedWall.endPoint.y - selectedWall.startPoint.y,
+      selectedWall.endPoint.x - selectedWall.startPoint.x,
+    ) *
+      180) /
+      Math.PI +
+      360) %
+    360;
+  const selectedMaterial = getArchitecturalMaterial(
+    selectedWall.properties3D.materialId,
+  );
   const thermalAssembly = selectedWall.properties3D.thermalAssembly ?? [];
   const thermalBreakdown = selectedWall.properties3D.thermalBreakdown ?? [];
 
@@ -288,15 +334,18 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   };
 
   const removeThermalLayer = (index: number) => {
-    const next = thermalAssembly.filter((_, layerIndex) => layerIndex !== index);
+    const next = thermalAssembly.filter(
+      (_, layerIndex) => layerIndex !== index,
+    );
     updateThermalAssembly(next);
   };
 
-  const updateThermalLayer = (index: number, updates: Partial<(typeof thermalAssembly)[number]>) => {
+  const updateThermalLayer = (
+    index: number,
+    updates: Partial<(typeof thermalAssembly)[number]>,
+  ) => {
     const next = thermalAssembly.map((layer, layerIndex) =>
-      layerIndex === index
-        ? { ...layer, ...updates }
-        : layer
+      layerIndex === index ? { ...layer, ...updates } : layer,
     );
     updateThermalAssembly(next);
   };
@@ -313,33 +362,56 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap gap-1 pb-2 border-b border-amber-100/70">
-        <TabButton active={tab === 'general'} label="General" onClick={() => setTab('general')} />
-        <TabButton active={tab === 'thermal'} label="Thermal" onClick={() => setTab('thermal')} />
-        <TabButton active={tab === 'openings'} label="Openings" onClick={() => setTab('openings')} />
+        <TabButton
+          active={tab === "general"}
+          label="General"
+          onClick={() => setTab("general")}
+        />
+        <TabButton
+          active={tab === "thermal"}
+          label="Thermal"
+          onClick={() => setTab("thermal")}
+        />
+        <TabButton
+          active={tab === "openings"}
+          label="Openings"
+          onClick={() => setTab("openings")}
+        />
       </div>
 
-      {tab === 'general' && (
+      {tab === "general" && (
         <div className="space-y-1">
           <PropertyRow label="ID">
-            <span className="text-xs text-slate-500">{selectedWall.id.slice(0, 10)}</span>
+            <span className="text-xs text-slate-500">
+              {selectedWall.id.slice(0, 10)}
+            </span>
           </PropertyRow>
           <PropertyRow label="Length">
-            <span className="text-sm text-slate-700">{fromMm(length, propertyUnit).toFixed(2)} {formatUnit(propertyUnit)}</span>
+            <span className="text-sm text-slate-700">
+              {fromMm(length, propertyUnit).toFixed(2)}{" "}
+              {formatUnit(propertyUnit)}
+            </span>
           </PropertyRow>
           <PropertyRow label="Angle">
-            <span className="text-sm text-slate-700">{angle.toFixed(1)}&deg;</span>
+            <span className="text-sm text-slate-700">
+              {angle.toFixed(1)}&deg;
+            </span>
           </PropertyRow>
           <PropertyRow label="Thickness">
             <input
               type="number"
               min={fromMm(MIN_WALL_THICKNESS, propertyUnit)}
               max={fromMm(MAX_WALL_THICKNESS, propertyUnit)}
-              step={propertyUnit === 'mm' ? 1 : 0.01}
+              step={propertyUnit === "mm" ? 1 : 0.01}
               value={fromMm(selectedWall.thickness, propertyUnit).toFixed(2)}
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                const nextThicknessMm = clamp(toMm(parsed, propertyUnit), MIN_WALL_THICKNESS, MAX_WALL_THICKNESS);
+                const nextThicknessMm = clamp(
+                  toMm(parsed, propertyUnit),
+                  MIN_WALL_THICKNESS,
+                  MAX_WALL_THICKNESS,
+                );
                 updateWall(selectedWall.id, { thickness: nextThicknessMm });
               }}
               className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
@@ -350,13 +422,22 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               type="number"
               min={fromMm(MIN_WALL_HEIGHT, propertyUnit)}
               max={fromMm(MAX_WALL_HEIGHT, propertyUnit)}
-              step={propertyUnit === 'mm' ? 1 : 0.01}
-              value={fromMm(selectedWall.properties3D.height, propertyUnit).toFixed(2)}
+              step={propertyUnit === "mm" ? 1 : 0.01}
+              value={fromMm(
+                selectedWall.properties3D.height,
+                propertyUnit,
+              ).toFixed(2)}
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                const nextHeightMm = clamp(toMm(parsed, propertyUnit), MIN_WALL_HEIGHT, MAX_WALL_HEIGHT);
-                updateWall3DAttributes(selectedWall.id, { height: nextHeightMm });
+                const nextHeightMm = clamp(
+                  toMm(parsed, propertyUnit),
+                  MIN_WALL_HEIGHT,
+                  MAX_WALL_HEIGHT,
+                );
+                updateWall3DAttributes(selectedWall.id, {
+                  height: nextHeightMm,
+                });
               }}
               className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
@@ -366,22 +447,32 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               type="number"
               min={1}
               step={1}
-              value={Math.max(1, Math.round(selectedWall.properties3D.layerCount))}
+              value={Math.max(
+                1,
+                Math.round(selectedWall.properties3D.layerCount),
+              )}
               onChange={(e) => {
                 const parsed = Number.parseInt(e.target.value, 10);
                 if (!Number.isFinite(parsed)) return;
-                updateWall3DAttributes(selectedWall.id, { layerCount: Math.max(1, parsed) });
+                updateWall3DAttributes(selectedWall.id, {
+                  layerCount: Math.max(1, parsed),
+                });
               }}
               className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
           </PropertyRow>
           <PropertyRow label="Connections">
-            <span className="text-xs text-slate-500">{selectedWall.connectedWalls.length} linked</span>
+            <span className="text-xs text-slate-500">
+              {selectedWall.connectedWalls.length} linked
+            </span>
           </PropertyRow>
           {selectedMaterial && (
             <PropertyRow label="Material Color">
               <span className="inline-flex items-center gap-1 text-xs text-slate-600">
-                <span className="inline-block h-3 w-3 rounded-full border border-slate-300" style={{ backgroundColor: selectedMaterial.color }} />
+                <span
+                  className="inline-block h-3 w-3 rounded-full border border-slate-300"
+                  style={{ backgroundColor: selectedMaterial.color }}
+                />
                 {selectedMaterial.color}
               </span>
             </PropertyRow>
@@ -389,7 +480,7 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         </div>
       )}
 
-      {tab === 'thermal' && (
+      {tab === "thermal" && (
         <div className="space-y-2">
           <PropertyRow label="Base Material">
             <select
@@ -399,49 +490,71 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                 const material = getArchitecturalMaterial(materialId);
                 updateWall3DAttributes(selectedWall.id, {
                   materialId,
-                  thermalResistance: material?.thermalResistance ?? selectedWall.properties3D.thermalResistance,
+                  thermalResistance:
+                    material?.thermalResistance ??
+                    selectedWall.properties3D.thermalResistance,
                 });
                 updateWall(selectedWall.id, {
-                  material: resolveWallMaterialFromLibrary(materialId) as WallMaterial,
+                  material: resolveWallMaterialFromLibrary(
+                    materialId,
+                  ) as WallMaterial,
                 });
               }}
               className="w-44 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             >
               {materialLibrary.map((material) => (
                 <option key={material.id} value={material.id}>
-                  {material.name} ({material.family}, R-{material.thermalResistance.toFixed(2)}, U-{material.uValue.toFixed(2)})
+                  {material.name} ({material.family}, R-
+                  {material.thermalResistance.toFixed(2)}, U-
+                  {material.uValue.toFixed(2)})
                 </option>
               ))}
             </select>
           </PropertyRow>
           <PropertyRow label="Overall R-Value">
-            <span className="text-sm text-slate-700">{selectedWall.properties3D.thermalResistance.toFixed(2)} m²K/W</span>
+            <span className="text-sm text-slate-700">
+              {selectedWall.properties3D.thermalResistance.toFixed(2)} m²K/W
+            </span>
           </PropertyRow>
           <PropertyRow label="Overall U-Value">
-            <span className={`text-sm ${selectedWall.properties3D.overallUValue < MIN_U_VALUE || selectedWall.properties3D.overallUValue > MAX_U_VALUE
-                ? 'text-rose-600'
-                : 'text-slate-700'
-              }`}>
+            <span
+              className={`text-sm ${
+                selectedWall.properties3D.overallUValue < MIN_U_VALUE ||
+                selectedWall.properties3D.overallUValue > MAX_U_VALUE
+                  ? "text-rose-600"
+                  : "text-slate-700"
+              }`}
+            >
               {selectedWall.properties3D.overallUValue.toFixed(2)} W/(m².K)
             </span>
           </PropertyRow>
           <PropertyRow label="Exposure Angle">
-            <span className="text-sm text-slate-700">{selectedWall.properties3D.exposureAngleFromNorth.toFixed(1)}&deg; from North</span>
+            <span className="text-sm text-slate-700">
+              {selectedWall.properties3D.exposureAngleFromNorth.toFixed(1)}&deg;
+              from North
+            </span>
           </PropertyRow>
           <PropertyRow label="Exposure">
-            <span className="text-sm text-slate-700">{selectedWall.properties3D.exposureDirection}</span>
+            <span className="text-sm text-slate-700">
+              {selectedWall.properties3D.exposureDirection}
+            </span>
             <select
-              value={selectedWall.properties3D.exposureOverride ?? 'auto'}
+              value={selectedWall.properties3D.exposureOverride ?? "auto"}
               onChange={(e) =>
                 updateWall3DAttributes(selectedWall.id, {
-                  exposureOverride: e.target.value === 'auto' ? null : (e.target.value as CompassDirection),
+                  exposureOverride:
+                    e.target.value === "auto"
+                      ? null
+                      : (e.target.value as CompassDirection),
                 })
               }
               className="w-24 px-2 py-1 text-xs border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             >
               <option value="auto">Auto</option>
               {COMPASS_DIRECTIONS.map((direction) => (
-                <option key={direction} value={direction}>{direction}</option>
+                <option key={direction} value={direction}>
+                  {direction}
+                </option>
               ))}
             </select>
           </PropertyRow>
@@ -455,7 +568,9 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateWall3DAttributes(selectedWall.id, { shadingFactor: clamp(parsed, 0, 1) });
+                updateWall3DAttributes(selectedWall.id, {
+                  shadingFactor: clamp(parsed, 0, 1),
+                });
               }}
               className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
@@ -464,10 +579,11 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             <select
               value={wallSettings.wallColorMode}
               onChange={(e) => {
-                const nextMode = e.target.value as typeof wallSettings.wallColorMode;
+                const nextMode = e.target
+                  .value as typeof wallSettings.wallColorMode;
                 setWallSettings({
                   wallColorMode: nextMode,
-                  colorCodeByMaterial: nextMode === 'material',
+                  colorCodeByMaterial: nextMode === "material",
                 });
               }}
               className="w-32 px-2 py-1 text-xs border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
@@ -480,7 +596,9 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 
           <div className="rounded border border-amber-200/80 bg-amber-50/30 p-2 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-600">Wall Assembly (Exterior to Interior)</span>
+              <span className="text-xs font-semibold text-slate-600">
+                Wall Assembly (Exterior to Interior)
+              </span>
               <button
                 type="button"
                 onClick={addThermalLayer}
@@ -489,7 +607,9 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                 Add Layer
               </button>
             </div>
-            <div className="text-[11px] text-slate-500">Drag rows to reorder layer sequence.</div>
+            <div className="text-[11px] text-slate-500">
+              Drag rows to reorder layer sequence.
+            </div>
             <div className="flex flex-wrap gap-1">
               {materialLibrary.map((material) => (
                 <div
@@ -531,16 +651,21 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                   reorderThermalLayer(dragLayerIndex, index);
                   setDragLayerIndex(null);
                 }}
-                className={`grid grid-cols-[1fr_auto_auto] gap-1 items-center rounded px-1 ${dragLayerIndex === index ? 'bg-amber-100/70' : ''
-                  }`}
+                className={`grid grid-cols-[1fr_auto_auto] gap-1 items-center rounded px-1 ${
+                  dragLayerIndex === index ? "bg-amber-100/70" : ""
+                }`}
               >
                 <select
                   value={layer.materialId}
-                  onChange={(e) => updateThermalLayer(index, { materialId: e.target.value })}
+                  onChange={(e) =>
+                    updateThermalLayer(index, { materialId: e.target.value })
+                  }
                   className="px-2 py-1 text-xs border border-amber-200/80 rounded bg-white"
                 >
                   {materialLibrary.map((material) => (
-                    <option key={material.id} value={material.id}>{material.name}</option>
+                    <option key={material.id} value={material.id}>
+                      {material.name}
+                    </option>
                   ))}
                 </select>
                 <input
@@ -551,7 +676,9 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                   onChange={(e) => {
                     const parsed = Number.parseFloat(e.target.value);
                     if (!Number.isFinite(parsed)) return;
-                    updateThermalLayer(index, { thicknessMm: Math.max(1, parsed) });
+                    updateThermalLayer(index, {
+                      thicknessMm: Math.max(1, parsed),
+                    });
                   }}
                   className="w-20 px-2 py-1 text-xs border border-amber-200/80 rounded bg-white"
                   title="Layer thickness (mm)"
@@ -566,15 +693,22 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               </div>
             ))}
             {thermalAssembly.length < 2 && (
-              <div className="text-xs text-rose-600">Assembly must have at least 2 layers.</div>
+              <div className="text-xs text-rose-600">
+                Assembly must have at least 2 layers.
+              </div>
             )}
             {thermalBreakdown.length > 0 && (
               <div className="space-y-1">
                 {thermalBreakdown.map((item) => {
-                  const layer = thermalAssembly.find((entry) => entry.id === item.layerId);
+                  const layer = thermalAssembly.find(
+                    (entry) => entry.id === item.layerId,
+                  );
                   const material = getArchitecturalMaterial(item.materialId);
                   const computedResistance = layer
-                    ? calculateMaterialResistance(layer.materialId, layer.thicknessMm)
+                    ? calculateMaterialResistance(
+                        layer.materialId,
+                        layer.thicknessMm,
+                      )
                     : item.resistance;
                   return (
                     <div key={item.layerId} className="space-y-0.5">
@@ -585,7 +719,9 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                       <div className="h-1.5 rounded bg-slate-200">
                         <div
                           className="h-1.5 rounded bg-amber-400"
-                          style={{ width: `${Math.max(2, Math.min(100, item.percentage))}%` }}
+                          style={{
+                            width: `${Math.max(2, Math.min(100, item.percentage))}%`,
+                          }}
                         />
                       </div>
                     </div>
@@ -597,21 +733,32 @@ function WallSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         </div>
       )}
 
-      {tab === 'openings' && (
+      {tab === "openings" && (
         <div className="space-y-1">
           <PropertyRow label="Openings">
-            <span className="text-sm text-slate-700">{selectedWall.openings.length}</span>
+            <span className="text-sm text-slate-700">
+              {selectedWall.openings.length}
+            </span>
           </PropertyRow>
           {selectedWall.openings.length === 0 && (
-            <p className="text-xs text-slate-500">No door/window openings on this wall.</p>
+            <p className="text-xs text-slate-500">
+              No door/window openings on this wall.
+            </p>
           )}
           {selectedWall.openings.map((opening) => (
-            <div key={opening.id} className="rounded border border-amber-200/70 bg-white px-2 py-1 text-xs text-slate-600">
-              {opening.type.toUpperCase()} | W {Math.round(opening.width)} mm | H {Math.round(opening.height)} mm | Pos {Math.round(opening.position)} mm
+            <div
+              key={opening.id}
+              className="rounded border border-amber-200/70 bg-white px-2 py-1 text-xs text-slate-600"
+            >
+              {opening.type.toUpperCase()} | W {Math.round(opening.width)} mm |
+              H {Math.round(opening.height)} mm | Pos{" "}
+              {Math.round(opening.position)} mm
             </div>
           ))}
           <PropertyRow label="Volume">
-            <span className="text-sm text-slate-700">{selectedWall.properties3D.computedVolumeM3.toFixed(3)} m&sup3;</span>
+            <span className="text-sm text-slate-700">
+              {selectedWall.properties3D.computedVolumeM3.toFixed(3)} m&sup3;
+            </span>
           </PropertyRow>
         </div>
       )}
@@ -627,17 +774,22 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     updateSymbol,
     updateWall,
     setProcessingStatus,
-  } = useSmartDrawingStore((state) => ({
-    selectedElementIds: state.selectedElementIds,
-    symbols: state.symbols,
-    walls: state.walls,
-    updateSymbol: state.updateSymbol,
-    updateWall: state.updateWall,
-    setProcessingStatus: state.setProcessingStatus,
-  }), shallow);
+  } = useSmartDrawingStore(
+    (state) => ({
+      selectedElementIds: state.selectedElementIds,
+      symbols: state.symbols,
+      walls: state.walls,
+      updateSymbol: state.updateSymbol,
+      updateWall: state.updateWall,
+      setProcessingStatus: state.setProcessingStatus,
+    }),
+    shallow,
+  );
 
   const selectedObject = useMemo(() => {
-    const selectedFromCanvas = symbols.find((symbol) => selectedElementIds.includes(symbol.id));
+    const selectedFromCanvas = symbols.find((symbol) =>
+      selectedElementIds.includes(symbol.id),
+    );
     return selectedFromCanvas ?? symbols[0] ?? null;
   }, [selectedElementIds, symbols]);
 
@@ -645,37 +797,75 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     return <p className="text-sm text-slate-400">No library object selected</p>;
   }
 
-  const category = propertyAsString(selectedObject.properties, 'category', 'object');
-  const type = propertyAsString(selectedObject.properties, 'type', 'custom');
-  const material = propertyAsString(selectedObject.properties, 'material', '');
-  const widthMm = propertyAsNumber(selectedObject.properties, 'widthMm', 0);
-  const depthMm = propertyAsNumber(selectedObject.properties, 'depthMm', 0);
-  const heightMm = propertyAsNumber(selectedObject.properties, 'heightMm', 0);
-  const sillHeightMm = propertyAsNumber(selectedObject.properties, 'sillHeightMm', 900);
-  const swingDirection = propertyAsString(selectedObject.properties, 'swingDirection', 'left');
-  const doorHingeMode = propertyAsString(selectedObject.properties, 'doorHingeMode', 'manual');
-  const doorSwingBehavior = propertyAsString(selectedObject.properties, 'doorSwingBehavior', 'inward');
-  const hostWallId = propertyAsString(selectedObject.properties, 'hostWallId', '');
-  const positionAlongWallMm = propertyAsNumber(selectedObject.properties, 'positionAlongWallMm', NaN);
-  const isDoor = category === 'doors';
-  const isWindow = category === 'windows';
+  const category = propertyAsString(
+    selectedObject.properties,
+    "category",
+    "object",
+  );
+  const type = propertyAsString(selectedObject.properties, "type", "custom");
+  const material = propertyAsString(selectedObject.properties, "material", "");
+  const widthMm = propertyAsNumber(selectedObject.properties, "widthMm", 0);
+  const depthMm = propertyAsNumber(selectedObject.properties, "depthMm", 0);
+  const heightMm = propertyAsNumber(selectedObject.properties, "heightMm", 0);
+  const sillHeightMm = propertyAsNumber(
+    selectedObject.properties,
+    "sillHeightMm",
+    900,
+  );
+  const swingDirection = propertyAsString(
+    selectedObject.properties,
+    "swingDirection",
+    "left",
+  );
+  const doorHingeMode = propertyAsString(
+    selectedObject.properties,
+    "doorHingeMode",
+    "manual",
+  );
+  const doorSwingBehavior = propertyAsString(
+    selectedObject.properties,
+    "doorSwingBehavior",
+    "inward",
+  );
+  const hostWallId = propertyAsString(
+    selectedObject.properties,
+    "hostWallId",
+    "",
+  );
+  const positionAlongWallMm = propertyAsNumber(
+    selectedObject.properties,
+    "positionAlongWallMm",
+    NaN,
+  );
+  const isDoor = category === "doors";
+  const isWindow = category === "windows";
   const isOpening = isDoor || isWindow;
-  const hostWall = hostWallId ? walls.find((wall) => wall.id === hostWallId) ?? null : null;
-  const hostOpening = hostWall?.openings.find((opening) => opening.id === selectedObject.id) ?? null;
+  const hostWall = hostWallId
+    ? (walls.find((wall) => wall.id === hostWallId) ?? null)
+    : null;
+  const hostOpening =
+    hostWall?.openings.find((opening) => opening.id === selectedObject.id) ??
+    null;
   const hostWallBaseElevationMm = hostWall?.properties3D.baseElevation ?? 0;
   const openingMinWidthMm = isDoor ? MIN_DOOR_WIDTH_MM : MIN_WINDOW_WIDTH_MM;
   const openingMaxWidthMm = isDoor ? MAX_DOOR_WIDTH_MM : MAX_WINDOW_WIDTH_MM;
   const openingMinHeightMm = isDoor ? MIN_DOOR_HEIGHT_MM : MIN_WINDOW_HEIGHT_MM;
-  const openingWidthBaseMm = widthMm > 0
-    ? widthMm
-    : hostOpening
-      ? Math.max(1, hostOpening.width - 50)
-      : isDoor ? 900 : 1200;
-  const openingHeightBaseMm = heightMm > 0
-    ? heightMm
-    : hostOpening
-      ? Math.max(1, hostOpening.height)
-      : isDoor ? 2100 : 1200;
+  const openingWidthBaseMm =
+    widthMm > 0
+      ? widthMm
+      : hostOpening
+        ? Math.max(1, hostOpening.width - 50)
+        : isDoor
+          ? 900
+          : 1200;
+  const openingHeightBaseMm =
+    heightMm > 0
+      ? heightMm
+      : hostOpening
+        ? Math.max(1, hostOpening.height)
+        : isDoor
+          ? 2100
+          : 1200;
   const windowSillBaseMm = hostOpening?.sillHeight ?? sillHeightMm;
   const openingWidthLimits = (() => {
     if (!isOpening || !hostWall) return null;
@@ -686,16 +876,26 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       selectedObject.id,
       openingPosition,
       openingMinWidthMm,
-      openingMaxWidthMm
+      openingMaxWidthMm,
     );
   })();
-  const canResizeOpening = !openingWidthLimits || openingWidthLimits.max >= openingWidthLimits.min;
+  const canResizeOpening =
+    !openingWidthLimits || openingWidthLimits.max >= openingWidthLimits.min;
   const effectiveOpeningWidthMm = Math.max(1, openingWidthBaseMm);
   const sliderMin = openingWidthLimits?.min ?? openingMinWidthMm;
-  const sliderMax = Math.max(sliderMin, openingWidthLimits?.max ?? openingMaxWidthMm);
-  const sliderValue = clamp(Math.round(effectiveOpeningWidthMm), sliderMin, sliderMax);
+  const sliderMax = Math.max(
+    sliderMin,
+    openingWidthLimits?.max ?? openingMaxWidthMm,
+  );
+  const sliderValue = clamp(
+    Math.round(effectiveOpeningWidthMm),
+    sliderMin,
+    sliderMax,
+  );
   const openingWidthPresets = isDoor
-    ? (type === 'double-swing' ? [1200, 1400, 1600, 1800] : [700, 800, 900, 1000, 1100])
+    ? type === "double-swing"
+      ? [1200, 1400, 1600, 1800]
+      : [700, 800, 900, 1000, 1100]
     : [600, 900, 1200, 1500, 1800];
 
   const updateProperty = (key: string, value: unknown) => {
@@ -712,17 +912,23 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     updateProperty(key, Math.max(1, value));
   };
 
-  const updateHostedOpening = (updates: Partial<{ width: number; height: number; sillHeight: number }>) => {
+  const updateHostedOpening = (
+    updates: Partial<{ width: number; height: number; sillHeight: number }>,
+  ) => {
     if (!hostWall || !hostOpening) return;
     const nextOpenings = hostWall.openings.map((opening) =>
       opening.id === selectedObject.id
         ? {
-          ...opening,
-          ...updates,
-        }
-        : opening
+            ...opening,
+            ...updates,
+          }
+        : opening,
     );
-    updateWall(hostWall.id, { openings: nextOpenings }, { source: 'ui', skipHistory: true });
+    updateWall(
+      hostWall.id,
+      { openings: nextOpenings },
+      { source: "ui", skipHistory: true },
+    );
   };
 
   const applyOpeningWidth = (requestedWidthMm: number) => {
@@ -732,23 +938,27 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     if (openingWidthLimits) {
       if (openingWidthLimits.max < openingWidthLimits.min) {
         setProcessingStatus(
-          `${isDoor ? 'Door' : 'Window'} cannot be resized at this position. Move it away from wall ends/openings first.`,
-          false
+          `${isDoor ? "Door" : "Window"} cannot be resized at this position. Move it away from wall ends/openings first.`,
+          false,
         );
         return;
       }
-      const clampedWidthMm = clamp(nextWidthMm, openingWidthLimits.min, openingWidthLimits.max);
+      const clampedWidthMm = clamp(
+        nextWidthMm,
+        openingWidthLimits.min,
+        openingWidthLimits.max,
+      );
       if (Math.abs(clampedWidthMm - nextWidthMm) > 0.01) {
         setProcessingStatus(
-          `${isDoor ? 'Door' : 'Window'} width limited to ${Math.round(clampedWidthMm)} mm to keep valid clearances.`,
-          false
+          `${isDoor ? "Door" : "Window"} width limited to ${Math.round(clampedWidthMm)} mm to keep valid clearances.`,
+          false,
         );
       }
       nextWidthMm = clampedWidthMm;
     }
 
     if (Math.abs(openingWidthBaseMm - nextWidthMm) > 0.01) {
-      updateProperty('widthMm', nextWidthMm);
+      updateProperty("widthMm", nextWidthMm);
     }
 
     if (hostOpening) {
@@ -761,9 +971,12 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 
   const applyOpeningHeight = (requestedHeightMm: number) => {
     if (!Number.isFinite(requestedHeightMm)) return;
-    const nextHeightMm = Math.max(openingMinHeightMm, Math.round(requestedHeightMm));
+    const nextHeightMm = Math.max(
+      openingMinHeightMm,
+      Math.round(requestedHeightMm),
+    );
     if (Math.abs(openingHeightBaseMm - nextHeightMm) > 0.01) {
-      updateProperty('heightMm', nextHeightMm);
+      updateProperty("heightMm", nextHeightMm);
     }
     if (hostOpening && Math.abs(hostOpening.height - nextHeightMm) > 0.01) {
       updateHostedOpening({ height: nextHeightMm });
@@ -780,7 +993,10 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         baseElevationMm: hostWallBaseElevationMm + nextSillHeightMm,
       },
     });
-    if (hostOpening && Math.abs((hostOpening.sillHeight ?? 0) - nextSillHeightMm) > 0.01) {
+    if (
+      hostOpening &&
+      Math.abs((hostOpening.sillHeight ?? 0) - nextSillHeightMm) > 0.01
+    ) {
       updateHostedOpening({ sillHeight: nextSillHeightMm });
     }
   };
@@ -788,10 +1004,14 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   return (
     <div className="space-y-1">
       <PropertyRow label="ID">
-        <span className="text-xs text-slate-500">{selectedObject.id.slice(0, 10)}</span>
+        <span className="text-xs text-slate-500">
+          {selectedObject.id.slice(0, 10)}
+        </span>
       </PropertyRow>
       <PropertyRow label="Symbol">
-        <span className="text-xs text-slate-600">{selectedObject.symbolId}</span>
+        <span className="text-xs text-slate-600">
+          {selectedObject.symbolId}
+        </span>
       </PropertyRow>
       <PropertyRow label="Category">
         <span className="text-sm text-slate-700">{category}</span>
@@ -800,7 +1020,7 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="text"
           value={type}
-          onChange={(e) => updateProperty('type', e.target.value)}
+          onChange={(e) => updateProperty("type", e.target.value)}
           className="w-36 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         />
       </PropertyRow>
@@ -808,7 +1028,7 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="text"
           value={material}
-          onChange={(e) => updateProperty('material', e.target.value)}
+          onChange={(e) => updateProperty("material", e.target.value)}
           className="w-36 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         />
       </PropertyRow>
@@ -817,8 +1037,11 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
           type="number"
           min={fromMm(isOpening ? sliderMin : 1, propertyUnit)}
           max={isOpening ? fromMm(sliderMax, propertyUnit) : undefined}
-          step={propertyUnit === 'mm' ? 1 : 0.01}
-          value={fromMm(isOpening ? effectiveOpeningWidthMm : widthMm, propertyUnit).toFixed(2)}
+          step={propertyUnit === "mm" ? 1 : 0.01}
+          value={fromMm(
+            isOpening ? effectiveOpeningWidthMm : widthMm,
+            propertyUnit,
+          ).toFixed(2)}
           onChange={(e) => {
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
@@ -827,7 +1050,7 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               applyOpeningWidth(nextWidthMm);
               return;
             }
-            updateDimensionProperty('widthMm', nextWidthMm);
+            updateDimensionProperty("widthMm", nextWidthMm);
           }}
           className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         />
@@ -836,9 +1059,11 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <div className="rounded border border-amber-200/70 bg-amber-50/50 p-2 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-              Smart {isDoor ? 'Door' : 'Window'} Width
+              Smart {isDoor ? "Door" : "Window"} Width
             </span>
-            <span className="text-xs text-slate-700">{Math.round(effectiveOpeningWidthMm)} mm</span>
+            <span className="text-xs text-slate-700">
+              {Math.round(effectiveOpeningWidthMm)} mm
+            </span>
           </div>
           <input
             type="range"
@@ -863,8 +1088,8 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                 onClick={() => applyOpeningWidth(preset)}
                 className={`rounded border px-2 py-1 text-[11px] ${
                   Math.abs(openingWidthBaseMm - preset) < 0.5
-                    ? 'border-amber-500 bg-amber-200 text-amber-900'
-                    : 'border-amber-200 bg-white text-slate-700 hover:bg-amber-100'
+                    ? "border-amber-500 bg-amber-200 text-amber-900"
+                    : "border-amber-200 bg-white text-slate-700 hover:bg-amber-100"
                 } disabled:cursor-not-allowed disabled:opacity-50`}
               >
                 {preset}
@@ -885,8 +1110,8 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             {openingWidthLimits
               ? canResizeOpening
                 ? `Allowed width: ${openingWidthLimits.min}-${openingWidthLimits.max} mm (auto-clamped for edges/openings)`
-                : `No valid ${isDoor ? 'door' : 'window'} width at this position. Move it before resizing.`
-              : `${isDoor ? 'Door' : 'Window'} is not currently hosted on a wall. Width updates the symbol only.`}
+                : `No valid ${isDoor ? "door" : "window"} width at this position. Move it before resizing.`
+              : `${isDoor ? "Door" : "Window"} is not currently hosted on a wall. Width updates the symbol only.`}
           </p>
         </div>
       )}
@@ -894,12 +1119,12 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="number"
           min={fromMm(1, propertyUnit)}
-          step={propertyUnit === 'mm' ? 1 : 0.01}
+          step={propertyUnit === "mm" ? 1 : 0.01}
           value={fromMm(depthMm, propertyUnit).toFixed(2)}
           onChange={(e) => {
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
-            updateDimensionProperty('depthMm', toMm(parsed, propertyUnit));
+            updateDimensionProperty("depthMm", toMm(parsed, propertyUnit));
           }}
           className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         />
@@ -908,8 +1133,11 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="number"
           min={fromMm(isOpening ? openingMinHeightMm : 1, propertyUnit)}
-          step={propertyUnit === 'mm' ? 1 : 0.01}
-          value={fromMm(isOpening ? openingHeightBaseMm : heightMm, propertyUnit).toFixed(2)}
+          step={propertyUnit === "mm" ? 1 : 0.01}
+          value={fromMm(
+            isOpening ? openingHeightBaseMm : heightMm,
+            propertyUnit,
+          ).toFixed(2)}
           onChange={(e) => {
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
@@ -918,12 +1146,13 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               applyOpeningHeight(nextHeightMm);
               return;
             }
-            updateDimensionProperty('heightMm', nextHeightMm);
+            updateDimensionProperty("heightMm", nextHeightMm);
           }}
           className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         />
       </PropertyRow>
-      {(selectedObject.symbolId === 'furn-circular-table-chairs' || selectedObject.symbolId === 'furn-square-table-chairs') && (
+      {(selectedObject.symbolId === "furn-circular-table-chairs" ||
+        selectedObject.symbolId === "furn-square-table-chairs") && (
         <div className="rounded border border-amber-200/70 bg-amber-50/50 p-2 space-y-2">
           <PropertyRow label="Chairs">
             <input
@@ -931,14 +1160,19 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               min={2}
               max={20}
               step={1}
-              value={propertyAsNumber(selectedObject.properties, 'chairCount', 4)}
+              value={propertyAsNumber(
+                selectedObject.properties,
+                "chairCount",
+                4,
+              )}
               onChange={(e) => {
                 const parsed = Number.parseInt(e.target.value, 10);
                 if (!Number.isFinite(parsed)) return;
                 const nextCount = Math.max(2, Math.min(20, parsed));
-                const footprint = selectedObject.symbolId === 'furn-circular-table-chairs'
-                  ? circularMeetingFootprintMm(nextCount)
-                  : squareMeetingFootprintMm(nextCount);
+                const footprint =
+                  selectedObject.symbolId === "furn-circular-table-chairs"
+                    ? circularMeetingFootprintMm(nextCount)
+                    : squareMeetingFootprintMm(nextCount);
                 updateSymbol(selectedObject.id, {
                   properties: {
                     ...selectedObject.properties,
@@ -957,9 +1191,10 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                 key={preset}
                 type="button"
                 onClick={() => {
-                  const footprint = selectedObject.symbolId === 'furn-circular-table-chairs'
-                    ? circularMeetingFootprintMm(preset)
-                    : squareMeetingFootprintMm(preset);
+                  const footprint =
+                    selectedObject.symbolId === "furn-circular-table-chairs"
+                      ? circularMeetingFootprintMm(preset)
+                      : squareMeetingFootprintMm(preset);
                   updateSymbol(selectedObject.id, {
                     properties: {
                       ...selectedObject.properties,
@@ -970,9 +1205,13 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                   });
                 }}
                 className={`rounded border px-2 py-1 text-[11px] ${
-                  propertyAsNumber(selectedObject.properties, 'chairCount', 4) === preset
-                    ? 'border-amber-500 bg-amber-200 text-amber-900'
-                    : 'border-amber-200 bg-white text-slate-700 hover:bg-amber-100'
+                  propertyAsNumber(
+                    selectedObject.properties,
+                    "chairCount",
+                    4,
+                  ) === preset
+                    ? "border-amber-500 bg-amber-200 text-amber-900"
+                    : "border-amber-200 bg-white text-slate-700 hover:bg-amber-100"
                 }`}
               >
                 {preset} chairs
@@ -989,7 +1228,7 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
           <input
             type="number"
             min={fromMm(0, propertyUnit)}
-            step={propertyUnit === 'mm' ? 1 : 0.01}
+            step={propertyUnit === "mm" ? 1 : 0.01}
             value={fromMm(windowSillBaseMm, propertyUnit).toFixed(2)}
             onChange={(e) => {
               const parsed = Number.parseFloat(e.target.value);
@@ -1014,48 +1253,62 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         />
         <span className="text-xs text-slate-500">&deg;</span>
       </PropertyRow>
-      {category === 'doors' && (
+      {category === "doors" && (
         <PropertyRow label="Opening">
           <button
             type="button"
-            onClick={() => updateProperty('doorSwingBehavior', doorSwingBehavior === 'outward' ? 'inward' : 'outward')}
+            onClick={() =>
+              updateProperty(
+                "doorSwingBehavior",
+                doorSwingBehavior === "outward" ? "inward" : "outward",
+              )
+            }
             className="rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-amber-50"
           >
-            {doorSwingBehavior === 'outward' ? 'Outward' : 'Inward'}
+            {doorSwingBehavior === "outward" ? "Outward" : "Inward"}
           </button>
         </PropertyRow>
       )}
-      {category === 'doors' && (
+      {category === "doors" && (
         <PropertyRow label="Hinge Mode">
           <button
             type="button"
-            onClick={() => updateProperty('doorHingeMode', doorHingeMode === 'auto-corner' ? 'manual' : 'auto-corner')}
+            onClick={() =>
+              updateProperty(
+                "doorHingeMode",
+                doorHingeMode === "auto-corner" ? "manual" : "auto-corner",
+              )
+            }
             className="rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-amber-50"
           >
-            {doorHingeMode === 'auto-corner' ? 'Auto Corner' : 'Manual'}
+            {doorHingeMode === "auto-corner" ? "Auto Corner" : "Manual"}
           </button>
         </PropertyRow>
       )}
-      {category === 'doors' && (
+      {category === "doors" && (
         <PropertyRow label="Swing">
           <button
             type="button"
-            onClick={() => updateSymbol(selectedObject.id, {
-              properties: {
-                ...selectedObject.properties,
-                doorHingeMode: 'manual',
-                swingDirection: swingDirection === 'right' ? 'left' : 'right',
-              },
-            })}
+            onClick={() =>
+              updateSymbol(selectedObject.id, {
+                properties: {
+                  ...selectedObject.properties,
+                  doorHingeMode: "manual",
+                  swingDirection: swingDirection === "right" ? "left" : "right",
+                },
+              })
+            }
             className="rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-amber-50"
           >
-            {swingDirection === 'right' ? 'Right-Hand' : 'Left-Hand'}
+            {swingDirection === "right" ? "Right-Hand" : "Left-Hand"}
           </button>
         </PropertyRow>
       )}
-      {category === 'doors' && (
+      {category === "doors" && (
         <p className="text-[11px] text-slate-500">
-          Inward opening plus Auto Corner hinge is the recommended setup. Auto Corner places the hinge near the nearest wall corner for typical room-entry layout; manual hand override is still available.
+          Inward opening plus Auto Corner hinge is the recommended setup. Auto
+          Corner places the hinge near the nearest wall corner for typical
+          room-entry layout; manual hand override is still available.
         </p>
       )}
     </div>
@@ -1063,20 +1316,22 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 }
 
 function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
-  const {
-    selectedElementIds,
-    hvacElements,
-    rooms,
-    updateHvacElement,
-  } = useSmartDrawingStore((state) => ({
-    selectedElementIds: state.selectedElementIds,
-    hvacElements: state.hvacElements,
-    rooms: state.rooms,
-    updateHvacElement: state.updateHvacElement,
-  }), shallow);
+  const { selectedElementIds, hvacElements, rooms, updateHvacElement } =
+    useSmartDrawingStore(
+      (state) => ({
+        selectedElementIds: state.selectedElementIds,
+        hvacElements: state.hvacElements,
+        rooms: state.rooms,
+        updateHvacElement: state.updateHvacElement,
+      }),
+      shallow,
+    );
 
   const selectedEquipment = useMemo(() => {
-    return hvacElements.find((element) => selectedElementIds.includes(element.id)) ?? null;
+    return (
+      hvacElements.find((element) => selectedElementIds.includes(element.id)) ??
+      null
+    );
   }, [hvacElements, selectedElementIds]);
 
   if (!selectedEquipment) {
@@ -1084,18 +1339,116 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   }
 
   const roomName = selectedEquipment.roomId
-    ? rooms.find((room) => room.id === selectedEquipment.roomId)?.name ?? selectedEquipment.roomId
-    : 'Unassigned';
-  const capacityKw = propertyAsNumber(selectedEquipment.properties, 'capacityKw');
-  const heatingCapacityKw = propertyAsNumber(selectedEquipment.properties, 'heatingCapacityKw');
-  const airflowLps = propertyAsNumber(selectedEquipment.properties, 'airflowLps');
-  const staticPressurePa = propertyAsNumber(selectedEquipment.properties, 'staticPressurePa');
-  const voltage = propertyAsNumber(selectedEquipment.properties, 'voltage');
-  const refrigerantType = propertyAsString(selectedEquipment.properties, 'refrigerantType', '-');
+    ? (rooms.find((room) => room.id === selectedEquipment.roomId)?.name ??
+      selectedEquipment.roomId)
+    : "Unassigned";
+  const capacityKw = propertyAsNumber(
+    selectedEquipment.properties,
+    "capacityKw",
+  );
+  const heatingCapacityKw = propertyAsNumber(
+    selectedEquipment.properties,
+    "heatingCapacityKw",
+  );
+  const airflowLps = propertyAsNumber(
+    selectedEquipment.properties,
+    "airflowLps",
+  );
+  const staticPressurePa = propertyAsNumber(
+    selectedEquipment.properties,
+    "staticPressurePa",
+  );
+  const voltage = propertyAsNumber(selectedEquipment.properties, "voltage");
+  const refrigerantType = propertyAsString(
+    selectedEquipment.properties,
+    "refrigerantType",
+    "-",
+  );
 
   const updateProperties = (properties: Record<string, unknown>) => {
     updateHvacElement(selectedEquipment.id, { properties });
   };
+
+  if (selectedEquipment.type === "duct") {
+    const ductVisual = buildGiDuctVisual(selectedEquipment);
+    const ductLengthMm = ductVisual.segments.reduce(
+      (total, segment) => total + segment.lengthMm,
+      0,
+    );
+    const ductKind = propertyAsString(
+      selectedEquipment.properties,
+      "ductKind",
+      "supply",
+    );
+    const sourceElementId = propertyAsString(
+      selectedEquipment.properties,
+      "sourceElementId",
+      "",
+    );
+
+    return (
+      <div className="space-y-1">
+        <PropertyRow label="Label">
+          <input
+            type="text"
+            value={selectedEquipment.label}
+            onChange={(e) =>
+              updateHvacElement(selectedEquipment.id, { label: e.target.value })
+            }
+            className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+          />
+        </PropertyRow>
+        <PropertyRow label="Type">
+          <span className="text-sm text-slate-700">GI Duct</span>
+        </PropertyRow>
+        <PropertyRow label="Connection">
+          <span className="text-sm text-slate-700 capitalize">{ductKind}</span>
+        </PropertyRow>
+        <PropertyRow label="Source Unit">
+          <span className="max-w-[10rem] truncate text-xs text-slate-500">
+            {sourceElementId || "Manual"}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Length">
+          <span className="text-sm text-slate-700">
+            {fromMm(ductLengthMm, propertyUnit).toFixed(2)}{" "}
+            {formatUnit(propertyUnit)}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Section">
+          <span className="text-sm text-slate-700">
+            {fromMm(ductVisual.outerWidthMm, propertyUnit).toFixed(2)} x{" "}
+            {fromMm(ductVisual.outerHeightMm, propertyUnit).toFixed(2)}{" "}
+            {formatUnit(propertyUnit)}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Sheet Thickness">
+          <span className="text-sm text-slate-700">
+            {fromMm(ductVisual.wallThicknessMm, propertyUnit).toFixed(2)}{" "}
+            {formatUnit(propertyUnit)}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Elevation">
+          <input
+            type="number"
+            step={propertyUnit === "mm" ? 1 : 0.01}
+            value={fromMm(selectedEquipment.elevation, propertyUnit).toFixed(2)}
+            onChange={(e) => {
+              const parsed = Number.parseFloat(e.target.value);
+              if (!Number.isFinite(parsed)) return;
+              updateHvacElement(selectedEquipment.id, {
+                elevation: Math.max(0, toMm(parsed, propertyUnit)),
+              });
+            }}
+            className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+          />
+          <span className="text-xs text-slate-500">
+            {formatUnit(propertyUnit)}
+          </span>
+        </PropertyRow>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-1">
@@ -1103,18 +1456,24 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="text"
           value={selectedEquipment.label}
-          onChange={(e) => updateHvacElement(selectedEquipment.id, { label: e.target.value })}
+          onChange={(e) =>
+            updateHvacElement(selectedEquipment.id, { label: e.target.value })
+          }
           className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
         />
       </PropertyRow>
       <PropertyRow label="Type">
-        <span className="text-sm text-slate-700">{selectedEquipment.modelLabel ?? selectedEquipment.type}</span>
+        <span className="text-sm text-slate-700">
+          {selectedEquipment.modelLabel ?? selectedEquipment.type}
+        </span>
       </PropertyRow>
       <PropertyRow label="Room">
         <span className="text-sm text-slate-700">{roomName}</span>
       </PropertyRow>
       <PropertyRow label="Wall Ref">
-        <span className="text-xs text-slate-500">{selectedEquipment.wallId ?? 'Free placement'}</span>
+        <span className="text-xs text-slate-500">
+          {selectedEquipment.wallId ?? "Free placement"}
+        </span>
       </PropertyRow>
       <PropertyRow label="Rotation">
         <input
@@ -1134,20 +1493,26 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       <PropertyRow label="Elevation">
         <input
           type="number"
-          step={propertyUnit === 'mm' ? 1 : 0.01}
+          step={propertyUnit === "mm" ? 1 : 0.01}
           value={fromMm(selectedEquipment.elevation, propertyUnit).toFixed(2)}
           onChange={(e) => {
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
-            updateHvacElement(selectedEquipment.id, { elevation: Math.max(0, toMm(parsed, propertyUnit)) });
+            updateHvacElement(selectedEquipment.id, {
+              elevation: Math.max(0, toMm(parsed, propertyUnit)),
+            });
           }}
           className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
         />
-        <span className="text-xs text-slate-500">{formatUnit(propertyUnit)}</span>
+        <span className="text-xs text-slate-500">
+          {formatUnit(propertyUnit)}
+        </span>
       </PropertyRow>
       <PropertyRow label="Plan Size">
         <span className="text-sm text-slate-700">
-          {fromMm(selectedEquipment.width, propertyUnit).toFixed(2)} x {fromMm(selectedEquipment.depth, propertyUnit).toFixed(2)} {formatUnit(propertyUnit)}
+          {fromMm(selectedEquipment.width, propertyUnit).toFixed(2)} x{" "}
+          {fromMm(selectedEquipment.depth, propertyUnit).toFixed(2)}{" "}
+          {formatUnit(propertyUnit)}
         </span>
       </PropertyRow>
       <PropertyRow label="Capacity">
@@ -1224,7 +1589,9 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="text"
           value={refrigerantType}
-          onChange={(e) => updateProperties({ refrigerantType: e.target.value })}
+          onChange={(e) =>
+            updateProperties({ refrigerantType: e.target.value })
+          }
           className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
         />
       </PropertyRow>
@@ -1241,35 +1608,49 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     updateRoom,
     updateRoom3DAttributes,
     applyRoomTemplateToSelectedRooms,
-  } = useSmartDrawingStore((state) => ({
-    rooms: state.rooms,
-    selectedElementIds: state.selectedElementIds,
-    setSelectedIds: state.setSelectedIds,
-    materialLibrary: state.materialLibrary,
-    updateRoom: state.updateRoom,
-    updateRoom3DAttributes: state.updateRoom3DAttributes,
-    applyRoomTemplateToSelectedRooms: state.applyRoomTemplateToSelectedRooms,
-  }), shallow);
-  const [selectedRoomId, setSelectedRoomId] = useState<string>('');
-  const [tab, setTab] = useState<'general' | 'thermal' | 'ventilation' | 'calculated'>('general');
+  } = useSmartDrawingStore(
+    (state) => ({
+      rooms: state.rooms,
+      selectedElementIds: state.selectedElementIds,
+      setSelectedIds: state.setSelectedIds,
+      materialLibrary: state.materialLibrary,
+      updateRoom: state.updateRoom,
+      updateRoom3DAttributes: state.updateRoom3DAttributes,
+      applyRoomTemplateToSelectedRooms: state.applyRoomTemplateToSelectedRooms,
+    }),
+    shallow,
+  );
+  const [selectedRoomId, setSelectedRoomId] = useState<string>("");
+  const [tab, setTab] = useState<
+    "general" | "thermal" | "ventilation" | "calculated"
+  >("general");
   const roomTypeOptions: RoomType[] = [
-    'Bathroom/Closet',
-    'Bedroom',
-    'Living Room',
-    'Open Space',
-    'Corridor',
-    'Passage',
-    'Balcony',
-    'Custom',
+    "Bathroom/Closet",
+    "Bedroom",
+    "Living Room",
+    "Open Space",
+    "Corridor",
+    "Passage",
+    "Balcony",
+    "Custom",
   ];
-  const scheduleOptions: RoomOccupancySchedule[] = ['daytime', 'evening', '24-hour'];
+  const scheduleOptions: RoomOccupancySchedule[] = [
+    "daytime",
+    "evening",
+    "24-hour",
+  ];
 
-  const selectedFromCanvas = rooms.find((room) => selectedElementIds.includes(room.id));
-  const resolvedRoomId = selectedFromCanvas?.id || selectedRoomId || rooms[0]?.id || '';
+  const selectedFromCanvas = rooms.find((room) =>
+    selectedElementIds.includes(room.id),
+  );
+  const resolvedRoomId =
+    selectedFromCanvas?.id || selectedRoomId || rooms[0]?.id || "";
   const selectedRoom = rooms.find((room) => room.id === resolvedRoomId) ?? null;
   const roomAreaM2 = selectedRoom ? selectedRoom.area / 1_000_000 : 0;
   const template = selectedRoom
-    ? DEFAULT_ROOM_HVAC_TEMPLATES.find((entry) => entry.id === selectedRoom.properties3D.hvacTemplateId) ?? null
+    ? (DEFAULT_ROOM_HVAC_TEMPLATES.find(
+        (entry) => entry.id === selectedRoom.properties3D.hvacTemplateId,
+      ) ?? null)
     : null;
 
   if (!selectedRoom) {
@@ -1277,10 +1658,16 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   }
 
   const applyTemplateToRoom = (templateId: string) => {
-    const next = DEFAULT_ROOM_HVAC_TEMPLATES.find((entry) => entry.id === templateId);
+    const next = DEFAULT_ROOM_HVAC_TEMPLATES.find(
+      (entry) => entry.id === templateId,
+    );
     if (!next) return;
-    const occupancyFromDensity = next.occupantsPer10m2 > 0 ? (roomAreaM2 / 10) * next.occupantsPer10m2 : 0;
-    const occupantCount = Math.max(1, Math.round(Math.max(next.occupantsBase, occupancyFromDensity) * 10) / 10);
+    const occupancyFromDensity =
+      next.occupantsPer10m2 > 0 ? (roomAreaM2 / 10) * next.occupantsPer10m2 : 0;
+    const occupantCount = Math.max(
+      1,
+      Math.round(Math.max(next.occupantsBase, occupancyFromDensity) * 10) / 10,
+    );
     updateRoom3DAttributes(selectedRoom.id, {
       hvacTemplateId: next.id,
       occupantCount,
@@ -1292,9 +1679,14 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   };
 
   const loadBreakdown = selectedRoom.properties3D.loadBreakdown;
-  const loadTotal = loadBreakdown.occupancyW + loadBreakdown.lightingW + loadBreakdown.equipmentW;
-  const occPct = loadTotal > 0 ? (loadBreakdown.occupancyW / loadTotal) * 100 : 0;
-  const lightPct = loadTotal > 0 ? (loadBreakdown.lightingW / loadTotal) * 100 : 0;
+  const loadTotal =
+    loadBreakdown.occupancyW +
+    loadBreakdown.lightingW +
+    loadBreakdown.equipmentW;
+  const occPct =
+    loadTotal > 0 ? (loadBreakdown.occupancyW / loadTotal) * 100 : 0;
+  const lightPct =
+    loadTotal > 0 ? (loadBreakdown.lightingW / loadTotal) * 100 : 0;
   const equipPct = Math.max(0, 100 - occPct - lightPct);
 
   return (
@@ -1316,49 +1708,85 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         </select>
       </PropertyRow>
       <div className="flex flex-wrap gap-1 pb-2 border-b border-amber-100/70">
-        <TabButton active={tab === 'general'} label="General" onClick={() => setTab('general')} />
-        <TabButton active={tab === 'thermal'} label="Thermal" onClick={() => setTab('thermal')} />
-        <TabButton active={tab === 'ventilation'} label="Ventilation" onClick={() => setTab('ventilation')} />
-        <TabButton active={tab === 'calculated'} label="Calculated" onClick={() => setTab('calculated')} />
+        <TabButton
+          active={tab === "general"}
+          label="General"
+          onClick={() => setTab("general")}
+        />
+        <TabButton
+          active={tab === "thermal"}
+          label="Thermal"
+          onClick={() => setTab("thermal")}
+        />
+        <TabButton
+          active={tab === "ventilation"}
+          label="Ventilation"
+          onClick={() => setTab("ventilation")}
+        />
+        <TabButton
+          active={tab === "calculated"}
+          label="Calculated"
+          onClick={() => setTab("calculated")}
+        />
       </div>
 
-      {tab === 'general' && (
+      {tab === "general" && (
         <div className="space-y-1">
           <PropertyRow label="Name">
             <input
               type="text"
               value={selectedRoom.name}
-              onChange={(e) => updateRoom(selectedRoom.id, { name: e.target.value })}
+              onChange={(e) =>
+                updateRoom(selectedRoom.id, { name: e.target.value })
+              }
               className="w-40 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
           </PropertyRow>
           <PropertyRow label="Type">
             <select
               value={selectedRoom.roomType}
-              onChange={(e) => updateRoom(selectedRoom.id, { roomType: e.target.value as RoomType })}
+              onChange={(e) =>
+                updateRoom(selectedRoom.id, {
+                  roomType: e.target.value as RoomType,
+                })
+              }
               className="w-40 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             >
               {roomTypeOptions.map((roomType) => (
-                <option key={roomType} value={roomType}>{roomType}</option>
+                <option key={roomType} value={roomType}>
+                  {roomType}
+                </option>
               ))}
             </select>
           </PropertyRow>
           <PropertyRow label="Area">
-            <span className="text-sm text-slate-700">{roomAreaM2.toFixed(2)} m2</span>
+            <span className="text-sm text-slate-700">
+              {roomAreaM2.toFixed(2)} m2
+            </span>
           </PropertyRow>
           <PropertyRow label="Perimeter">
-            <span className="text-sm text-slate-700">{selectedRoom.perimeter.toFixed(0)} mm</span>
+            <span className="text-sm text-slate-700">
+              {selectedRoom.perimeter.toFixed(0)} mm
+            </span>
           </PropertyRow>
           <PropertyRow label="Height">
             <input
               type="number"
               min={fromMm(MIN_WALL_HEIGHT, propertyUnit)}
-              step={propertyUnit === 'mm' ? 1 : 0.01}
-              value={fromMm(selectedRoom.properties3D.ceilingHeight, propertyUnit).toFixed(2)}
+              step={propertyUnit === "mm" ? 1 : 0.01}
+              value={fromMm(
+                selectedRoom.properties3D.ceilingHeight,
+                propertyUnit,
+              ).toFixed(2)}
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateRoom3DAttributes(selectedRoom.id, { ceilingHeight: Math.max(MIN_WALL_HEIGHT, toMm(parsed, propertyUnit)) });
+                updateRoom3DAttributes(selectedRoom.id, {
+                  ceilingHeight: Math.max(
+                    MIN_WALL_HEIGHT,
+                    toMm(parsed, propertyUnit),
+                  ),
+                });
               }}
               className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
@@ -1366,12 +1794,17 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
           <PropertyRow label="Floor Elevation">
             <input
               type="number"
-              step={propertyUnit === 'mm' ? 1 : 0.01}
-              value={fromMm(selectedRoom.properties3D.floorElevation, propertyUnit).toFixed(2)}
+              step={propertyUnit === "mm" ? 1 : 0.01}
+              value={fromMm(
+                selectedRoom.properties3D.floorElevation,
+                propertyUnit,
+              ).toFixed(2)}
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateRoom3DAttributes(selectedRoom.id, { floorElevation: toMm(parsed, propertyUnit) });
+                updateRoom3DAttributes(selectedRoom.id, {
+                  floorElevation: toMm(parsed, propertyUnit),
+                });
               }}
               className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
@@ -1379,11 +1812,17 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
           <PropertyRow label="Material">
             <select
               value={selectedRoom.properties3D.materialId}
-              onChange={(e) => updateRoom3DAttributes(selectedRoom.id, { materialId: e.target.value })}
+              onChange={(e) =>
+                updateRoom3DAttributes(selectedRoom.id, {
+                  materialId: e.target.value,
+                })
+              }
               className="w-44 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             >
               {materialLibrary.map((material) => (
-                <option key={material.id} value={material.id}>{material.name} ({material.family})</option>
+                <option key={material.id} value={material.id}>
+                  {material.name} ({material.family})
+                </option>
               ))}
             </select>
           </PropertyRow>
@@ -1391,14 +1830,18 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             <input
               type="text"
               value={selectedRoom.finishes}
-              onChange={(e) => updateRoom(selectedRoom.id, { finishes: e.target.value })}
+              onChange={(e) =>
+                updateRoom(selectedRoom.id, { finishes: e.target.value })
+              }
               className="w-44 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
           </PropertyRow>
           <PropertyRow label="Notes">
             <textarea
               value={selectedRoom.notes}
-              onChange={(e) => updateRoom(selectedRoom.id, { notes: e.target.value })}
+              onChange={(e) =>
+                updateRoom(selectedRoom.id, { notes: e.target.value })
+              }
               rows={2}
               className="w-44 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white resize-none"
             />
@@ -1407,7 +1850,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             <input
               type="color"
               value={selectedRoom.fillColor}
-              onChange={(e) => updateRoom(selectedRoom.id, { fillColor: e.target.value })}
+              onChange={(e) =>
+                updateRoom(selectedRoom.id, { fillColor: e.target.value })
+              }
               className="h-8 w-12 rounded border border-amber-200/80 bg-white"
             />
           </PropertyRow>
@@ -1415,13 +1860,15 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             <input
               type="checkbox"
               checked={selectedRoom.showLabel}
-              onChange={(e) => updateRoom(selectedRoom.id, { showLabel: e.target.checked })}
+              onChange={(e) =>
+                updateRoom(selectedRoom.id, { showLabel: e.target.checked })
+              }
             />
           </PropertyRow>
         </div>
       )}
 
-      {tab === 'thermal' && (
+      {tab === "thermal" && (
         <div className="space-y-1">
           <PropertyRow label="HVAC Template">
             <select
@@ -1430,12 +1877,18 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               className="w-40 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             >
               {DEFAULT_ROOM_HVAC_TEMPLATES.map((entry) => (
-                <option key={entry.id} value={entry.id}>{entry.roomType}</option>
+                <option key={entry.id} value={entry.id}>
+                  {entry.roomType}
+                </option>
               ))}
             </select>
             <button
               type="button"
-              onClick={() => applyRoomTemplateToSelectedRooms(selectedRoom.properties3D.hvacTemplateId)}
+              onClick={() =>
+                applyRoomTemplateToSelectedRooms(
+                  selectedRoom.properties3D.hvacTemplateId,
+                )
+              }
               className="rounded border border-amber-200/80 bg-white px-2 py-1 text-[11px] text-slate-700 hover:bg-amber-50"
             >
               Bulk Apply
@@ -1443,7 +1896,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
           </PropertyRow>
           {template && (
             <div className="rounded border border-amber-200/80 bg-amber-50/30 px-2 py-1 text-[11px] text-slate-600">
-              Defaults: {template.occupantsBase} occupants, {template.lightingWm2} W/m2 lighting, {template.equipmentWm2} W/m2 equipment.
+              Defaults: {template.occupantsBase} occupants,{" "}
+              {template.lightingWm2} W/m2 lighting, {template.equipmentWm2} W/m2
+              equipment.
             </div>
           )}
           <PropertyRow label="Occupancy">
@@ -1455,7 +1910,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateRoom3DAttributes(selectedRoom.id, { occupantCount: Math.max(0.1, parsed) });
+                updateRoom3DAttributes(selectedRoom.id, {
+                  occupantCount: Math.max(0.1, parsed),
+                });
               }}
               className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
@@ -1463,11 +1920,17 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
           <PropertyRow label="Schedule">
             <select
               value={selectedRoom.properties3D.occupancySchedule}
-              onChange={(e) => updateRoom3DAttributes(selectedRoom.id, { occupancySchedule: e.target.value as RoomOccupancySchedule })}
+              onChange={(e) =>
+                updateRoom3DAttributes(selectedRoom.id, {
+                  occupancySchedule: e.target.value as RoomOccupancySchedule,
+                })
+              }
               className="w-28 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             >
               {scheduleOptions.map((schedule) => (
-                <option key={schedule} value={schedule}>{schedule}</option>
+                <option key={schedule} value={schedule}>
+                  {schedule}
+                </option>
               ))}
             </select>
           </PropertyRow>
@@ -1482,7 +1945,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateRoom3DAttributes(selectedRoom.id, { lightingLoadWm2: clamp(parsed, 0, 100) });
+                updateRoom3DAttributes(selectedRoom.id, {
+                  lightingLoadWm2: clamp(parsed, 0, 100),
+                });
               }}
               className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
@@ -1499,7 +1964,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateRoom3DAttributes(selectedRoom.id, { equipmentLoadWm2: clamp(parsed, 0, 100) });
+                updateRoom3DAttributes(selectedRoom.id, {
+                  equipmentLoadWm2: clamp(parsed, 0, 100),
+                });
               }}
               className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
@@ -1514,7 +1981,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                 onChange={(e) => {
                   const parsed = Number.parseFloat(e.target.value);
                   if (!Number.isFinite(parsed)) return;
-                  updateRoom3DAttributes(selectedRoom.id, { heatingSetpointC: parsed });
+                  updateRoom3DAttributes(selectedRoom.id, {
+                    heatingSetpointC: parsed,
+                  });
                 }}
                 className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
               />
@@ -1525,7 +1994,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                 onChange={(e) => {
                   const parsed = Number.parseFloat(e.target.value);
                   if (!Number.isFinite(parsed)) return;
-                  updateRoom3DAttributes(selectedRoom.id, { coolingSetpointC: parsed });
+                  updateRoom3DAttributes(selectedRoom.id, {
+                    coolingSetpointC: parsed,
+                  });
                 }}
                 className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
               />
@@ -1541,7 +2012,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateRoom3DAttributes(selectedRoom.id, { windowShgc: clamp(parsed, 0, 1) });
+                updateRoom3DAttributes(selectedRoom.id, {
+                  windowShgc: clamp(parsed, 0, 1),
+                });
               }}
               className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
             />
@@ -1549,18 +2022,22 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         </div>
       )}
 
-      {tab === 'ventilation' && (
+      {tab === "ventilation" && (
         <div className="space-y-1">
           <PropertyRow label="OA / Person">
             <input
               type="number"
               min={0}
               step={0.1}
-              value={selectedRoom.properties3D.outdoorAirPerPersonLps.toFixed(1)}
+              value={selectedRoom.properties3D.outdoorAirPerPersonLps.toFixed(
+                1,
+              )}
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateRoom3DAttributes(selectedRoom.id, { outdoorAirPerPersonLps: Math.max(0, parsed) });
+                updateRoom3DAttributes(selectedRoom.id, {
+                  outdoorAirPerPersonLps: Math.max(0, parsed),
+                });
               }}
               className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
             />
@@ -1571,42 +2048,61 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               type="number"
               min={0}
               step={0.05}
-              value={selectedRoom.properties3D.outdoorAirPerAreaLpsm2.toFixed(2)}
+              value={selectedRoom.properties3D.outdoorAirPerAreaLpsm2.toFixed(
+                2,
+              )}
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateRoom3DAttributes(selectedRoom.id, { outdoorAirPerAreaLpsm2: Math.max(0, parsed) });
+                updateRoom3DAttributes(selectedRoom.id, {
+                  outdoorAirPerAreaLpsm2: Math.max(0, parsed),
+                });
               }}
               className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
             />
             <span className="text-xs text-slate-500">L/s-m2</span>
           </PropertyRow>
           <PropertyRow label="Minimum OA">
-            <span className="text-sm text-slate-700">{selectedRoom.properties3D.ventilationOutdoorAirLps.toFixed(1)} L/s</span>
+            <span className="text-sm text-slate-700">
+              {selectedRoom.properties3D.ventilationOutdoorAirLps.toFixed(1)}{" "}
+              L/s
+            </span>
           </PropertyRow>
           <PropertyRow label="Exhaust Required">
             <input
               type="checkbox"
               checked={selectedRoom.properties3D.requiresExhaust}
-              onChange={(e) => updateRoom3DAttributes(selectedRoom.id, { requiresExhaust: e.target.checked })}
+              onChange={(e) =>
+                updateRoom3DAttributes(selectedRoom.id, {
+                  requiresExhaust: e.target.checked,
+                })
+              }
             />
           </PropertyRow>
           <PropertyRow label="Windows">
-            <span className="text-xs text-slate-500">{selectedRoom.hasWindows ? 'Detected' : 'None detected'}</span>
+            <span className="text-xs text-slate-500">
+              {selectedRoom.hasWindows ? "Detected" : "None detected"}
+            </span>
           </PropertyRow>
         </div>
       )}
 
-      {tab === 'calculated' && (
+      {tab === "calculated" && (
         <div className="space-y-1">
           <PropertyRow label="Cooling Load">
-            <span className="text-sm text-slate-700">{selectedRoom.properties3D.calculatedCoolingLoadW.toFixed(0)} W</span>
+            <span className="text-sm text-slate-700">
+              {selectedRoom.properties3D.calculatedCoolingLoadW.toFixed(0)} W
+            </span>
           </PropertyRow>
           <PropertyRow label="Heating Load">
-            <span className="text-sm text-slate-700">{selectedRoom.properties3D.calculatedHeatingLoadW.toFixed(0)} W</span>
+            <span className="text-sm text-slate-700">
+              {selectedRoom.properties3D.calculatedHeatingLoadW.toFixed(0)} W
+            </span>
           </PropertyRow>
           <PropertyRow label="Volume">
-            <span className="text-sm text-slate-700">{selectedRoom.properties3D.computedVolumeM3.toFixed(3)} m3</span>
+            <span className="text-sm text-slate-700">
+              {selectedRoom.properties3D.computedVolumeM3.toFixed(3)} m3
+            </span>
           </PropertyRow>
           <div className="rounded border border-amber-200/80 bg-amber-50/30 p-2 space-y-1">
             <div className="text-xs text-slate-600">Load Distribution</div>
@@ -1632,7 +2128,9 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             </div>
           )}
           <PropertyRow label="Library Entries">
-            <span className="text-xs text-slate-500">{DEFAULT_ARCHITECTURAL_MATERIALS.length} materials</span>
+            <span className="text-xs text-slate-500">
+              {DEFAULT_ARCHITECTURAL_MATERIALS.length} materials
+            </span>
           </PropertyRow>
         </div>
       )}
@@ -1641,10 +2139,14 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 }
 
 function HvacDesignSection() {
-  const { hvacDesignConditions, setHvacDesignConditions } = useSmartDrawingStore((state) => ({
-    hvacDesignConditions: state.hvacDesignConditions,
-    setHvacDesignConditions: state.setHvacDesignConditions,
-  }), shallow);
+  const { hvacDesignConditions, setHvacDesignConditions } =
+    useSmartDrawingStore(
+      (state) => ({
+        hvacDesignConditions: state.hvacDesignConditions,
+        setHvacDesignConditions: state.setHvacDesignConditions,
+      }),
+      shallow,
+    );
 
   const parseAndApply = (value: string, setter: (next: number) => void) => {
     const parsed = Number.parseFloat(value);
@@ -1658,7 +2160,9 @@ function HvacDesignSection() {
         <input
           type="text"
           value={hvacDesignConditions.location}
-          onChange={(e) => setHvacDesignConditions({ location: e.target.value })}
+          onChange={(e) =>
+            setHvacDesignConditions({ location: e.target.value })
+          }
           className="w-36 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
         />
       </PropertyRow>
@@ -1676,14 +2180,22 @@ function HvacDesignSection() {
             type="number"
             step={0.5}
             value={hvacDesignConditions.summerDryBulbC.toFixed(1)}
-            onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({ summerDryBulbC: next }))}
+            onChange={(e) =>
+              parseAndApply(e.target.value, (next) =>
+                setHvacDesignConditions({ summerDryBulbC: next }),
+              )
+            }
             className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
           />
           <input
             type="number"
             step={0.5}
             value={hvacDesignConditions.summerWetBulbC.toFixed(1)}
-            onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({ summerWetBulbC: next }))}
+            onChange={(e) =>
+              parseAndApply(e.target.value, (next) =>
+                setHvacDesignConditions({ summerWetBulbC: next }),
+              )
+            }
             className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
           />
           <span className="text-xs text-slate-500">C</span>
@@ -1694,7 +2206,11 @@ function HvacDesignSection() {
           type="number"
           step={0.5}
           value={hvacDesignConditions.winterDryBulbC.toFixed(1)}
-          onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({ winterDryBulbC: next }))}
+          onChange={(e) =>
+            parseAndApply(e.target.value, (next) =>
+              setHvacDesignConditions({ winterDryBulbC: next }),
+            )
+          }
           className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
         />
       </PropertyRow>
@@ -1703,7 +2219,11 @@ function HvacDesignSection() {
           type="number"
           step={0.5}
           value={hvacDesignConditions.groundTemperatureC.toFixed(1)}
-          onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({ groundTemperatureC: next }))}
+          onChange={(e) =>
+            parseAndApply(e.target.value, (next) =>
+              setHvacDesignConditions({ groundTemperatureC: next }),
+            )
+          }
           className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
         />
       </PropertyRow>
@@ -1712,7 +2232,11 @@ function HvacDesignSection() {
           type="number"
           step={1}
           value={hvacDesignConditions.altitudeM.toFixed(0)}
-          onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({ altitudeM: next }))}
+          onChange={(e) =>
+            parseAndApply(e.target.value, (next) =>
+              setHvacDesignConditions({ altitudeM: next }),
+            )
+          }
           className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
         />
         <span className="text-xs text-slate-500">m</span>
@@ -1722,7 +2246,9 @@ function HvacDesignSection() {
           <input
             type="text"
             value={hvacDesignConditions.peakCoolingMonth}
-            onChange={(e) => setHvacDesignConditions({ peakCoolingMonth: e.target.value })}
+            onChange={(e) =>
+              setHvacDesignConditions({ peakCoolingMonth: e.target.value })
+            }
             className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
           />
           <input
@@ -1731,7 +2257,11 @@ function HvacDesignSection() {
             max={23}
             step={1}
             value={hvacDesignConditions.peakCoolingHour}
-            onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({ peakCoolingHour: next }))}
+            onChange={(e) =>
+              parseAndApply(e.target.value, (next) =>
+                setHvacDesignConditions({ peakCoolingHour: next }),
+              )
+            }
             className="w-14 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
           />
         </div>
@@ -1743,7 +2273,13 @@ function HvacDesignSection() {
           max={1}
           step={0.05}
           value={hvacDesignConditions.internalGainDiversityFactor.toFixed(2)}
-          onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({ internalGainDiversityFactor: clamp(next, 0, 1) }))}
+          onChange={(e) =>
+            parseAndApply(e.target.value, (next) =>
+              setHvacDesignConditions({
+                internalGainDiversityFactor: clamp(next, 0, 1),
+              }),
+            )
+          }
           className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
         />
       </PropertyRow>
@@ -1754,7 +2290,11 @@ function HvacDesignSection() {
           max={1}
           step={0.05}
           value={hvacDesignConditions.defaultWindowShgc.toFixed(2)}
-          onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({ defaultWindowShgc: clamp(next, 0, 1) }))}
+          onChange={(e) =>
+            parseAndApply(e.target.value, (next) =>
+              setHvacDesignConditions({ defaultWindowShgc: clamp(next, 0, 1) }),
+            )
+          }
           className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
         />
       </PropertyRow>
@@ -1763,32 +2303,46 @@ function HvacDesignSection() {
           <input
             type="number"
             step={0.05}
-            value={hvacDesignConditions.seasonalVariation.summerAdjustment.toFixed(2)}
-            onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({
-              seasonalVariation: {
-                ...hvacDesignConditions.seasonalVariation,
-                summerAdjustment: next,
-              },
-            }))}
+            value={hvacDesignConditions.seasonalVariation.summerAdjustment.toFixed(
+              2,
+            )}
+            onChange={(e) =>
+              parseAndApply(e.target.value, (next) =>
+                setHvacDesignConditions({
+                  seasonalVariation: {
+                    ...hvacDesignConditions.seasonalVariation,
+                    summerAdjustment: next,
+                  },
+                }),
+              )
+            }
             className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
           />
           <input
             type="number"
             step={0.05}
-            value={hvacDesignConditions.seasonalVariation.winterAdjustment.toFixed(2)}
-            onChange={(e) => parseAndApply(e.target.value, (next) => setHvacDesignConditions({
-              seasonalVariation: {
-                ...hvacDesignConditions.seasonalVariation,
-                winterAdjustment: next,
-              },
-            }))}
+            value={hvacDesignConditions.seasonalVariation.winterAdjustment.toFixed(
+              2,
+            )}
+            onChange={(e) =>
+              parseAndApply(e.target.value, (next) =>
+                setHvacDesignConditions({
+                  seasonalVariation: {
+                    ...hvacDesignConditions.seasonalVariation,
+                    winterAdjustment: next,
+                  },
+                }),
+              )
+            }
             className="w-16 px-2 py-1 text-sm border border-amber-200/80 rounded bg-white"
           />
         </div>
       </PropertyRow>
       <button
         type="button"
-        onClick={() => setHvacDesignConditions({ ...DEFAULT_HVAC_DESIGN_CONDITIONS })}
+        onClick={() =>
+          setHvacDesignConditions({ ...DEFAULT_HVAC_DESIGN_CONDITIONS })
+        }
         className="w-full rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-amber-50"
       >
         Reset HVAC Defaults
@@ -1804,25 +2358,28 @@ function WallToolSection() {
     setWallSettings,
     setWallPreviewMaterial,
     setWallPreviewThickness,
-  } = useSmartDrawingStore((state) => ({
-    activeTool: state.activeTool,
-    wallSettings: state.wallSettings,
-    setWallSettings: state.setWallSettings,
-    setWallPreviewMaterial: state.setWallPreviewMaterial,
-    setWallPreviewThickness: state.setWallPreviewThickness,
-  }), shallow);
+  } = useSmartDrawingStore(
+    (state) => ({
+      activeTool: state.activeTool,
+      wallSettings: state.wallSettings,
+      setWallSettings: state.setWallSettings,
+      setWallPreviewMaterial: state.setWallPreviewMaterial,
+      setWallPreviewThickness: state.setWallPreviewThickness,
+    }),
+    shallow,
+  );
 
-  const partitionToolActive = activeTool === 'partition-wall';
+  const partitionToolActive = activeTool === "partition-wall";
   const activeDefaultThickness = partitionToolActive
     ? wallSettings.defaultPartitionThickness
     : wallSettings.defaultThickness;
 
   const gridPreset =
     wallSettings.gridSize === 50
-      ? '50'
+      ? "50"
       : wallSettings.gridSize === 100
-        ? '100'
-        : 'custom';
+        ? "100"
+        : "custom";
 
   return (
     <div className="space-y-1">
@@ -1838,9 +2395,10 @@ function WallToolSection() {
           value={gridPreset}
           onChange={(e) => {
             const value = e.target.value;
-            if (value === '50') setWallSettings({ gridSize: 50 });
-            if (value === '100') setWallSettings({ gridSize: 100 });
-            if (value === 'custom') setWallSettings({ gridSize: Math.max(1, wallSettings.gridSize) });
+            if (value === "50") setWallSettings({ gridSize: 50 });
+            if (value === "100") setWallSettings({ gridSize: 100 });
+            if (value === "custom")
+              setWallSettings({ gridSize: Math.max(1, wallSettings.gridSize) });
           }}
           className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
@@ -1848,7 +2406,7 @@ function WallToolSection() {
           <option value="100">100 mm</option>
           <option value="custom">Custom</option>
         </select>
-        {gridPreset === 'custom' && (
+        {gridPreset === "custom" && (
           <input
             type="number"
             min={1}
@@ -1867,7 +2425,11 @@ function WallToolSection() {
         <PropertyRow label="Partition Mode">
           <select
             value={wallSettings.partitionMode}
-            onChange={(e) => setWallSettings({ partitionMode: e.target.value as PartitionWallMode })}
+            onChange={(e) =>
+              setWallSettings({
+                partitionMode: e.target.value as PartitionWallMode,
+              })
+            }
             className="w-28 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
           >
             <option value="full">Full</option>
@@ -1876,7 +2438,11 @@ function WallToolSection() {
           </select>
         </PropertyRow>
       )}
-      <PropertyRow label={partitionToolActive ? 'Partition Thickness' : 'Default Thickness'}>
+      <PropertyRow
+        label={
+          partitionToolActive ? "Partition Thickness" : "Default Thickness"
+        }
+      >
         <input
           type="number"
           min={MIN_WALL_THICKNESS}
@@ -1887,9 +2453,11 @@ function WallToolSection() {
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
             const next = clamp(parsed, MIN_WALL_THICKNESS, MAX_WALL_THICKNESS);
-            setWallSettings(partitionToolActive
-              ? { defaultPartitionThickness: next }
-              : { defaultThickness: next });
+            setWallSettings(
+              partitionToolActive
+                ? { defaultPartitionThickness: next }
+                : { defaultThickness: next },
+            );
             setWallPreviewThickness(next);
           }}
           className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
@@ -1905,14 +2473,20 @@ function WallToolSection() {
           onChange={(e) => {
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
-            setWallSettings({ defaultHeight: clamp(parsed, MIN_WALL_HEIGHT, MAX_WALL_HEIGHT) });
+            setWallSettings({
+              defaultHeight: clamp(parsed, MIN_WALL_HEIGHT, MAX_WALL_HEIGHT),
+            });
           }}
           className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         />
       </PropertyRow>
-      <PropertyRow label={partitionToolActive ? 'Partition Material' : 'Default Material'}>
+      <PropertyRow
+        label={partitionToolActive ? "Partition Material" : "Default Material"}
+      >
         <select
-          value={partitionToolActive ? 'partition' : wallSettings.defaultMaterial}
+          value={
+            partitionToolActive ? "partition" : wallSettings.defaultMaterial
+          }
           onChange={(e) => {
             const material = e.target.value as WallMaterial;
             setWallSettings({ defaultMaterial: material });
@@ -1930,17 +2504,19 @@ function WallToolSection() {
         <input
           type="checkbox"
           checked={wallSettings.showHeightTags}
-          onChange={(e) => setWallSettings({ showHeightTags: e.target.checked })}
+          onChange={(e) =>
+            setWallSettings({ showHeightTags: e.target.checked })
+          }
         />
       </PropertyRow>
       <PropertyRow label="Color by Material">
         <input
           type="checkbox"
-          checked={wallSettings.wallColorMode === 'material'}
+          checked={wallSettings.wallColorMode === "material"}
           onChange={(e) =>
             setWallSettings({
               colorCodeByMaterial: e.target.checked,
-              wallColorMode: e.target.checked ? 'material' : 'u-value',
+              wallColorMode: e.target.checked ? "material" : "u-value",
             })
           }
         />
@@ -1949,21 +2525,27 @@ function WallToolSection() {
         <input
           type="checkbox"
           checked={wallSettings.showLayerCountIndicators}
-          onChange={(e) => setWallSettings({ showLayerCountIndicators: e.target.checked })}
+          onChange={(e) =>
+            setWallSettings({ showLayerCountIndicators: e.target.checked })
+          }
         />
       </PropertyRow>
       <PropertyRow label="Room Temp Icons">
         <input
           type="checkbox"
           checked={wallSettings.showRoomTemperatureIcons}
-          onChange={(e) => setWallSettings({ showRoomTemperatureIcons: e.target.checked })}
+          onChange={(e) =>
+            setWallSettings({ showRoomTemperatureIcons: e.target.checked })
+          }
         />
       </PropertyRow>
       <PropertyRow label="Ventilation Badges">
         <input
           type="checkbox"
           checked={wallSettings.showRoomVentilationBadges}
-          onChange={(e) => setWallSettings({ showRoomVentilationBadges: e.target.checked })}
+          onChange={(e) =>
+            setWallSettings({ showRoomVentilationBadges: e.target.checked })
+          }
         />
       </PropertyRow>
     </div>
@@ -1979,33 +2561,42 @@ function DimensionSection() {
     updateDimension,
     autoDimensionExteriorWalls,
     addAreaDimensions,
-  } = useSmartDrawingStore((state) => ({
-    dimensions: state.dimensions,
-    selectedElementIds: state.selectedElementIds,
-    dimensionSettings: state.dimensionSettings,
-    setDimensionSettings: state.setDimensionSettings,
-    updateDimension: state.updateDimension,
-    autoDimensionExteriorWalls: state.autoDimensionExteriorWalls,
-    addAreaDimensions: state.addAreaDimensions,
-  }), shallow);
+  } = useSmartDrawingStore(
+    (state) => ({
+      dimensions: state.dimensions,
+      selectedElementIds: state.selectedElementIds,
+      dimensionSettings: state.dimensionSettings,
+      setDimensionSettings: state.setDimensionSettings,
+      updateDimension: state.updateDimension,
+      autoDimensionExteriorWalls: state.autoDimensionExteriorWalls,
+      addAreaDimensions: state.addAreaDimensions,
+    }),
+    shallow,
+  );
 
   const selectedDimension = useMemo(
-    () => dimensions.find((dimension) => selectedElementIds.includes(dimension.id)) ?? null,
-    [dimensions, selectedElementIds]
+    () =>
+      dimensions.find((dimension) =>
+        selectedElementIds.includes(dimension.id),
+      ) ?? null,
+    [dimensions, selectedElementIds],
   );
 
   const placementOptions: { value: DimensionPlacementType; label: string }[] = [
-    { value: 'linear', label: 'Linear' },
-    { value: 'angular', label: 'Angular' },
-    { value: 'area', label: 'Area' },
+    { value: "linear", label: "Linear" },
+    { value: "angular", label: "Angular" },
+    { value: "area", label: "Area" },
   ];
 
-  const displayFormatOptions: { value: DimensionDisplayFormat; label: string }[] = [
-    { value: 'auto', label: 'Auto' },
-    { value: 'mm', label: 'mm' },
-    { value: 'm', label: 'm' },
-    { value: 'ft-in', label: 'ft-in' },
-    { value: 'in', label: 'in' },
+  const displayFormatOptions: {
+    value: DimensionDisplayFormat;
+    label: string;
+  }[] = [
+    { value: "auto", label: "Auto" },
+    { value: "mm", label: "mm" },
+    { value: "m", label: "m" },
+    { value: "ft-in", label: "ft-in" },
+    { value: "in", label: "in" },
   ];
 
   return (
@@ -2013,7 +2604,11 @@ function DimensionSection() {
       <PropertyRow label="Placement">
         <select
           value={dimensionSettings.placementType}
-          onChange={(e) => setDimensionSettings({ placementType: e.target.value as DimensionPlacementType })}
+          onChange={(e) =>
+            setDimensionSettings({
+              placementType: e.target.value as DimensionPlacementType,
+            })
+          }
           className="w-32 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
           {placementOptions.map((option) => (
@@ -2026,7 +2621,11 @@ function DimensionSection() {
       <PropertyRow label="Style">
         <select
           value={dimensionSettings.style}
-          onChange={(e) => setDimensionSettings({ style: e.target.value as typeof dimensionSettings.style })}
+          onChange={(e) =>
+            setDimensionSettings({
+              style: e.target.value as typeof dimensionSettings.style,
+            })
+          }
           className="w-32 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
           <option value="architectural">Architectural</option>
@@ -2037,7 +2636,11 @@ function DimensionSection() {
       <PropertyRow label="Terminator">
         <select
           value={dimensionSettings.terminator}
-          onChange={(e) => setDimensionSettings({ terminator: e.target.value as typeof dimensionSettings.terminator })}
+          onChange={(e) =>
+            setDimensionSettings({
+              terminator: e.target.value as typeof dimensionSettings.terminator,
+            })
+          }
           className="w-32 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
           <option value="tick">Tick</option>
@@ -2047,7 +2650,11 @@ function DimensionSection() {
       <PropertyRow label="Unit System">
         <select
           value={dimensionSettings.unitSystem}
-          onChange={(e) => setDimensionSettings({ unitSystem: e.target.value as typeof dimensionSettings.unitSystem })}
+          onChange={(e) =>
+            setDimensionSettings({
+              unitSystem: e.target.value as typeof dimensionSettings.unitSystem,
+            })
+          }
           className="w-32 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
           <option value="metric">Metric</option>
@@ -2057,7 +2664,11 @@ function DimensionSection() {
       <PropertyRow label="Display Format">
         <select
           value={dimensionSettings.displayFormat}
-          onChange={(e) => setDimensionSettings({ displayFormat: e.target.value as DimensionDisplayFormat })}
+          onChange={(e) =>
+            setDimensionSettings({
+              displayFormat: e.target.value as DimensionDisplayFormat,
+            })
+          }
           className="w-32 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
           {displayFormatOptions.map((option) => (
@@ -2070,7 +2681,11 @@ function DimensionSection() {
       <PropertyRow label="Precision">
         <select
           value={dimensionSettings.precision}
-          onChange={(e) => setDimensionSettings({ precision: Number.parseInt(e.target.value, 10) as 0 | 1 | 2 })}
+          onChange={(e) =>
+            setDimensionSettings({
+              precision: Number.parseInt(e.target.value, 10) as 0 | 1 | 2,
+            })
+          }
           className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
           <option value={0}>0</option>
@@ -2096,25 +2711,35 @@ function DimensionSection() {
         <input
           type="checkbox"
           checked={dimensionSettings.showAreaPerimeter}
-          onChange={(e) => setDimensionSettings({ showAreaPerimeter: e.target.checked })}
+          onChange={(e) =>
+            setDimensionSettings({ showAreaPerimeter: e.target.checked })
+          }
         />
       </PropertyRow>
       <PropertyRow label="Show Layer">
         <input
           type="checkbox"
           checked={dimensionSettings.showLayer}
-          onChange={(e) => setDimensionSettings({ showLayer: e.target.checked })}
+          onChange={(e) =>
+            setDimensionSettings({ showLayer: e.target.checked })
+          }
         />
       </PropertyRow>
 
       {selectedDimension && (
         <PropertyRow label="Selected Dim">
           <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-600">{selectedDimension.type}</span>
+            <span className="text-xs text-slate-600">
+              {selectedDimension.type}
+            </span>
             <input
               type="checkbox"
               checked={selectedDimension.visible}
-              onChange={(e) => updateDimension(selectedDimension.id, { visible: e.target.checked })}
+              onChange={(e) =>
+                updateDimension(selectedDimension.id, {
+                  visible: e.target.checked,
+                })
+              }
               title="Visible"
             />
           </div>
@@ -2142,20 +2767,25 @@ function DimensionSection() {
 }
 
 function RoomListSection() {
-  const { rooms, setSelectedIds } = useSmartDrawingStore((state) => ({
-    rooms: state.rooms,
-    setSelectedIds: state.setSelectedIds,
-  }), shallow);
-  const [typeFilter, setTypeFilter] = useState<'all' | RoomType>('all');
-  const [sortBy, setSortBy] = useState<'name' | 'area' | 'type'>('name');
+  const { rooms, setSelectedIds } = useSmartDrawingStore(
+    (state) => ({
+      rooms: state.rooms,
+      setSelectedIds: state.setSelectedIds,
+    }),
+    shallow,
+  );
+  const [typeFilter, setTypeFilter] = useState<"all" | RoomType>("all");
+  const [sortBy, setSortBy] = useState<"name" | "area" | "type">("name");
 
   const filteredRooms = useMemo(() => {
-    const next = rooms.filter((room) => (typeFilter === 'all' ? true : room.roomType === typeFilter));
+    const next = rooms.filter((room) =>
+      typeFilter === "all" ? true : room.roomType === typeFilter,
+    );
     next.sort((a, b) => {
-      if (sortBy === 'area') {
+      if (sortBy === "area") {
         return b.area - a.area;
       }
-      if (sortBy === 'type') {
+      if (sortBy === "type") {
         return a.roomType.localeCompare(b.roomType);
       }
       return a.name.localeCompare(b.name);
@@ -2165,21 +2795,23 @@ function RoomListSection() {
 
   const exportSchedule = () => {
     if (filteredRooms.length === 0) return;
-    const header = 'Name,Type,Area(m2),Perimeter(mm),AdjacencyCount,Warnings';
-    const rows = filteredRooms.map((room) => [
-      `"${room.name.replace(/"/g, '""')}"`,
-      `"${room.roomType}"`,
-      (room.area / 1_000_000).toFixed(2),
-      room.perimeter.toFixed(0),
-      room.adjacentRoomIds.length.toString(),
-      `"${room.validationWarnings.join('; ').replace(/"/g, '""')}"`,
-    ].join(','));
-    const csv = [header, ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const header = "Name,Type,Area(m2),Perimeter(mm),AdjacencyCount,Warnings";
+    const rows = filteredRooms.map((room) =>
+      [
+        `"${room.name.replace(/"/g, '""')}"`,
+        `"${room.roomType}"`,
+        (room.area / 1_000_000).toFixed(2),
+        room.perimeter.toFixed(0),
+        room.adjacentRoomIds.length.toString(),
+        `"${room.validationWarnings.join("; ").replace(/"/g, '""')}"`,
+      ].join(","),
+    );
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
+    const link = document.createElement("a");
     link.href = url;
-    link.download = 'room-schedule.csv';
+    link.download = "room-schedule.csv";
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -2189,7 +2821,7 @@ function RoomListSection() {
       <div className="flex gap-2">
         <select
           value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value as 'all' | RoomType)}
+          onChange={(e) => setTypeFilter(e.target.value as "all" | RoomType)}
           className="flex-1 px-2 py-1 text-xs border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
           <option value="all">All Types</option>
@@ -2204,7 +2836,9 @@ function RoomListSection() {
         </select>
         <select
           value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as 'name' | 'area' | 'type')}
+          onChange={(e) =>
+            setSortBy(e.target.value as "name" | "area" | "type")
+          }
           className="flex-1 px-2 py-1 text-xs border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
         >
           <option value="name">Sort: Name</option>
@@ -2215,7 +2849,9 @@ function RoomListSection() {
 
       <div className="max-h-48 overflow-y-auto rounded border border-amber-200/80 bg-white/80">
         {filteredRooms.length === 0 && (
-          <div className="px-2 py-2 text-xs text-slate-400">No rooms detected</div>
+          <div className="px-2 py-2 text-xs text-slate-400">
+            No rooms detected
+          </div>
         )}
         {filteredRooms.map((room) => (
           <button
@@ -2224,7 +2860,9 @@ function RoomListSection() {
             onClick={() => setSelectedIds([room.id])}
             className="w-full text-left px-2 py-2 border-b border-amber-100/70 last:border-b-0 hover:bg-amber-50"
           >
-            <div className="text-xs font-medium text-slate-700">{room.name}</div>
+            <div className="text-xs font-medium text-slate-700">
+              {room.name}
+            </div>
             <div className="text-[11px] text-slate-500">
               {room.roomType} | {(room.area / 1_000_000).toFixed(1)}m²
             </div>
@@ -2259,26 +2897,33 @@ function ElevationSection() {
     flipSectionLineDirection,
     updateSectionLine,
     deleteSectionLine,
-  } = useSmartDrawingStore((state) => ({
-    setTool: state.setTool,
-    setWallSettings: state.setWallSettings,
-    wallSettings: state.wallSettings,
-    sectionLines: state.sectionLines,
-    elevationViews: state.elevationViews,
-    activeElevationViewId: state.activeElevationViewId,
-    elevationSettings: state.elevationSettings,
-    setActiveElevationView: state.setActiveElevationView,
-    setElevationSettings: state.setElevationSettings,
-    regenerateElevations: state.regenerateElevations,
-    generateElevationForSection: state.generateElevationForSection,
-    flipSectionLineDirection: state.flipSectionLineDirection,
-    updateSectionLine: state.updateSectionLine,
-    deleteSectionLine: state.deleteSectionLine,
-  }), shallow);
+  } = useSmartDrawingStore(
+    (state) => ({
+      setTool: state.setTool,
+      setWallSettings: state.setWallSettings,
+      wallSettings: state.wallSettings,
+      sectionLines: state.sectionLines,
+      elevationViews: state.elevationViews,
+      activeElevationViewId: state.activeElevationViewId,
+      elevationSettings: state.elevationSettings,
+      setActiveElevationView: state.setActiveElevationView,
+      setElevationSettings: state.setElevationSettings,
+      regenerateElevations: state.regenerateElevations,
+      generateElevationForSection: state.generateElevationForSection,
+      flipSectionLineDirection: state.flipSectionLineDirection,
+      updateSectionLine: state.updateSectionLine,
+      deleteSectionLine: state.deleteSectionLine,
+    }),
+    shallow,
+  );
 
-  const activeView = elevationViews.find((view) => view.id === activeElevationViewId) ?? elevationViews[0] ?? null;
+  const activeView =
+    elevationViews.find((view) => view.id === activeElevationViewId) ??
+    elevationViews[0] ??
+    null;
   const linkedSectionLine = activeView?.sectionLineId
-    ? sectionLines.find((line) => line.id === activeView.sectionLineId) ?? null
+    ? (sectionLines.find((line) => line.id === activeView.sectionLineId) ??
+      null)
     : null;
   const previewWidth = 340;
   const previewHeight = 180;
@@ -2286,12 +2931,13 @@ function ElevationSection() {
   const spanY = activeView ? Math.max(1000, activeView.maxHeightMm) : 1000;
   const scaleX = (previewWidth - 20) / spanX;
   const scaleY = (previewHeight - 20) / spanY;
-  const toPreviewX = (value: number) => 10 + (value - (activeView?.minX ?? 0)) * scaleX;
+  const toPreviewX = (value: number) =>
+    10 + (value - (activeView?.minX ?? 0)) * scaleX;
   const toPreviewY = (value: number) => previewHeight - 10 - value * scaleY;
 
   const formatViewLabel = (name: string, kind: string) => {
-    if (kind === 'custom') return name;
-    return name.replace(' Elevation', '');
+    if (kind === "custom") return name;
+    return name.replace(" Elevation", "");
   };
 
   return (
@@ -2299,7 +2945,7 @@ function ElevationSection() {
       <div className="flex gap-2">
         <button
           type="button"
-          onClick={() => setTool('section-line')}
+          onClick={() => setTool("section-line")}
           className="flex-1 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-amber-50"
         >
           Section Line Tool
@@ -2330,16 +2976,24 @@ function ElevationSection() {
             <span className="text-xs text-slate-600">{activeView.name}</span>
           </PropertyRow>
           <PropertyRow label="Projected Walls">
-            <span className="text-sm text-slate-700">{activeView.walls.length}</span>
+            <span className="text-sm text-slate-700">
+              {activeView.walls.length}
+            </span>
           </PropertyRow>
           <PropertyRow label="Max Height">
-            <span className="text-sm text-slate-700">{(activeView.maxHeightMm / 1000).toFixed(2)} m</span>
+            <span className="text-sm text-slate-700">
+              {(activeView.maxHeightMm / 1000).toFixed(2)} m
+            </span>
           </PropertyRow>
           <PropertyRow label="Scale">
-            <span className="text-sm text-slate-700">1:{Math.round(activeView.scale)}</span>
+            <span className="text-sm text-slate-700">
+              1:{Math.round(activeView.scale)}
+            </span>
           </PropertyRow>
           <PropertyRow label="Grid Increment">
-            <span className="text-sm text-slate-700">{Math.round(activeView.gridIncrementMm)} mm</span>
+            <span className="text-sm text-slate-700">
+              {Math.round(activeView.gridIncrementMm)} mm
+            </span>
           </PropertyRow>
           <div className="rounded border border-amber-200/70 bg-white p-1">
             <svg
@@ -2357,8 +3011,14 @@ function ElevationSection() {
                 strokeWidth={1.2}
               />
               {activeView.walls.map((wall) => {
-                const x = Math.min(toPreviewX(wall.xStart), toPreviewX(wall.xEnd));
-                const width = Math.max(1.5, Math.abs(toPreviewX(wall.xEnd) - toPreviewX(wall.xStart)));
+                const x = Math.min(
+                  toPreviewX(wall.xStart),
+                  toPreviewX(wall.xEnd),
+                );
+                const width = Math.max(
+                  1.5,
+                  Math.abs(toPreviewX(wall.xEnd) - toPreviewX(wall.xStart)),
+                );
                 const yTop = toPreviewY(wall.yTop);
                 const yBottom = toPreviewY(wall.yBottom);
                 return (
@@ -2374,8 +3034,16 @@ function ElevationSection() {
                       strokeWidth={1}
                     />
                     {wall.openings.map((opening) => {
-                      const ox = Math.min(toPreviewX(opening.xStart), toPreviewX(opening.xEnd));
-                      const ow = Math.max(1, Math.abs(toPreviewX(opening.xEnd) - toPreviewX(opening.xStart)));
+                      const ox = Math.min(
+                        toPreviewX(opening.xStart),
+                        toPreviewX(opening.xEnd),
+                      );
+                      const ow = Math.max(
+                        1,
+                        Math.abs(
+                          toPreviewX(opening.xEnd) - toPreviewX(opening.xStart),
+                        ),
+                      );
                       const oyTop = toPreviewY(opening.yTop);
                       const oyBottom = toPreviewY(opening.yBottom);
                       return (
@@ -2404,10 +3072,14 @@ function ElevationSection() {
       {linkedSectionLine && (
         <div className="rounded border border-amber-200/80 bg-amber-50/30 p-2 space-y-1">
           <PropertyRow label="Section">
-            <span className="text-xs text-slate-600">{linkedSectionLine.label}</span>
+            <span className="text-xs text-slate-600">
+              {linkedSectionLine.label}
+            </span>
           </PropertyRow>
           <PropertyRow label="Direction">
-            <span className="text-sm text-slate-700">{linkedSectionLine.direction === 1 ? 'Forward' : 'Reverse'}</span>
+            <span className="text-sm text-slate-700">
+              {linkedSectionLine.direction === 1 ? "Forward" : "Reverse"}
+            </span>
             <button
               type="button"
               onClick={() => flipSectionLineDirection(linkedSectionLine.id)}
@@ -2425,7 +3097,9 @@ function ElevationSection() {
               onChange={(e) => {
                 const parsed = Number.parseFloat(e.target.value);
                 if (!Number.isFinite(parsed)) return;
-                updateSectionLine(linkedSectionLine.id, { depthMm: Math.max(100, parsed) });
+                updateSectionLine(linkedSectionLine.id, {
+                  depthMm: Math.max(100, parsed),
+                });
               }}
               className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
             />
@@ -2435,7 +3109,11 @@ function ElevationSection() {
             <input
               type="checkbox"
               checked={linkedSectionLine.locked}
-              onChange={(e) => updateSectionLine(linkedSectionLine.id, { locked: e.target.checked })}
+              onChange={(e) =>
+                updateSectionLine(linkedSectionLine.id, {
+                  locked: e.target.checked,
+                })
+              }
             />
           </PropertyRow>
           <div className="flex gap-2">
@@ -2467,7 +3145,9 @@ function ElevationSection() {
             onChange={(e) => {
               const parsed = Number.parseFloat(e.target.value);
               if (!Number.isFinite(parsed)) return;
-              setElevationSettings({ defaultGridIncrementMm: Math.max(100, parsed) });
+              setElevationSettings({
+                defaultGridIncrementMm: Math.max(100, parsed),
+              });
             }}
             className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
           />
@@ -2493,14 +3173,18 @@ function ElevationSection() {
           <input
             type="checkbox"
             checked={elevationSettings.showDepthCueing}
-            onChange={(e) => setElevationSettings({ showDepthCueing: e.target.checked })}
+            onChange={(e) =>
+              setElevationSettings({ showDepthCueing: e.target.checked })
+            }
           />
         </PropertyRow>
         <PropertyRow label="Reference Lines">
           <input
             type="checkbox"
             checked={wallSettings.showSectionReferenceLines}
-            onChange={(e) => setWallSettings({ showSectionReferenceLines: e.target.checked })}
+            onChange={(e) =>
+              setWallSettings({ showSectionReferenceLines: e.target.checked })
+            }
           />
         </PropertyRow>
       </div>
@@ -2508,7 +3192,12 @@ function ElevationSection() {
   );
 }
 
-function wallBounds(wall: Wall): { minX: number; minY: number; maxX: number; maxY: number } {
+function wallBounds(wall: Wall): {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+} {
   const points = [
     wall.interiorLine.start,
     wall.interiorLine.end,
@@ -2526,13 +3215,19 @@ function wallBounds(wall: Wall): { minX: number; minY: number; maxX: number; max
 }
 
 function SelectionAlignSection() {
-  const { selectedElementIds, walls, updateWall, saveToHistory } = useSmartDrawingStore((state) => ({
-    selectedElementIds: state.selectedElementIds,
-    walls: state.walls,
-    updateWall: state.updateWall,
-    saveToHistory: state.saveToHistory,
-  }), shallow);
-  const selectedWalls = walls.filter((wall) => selectedElementIds.includes(wall.id));
+  const { selectedElementIds, walls, updateWall, saveToHistory } =
+    useSmartDrawingStore(
+      (state) => ({
+        selectedElementIds: state.selectedElementIds,
+        walls: state.walls,
+        updateWall: state.updateWall,
+        saveToHistory: state.saveToHistory,
+      }),
+      shallow,
+    );
+  const selectedWalls = walls.filter((wall) =>
+    selectedElementIds.includes(wall.id),
+  );
 
   const translateWall = (wall: Wall, dx: number, dy: number) => {
     updateWall(
@@ -2541,11 +3236,14 @@ function SelectionAlignSection() {
         startPoint: { x: wall.startPoint.x + dx, y: wall.startPoint.y + dy },
         endPoint: { x: wall.endPoint.x + dx, y: wall.endPoint.y + dy },
       },
-      { skipHistory: true, source: 'ui' }
+      { skipHistory: true, source: "ui" },
     );
   };
 
-  const runAlignment = (action: string, updater: (wallsToAlign: Wall[]) => void) => {
+  const runAlignment = (
+    action: string,
+    updater: (wallsToAlign: Wall[]) => void,
+  ) => {
     if (selectedWalls.length < 2) return;
     updater(selectedWalls);
     saveToHistory(action);
@@ -2556,8 +3254,10 @@ function SelectionAlignSection() {
   }
 
   const alignTop = () =>
-    runAlignment('Align walls top', (wallsToAlign) => {
-      const target = Math.min(...wallsToAlign.map((wall) => wallBounds(wall).minY));
+    runAlignment("Align walls top", (wallsToAlign) => {
+      const target = Math.min(
+        ...wallsToAlign.map((wall) => wallBounds(wall).minY),
+      );
       wallsToAlign.forEach((wall) => {
         const current = wallBounds(wall).minY;
         translateWall(wall, 0, target - current);
@@ -2565,8 +3265,10 @@ function SelectionAlignSection() {
     });
 
   const alignBottom = () =>
-    runAlignment('Align walls bottom', (wallsToAlign) => {
-      const target = Math.max(...wallsToAlign.map((wall) => wallBounds(wall).maxY));
+    runAlignment("Align walls bottom", (wallsToAlign) => {
+      const target = Math.max(
+        ...wallsToAlign.map((wall) => wallBounds(wall).maxY),
+      );
       wallsToAlign.forEach((wall) => {
         const current = wallBounds(wall).maxY;
         translateWall(wall, 0, target - current);
@@ -2574,8 +3276,10 @@ function SelectionAlignSection() {
     });
 
   const alignLeft = () =>
-    runAlignment('Align walls left', (wallsToAlign) => {
-      const target = Math.min(...wallsToAlign.map((wall) => wallBounds(wall).minX));
+    runAlignment("Align walls left", (wallsToAlign) => {
+      const target = Math.min(
+        ...wallsToAlign.map((wall) => wallBounds(wall).minX),
+      );
       wallsToAlign.forEach((wall) => {
         const current = wallBounds(wall).minX;
         translateWall(wall, target - current, 0);
@@ -2583,8 +3287,10 @@ function SelectionAlignSection() {
     });
 
   const alignRight = () =>
-    runAlignment('Align walls right', (wallsToAlign) => {
-      const target = Math.max(...wallsToAlign.map((wall) => wallBounds(wall).maxX));
+    runAlignment("Align walls right", (wallsToAlign) => {
+      const target = Math.max(
+        ...wallsToAlign.map((wall) => wallBounds(wall).maxX),
+      );
       wallsToAlign.forEach((wall) => {
         const current = wallBounds(wall).maxX;
         translateWall(wall, target - current, 0);
@@ -2592,14 +3298,18 @@ function SelectionAlignSection() {
     });
 
   const distributeHorizontal = () =>
-    runAlignment('Distribute walls horizontally', (wallsToAlign) => {
+    runAlignment("Distribute walls horizontally", (wallsToAlign) => {
       if (wallsToAlign.length < 3) return;
       const sorted = [...wallsToAlign].sort(
         (a, b) =>
-          (a.startPoint.x + a.endPoint.x) / 2 - (b.startPoint.x + b.endPoint.x) / 2
+          (a.startPoint.x + a.endPoint.x) / 2 -
+          (b.startPoint.x + b.endPoint.x) / 2,
       );
       const firstCenter = (sorted[0].startPoint.x + sorted[0].endPoint.x) / 2;
-      const lastCenter = (sorted[sorted.length - 1].startPoint.x + sorted[sorted.length - 1].endPoint.x) / 2;
+      const lastCenter =
+        (sorted[sorted.length - 1].startPoint.x +
+          sorted[sorted.length - 1].endPoint.x) /
+        2;
       const step = (lastCenter - firstCenter) / (sorted.length - 1);
       for (let i = 1; i < sorted.length - 1; i++) {
         const wall = sorted[i];
@@ -2610,14 +3320,18 @@ function SelectionAlignSection() {
     });
 
   const distributeVertical = () =>
-    runAlignment('Distribute walls vertically', (wallsToAlign) => {
+    runAlignment("Distribute walls vertically", (wallsToAlign) => {
       if (wallsToAlign.length < 3) return;
       const sorted = [...wallsToAlign].sort(
         (a, b) =>
-          (a.startPoint.y + a.endPoint.y) / 2 - (b.startPoint.y + b.endPoint.y) / 2
+          (a.startPoint.y + a.endPoint.y) / 2 -
+          (b.startPoint.y + b.endPoint.y) / 2,
       );
       const firstCenter = (sorted[0].startPoint.y + sorted[0].endPoint.y) / 2;
-      const lastCenter = (sorted[sorted.length - 1].startPoint.y + sorted[sorted.length - 1].endPoint.y) / 2;
+      const lastCenter =
+        (sorted[sorted.length - 1].startPoint.y +
+          sorted[sorted.length - 1].endPoint.y) /
+        2;
       const step = (lastCenter - firstCenter) / (sorted.length - 1);
       for (let i = 1; i < sorted.length - 1; i++) {
         const wall = sorted[i];
@@ -2628,25 +3342,48 @@ function SelectionAlignSection() {
     });
 
   const buttonClass =
-    'rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-amber-50';
+    "rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-amber-50";
 
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-2">
-        <button type="button" onClick={alignTop} className={buttonClass}>Top</button>
-        <button type="button" onClick={alignBottom} className={buttonClass}>Bottom</button>
-        <button type="button" onClick={alignLeft} className={buttonClass}>Left</button>
-        <button type="button" onClick={alignRight} className={buttonClass}>Right</button>
+        <button type="button" onClick={alignTop} className={buttonClass}>
+          Top
+        </button>
+        <button type="button" onClick={alignBottom} className={buttonClass}>
+          Bottom
+        </button>
+        <button type="button" onClick={alignLeft} className={buttonClass}>
+          Left
+        </button>
+        <button type="button" onClick={alignRight} className={buttonClass}>
+          Right
+        </button>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <button type="button" onClick={distributeHorizontal} className={buttonClass}>Distribute X</button>
-        <button type="button" onClick={distributeVertical} className={buttonClass}>Distribute Y</button>
+        <button
+          type="button"
+          onClick={distributeHorizontal}
+          className={buttonClass}
+        >
+          Distribute X
+        </button>
+        <button
+          type="button"
+          onClick={distributeVertical}
+          className={buttonClass}
+        >
+          Distribute Y
+        </button>
       </div>
     </div>
   );
 }
 
-export function PropertiesPanel({ className = '', onClose }: PropertiesPanelProps) {
+export function PropertiesPanel({
+  className = "",
+  onClose,
+}: PropertiesPanelProps) {
   const {
     selectedElementIds,
     clearSelection,
@@ -2656,37 +3393,43 @@ export function PropertiesPanel({ className = '', onClose }: PropertiesPanelProp
     hvacElements,
     dimensions,
     activeTool,
-  } = useSmartDrawingStore((state) => ({
-    selectedElementIds: state.selectedElementIds,
-    clearSelection: state.clearSelection,
-    walls: state.walls,
-    rooms: state.rooms,
-    symbols: state.symbols,
-    hvacElements: state.hvacElements,
-    dimensions: state.dimensions,
-    activeTool: state.activeTool,
-  }), shallow);
-  const [propertyUnit, setPropertyUnit] = useState<PropertyUnit>('mm');
-  const selectedLookup = useMemo(() => new Set(selectedElementIds), [selectedElementIds]);
+  } = useSmartDrawingStore(
+    (state) => ({
+      selectedElementIds: state.selectedElementIds,
+      clearSelection: state.clearSelection,
+      walls: state.walls,
+      rooms: state.rooms,
+      symbols: state.symbols,
+      hvacElements: state.hvacElements,
+      dimensions: state.dimensions,
+      activeTool: state.activeTool,
+    }),
+    shallow,
+  );
+  const [propertyUnit, setPropertyUnit] = useState<PropertyUnit>("mm");
+  const selectedLookup = useMemo(
+    () => new Set(selectedElementIds),
+    [selectedElementIds],
+  );
   const hasSelectedWall = useMemo(
     () => walls.some((wall) => selectedLookup.has(wall.id)),
-    [walls, selectedLookup]
+    [walls, selectedLookup],
   );
   const hasSelectedRoom = useMemo(
     () => rooms.some((room) => selectedLookup.has(room.id)),
-    [rooms, selectedLookup]
+    [rooms, selectedLookup],
   );
   const hasSelectedObject = useMemo(
     () => symbols.some((symbol) => selectedLookup.has(symbol.id)),
-    [symbols, selectedLookup]
+    [symbols, selectedLookup],
   );
   const hasSelectedHvac = useMemo(
     () => hvacElements.some((element) => selectedLookup.has(element.id)),
-    [hvacElements, selectedLookup]
+    [hvacElements, selectedLookup],
   );
   const hasSelectedDimension = useMemo(
     () => dimensions.some((dimension) => selectedLookup.has(dimension.id)),
-    [dimensions, selectedLookup]
+    [dimensions, selectedLookup],
   );
 
   const handleClose = () => {
@@ -2711,17 +3454,32 @@ export function PropertiesPanel({ className = '', onClose }: PropertiesPanelProp
       <div className="flex-1 space-y-2 overflow-y-auto px-3 py-2">
         <div className="rounded-lg border border-amber-200/70 bg-white/80 p-2">
           <PropertyRow label="Selected">
-            <span className="text-sm text-slate-600">{selectedElementIds.length} element(s)</span>
+            <span className="text-sm text-slate-600">
+              {selectedElementIds.length} element(s)
+            </span>
           </PropertyRow>
         </div>
 
-        <UnitSelector propertyUnit={propertyUnit} onPropertyUnitChange={setPropertyUnit} />
+        <UnitSelector
+          propertyUnit={propertyUnit}
+          onPropertyUnitChange={setPropertyUnit}
+        />
 
-        <CollapsibleSection title="Wall Properties" defaultOpen={hasSelectedWall || activeTool === 'wall' || activeTool === 'partition-wall'}>
+        <CollapsibleSection
+          title="Wall Properties"
+          defaultOpen={
+            hasSelectedWall ||
+            activeTool === "wall" ||
+            activeTool === "partition-wall"
+          }
+        >
           <WallSection propertyUnit={propertyUnit} />
         </CollapsibleSection>
 
-        <CollapsibleSection title="Object Properties" defaultOpen={hasSelectedObject}>
+        <CollapsibleSection
+          title="Object Properties"
+          defaultOpen={hasSelectedObject}
+        >
           <ObjectSection propertyUnit={propertyUnit} />
         </CollapsibleSection>
 
@@ -2729,7 +3487,10 @@ export function PropertiesPanel({ className = '', onClose }: PropertiesPanelProp
           <AcEquipmentSection propertyUnit={propertyUnit} />
         </CollapsibleSection>
 
-        <CollapsibleSection title="Room Properties" defaultOpen={hasSelectedRoom}>
+        <CollapsibleSection
+          title="Room Properties"
+          defaultOpen={hasSelectedRoom}
+        >
           <RoomSection propertyUnit={propertyUnit} />
         </CollapsibleSection>
 
@@ -2751,13 +3512,18 @@ export function PropertiesPanel({ className = '', onClose }: PropertiesPanelProp
           </CollapsibleSection>
         )}
 
-        {(activeTool === 'wall' || activeTool === 'partition-wall' || hasSelectedWall) && (
+        {(activeTool === "wall" ||
+          activeTool === "partition-wall" ||
+          hasSelectedWall) && (
           <CollapsibleSection title="Wall Tool" defaultOpen={false}>
             <WallToolSection />
           </CollapsibleSection>
         )}
 
-        <CollapsibleSection title="Dimensions" defaultOpen={hasSelectedDimension}>
+        <CollapsibleSection
+          title="Dimensions"
+          defaultOpen={hasSelectedDimension}
+        >
           <DimensionSection />
         </CollapsibleSection>
 

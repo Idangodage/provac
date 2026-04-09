@@ -1,10 +1,10 @@
 /**
  * Toolbar Component
- * 
+ *
  * Drawing tools and controls for the smart drawing editor.
  */
 
-'use client';
+"use client";
 
 import {
   MousePointer2,
@@ -28,13 +28,13 @@ import {
   Scissors,
   MoveHorizontal,
   Pipette,
-} from 'lucide-react';
-import React from 'react';
-import { shallow } from 'zustand/shallow';
+} from "lucide-react";
+import React from "react";
+import { shallow } from "zustand/shallow";
 
-import { useSmartDrawingStore } from '../store';
-import { useDrawingInteractionStore } from '../store/interactionStore';
-import type { DrawingTool } from '../types';
+import { useSmartDrawingStore } from "../store";
+import { useDrawingInteractionStore } from "../store/interactionStore";
+import type { DrawingTool } from "../types";
 
 // =============================================================================
 // Types
@@ -42,9 +42,9 @@ import type { DrawingTool } from '../types';
 
 export interface ToolbarProps {
   className?: string;
-  orientation?: 'horizontal' | 'vertical';
-  layout?: 'auto' | 'grid';
-  variant?: 'default' | 'toolbox' | 'ribbon';
+  orientation?: "horizontal" | "vertical";
+  layout?: "auto" | "grid";
+  variant?: "default" | "toolbox" | "ribbon";
   showZoomControls?: boolean;
   showUndoRedo?: boolean;
   showLayerControls?: boolean;
@@ -60,7 +60,7 @@ interface ToolButtonProps {
   disabled?: boolean;
   onClick: () => void;
   shortcut?: string;
-  variant?: 'default' | 'toolbox' | 'ribbon';
+  variant?: "default" | "toolbox" | "ribbon";
   showLabel?: boolean;
   fullWidth?: boolean;
   compact?: boolean;
@@ -77,24 +77,137 @@ const DRAWING_TOOLS: {
   shortLabel?: string;
   shortcut?: string;
 }[] = [
-  { id: 'select', icon: <MousePointer2 size={16} />, label: 'Select', shortLabel: 'Select', shortcut: 'V' },
-  { id: 'pan', icon: <Hand size={16} />, label: 'Pan', shortLabel: 'Pan', shortcut: 'H' },
-  { id: 'wall', icon: <Minus size={16} />, label: 'Wall', shortLabel: 'Wall', shortcut: 'W' },
-  { id: 'partition-wall', icon: <Minus size={16} />, label: 'Partition', shortLabel: 'Part', shortcut: 'Q' },
-  { id: 'section-line', icon: <Minus size={16} />, label: 'Section', shortLabel: 'Section', shortcut: 'K' },
-  { id: 'room', icon: <BoxSelect size={16} />, label: 'Room', shortLabel: 'Room', shortcut: 'R' },
-  { id: 'pencil', icon: <Pencil size={16} />, label: 'Pencil', shortLabel: 'Pencil', shortcut: 'P' },
-  { id: 'spline', icon: <Spline size={16} />, label: 'Spline', shortLabel: 'Spline', shortcut: 'S' },
-  { id: 'line', icon: <Minus size={16} />, label: 'Line', shortLabel: 'Line', shortcut: 'L' },
-  { id: 'rectangle', icon: <Square size={16} />, label: 'Rectangle', shortLabel: 'Rect' },
-  { id: 'circle', icon: <Circle size={16} />, label: 'Circle', shortLabel: 'Circle' },
-  { id: 'dimension', icon: <Ruler size={16} />, label: 'Dimension', shortLabel: 'Dim', shortcut: 'D' },
-  { id: 'refrigerant-pipe', icon: <Pipette size={16} />, label: 'Pipe', shortLabel: 'Pipe', shortcut: 'I' },
-  { id: 'text', icon: <Type size={16} />, label: 'Text', shortLabel: 'Text', shortcut: 'T' },
-  { id: 'eraser', icon: <Eraser size={16} />, label: 'Eraser', shortLabel: 'Erase', shortcut: 'E' },
-  { id: 'offset', icon: <Copy size={16} />, label: 'Offset', shortLabel: 'Offset', shortcut: 'O' },
-  { id: 'trim', icon: <Scissors size={16} />, label: 'Trim', shortLabel: 'Trim', shortcut: 'X' },
-  { id: 'extend', icon: <MoveHorizontal size={16} />, label: 'Extend', shortLabel: 'Extend', shortcut: 'G' },
+  {
+    id: "select",
+    icon: <MousePointer2 size={16} />,
+    label: "Select",
+    shortLabel: "Select",
+    shortcut: "V",
+  },
+  {
+    id: "pan",
+    icon: <Hand size={16} />,
+    label: "Pan",
+    shortLabel: "Pan",
+    shortcut: "H",
+  },
+  {
+    id: "wall",
+    icon: <Minus size={16} />,
+    label: "Wall",
+    shortLabel: "Wall",
+    shortcut: "W",
+  },
+  {
+    id: "partition-wall",
+    icon: <Minus size={16} />,
+    label: "Partition",
+    shortLabel: "Part",
+    shortcut: "Q",
+  },
+  {
+    id: "section-line",
+    icon: <Minus size={16} />,
+    label: "Section",
+    shortLabel: "Section",
+    shortcut: "K",
+  },
+  {
+    id: "room",
+    icon: <BoxSelect size={16} />,
+    label: "Room",
+    shortLabel: "Room",
+    shortcut: "R",
+  },
+  {
+    id: "pencil",
+    icon: <Pencil size={16} />,
+    label: "Pencil",
+    shortLabel: "Pencil",
+    shortcut: "P",
+  },
+  {
+    id: "spline",
+    icon: <Spline size={16} />,
+    label: "Spline",
+    shortLabel: "Spline",
+    shortcut: "S",
+  },
+  {
+    id: "line",
+    icon: <Minus size={16} />,
+    label: "Line",
+    shortLabel: "Line",
+    shortcut: "L",
+  },
+  {
+    id: "rectangle",
+    icon: <Square size={16} />,
+    label: "Rectangle",
+    shortLabel: "Rect",
+  },
+  {
+    id: "circle",
+    icon: <Circle size={16} />,
+    label: "Circle",
+    shortLabel: "Circle",
+  },
+  {
+    id: "dimension",
+    icon: <Ruler size={16} />,
+    label: "Dimension",
+    shortLabel: "Dim",
+    shortcut: "D",
+  },
+  {
+    id: "duct",
+    icon: <Layers size={16} />,
+    label: "Duct",
+    shortLabel: "Duct",
+    shortcut: "U",
+  },
+  {
+    id: "refrigerant-pipe",
+    icon: <Pipette size={16} />,
+    label: "Pipe",
+    shortLabel: "Pipe",
+    shortcut: "I",
+  },
+  {
+    id: "text",
+    icon: <Type size={16} />,
+    label: "Text",
+    shortLabel: "Text",
+    shortcut: "T",
+  },
+  {
+    id: "eraser",
+    icon: <Eraser size={16} />,
+    label: "Eraser",
+    shortLabel: "Erase",
+    shortcut: "E",
+  },
+  {
+    id: "offset",
+    icon: <Copy size={16} />,
+    label: "Offset",
+    shortLabel: "Offset",
+    shortcut: "O",
+  },
+  {
+    id: "trim",
+    icon: <Scissors size={16} />,
+    label: "Trim",
+    shortLabel: "Trim",
+    shortcut: "X",
+  },
+  {
+    id: "extend",
+    icon: <MoveHorizontal size={16} />,
+    label: "Extend",
+    shortLabel: "Extend",
+    shortcut: "G",
+  },
 ];
 
 // =============================================================================
@@ -109,26 +222,26 @@ function ToolButton({
   disabled = false,
   onClick,
   shortcut,
-  variant = 'default',
+  variant = "default",
   showLabel = false,
   fullWidth = false,
   compact = false,
 }: ToolButtonProps) {
   const baseStyles =
-    'flex items-center justify-center rounded-md border transition-colors duration-150';
+    "flex items-center justify-center rounded-md border transition-colors duration-150";
   const sizeStyles = showLabel
-    ? `${fullWidth ? 'w-full min-h-[36px] px-1 py-1' : 'w-11 h-9'} flex-col gap-1`
-    : 'h-8 w-8';
+    ? `${fullWidth ? "w-full min-h-[36px] px-1 py-1" : "w-11 h-9"} flex-col gap-1`
+    : "h-8 w-8";
   const variantStyles = {
     default: active
-      ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-      : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100',
+      ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+      : "bg-white text-gray-700 border-gray-200 hover:bg-gray-100",
     toolbox: active
-      ? 'bg-amber-400 text-amber-950 border-amber-400 shadow-sm'
-      : 'bg-white text-slate-700 border-amber-200 hover:bg-amber-50',
+      ? "bg-amber-400 text-amber-950 border-amber-400 shadow-sm"
+      : "bg-white text-slate-700 border-amber-200 hover:bg-amber-50",
     ribbon: active
-      ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50',
+      ? "bg-slate-900 text-white border-slate-900 shadow-sm"
+      : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50",
   };
 
   return (
@@ -141,10 +254,16 @@ function ToolButton({
         ${baseStyles}
         ${sizeStyles}
         ${variantStyles[variant]}
-        ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+        ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
       `}
     >
-      <span className={compact ? 'scale-[1.2] leading-none' : 'scale-[1.2] leading-none'}>{icon}</span>
+      <span
+        className={
+          compact ? "scale-[1.2] leading-none" : "scale-[1.2] leading-none"
+        }
+      >
+        {icon}
+      </span>
       {showLabel && (
         <span className="px-0.5 text-[10px] font-medium leading-tight text-center">
           {compact && shortLabel ? shortLabel : label}
@@ -160,21 +279,21 @@ function ToolButton({
 
 function ToolbarSeparator({
   orientation,
-  variant = 'default',
+  variant = "default",
 }: {
-  orientation: 'horizontal' | 'vertical';
-  variant?: 'default' | 'toolbox' | 'ribbon';
+  orientation: "horizontal" | "vertical";
+  variant?: "default" | "toolbox" | "ribbon";
 }) {
   const tone =
-    variant === 'toolbox'
-      ? 'bg-amber-200'
-      : variant === 'ribbon'
-        ? 'bg-slate-200'
-        : 'bg-gray-300';
+    variant === "toolbox"
+      ? "bg-amber-200"
+      : variant === "ribbon"
+        ? "bg-slate-200"
+        : "bg-gray-300";
   return (
     <div
       className={`
-        ${orientation === 'horizontal' ? 'w-px h-6' : 'h-px w-6'}
+        ${orientation === "horizontal" ? "w-px h-6" : "h-px w-6"}
         ${tone} mx-1
       `}
     />
@@ -186,10 +305,10 @@ function ToolbarSeparator({
 // =============================================================================
 
 export function Toolbar({
-  className = '',
-  orientation = 'vertical',
-  layout = 'auto',
-  variant = 'default',
+  className = "",
+  orientation = "vertical",
+  layout = "auto",
+  variant = "default",
   showZoomControls = true,
   showUndoRedo = true,
   showLayerControls = true,
@@ -205,25 +324,31 @@ export function Toolbar({
     undo,
     redo,
     resetView,
-  } = useSmartDrawingStore((state) => ({
-    activeTool: state.activeTool,
-    canUndo: state.canUndo,
-    canRedo: state.canRedo,
-    setTool: state.setTool,
-    setZoom: state.setZoom,
-    undo: state.undo,
-    redo: state.redo,
-    resetView: state.resetView,
-  }), shallow);
+  } = useSmartDrawingStore(
+    (state) => ({
+      activeTool: state.activeTool,
+      canUndo: state.canUndo,
+      canRedo: state.canRedo,
+      setTool: state.setTool,
+      setZoom: state.setZoom,
+      undo: state.undo,
+      redo: state.redo,
+      resetView: state.resetView,
+    }),
+    shallow,
+  );
   const {
     zoom,
     panOffset,
     setViewTransform: setInteractionViewTransform,
-  } = useDrawingInteractionStore((state) => ({
-    zoom: state.zoom,
-    panOffset: state.panOffset,
-    setViewTransform: state.setViewTransform,
-  }), shallow);
+  } = useDrawingInteractionStore(
+    (state) => ({
+      zoom: state.zoom,
+      panOffset: state.panOffset,
+      setViewTransform: state.setViewTransform,
+    }),
+    shallow,
+  );
   const handleZoomIn = () => {
     const nextZoom = Math.min(zoom * 1.2, 5);
     setInteractionViewTransform(nextZoom, panOffset);
@@ -236,21 +361,20 @@ export function Toolbar({
     setZoom(nextZoom);
   };
 
-  const isHorizontal = orientation === 'horizontal';
-  const isGrid = layout === 'grid';
-  const containerClass =
-    isGrid
-      ? 'grid w-full grid-cols-2 gap-1 p-1'
-      : isHorizontal
-        ? 'flex flex-row items-center gap-1 px-1.5 py-1'
-        : 'flex flex-col items-center gap-1 px-1 py-1.5';
+  const isHorizontal = orientation === "horizontal";
+  const isGrid = layout === "grid";
+  const containerClass = isGrid
+    ? "grid w-full grid-cols-2 gap-1 p-1"
+    : isHorizontal
+      ? "flex flex-row items-center gap-1 px-1.5 py-1"
+      : "flex flex-col items-center gap-1 px-1 py-1.5";
   const isCompactGrid = isGrid && showLabels;
   const containerTone =
-    variant === 'toolbox'
-      ? 'bg-[#fffaf0] border-amber-200 shadow-sm'
-      : variant === 'ribbon'
-        ? 'bg-white border-slate-200'
-        : 'bg-white border-gray-200 shadow-sm';
+    variant === "toolbox"
+      ? "bg-[#fffaf0] border-amber-200 shadow-sm"
+      : variant === "ribbon"
+        ? "bg-white border-slate-200"
+        : "bg-white border-gray-200 shadow-sm";
 
   return (
     <div
@@ -266,8 +390,10 @@ export function Toolbar({
         DRAWING_TOOLS.map((toolDef) => {
           const handleToolClick = () => {
             setTool(toolDef.id);
-            if (toolDef.id === 'room' && typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('smart-drawing:room-tool-activate'));
+            if (toolDef.id === "room" && typeof window !== "undefined") {
+              window.dispatchEvent(
+                new CustomEvent("smart-drawing:room-tool-activate"),
+              );
             }
           };
 
@@ -288,7 +414,7 @@ export function Toolbar({
           );
         })}
 
-      {layout !== 'grid' &&
+      {layout !== "grid" &&
         showDrawingTools &&
         (showZoomControls || showUndoRedo || showLayerControls) && (
           <ToolbarSeparator orientation={orientation} variant={variant} />
@@ -327,7 +453,7 @@ export function Toolbar({
             fullWidth={isGrid}
             compact={isCompactGrid}
           />
-          {layout !== 'grid' && (showUndoRedo || showLayerControls) && (
+          {layout !== "grid" && (showUndoRedo || showLayerControls) && (
             <ToolbarSeparator orientation={orientation} variant={variant} />
           )}
         </>
@@ -358,7 +484,7 @@ export function Toolbar({
             fullWidth={isGrid}
             compact={isCompactGrid}
           />
-          {layout !== 'grid' && showLayerControls && (
+          {layout !== "grid" && showLayerControls && (
             <ToolbarSeparator orientation={orientation} variant={variant} />
           )}
         </>
@@ -384,10 +510,12 @@ export function Toolbar({
 // Zoom Indicator
 // =============================================================================
 
-export function ZoomIndicator({ className = '' }: { className?: string }) {
+export function ZoomIndicator({ className = "" }: { className?: string }) {
   const zoom = useDrawingInteractionStore((state) => state.zoom);
   const panOffset = useDrawingInteractionStore((state) => state.panOffset);
-  const setInteractionViewTransform = useDrawingInteractionStore((state) => state.setViewTransform);
+  const setInteractionViewTransform = useDrawingInteractionStore(
+    (state) => state.setViewTransform,
+  );
   const setZoom = useSmartDrawingStore((state) => state.setZoom);
   const percentage = Math.round(zoom * 100);
 
@@ -421,8 +549,8 @@ export function ZoomIndicator({ className = '' }: { className?: string }) {
 export function CoordinatesDisplay({
   x,
   y,
-  unit = 'm',
-  className = '',
+  unit = "m",
+  className = "",
 }: {
   x: number;
   y: number;
@@ -438,8 +566,12 @@ export function CoordinatesDisplay({
         ${className}
       `}
     >
-      <span>X: {x.toFixed(2)} {unit}</span>
-      <span>Y: {y.toFixed(2)} {unit}</span>
+      <span>
+        X: {x.toFixed(2)} {unit}
+      </span>
+      <span>
+        Y: {y.toFixed(2)} {unit}
+      </span>
     </div>
   );
 }
