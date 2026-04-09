@@ -14,7 +14,6 @@ import {
   DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
   DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
-  DEFAULT_REFRIGERANT_PIPE_GAP_MM,
 } from "./refrigerantPipeDimensions";
 import { buildDuctedIndoorUnitModel } from "./ductedIndoorUnitModel";
 
@@ -30,6 +29,12 @@ export interface UnitPipePort {
   radius: number;
   /** Visual length of the port stub (mm) */
   length: number;
+  /** Optional shared collar radius for exact 2D/3D alignment */
+  collarRadius?: number;
+  /** Optional shared collar length for exact 2D/3D alignment */
+  collarLength?: number;
+  /** Optional shared flange thickness for exact 2D/3D alignment */
+  flangeThickness?: number;
   /** Core pipe color */
   color: string;
 }
@@ -40,6 +45,53 @@ export interface UnitPipePortSpec {
   gasPipeDiameterMm: number;
   liquidPipeDiameterMm: number;
   ports: UnitPipePort[];
+}
+
+export interface UnitPipePortRenderMetrics {
+  collarRadius: number;
+  collarLength: number;
+  flangeThickness: number;
+  flangeStartX: number;
+  flangeEndX: number;
+  collarStartX: number;
+  collarEndX: number;
+  pipeStartX: number;
+  pipeEndX: number;
+}
+
+export function getUnitPipePortRenderMetrics(
+  port: UnitPipePort,
+): UnitPipePortRenderMetrics {
+  const collarLength = port.collarLength ?? Math.max(10, port.length * 0.28);
+  const flangeThickness =
+    port.flangeThickness ?? Math.max(4, collarLength * 0.24);
+  const collarRadius = port.collarRadius ?? port.radius * 1.24;
+  const flangeStartX = port.localX;
+  const flangeEndX = port.localX + flangeThickness;
+  const collarStartX = port.localX + flangeThickness * 0.35;
+  const collarEndX = collarStartX + collarLength;
+  const pipeStartX = port.localX + collarLength - flangeThickness * 0.15;
+  const pipeEndX = pipeStartX + port.length;
+
+  return {
+    collarRadius,
+    collarLength,
+    flangeThickness,
+    flangeStartX,
+    flangeEndX,
+    collarStartX,
+    collarEndX,
+    pipeStartX,
+    pipeEndX,
+  };
+}
+
+export function getUnitPipePortEndpointLocal(port: UnitPipePort): Point2D {
+  const metrics = getUnitPipePortRenderMetrics(port);
+  return {
+    x: metrics.pipeEndX,
+    y: port.localY,
+  };
 }
 
 type UnitElement = Pick<
@@ -82,17 +134,17 @@ export function getUnitPipePortSpec(
   const liquidDiameter =
     readProperty(props, "refrigerantLiquidPipeDiameterMm") ??
     DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM;
-  const outerDiameter = DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM;
-  const portRadius = outerDiameter / 2;
-  const centerSpacing = portRadius * 2 + DEFAULT_REFRIGERANT_PIPE_GAP_MM;
-  const gasOffsetY = -centerSpacing / 2;
-  const liquidOffsetY = centerSpacing / 2;
+  const portRadius = DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM / 2;
+  // Fixed center-to-center spacing: 42mm vertical, 68mm horizontal stub length
+  const PIPE_PORT_CENTER_SPACING_MM = 42;
+  const PIPE_PORT_LENGTH_MM = 68;
+  const gasOffsetY = -PIPE_PORT_CENTER_SPACING_MM / 2;
+  const liquidOffsetY = PIPE_PORT_CENTER_SPACING_MM / 2;
 
   switch (element.type) {
     case "outdoor-unit": {
       // Ports exit from the right side (+x local) near the top
       const portX = element.width * 0.4;
-      const portLength = Math.max(30, element.width * 0.1);
       const heightMm = readNumber(element.height, 1380);
       return {
         localDirection: { x: 1, y: 0 },
@@ -105,7 +157,7 @@ export function getUnitPipePortSpec(
             localY: gasOffsetY,
             localZ: heightMm * 0.85,
             radius: portRadius,
-            length: portLength,
+            length: PIPE_PORT_LENGTH_MM,
             color: "#c5894d",
           },
           {
@@ -114,7 +166,7 @@ export function getUnitPipePortSpec(
             localY: liquidOffsetY,
             localZ: heightMm * 0.78,
             radius: Math.max(3, liquidDiameter / 2),
-            length: portLength,
+            length: PIPE_PORT_LENGTH_MM,
             color: "#dca25d",
           },
         ],
@@ -124,7 +176,6 @@ export function getUnitPipePortSpec(
     case "wall-mounted-ac": {
       // Ports exit from the back/bottom of the unit (+x = away from wall)
       const portX = element.width * 0.38;
-      const portLength = Math.max(24, element.width * 0.08);
       const heightMm = readNumber(element.height, 320);
       return {
         localDirection: { x: 1, y: 0 },
@@ -137,7 +188,7 @@ export function getUnitPipePortSpec(
             localY: gasOffsetY,
             localZ: heightMm * 0.3,
             radius: portRadius,
-            length: portLength,
+            length: PIPE_PORT_LENGTH_MM,
             color: "#c5894d",
           },
           {
@@ -146,7 +197,7 @@ export function getUnitPipePortSpec(
             localY: liquidOffsetY,
             localZ: heightMm * 0.22,
             radius: Math.max(3, liquidDiameter / 2),
-            length: portLength,
+            length: PIPE_PORT_LENGTH_MM,
             color: "#dca25d",
           },
         ],
@@ -156,7 +207,6 @@ export function getUnitPipePortSpec(
     case "ceiling-suspended-ac": {
       // Ports exit from the right side
       const portX = element.width * 0.4;
-      const portLength = Math.max(30, element.width * 0.08);
       const heightMm = readNumber(element.height, 235);
       return {
         localDirection: { x: 1, y: 0 },
@@ -169,7 +219,7 @@ export function getUnitPipePortSpec(
             localY: gasOffsetY,
             localZ: heightMm * 0.75,
             radius: portRadius,
-            length: portLength,
+            length: PIPE_PORT_LENGTH_MM,
             color: "#c5894d",
           },
           {
@@ -178,7 +228,7 @@ export function getUnitPipePortSpec(
             localY: liquidOffsetY,
             localZ: heightMm * 0.65,
             radius: Math.max(3, liquidDiameter / 2),
-            length: portLength,
+            length: PIPE_PORT_LENGTH_MM,
             color: "#dca25d",
           },
         ],
@@ -206,6 +256,9 @@ export function getUnitPipePortSpec(
             localZ: gasPort.z,
             radius: gasPort.radius,
             length: gasPort.length,
+            collarRadius: gasPort.collarRadius,
+            collarLength: gasPort.collarLength,
+            flangeThickness: gasPort.flangeThickness,
             color: gasPort.color,
           },
           {
@@ -215,6 +268,9 @@ export function getUnitPipePortSpec(
             localZ: liquidPort.z,
             radius: liquidPort.radius,
             length: liquidPort.length,
+            collarRadius: liquidPort.collarRadius,
+            collarLength: liquidPort.collarLength,
+            flangeThickness: liquidPort.flangeThickness,
             color: liquidPort.color,
           },
         ],

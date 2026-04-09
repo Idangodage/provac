@@ -8,7 +8,10 @@ import * as fabric from "fabric";
 
 import type { AcEquipmentDefinition } from "../../../data";
 import type { HvacElement, Point2D } from "../../../types";
-import { buildCeilingCassetteModel } from "./ceilingCassetteModel";
+import {
+  buildCeilingCassetteModel,
+  getCeilingCassettePipePortEndpointLocal,
+} from "./ceilingCassetteModel";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
@@ -24,7 +27,10 @@ import {
   isRefrigerantPipePairType,
   type RefrigerantPipeBundleConnection,
 } from "./refrigerantPipePairModel";
+import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from "./refrigerantPipeDimensions";
 import {
+  getUnitPipePortEndpointLocal,
+  getUnitPipePortRenderMetrics,
   getUnitPipePortSpec,
   GENERIC_PIPE_PORT_TYPES,
   ALL_PIPE_PORT_TYPES,
@@ -288,20 +294,88 @@ export class HvacPlanRenderer {
       | undefined;
     if (
       !portObject ||
-      typeof portObject.left !== "number" ||
-      typeof portObject.top !== "number"
+      typeof portObject.getPointByOrigin !== "function"
     ) {
       return null;
     }
-    const widthPx = typeof portObject.width === "number" ? portObject.width : 0;
-    const localPointPx = {
-      x: portObject.left + widthPx / 2,
-      y: portObject.top,
+    const centerInParentPlane = portObject.getRelativeCenterPoint();
+    const halfLengthPx =
+      (typeof portObject.width === "number" ? portObject.width : 0) *
+      (typeof portObject.scaleX === "number" ? portObject.scaleX : 1) *
+      0.5;
+    const portAngleDeg =
+      typeof portObject.angle === "number" ? portObject.angle : 0;
+    const endpointInParentPlane = {
+      x:
+        centerInParentPlane.x +
+        Math.cos((portAngleDeg * Math.PI) / 180) * halfLengthPx,
+      y:
+        centerInParentPlane.y +
+        Math.sin((portAngleDeg * Math.PI) / 180) * halfLengthPx,
     };
-    const rotatedLocalPointPx = rotatePoint(localPointPx, group.angle ?? 0);
+    const endpointPx = portObject.group
+      ? (() => {
+          const matrix = portObject.group.calcTransformMatrix();
+          return {
+            x:
+              matrix[0] * endpointInParentPlane.x +
+              matrix[2] * endpointInParentPlane.y +
+              matrix[4],
+            y:
+              matrix[1] * endpointInParentPlane.x +
+              matrix[3] * endpointInParentPlane.y +
+              matrix[5],
+          };
+        })()
+      : endpointInParentPlane;
+    if (
+      !endpointPx ||
+      !Number.isFinite(endpointPx.x) ||
+      !Number.isFinite(endpointPx.y)
+    ) {
+      return null;
+    }
     return {
-      x: ((group.left ?? 0) + rotatedLocalPointPx.x) / MM_TO_PX,
-      y: ((group.top ?? 0) + rotatedLocalPointPx.y) / MM_TO_PX,
+      x: endpointPx.x / MM_TO_PX,
+      y: endpointPx.y / MM_TO_PX,
+    };
+  }
+
+  private getRenderedObjectCenterMm(
+    group: HvacGroup,
+    objectName: string,
+  ): Point2D | null {
+    const object = group
+      .getObjects()
+      .find((obj) => (obj as NamedObject).name === objectName);
+    if (!object || typeof object.getRelativeCenterPoint !== "function") {
+      return null;
+    }
+
+    const centerInParentPlane = object.getRelativeCenterPoint();
+    const centerPx = object.group
+      ? (() => {
+          const matrix = object.group.calcTransformMatrix();
+          return {
+            x:
+              matrix[0] * centerInParentPlane.x +
+              matrix[2] * centerInParentPlane.y +
+              matrix[4],
+            y:
+              matrix[1] * centerInParentPlane.x +
+              matrix[3] * centerInParentPlane.y +
+              matrix[5],
+          };
+        })()
+      : centerInParentPlane;
+
+    if (!Number.isFinite(centerPx.x) || !Number.isFinite(centerPx.y)) {
+      return null;
+    }
+
+    return {
+      x: centerPx.x / MM_TO_PX,
+      y: centerPx.y / MM_TO_PX,
     };
   }
 
@@ -311,21 +385,77 @@ export class HvacPlanRenderer {
   ): RefrigerantPipeBundleConnection | null {
     let bestTarget: RefrigerantPipeBundleConnection | null = null;
     let bestDistance = thresholdMm;
+    const renderedPipeEndpoints: Array<{
+      key: string;
+      elementId: string;
+      bundleId?: string;
+      lineKind: "gas" | "liquid";
+      point: Point2D;
+      direction: Point2D;
+      elevationMm: number;
+      outerDiameterMm: number;
+    }> = [];
 
     this.groups.forEach((group, id) => {
       const element = this.hvacData.get(id);
-      if (!element || !ALL_PIPE_PORT_TYPES.has(element.type)) {
+      if (!element) {
         return;
       }
 
-      const gasPoint = this.getRenderedPortEndpointMm(
-        group,
-        "hvac-port-gas-pipe",
-      );
-      const liquidPoint = this.getRenderedPortEndpointMm(
-        group,
-        "hvac-port-liquid-pipe",
-      );
+      if (element.type === "refrigerant-pipe") {
+        const visual = buildRefrigerantPipeVisual(element);
+        const startPoint = this.getRenderedObjectCenterMm(group, "hvac-snap-start");
+        const endPoint = this.getRenderedObjectCenterMm(group, "hvac-snap-end");
+        const outerPoints = visual.outerPoints;
+
+        if (!visual.startConnection && startPoint && outerPoints.length >= 2) {
+          const nextPoint = outerPoints[1]!;
+          const firstPoint = outerPoints[0]!;
+          renderedPipeEndpoints.push({
+            key: `${element.id}:start`,
+            elementId: element.id,
+            bundleId: visual.bundleId,
+            lineKind: visual.lineKind,
+            point: startPoint,
+            direction: {
+              x: (firstPoint.x - nextPoint.x) / Math.max(Math.hypot(firstPoint.x - nextPoint.x, firstPoint.y - nextPoint.y), 0.0001),
+              y: (firstPoint.y - nextPoint.y) / Math.max(Math.hypot(firstPoint.x - nextPoint.x, firstPoint.y - nextPoint.y), 0.0001),
+            },
+            elevationMm: element.elevation + visual.localZMm,
+            outerDiameterMm: visual.outerDiameterMm,
+          });
+        }
+
+        if (endPoint && outerPoints.length >= 2) {
+          const lastPoint = outerPoints[outerPoints.length - 1]!;
+          const previousPoint = outerPoints[outerPoints.length - 2]!;
+          renderedPipeEndpoints.push({
+            key: `${element.id}:end`,
+            elementId: element.id,
+            bundleId: visual.bundleId,
+            lineKind: visual.lineKind,
+            point: endPoint,
+            direction: {
+              x: (lastPoint.x - previousPoint.x) / Math.max(Math.hypot(lastPoint.x - previousPoint.x, lastPoint.y - previousPoint.y), 0.0001),
+              y: (lastPoint.y - previousPoint.y) / Math.max(Math.hypot(lastPoint.x - previousPoint.x, lastPoint.y - previousPoint.y), 0.0001),
+            },
+            elevationMm: element.elevation + visual.localZMm,
+            outerDiameterMm: visual.outerDiameterMm,
+          });
+        }
+        return;
+      }
+
+      if (!ALL_PIPE_PORT_TYPES.has(element.type)) {
+        return;
+      }
+
+      const gasPoint =
+        this.getRenderedObjectCenterMm(group, "hvac-snap-gas") ??
+        this.getRenderedPortEndpointMm(group, "hvac-port-gas-pipe");
+      const liquidPoint =
+        this.getRenderedObjectCenterMm(group, "hvac-snap-liquid") ??
+        this.getRenderedPortEndpointMm(group, "hvac-port-liquid-pipe");
       if (!gasPoint || !liquidPoint) {
         return;
       }
@@ -403,6 +533,127 @@ export class HvacPlanRenderer {
           sourceElementId: element.id,
         };
       }
+    });
+
+    const gasEndpoints = renderedPipeEndpoints.filter(
+      (endpoint) => endpoint.lineKind === "gas",
+    );
+    const liquidEndpoints = renderedPipeEndpoints.filter(
+      (endpoint) => endpoint.lineKind === "liquid",
+    );
+    const fieldCandidates: Array<{
+      gas: (typeof renderedPipeEndpoints)[number];
+      liquid: (typeof renderedPipeEndpoints)[number];
+      score: number;
+    }> = [];
+
+    gasEndpoints.forEach((gasEndpoint) => {
+      liquidEndpoints.forEach((liquidEndpoint) => {
+        const directionDot =
+          gasEndpoint.direction.x * liquidEndpoint.direction.x +
+          gasEndpoint.direction.y * liquidEndpoint.direction.y;
+        if (directionDot < 0.92) {
+          return;
+        }
+
+        const delta = {
+          x: liquidEndpoint.point.x - gasEndpoint.point.x,
+          y: liquidEndpoint.point.y - gasEndpoint.point.y,
+        };
+        const distanceMm = Math.hypot(delta.x, delta.y);
+        if (distanceMm < 0.01) {
+          return;
+        }
+
+        const averageDirectionLength = Math.max(
+          Math.hypot(
+            gasEndpoint.direction.x + liquidEndpoint.direction.x,
+            gasEndpoint.direction.y + liquidEndpoint.direction.y,
+          ),
+          0.0001,
+        );
+        const averageDirection = {
+          x: (gasEndpoint.direction.x + liquidEndpoint.direction.x) / averageDirectionLength,
+          y: (gasEndpoint.direction.y + liquidEndpoint.direction.y) / averageDirectionLength,
+        };
+        const lateralAlignment = Math.abs(
+          (delta.x / distanceMm) * averageDirection.x +
+          (delta.y / distanceMm) * averageDirection.y,
+        );
+        if (lateralAlignment > 0.35) {
+          return;
+        }
+
+        const expectedSpacingMm =
+          gasEndpoint.outerDiameterMm / 2 +
+          liquidEndpoint.outerDiameterMm / 2 +
+          DEFAULT_REFRIGERANT_PIPE_GAP_MM;
+        const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
+        const spacingErrorMm = Math.abs(distanceMm - expectedSpacingMm);
+        const sharesBundleId = Boolean(
+          gasEndpoint.bundleId &&
+            liquidEndpoint.bundleId &&
+            gasEndpoint.bundleId === liquidEndpoint.bundleId,
+        );
+        if (!sharesBundleId && spacingErrorMm > spacingToleranceMm) {
+          return;
+        }
+
+        fieldCandidates.push({
+          gas: gasEndpoint,
+          liquid: liquidEndpoint,
+          score: spacingErrorMm + (sharesBundleId ? 0 : 200),
+        });
+      });
+    });
+
+    fieldCandidates.sort((a, b) => a.score - b.score);
+    const usedEndpointKeys = new Set<string>();
+    fieldCandidates.forEach(({ gas, liquid }) => {
+      if (usedEndpointKeys.has(gas.key) || usedEndpointKeys.has(liquid.key)) {
+        return;
+      }
+      usedEndpointKeys.add(gas.key);
+      usedEndpointKeys.add(liquid.key);
+
+      const gasDistance = Math.hypot(gas.point.x - point.x, gas.point.y - point.y);
+      const liquidDistance = Math.hypot(liquid.point.x - point.x, liquid.point.y - point.y);
+      const nearestDistance = Math.min(gasDistance, liquidDistance);
+      if (nearestDistance > bestDistance) {
+        return;
+      }
+
+      bestDistance = nearestDistance;
+      const directionLength = Math.max(
+        Math.hypot(
+          gas.direction.x + liquid.direction.x,
+          gas.direction.y + liquid.direction.y,
+        ),
+        0.0001,
+      );
+      bestTarget = {
+        point: {
+          x: (gas.point.x + liquid.point.x) / 2,
+          y: (gas.point.y + liquid.point.y) / 2,
+        },
+        gasPoint: gas.point,
+        liquidPoint: liquid.point,
+        gasFieldPoint: gas.point,
+        liquidFieldPoint: liquid.point,
+        gasOuterDiameterMm: gas.outerDiameterMm,
+        liquidOuterDiameterMm: liquid.outerDiameterMm,
+        gasDirection: gas.direction,
+        liquidDirection: liquid.direction,
+        direction: {
+          x: (gas.direction.x + liquid.direction.x) / directionLength,
+          y: (gas.direction.y + liquid.direction.y) / directionLength,
+        },
+        elevationMm: (gas.elevationMm + liquid.elevationMm) / 2,
+        gasElevationMm: gas.elevationMm,
+        liquidElevationMm: liquid.elevationMm,
+        connectionKind: "field-pipe",
+        sourceElementId: gas.bundleId ?? gas.elementId,
+      };
     });
 
     return bestTarget;
@@ -522,6 +773,23 @@ export class HvacPlanRenderer {
       });
       this.annotate(segment, element.id, name);
       objects.push(segment);
+    };
+
+    const createHiddenSnapPoint = (localPoint: Point2D, name: string): void => {
+      const snapPoint = new fabric.Circle({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        radius: 1,
+        originX: "center",
+        originY: "center",
+        fill: "rgba(0,0,0,0)",
+        strokeWidth: 0,
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+      });
+      this.annotate(snapPoint, element.id, name);
+      objects.push(snapPoint);
     };
 
     const buildContinuousCorePoints = (
@@ -718,6 +986,13 @@ export class HvacPlanRenderer {
           visual.coreRadiusMm * 2,
           "hvac-detail",
         );
+        if (visual.localOuterPoints.length >= 1) {
+          createHiddenSnapPoint(visual.localOuterPoints[0]!, "hvac-snap-start");
+          createHiddenSnapPoint(
+            visual.localOuterPoints[visual.localOuterPoints.length - 1]!,
+            "hvac-snap-end",
+          );
+        }
         break;
       }
       case "refrigerant-pipe-pair": {
@@ -750,7 +1025,6 @@ export class HvacPlanRenderer {
           : "rgba(254,226,226,0.9)";
         const gasCoreStroke = options.valid ? "#c5894d" : "#dc2626";
         const liquidCoreStroke = options.valid ? "#dca25d" : "#f97316";
-
         const renderPolyline = (
           points: Point2D[],
           stroke: string,
@@ -1135,6 +1409,12 @@ export class HvacPlanRenderer {
             port.color,
             `hvac-port-${port.kind}-pipe`,
           );
+          if (port.kind === "gas" || port.kind === "liquid") {
+            createHiddenSnapPoint(
+              getCeilingCassettePipePortEndpointLocal(port),
+              `hvac-snap-${port.kind}`,
+            );
+          }
 
           const bandX = port.x + port.bandOffsetX;
           if (bandX >= visiblePortStartX) {
@@ -1541,14 +1821,18 @@ export class HvacPlanRenderer {
 
         const casingFaceX = ducted.casingInset.x + ducted.casingInset.width / 2;
         ducted.pipePorts.forEach((port) => {
-          const pipeEndMm = port.x + port.length;
+          const pipeEndMm =
+            port.x + port.collarLength + port.length - port.flangeThickness * 0.15;
           const minVisiblePipeMm = port.kind === "drain" ? 18 : 14;
           const bootStartMm = casingFaceX;
           const bootEndMm = Math.min(
-            casingFaceX + port.bootLength,
+            port.x + port.collarLength,
             pipeEndMm - minVisiblePipeMm,
           );
-          const pipeStartMm = Math.max(bootEndMm, casingFaceX);
+          const pipeStartMm = Math.max(
+            port.x + port.collarLength - port.flangeThickness * 0.15,
+            casingFaceX,
+          );
 
           const renderPortSegment = (
             startMm: number,
@@ -1609,6 +1893,12 @@ export class HvacPlanRenderer {
               strokeWidth: 0.6,
             },
           );
+          if (port.kind === "gas" || port.kind === "liquid") {
+            createHiddenSnapPoint(
+              { x: pipeEndMm, y: port.y },
+              `hvac-snap-${port.kind}`,
+            );
+          }
 
           const bandX = Math.min(
             pipeEndMm - 4,
@@ -1782,20 +2072,15 @@ export class HvacPlanRenderer {
       if (portSpec) {
         const toPx = (valueMm: number): number => valueMm * MM_TO_PX;
         portSpec.ports.forEach((port) => {
-          const portStartX = port.localX;
-          const portEndX = port.localX + port.length;
-          const portCenterX = (portStartX + portEndX) / 2;
-          const collarLength = Math.max(6, port.length * 0.28);
-          const flangeThickness = Math.max(3, collarLength * 0.24);
-          const collarRadius = port.radius * 1.24;
+          const metrics = getUnitPipePortRenderMetrics(port);
 
           const collar = new fabric.Rect({
-            left: toPx(portStartX + flangeThickness * 0.35 + collarLength / 2),
+            left: toPx((metrics.collarStartX + metrics.collarEndX) / 2),
             top: toPx(port.localY),
-            width: Math.max(toPx(collarLength), 2),
-            height: Math.max(toPx(collarRadius * 2), 2),
-            rx: Math.max(toPx(collarRadius), 1),
-            ry: Math.max(toPx(collarRadius), 1),
+            width: Math.max(toPx(metrics.collarLength), 2),
+            height: Math.max(toPx(metrics.collarRadius * 2), 2),
+            rx: Math.max(toPx(metrics.collarRadius), 1),
+            ry: Math.max(toPx(metrics.collarRadius), 1),
             originX: "center",
             originY: "center",
             fill: "#1f2937",
@@ -1806,9 +2091,9 @@ export class HvacPlanRenderer {
           objects.push(collar);
 
           const pipeRun = new fabric.Rect({
-            left: toPx(portCenterX),
+            left: toPx((metrics.pipeStartX + metrics.pipeEndX) / 2),
             top: toPx(port.localY),
-            width: Math.max(toPx(port.length), 2),
+            width: Math.max(toPx(metrics.pipeEndX - metrics.pipeStartX), 2),
             height: Math.max(toPx(port.radius * 2), 1.5),
             rx: Math.max(toPx(port.radius), 1),
             ry: Math.max(toPx(port.radius), 1),
@@ -1820,6 +2105,10 @@ export class HvacPlanRenderer {
           });
           this.annotate(pipeRun, element.id, `hvac-port-${port.kind}-pipe`);
           objects.push(pipeRun);
+          createHiddenSnapPoint(
+            getUnitPipePortEndpointLocal(port),
+            `hvac-snap-${port.kind}`,
+          );
         });
       }
     }

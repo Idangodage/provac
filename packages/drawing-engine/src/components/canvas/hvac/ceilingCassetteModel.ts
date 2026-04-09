@@ -1,9 +1,7 @@
 import type { HvacElement } from '../../../types';
 import {
-  DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
   DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
-  DEFAULT_REFRIGERANT_PIPE_GAP_MM,
 } from './refrigerantPipeDimensions';
 
 export interface CeilingCassetteBoxSpec {
@@ -80,6 +78,15 @@ export interface CeilingCassetteModelSpec {
   serviceTab: CeilingCassetteBoxSpec;
   connectionPod: CeilingCassetteBoxSpec;
   pipePorts: CeilingCassettePipePortSpec[];
+}
+
+export function getCeilingCassettePipePortEndpointLocal(
+  port: CeilingCassettePipePortSpec,
+): { x: number; y: number } {
+  return {
+    x: port.x + port.collarLength + port.length - port.flangeThickness * 0.15,
+    y: port.y,
+  };
 }
 
 function clampValue(value: number, min: number, max: number): number {
@@ -333,12 +340,8 @@ export function buildCeilingCassetteModel(
     cornerRadius: baseDepth * 0.02,
   };
 
-  const refrigerantPortRadius = Math.max(
-    DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM / 2,
-    gasPipeDiameterMm / 2,
-    liquidPipeDiameterMm / 2,
-  );
-  const refrigerantPortCenterSpacing = refrigerantPortRadius * 2 + DEFAULT_REFRIGERANT_PIPE_GAP_MM;
+  // Fixed center-to-center spacing: 42mm vertical between gas and liquid ports
+  const refrigerantPortCenterSpacing = 42;
   const refrigerantBundleCenterY = Math.max(
     refrigerantPortCenterSpacing / 2 + 6,
     baseDepth * 0.08,
@@ -348,8 +351,9 @@ export function buildCeilingCassetteModel(
 
   const gasPortRadius = Math.max(4.5, gasPipeDiameterMm / 2);
   const liquidPortRadius = Math.max(3, liquidPipeDiameterMm / 2);
-  const gasPortLength = Math.max(38, baseWidth * 0.14);
-  const liquidPortLength = Math.max(32, baseWidth * 0.12);
+  // Fixed port stub length: 68mm horizontal extension
+  const gasPortLength = 68;
+  const liquidPortLength = 68;
   const drainPortRadius = Math.max(5, drainPipeDiameterMm / 2);
   const drainPortLength = Math.max(42, baseWidth * 0.15);
 

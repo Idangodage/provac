@@ -103,6 +103,25 @@ type SceneState = {
   geometryRoot: THREE.Group;
 };
 
+type RefrigerantPipeEndpointRenderState = {
+  openStart: boolean;
+  openEnd: boolean;
+};
+
+type RefrigerantPipeRenderChainState = {
+  renderAsHead: boolean;
+  headId: string;
+  outerPoints: Point2D[];
+  outerRadiusMm: number;
+  corePoints: Point2D[];
+  coreRadiusMm: number;
+  absoluteStub: { start: Point2D; end: Point2D } | null;
+  elevationMm: number;
+  lineKind: "gas" | "liquid";
+  openStart: boolean;
+  openEnd: boolean;
+};
+
 export interface IsometricViewCanvasProps {
   className?: string;
   walls: Wall[];
@@ -857,37 +876,446 @@ function createLocalCylinderMesh(
   return mesh;
 }
 
+/**
+ * Creates a THREE.Sprite with canvas-rendered text.
+ * The sprite lives in 3D space, always faces the camera, and scales with
+ * distance — the standard approach for professional CAD/BIM labels.
+ */
+function createTextSprite(
+  text: string,
+  color: string,
+  options?: {
+    fontSize?: number;
+    backgroundColor?: string;
+    borderColor?: string;
+    scaleFactor?: number;
+  },
+): THREE.Sprite {
+  const fontSize = options?.fontSize ?? 48;
+  const padding = fontSize * 0.4;
+  const borderWidth = 2;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+
+  // Measure text first to size canvas
+  ctx.font = `600 ${fontSize}px "SF Mono", "Cascadia Code", "Fira Code", monospace`;
+  const metrics = ctx.measureText(text);
+  const textWidth = metrics.width;
+  const textHeight = fontSize * 1.2;
+
+  canvas.width = Math.ceil(textWidth + padding * 2 + borderWidth * 2);
+  canvas.height = Math.ceil(textHeight + padding * 2 + borderWidth * 2);
+
+  // Background
+  ctx.fillStyle = options?.backgroundColor ?? "rgba(255,255,255,0.92)";
+  ctx.strokeStyle = options?.borderColor ?? "rgba(148,163,184,0.6)";
+  ctx.lineWidth = borderWidth;
+  const r = 6;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.lineTo(w - r, 0);
+  ctx.quadraticCurveTo(w, 0, w, r);
+  ctx.lineTo(w, h - r);
+  ctx.quadraticCurveTo(w, h, w - r, h);
+  ctx.lineTo(r, h);
+  ctx.quadraticCurveTo(0, h, 0, h - r);
+  ctx.lineTo(0, r);
+  ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Text
+  ctx.font = `600 ${fontSize}px "SF Mono", "Cascadia Code", "Fira Code", monospace`;
+  ctx.fillStyle = color;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+  });
+
+  const sprite = new THREE.Sprite(material);
+
+  // Scale sprite so it has a sensible world-space size.
+  // scaleFactor controls the mm-per-pixel ratio.
+  const scale = options?.scaleFactor ?? 0.5;
+  sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
+  sprite.renderOrder = 30;
+
+  return sprite;
+}
+
+/**
+ * Computes the midpoint along a polyline at 50% of its total arc length.
+ * Returns { point, tangent } where tangent is the normalised direction at that point.
+ */
+function polylineMidpoint(points: Point2D[]): {
+  point: Point2D;
+  tangent: Point2D;
+} | null {
+  if (points.length < 2) {
+    return null;
+  }
+  // Total length
+  let totalLength = 0;
+  for (let i = 1; i < points.length; i++) {
+    totalLength += Math.hypot(
+      points[i]!.x - points[i - 1]!.x,
+      points[i]!.y - points[i - 1]!.y,
+    );
+  }
+  if (totalLength < 0.1) {
+    return null;
+  }
+  const halfLength = totalLength / 2;
+  let accum = 0;
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i]!.x - points[i - 1]!.x;
+    const dy = points[i]!.y - points[i - 1]!.y;
+    const segLen = Math.hypot(dx, dy);
+    if (accum + segLen >= halfLength) {
+      const t = (halfLength - accum) / segLen;
+      return {
+        point: {
+          x: points[i - 1]!.x + dx * t,
+          y: points[i - 1]!.y + dy * t,
+        },
+        tangent: {
+          x: dx / segLen,
+          y: dy / segLen,
+        },
+      };
+    }
+    accum += segLen;
+  }
+  // Fallback
+  const last = points[points.length - 1]!;
+  const prev = points[points.length - 2]!;
+  const dx = last.x - prev.x;
+  const dy = last.y - prev.y;
+  const len = Math.hypot(dx, dy);
+  return {
+    point: last,
+    tangent: len > 0 ? { x: dx / len, y: dy / len } : { x: 1, y: 0 },
+  };
+}
+
+function buildRefrigerantPipeEndpointRenderStateMap(
+  elements: HvacElement[],
+): Map<string, RefrigerantPipeEndpointRenderState> {
+  const states = new Map<string, RefrigerantPipeEndpointRenderState>();
+  const ownership = new Map<string, string>();
+  const visuals = new Map<string, ReturnType<typeof buildRefrigerantPipeVisual>>();
+
+  elements.forEach((element) => {
+    if (element.type !== "refrigerant-pipe") {
+      return;
+    }
+    const visual = buildRefrigerantPipeVisual(element);
+    visuals.set(element.id, visual);
+    states.set(element.id, {
+      openStart: visual.startConnection?.connectionKind === "field-pipe",
+      openEnd: false,
+    });
+    ownership.set(
+      `${visual.bundleId ?? element.id}|${visual.lineKind}`,
+      element.id,
+    );
+  });
+
+  elements.forEach((element) => {
+    if (element.type !== "refrigerant-pipe") {
+      return;
+    }
+    const visual = visuals.get(element.id);
+    const sourceKey = visual?.startConnection?.sourceElementId;
+    if (
+      !visual ||
+      visual.startConnection?.connectionKind !== "field-pipe" ||
+      !sourceKey
+    ) {
+      return;
+    }
+    const upstreamId = ownership.get(`${sourceKey}|${visual.lineKind}`);
+    if (!upstreamId) {
+      return;
+    }
+    const state = states.get(upstreamId);
+    if (state) {
+      state.openEnd = true;
+    }
+  });
+
+  return states;
+}
+
+function appendUniquePipeChainPoint(
+  points: Point2D[],
+  point: Point2D,
+  toleranceMm = 0.2,
+): void {
+  const previous = points[points.length - 1];
+  if (
+    previous &&
+    Math.hypot(previous.x - point.x, previous.y - point.y) <= toleranceMm
+  ) {
+    return;
+  }
+  points.push(point);
+}
+
+function appendPipeChainMemberPoints(
+  chainPoints: Point2D[],
+  memberPoints: Point2D[],
+): void {
+  if (memberPoints.length === 0) {
+    return;
+  }
+
+  const PIPE_CHAIN_JOIN_TOLERANCE_MM = 6;
+  if (chainPoints.length === 0) {
+    memberPoints.forEach((point) => appendUniquePipeChainPoint(chainPoints, point));
+    return;
+  }
+
+  const previousTail = chainPoints[chainPoints.length - 1]!;
+  const firstPoint = memberPoints[0]!;
+  const adjustedPoints =
+    Math.hypot(previousTail.x - firstPoint.x, previousTail.y - firstPoint.y) <=
+    PIPE_CHAIN_JOIN_TOLERANCE_MM
+      ? [previousTail, ...memberPoints.slice(1)]
+      : memberPoints;
+
+  adjustedPoints.forEach((point) => appendUniquePipeChainPoint(chainPoints, point));
+}
+
+function absoluteStubFromPipeVisual(
+  visual: ReturnType<typeof buildRefrigerantPipeVisual>,
+): { start: Point2D; end: Point2D } | null {
+  if (!visual.localStub) {
+    return null;
+  }
+  return {
+    start: {
+      x: visual.localStub.start.x + visual.bounds.center.x,
+      y: visual.localStub.start.y + visual.bounds.center.y,
+    },
+    end: {
+      x: visual.localStub.end.x + visual.bounds.center.x,
+      y: visual.localStub.end.y + visual.bounds.center.y,
+    },
+  };
+}
+
+function canJoinPipeRenderChain(
+  upstream: ReturnType<typeof buildRefrigerantPipeVisual>,
+  downstream: ReturnType<typeof buildRefrigerantPipeVisual>,
+): boolean {
+  return (
+    upstream.lineKind === downstream.lineKind &&
+    Math.abs(upstream.outerRadiusMm - downstream.outerRadiusMm) <= 0.2 &&
+    Math.abs(upstream.coreRadiusMm - downstream.coreRadiusMm) <= 0.2 &&
+    Math.abs(upstream.localZMm - downstream.localZMm) <= 0.2
+  );
+}
+
+function buildRefrigerantPipeRenderChainStateMap(
+  elements: HvacElement[],
+  endpointStates: Map<string, RefrigerantPipeEndpointRenderState>,
+): Map<string, RefrigerantPipeRenderChainState> {
+  const visuals = new Map<string, ReturnType<typeof buildRefrigerantPipeVisual>>();
+  const elementsById = new Map<string, HvacElement>();
+  const ownership = new Map<string, string>();
+  const upstreamById = new Map<string, string>();
+  const downstreamById = new Map<string, string | null>();
+
+  elements.forEach((element) => {
+    elementsById.set(element.id, element);
+    if (element.type !== "refrigerant-pipe") {
+      return;
+    }
+    const visual = buildRefrigerantPipeVisual(element);
+    visuals.set(element.id, visual);
+    ownership.set(`${visual.bundleId ?? element.id}|${visual.lineKind}`, element.id);
+  });
+
+  elements.forEach((element) => {
+    if (element.type !== "refrigerant-pipe") {
+      return;
+    }
+    const visual = visuals.get(element.id);
+    const sourceKey = visual?.startConnection?.sourceElementId;
+    if (
+      !visual ||
+      visual.startConnection?.connectionKind !== "field-pipe" ||
+      !sourceKey
+    ) {
+      return;
+    }
+    const upstreamId = ownership.get(`${sourceKey}|${visual.lineKind}`);
+    if (!upstreamId) {
+      return;
+    }
+    const upstreamVisual = visuals.get(upstreamId);
+    if (!upstreamVisual || !canJoinPipeRenderChain(upstreamVisual, visual)) {
+      return;
+    }
+    const existingDownstream = downstreamById.get(upstreamId);
+    if (existingDownstream && existingDownstream !== element.id) {
+      downstreamById.set(upstreamId, null);
+      return;
+    }
+    upstreamById.set(element.id, upstreamId);
+    downstreamById.set(upstreamId, element.id);
+  });
+
+  const chainStates = new Map<string, RefrigerantPipeRenderChainState>();
+  const visited = new Set<string>();
+
+  visuals.forEach((visual, elementId) => {
+    if (visited.has(elementId)) {
+      return;
+    }
+
+    let headId = elementId;
+    while (upstreamById.has(headId)) {
+      headId = upstreamById.get(headId)!;
+    }
+
+    const memberIds: string[] = [];
+    let currentId: string | null = headId;
+    while (currentId && !visited.has(currentId)) {
+      memberIds.push(currentId);
+      visited.add(currentId);
+      const nextId = downstreamById.get(currentId);
+      if (!nextId) {
+        break;
+      }
+      currentId = nextId;
+    }
+
+    const headVisual = visuals.get(headId)!;
+    const lastId = memberIds[memberIds.length - 1]!;
+    const outerPoints: Point2D[] = [];
+    memberIds.forEach((memberId) => {
+      const memberVisual = visuals.get(memberId)!;
+      appendPipeChainMemberPoints(outerPoints, memberVisual.outerPoints);
+    });
+
+    const absoluteStub = absoluteStubFromPipeVisual(headVisual);
+    const headElement = elementsById.get(headId)!;
+    const headEndpointState = endpointStates.get(headId) ?? {
+      openStart: false,
+      openEnd: false,
+    };
+    const tailEndpointState = endpointStates.get(lastId) ?? {
+      openStart: false,
+      openEnd: false,
+    };
+
+    memberIds.forEach((memberId, index) => {
+      chainStates.set(memberId, {
+        renderAsHead: index === 0,
+        headId,
+        outerPoints,
+        outerRadiusMm: headVisual.outerRadiusMm,
+        corePoints: [...outerPoints],
+        coreRadiusMm: headVisual.coreRadiusMm,
+        absoluteStub: index === 0 ? absoluteStub : null,
+        elevationMm: headElement.elevation + headVisual.localZMm,
+        lineKind: headVisual.lineKind,
+        openStart: headEndpointState.openStart,
+        openEnd: tailEndpointState.openEnd,
+      });
+    });
+  });
+
+  return chainStates;
+}
+
 function createCylinderBetweenPoints(
   start: THREE.Vector3,
   end: THREE.Vector3,
   radius: number,
   color: string,
-  options?: { opacity?: number; renderOrder?: number; radialSegments?: number },
-): THREE.Mesh | null {
+  options?: {
+    opacity?: number;
+    renderOrder?: number;
+    radialSegments?: number;
+    capStart?: boolean;
+    capEnd?: boolean;
+  },
+): THREE.Object3D | null {
   const delta = end.clone().sub(start);
   const length = delta.length();
   if (length < 0.001) {
     return null;
   }
+  const axis = delta.normalize();
   const center = start.clone().add(end).multiplyScalar(0.5);
-  const mesh = createLocalCylinderMesh(radius, radius, length, color, center, {
-    opacity: options?.opacity,
-    renderOrder: options?.renderOrder,
-    radialSegments: options?.radialSegments ?? 18,
+  const opacity = options?.opacity ?? 1;
+  const isTransparent = opacity < 1;
+  const renderOrder = options?.renderOrder ?? (isTransparent ? 24 : 16);
+  const radialSegments = options?.radialSegments ?? 18;
+  const group = new THREE.Group();
+
+  const cylinder = createLocalCylinderMesh(radius, radius, length, color, center, {
+    opacity,
+    renderOrder,
+    radialSegments,
+    openEnded: true,
   });
-  mesh.quaternion.setFromUnitVectors(
+  cylinder.quaternion.setFromUnitVectors(
     new THREE.Vector3(0, 1, 0),
-    delta.normalize(),
+    axis,
   );
-  return mesh;
+  group.add(cylinder);
+
+  const createCap = (position: THREE.Vector3, normal: THREE.Vector3): void => {
+    const geometry = new THREE.CircleGeometry(radius, radialSegments);
+    const material = getSharedBoxMaterial(color, opacity, isTransparent);
+    const cap = new THREE.Mesh(geometry, material);
+    cap.position.copy(position);
+    cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    cap.renderOrder = renderOrder;
+    cap.castShadow = true;
+    cap.receiveShadow = true;
+    group.add(cap);
+  };
+
+  if (options?.capStart !== false) {
+    createCap(start, axis.clone().multiplyScalar(-1));
+  }
+  if (options?.capEnd !== false) {
+    createCap(end, axis);
+  }
+
+  return group;
 }
 
 function createTubeAlongPoints(
   points: THREE.Vector3[],
   radius: number,
   color: string,
-  options?: { opacity?: number; renderOrder?: number; radialSegments?: number },
-): THREE.Mesh | null {
+  options?: {
+    opacity?: number;
+    renderOrder?: number;
+    radialSegments?: number;
+    openStart?: boolean;
+    openEnd?: boolean;
+  },
+): THREE.Object3D | null {
   if (points.length < 2) {
     return null;
   }
@@ -903,30 +1331,108 @@ function createTubeAlongPoints(
     return null;
   }
 
-  const path = new THREE.CurvePath<THREE.Vector3>();
-  let totalLength = 0;
-  for (let index = 0; index < cleaned.length - 1; index += 1) {
-    const start = cleaned[index]!;
-    const end = cleaned[index + 1]!;
-    totalLength += start.distanceTo(end);
-    path.add(new THREE.LineCurve3(start, end));
+  const simplified: THREE.Vector3[] = [cleaned[0]!];
+  const angleToleranceCos = Math.cos((2 * Math.PI) / 180);
+  for (let index = 1; index < cleaned.length - 1; index += 1) {
+    const previous = simplified[simplified.length - 1]!;
+    const current = cleaned[index]!;
+    const next = cleaned[index + 1]!;
+    const incoming = current.clone().sub(previous);
+    const outgoing = next.clone().sub(current);
+    const incomingLength = incoming.length();
+    const outgoingLength = outgoing.length();
+    if (incomingLength < 0.01 || outgoingLength < 0.01) {
+      continue;
+    }
+    const directionDot = incoming.normalize().dot(outgoing.normalize());
+    const direct = next.clone().sub(previous);
+    const directLength = direct.length();
+    if (directLength < 0.01) {
+      continue;
+    }
+    const projectedScale = current.clone().sub(previous).dot(direct) / (directLength * directLength);
+    const projectedPoint = previous.clone().add(direct.multiplyScalar(projectedScale));
+    const lateralOffset = projectedPoint.distanceTo(current);
+    if (directionDot >= angleToleranceCos && lateralOffset <= 0.2) {
+      continue;
+    }
+    simplified.push(current);
+  }
+  simplified.push(cleaned[cleaned.length - 1]!);
+
+  const finalPoints = simplified.map((point) => point.clone());
+  const continuationOverlapMm = Math.max(1.5, radius * 0.75);
+
+  if (options?.openStart && finalPoints.length >= 2) {
+    const startDirection = finalPoints[1]!.clone().sub(finalPoints[0]!);
+    if (startDirection.length() > 0.001) {
+      startDirection.normalize();
+      finalPoints[0] = finalPoints[0]!
+        .clone()
+        .add(startDirection.multiplyScalar(-continuationOverlapMm));
+    }
   }
 
-  const opacity = options?.opacity ?? 1;
-  const isTransparent = opacity < 1;
-  const geometry = new THREE.TubeGeometry(
-    path,
-    Math.max(24, Math.ceil(totalLength / Math.max(6, radius * 0.8))),
-    radius,
-    options?.radialSegments ?? 18,
-    false,
-  );
-  const material = getSharedBoxMaterial(color, opacity, isTransparent);
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.renderOrder = options?.renderOrder ?? (isTransparent ? 24 : 16);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
+  if (options?.openEnd && finalPoints.length >= 2) {
+    const lastIndex = finalPoints.length - 1;
+    const endDirection = finalPoints[lastIndex]!
+      .clone()
+      .sub(finalPoints[lastIndex - 1]!);
+    if (endDirection.length() > 0.001) {
+      endDirection.normalize();
+      finalPoints[lastIndex] = finalPoints[lastIndex]!
+        .clone()
+        .add(endDirection.multiplyScalar(continuationOverlapMm));
+    }
+  }
+
+  if (finalPoints.length === 2) {
+    return createCylinderBetweenPoints(finalPoints[0]!, finalPoints[1]!, radius, color, {
+      opacity: options?.opacity,
+      renderOrder: options?.renderOrder,
+      radialSegments: options?.radialSegments ?? 18,
+      capStart: !options?.openStart,
+      capEnd: !options?.openEnd,
+    });
+  }
+
+  const group = new THREE.Group();
+  for (let index = 0; index < finalPoints.length - 1; index += 1) {
+    const segment = createCylinderBetweenPoints(
+      finalPoints[index]!,
+      finalPoints[index + 1]!,
+      radius,
+      color,
+      {
+        opacity: options?.opacity,
+        renderOrder: options?.renderOrder,
+        radialSegments: options?.radialSegments ?? 18,
+        capStart: index === 0 ? !options?.openStart : false,
+        capEnd: index === finalPoints.length - 2 ? !options?.openEnd : false,
+      },
+    );
+    if (segment) {
+      group.add(segment);
+    }
+  }
+
+  for (let index = 1; index < finalPoints.length - 1; index += 1) {
+    group.add(
+      createLocalSphereMesh(
+        radius,
+        color,
+        finalPoints[index]!,
+        {
+          opacity: options?.opacity,
+          renderOrder: options?.renderOrder,
+          widthSegments: Math.max(18, options?.radialSegments ?? 18),
+          heightSegments: 14,
+        },
+      ),
+    );
+  }
+
+  return group.children.length > 0 ? group : null;
 }
 
 function createLocalSphereMesh(
@@ -1248,7 +1754,11 @@ function addVentSlats(
   }
 }
 
-function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
+function createHvacEquipmentMesh(
+  element: HvacElement,
+  pipeEndpointStateMap?: Map<string, RefrigerantPipeEndpointRenderState>,
+  pipeRenderChainStateMap?: Map<string, RefrigerantPipeRenderChainState>,
+): THREE.Group {
   const width = Math.max(60, element.width);
   const depth = Math.max(60, element.depth);
   const height = Math.max(80, element.height);
@@ -1553,6 +2063,8 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
       const insulationColor = "#1f2021";
       const gasColor = "#c5894d";
       const liquidColor = "#dca25d";
+      const isFieldPipeStart =
+        visual.startBundleConnection?.connectionKind === "field-pipe";
       const buildContinuousCorePoints = (
         stub: { start: Point2D; end: Point2D } | null,
         points: Point2D[],
@@ -1588,12 +2100,14 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         color: string,
         opacity: number,
         renderOrder: number,
+        openStart = false,
+        openEnd = false,
       ) => {
         const tube = createTubeAlongPoints(
           points.map((point) => new THREE.Vector3(point.x, point.y, z)),
           radius,
           color,
-          { opacity, renderOrder },
+          { opacity, renderOrder, openStart, openEnd },
         );
         if (tube) {
           group.add(tube);
@@ -1630,6 +2144,8 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         insulationColor,
         1,
         18,
+        isFieldPipeStart,
+        false,
       );
       addRouteTube(
         visual.liquidLocalOuterPoints,
@@ -1638,6 +2154,8 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         insulationColor,
         1,
         18,
+        isFieldPipeStart,
+        false,
       );
 
       addStub(
@@ -1663,6 +2181,8 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         gasColor,
         1,
         19,
+        isFieldPipeStart,
+        false,
       );
       addRouteTube(
         liquidCorePoints,
@@ -1671,13 +2191,25 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         liquidColor,
         1,
         19,
+        isFieldPipeStart,
+        false,
       );
+
       break;
     }
     case "refrigerant-pipe": {
       const visual = buildRefrigerantPipeVisual(element);
       const insulationColor = "#e6edf2";
       const coreColor = visual.lineKind === "gas" ? "#c5894d" : "#dca25d";
+      const chainState = pipeRenderChainStateMap?.get(element.id) ?? null;
+      if (chainState && !chainState.renderAsHead) {
+        group.clear();
+        break;
+      }
+      const endpointState = pipeEndpointStateMap?.get(element.id) ?? {
+        openStart: false,
+        openEnd: false,
+      };
       const buildContinuousCorePoints = (
         stub: { start: Point2D; end: Point2D } | null,
         points: Point2D[],
@@ -1709,12 +2241,14 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         color: string,
         opacity: number,
         renderOrder: number,
+        openStart = false,
+        openEnd = false,
       ) => {
         const tube = createTubeAlongPoints(
           points.map((point) => new THREE.Vector3(point.x, point.y, z)),
           radius,
           color,
-          { opacity, renderOrder },
+          { opacity, renderOrder, openStart, openEnd },
         );
         if (tube) {
           group.add(tube);
@@ -1744,30 +2278,69 @@ function createHvacEquipmentMesh(element: HvacElement): THREE.Group {
         }
       };
 
-      addRouteTube(
-        visual.localOuterPoints,
-        visual.localZMm,
-        visual.outerRadiusMm,
-        insulationColor,
-        1,
-        18,
-      );
-      addStub(
-        visual.localStub,
-        visual.localZMm,
-        visual.coreRadiusMm,
-        coreColor,
-        1,
-        19,
-      );
-      addRouteTube(
-        corePoints,
-        visual.localZMm,
-        visual.coreRadiusMm,
-        coreColor,
-        1,
-        19,
-      );
+      if (chainState) {
+        group.position.set(0, 0, 0);
+        group.rotation.z = 0;
+
+        addRouteTube(
+          chainState.outerPoints,
+          chainState.elevationMm,
+          chainState.outerRadiusMm,
+          insulationColor,
+          1,
+          18,
+          chainState.openStart,
+          chainState.openEnd,
+        );
+        addStub(
+          chainState.absoluteStub,
+          chainState.elevationMm,
+          chainState.coreRadiusMm,
+          coreColor,
+          1,
+          19,
+        );
+        addRouteTube(
+          chainState.corePoints,
+          chainState.elevationMm,
+          chainState.coreRadiusMm,
+          coreColor,
+          1,
+          19,
+          chainState.openStart,
+          chainState.openEnd,
+        );
+      } else {
+        addRouteTube(
+          visual.localOuterPoints,
+          visual.localZMm,
+          visual.outerRadiusMm,
+          insulationColor,
+          1,
+          18,
+          endpointState.openStart,
+          endpointState.openEnd,
+        );
+        addStub(
+          visual.localStub,
+          visual.localZMm,
+          visual.coreRadiusMm,
+          coreColor,
+          1,
+          19,
+        );
+        addRouteTube(
+          corePoints,
+          visual.localZMm,
+          visual.coreRadiusMm,
+          coreColor,
+          1,
+          19,
+          endpointState.openStart,
+          endpointState.openEnd,
+        );
+      }
+
       break;
     }
     case "duct": {
@@ -3331,12 +3904,28 @@ export function IsometricViewCanvas({
       wall.openings.forEach((opening) => renderedOpeningIds.add(opening.id));
     });
 
+    const pipeEndpointStateMap =
+      buildRefrigerantPipeEndpointRenderStateMap(hvacElements);
+    const pipeRenderChainStateMap = buildRefrigerantPipeRenderChainStateMap(
+      hvacElements,
+      pipeEndpointStateMap,
+    );
+
     hvacElements.forEach((element) => {
-      const mesh = createHvacEquipmentMesh(element);
+      const mesh = createHvacEquipmentMesh(
+        element,
+        pipeEndpointStateMap,
+        pipeRenderChainStateMap,
+      );
       mesh.updateMatrixWorld(true);
       const meshBounds = new THREE.Box3().setFromObject(mesh);
       const labelColor = hvacPaletteForElement(element).label;
       geometryRoot.add(mesh);
+
+      // Pipe elements intentionally render without floating labels.
+      const isPipeElement =
+        element.type === "refrigerant-pipe" ||
+        element.type === "refrigerant-pipe-pair";
 
       if (!meshBounds.isEmpty()) {
         lowestElevation = Math.min(lowestElevation, meshBounds.min.z);
@@ -3346,16 +3935,18 @@ export function IsometricViewCanvas({
           { x: meshBounds.max.x, y: meshBounds.max.y },
           { x: meshBounds.min.x, y: meshBounds.max.y },
         );
-        labelAnchors.push({
-          key: `hvac-${element.id}`,
-          position: new THREE.Vector3(
-            (meshBounds.min.x + meshBounds.max.x) / 2,
-            (meshBounds.min.y + meshBounds.max.y) / 2,
-            meshBounds.max.z + 30,
-          ),
-          text: element.label || element.type,
-          color: labelColor,
-        });
+        if (!isPipeElement) {
+          labelAnchors.push({
+            key: `hvac-${element.id}`,
+            position: new THREE.Vector3(
+              (meshBounds.min.x + meshBounds.max.x) / 2,
+              (meshBounds.min.y + meshBounds.max.y) / 2,
+              meshBounds.max.z + 30,
+            ),
+            text: element.label || element.type,
+            color: labelColor,
+          });
+        }
         return;
       }
 
@@ -3369,16 +3960,18 @@ export function IsometricViewCanvas({
         },
         { x: element.position.x, y: element.position.y + element.depth },
       );
-      labelAnchors.push({
-        key: `hvac-${element.id}`,
-        position: new THREE.Vector3(
-          element.position.x + element.width / 2,
-          element.position.y + element.depth / 2,
-          element.elevation + Math.max(80, element.height) + 30,
-        ),
-        text: element.label || element.type,
-        color: labelColor,
-      });
+      if (!isPipeElement) {
+        labelAnchors.push({
+          key: `hvac-${element.id}`,
+          position: new THREE.Vector3(
+            element.position.x + element.width / 2,
+            element.position.y + element.depth / 2,
+            element.elevation + Math.max(80, element.height) + 30,
+          ),
+          text: element.label || element.type,
+          color: labelColor,
+        });
+      }
     });
 
     symbols.forEach((instance) => {

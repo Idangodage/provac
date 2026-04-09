@@ -1,5 +1,8 @@
 import type { HvacElement, Point2D } from '../../../types';
-import { buildCeilingCassetteModel } from './ceilingCassetteModel';
+import {
+  buildCeilingCassetteModel,
+  getCeilingCassettePipePortEndpointLocal,
+} from './ceilingCassetteModel';
 import {
   DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
   DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
@@ -7,7 +10,11 @@ import {
   DEFAULT_REFRIGERANT_PIPE_GAP_MM,
   INCH_MM,
 } from './refrigerantPipeDimensions';
-import { getUnitPipePortSpec, GENERIC_PIPE_PORT_TYPES } from './unitPipePortModel';
+import {
+  getUnitPipePortEndpointLocal,
+  getUnitPipePortSpec,
+  GENERIC_PIPE_PORT_TYPES,
+} from './unitPipePortModel';
 
 export const ONE_INCH_MM = INCH_MM;
 export const DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM = ONE_INCH_MM;
@@ -30,6 +37,7 @@ export interface RefrigerantPipeBundleConnection {
   gasElevationMm: number;
   liquidElevationMm: number;
   connectionKind: RefrigerantPipeConnectionKind;
+  guideReference?: 'gas' | 'liquid' | 'center';
   sourceElementId?: string;
 }
 
@@ -177,6 +185,7 @@ function normalizeBundleConnection(value: unknown): RefrigerantPipeBundleConnect
     gasElevationMm?: unknown;
     liquidElevationMm?: unknown;
     connectionKind?: unknown;
+    guideReference?: unknown;
     sourceElementId?: unknown;
   };
   const point = normalizePoint(candidate.point);
@@ -211,6 +220,12 @@ function normalizeBundleConnection(value: unknown): RefrigerantPipeBundleConnect
       readNumber(candidate.elevationMm, DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM),
     ),
     connectionKind: normalizeConnectionKind(candidate.connectionKind),
+    guideReference:
+      candidate.guideReference === 'gas'
+      || candidate.guideReference === 'liquid'
+      || candidate.guideReference === 'center'
+        ? candidate.guideReference
+        : undefined,
     sourceElementId: typeof candidate.sourceElementId === 'string' ? candidate.sourceElementId : undefined,
   };
 }
@@ -306,6 +321,51 @@ function dedupeConsecutivePoints(points: Point2D[]): Point2D[] {
     }
   });
   return deduped;
+}
+
+function simplifyNearlyCollinearPoints(points: Point2D[]): Point2D[] {
+  const deduped = dedupeConsecutivePoints(points);
+  if (deduped.length < 3) {
+    return deduped;
+  }
+
+  const angleToleranceCos = Math.cos((2 * Math.PI) / 180);
+  const lateralToleranceMm = 0.2;
+  const simplified: Point2D[] = [deduped[0]!];
+
+  for (let index = 1; index < deduped.length - 1; index += 1) {
+    const previous = simplified[simplified.length - 1]!;
+    const current = deduped[index]!;
+    const next = deduped[index + 1]!;
+    const incoming = subtract(current, previous);
+    const outgoing = subtract(next, current);
+    const direct = subtract(next, previous);
+    const incomingLength = Math.hypot(incoming.x, incoming.y);
+    const outgoingLength = Math.hypot(outgoing.x, outgoing.y);
+    const directLength = Math.hypot(direct.x, direct.y);
+
+    if (incomingLength < 0.01 || outgoingLength < 0.01 || directLength < 0.01) {
+      continue;
+    }
+
+    const incomingDirection = normalizeDirection(incoming);
+    const outgoingDirection = normalizeDirection(outgoing);
+    const directionDot = dot(incomingDirection, outgoingDirection);
+    const areaTwice = Math.abs(
+      (current.x - previous.x) * (next.y - previous.y) -
+      (current.y - previous.y) * (next.x - previous.x),
+    );
+    const lateralOffsetMm = areaTwice / directLength;
+
+    if (directionDot >= angleToleranceCos && lateralOffsetMm <= lateralToleranceMm) {
+      continue;
+    }
+
+    simplified.push(current);
+  }
+
+  simplified.push(deduped[deduped.length - 1]!);
+  return dedupeConsecutivePoints(simplified);
 }
 
 function resolveInsulationThicknessMm(value: unknown): number {
@@ -569,7 +629,7 @@ function computeStartTakeoffLength(
   centerSpacingMm: number,
   maxOuterDiameterMm: number,
 ): number {
-  return Math.max(48, centerSpacingMm * 0.55, maxOuterDiameterMm * 0.9);
+  return Math.max(64, centerSpacingMm + 18, maxOuterDiameterMm * 1.15);
 }
 
 function computeConnectionOverlapLength(maxOuterDiameterMm: number): number {
@@ -578,6 +638,41 @@ function computeConnectionOverlapLength(maxOuterDiameterMm: number): number {
 
 function computeExposedConnectionTailLength(outerDiameterMm: number): number {
   return Math.max(22, Math.min(38, outerDiameterMm * 0.45));
+}
+
+/**
+ * Appends a short direction-aligned tail at the end of the guide route so the
+ * last segment points along the end unit's port exit direction.  This ensures
+ * that `offsetPolyline` offsets the endpoint perpendicular to the port direction,
+ * producing correctly spaced gas/liquid endpoints without kinking.
+ */
+function appendEndApproachTail(
+  guidePoints: Point2D[],
+  endBundleConnection: RefrigerantPipeBundleConnection | null,
+  tailLengthMm: number,
+): Point2D[] {
+  if (
+    !endBundleConnection
+    || endBundleConnection.connectionKind === 'field-pipe'
+    || guidePoints.length < 1
+  ) {
+    return guidePoints;
+  }
+
+  const endCenter = computeBundleCenter(
+    endBundleConnection.gasFieldPoint,
+    endBundleConnection.liquidFieldPoint,
+  );
+  const endDir = endBundleConnection.direction;
+
+  // The approach point sits tailLengthMm outward from endCenter along the port
+  // exit direction.  The segment approachPoint → endCenter is therefore aligned
+  // with the port, and offsetPolyline will offset perpendicular to it.
+  const approachPoint = add(endCenter, scale(endDir, tailLengthMm));
+
+  const result = guidePoints.slice(0, -1);
+  result.push(approachPoint, endCenter);
+  return dedupeConsecutivePoints(result);
 }
 
 function buildFieldRoutePoints(
@@ -590,6 +685,7 @@ function buildFieldRoutePoints(
     return routePoints;
   }
 
+  const FIELD_CONTINUATION_LATERAL_TOLERANCE_MM = 0.75;
   const takeoffEnd = add(connectionCenter, scale(direction, takeoffLengthMm));
   const remaining = routePoints.slice(1);
   const firstPoint = remaining[0];
@@ -597,17 +693,35 @@ function buildFieldRoutePoints(
     return dedupeConsecutivePoints([connectionCenter, takeoffEnd]);
   }
 
-  const projectedDistance = dot(subtract(firstPoint, connectionCenter), direction);
-  const adjustedFirstPoint = projectedDistance < takeoffLengthMm
-    ? add(firstPoint, scale(direction, takeoffLengthMm - projectedDistance))
-    : firstPoint;
+  const normal = perpendicular(direction);
+  const firstDelta = subtract(firstPoint, connectionCenter);
+  const projectedDistance = Math.max(0, dot(firstDelta, direction));
+  const lateralOffsetMm = dot(firstDelta, normal);
+  const axisAdvanceMm = Math.max(projectedDistance, takeoffLengthMm);
+  const axisJoinPoint = add(connectionCenter, scale(direction, axisAdvanceMm));
+  const points: Point2D[] = [connectionCenter, takeoffEnd];
 
-  return dedupeConsecutivePoints([
-    connectionCenter,
-    takeoffEnd,
-    adjustedFirstPoint,
-    ...remaining.slice(1),
-  ]);
+  if (Math.hypot(axisJoinPoint.x - takeoffEnd.x, axisJoinPoint.y - takeoffEnd.y) > 0.2) {
+    points.push(axisJoinPoint);
+  }
+
+  if (Math.abs(lateralOffsetMm) > FIELD_CONTINUATION_LATERAL_TOLERANCE_MM) {
+    const correctedFirstPoint = add(
+      axisJoinPoint,
+      scale(normal, lateralOffsetMm),
+    );
+    if (
+      Math.hypot(
+        correctedFirstPoint.x - points[points.length - 1]!.x,
+        correctedFirstPoint.y - points[points.length - 1]!.y,
+      ) > 0.2
+    ) {
+      points.push(correctedFirstPoint);
+    }
+  }
+
+  points.push(...remaining.slice(1));
+  return dedupeConsecutivePoints(points);
 }
 
 function buildTakeoffTailPoints(
@@ -616,6 +730,7 @@ function buildTakeoffTailPoints(
   direction: Point2D,
   takeoffLengthMm: number,
 ): Point2D[] {
+  const TAKEOFF_LATERAL_TOLERANCE_MM = 0.75;
   const takeoffEnd = add(connectionPoint, scale(direction, takeoffLengthMm));
   const dedupedRoutePoints = dedupeConsecutivePoints(routePoints);
   const firstRoutePoint = dedupedRoutePoints[0];
@@ -631,21 +746,49 @@ function buildTakeoffTailPoints(
   }
 
   const firstPoint = remaining[0]!;
+  const normal = perpendicular(direction);
   const projectedDistance = dot(subtract(firstPoint, connectionPoint), direction);
+  const axisAdvanceMm = Math.max(projectedDistance, takeoffLengthMm);
   const alignedFirstPoint = add(
     connectionPoint,
-    scale(direction, Math.max(projectedDistance, takeoffLengthMm)),
+    scale(direction, axisAdvanceMm),
   );
-  const hasOffAxisShift = Math.hypot(
-    firstPoint.x - alignedFirstPoint.x,
-    firstPoint.y - alignedFirstPoint.y,
-  ) > 0.2;
+  const lateralOffsetMm = dot(subtract(firstPoint, alignedFirstPoint), normal);
 
-  const points = [
-    takeoffEnd,
-    alignedFirstPoint,
-  ];
-  if (hasOffAxisShift) {
+  const points = [takeoffEnd];
+  if (
+    Math.hypot(
+      alignedFirstPoint.x - takeoffEnd.x,
+      alignedFirstPoint.y - takeoffEnd.y,
+    ) > 0.2
+  ) {
+    points.push(alignedFirstPoint);
+  }
+
+  if (projectedDistance < takeoffLengthMm) {
+    if (Math.abs(lateralOffsetMm) > TAKEOFF_LATERAL_TOLERANCE_MM) {
+      const projectedLateralPoint = add(
+        alignedFirstPoint,
+        scale(normal, lateralOffsetMm),
+      );
+      if (
+        Math.hypot(
+          projectedLateralPoint.x - points[points.length - 1]!.x,
+          projectedLateralPoint.y - points[points.length - 1]!.y,
+        ) > 0.2
+      ) {
+        points.push(projectedLateralPoint);
+      }
+    }
+    return dedupeConsecutivePoints(points);
+  }
+
+  if (
+    Math.hypot(
+      firstPoint.x - alignedFirstPoint.x,
+      firstPoint.y - alignedFirstPoint.y,
+    ) > 0.2
+  ) {
     points.push(firstPoint);
   }
   points.push(...remaining.slice(1));
@@ -653,13 +796,96 @@ function buildTakeoffTailPoints(
   return dedupeConsecutivePoints(points);
 }
 
+function buildTwoFortyFiveOffsetTakeoffPoints(
+  leadGuidePoints: Point2D[],
+  leadConnectionPoint: Point2D,
+  trailingConnectionPoint: Point2D,
+  direction: Point2D,
+  actualOffsetFromLeadMm: number,
+  desiredOffsetFromLeadMm: number,
+  takeoffLengthMm: number,
+): Point2D[] {
+  if (leadGuidePoints.length === 0) {
+    return [];
+  }
+
+  const normal = perpendicular(direction);
+  const parallelLeadPoints = leadGuidePoints.map((point) =>
+    add(point, scale(normal, desiredOffsetFromLeadMm)),
+  );
+  const lateralShiftMm = desiredOffsetFromLeadMm - actualOffsetFromLeadMm;
+  if (Math.abs(lateralShiftMm) <= 0.2) {
+    return dedupeConsecutivePoints(parallelLeadPoints);
+  }
+
+  // For the non-selected pipe, start the 45 deg offset immediately from the
+  // unit port. Any remaining straight takeoff length continues after the second
+  // 45 so the bundle spacing is already correct before the first routed bend.
+  const diagonalAdvanceMm = Math.min(takeoffLengthMm, Math.abs(lateralShiftMm));
+  const diagonalJoinPoint = add(
+    add(trailingConnectionPoint, scale(direction, diagonalAdvanceMm)),
+    scale(normal, lateralShiftMm),
+  );
+
+  const points: Point2D[] = [diagonalJoinPoint];
+  const parallelTakeoffPoint = parallelLeadPoints[0];
+  if (
+    parallelTakeoffPoint
+    && Math.hypot(
+      parallelTakeoffPoint.x - diagonalJoinPoint.x,
+      parallelTakeoffPoint.y - diagonalJoinPoint.y,
+    ) > 0.2
+  ) {
+    points.push(parallelTakeoffPoint);
+  }
+  points.push(...parallelLeadPoints.slice(1));
+
+  return dedupeConsecutivePoints(points);
+}
+
 type BundleGuideReference = 'gas' | 'liquid' | 'center';
+
+function resolveParallelBundleOffsets(
+  startBundleConnection: RefrigerantPipeBundleConnection | null,
+  centerSpacingMm: number,
+): { gasOffsetMm: number; liquidOffsetMm: number } {
+  if (!startBundleConnection) {
+    return {
+      gasOffsetMm: -centerSpacingMm / 2,
+      liquidOffsetMm: centerSpacingMm / 2,
+    };
+  }
+
+  const bundleCenter = computeBundleCenter(
+    startBundleConnection.gasFieldPoint,
+    startBundleConnection.liquidFieldPoint,
+  );
+  const perpDir = perpendicular(startBundleConnection.direction);
+  const gasPortOffset = dot(subtract(startBundleConnection.gasFieldPoint, bundleCenter), perpDir);
+  const liquidPortOffset = dot(subtract(startBundleConnection.liquidFieldPoint, bundleCenter), perpDir);
+
+  if (startBundleConnection.connectionKind === 'unit-port') {
+    const offsetSign = Math.sign(liquidPortOffset - gasPortOffset) || 1;
+    return {
+      gasOffsetMm: -offsetSign * centerSpacingMm / 2,
+      liquidOffsetMm: offsetSign * centerSpacingMm / 2,
+    };
+  }
+
+  return {
+    gasOffsetMm: gasPortOffset,
+    liquidOffsetMm: liquidPortOffset,
+  };
+}
 
 function resolveBundleGuideReference(
   startBundleConnection: RefrigerantPipeBundleConnection | null,
 ): BundleGuideReference {
   if (!startBundleConnection) {
     return 'center';
+  }
+  if (startBundleConnection.guideReference) {
+    return startBundleConnection.guideReference;
   }
 
   const bundleCenter = computeBundleCenter(
@@ -688,7 +914,7 @@ function resolveBundleGuideReference(
 function buildBundleGuideRoutes(
   routePoints: Point2D[],
   startBundleConnection: RefrigerantPipeBundleConnection | null,
-  _endBundleConnection: RefrigerantPipeBundleConnection | null,
+  endBundleConnection: RefrigerantPipeBundleConnection | null,
   centerSpacingMm: number,
   startTakeoffLengthMm: number,
 ): {
@@ -697,9 +923,18 @@ function buildBundleGuideRoutes(
   bundleGuidePoints: Point2D[];
 } {
   const isFieldPipeConnection = startBundleConnection?.connectionKind === 'field-pipe';
-  const normalizedGuideRoutePoints = isFieldPipeConnection
+  // Append an end approach tail so the last segment is aligned with the end
+  // unit's port direction. offsetPolyline then naturally offsets the endpoint
+  // perpendicular to the port direction — no endpoint-snapping hack needed.
+  const endTailLength = startTakeoffLengthMm;
+  const rawNormalized = isFieldPipeConnection
     ? dedupeConsecutivePoints(routePoints)
     : normalizeBundleGuideRoutePoints(routePoints, startBundleConnection);
+  const normalizedGuideRoutePoints = appendEndApproachTail(
+    rawNormalized,
+    endBundleConnection,
+    endTailLength,
+  );
 
   if (!startBundleConnection) {
     return {
@@ -728,66 +963,332 @@ function buildBundleGuideRoutes(
   const gasPortOffset = dot(subtract(startBundleConnection.gasFieldPoint, bundleCenter), perpDir);
   const liquidPortOffset = dot(subtract(startBundleConnection.liquidFieldPoint, bundleCenter), perpDir);
   const gasToLiquidOffset = liquidPortOffset - gasPortOffset;
+  const desiredParallelOffsets = resolveParallelBundleOffsets(startBundleConnection, centerSpacingMm);
 
   if (anchor === 'gas') {
     const gasGuidePoints = isFieldPipeConnection
-      ? normalizedGuideRoutePoints
+      ? buildFieldRoutePoints(
+          normalizedGuideRoutePoints,
+          startBundleConnection.gasFieldPoint,
+          startBundleConnection.gasDirection ?? direction,
+          startTakeoffLengthMm,
+        )
       : buildTakeoffTailPoints(
           normalizedGuideRoutePoints,
           startBundleConnection.gasFieldPoint,
           direction,
           startTakeoffLengthMm,
         );
-    const liquidGuidePoints = gasGuidePoints.length >= 1
-      ? dedupeConsecutivePoints(offsetPolyline(gasGuidePoints, gasToLiquidOffset))
-      : [];
+    const desiredLiquidOffset = desiredParallelOffsets.liquidOffsetMm - desiredParallelOffsets.gasOffsetMm;
+    const liquidGuidePoints = isFieldPipeConnection
+      ? gasGuidePoints.length >= 1
+        ? dedupeConsecutivePoints(offsetPolyline(gasGuidePoints, gasToLiquidOffset))
+        : []
+      : buildTwoFortyFiveOffsetTakeoffPoints(
+          gasGuidePoints,
+          startBundleConnection.gasFieldPoint,
+          startBundleConnection.liquidFieldPoint,
+          direction,
+          gasToLiquidOffset,
+          desiredLiquidOffset,
+          startTakeoffLengthMm,
+        );
     return {
       gasGuidePoints,
       liquidGuidePoints,
       bundleGuidePoints: gasGuidePoints.length >= 1
-        ? dedupeConsecutivePoints(offsetPolyline(gasGuidePoints, gasToLiquidOffset / 2))
+        ? dedupeConsecutivePoints(offsetPolyline(gasGuidePoints, desiredLiquidOffset / 2))
         : [bundleCenter],
     };
   }
 
   if (anchor === 'liquid') {
     const liquidGuidePoints = isFieldPipeConnection
-      ? normalizedGuideRoutePoints
+      ? buildFieldRoutePoints(
+          normalizedGuideRoutePoints,
+          startBundleConnection.liquidFieldPoint,
+          startBundleConnection.liquidDirection ?? direction,
+          startTakeoffLengthMm,
+        )
       : buildTakeoffTailPoints(
           normalizedGuideRoutePoints,
           startBundleConnection.liquidFieldPoint,
           direction,
           startTakeoffLengthMm,
         );
-    const gasGuidePoints = liquidGuidePoints.length >= 1
-      ? dedupeConsecutivePoints(offsetPolyline(liquidGuidePoints, -gasToLiquidOffset))
-      : [];
+    const desiredGasOffset = desiredParallelOffsets.gasOffsetMm - desiredParallelOffsets.liquidOffsetMm;
+    const gasGuidePoints = isFieldPipeConnection
+      ? liquidGuidePoints.length >= 1
+        ? dedupeConsecutivePoints(offsetPolyline(liquidGuidePoints, -gasToLiquidOffset))
+        : []
+      : buildTwoFortyFiveOffsetTakeoffPoints(
+          liquidGuidePoints,
+          startBundleConnection.liquidFieldPoint,
+          startBundleConnection.gasFieldPoint,
+          direction,
+          -gasToLiquidOffset,
+          desiredGasOffset,
+          startTakeoffLengthMm,
+        );
     return {
       gasGuidePoints,
       liquidGuidePoints,
       bundleGuidePoints: liquidGuidePoints.length >= 1
-        ? dedupeConsecutivePoints(offsetPolyline(liquidGuidePoints, -gasToLiquidOffset / 2))
+        ? dedupeConsecutivePoints(offsetPolyline(liquidGuidePoints, desiredGasOffset / 2))
         : [bundleCenter],
     };
   }
 
   // 'center' anchor: offset the center takeoff route by port-derived perpendicular distances
   const bundleGuidePoints = isFieldPipeConnection
-    ? normalizedGuideRoutePoints
+    ? buildFieldRoutePoints(
+        normalizedGuideRoutePoints,
+        bundleCenter,
+        direction,
+        startTakeoffLengthMm,
+      )
     : buildTakeoffTailPoints(
         normalizedGuideRoutePoints,
         bundleCenter,
         direction,
         startTakeoffLengthMm,
       );
-  return {
-    gasGuidePoints: bundleGuidePoints.length >= 1
+  const gasGuidePoints = isFieldPipeConnection
+    ? bundleGuidePoints.length >= 1
       ? dedupeConsecutivePoints(offsetPolyline(bundleGuidePoints, gasPortOffset))
-      : [],
-    liquidGuidePoints: bundleGuidePoints.length >= 1
+      : []
+    : buildTwoFortyFiveOffsetTakeoffPoints(
+        bundleGuidePoints,
+        bundleCenter,
+        startBundleConnection.gasFieldPoint,
+        direction,
+        gasPortOffset,
+        desiredParallelOffsets.gasOffsetMm,
+        startTakeoffLengthMm,
+      );
+  const liquidGuidePoints = isFieldPipeConnection
+    ? bundleGuidePoints.length >= 1
       ? dedupeConsecutivePoints(offsetPolyline(bundleGuidePoints, liquidPortOffset))
-      : [],
+      : []
+    : buildTwoFortyFiveOffsetTakeoffPoints(
+        bundleGuidePoints,
+        bundleCenter,
+        startBundleConnection.liquidFieldPoint,
+        direction,
+        liquidPortOffset,
+        desiredParallelOffsets.liquidOffsetMm,
+        startTakeoffLengthMm,
+      );
+  return {
+    gasGuidePoints,
+    liquidGuidePoints,
     bundleGuidePoints,
+  };
+}
+
+function mergeGuideRouteWithParallelRoute(
+  guidePoints: Point2D[],
+  parallelPoints: Point2D[],
+): Point2D[] {
+  if (parallelPoints.length === 0) {
+    return dedupeConsecutivePoints(guidePoints);
+  }
+  if (guidePoints.length === 0) {
+    return dedupeConsecutivePoints(parallelPoints);
+  }
+
+  const parallelStartPoint = parallelPoints[0]!;
+  const joinIndex = guidePoints.findIndex((point) => Math.hypot(
+    point.x - parallelStartPoint.x,
+    point.y - parallelStartPoint.y,
+  ) <= 0.2);
+
+  if (joinIndex >= 0) {
+    return dedupeConsecutivePoints([
+      ...guidePoints.slice(0, joinIndex),
+      ...parallelPoints,
+    ]);
+  }
+
+  const MAX_GUIDE_PARALLEL_JOIN_DISTANCE_MM = 96;
+  let bestGuideIndex = -1;
+  let bestParallelIndex = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  guidePoints.forEach((guidePoint, guideIndex) => {
+    parallelPoints.forEach((parallelPoint, parallelIndex) => {
+      const gap = Math.hypot(
+        guidePoint.x - parallelPoint.x,
+        guidePoint.y - parallelPoint.y,
+      );
+      if (
+        gap < bestDistance
+        || (
+          Math.abs(gap - bestDistance) <= 0.01
+          && parallelIndex < bestParallelIndex
+        )
+      ) {
+        bestDistance = gap;
+        bestGuideIndex = guideIndex;
+        bestParallelIndex = parallelIndex;
+      }
+    });
+  });
+
+  if (
+    bestGuideIndex >= 0
+    && bestParallelIndex >= 0
+    && bestDistance <= MAX_GUIDE_PARALLEL_JOIN_DISTANCE_MM
+  ) {
+    const guideJoinPoint = guidePoints[bestGuideIndex]!;
+    const parallelJoinPoint = parallelPoints[bestParallelIndex]!;
+    const splicePoint =
+      bestDistance <= 0.2
+        ? guideJoinPoint
+        : {
+            x: (guideJoinPoint.x + parallelJoinPoint.x) / 2,
+            y: (guideJoinPoint.y + parallelJoinPoint.y) / 2,
+          };
+    return dedupeConsecutivePoints([
+      ...guidePoints.slice(0, bestGuideIndex),
+      splicePoint,
+      ...parallelPoints.slice(bestParallelIndex + 1),
+    ]);
+  }
+
+  return dedupeConsecutivePoints(parallelPoints);
+}
+
+function anchorGuideRouteEnd(
+  guidePoints: Point2D[],
+  endpoint: Point2D | null,
+): Point2D[] {
+  if (!endpoint || guidePoints.length === 0) {
+    return guidePoints;
+  }
+  const anchored = [...guidePoints];
+  anchored[anchored.length - 1] = endpoint;
+  return anchored;
+}
+
+function anchorGuideRouteStart(
+  guidePoints: Point2D[],
+  endpoint: Point2D | null,
+): Point2D[] {
+  if (!endpoint || guidePoints.length === 0) {
+    return guidePoints;
+  }
+  const anchored = [...guidePoints];
+  anchored[0] = endpoint;
+  return anchored;
+}
+
+function buildResolvedPipeRoutePoints(
+  options: {
+    gasGuidePoints: Point2D[];
+    liquidGuidePoints: Point2D[];
+    bundleGuidePoints: Point2D[];
+    startBundleConnection: RefrigerantPipeBundleConnection | null;
+    endBundleConnection: RefrigerantPipeBundleConnection | null;
+    centerSpacingMm: number;
+    bendRadiusMm: number;
+  },
+): {
+  gasRoutePoints: Point2D[];
+  liquidRoutePoints: Point2D[];
+} {
+  const {
+    gasGuidePoints,
+    liquidGuidePoints,
+    bundleGuidePoints,
+    startBundleConnection,
+    endBundleConnection,
+    centerSpacingMm,
+    bendRadiusMm,
+  } = options;
+  const startGuideReference = resolveBundleGuideReference(startBundleConnection);
+  const canContinueSelectedFieldPipe =
+    startBundleConnection?.connectionKind === 'field-pipe'
+    && (startGuideReference === 'gas' || startGuideReference === 'liquid')
+    && (
+      !endBundleConnection
+      || endBundleConnection.connectionKind !== 'field-pipe'
+      || !endBundleConnection.guideReference
+      || endBundleConnection.guideReference === startGuideReference
+    );
+
+  if (canContinueSelectedFieldPipe) {
+    const leadKind = startGuideReference;
+    const leadGuidePoints = leadKind === 'gas' ? gasGuidePoints : liquidGuidePoints;
+    const leadRoutePoints = roundPolylineCorners(leadGuidePoints, bendRadiusMm);
+    const { gasOffsetMm, liquidOffsetMm } = resolveParallelBundleOffsets(
+      startBundleConnection,
+      centerSpacingMm,
+    );
+    const companionOffsetMm = leadKind === 'gas'
+      ? liquidOffsetMm - gasOffsetMm
+      : gasOffsetMm - liquidOffsetMm;
+    const companionRoutePoints = leadRoutePoints.length >= 1
+      ? dedupeConsecutivePoints(offsetPolyline(leadRoutePoints, companionOffsetMm))
+      : [];
+    const gasRouteBase = leadKind === 'gas' ? leadRoutePoints : companionRoutePoints;
+    const liquidRouteBase = leadKind === 'liquid' ? leadRoutePoints : companionRoutePoints;
+
+    return {
+      gasRoutePoints: anchorGuideRouteEnd(
+        anchorGuideRouteStart(
+          gasRouteBase,
+          startBundleConnection?.connectionKind === 'field-pipe'
+            ? startBundleConnection.gasFieldPoint
+            : null,
+        ),
+        endBundleConnection?.gasFieldPoint ?? null,
+      ),
+      liquidRoutePoints: anchorGuideRouteEnd(
+        anchorGuideRouteStart(
+          liquidRouteBase,
+          startBundleConnection?.connectionKind === 'field-pipe'
+            ? startBundleConnection.liquidFieldPoint
+            : null,
+        ),
+        endBundleConnection?.liquidFieldPoint ?? null,
+      ),
+    };
+  }
+
+  const { gasOffsetMm, liquidOffsetMm } = resolveParallelBundleOffsets(
+    startBundleConnection,
+    centerSpacingMm,
+  );
+  const roundedBundleGuidePoints = bundleGuidePoints.length >= 1
+    ? roundPolylineCorners(bundleGuidePoints, bendRadiusMm)
+    : [];
+  const gasParallelRoutePoints = roundedBundleGuidePoints.length >= 1
+    ? dedupeConsecutivePoints(offsetPolyline(roundedBundleGuidePoints, gasOffsetMm))
+    : [];
+  const liquidParallelRoutePoints = roundedBundleGuidePoints.length >= 1
+    ? dedupeConsecutivePoints(offsetPolyline(roundedBundleGuidePoints, liquidOffsetMm))
+    : [];
+
+  return {
+    gasRoutePoints: anchorGuideRouteEnd(
+      anchorGuideRouteStart(
+        mergeGuideRouteWithParallelRoute(gasGuidePoints, gasParallelRoutePoints),
+        startBundleConnection?.connectionKind === 'field-pipe'
+          ? startBundleConnection.gasFieldPoint
+          : null,
+      ),
+      endBundleConnection?.gasFieldPoint ?? null,
+    ),
+    liquidRoutePoints: anchorGuideRouteEnd(
+      anchorGuideRouteStart(
+        mergeGuideRouteWithParallelRoute(liquidGuidePoints, liquidParallelRoutePoints),
+        startBundleConnection?.connectionKind === 'field-pipe'
+          ? startBundleConnection.liquidFieldPoint
+          : null,
+      ),
+      endBundleConnection?.liquidFieldPoint ?? null,
+    ),
   };
 }
 
@@ -923,36 +1424,35 @@ export function buildRefrigerantPipeVisual(
   const outerRadiusMm = spec.outerDiameterMm / 2;
   const coreRadiusMm = spec.pipeDiameterMm / 2;
   const baseElevationMm = isFiniteNumber(element.elevation) ? element.elevation : 0;
-  const isFieldPipeConnection = spec.startConnection?.connectionKind === 'field-pipe';
+  const isUnitPortConnection = spec.startConnection?.connectionKind === 'unit-port';
+  const hasStartConnection = Boolean(spec.startConnection);
   const localZMm = spec.startConnection
     ? spec.startConnection.elevationMm - baseElevationMm
     : outerRadiusMm;
-  const connectionOverlapMm = spec.startConnection && !isFieldPipeConnection
+  const connectionOverlapMm = hasStartConnection
     ? computeConnectionOverlapLength(spec.outerDiameterMm)
     : 0;
-  const exposedTailLengthMm = spec.startConnection
-    ? isFieldPipeConnection ? 0 : computeExposedConnectionTailLength(spec.outerDiameterMm)
-    : 0;
-  const renderedRoutePoints = dedupeConsecutivePoints(spec.routePoints);
-  const insulationStartPoint = spec.startConnection && !isFieldPipeConnection
+  const exposedTailLengthMm = 0;
+  const renderedRoutePoints = simplifyNearlyCollinearPoints(spec.routePoints);
+  const insulationStartPoint = spec.startConnection && isUnitPortConnection
     ? add(spec.startConnection.portPoint, scale(spec.startConnection.direction, exposedTailLengthMm))
     : null;
-  const routeStartPoint = spec.startConnection && !isFieldPipeConnection
-    ? insulationStartPoint
-    : renderedRoutePoints[0] ?? null;
-  const outerPoints = spec.startConnection && !isFieldPipeConnection && routeStartPoint
-    ? dedupeConsecutivePoints([routeStartPoint, ...renderedRoutePoints])
+  const routeStartPoint = insulationStartPoint
+    ?? renderedRoutePoints[0]
+    ?? null;
+  const outerPoints = routeStartPoint
+    ? simplifyNearlyCollinearPoints([routeStartPoint, ...renderedRoutePoints])
     : [...renderedRoutePoints];
-  const stubStart = spec.startConnection && !isFieldPipeConnection
+  const stubStart = spec.startConnection && isUnitPortConnection
     ? add(spec.startConnection.portPoint, scale(spec.startConnection.direction, -connectionOverlapMm))
     : null;
-  const stubEnd = spec.startConnection && !isFieldPipeConnection
+  const stubEnd = spec.startConnection && isUnitPortConnection
     ? spec.startConnection.portPoint
     : null;
   const boundsSourcePoints = [
     ...outerPoints,
   ];
-  if (spec.startConnection && !isFieldPipeConnection) {
+  if (spec.startConnection) {
     boundsSourcePoints.push(spec.startConnection.portPoint);
   }
   if (stubStart && stubEnd) {
@@ -1001,16 +1501,19 @@ export function buildRefrigerantPipePairVisual(
     Math.max(gasOuterDiameterMm, liquidOuterDiameterMm) * 1.25,
     centerSpacingMm * 0.45,
   );
-  const gasExposedTailLengthMm = computeExposedConnectionTailLength(gasOuterDiameterMm);
-  const liquidExposedTailLengthMm = computeExposedConnectionTailLength(liquidOuterDiameterMm);
+  const gasExposedTailLengthMm = 0;
+  const liquidExposedTailLengthMm = 0;
   const connectionOverlapMm = computeConnectionOverlapLength(
     Math.max(gasOuterDiameterMm, liquidOuterDiameterMm),
   );
+  const gasStubDirection = spec.startBundleConnection?.gasDirection ?? spec.startBundleConnection?.direction ?? null;
+  const liquidStubDirection = spec.startBundleConnection?.liquidDirection ?? spec.startBundleConnection?.direction ?? null;
+  const isUnitPortConnection = spec.startBundleConnection?.connectionKind === 'unit-port';
   const resolvedGasFieldPoint = spec.startBundleConnection
-    ? spec.startBundleConnection.gasPoint
+    ? spec.startBundleConnection.gasFieldPoint
     : null;
   const resolvedLiquidFieldPoint = spec.startBundleConnection
-    ? spec.startBundleConnection.liquidPoint
+    ? spec.startBundleConnection.liquidFieldPoint
     : null;
   const startTakeoffLengthMm = computeStartTakeoffLength(
     centerSpacingMm,
@@ -1027,13 +1530,15 @@ export function buildRefrigerantPipePairVisual(
     centerSpacingMm,
     startTakeoffLengthMm,
   );
-
-  const gasRoutePoints = gasGuidePoints.length >= 1
-    ? roundPolylineCorners(gasGuidePoints, bendRadiusMm)
-    : [];
-  const liquidRoutePoints = liquidGuidePoints.length >= 1
-    ? roundPolylineCorners(liquidGuidePoints, bendRadiusMm)
-    : [];
+  const { gasRoutePoints, liquidRoutePoints } = buildResolvedPipeRoutePoints({
+    gasGuidePoints,
+    liquidGuidePoints,
+    bundleGuidePoints,
+    startBundleConnection: spec.startBundleConnection,
+    endBundleConnection: spec.endBundleConnection,
+    centerSpacingMm,
+    bendRadiusMm,
+  });
   const gasInsulationStartPoint = resolvedGasFieldPoint && spec.startBundleConnection
     ? add(
         resolvedGasFieldPoint,
@@ -1048,34 +1553,34 @@ export function buildRefrigerantPipePairVisual(
     : resolvedLiquidFieldPoint;
 
   const gasOuterPoints = gasInsulationStartPoint
-    ? dedupeConsecutivePoints([gasInsulationStartPoint, ...gasRoutePoints])
-    : gasRoutePoints;
+    ? simplifyNearlyCollinearPoints([gasInsulationStartPoint, ...gasRoutePoints])
+    : simplifyNearlyCollinearPoints(gasRoutePoints);
   const liquidOuterPoints = liquidInsulationStartPoint
-    ? dedupeConsecutivePoints([liquidInsulationStartPoint, ...liquidRoutePoints])
-    : liquidRoutePoints;
+    ? simplifyNearlyCollinearPoints([liquidInsulationStartPoint, ...liquidRoutePoints])
+    : simplifyNearlyCollinearPoints(liquidRoutePoints);
 
   const boundsSourcePoints = [
     ...bundleGuidePoints,
     ...gasOuterPoints,
     ...liquidOuterPoints,
   ];
-  const gasStubStart = spec.startBundleConnection
+  const gasStubStart = spec.startBundleConnection && gasStubDirection && isUnitPortConnection
     ? add(
         spec.startBundleConnection.gasPoint,
-        scale(spec.startBundleConnection.direction, -connectionOverlapMm),
+        scale(gasStubDirection, -connectionOverlapMm),
       )
     : null;
-  const gasStubEnd = resolvedGasFieldPoint && spec.startBundleConnection
-    ? add(resolvedGasFieldPoint, scale(spec.startBundleConnection.direction, connectionOverlapMm))
+  const gasStubEnd = resolvedGasFieldPoint && spec.startBundleConnection && isUnitPortConnection
+    ? resolvedGasFieldPoint
     : null;
-  const liquidStubStart = spec.startBundleConnection
+  const liquidStubStart = spec.startBundleConnection && liquidStubDirection && isUnitPortConnection
     ? add(
         spec.startBundleConnection.liquidPoint,
-        scale(spec.startBundleConnection.direction, -connectionOverlapMm),
+        scale(liquidStubDirection, -connectionOverlapMm),
       )
     : null;
-  const liquidStubEnd = resolvedLiquidFieldPoint && spec.startBundleConnection
-    ? add(resolvedLiquidFieldPoint, scale(spec.startBundleConnection.direction, connectionOverlapMm))
+  const liquidStubEnd = resolvedLiquidFieldPoint && spec.startBundleConnection && isUnitPortConnection
+    ? resolvedLiquidFieldPoint
     : null;
   if (spec.startBundleConnection) {
     boundsSourcePoints.push(
@@ -1241,6 +1746,7 @@ export function buildRefrigerantPipeElements(
   const {
     gasGuidePoints,
     liquidGuidePoints,
+    bundleGuidePoints,
   } = buildBundleGuideRoutes(
     routePoints,
     options?.startBundleConnection ?? null,
@@ -1248,12 +1754,15 @@ export function buildRefrigerantPipeElements(
     centerSpacingMm,
     startTakeoffLengthMm,
   );
-  const gasRoutePoints = gasGuidePoints.length >= 1
-    ? roundPolylineCorners(gasGuidePoints, bendRadiusMm)
-    : [];
-  const liquidRoutePoints = liquidGuidePoints.length >= 1
-    ? roundPolylineCorners(liquidGuidePoints, bendRadiusMm)
-    : [];
+  const { gasRoutePoints, liquidRoutePoints } = buildResolvedPipeRoutePoints({
+    gasGuidePoints,
+    liquidGuidePoints,
+    bundleGuidePoints,
+    startBundleConnection: options?.startBundleConnection ?? null,
+    endBundleConnection: options?.endBundleConnection ?? null,
+    centerSpacingMm,
+    bendRadiusMm,
+  });
 
   return [
     buildRefrigerantPipeElement(gasRoutePoints, {
@@ -1266,7 +1775,9 @@ export function buildRefrigerantPipeElements(
       startConnection: options?.startBundleConnection
         ? {
             portPoint: options.startBundleConnection.gasPoint,
-            direction: options.startBundleConnection.direction,
+            direction:
+              options.startBundleConnection.gasDirection ??
+              options.startBundleConnection.direction,
             elevationMm: options.startBundleConnection.gasElevationMm,
             connectionKind: options.startBundleConnection.connectionKind,
             sourceElementId: options.startBundleConnection.sourceElementId,
@@ -1283,7 +1794,9 @@ export function buildRefrigerantPipeElements(
       startConnection: options?.startBundleConnection
         ? {
             portPoint: options.startBundleConnection.liquidPoint,
-            direction: options.startBundleConnection.direction,
+            direction:
+              options.startBundleConnection.liquidDirection ??
+              options.startBundleConnection.direction,
             elevationMm: options.startBundleConnection.liquidElevationMm,
             connectionKind: options.startBundleConnection.connectionKind,
             sourceElementId: options.startBundleConnection.sourceElementId,
@@ -1380,22 +1893,6 @@ function absoluteCenter(element: Pick<HvacElement, 'position' | 'width' | 'depth
     x: element.position.x + element.width / 2,
     y: element.position.y + element.depth / 2,
   };
-}
-
-function cassettePortEndpointLocal(port: ReturnType<typeof buildCeilingCassetteModel>['pipePorts'][number]): Point2D {
-  return {
-    x: port.x + port.collarLength + port.length - port.flangeThickness * 0.15,
-    y: port.y,
-  };
-}
-
-function unitPipeSnapEndpoint(
-  point: Point2D,
-  direction: Point2D,
-  maxOuterDiameterMm: number,
-): Point2D {
-  const leadLengthMm = Math.max(20, maxOuterDiameterMm * 1.1);
-  return add(point, scale(direction, leadLengthMm));
 }
 
 interface RefrigerantPipeEndpointTarget {
@@ -1581,8 +2078,8 @@ export function getRefrigerantPipeBundleSnapTargets(
 
       const center = absoluteCenter(element);
       const direction = normalizeDirection(rotateLocalPoint({ x: 1, y: 0 }, element.rotation ?? 0));
-      const gasPoint = localToWorld(center, cassettePortEndpointLocal(gasPort), element.rotation ?? 0);
-      const liquidPoint = localToWorld(center, cassettePortEndpointLocal(liquidPort), element.rotation ?? 0);
+      const gasPoint = localToWorld(center, getCeilingCassettePipePortEndpointLocal(gasPort), element.rotation ?? 0);
+      const liquidPoint = localToWorld(center, getCeilingCassettePipePortEndpointLocal(liquidPort), element.rotation ?? 0);
       const gasElevationMm = element.elevation + gasPort.z;
       const liquidElevationMm = element.elevation + liquidPort.z;
 
@@ -1623,14 +2120,8 @@ export function getRefrigerantPipeBundleSnapTargets(
     const center = absoluteCenter(element);
     const rotation = element.rotation ?? 0;
     const direction = normalizeDirection(rotateLocalPoint(portSpec.localDirection, rotation));
-    const gasEndpoint: Point2D = {
-      x: gasPort.localX + gasPort.length,
-      y: gasPort.localY,
-    };
-    const liquidEndpoint: Point2D = {
-      x: liquidPort.localX + liquidPort.length,
-      y: liquidPort.localY,
-    };
+    const gasEndpoint = getUnitPipePortEndpointLocal(gasPort);
+    const liquidEndpoint = getUnitPipePortEndpointLocal(liquidPort);
     const gasPoint = localToWorld(center, gasEndpoint, rotation);
     const liquidPoint = localToWorld(center, liquidEndpoint, rotation);
     const gasElevationMm = element.elevation + gasPort.localZ;
