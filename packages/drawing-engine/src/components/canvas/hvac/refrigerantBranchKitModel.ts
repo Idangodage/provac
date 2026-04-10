@@ -451,24 +451,23 @@ function buildBranchLineGeometry(
   const manifoldLeftX = junctionSleeve1StartX;
   const manifoldRightX = junctionBodyEndX;
   const manifoldSpanMm = manifoldRightX - manifoldLeftX;
-  const manifoldBodyLeftX = junctionBodyStartX + junctionBodyLengthMm * 0.24;
   const manifoldNeckHalfHeight = outletFaceHalfHeightMm;
-  const manifoldUpperCrownX = manifoldLeftX + manifoldSpanMm * 0.4;
-  const manifoldLowerCrownX = manifoldLeftX + manifoldSpanMm * 0.39;
-  const manifoldTopShoulderX = manifoldLeftX + manifoldSpanMm * 0.2;
-  const manifoldBottomShoulderX = manifoldLeftX + manifoldSpanMm * 0.21;
-  const manifoldTopBulgeMm = clamp(
-    Math.max(junctionBodyOuterDiameterMm, runOuterDiameterMm) * 0.17,
-    2.4,
-    4.8,
+  const manifoldFlatStartX = manifoldLeftX + manifoldSpanMm * 0.34;
+  const manifoldFlatEndX = manifoldRightX - manifoldSpanMm * 0.22;
+  const manifoldLeftShoulderControlX = manifoldLeftX + manifoldSpanMm * 0.14;
+  const manifoldRightShoulderControlX = manifoldRightX - manifoldSpanMm * 0.1;
+  const manifoldBodyBulgeMm = clamp(
+    Math.max(
+      junctionBodyOuterDiameterMm,
+      runOuterDiameterMm,
+      branchSectionEndOuterDiameterMm,
+    ) * 0.2,
+    3,
+    6,
   );
-  const manifoldBottomBulgeMm = clamp(
-    Math.max(junctionBodyOuterDiameterMm, branchSectionEndOuterDiameterMm) * 0.17,
-    2.6,
-    5.1,
-  );
-  const manifoldTopY = runOutletTopY - manifoldTopBulgeMm;
-  const manifoldBottomY = branchOutletBottomY + manifoldBottomBulgeMm;
+  const manifoldTopY = trunkCenterY - (manifoldNeckHalfHeight + manifoldBodyBulgeMm);
+  const manifoldBottomY =
+    trunkCenterY + manifoldNeckHalfHeight + manifoldBodyBulgeMm;
   const manifoldTopStart = {
     x: manifoldLeftX,
     y: trunkCenterY - manifoldNeckHalfHeight,
@@ -482,31 +481,32 @@ function buildBranchLineGeometry(
     ...sampleCubicBezierPoints(
       manifoldTopStart,
       {
-        x: manifoldTopShoulderX - manifoldSpanMm * 0.1,
+        x: manifoldLeftShoulderControlX,
         y: manifoldTopStart.y,
       },
       {
-        x: manifoldUpperCrownX - manifoldSpanMm * 0.14,
+        x: manifoldFlatStartX - manifoldSpanMm * 0.14,
         y: manifoldTopY,
       },
       {
-        x: manifoldUpperCrownX,
+        x: manifoldFlatStartX,
         y: manifoldTopY,
       },
-      24,
+      28,
     ).slice(1),
+    { x: manifoldFlatEndX, y: manifoldTopY },
     ...sampleCubicBezierPoints(
-      { x: manifoldUpperCrownX, y: manifoldTopY },
+      { x: manifoldFlatEndX, y: manifoldTopY },
       {
-        x: manifoldUpperCrownX + manifoldSpanMm * 0.14,
+        x: manifoldFlatEndX + manifoldSpanMm * 0.1,
         y: manifoldTopY,
       },
       {
-        x: manifoldRightX - manifoldSpanMm * 0.12,
+        x: manifoldRightShoulderControlX,
         y: runOutletTopY,
       },
       { x: manifoldRightX, y: runOutletTopY },
-      24,
+      28,
     ).slice(1),
   ]);
   const outletVerticalGapMm = branchOutletTopY - runOutletBottomY;
@@ -562,37 +562,38 @@ function buildBranchLineGeometry(
     ...sampleCubicBezierPoints(
       { x: manifoldRightX, y: branchOutletBottomY },
       {
-        x: manifoldRightX - manifoldSpanMm * 0.12,
+        x: manifoldRightShoulderControlX,
         y: branchOutletBottomY,
       },
       {
-        x: manifoldLowerCrownX,
+        x: manifoldFlatEndX + manifoldSpanMm * 0.1,
         y: manifoldBottomY,
       },
       {
-        x: manifoldLowerCrownX - manifoldSpanMm * 0.14,
+        x: manifoldFlatEndX,
         y: manifoldBottomY,
       },
-      24,
+      28,
     ).slice(1),
+    { x: manifoldFlatStartX, y: manifoldBottomY },
     ...sampleCubicBezierPoints(
-      { x: manifoldLowerCrownX - manifoldSpanMm * 0.14, y: manifoldBottomY },
+      { x: manifoldFlatStartX, y: manifoldBottomY },
       {
-        x: manifoldBottomShoulderX,
+        x: manifoldFlatStartX - manifoldSpanMm * 0.14,
         y: manifoldBottomY,
       },
       {
-        x: manifoldBottomShoulderX - manifoldSpanMm * 0.1,
+        x: manifoldLeftShoulderControlX,
         y: manifoldBottomStart.y,
       },
       manifoldBottomStart,
-      24,
+      28,
     ).slice(1),
   ]);
   const manifoldLeftBulgeMm = clamp(
-    Math.max(junctionBodyOuterDiameterMm, branchSectionEndOuterDiameterMm) * 0.2,
-    2.8,
-    5.8,
+    Math.max(junctionBodyOuterDiameterMm, branchSectionEndOuterDiameterMm) * 0.24,
+    3.2,
+    6.6,
   );
   const manifoldLeftContour = dedupeConsecutivePoints(
     sampleCubicBezierPoints(

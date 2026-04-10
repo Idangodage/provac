@@ -2396,9 +2396,9 @@ function createHvacEquipmentMesh(
           line.manifold.depthMm,
         );
         const bevelRadiusMm = Math.min(
-          Math.max(2.8, manifoldMinSpanMm * 0.22),
-          Math.max(3.4, envelopeHeight * 0.2),
-          line.manifold.depthMm * 0.36,
+          Math.max(3, manifoldMinSpanMm * 0.24),
+          Math.max(3.6, envelopeHeight * 0.22),
+          line.manifold.depthMm * 0.38,
         );
         return createExtrudedPolygonMesh(
           line.manifold.outline,
@@ -2410,8 +2410,8 @@ function createHvacEquipmentMesh(
             bevelEnabled: true,
             bevelSize: bevelRadiusMm,
             bevelThickness: bevelRadiusMm,
-            bevelSegments: 12,
-            curveSegments: 48,
+            bevelSegments: 16,
+            curveSegments: 64,
           },
         );
       };
