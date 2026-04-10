@@ -436,6 +436,7 @@ function inferHvacElementCategory(type: HvacElement['type']): HvacElement['categ
     case 'duct':
     case 'refrigerant-pipe':
     case 'refrigerant-pipe-pair':
+    case 'refrigerant-branch-kit':
       return 'accessory';
     case 'diffuser':
     case 'return-grille':

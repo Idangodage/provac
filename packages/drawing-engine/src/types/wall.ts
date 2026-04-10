@@ -51,6 +51,7 @@ export type HvacElementType =
   | 'ceiling-suspended-ac'
   | 'refrigerant-pipe'
   | 'refrigerant-pipe-pair'
+  | 'refrigerant-branch-kit'
   | 'outdoor-unit'
   | 'filter'
   | 'remote-controller'

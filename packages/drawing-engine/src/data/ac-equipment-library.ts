@@ -39,6 +39,7 @@ export interface AcEquipmentDefinition {
 
 const DEFAULT_CEILING_ELEVATION_MM = 2400;
 const DEFAULT_CONTROL_ELEVATION_MM = 1400;
+const DEFAULT_REFRIGERANT_ACCESSORY_ELEVATION_MM = 2600;
 
 function equipment(definition: AcEquipmentDefinition): AcEquipmentDefinition {
   return definition;
@@ -275,13 +276,42 @@ export const DEFAULT_AC_EQUIPMENT_LIBRARY: AcEquipmentDefinition[] = [
     },
   }),
   equipment({
+    id: "ac-branch-kit-dis-22-1g",
+    name: "Copper Branch Kit",
+    category: "accessories",
+    equipmentCategory: "accessory",
+    type: "refrigerant-branch-kit",
+    subtype: "dis-22-1g",
+    modelLabel: "DIS-22-1G",
+    placementMode: "room",
+    mountType: "ceiling",
+    widthMm: 520,
+    depthMm: 320,
+    heightMm: 90,
+    elevationMm: DEFAULT_REFRIGERANT_ACCESSORY_ELEVATION_MM,
+    supplyZoneRatio: 0.5,
+    description:
+      "Paired gas and liquid VRF branching kit based on DIS-22-1G dimensional data, rendered in plan and isometric views from one shared geometry model.",
+    tags: ["branch-kit", "refnet", "refrigerant", "vrf"],
+    defaultProperties: {
+      branchKitType: "dis-22-1g",
+      branchKitWallAllowanceMm: 0.9,
+      gasInletDiameterMm: 19.05,
+      gasRunOutletDiameterMm: 15.88,
+      gasBranchOutletDiameterMm: 12.7,
+      liquidInletDiameterMm: 9.52,
+      liquidRunOutletDiameterMm: 9.52,
+      liquidBranchOutletDiameterMm: 6.35,
+    },
+  }),
+  equipment({
     id: "ac-accessory-generic",
-    name: "Accessory",
+    name: "Generic Accessory",
     category: "accessories",
     equipmentCategory: "accessory",
     type: "accessory",
     subtype: "generic-accessory",
-    modelLabel: "Accessory",
+    modelLabel: "Generic Accessory",
     placementMode: "room",
     mountType: "ceiling",
     widthMm: 280,

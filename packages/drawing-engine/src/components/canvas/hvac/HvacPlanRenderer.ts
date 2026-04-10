@@ -27,6 +27,14 @@ import {
   isRefrigerantPipePairType,
   type RefrigerantPipeBundleConnection,
 } from "./refrigerantPipePairModel";
+import {
+  buildRefrigerantBranchKitModel,
+  getRefrigerantBranchKitPlanBounds,
+  getRefrigerantBranchKitTerminalSpecs,
+  isRefrigerantBranchKitElement,
+  isRefrigerantBranchKitType,
+  REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
+} from "./refrigerantBranchKitModel";
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from "./refrigerantPipeDimensions";
 import {
   getUnitPipePortEndpointLocal,
@@ -167,6 +175,7 @@ export class HvacPlanRenderer {
       case "duct":
       case "refrigerant-pipe":
       case "refrigerant-pipe-pair":
+      case "refrigerant-branch-kit":
         return {
           stroke: "#475569",
           fill: "rgba(71,85,105,0.08)",
@@ -273,7 +282,8 @@ export class HvacPlanRenderer {
       if (
         element &&
         (isRefrigerantPipeElementType(element.type) ||
-          isGiDuctElementType(element.type))
+          isGiDuctElementType(element.type) ||
+          isRefrigerantBranchKitElement(element))
       ) {
         this.canvas.bringObjectToFront(group);
       }
@@ -674,9 +684,20 @@ export class HvacPlanRenderer {
     >,
     options: { valid: boolean; includeInteractionHalos: boolean },
   ): fabric.FabricObject[] {
+    if (element.type === "accessory" && isRefrigerantBranchKitElement(element)) {
+      return this.createBaseObjects(
+        {
+          ...element,
+          type: "refrigerant-branch-kit",
+        },
+        options,
+      );
+    }
+
     const palette = this.getPalette(element, options.valid);
     const isPipeElement = isRefrigerantPipeElementType(element.type);
     const isDuctElement = isGiDuctElementType(element.type);
+    const isBranchKitElement = isRefrigerantBranchKitElement(element);
     const baseWidthPx = Math.max(20, element.width * MM_TO_PX);
     const baseDepthPx = Math.max(12, element.depth * MM_TO_PX);
     const widthPx = baseWidthPx;
@@ -688,9 +709,10 @@ export class HvacPlanRenderer {
     const interactionOverlays: fabric.FabricObject[] = [];
     let ductedModel: ReturnType<typeof buildDuctedIndoorUnitModel> | null =
       null;
-    let ductedPlanBounds: ReturnType<
-      typeof getDuctedIndoorUnitPlanBounds
-    > | null = null;
+    let customPlanBounds:
+      | ReturnType<typeof getDuctedIndoorUnitPlanBounds>
+      | ReturnType<typeof getRefrigerantBranchKitPlanBounds>
+      | null = null;
 
     const background = new fabric.Rect({
       left: 0,
@@ -712,7 +734,7 @@ export class HvacPlanRenderer {
       background.set("strokeDashArray", [6, 4]);
     }
 
-    if (!isPipeElement && !isDuctElement) {
+    if (!isPipeElement && !isDuctElement && !isBranchKitElement) {
       this.annotate(background, element.id, "hvac-body");
       objects.push(background);
     }
@@ -1228,6 +1250,241 @@ export class HvacPlanRenderer {
         );
         break;
       }
+      case "refrigerant-branch-kit": {
+        const branchKit = buildRefrigerantBranchKitModel(element);
+        customPlanBounds = getRefrigerantBranchKitPlanBounds(branchKit);
+        const edgeStroke = options.valid
+          ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.insulationEdge
+          : "rgba(185,28,28,0.72)";
+        const highlightStroke = options.valid
+          ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.insulationShadow
+          : "rgba(255,255,255,0.35)";
+        const bandFill = options.valid
+          ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.fittingBand
+          : "rgba(248,113,113,0.78)";
+        const bandEdge = options.valid
+          ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.fittingBandEdge
+          : "rgba(254,226,226,0.92)";
+
+        const renderTaperedSegment = (
+          reducer: {
+            start: Point2D;
+            end: Point2D;
+            startDiameterMm: number;
+            endDiameterMm: number;
+          },
+          fill: string,
+          name: string,
+          strokeColor = edgeStroke,
+        ): void => {
+          const dx = reducer.end.x - reducer.start.x;
+          const dy = reducer.end.y - reducer.start.y;
+          const lengthMm = Math.hypot(dx, dy);
+          if (lengthMm <= 0.2) {
+            return;
+          }
+          const direction = { x: dx / lengthMm, y: dy / lengthMm };
+          const normal = { x: -direction.y, y: direction.x };
+          const startHalf = reducer.startDiameterMm / 2;
+          const endHalf = reducer.endDiameterMm / 2;
+          const polygon = new fabric.Polygon(
+            [
+              {
+                x: toPx(reducer.start.x + normal.x * startHalf),
+                y: toPx(reducer.start.y + normal.y * startHalf),
+              },
+              {
+                x: toPx(reducer.end.x + normal.x * endHalf),
+                y: toPx(reducer.end.y + normal.y * endHalf),
+              },
+              {
+                x: toPx(reducer.end.x - normal.x * endHalf),
+                y: toPx(reducer.end.y - normal.y * endHalf),
+              },
+              {
+                x: toPx(reducer.start.x - normal.x * startHalf),
+                y: toPx(reducer.start.y - normal.y * startHalf),
+              },
+            ],
+            {
+              fill,
+              stroke: strokeColor,
+              strokeWidth: 0.8,
+              selectable: false,
+              evented: false,
+            },
+          );
+          this.annotate(polygon, element.id, name);
+          objects.push(polygon);
+        };
+
+        const renderJunctionSection = (
+          reducer: {
+            start: Point2D;
+            end: Point2D;
+            startDiameterMm: number;
+            endDiameterMm: number;
+          },
+          fill: string,
+          name: string,
+        ): void => {
+          renderTaperedSegment(reducer, fill, `${name}-outer`);
+          renderPipePolyline(
+            [reducer.start, reducer.end],
+            highlightStroke,
+            Math.max(
+              1.1,
+              Math.min(reducer.startDiameterMm, reducer.endDiameterMm) * 0.2,
+            ),
+            `${name}-highlight`,
+          );
+        };
+
+        const renderManifoldBody = (
+          manifold: { outline: Point2D[]; highlightPath: Point2D[] },
+          fill: string,
+          name: string,
+        ): void => {
+          const outline = manifold.outline;
+          if (outline.length < 3) {
+            return;
+          }
+          const polygon = new fabric.Polygon(
+            outline.map((point) => ({ x: toPx(point.x), y: toPx(point.y) })),
+            {
+              fill,
+              stroke: edgeStroke,
+              strokeWidth: 0.8,
+              selectable: false,
+              evented: false,
+            },
+          );
+          this.annotate(polygon, element.id, `${name}-body`);
+          objects.push(polygon);
+
+          renderPipePolyline(
+            manifold.highlightPath,
+            highlightStroke,
+            Math.max(1.1, lineWidthFromOutline(outline) * 0.12),
+            `${name}-highlight`,
+          );
+        };
+
+        const lineWidthFromOutline = (outline: Point2D[]): number => {
+          const ys = outline.map((point) => point.y);
+          return Math.max(...ys) - Math.min(...ys);
+        };
+
+        const renderBand = (
+          band: (typeof branchKit.gas.bands)[number],
+          name: string,
+        ): void => {
+          const rect = new fabric.Rect({
+            left: toPx(band.center.x),
+            top: toPx(band.center.y),
+            width: Math.max(toPx(band.lengthMm), 1),
+            height: Math.max(toPx(band.outerDiameterMm), 1),
+            angle: (Math.atan2(band.direction.y, band.direction.x) * 180) / Math.PI,
+            rx: Math.max(toPx(band.outerDiameterMm * 0.18), 0.8),
+            ry: Math.max(toPx(band.outerDiameterMm * 0.18), 0.8),
+            originX: "center",
+            originY: "center",
+            fill: bandFill,
+            stroke: bandEdge,
+            strokeWidth: 0.55,
+            selectable: false,
+            evented: false,
+          });
+          this.annotate(rect, element.id, name);
+          objects.push(rect);
+        };
+
+        const renderLine = (
+          line: typeof branchKit.gas,
+          bodyStroke: string,
+        ): void => {
+          const renderCopperPolyline = (
+            points: Point2D[],
+            diameterMm: number,
+            name: string,
+          ): void => {
+            renderPipePolyline(
+              points,
+              edgeStroke,
+              diameterMm + 1.2,
+              `${name}-edge`,
+            );
+            renderPipePolyline(points, bodyStroke, diameterMm, `${name}-body`);
+            renderPipePolyline(
+              points,
+              highlightStroke,
+              Math.max(1.1, diameterMm * 0.22),
+              `${name}-highlight`,
+            );
+          };
+
+          renderCopperPolyline(
+            line.inletTube.points,
+            line.inletTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-inlet`,
+          );
+          renderCopperPolyline(
+            line.inletRunTube.points,
+            line.inletRunTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-inlet-run`,
+          );
+          renderManifoldBody(
+            line.manifold,
+            bodyStroke,
+            `hvac-branch-${line.kind}-manifold`,
+          );
+          renderCopperPolyline(
+            line.mainTube.points,
+            line.mainTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-main`,
+          );
+          renderCopperPolyline(
+            line.branchTube.points,
+            line.branchTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-branch`,
+          );
+          if (line.inletReducer) {
+            renderJunctionSection(
+              {
+                start: line.inletReducer.start,
+                end: line.inletReducer.end,
+                startDiameterMm: line.inletReducer.startOuterDiameterMm,
+                endDiameterMm: line.inletReducer.endOuterDiameterMm,
+              },
+              bodyStroke,
+              `hvac-branch-${line.kind}-reducer-outer`,
+            );
+          }
+          line.bands.forEach((band, index) => {
+            renderBand(band, `hvac-branch-${line.kind}-band-${index}`);
+          });
+        };
+
+        renderLine(
+          branchKit.gas,
+          options.valid
+            ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.gasCopper
+            : "#dc2626",
+        );
+        renderLine(
+          branchKit.liquid,
+          options.valid
+            ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.liquidCopper
+            : "#f97316",
+        );
+        getRefrigerantBranchKitTerminalSpecs(branchKit).forEach((terminal) => {
+          createHiddenSnapPoint(
+            terminal.point,
+            `hvac-branch-snap-${terminal.kind}-${terminal.role}`,
+          );
+        });
+        break;
+      }
       case "ceiling-cassette-ac": {
         const cassette = buildCeilingCassetteModel(element);
         const toPx = (valueMm: number): number => valueMm * MM_TO_PX;
@@ -1502,7 +1759,7 @@ export class HvacPlanRenderer {
       }
       case "ducted-ac": {
         ductedModel = buildDuctedIndoorUnitModel(element);
-        ductedPlanBounds = getDuctedIndoorUnitPlanBounds(ductedModel);
+        customPlanBounds = getDuctedIndoorUnitPlanBounds(ductedModel);
         const ducted = ductedModel;
         const shellFill = options.valid
           ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.shell
@@ -2129,8 +2386,8 @@ export class HvacPlanRenderer {
 
     if (!isPipeElement && !isDuctElement) {
       const labelTopPx =
-        ductedPlanBounds !== null
-          ? toPx(ductedPlanBounds.minY) - 8
+        customPlanBounds !== null
+          ? toPx(customPlanBounds.minY) - 8
           : -halfD - 8;
       const label = new fabric.Text(element.label.toUpperCase(), {
         left: 0,
@@ -2153,15 +2410,15 @@ export class HvacPlanRenderer {
       !isPipeElement &&
       element.type !== "ceiling-cassette-ac"
     ) {
-      if (element.type === "ducted-ac" && ductedPlanBounds) {
+      if (customPlanBounds) {
         createRectOutlineHalo(
           {
-            leftMm: (ductedPlanBounds.minX + ductedPlanBounds.maxX) / 2,
-            topMm: (ductedPlanBounds.minY + ductedPlanBounds.maxY) / 2,
+            leftMm: (customPlanBounds.minX + customPlanBounds.maxX) / 2,
+            topMm: (customPlanBounds.minY + customPlanBounds.maxY) / 2,
             widthMm:
-              ductedPlanBounds.maxX - ductedPlanBounds.minX + 8 / MM_TO_PX,
+              customPlanBounds.maxX - customPlanBounds.minX + 8 / MM_TO_PX,
             heightMm:
-              ductedPlanBounds.maxY - ductedPlanBounds.minY + 8 / MM_TO_PX,
+              customPlanBounds.maxY - customPlanBounds.minY + 8 / MM_TO_PX,
           },
           palette.halo,
           2,
@@ -2170,12 +2427,12 @@ export class HvacPlanRenderer {
         );
         createRectOutlineHalo(
           {
-            leftMm: (ductedPlanBounds.minX + ductedPlanBounds.maxX) / 2,
-            topMm: (ductedPlanBounds.minY + ductedPlanBounds.maxY) / 2,
+            leftMm: (customPlanBounds.minX + customPlanBounds.maxX) / 2,
+            topMm: (customPlanBounds.minY + customPlanBounds.maxY) / 2,
             widthMm:
-              ductedPlanBounds.maxX - ductedPlanBounds.minX + 6 / MM_TO_PX,
+              customPlanBounds.maxX - customPlanBounds.minX + 6 / MM_TO_PX,
             heightMm:
-              ductedPlanBounds.maxY - ductedPlanBounds.minY + 6 / MM_TO_PX,
+              customPlanBounds.maxY - customPlanBounds.minY + 6 / MM_TO_PX,
           },
           palette.hover,
           1.5,

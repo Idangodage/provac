@@ -34,6 +34,11 @@ import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
 } from "../hvac/refrigerantPipePairModel";
+import {
+  buildRefrigerantBranchKitModel,
+  isRefrigerantBranchKitElement,
+  REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
+} from "../hvac/refrigerantBranchKitModel";
 import { hasRenderer } from "../object/FurnitureSymbolRenderer";
 import { createOptimizedFurnitureModel3D } from "../object/three3d/Furniture3DRenderer";
 
@@ -1304,6 +1309,100 @@ function createCylinderBetweenPoints(
   return group;
 }
 
+function createTaperedCylinderBetweenPoints(
+  start: THREE.Vector3,
+  end: THREE.Vector3,
+  startRadius: number,
+  endRadius: number,
+  color: string,
+  options?: {
+    opacity?: number;
+    renderOrder?: number;
+    radialSegments?: number;
+  },
+): THREE.Mesh | null {
+  const delta = end.clone().sub(start);
+  const length = delta.length();
+  if (length < 0.001) {
+    return null;
+  }
+  const axis = delta.normalize();
+  const center = start.clone().add(end).multiplyScalar(0.5);
+  const mesh = createLocalCylinderMesh(
+    endRadius,
+    startRadius,
+    length,
+    color,
+    center,
+    {
+      opacity: options?.opacity,
+      renderOrder: options?.renderOrder,
+      radialSegments: options?.radialSegments ?? 18,
+    },
+  );
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+  return mesh;
+}
+
+function createSmoothTubeAlongPoints(
+  points: THREE.Vector3[],
+  radius: number,
+  color: string,
+  options?: {
+    opacity?: number;
+    renderOrder?: number;
+    radialSegments?: number;
+    tubularSegments?: number;
+  },
+): THREE.Object3D | null {
+  if (points.length < 2) {
+    return null;
+  }
+
+  const cleaned: THREE.Vector3[] = [];
+  points.forEach((point) => {
+    const previous = cleaned[cleaned.length - 1];
+    if (!previous || previous.distanceTo(point) > 0.5) {
+      cleaned.push(point.clone());
+    }
+  });
+  if (cleaned.length < 2) {
+    return null;
+  }
+  if (cleaned.length === 2) {
+    return createCylinderBetweenPoints(
+      cleaned[0]!,
+      cleaned[1]!,
+      radius,
+      color,
+      {
+        opacity: options?.opacity,
+        renderOrder: options?.renderOrder,
+        radialSegments: options?.radialSegments ?? 18,
+        capStart: false,
+        capEnd: false,
+      },
+    );
+  }
+
+  const curve = new THREE.CatmullRomCurve3(cleaned, false, "centripetal", 0.5);
+  const geometry = new THREE.TubeGeometry(
+    curve,
+    options?.tubularSegments ?? Math.max(48, cleaned.length * 10),
+    radius,
+    options?.radialSegments ?? 18,
+    false,
+  );
+  const opacity = options?.opacity ?? 1;
+  const isTransparent = opacity < 1;
+  const material = getSharedBoxMaterial(color, opacity, isTransparent);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = options?.renderOrder ?? (isTransparent ? 24 : 16);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
 function createTubeAlongPoints(
   points: THREE.Vector3[],
   radius: number,
@@ -1528,6 +1627,53 @@ function createRoundedRectShape(
   return shape;
 }
 
+function createExtrudedPolygonMesh(
+  points: Point2D[],
+  height: number,
+  color: string,
+  zCenter: number,
+  options?: {
+    opacity?: number;
+    renderOrder?: number;
+    bevelEnabled?: boolean;
+    bevelSize?: number;
+    bevelThickness?: number;
+    bevelSegments?: number;
+    curveSegments?: number;
+  },
+): THREE.Mesh | null {
+  if (points.length < 3 || height <= 0.2) {
+    return null;
+  }
+  const shape = new THREE.Shape();
+  shape.moveTo(points[0]!.x, points[0]!.y);
+  for (let index = 1; index < points.length; index += 1) {
+    shape.lineTo(points[index]!.x, points[index]!.y);
+  }
+  shape.closePath();
+
+  const opacity = options?.opacity ?? 1;
+  const isTransparent = opacity < 1;
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: height,
+    bevelEnabled: options?.bevelEnabled ?? true,
+    bevelSize: options?.bevelSize ?? Math.min(1.2, height * 0.08),
+    bevelThickness: options?.bevelThickness ?? Math.min(1.2, height * 0.08),
+    bevelSegments: options?.bevelSegments ?? 2,
+    curveSegments: options?.curveSegments ?? 8,
+    steps: 1,
+  });
+  geometry.translate(0, 0, zCenter - height / 2);
+  geometry.computeVertexNormals();
+
+  const material = getSharedBoxMaterial(color, opacity, isTransparent);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = options?.renderOrder ?? (isTransparent ? 24 : 16);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
 function createRoundedLocalExtrudedMesh(
   width: number,
   depth: number,
@@ -1685,6 +1831,7 @@ function hvacPaletteForElement(element: HvacElement): Hvac3DPalette {
     case "filter":
     case "accessory":
     case "duct":
+    case "refrigerant-branch-kit":
       return {
         body: "#eef2f4",
         trim: "#dbe3e8",
@@ -1762,6 +1909,17 @@ function createHvacEquipmentMesh(
   pipeEndpointStateMap?: Map<string, RefrigerantPipeEndpointRenderState>,
   pipeRenderChainStateMap?: Map<string, RefrigerantPipeRenderChainState>,
 ): THREE.Group {
+  if (element.type === "accessory" && isRefrigerantBranchKitElement(element)) {
+    return createHvacEquipmentMesh(
+      {
+        ...element,
+        type: "refrigerant-branch-kit",
+      },
+      pipeEndpointStateMap,
+      pipeRenderChainStateMap,
+    );
+  }
+
   const width = Math.max(60, element.width);
   const depth = Math.max(60, element.depth);
   const height = Math.max(80, element.height);
@@ -2059,6 +2217,262 @@ function createHvacEquipmentMesh(
           ),
         );
       });
+      break;
+    }
+    case "refrigerant-branch-kit": {
+      const branchKit = buildRefrigerantBranchKitModel(element);
+      const gasCopper = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.gasCopper;
+      const liquidCopper = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.liquidCopper;
+      const bandColor = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.fittingBand;
+
+      const pointToVector = (point: Point2D, z: number): THREE.Vector3 =>
+        new THREE.Vector3(point.x, point.y, z);
+
+      const addSegment = (
+        points: Point2D[],
+        z: number,
+        radius: number,
+        color: string,
+        renderOrder: number,
+        options?: {
+          capStart?: boolean;
+          capEnd?: boolean;
+        },
+      ): void => {
+        if (points.length < 2) {
+          return;
+        }
+        const segment = createCylinderBetweenPoints(
+          pointToVector(points[0]!, z),
+          pointToVector(points[points.length - 1]!, z),
+          radius,
+          color,
+          {
+            renderOrder,
+            capStart: options?.capStart,
+            capEnd: options?.capEnd,
+            radialSegments: 18,
+          },
+        );
+        if (segment) {
+          group.add(segment);
+        }
+      };
+
+      const addReducer = (
+        reducer: {
+          start: Point2D;
+          end: Point2D;
+          startDiameterMm: number;
+          endDiameterMm: number;
+        } | null,
+        z: number,
+        color: string,
+        renderOrder: number,
+      ): void => {
+        if (!reducer) {
+          return;
+        }
+        const mesh = createTaperedCylinderBetweenPoints(
+          pointToVector(reducer.start, z),
+          pointToVector(reducer.end, z),
+          reducer.startDiameterMm / 2,
+          reducer.endDiameterMm / 2,
+          color,
+          { renderOrder, radialSegments: 18 },
+        );
+        if (mesh) {
+          group.add(mesh);
+        }
+      };
+
+      const addBranchTube = (
+        points: Point2D[],
+        z: number,
+        radius: number,
+        color: string,
+        renderOrder: number,
+        openEnd = true,
+      ): void => {
+        const tube = createTubeAlongPoints(
+          points.map((point) => pointToVector(point, z)),
+          radius,
+          color,
+          {
+            renderOrder,
+            openStart: true,
+            openEnd,
+            cornerStyle: "round",
+            radialSegments: 18,
+          },
+        );
+        if (tube) {
+          group.add(tube);
+        }
+        if (openEnd && points.length >= 2) {
+          const last = points[points.length - 1]!;
+          const previous = points[points.length - 2]!;
+          const dx = last.x - previous.x;
+          const dy = last.y - previous.y;
+          const length = Math.hypot(dx, dy);
+          if (length > 0.01) {
+            const rim = createCylinderBetweenPoints(
+              pointToVector(
+                {
+                  x: last.x - (dx / length) * Math.max(radius * 0.12, 0.6),
+                  y: last.y - (dy / length) * Math.max(radius * 0.12, 0.6),
+                },
+                z,
+              ),
+              pointToVector(last, z),
+              radius,
+              color,
+              {
+                renderOrder,
+                radialSegments: 18,
+                capStart: false,
+                capEnd: false,
+              },
+            );
+            if (rim) {
+              group.add(rim);
+            }
+          }
+        }
+      };
+
+      const addBand = (
+        band: (typeof branchKit.gas.bands)[number],
+        z: number,
+        renderOrder: number,
+      ): void => {
+        const halfLength = band.lengthMm / 2;
+        const start = {
+          x: band.center.x - band.direction.x * halfLength,
+          y: band.center.y - band.direction.y * halfLength,
+        };
+        const end = {
+          x: band.center.x + band.direction.x * halfLength,
+          y: band.center.y + band.direction.y * halfLength,
+        };
+        const mesh = createCylinderBetweenPoints(
+          pointToVector(start, z),
+          pointToVector(end, z),
+          band.outerDiameterMm / 2,
+          bandColor,
+          { renderOrder, radialSegments: 16 },
+        );
+        if (mesh) {
+          group.add(mesh);
+        }
+      };
+
+      const createRoundedManifoldMesh = (
+        line: typeof branchKit.gas,
+        color: string,
+        renderOrder: number,
+      ): THREE.Mesh | null => {
+        const manifoldBounds = line.manifold.outline.reduce(
+          (bounds, point) => ({
+            minX: Math.min(bounds.minX, point.x),
+            maxX: Math.max(bounds.maxX, point.x),
+            minY: Math.min(bounds.minY, point.y),
+            maxY: Math.max(bounds.maxY, point.y),
+          }),
+          {
+            minX: Number.POSITIVE_INFINITY,
+            maxX: Number.NEGATIVE_INFINITY,
+            minY: Number.POSITIVE_INFINITY,
+            maxY: Number.NEGATIVE_INFINITY,
+          },
+        );
+        const envelopeHeight = Math.max(
+          1,
+          manifoldBounds.maxY - manifoldBounds.minY,
+        );
+        const manifoldMinSpanMm = Math.min(
+          Math.max(1, manifoldBounds.maxX - manifoldBounds.minX),
+          Math.max(1, manifoldBounds.maxY - manifoldBounds.minY),
+          line.manifold.depthMm,
+        );
+        const bevelRadiusMm = Math.min(
+          Math.max(2.8, manifoldMinSpanMm * 0.22),
+          Math.max(3.4, envelopeHeight * 0.2),
+          line.manifold.depthMm * 0.36,
+        );
+        return createExtrudedPolygonMesh(
+          line.manifold.outline,
+          line.manifold.depthMm,
+          color,
+          line.centerlineZMm,
+          {
+            renderOrder,
+            bevelEnabled: true,
+            bevelSize: bevelRadiusMm,
+            bevelThickness: bevelRadiusMm,
+            bevelSegments: 12,
+            curveSegments: 48,
+          },
+        );
+      };
+
+      const renderLine = (
+        line: typeof branchKit.gas,
+        copperColor: string,
+      ): void => {
+        addSegment(
+          line.inletTube.points,
+          line.centerlineZMm,
+          line.inletTube.outerDiameterMm / 2,
+          copperColor,
+          19,
+          { capStart: false, capEnd: false },
+        );
+        addReducer(
+          line.inletReducer
+            ? {
+                start: line.inletReducer.start,
+                end: line.inletReducer.end,
+                startDiameterMm: line.inletReducer.startOuterDiameterMm,
+                endDiameterMm: line.inletReducer.endOuterDiameterMm,
+              }
+            : null,
+          line.centerlineZMm,
+          copperColor,
+          19,
+        );
+        addSegment(
+          line.inletRunTube.points,
+          line.centerlineZMm,
+          line.inletRunTube.outerDiameterMm / 2,
+          copperColor,
+          19,
+          { capStart: false, capEnd: false },
+        );
+        const manifoldMesh = createRoundedManifoldMesh(line, copperColor, 20);
+        if (manifoldMesh) {
+          group.add(manifoldMesh);
+        }
+        addSegment(
+          line.mainTube.points,
+          line.centerlineZMm,
+          line.mainTube.outerDiameterMm / 2,
+          copperColor,
+          19,
+          { capStart: false, capEnd: false },
+        );
+        addBranchTube(
+          line.branchTube.points,
+          line.centerlineZMm,
+          line.branchTube.outerDiameterMm / 2,
+          copperColor,
+          19,
+        );
+        line.bands.forEach((band) => addBand(band, line.centerlineZMm, 20));
+      };
+
+      renderLine(branchKit.gas, gasCopper);
+      renderLine(branchKit.liquid, liquidCopper);
       break;
     }
     case "refrigerant-pipe-pair": {
