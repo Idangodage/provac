@@ -117,6 +117,9 @@ export const REFRIGERANT_BRANCH_KIT_COLOR_PALETTE = {
   nodeInner: "#e0b082",
 } as const;
 
+export const DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM =
+  INCH_MM * 0.75;
+
 const DEFAULT_BRANCH_KIT_SUBTYPE: RefrigerantBranchKitSubtype = "dis-22-1g";
 const DEFAULT_BRANCH_KIT_WALL_ALLOWANCE_MM = 0.9;
 
@@ -153,6 +156,10 @@ function readNumberProperty(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function lerpNumber(start: number, end: number, t: number): number {
+  return start + (end - start) * t;
 }
 
 function resolveCopperBodyDiameterMm(
@@ -448,22 +455,24 @@ function buildBranchLineGeometry(
     x: branchSectionEndX,
     y: branchSectionEndY,
   };
-  const manifoldLeftX = junctionSleeve1StartX;
+  const manifoldLengthScale = 3 / 5;
   const manifoldRightX = junctionBodyEndX;
-  const manifoldSpanMm = manifoldRightX - manifoldLeftX;
+  const manifoldSpanMm = (junctionBodyEndX - junctionSleeve1StartX) * manifoldLengthScale;
+  const manifoldLeftX = manifoldRightX - manifoldSpanMm;
+  const inletRunEndX = manifoldLeftX;
   const manifoldNeckHalfHeight = outletFaceHalfHeightMm;
-  const manifoldFlatStartX = manifoldLeftX + manifoldSpanMm * 0.34;
-  const manifoldFlatEndX = manifoldRightX - manifoldSpanMm * 0.22;
-  const manifoldLeftShoulderControlX = manifoldLeftX + manifoldSpanMm * 0.14;
-  const manifoldRightShoulderControlX = manifoldRightX - manifoldSpanMm * 0.1;
+  const manifoldFlatStartX = manifoldLeftX + manifoldSpanMm * 0.41;
+  const manifoldFlatEndX = manifoldRightX - manifoldSpanMm * 0.28;
+  const manifoldLeftShoulderControlX = manifoldLeftX + manifoldSpanMm * 0.1;
+  const manifoldRightShoulderControlX = manifoldRightX - manifoldSpanMm * 0.06;
   const manifoldBodyBulgeMm = clamp(
     Math.max(
       junctionBodyOuterDiameterMm,
       runOuterDiameterMm,
       branchSectionEndOuterDiameterMm,
-    ) * 0.2,
-    3,
-    6,
+    ) * 0.24,
+    3.4,
+    6.8,
   );
   const manifoldTopY = trunkCenterY - (manifoldNeckHalfHeight + manifoldBodyBulgeMm);
   const manifoldBottomY =
@@ -485,20 +494,20 @@ function buildBranchLineGeometry(
         y: manifoldTopStart.y,
       },
       {
-        x: manifoldFlatStartX - manifoldSpanMm * 0.14,
+        x: manifoldFlatStartX - manifoldSpanMm * 0.18,
         y: manifoldTopY,
       },
       {
         x: manifoldFlatStartX,
         y: manifoldTopY,
       },
-      28,
+      36,
     ).slice(1),
     { x: manifoldFlatEndX, y: manifoldTopY },
     ...sampleCubicBezierPoints(
       { x: manifoldFlatEndX, y: manifoldTopY },
       {
-        x: manifoldFlatEndX + manifoldSpanMm * 0.1,
+        x: manifoldFlatEndX + manifoldSpanMm * 0.14,
         y: manifoldTopY,
       },
       {
@@ -506,7 +515,7 @@ function buildBranchLineGeometry(
         y: runOutletTopY,
       },
       { x: manifoldRightX, y: runOutletTopY },
-      28,
+      36,
     ).slice(1),
   ]);
   const outletVerticalGapMm = branchOutletTopY - runOutletBottomY;
@@ -566,20 +575,20 @@ function buildBranchLineGeometry(
         y: branchOutletBottomY,
       },
       {
-        x: manifoldFlatEndX + manifoldSpanMm * 0.1,
+        x: manifoldFlatEndX + manifoldSpanMm * 0.14,
         y: manifoldBottomY,
       },
       {
         x: manifoldFlatEndX,
         y: manifoldBottomY,
       },
-      28,
+      36,
     ).slice(1),
     { x: manifoldFlatStartX, y: manifoldBottomY },
     ...sampleCubicBezierPoints(
       { x: manifoldFlatStartX, y: manifoldBottomY },
       {
-        x: manifoldFlatStartX - manifoldSpanMm * 0.14,
+        x: manifoldFlatStartX - manifoldSpanMm * 0.18,
         y: manifoldBottomY,
       },
       {
@@ -587,13 +596,13 @@ function buildBranchLineGeometry(
         y: manifoldBottomStart.y,
       },
       manifoldBottomStart,
-      28,
+      36,
     ).slice(1),
   ]);
   const manifoldLeftBulgeMm = clamp(
-    Math.max(junctionBodyOuterDiameterMm, branchSectionEndOuterDiameterMm) * 0.24,
-    3.2,
-    6.6,
+    Math.max(junctionBodyOuterDiameterMm, branchSectionEndOuterDiameterMm) * 0.28,
+    3.8,
+    7.4,
   );
   const manifoldLeftContour = dedupeConsecutivePoints(
     sampleCubicBezierPoints(
@@ -607,7 +616,7 @@ function buildBranchLineGeometry(
         y: manifoldTopStart.y,
       },
       manifoldTopStart,
-      28,
+      36,
     ),
   );
   const manifold: RefrigerantBranchKitManifoldSpec = {
@@ -620,90 +629,40 @@ function buildBranchLineGeometry(
     highlightPath: manifoldTopProfile,
     depthMm: junctionBodyOuterDiameterMm,
   };
-  const branchStraightFromJunctionMm = clamp(
-    config.overallLengthMm * 0.03,
-    10,
-    16,
-  );
   const branchCurveStart = {
     x: branchSectionEnd.x,
     y: branchSectionEnd.y,
   };
+  const branchDiagonalDropMm = Math.max(branchY - branchCurveStart.y, 0);
+  const minBranchTailMm = clamp(config.overallLengthMm * 0.14, 42, 58);
+  const preferredBranchStraightFromJunctionMm = clamp(
+    config.overallLengthMm * 0.03,
+    10,
+    16,
+  );
+  const maxBranchStraightFromJunctionMm = Math.max(
+    branchOutletSocketStartX -
+      branchCurveStart.x -
+      branchDiagonalDropMm -
+      minBranchTailMm,
+    0,
+  );
+  const branchStraightFromJunctionMm = Math.min(
+    preferredBranchStraightFromJunctionMm,
+    maxBranchStraightFromJunctionMm,
+  );
   const branchStraightEnd = {
     x: branchCurveStart.x + branchStraightFromJunctionMm,
     y: branchCurveStart.y,
   };
-  const branchDiagonalDropMm = Math.max(branchY - branchStraightEnd.y, 0);
-  const minBranchTailMm = clamp(config.overallLengthMm * 0.14, 42, 58);
-  const branchOffsetTravelMm = Math.min(
-    branchDiagonalDropMm,
-    Math.max(branchOutletSocketStartX - branchStraightEnd.x - minBranchTailMm, 0),
-  );
-  const branchFirstBendRadiusMm = clamp(branchOffsetTravelMm * 0.12, 4, 8);
-  const branchSecondBendRadiusMm = clamp(branchOffsetTravelMm * 0.12, 4, 8);
-  const branchFirstBendEnd = {
-    x: branchStraightEnd.x + branchFirstBendRadiusMm,
-    y: branchStraightEnd.y + branchFirstBendRadiusMm,
-  };
-  const branchSecondBendStart = {
-    x:
-      branchStraightEnd.x +
-      branchOffsetTravelMm -
-      branchSecondBendRadiusMm,
-    y:
-      branchStraightEnd.y +
-      branchOffsetTravelMm -
-      branchSecondBendRadiusMm,
-  };
-  const branchSecondBendEnd = {
-    x: branchStraightEnd.x + branchOffsetTravelMm,
+  const branchDiagonalEnd = {
+    x: branchStraightEnd.x + branchDiagonalDropMm,
     y: branchY,
   };
-  const firstBendCurvePoints =
-    branchFirstBendEnd.x - branchStraightEnd.x > 0.5
-      ? sampleCubicBezierPoints(
-          branchStraightEnd,
-          {
-            x: branchStraightEnd.x + branchFirstBendRadiusMm * 0.72,
-            y: branchStraightEnd.y,
-          },
-          {
-            x: branchFirstBendEnd.x,
-            y: branchFirstBendEnd.y - branchFirstBendRadiusMm * 0.72,
-          },
-          branchFirstBendEnd,
-          4,
-        )
-      : [branchStraightEnd, branchFirstBendEnd];
-  const secondBendCurvePoints =
-    branchSecondBendEnd.x - branchSecondBendStart.x > 0.5
-      ? sampleCubicBezierPoints(
-          branchSecondBendStart,
-          {
-            x:
-              branchSecondBendStart.x +
-              branchSecondBendRadiusMm * 0.72,
-            y:
-              branchSecondBendStart.y +
-              branchSecondBendRadiusMm * 0.72,
-          },
-          {
-            x:
-              branchSecondBendEnd.x -
-              branchSecondBendRadiusMm * 0.72,
-            y: branchSecondBendEnd.y,
-          },
-          branchSecondBendEnd,
-          4,
-        )
-      : [branchSecondBendStart, branchSecondBendEnd];
   const branchGuidePoints = dedupeConsecutivePoints([
     branchCurveStart,
     branchStraightEnd,
-    ...firstBendCurvePoints.slice(1),
-    branchSecondBendStart,
-    ...secondBendCurvePoints.slice(1, -1),
-    branchSecondBendEnd,
+    branchDiagonalEnd,
     { x: rightX, y: branchY },
   ]);
   const bandLengthMm = clamp(config.overallLengthMm * 0.026, 8, 12);
@@ -729,6 +688,32 @@ function buildBranchLineGeometry(
     coreDiameterMm: junctionBodyCoreDiameterMm,
   };
   const centerlineZMm = maxOuterDiameterMm / 2;
+  const trimMainSectionToInlet = (
+    section: RefrigerantBranchKitReducerSpec,
+  ): RefrigerantBranchKitReducerSpec | null => {
+    const sectionLength = section.end.x - section.start.x;
+    if (sectionLength <= 0.01 || section.end.x <= inletRunEndX + 0.01) {
+      return null;
+    }
+    if (section.start.x >= inletRunEndX - 0.01) {
+      return section;
+    }
+    const t = clamp((inletRunEndX - section.start.x) / sectionLength, 0, 1);
+    return {
+      ...section,
+      start: { x: inletRunEndX, y: section.start.y },
+      startCoreDiameterMm: lerpNumber(
+        section.startCoreDiameterMm,
+        section.endCoreDiameterMm,
+        t,
+      ),
+      startOuterDiameterMm: lerpNumber(
+        section.startOuterDiameterMm,
+        section.endOuterDiameterMm,
+        t,
+      ),
+    };
+  };
   const junction: RefrigerantBranchKitJunctionSpec = {
     mainSections: [
       {
@@ -771,7 +756,9 @@ function buildBranchLineGeometry(
         startOuterDiameterMm: junctionBodyOuterDiameterMm,
         endOuterDiameterMm: junctionBodyOuterDiameterMm,
       },
-    ],
+    ]
+      .map(trimMainSectionToInlet)
+      .filter((section): section is RefrigerantBranchKitReducerSpec => section !== null),
     branchSection: {
       start: branchSectionStart,
       end: branchSectionEnd,
@@ -871,7 +858,7 @@ function buildBranchLineGeometry(
     inletRunTube: {
       points: [
         { x: reducerEndX, y: trunkCenterY },
-        { x: junctionSleeve1StartX, y: trunkCenterY },
+        { x: inletRunEndX, y: trunkCenterY },
       ],
       coreDiameterMm: config.runCoreDiameterMm,
       outerDiameterMm: runOuterDiameterMm,
@@ -1075,7 +1062,10 @@ export function buildRefrigerantBranchKitModel(
     );
   });
 
-  const bounds = computeBounds(boundsPoints, maxOuterRadiusMm + 8);
+  const bounds = computeBounds(
+    boundsPoints,
+    maxOuterRadiusMm + DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM + 8,
+  );
   const offset = bounds.center;
   const translateLine = (
     line: RefrigerantBranchKitLineSpec,
@@ -1121,7 +1111,9 @@ export function buildRefrigerantBranchKitModel(
 
   const translatedGas = translateLine(gas);
   const translatedLiquid = translateLine(liquid);
-  const heightMm = Math.max(gasMaxOuterDiameterMm, liquidMaxOuterDiameterMm);
+  const heightMm =
+    Math.max(gasMaxOuterDiameterMm, liquidMaxOuterDiameterMm) +
+    DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM * 2;
 
   return {
     subtype,

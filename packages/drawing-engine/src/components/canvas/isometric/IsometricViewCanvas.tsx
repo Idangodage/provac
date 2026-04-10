@@ -36,6 +36,7 @@ import {
 } from "../hvac/refrigerantPipePairModel";
 import {
   buildRefrigerantBranchKitModel,
+  DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
   isRefrigerantBranchKitElement,
   REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
 } from "../hvac/refrigerantBranchKitModel";
@@ -2221,12 +2222,65 @@ function createHvacEquipmentMesh(
     }
     case "refrigerant-branch-kit": {
       const branchKit = buildRefrigerantBranchKitModel(element);
+      const insulationColor = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.insulationBody;
       const gasCopper = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.gasCopper;
       const liquidCopper = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.liquidCopper;
       const bandColor = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.fittingBand;
+      const insulationThicknessMm =
+        DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM;
 
       const pointToVector = (point: Point2D, z: number): THREE.Vector3 =>
         new THREE.Vector3(point.x, point.y, z);
+
+      const trimPolylineEnd = (
+        points: Point2D[],
+        trimLengthMm: number,
+      ): Point2D[] => {
+        if (points.length < 2 || trimLengthMm <= 0.01) {
+          return points;
+        }
+
+        const segmentLengths: number[] = [];
+        let totalLength = 0;
+        for (let index = 1; index < points.length; index += 1) {
+          const start = points[index - 1]!;
+          const end = points[index]!;
+          const length = Math.hypot(end.x - start.x, end.y - start.y);
+          segmentLengths.push(length);
+          totalLength += length;
+        }
+
+        const targetLength = Math.max(totalLength - trimLengthMm, 0);
+        if (targetLength <= 0.01) {
+          return [points[0]!];
+        }
+        if (targetLength >= totalLength - 0.01) {
+          return points;
+        }
+
+        const trimmed: Point2D[] = [points[0]!];
+        let traversed = 0;
+        for (let index = 1; index < points.length; index += 1) {
+          const start = points[index - 1]!;
+          const end = points[index]!;
+          const length = segmentLengths[index - 1]!;
+          if (traversed + length < targetLength - 0.01) {
+            trimmed.push(end);
+            traversed += length;
+            continue;
+          }
+
+          const remaining = targetLength - traversed;
+          const t = length > 0.01 ? remaining / length : 0;
+          trimmed.push({
+            x: start.x + (end.x - start.x) * t,
+            y: start.y + (end.y - start.y) * t,
+          });
+          break;
+        }
+
+        return trimmed;
+      };
 
       const addSegment = (
         points: Point2D[],
@@ -2367,6 +2421,33 @@ function createHvacEquipmentMesh(
         }
       };
 
+      const addRouteTube = (
+        points: Point2D[],
+        z: number,
+        radius: number,
+        color: string,
+        renderOrder: number,
+      ): void => {
+        if (points.length < 2) {
+          return;
+        }
+        const tube = createTubeAlongPoints(
+          points.map((point) => pointToVector(point, z)),
+          radius,
+          color,
+          {
+            renderOrder,
+            openStart: false,
+            openEnd: false,
+            cornerStyle: "round",
+            radialSegments: 18,
+          },
+        );
+        if (tube) {
+          group.add(tube);
+        }
+      };
+
       const createRoundedManifoldMesh = (
         line: typeof branchKit.gas,
         color: string,
@@ -2420,6 +2501,40 @@ function createHvacEquipmentMesh(
         line: typeof branchKit.gas,
         copperColor: string,
       ): void => {
+        const insulatedMainPoints = trimPolylineEnd(
+          line.mainTube.points,
+          line.runOutletTerminal.socketLengthMm,
+        );
+        const insulatedBranchPoints = trimPolylineEnd(
+          line.branchTube.points,
+          line.branchOutletTerminal.socketLengthMm,
+        );
+
+        addRouteTube(
+          line.inletRunTube.points,
+          line.centerlineZMm,
+          line.inletRunTube.outerDiameterMm / 2 + insulationThicknessMm,
+          insulationColor,
+          18,
+        );
+        const manifoldMesh = createRoundedManifoldMesh(line, insulationColor, 18);
+        if (manifoldMesh) {
+          group.add(manifoldMesh);
+        }
+        addRouteTube(
+          insulatedMainPoints,
+          line.centerlineZMm,
+          line.mainTube.outerDiameterMm / 2 + insulationThicknessMm,
+          insulationColor,
+          18,
+        );
+        addRouteTube(
+          insulatedBranchPoints,
+          line.centerlineZMm,
+          line.branchTube.outerDiameterMm / 2 + insulationThicknessMm,
+          insulationColor,
+          18,
+        );
         addSegment(
           line.inletTube.points,
           line.centerlineZMm,
@@ -2449,10 +2564,6 @@ function createHvacEquipmentMesh(
           19,
           { capStart: false, capEnd: false },
         );
-        const manifoldMesh = createRoundedManifoldMesh(line, copperColor, 20);
-        if (manifoldMesh) {
-          group.add(manifoldMesh);
-        }
         addSegment(
           line.mainTube.points,
           line.centerlineZMm,

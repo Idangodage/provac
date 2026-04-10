@@ -29,6 +29,7 @@ import {
 } from "./refrigerantPipePairModel";
 import {
   buildRefrigerantBranchKitModel,
+  DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
   getRefrigerantBranchKitPlanBounds,
   getRefrigerantBranchKitTerminalSpecs,
   isRefrigerantBranchKitElement,
@@ -1259,12 +1260,17 @@ export class HvacPlanRenderer {
         const highlightStroke = options.valid
           ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.insulationShadow
           : "rgba(255,255,255,0.35)";
+        const insulationFill = options.valid
+          ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.insulationBody
+          : "rgba(248,113,113,0.46)";
         const bandFill = options.valid
           ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.fittingBand
           : "rgba(248,113,113,0.78)";
         const bandEdge = options.valid
           ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.fittingBandEdge
           : "rgba(254,226,226,0.92)";
+        const insulationThicknessMm =
+          DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM;
 
         const renderTaperedSegment = (
           reducer: {
@@ -1375,6 +1381,56 @@ export class HvacPlanRenderer {
           return Math.max(...ys) - Math.min(...ys);
         };
 
+        const trimPolylineEnd = (
+          points: Point2D[],
+          trimLengthMm: number,
+        ): Point2D[] => {
+          if (points.length < 2 || trimLengthMm <= 0.01) {
+            return points;
+          }
+
+          const segmentLengths: number[] = [];
+          let totalLength = 0;
+          for (let index = 1; index < points.length; index += 1) {
+            const start = points[index - 1]!;
+            const end = points[index]!;
+            const length = Math.hypot(end.x - start.x, end.y - start.y);
+            segmentLengths.push(length);
+            totalLength += length;
+          }
+
+          const targetLength = Math.max(totalLength - trimLengthMm, 0);
+          if (targetLength <= 0.01) {
+            return [points[0]!];
+          }
+          if (targetLength >= totalLength - 0.01) {
+            return points;
+          }
+
+          const trimmed: Point2D[] = [points[0]!];
+          let traversed = 0;
+          for (let index = 1; index < points.length; index += 1) {
+            const start = points[index - 1]!;
+            const end = points[index]!;
+            const length = segmentLengths[index - 1]!;
+            if (traversed + length < targetLength - 0.01) {
+              trimmed.push(end);
+              traversed += length;
+              continue;
+            }
+
+            const remaining = targetLength - traversed;
+            const t = length > 0.01 ? remaining / length : 0;
+            trimmed.push({
+              x: start.x + (end.x - start.x) * t,
+              y: start.y + (end.y - start.y) * t,
+            });
+            break;
+          }
+
+          return trimmed;
+        };
+
         const renderBand = (
           band: (typeof branchKit.gas.bands)[number],
           name: string,
@@ -1423,6 +1479,59 @@ export class HvacPlanRenderer {
             );
           };
 
+          const renderInsulationPolyline = (
+            points: Point2D[],
+            copperDiameterMm: number,
+            name: string,
+          ): void => {
+            if (points.length < 2) {
+              return;
+            }
+            const insulatedDiameterMm =
+              copperDiameterMm + insulationThicknessMm * 2;
+            renderPipePolyline(
+              points,
+              edgeStroke,
+              insulatedDiameterMm + 1.2,
+              `${name}-edge`,
+            );
+            renderPipePolyline(
+              points,
+              insulationFill,
+              insulatedDiameterMm,
+              `${name}-body`,
+            );
+          };
+
+          const insulatedMainPoints = trimPolylineEnd(
+            line.mainTube.points,
+            line.runOutletTerminal.socketLengthMm,
+          );
+          const insulatedBranchPoints = trimPolylineEnd(
+            line.branchTube.points,
+            line.branchOutletTerminal.socketLengthMm,
+          );
+
+          renderInsulationPolyline(
+            line.inletRunTube.points,
+            line.inletRunTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-inlet-run-insulation`,
+          );
+          renderManifoldBody(
+            line.manifold,
+            insulationFill,
+            `hvac-branch-${line.kind}-manifold`,
+          );
+          renderInsulationPolyline(
+            insulatedMainPoints,
+            line.mainTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-main-insulation`,
+          );
+          renderInsulationPolyline(
+            insulatedBranchPoints,
+            line.branchTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-branch-insulation`,
+          );
           renderCopperPolyline(
             line.inletTube.points,
             line.inletTube.outerDiameterMm,
@@ -1432,11 +1541,6 @@ export class HvacPlanRenderer {
             line.inletRunTube.points,
             line.inletRunTube.outerDiameterMm,
             `hvac-branch-${line.kind}-inlet-run`,
-          );
-          renderManifoldBody(
-            line.manifold,
-            bodyStroke,
-            `hvac-branch-${line.kind}-manifold`,
           );
           renderCopperPolyline(
             line.mainTube.points,
