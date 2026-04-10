@@ -629,7 +629,14 @@ function computeStartTakeoffLength(
   centerSpacingMm: number,
   maxOuterDiameterMm: number,
 ): number {
-  return Math.max(64, centerSpacingMm + 18, maxOuterDiameterMm * 1.15);
+  return Math.max(54, centerSpacingMm + 12, maxOuterDiameterMm * 1.02);
+}
+
+function computeCompactBendRadius(
+  centerSpacingMm: number,
+  maxOuterDiameterMm: number,
+): number {
+  return Math.max(6, maxOuterDiameterMm * 0.42, centerSpacingMm * 0.12);
 }
 
 function computeConnectionOverlapLength(maxOuterDiameterMm: number): number {
@@ -1207,6 +1214,7 @@ function buildResolvedPipeRoutePoints(
     bendRadiusMm,
   } = options;
   const startGuideReference = resolveBundleGuideReference(startBundleConnection);
+  const isUnitPortStart = startBundleConnection?.connectionKind === 'unit-port';
   const canContinueSelectedFieldPipe =
     startBundleConnection?.connectionKind === 'field-pipe'
     && (startGuideReference === 'gas' || startGuideReference === 'liquid')
@@ -1228,8 +1236,11 @@ function buildResolvedPipeRoutePoints(
     const companionOffsetMm = leadKind === 'gas'
       ? liquidOffsetMm - gasOffsetMm
       : gasOffsetMm - liquidOffsetMm;
-    const companionRoutePoints = leadRoutePoints.length >= 1
-      ? dedupeConsecutivePoints(offsetPolyline(leadRoutePoints, companionOffsetMm))
+    const companionGuidePoints = leadGuidePoints.length >= 1
+      ? dedupeConsecutivePoints(offsetPolyline(leadGuidePoints, companionOffsetMm))
+      : [];
+    const companionRoutePoints = companionGuidePoints.length >= 1
+      ? roundPolylineCorners(companionGuidePoints, bendRadiusMm)
       : [];
     const gasRouteBase = leadKind === 'gas' ? leadRoutePoints : companionRoutePoints;
     const liquidRouteBase = leadKind === 'liquid' ? leadRoutePoints : companionRoutePoints;
@@ -1260,15 +1271,44 @@ function buildResolvedPipeRoutePoints(
     startBundleConnection,
     centerSpacingMm,
   );
-  const roundedBundleGuidePoints = bundleGuidePoints.length >= 1
-    ? roundPolylineCorners(bundleGuidePoints, bendRadiusMm)
+  const gasParallelGuidePoints = bundleGuidePoints.length >= 1
+    ? dedupeConsecutivePoints(offsetPolyline(bundleGuidePoints, gasOffsetMm))
     : [];
-  const gasParallelRoutePoints = roundedBundleGuidePoints.length >= 1
-    ? dedupeConsecutivePoints(offsetPolyline(roundedBundleGuidePoints, gasOffsetMm))
+  const liquidParallelGuidePoints = bundleGuidePoints.length >= 1
+    ? dedupeConsecutivePoints(offsetPolyline(bundleGuidePoints, liquidOffsetMm))
     : [];
-  const liquidParallelRoutePoints = roundedBundleGuidePoints.length >= 1
-    ? dedupeConsecutivePoints(offsetPolyline(roundedBundleGuidePoints, liquidOffsetMm))
+  const gasParallelRoutePoints = gasParallelGuidePoints.length >= 1
+    ? roundPolylineCorners(gasParallelGuidePoints, bendRadiusMm)
     : [];
+  const liquidParallelRoutePoints = liquidParallelGuidePoints.length >= 1
+    ? roundPolylineCorners(liquidParallelGuidePoints, bendRadiusMm)
+    : [];
+
+  if (isUnitPortStart) {
+    const gasRoundedGuidePoints = gasGuidePoints.length >= 1
+      ? roundPolylineCorners(gasGuidePoints, bendRadiusMm)
+      : [];
+    const liquidRoundedGuidePoints = liquidGuidePoints.length >= 1
+      ? roundPolylineCorners(liquidGuidePoints, bendRadiusMm)
+      : [];
+
+    return {
+      gasRoutePoints: anchorGuideRouteEnd(
+        mergeGuideRouteWithParallelRoute(
+          gasRoundedGuidePoints,
+          gasParallelRoutePoints,
+        ),
+        endBundleConnection?.gasFieldPoint ?? null,
+      ),
+      liquidRoutePoints: anchorGuideRouteEnd(
+        mergeGuideRouteWithParallelRoute(
+          liquidRoundedGuidePoints,
+          liquidParallelRoutePoints,
+        ),
+        endBundleConnection?.liquidFieldPoint ?? null,
+      ),
+    };
+  }
 
   return {
     gasRoutePoints: anchorGuideRouteEnd(
@@ -1497,9 +1537,11 @@ export function buildRefrigerantPipePairVisual(
     : liquidOuterRadiusMm;
   const centerSpacingMm = gasOuterRadiusMm + liquidOuterRadiusMm + spec.pipeGapMm;
   const bendRadiusMm = Math.max(
-    18,
-    Math.max(gasOuterDiameterMm, liquidOuterDiameterMm) * 1.25,
-    centerSpacingMm * 0.45,
+    12,
+    computeCompactBendRadius(
+      centerSpacingMm,
+      Math.max(gasOuterDiameterMm, liquidOuterDiameterMm),
+    ),
   );
   const gasExposedTailLengthMm = 0;
   const liquidExposedTailLengthMm = 0;
@@ -1737,9 +1779,11 @@ export function buildRefrigerantPipeElements(
   const pipeGapMm = options?.pipeGapMm ?? DEFAULT_REFRIGERANT_PIPE_GAP_MM;
   const centerSpacingMm = gasOuterRadiusMm + liquidOuterRadiusMm + pipeGapMm;
   const bendRadiusMm = Math.max(
-    18,
-    Math.max(gasOuterDiameterMm, liquidOuterDiameterMm) * 1.25,
-    centerSpacingMm * 0.45,
+    12,
+    computeCompactBendRadius(
+      centerSpacingMm,
+      Math.max(gasOuterDiameterMm, liquidOuterDiameterMm),
+    ),
   );
   const maxOuterDiameterMm = Math.max(gasOuterDiameterMm, liquidOuterDiameterMm);
   const startTakeoffLengthMm = computeStartTakeoffLength(centerSpacingMm, maxOuterDiameterMm);

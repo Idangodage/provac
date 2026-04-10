@@ -1314,6 +1314,7 @@ function createTubeAlongPoints(
     radialSegments?: number;
     openStart?: boolean;
     openEnd?: boolean;
+    cornerStyle?: "round" | "elbow";
   },
 ): THREE.Object3D | null {
   if (points.length < 2) {
@@ -1416,20 +1417,22 @@ function createTubeAlongPoints(
     }
   }
 
-  for (let index = 1; index < finalPoints.length - 1; index += 1) {
-    group.add(
-      createLocalSphereMesh(
-        radius,
-        color,
-        finalPoints[index]!,
-        {
-          opacity: options?.opacity,
-          renderOrder: options?.renderOrder,
-          widthSegments: Math.max(18, options?.radialSegments ?? 18),
-          heightSegments: 14,
-        },
-      ),
-    );
+  if ((options?.cornerStyle ?? "round") === "round") {
+    for (let index = 1; index < finalPoints.length - 1; index += 1) {
+      group.add(
+        createLocalSphereMesh(
+          radius,
+          color,
+          finalPoints[index]!,
+          {
+            opacity: options?.opacity,
+            renderOrder: options?.renderOrder,
+            widthSegments: Math.max(18, options?.radialSegments ?? 18),
+            heightSegments: 14,
+          },
+        ),
+      );
+    }
   }
 
   return group.children.length > 0 ? group : null;
@@ -2102,12 +2105,13 @@ function createHvacEquipmentMesh(
         renderOrder: number,
         openStart = false,
         openEnd = false,
+        cornerStyle: "round" | "elbow" = "round",
       ) => {
         const tube = createTubeAlongPoints(
           points.map((point) => new THREE.Vector3(point.x, point.y, z)),
           radius,
           color,
-          { opacity, renderOrder, openStart, openEnd },
+          { opacity, renderOrder, openStart, openEnd, cornerStyle },
         );
         if (tube) {
           group.add(tube);
@@ -2183,6 +2187,7 @@ function createHvacEquipmentMesh(
         19,
         isFieldPipeStart,
         false,
+        "elbow",
       );
       addRouteTube(
         liquidCorePoints,
@@ -2193,6 +2198,7 @@ function createHvacEquipmentMesh(
         19,
         isFieldPipeStart,
         false,
+        "elbow",
       );
 
       break;
@@ -2243,12 +2249,13 @@ function createHvacEquipmentMesh(
         renderOrder: number,
         openStart = false,
         openEnd = false,
+        cornerStyle: "round" | "elbow" = "round",
       ) => {
         const tube = createTubeAlongPoints(
           points.map((point) => new THREE.Vector3(point.x, point.y, z)),
           radius,
           color,
-          { opacity, renderOrder, openStart, openEnd },
+          { opacity, renderOrder, openStart, openEnd, cornerStyle },
         );
         if (tube) {
           group.add(tube);
@@ -2309,6 +2316,7 @@ function createHvacEquipmentMesh(
           19,
           chainState.openStart,
           chainState.openEnd,
+          "elbow",
         );
       } else {
         addRouteTube(
@@ -2338,6 +2346,7 @@ function createHvacEquipmentMesh(
           19,
           endpointState.openStart,
           endpointState.openEnd,
+          "elbow",
         );
       }
 

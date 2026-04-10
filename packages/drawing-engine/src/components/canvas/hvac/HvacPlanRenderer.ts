@@ -723,6 +723,7 @@ export class HvacPlanRenderer {
       stroke: string,
       strokeWidthMm: number,
       name: string,
+      lineJoin: "round" | "miter" = "round",
     ): void => {
       if (points.length < 2) {
         return;
@@ -734,7 +735,8 @@ export class HvacPlanRenderer {
           stroke,
           strokeWidth: Math.max(toPx(strokeWidthMm), 1),
           strokeLineCap: "butt",
-          strokeLineJoin: "round",
+          strokeLineJoin: lineJoin,
+          strokeMiterLimit: lineJoin === "miter" ? 8 : 4,
           selectable: false,
           evented: false,
         },
@@ -985,6 +987,7 @@ export class HvacPlanRenderer {
           coreStroke,
           visual.coreRadiusMm * 2,
           "hvac-detail",
+          "miter",
         );
         if (visual.localOuterPoints.length >= 1) {
           createHiddenSnapPoint(visual.localOuterPoints[0]!, "hvac-snap-start");
@@ -1030,6 +1033,7 @@ export class HvacPlanRenderer {
           stroke: string,
           strokeWidthMm: number,
           name: string,
+          lineJoin: "round" | "miter" = "round",
         ): void => {
           if (points.length < 2) {
             return;
@@ -1041,7 +1045,8 @@ export class HvacPlanRenderer {
               stroke,
               strokeWidth: Math.max(toPx(strokeWidthMm), 1),
               strokeLineCap: "butt",
-              strokeLineJoin: "round",
+              strokeLineJoin: lineJoin,
+              strokeMiterLimit: lineJoin === "miter" ? 8 : 4,
               selectable: false,
               evented: false,
             },
@@ -1212,12 +1217,14 @@ export class HvacPlanRenderer {
           gasCoreStroke,
           visual.gasCoreRadiusMm * 2,
           "hvac-detail",
+          "miter",
         );
         renderPolyline(
           liquidCorePoints,
           liquidCoreStroke,
           visual.liquidCoreRadiusMm * 2,
           "hvac-detail",
+          "miter",
         );
         break;
       }
