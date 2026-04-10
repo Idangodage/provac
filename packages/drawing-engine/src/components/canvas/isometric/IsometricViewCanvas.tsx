@@ -35,9 +35,16 @@ import {
   buildRefrigerantPipeVisual,
 } from "../hvac/refrigerantPipePairModel";
 import {
-  buildRefrigerantBranchKitModel,
+  buildRefrigerantPipeEndpointRenderStateMap,
+  buildRefrigerantPipeRenderChainStateMap,
+  type RefrigerantPipeEndpointRenderState,
+  type RefrigerantPipeRenderChainState,
+} from "../hvac/refrigerantPipeRenderState";
+import {
+  buildRefrigerantBranchKitViewModel,
   DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
   isRefrigerantBranchKitElement,
+  resolveRefrigerantBranchKitLineSelection,
   REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
 } from "../hvac/refrigerantBranchKitModel";
 import { hasRenderer } from "../object/FurnitureSymbolRenderer";
@@ -107,25 +114,6 @@ type SceneState = {
   controls: OrbitControls;
   contentRoot: THREE.Group;
   geometryRoot: THREE.Group;
-};
-
-type RefrigerantPipeEndpointRenderState = {
-  openStart: boolean;
-  openEnd: boolean;
-};
-
-type RefrigerantPipeRenderChainState = {
-  renderAsHead: boolean;
-  headId: string;
-  outerPoints: Point2D[];
-  outerRadiusMm: number;
-  corePoints: Point2D[];
-  coreRadiusMm: number;
-  absoluteStub: { start: Point2D; end: Point2D } | null;
-  elevationMm: number;
-  lineKind: "gas" | "liquid";
-  openStart: boolean;
-  openEnd: boolean;
 };
 
 export interface IsometricViewCanvasProps {
@@ -419,6 +407,82 @@ function ensurePlanBounds(points: Point2D[]): {
     maxX: Math.max(...points.map((point) => point.x)),
     minY: Math.min(...points.map((point) => point.y)),
     maxY: Math.max(...points.map((point) => point.y)),
+  };
+}
+
+function rotatePoint2D(point: Point2D, angleDeg: number): Point2D {
+  const radians = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    x: point.x * cos - point.y * sin,
+    y: point.x * sin + point.y * cos,
+  };
+}
+
+function averagePoints(points: Point2D[]): Point2D {
+  if (points.length === 0) {
+    return { x: 0, y: 0 };
+  }
+  const sum = points.reduce(
+    (acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }),
+    { x: 0, y: 0 },
+  );
+  return {
+    x: sum.x / points.length,
+    y: sum.y / points.length,
+  };
+}
+
+function normalizePoint(value: unknown): Point2D | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("x" in value) ||
+    !("y" in value)
+  ) {
+    return null;
+  }
+  const candidate = value as { x?: unknown; y?: unknown };
+  if (
+    typeof candidate.x !== "number" ||
+    !Number.isFinite(candidate.x) ||
+    typeof candidate.y !== "number" ||
+    !Number.isFinite(candidate.y)
+  ) {
+    return null;
+  }
+  return { x: candidate.x, y: candidate.y };
+}
+
+function resolveInlineBranchKitRenderCenter(
+  element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties" | "rotation">,
+): Point2D | null {
+  if (
+    !isRefrigerantBranchKitElement(element) ||
+    element.properties.branchKitPlacementMode !== "inline-pipe-run"
+  ) {
+    return null;
+  }
+  const anchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
+  if (!anchorPoint) {
+    return null;
+  }
+  const model = buildRefrigerantBranchKitViewModel(element);
+  const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+  const lines =
+    lineSelection === "gas"
+      ? [model.gas]
+      : lineSelection === "liquid"
+        ? [model.liquid]
+        : [model.gas, model.liquid];
+  const anchorLocal = averagePoints(
+    lines.flatMap((line) => [line.inletTerminal.point, line.runOutletTerminal.point]),
+  );
+  const rotatedAnchor = rotatePoint2D(anchorLocal, element.rotation);
+  return {
+    x: anchorPoint.x - rotatedAnchor.x,
+    y: anchorPoint.y - rotatedAnchor.y,
   };
 }
 
@@ -1015,239 +1079,6 @@ function polylineMidpoint(points: Point2D[]): {
     point: last,
     tangent: len > 0 ? { x: dx / len, y: dy / len } : { x: 1, y: 0 },
   };
-}
-
-function buildRefrigerantPipeEndpointRenderStateMap(
-  elements: HvacElement[],
-): Map<string, RefrigerantPipeEndpointRenderState> {
-  const states = new Map<string, RefrigerantPipeEndpointRenderState>();
-  const ownership = new Map<string, string>();
-  const visuals = new Map<string, ReturnType<typeof buildRefrigerantPipeVisual>>();
-
-  elements.forEach((element) => {
-    if (element.type !== "refrigerant-pipe") {
-      return;
-    }
-    const visual = buildRefrigerantPipeVisual(element);
-    visuals.set(element.id, visual);
-    states.set(element.id, {
-      openStart: visual.startConnection?.connectionKind === "field-pipe",
-      openEnd: false,
-    });
-    ownership.set(
-      `${visual.bundleId ?? element.id}|${visual.lineKind}`,
-      element.id,
-    );
-  });
-
-  elements.forEach((element) => {
-    if (element.type !== "refrigerant-pipe") {
-      return;
-    }
-    const visual = visuals.get(element.id);
-    const sourceKey = visual?.startConnection?.sourceElementId;
-    if (
-      !visual ||
-      visual.startConnection?.connectionKind !== "field-pipe" ||
-      !sourceKey
-    ) {
-      return;
-    }
-    const upstreamId = ownership.get(`${sourceKey}|${visual.lineKind}`);
-    if (!upstreamId) {
-      return;
-    }
-    const state = states.get(upstreamId);
-    if (state) {
-      state.openEnd = true;
-    }
-  });
-
-  return states;
-}
-
-function appendUniquePipeChainPoint(
-  points: Point2D[],
-  point: Point2D,
-  toleranceMm = 0.2,
-): void {
-  const previous = points[points.length - 1];
-  if (
-    previous &&
-    Math.hypot(previous.x - point.x, previous.y - point.y) <= toleranceMm
-  ) {
-    return;
-  }
-  points.push(point);
-}
-
-function appendPipeChainMemberPoints(
-  chainPoints: Point2D[],
-  memberPoints: Point2D[],
-): void {
-  if (memberPoints.length === 0) {
-    return;
-  }
-
-  const PIPE_CHAIN_JOIN_TOLERANCE_MM = 6;
-  if (chainPoints.length === 0) {
-    memberPoints.forEach((point) => appendUniquePipeChainPoint(chainPoints, point));
-    return;
-  }
-
-  const previousTail = chainPoints[chainPoints.length - 1]!;
-  const firstPoint = memberPoints[0]!;
-  const adjustedPoints =
-    Math.hypot(previousTail.x - firstPoint.x, previousTail.y - firstPoint.y) <=
-    PIPE_CHAIN_JOIN_TOLERANCE_MM
-      ? [previousTail, ...memberPoints.slice(1)]
-      : memberPoints;
-
-  adjustedPoints.forEach((point) => appendUniquePipeChainPoint(chainPoints, point));
-}
-
-function absoluteStubFromPipeVisual(
-  visual: ReturnType<typeof buildRefrigerantPipeVisual>,
-): { start: Point2D; end: Point2D } | null {
-  if (!visual.localStub) {
-    return null;
-  }
-  return {
-    start: {
-      x: visual.localStub.start.x + visual.bounds.center.x,
-      y: visual.localStub.start.y + visual.bounds.center.y,
-    },
-    end: {
-      x: visual.localStub.end.x + visual.bounds.center.x,
-      y: visual.localStub.end.y + visual.bounds.center.y,
-    },
-  };
-}
-
-function canJoinPipeRenderChain(
-  upstream: ReturnType<typeof buildRefrigerantPipeVisual>,
-  downstream: ReturnType<typeof buildRefrigerantPipeVisual>,
-): boolean {
-  return (
-    upstream.lineKind === downstream.lineKind &&
-    Math.abs(upstream.outerRadiusMm - downstream.outerRadiusMm) <= 0.2 &&
-    Math.abs(upstream.coreRadiusMm - downstream.coreRadiusMm) <= 0.2 &&
-    Math.abs(upstream.localZMm - downstream.localZMm) <= 0.2
-  );
-}
-
-function buildRefrigerantPipeRenderChainStateMap(
-  elements: HvacElement[],
-  endpointStates: Map<string, RefrigerantPipeEndpointRenderState>,
-): Map<string, RefrigerantPipeRenderChainState> {
-  const visuals = new Map<string, ReturnType<typeof buildRefrigerantPipeVisual>>();
-  const elementsById = new Map<string, HvacElement>();
-  const ownership = new Map<string, string>();
-  const upstreamById = new Map<string, string>();
-  const downstreamById = new Map<string, string | null>();
-
-  elements.forEach((element) => {
-    elementsById.set(element.id, element);
-    if (element.type !== "refrigerant-pipe") {
-      return;
-    }
-    const visual = buildRefrigerantPipeVisual(element);
-    visuals.set(element.id, visual);
-    ownership.set(`${visual.bundleId ?? element.id}|${visual.lineKind}`, element.id);
-  });
-
-  elements.forEach((element) => {
-    if (element.type !== "refrigerant-pipe") {
-      return;
-    }
-    const visual = visuals.get(element.id);
-    const sourceKey = visual?.startConnection?.sourceElementId;
-    if (
-      !visual ||
-      visual.startConnection?.connectionKind !== "field-pipe" ||
-      !sourceKey
-    ) {
-      return;
-    }
-    const upstreamId = ownership.get(`${sourceKey}|${visual.lineKind}`);
-    if (!upstreamId) {
-      return;
-    }
-    const upstreamVisual = visuals.get(upstreamId);
-    if (!upstreamVisual || !canJoinPipeRenderChain(upstreamVisual, visual)) {
-      return;
-    }
-    const existingDownstream = downstreamById.get(upstreamId);
-    if (existingDownstream && existingDownstream !== element.id) {
-      downstreamById.set(upstreamId, null);
-      return;
-    }
-    upstreamById.set(element.id, upstreamId);
-    downstreamById.set(upstreamId, element.id);
-  });
-
-  const chainStates = new Map<string, RefrigerantPipeRenderChainState>();
-  const visited = new Set<string>();
-
-  visuals.forEach((visual, elementId) => {
-    if (visited.has(elementId)) {
-      return;
-    }
-
-    let headId = elementId;
-    while (upstreamById.has(headId)) {
-      headId = upstreamById.get(headId)!;
-    }
-
-    const memberIds: string[] = [];
-    let currentId: string | null = headId;
-    while (currentId && !visited.has(currentId)) {
-      memberIds.push(currentId);
-      visited.add(currentId);
-      const nextId = downstreamById.get(currentId);
-      if (!nextId) {
-        break;
-      }
-      currentId = nextId;
-    }
-
-    const headVisual = visuals.get(headId)!;
-    const lastId = memberIds[memberIds.length - 1]!;
-    const outerPoints: Point2D[] = [];
-    memberIds.forEach((memberId) => {
-      const memberVisual = visuals.get(memberId)!;
-      appendPipeChainMemberPoints(outerPoints, memberVisual.outerPoints);
-    });
-
-    const absoluteStub = absoluteStubFromPipeVisual(headVisual);
-    const headElement = elementsById.get(headId)!;
-    const headEndpointState = endpointStates.get(headId) ?? {
-      openStart: false,
-      openEnd: false,
-    };
-    const tailEndpointState = endpointStates.get(lastId) ?? {
-      openStart: false,
-      openEnd: false,
-    };
-
-    memberIds.forEach((memberId, index) => {
-      chainStates.set(memberId, {
-        renderAsHead: index === 0,
-        headId,
-        outerPoints,
-        outerRadiusMm: headVisual.outerRadiusMm,
-        corePoints: [...outerPoints],
-        coreRadiusMm: headVisual.coreRadiusMm,
-        absoluteStub: index === 0 ? absoluteStub : null,
-        elevationMm: headElement.elevation + headVisual.localZMm,
-        lineKind: headVisual.lineKind,
-        openStart: headEndpointState.openStart,
-        openEnd: tailEndpointState.openEnd,
-      });
-    });
-  });
-
-  return chainStates;
 }
 
 function createCylinderBetweenPoints(
@@ -1926,9 +1757,14 @@ function createHvacEquipmentMesh(
   const height = Math.max(80, element.height);
   const palette = hvacPaletteForElement(element);
   const group = new THREE.Group();
+  const renderCenter =
+    resolveInlineBranchKitRenderCenter(element) ?? {
+      x: element.position.x + width / 2,
+      y: element.position.y + depth / 2,
+    };
   group.position.set(
-    element.position.x + width / 2,
-    element.position.y + depth / 2,
+    renderCenter.x,
+    renderCenter.y,
     element.elevation,
   );
   group.rotation.z = THREE.MathUtils.degToRad(element.rotation);
@@ -2221,7 +2057,10 @@ function createHvacEquipmentMesh(
       break;
     }
     case "refrigerant-branch-kit": {
-      const branchKit = buildRefrigerantBranchKitModel(element);
+      const branchKit = buildRefrigerantBranchKitViewModel(element);
+      const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+      const renderGasLine = lineSelection !== "liquid";
+      const renderLiquidLine = lineSelection !== "gas";
       const insulationColor = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.insulationBody;
       const gasCopper = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.gasCopper;
       const liquidCopper = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.liquidCopper;
@@ -2582,8 +2421,12 @@ function createHvacEquipmentMesh(
         line.bands.forEach((band) => addBand(band, line.centerlineZMm, 20));
       };
 
-      renderLine(branchKit.gas, gasCopper);
-      renderLine(branchKit.liquid, liquidCopper);
+      if (renderGasLine) {
+        renderLine(branchKit.gas, gasCopper);
+      }
+      if (renderLiquidLine) {
+        renderLine(branchKit.liquid, liquidCopper);
+      }
       break;
     }
     case "refrigerant-pipe-pair": {

@@ -248,6 +248,10 @@ export interface UseCanvasEventBindingOptions {
     roomId: string | null;
     wallId: string | null;
     invalidReason: string | null;
+    widthMm: number;
+    depthMm: number;
+    heightMm: number;
+    placementProperties?: Record<string, unknown>;
   };
   resolveOpeningWidthMm: (
     definition: ArchitecturalObjectDefinition,
@@ -1682,19 +1686,33 @@ export function useCanvasEventBinding(
         const nextRotation = placement.rotationDeg;
         const nextRoomId = placement.roomId ?? undefined;
         const nextWallId = placement.wallId ?? undefined;
+        const nextProperties = placement.placementProperties
+          ? {
+              ...existing.properties,
+              ...placement.placementProperties,
+            }
+          : existing.properties;
         const changed =
           Math.abs(existing.position.x - nextPosition.x) > 0.01 ||
           Math.abs(existing.position.y - nextPosition.y) > 0.01 ||
           Math.abs(existing.rotation - nextRotation) > 0.01 ||
+          Math.abs(existing.width - placement.widthMm) > 0.01 ||
+          Math.abs(existing.depth - placement.depthMm) > 0.01 ||
+          Math.abs(existing.height - placement.heightMm) > 0.01 ||
           existing.roomId !== nextRoomId ||
-          existing.wallId !== nextWallId;
+          existing.wallId !== nextWallId ||
+          nextProperties !== existing.properties;
 
         if (changed) {
           updateHvacElement(hvacId, {
             position: nextPosition,
             rotation: nextRotation,
+            width: placement.widthMm,
+            depth: placement.depthMm,
+            height: placement.heightMm,
             roomId: nextRoomId,
             wallId: nextWallId,
+            properties: nextProperties,
           });
         }
 

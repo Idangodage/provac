@@ -15,6 +15,13 @@ import {
   getUnitPipePortSpec,
   GENERIC_PIPE_PORT_TYPES,
 } from './unitPipePortModel';
+import {
+  buildRefrigerantBranchKitViewModel,
+  getRefrigerantBranchKitTerminalSpecs,
+  isRefrigerantBranchKitElement,
+  resolveRefrigerantBranchKitLineSelection,
+  type RefrigerantBranchTerminalRole,
+} from './refrigerantBranchKitModel';
 
 export const ONE_INCH_MM = INCH_MM;
 export const DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM = ONE_INCH_MM;
@@ -39,6 +46,15 @@ export interface RefrigerantPipeBundleConnection {
   connectionKind: RefrigerantPipeConnectionKind;
   guideReference?: 'gas' | 'liquid' | 'center';
   sourceElementId?: string;
+  terminalRole?: RefrigerantBranchTerminalRole;
+}
+
+export interface RefrigerantPipeBundleSegmentConnection
+  extends RefrigerantPipeBundleConnection {
+  segmentStart: Point2D;
+  segmentEnd: Point2D;
+  segmentLengthMm: number;
+  projectedDistanceMm: number;
 }
 
 export interface RefrigerantPipePairSpec {
@@ -98,6 +114,7 @@ export interface RefrigerantPipeSpec {
   lineKind: RefrigerantPipeLineKind;
   bundleId?: string;
   startConnection: RefrigerantPipeConnection | null;
+  endConnection: RefrigerantPipeConnection | null;
 }
 
 export interface RefrigerantPipeVisualSpec extends RefrigerantPipeSpec {
@@ -133,6 +150,10 @@ function readNumber(value: unknown, fallback: number): number {
     return Number.isFinite(parsed) ? parsed : fallback;
   }
   return fallback;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function normalizePoint(value: unknown): Point2D | null {
@@ -564,6 +585,7 @@ export function resolveRefrigerantPipeSpec(
     lineKind: normalizeLineKind(properties.lineKind),
     bundleId: typeof properties.bundleId === 'string' ? properties.bundleId : undefined,
     startConnection: normalizePipeConnection(properties.startConnection),
+    endConnection: normalizePipeConnection(properties.endConnection),
   };
 }
 
@@ -572,17 +594,24 @@ export function translateRefrigerantPipeProperties(
   delta: Point2D,
 ): Record<string, unknown> {
   const spec = resolveRefrigerantPipeSpec(properties);
-  const nextConnection = spec.startConnection
+  const nextStartConnection = spec.startConnection
     ? {
         ...spec.startConnection,
         portPoint: add(spec.startConnection.portPoint, delta),
+      }
+    : null;
+  const nextEndConnection = spec.endConnection
+    ? {
+        ...spec.endConnection,
+        portPoint: add(spec.endConnection.portPoint, delta),
       }
     : null;
 
   return {
     ...properties,
     routePoints: spec.routePoints.map((point) => add(point, delta)),
-    startConnection: nextConnection,
+    startConnection: nextStartConnection,
+    endConnection: nextEndConnection,
   };
 }
 
@@ -1464,29 +1493,42 @@ export function buildRefrigerantPipeVisual(
   const outerRadiusMm = spec.outerDiameterMm / 2;
   const coreRadiusMm = spec.pipeDiameterMm / 2;
   const baseElevationMm = isFiniteNumber(element.elevation) ? element.elevation : 0;
-  const isUnitPortConnection = spec.startConnection?.connectionKind === 'unit-port';
+  const isUnitPortStartConnection = spec.startConnection?.connectionKind === 'unit-port';
+  const isFieldPipeStartConnection = spec.startConnection?.connectionKind === 'field-pipe';
+  const isUnitPortEndConnection = spec.endConnection?.connectionKind === 'unit-port';
+  const isFieldPipeEndConnection = spec.endConnection?.connectionKind === 'field-pipe';
   const hasStartConnection = Boolean(spec.startConnection);
+  const hasEndConnection = Boolean(spec.endConnection);
   const localZMm = spec.startConnection
     ? spec.startConnection.elevationMm - baseElevationMm
+    : spec.endConnection
+      ? spec.endConnection.elevationMm - baseElevationMm
     : outerRadiusMm;
-  const connectionOverlapMm = hasStartConnection
+  const connectionOverlapMm = hasStartConnection || hasEndConnection
     ? computeConnectionOverlapLength(spec.outerDiameterMm)
     : 0;
   const exposedTailLengthMm = 0;
   const renderedRoutePoints = simplifyNearlyCollinearPoints(spec.routePoints);
-  const insulationStartPoint = spec.startConnection && isUnitPortConnection
+  const insulationStartPoint =
+    spec.startConnection && (isUnitPortStartConnection || isFieldPipeStartConnection)
     ? add(spec.startConnection.portPoint, scale(spec.startConnection.direction, exposedTailLengthMm))
     : null;
+  const insulationEndPoint =
+    spec.endConnection && (isUnitPortEndConnection || isFieldPipeEndConnection)
+      ? add(spec.endConnection.portPoint, scale(spec.endConnection.direction, exposedTailLengthMm))
+      : null;
   const routeStartPoint = insulationStartPoint
     ?? renderedRoutePoints[0]
     ?? null;
-  const outerPoints = routeStartPoint
-    ? simplifyNearlyCollinearPoints([routeStartPoint, ...renderedRoutePoints])
-    : [...renderedRoutePoints];
-  const stubStart = spec.startConnection && isUnitPortConnection
+  const outerPoints = simplifyNearlyCollinearPoints([
+    ...(routeStartPoint ? [routeStartPoint] : []),
+    ...renderedRoutePoints,
+    ...(insulationEndPoint ? [insulationEndPoint] : []),
+  ]);
+  const stubStart = spec.startConnection && isUnitPortStartConnection
     ? add(spec.startConnection.portPoint, scale(spec.startConnection.direction, -connectionOverlapMm))
     : null;
-  const stubEnd = spec.startConnection && isUnitPortConnection
+  const stubEnd = spec.startConnection && isUnitPortStartConnection
     ? spec.startConnection.portPoint
     : null;
   const boundsSourcePoints = [
@@ -1494,6 +1536,9 @@ export function buildRefrigerantPipeVisual(
   ];
   if (spec.startConnection) {
     boundsSourcePoints.push(spec.startConnection.portPoint);
+  }
+  if (spec.endConnection) {
+    boundsSourcePoints.push(spec.endConnection.portPoint);
   }
   if (stubStart && stubEnd) {
     boundsSourcePoints.push(stubStart, stubEnd);
@@ -1691,6 +1736,7 @@ export function buildRefrigerantPipeElement(
     insulationThicknessMm?: number;
     bundleId?: string;
     startConnection?: RefrigerantPipeConnection | null;
+    endConnection?: RefrigerantPipeConnection | null;
     elevationMm?: number;
   },
 ): Omit<Partial<HvacElement>, 'id'> &
@@ -1707,6 +1753,8 @@ export function buildRefrigerantPipeElement(
     isFiniteNumber(options.elevationMm) ? options.elevationMm
       : options.startConnection
         ? options.startConnection.elevationMm - outerRadiusMm
+        : options.endConnection
+          ? options.endConnection.elevationMm - outerRadiusMm
         : DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM;
 
   const properties = {
@@ -1717,6 +1765,7 @@ export function buildRefrigerantPipeElement(
     lineKind: options.lineKind,
     bundleId: options.bundleId,
     startConnection: options.startConnection ?? null,
+    endConnection: options.endConnection ?? null,
   };
   const visual = buildRefrigerantPipeVisual({
     position: { x: 0, y: 0 },
@@ -1827,6 +1876,17 @@ export function buildRefrigerantPipeElements(
             sourceElementId: options.startBundleConnection.sourceElementId,
           }
         : null,
+      endConnection: options?.endBundleConnection
+        ? {
+            portPoint: options.endBundleConnection.gasPoint,
+            direction:
+              options.endBundleConnection.gasDirection ??
+              options.endBundleConnection.direction,
+            elevationMm: options.endBundleConnection.gasElevationMm,
+            connectionKind: options.endBundleConnection.connectionKind,
+            sourceElementId: options.endBundleConnection.sourceElementId,
+          }
+        : null,
     }),
     buildRefrigerantPipeElement(liquidRoutePoints, {
       lineKind: 'liquid',
@@ -1844,6 +1904,17 @@ export function buildRefrigerantPipeElements(
             elevationMm: options.startBundleConnection.liquidElevationMm,
             connectionKind: options.startBundleConnection.connectionKind,
             sourceElementId: options.startBundleConnection.sourceElementId,
+          }
+        : null,
+      endConnection: options?.endBundleConnection
+        ? {
+            portPoint: options.endBundleConnection.liquidPoint,
+            direction:
+              options.endBundleConnection.liquidDirection ??
+              options.endBundleConnection.direction,
+            elevationMm: options.endBundleConnection.liquidElevationMm,
+            connectionKind: options.endBundleConnection.connectionKind,
+            sourceElementId: options.endBundleConnection.sourceElementId,
           }
         : null,
     }),
@@ -1950,6 +2021,32 @@ interface RefrigerantPipeEndpointTarget {
   outerDiameterMm: number;
 }
 
+interface RefrigerantPipeStraightSegmentTarget {
+  key: string;
+  elementId: string;
+  bundleId?: string;
+  lineKind: RefrigerantPipeLineKind;
+  start: Point2D;
+  end: Point2D;
+  direction: Point2D;
+  lengthMm: number;
+  elevationMm: number;
+  outerDiameterMm: number;
+}
+
+export interface RefrigerantPipeSegmentConnection {
+  point: Point2D;
+  direction: Point2D;
+  segmentStart: Point2D;
+  segmentEnd: Point2D;
+  segmentLengthMm: number;
+  projectedDistanceMm: number;
+  lineKind: RefrigerantPipeLineKind;
+  elevationMm: number;
+  outerDiameterMm: number;
+  sourceElementId?: string;
+}
+
 function createPipeEndpointTarget(
   element: HvacPipeSnapSource,
   spec: RefrigerantPipeSpec,
@@ -2002,7 +2099,9 @@ function getRefrigerantPipeEndpointTargets(
 
     const spec = resolveRefrigerantPipeSpec(element.properties);
     const visual = buildRefrigerantPipeVisual(element);
-    const endTarget = createPipeEndpointTarget(element, spec, visual, 'end');
+    const endTarget = !spec.endConnection
+      ? createPipeEndpointTarget(element, spec, visual, 'end')
+      : null;
     if (!spec.startConnection) {
       const startTarget = createPipeEndpointTarget(element, spec, visual, 'start');
       if (startTarget) {
@@ -2011,6 +2110,50 @@ function getRefrigerantPipeEndpointTargets(
     }
     if (endTarget) {
       targets.push(endTarget);
+    }
+  });
+
+  return targets;
+}
+
+function getRefrigerantPipeStraightSegmentTargets(
+  elements: HvacPipeSnapSource[],
+): RefrigerantPipeStraightSegmentTarget[] {
+  const targets: RefrigerantPipeStraightSegmentTarget[] = [];
+
+  elements.forEach((element) => {
+    if (element.type !== 'refrigerant-pipe') {
+      return;
+    }
+
+    const spec = resolveRefrigerantPipeSpec(element.properties);
+    const visual = buildRefrigerantPipeVisual(element);
+    const points = visual.outerPoints;
+    if (points.length < 2) {
+      return;
+    }
+
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const start = points[index]!;
+      const end = points[index + 1]!;
+      const delta = subtract(end, start);
+      const lengthMm = Math.hypot(delta.x, delta.y);
+      if (lengthMm < 0.01) {
+        continue;
+      }
+
+      targets.push({
+        key: `${element.id}:segment:${index}`,
+        elementId: element.id,
+        bundleId: spec.bundleId,
+        lineKind: spec.lineKind,
+        start,
+        end,
+        direction: normalizeDirection(delta),
+        lengthMm,
+        elevationMm: element.elevation + visual.localZMm,
+        outerDiameterMm: spec.outerDiameterMm,
+      });
     }
   });
 
@@ -2106,10 +2249,195 @@ function buildFieldPipeBundleSnapTargets(
   return targets;
 }
 
+function interpolatePointOnAxis(
+  axisPoint: Point2D,
+  axisDirection: Point2D,
+  axisScalar: number,
+  targetScalar: number,
+): Point2D {
+  return add(axisPoint, scale(axisDirection, targetScalar - axisScalar));
+}
+
+function computeStraightBundleSegmentTargets(
+  elements: HvacPipeSnapSource[],
+  minimumSegmentLengthMm: number,
+): RefrigerantPipeBundleSegmentConnection[] {
+  const straightSegments = getRefrigerantPipeStraightSegmentTargets(elements);
+  const gasSegments = straightSegments.filter((segment) => segment.lineKind === 'gas');
+  const liquidSegments = straightSegments.filter((segment) => segment.lineKind === 'liquid');
+  const candidates: Array<{
+    gas: RefrigerantPipeStraightSegmentTarget;
+    liquid: RefrigerantPipeStraightSegmentTarget;
+    score: number;
+  }> = [];
+
+  gasSegments.forEach((gasSegment) => {
+    liquidSegments.forEach((liquidSegment) => {
+      const directionDot = dot(gasSegment.direction, liquidSegment.direction);
+      if (Math.abs(directionDot) < 0.985) {
+        return;
+      }
+
+      const averageDirection = directionDot >= 0
+        ? normalizeDirection(add(gasSegment.direction, liquidSegment.direction))
+        : gasSegment.direction;
+      const gasStartScalar = dot(gasSegment.start, averageDirection);
+      const gasEndScalar = dot(gasSegment.end, averageDirection);
+      const liquidStartScalar = dot(liquidSegment.start, averageDirection);
+      const liquidEndScalar = dot(liquidSegment.end, averageDirection);
+      const gasMinScalar = Math.min(gasStartScalar, gasEndScalar);
+      const gasMaxScalar = Math.max(gasStartScalar, gasEndScalar);
+      const liquidMinScalar = Math.min(liquidStartScalar, liquidEndScalar);
+      const liquidMaxScalar = Math.max(liquidStartScalar, liquidEndScalar);
+      const overlapStartScalar = Math.max(gasMinScalar, liquidMinScalar);
+      const overlapEndScalar = Math.min(gasMaxScalar, liquidMaxScalar);
+      const overlapLengthMm = overlapEndScalar - overlapStartScalar;
+      if (overlapLengthMm < minimumSegmentLengthMm) {
+        return;
+      }
+
+      const bundleStartGasPoint = interpolatePointOnAxis(
+        gasSegment.start,
+        averageDirection,
+        gasStartScalar,
+        overlapStartScalar,
+      );
+      const bundleStartLiquidPoint = interpolatePointOnAxis(
+        liquidSegment.start,
+        averageDirection,
+        liquidStartScalar,
+        overlapStartScalar,
+      );
+      const bundleEndGasPoint = interpolatePointOnAxis(
+        gasSegment.start,
+        averageDirection,
+        gasStartScalar,
+        overlapEndScalar,
+      );
+      const bundleEndLiquidPoint = interpolatePointOnAxis(
+        liquidSegment.start,
+        averageDirection,
+        liquidStartScalar,
+        overlapEndScalar,
+      );
+      const bundleStart = computeBundleCenter(bundleStartGasPoint, bundleStartLiquidPoint);
+      const bundleEnd = computeBundleCenter(bundleEndGasPoint, bundleEndLiquidPoint);
+      const spacingStartMm = Math.hypot(
+        bundleStartLiquidPoint.x - bundleStartGasPoint.x,
+        bundleStartLiquidPoint.y - bundleStartGasPoint.y,
+      );
+      const spacingEndMm = Math.hypot(
+        bundleEndLiquidPoint.x - bundleEndGasPoint.x,
+        bundleEndLiquidPoint.y - bundleEndGasPoint.y,
+      );
+      const spacingMm = (spacingStartMm + spacingEndMm) / 2;
+      const expectedSpacingMm =
+        gasSegment.outerDiameterMm / 2 +
+        liquidSegment.outerDiameterMm / 2 +
+        DEFAULT_REFRIGERANT_PIPE_GAP_MM;
+      const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
+      const spacingErrorMm = Math.abs(spacingMm - expectedSpacingMm);
+      const sharesBundleId = Boolean(
+        gasSegment.bundleId &&
+        liquidSegment.bundleId &&
+        gasSegment.bundleId === liquidSegment.bundleId,
+      );
+      if (!sharesBundleId && spacingErrorMm > spacingToleranceMm) {
+        return;
+      }
+
+      const centerSegmentLengthMm = Math.hypot(
+        bundleEnd.x - bundleStart.x,
+        bundleEnd.y - bundleStart.y,
+      );
+      if (centerSegmentLengthMm < minimumSegmentLengthMm) {
+        return;
+      }
+
+      candidates.push({
+        gas: gasSegment,
+        liquid: liquidSegment,
+        score: spacingErrorMm + (sharesBundleId ? 0 : 200),
+      });
+    });
+  });
+
+  candidates.sort((a, b) => a.score - b.score);
+
+  const usedKeys = new Set<string>();
+  const targets: RefrigerantPipeBundleSegmentConnection[] = [];
+  candidates.forEach(({ gas, liquid }) => {
+    if (usedKeys.has(gas.key) || usedKeys.has(liquid.key)) {
+      return;
+    }
+    usedKeys.add(gas.key);
+    usedKeys.add(liquid.key);
+
+    const directionDot = dot(gas.direction, liquid.direction);
+    const direction = directionDot >= 0
+      ? normalizeDirection(add(gas.direction, liquid.direction))
+      : gas.direction;
+    const gasStartScalar = dot(gas.start, direction);
+    const gasEndScalar = dot(gas.end, direction);
+    const liquidStartScalar = dot(liquid.start, direction);
+    const liquidEndScalar = dot(liquid.end, direction);
+    const overlapStartScalar = Math.max(
+      Math.min(gasStartScalar, gasEndScalar),
+      Math.min(liquidStartScalar, liquidEndScalar),
+    );
+    const overlapEndScalar = Math.min(
+      Math.max(gasStartScalar, gasEndScalar),
+      Math.max(liquidStartScalar, liquidEndScalar),
+    );
+    const gasPointStart = interpolatePointOnAxis(gas.start, direction, gasStartScalar, overlapStartScalar);
+    const liquidPointStart = interpolatePointOnAxis(liquid.start, direction, liquidStartScalar, overlapStartScalar);
+    const gasPointEnd = interpolatePointOnAxis(gas.start, direction, gasStartScalar, overlapEndScalar);
+    const liquidPointEnd = interpolatePointOnAxis(liquid.start, direction, liquidStartScalar, overlapEndScalar);
+    const segmentStart = computeBundleCenter(gasPointStart, liquidPointStart);
+    const segmentEnd = computeBundleCenter(gasPointEnd, liquidPointEnd);
+    const segmentLengthMm = Math.hypot(
+      segmentEnd.x - segmentStart.x,
+      segmentEnd.y - segmentStart.y,
+    );
+    if (segmentLengthMm < minimumSegmentLengthMm) {
+      return;
+    }
+
+    targets.push({
+      point: segmentStart,
+      gasPoint: gasPointStart,
+      liquidPoint: liquidPointStart,
+      gasFieldPoint: gasPointStart,
+      liquidFieldPoint: liquidPointStart,
+      gasOuterDiameterMm: gas.outerDiameterMm,
+      liquidOuterDiameterMm: liquid.outerDiameterMm,
+      gasDirection: gas.direction,
+      liquidDirection: liquid.direction,
+      direction,
+      elevationMm: (gas.elevationMm + liquid.elevationMm) / 2,
+      gasElevationMm: gas.elevationMm,
+      liquidElevationMm: liquid.elevationMm,
+      connectionKind: 'field-pipe',
+      sourceElementId: gas.bundleId ?? gas.elementId,
+      segmentStart,
+      segmentEnd,
+      segmentLengthMm,
+      projectedDistanceMm: 0,
+    });
+  });
+
+  return targets;
+}
+
 export function getRefrigerantPipeBundleSnapTargets(
   elements: HvacPipeSnapSource[],
 ): RefrigerantPipeBundleConnection[] {
   const targets: RefrigerantPipeBundleConnection[] = [];
+  const branchRoles: RefrigerantBranchTerminalRole[] = [
+    'inlet',
+    'run-outlet',
+    'branch-outlet',
+  ];
 
   elements.forEach((element) => {
     if (element.type === 'ceiling-cassette-ac') {
@@ -2143,6 +2471,126 @@ export function getRefrigerantPipeBundleSnapTargets(
         liquidElevationMm,
         connectionKind: 'unit-port',
         sourceElementId: element.id,
+      });
+      return;
+    }
+
+    if (isRefrigerantBranchKitElement(element)) {
+      const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+      const model = buildRefrigerantBranchKitViewModel(element);
+      const terminalMap = new Map(
+        getRefrigerantBranchKitTerminalSpecs(model).map((terminal) => [
+          `${terminal.kind}:${terminal.role}`,
+          terminal,
+        ]),
+      );
+      const center = absoluteCenter(element);
+      const rotation = element.rotation ?? 0;
+
+      branchRoles.forEach((role) => {
+        let gasTerminal = terminalMap.get(`gas:${role}`);
+        let liquidTerminal = terminalMap.get(`liquid:${role}`);
+        let gasPoint: Point2D | null = null;
+        let liquidPoint: Point2D | null = null;
+        let gasDirection: Point2D;
+        let liquidDirection: Point2D;
+        let direction: Point2D;
+        let guideReference: 'gas' | 'liquid' | undefined;
+
+        if (lineSelection === 'both') {
+          if (!gasTerminal || !liquidTerminal) {
+            return;
+          }
+          gasPoint = localToWorld(center, gasTerminal.point, rotation);
+          liquidPoint = localToWorld(center, liquidTerminal.point, rotation);
+          gasDirection = normalizeDirection(
+            rotateLocalPoint(gasTerminal.direction, rotation),
+          );
+          liquidDirection = normalizeDirection(
+            rotateLocalPoint(liquidTerminal.direction, rotation),
+          );
+          direction = normalizeDirection({
+            x: gasDirection.x + liquidDirection.x,
+            y: gasDirection.y + liquidDirection.y,
+          });
+        } else {
+          const selectedKind = lineSelection;
+          const counterpartKind = selectedKind === 'gas' ? 'liquid' : 'gas';
+          const selectedTerminal = terminalMap.get(`${selectedKind}:${role}`);
+          const counterpartTerminal = terminalMap.get(`${counterpartKind}:${role}`);
+          if (!selectedTerminal) {
+            return;
+          }
+
+          const selectedPoint = localToWorld(center, selectedTerminal.point, rotation);
+          direction = normalizeDirection(
+            rotateLocalPoint(selectedTerminal.direction, rotation),
+          );
+          const normal = perpendicular(direction);
+          const selectedOuterDiameterMm = selectedTerminal.outerDiameterMm;
+          const counterpartOuterDiameterMm =
+            counterpartTerminal?.outerDiameterMm ?? selectedOuterDiameterMm;
+          const gasOuterDiameterMm =
+            selectedKind === 'gas'
+              ? selectedOuterDiameterMm
+              : counterpartOuterDiameterMm;
+          const liquidOuterDiameterMm =
+            selectedKind === 'liquid'
+              ? selectedOuterDiameterMm
+              : counterpartOuterDiameterMm;
+          const centerSpacingMm =
+            gasOuterDiameterMm / 2 +
+            liquidOuterDiameterMm / 2 +
+            DEFAULT_REFRIGERANT_PIPE_GAP_MM;
+
+          if (selectedKind === 'gas') {
+            gasPoint = selectedPoint;
+            liquidPoint = add(selectedPoint, scale(normal, centerSpacingMm));
+          } else {
+            liquidPoint = selectedPoint;
+            gasPoint = add(selectedPoint, scale(normal, -centerSpacingMm));
+          }
+
+          gasTerminal = gasTerminal ?? {
+            ...selectedTerminal,
+            kind: 'gas' as const,
+            outerDiameterMm: gasOuterDiameterMm,
+          };
+          liquidTerminal = liquidTerminal ?? {
+            ...selectedTerminal,
+            kind: 'liquid' as const,
+            outerDiameterMm: liquidOuterDiameterMm,
+          };
+          gasDirection = direction;
+          liquidDirection = direction;
+          guideReference = selectedKind;
+        }
+
+        if (!gasTerminal || !liquidTerminal || !gasPoint || !liquidPoint) {
+          return;
+        }
+
+        targets.push({
+          point: computeBundleCenter(gasPoint, liquidPoint),
+          gasPoint,
+          liquidPoint,
+          gasFieldPoint: gasPoint,
+          liquidFieldPoint: liquidPoint,
+          gasOuterDiameterMm: gasTerminal.outerDiameterMm,
+          liquidOuterDiameterMm: liquidTerminal.outerDiameterMm,
+          gasDirection,
+          liquidDirection,
+          direction,
+          elevationMm:
+            element.elevation +
+            (model.gas.centerlineZMm + model.liquid.centerlineZMm) / 2,
+          gasElevationMm: element.elevation + model.gas.centerlineZMm,
+          liquidElevationMm: element.elevation + model.liquid.centerlineZMm,
+          connectionKind: 'field-pipe',
+          guideReference,
+          sourceElementId: element.id,
+          terminalRole: role,
+        });
       });
       return;
     }
@@ -2213,6 +2661,140 @@ export function findNearestRefrigerantPipeBundleTarget(
       bestDistance = nearestDistance;
       bestTarget = target;
     }
+  });
+
+  return bestTarget;
+}
+
+export function findNearestRefrigerantPipeBundleSegmentTarget(
+  elements: HvacPipeSnapSource[],
+  point: Point2D,
+  thresholdMm: number,
+  options?: {
+    minSegmentLengthMm?: number;
+  },
+): RefrigerantPipeBundleSegmentConnection | null {
+  const minimumSegmentLengthMm = Math.max(
+    1,
+    options?.minSegmentLengthMm ?? 1,
+  );
+  const targets = computeStraightBundleSegmentTargets(
+    elements,
+    minimumSegmentLengthMm,
+  );
+  let bestTarget: RefrigerantPipeBundleSegmentConnection | null = null;
+  let bestDistance = thresholdMm;
+
+  targets.forEach((target) => {
+    const segmentDirection = normalizeDirection(
+      subtract(target.segmentEnd, target.segmentStart),
+    );
+    const segmentVector = subtract(target.segmentEnd, target.segmentStart);
+    const segmentLengthMm = Math.max(
+      Math.hypot(segmentVector.x, segmentVector.y),
+      0.0001,
+    );
+    const projectedScalar = clamp(
+      dot(subtract(point, target.segmentStart), segmentDirection),
+      0,
+      segmentLengthMm,
+    );
+    const bundlePoint = add(
+      target.segmentStart,
+      scale(segmentDirection, projectedScalar),
+    );
+    const distanceMm = Math.hypot(
+      point.x - bundlePoint.x,
+      point.y - bundlePoint.y,
+    );
+    if (distanceMm > bestDistance) {
+      return;
+    }
+
+    const segmentStartScalar = dot(target.segmentStart, segmentDirection);
+    const gasStartScalar = dot(target.gasPoint, segmentDirection);
+    const liquidStartScalar = dot(target.liquidPoint, segmentDirection);
+    const gasPoint = interpolatePointOnAxis(
+      target.gasPoint,
+      segmentDirection,
+      gasStartScalar,
+      segmentStartScalar + projectedScalar,
+    );
+    const liquidPoint = interpolatePointOnAxis(
+      target.liquidPoint,
+      segmentDirection,
+      liquidStartScalar,
+      segmentStartScalar + projectedScalar,
+    );
+    bestDistance = distanceMm;
+    bestTarget = {
+      ...target,
+      point: bundlePoint,
+      gasPoint,
+      liquidPoint,
+      gasFieldPoint: gasPoint,
+      liquidFieldPoint: liquidPoint,
+      direction: segmentDirection,
+      projectedDistanceMm: projectedScalar,
+    };
+  });
+
+  return bestTarget;
+}
+
+export function findNearestRefrigerantPipeSegmentTarget(
+  elements: HvacPipeSnapSource[],
+  point: Point2D,
+  thresholdMm: number,
+  options?: {
+    lineKind?: RefrigerantPipeLineKind;
+    minSegmentLengthMm?: number;
+  },
+): RefrigerantPipeSegmentConnection | null {
+  const minimumSegmentLengthMm = Math.max(
+    1,
+    options?.minSegmentLengthMm ?? 1,
+  );
+  const lineKindFilter = options?.lineKind;
+  const targets = getRefrigerantPipeStraightSegmentTargets(elements).filter(
+    (target) =>
+      (!lineKindFilter || target.lineKind === lineKindFilter) &&
+      target.lengthMm >= minimumSegmentLengthMm,
+  );
+  let bestTarget: RefrigerantPipeSegmentConnection | null = null;
+  let bestDistance = thresholdMm;
+
+  targets.forEach((target) => {
+    const projectedScalar = clamp(
+      dot(subtract(point, target.start), target.direction),
+      0,
+      target.lengthMm,
+    );
+    const projectedPoint = add(
+      target.start,
+      scale(target.direction, projectedScalar),
+    );
+    const distanceMm = Math.hypot(
+      point.x - projectedPoint.x,
+      point.y - projectedPoint.y,
+    );
+    if (distanceMm > bestDistance) {
+      return;
+    }
+
+    bestDistance = distanceMm;
+    bestTarget = {
+      point: projectedPoint,
+      direction: target.direction,
+      segmentStart: target.start,
+      segmentEnd: target.end,
+      segmentLengthMm: target.lengthMm,
+      projectedDistanceMm: projectedScalar,
+      lineKind: target.lineKind,
+      elevationMm: target.elevationMm,
+      outerDiameterMm: target.outerDiameterMm,
+      sourceElementId: target.bundleId ?? target.elementId,
+    };
   });
 
   return bestTarget;

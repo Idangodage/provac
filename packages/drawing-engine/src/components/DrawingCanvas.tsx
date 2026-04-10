@@ -705,6 +705,7 @@ export function DrawingCanvas({
 
   const { computeHvacPlacement, placePendingHvacElement } = useHvacPlacement({
     rooms,
+    hvacElements,
     equipmentDefinitions,
     pendingPlacementEquipmentDefinition,
     placementRotationDeg,
@@ -843,8 +844,15 @@ export function DrawingCanvas({
         updateHvacElement(element.id, {
           position: placement.point,
           rotation: placement.rotationDeg,
+          width: placement.widthMm,
+          depth: placement.depthMm,
+          height: placement.heightMm,
           roomId: placement.roomId ?? undefined,
           wallId: placement.wallId ?? undefined,
+          properties: {
+            ...element.properties,
+            ...(placement.placementProperties ?? {}),
+          },
         });
         movedEquipment = true;
       }

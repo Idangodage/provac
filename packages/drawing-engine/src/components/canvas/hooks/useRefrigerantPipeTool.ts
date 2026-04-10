@@ -226,12 +226,36 @@ export function useRefrigerantPipeTool(
     const thresholdMm = Math.max(14, PIPE_SNAP_THRESHOLD_PX / Math.max(zoom * MM_TO_PX, 0.01));
     let bundle: RefrigerantPipeBundleConnection | null = null;
     if (allowBundleSnap) {
-      bundle = hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(point, thresholdMm)
-        ?? findNearestRefrigerantPipeBundleTarget(hvacElements, point, thresholdMm);
-      // When routing, exclude the source element to avoid snapping back to origin
-      if (bundle && startBundleRef.current?.sourceElementId
-        && bundle.sourceElementId === startBundleRef.current.sourceElementId) {
+      const shouldExcludeBundle = (candidate: RefrigerantPipeBundleConnection | null): boolean => {
+        if (!candidate || !startBundleRef.current?.sourceElementId) {
+          return false;
+        }
+        if (candidate.sourceElementId !== startBundleRef.current.sourceElementId) {
+          return false;
+        }
+        // Same element: only exclude the exact same terminal role — allow
+        // snapping to a different terminal (e.g. run-outlet vs branch-outlet)
+        // on the same branch kit so the user can connect a field pipe between
+        // different outlets.
+        return (
+          !candidate.terminalRole
+          || !startBundleRef.current.terminalRole
+          || candidate.terminalRole === startBundleRef.current.terminalRole
+        );
+      };
+
+      bundle = hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(point, thresholdMm) ?? null;
+      if (shouldExcludeBundle(bundle)) {
         bundle = null;
+      }
+      // Fall back to the model-based snap targets when the rendered target was
+      // excluded or not found — this ensures field pipe endpoints and other
+      // branch kit terminals are still reachable.
+      if (!bundle) {
+        bundle = findNearestRefrigerantPipeBundleTarget(hvacElements, point, thresholdMm);
+        if (shouldExcludeBundle(bundle)) {
+          bundle = null;
+        }
       }
     }
 
@@ -260,13 +284,17 @@ export function useRefrigerantPipeTool(
     return { point: nextPoint, bundle: snappedBundle };
   }, [gridSize, hvacElements, hvacRendererRef, snapToGrid, zoom]);
 
-  const renderRoutePreview = useCallback((routePoints: Point2D[]) => {
+  const renderRoutePreview = useCallback((
+    routePoints: Point2D[],
+    endBundleConnection: RefrigerantPipeBundleConnection | null = null,
+  ) => {
     if (routePoints.length < 2) {
       clearPreview();
       return;
     }
     const previewElements = buildRefrigerantPipeElements(routePoints, {
       startBundleConnection: startBundleRef.current,
+      endBundleConnection,
     });
     hvacRendererRef.current?.renderElementPreviews(
       previewElements.map((previewElement, index) => ({
@@ -350,7 +378,10 @@ export function useRefrigerantPipeTool(
 
     previewPointRef.current = snappedPoint;
     renderSnapMarkers(bundle);
-    renderRoutePreview([...routePointsRef.current, snappedPoint]);
+    renderRoutePreview(
+      [...routePointsRef.current, snappedPoint],
+      bundle,
+    );
   }, [renderRoutePreview, renderSnapMarkers, snapPoint]);
 
   const handleDoubleClick = useCallback(() => {

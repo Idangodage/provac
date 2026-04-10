@@ -7,6 +7,7 @@ import {
 
 export type RefrigerantBranchKitSubtype = "dis-22-1g";
 export type RefrigerantBranchLineKind = "gas" | "liquid";
+export type RefrigerantBranchKitLineSelection = "both" | RefrigerantBranchLineKind;
 export type RefrigerantBranchTerminalRole =
   | "inlet"
   | "run-outlet"
@@ -122,6 +123,8 @@ export const DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM =
 
 const DEFAULT_BRANCH_KIT_SUBTYPE: RefrigerantBranchKitSubtype = "dis-22-1g";
 const DEFAULT_BRANCH_KIT_WALL_ALLOWANCE_MM = 0.9;
+const TEST_GAS_BRANCH_CORE_DIAMETER_MM = 15.88; // 5/8"
+const TEST_LIQUID_BRANCH_CORE_DIAMETER_MM = 9.52; // 3/8"
 
 interface BranchLineBuildConfig {
   kind: RefrigerantBranchLineKind;
@@ -324,6 +327,104 @@ function translateBand(
   };
 }
 
+function collectBranchKitLineBoundsPoints(
+  line: RefrigerantBranchKitLineSpec,
+): Point2D[] {
+  const points: Point2D[] = [];
+  line.inletTube.points.forEach((point) => points.push(point));
+  line.inletRunTube.points.forEach((point) => points.push(point));
+  line.mainTube.points.forEach((point) => points.push(point));
+  line.branchTube.points.forEach((point) => points.push(point));
+  line.manifold.outline.forEach((point) => points.push(point));
+  points.push(
+    line.inletTerminal.point,
+    line.runOutletTerminal.point,
+    line.branchOutletTerminal.point,
+    line.splitNode.center,
+  );
+  line.bands.forEach((band) => points.push(band.center));
+  if (line.inletReducer) {
+    points.push(line.inletReducer.start, line.inletReducer.end);
+  }
+  line.junction.mainSections.forEach((section) =>
+    points.push(section.start, section.end),
+  );
+  points.push(line.junction.branchSection.start, line.junction.branchSection.end);
+  return points;
+}
+
+function getBranchKitLineMaxOuterDiameter(
+  line: RefrigerantBranchKitLineSpec,
+): number {
+  const diameters = [
+    line.inletTube.outerDiameterMm,
+    line.inletRunTube.outerDiameterMm,
+    line.mainTube.outerDiameterMm,
+    line.branchTube.outerDiameterMm,
+    line.splitNode.outerDiameterMm,
+    ...line.bands.map((band) => band.outerDiameterMm),
+  ];
+  if (line.inletReducer) {
+    diameters.push(
+      line.inletReducer.startOuterDiameterMm,
+      line.inletReducer.endOuterDiameterMm,
+    );
+  }
+  line.junction.mainSections.forEach((section) =>
+    diameters.push(section.startOuterDiameterMm, section.endOuterDiameterMm),
+  );
+  diameters.push(
+    line.junction.branchSection.startOuterDiameterMm,
+    line.junction.branchSection.endOuterDiameterMm,
+  );
+  return Math.max(...diameters);
+}
+
+function translateBranchKitLine(
+  line: RefrigerantBranchKitLineSpec,
+  offset: Point2D,
+): RefrigerantBranchKitLineSpec {
+  return {
+    ...line,
+    inletTube: {
+      ...line.inletTube,
+      points: translatePoints(line.inletTube.points, offset),
+    },
+    inletRunTube: {
+      ...line.inletRunTube,
+      points: translatePoints(line.inletRunTube.points, offset),
+    },
+    mainTube: {
+      ...line.mainTube,
+      points: translatePoints(line.mainTube.points, offset),
+    },
+    branchTube: {
+      ...line.branchTube,
+      points: translatePoints(line.branchTube.points, offset),
+    },
+    inletReducer: translateReducer(line.inletReducer, offset),
+    manifold: translateManifold(line.manifold, offset),
+    junction: translateJunction(line.junction, offset),
+    splitNode: {
+      ...line.splitNode,
+      center: translatePoint(line.splitNode.center, offset),
+    },
+    inletTerminal: {
+      ...line.inletTerminal,
+      point: translatePoint(line.inletTerminal.point, offset),
+    },
+    runOutletTerminal: {
+      ...line.runOutletTerminal,
+      point: translatePoint(line.runOutletTerminal.point, offset),
+    },
+    branchOutletTerminal: {
+      ...line.branchOutletTerminal,
+      point: translatePoint(line.branchOutletTerminal.point, offset),
+    },
+    bands: line.bands.map((band) => translateBand(band, offset)),
+  };
+}
+
 function buildBranchLineGeometry(
   config: BranchLineBuildConfig,
 ): RefrigerantBranchKitLineSpec {
@@ -441,10 +542,10 @@ function buildBranchLineGeometry(
     branchSectionEndY +
     branchSectionEndOuterDiameterMm / 2 +
     manifoldOutletBoundaryGapMm;
-  // The inlet axis follows the center of the overall outlet face envelope.
-  // This is the midpoint between the top of the straight outlet face and the
-  // bottom of the offset outlet face, matching the branch-kit reference.
-  const trunkCenterY = (runOutletTopY + branchOutletBottomY) / 2;
+  // The through connection must stay on one centerline so the branch kit can
+  // be inserted inline on an existing field pipe without any axis offset.
+  // The offset branch departs from this straight run using the branch section.
+  const trunkCenterY = runCenterY;
   const branchSectionStartY =
     trunkCenterY + junctionBodyOuterDiameterMm * 0.1;
   const branchSectionStart = {
@@ -953,6 +1054,36 @@ export function isRefrigerantBranchKitElement(
   );
 }
 
+export function resolveRefrigerantBranchKitLineSelection(
+  element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties">,
+): RefrigerantBranchKitLineSelection {
+  const rawSelection =
+    typeof element.properties.branchKitLineKind === "string"
+      ? element.properties.branchKitLineKind.toLowerCase().trim()
+      : "";
+  if (rawSelection === "gas" || rawSelection === "liquid") {
+    return rawSelection;
+  }
+
+  const subtype = (element.subtype ?? "").toLowerCase();
+  if (subtype.includes("gas")) {
+    return "gas";
+  }
+  if (subtype.includes("liquid")) {
+    return "liquid";
+  }
+
+  const modelLabel = (element.modelLabel ?? "").toLowerCase();
+  if (modelLabel.includes("gas")) {
+    return "gas";
+  }
+  if (modelLabel.includes("liquid")) {
+    return "liquid";
+  }
+
+  return "both";
+}
+
 export function buildRefrigerantBranchKitModel(
   element: Pick<
     HvacElement,
@@ -964,19 +1095,13 @@ export function buildRefrigerantBranchKitModel(
     readNumberProperty(element.properties, "branchKitWallAllowanceMm") ??
     DEFAULT_BRANCH_KIT_WALL_ALLOWANCE_MM;
 
-  const gasInletDiameterMm =
-    readNumberProperty(element.properties, "gasInletDiameterMm") ?? 19.05;
-  const gasRunOutletDiameterMm =
-    readNumberProperty(element.properties, "gasRunOutletDiameterMm") ?? 15.88;
-  const gasBranchOutletDiameterMm =
-    readNumberProperty(element.properties, "gasBranchOutletDiameterMm") ?? 12.7;
-  const liquidInletDiameterMm =
-    readNumberProperty(element.properties, "liquidInletDiameterMm") ?? 9.52;
-  const liquidRunOutletDiameterMm =
-    readNumberProperty(element.properties, "liquidRunOutletDiameterMm") ?? 9.52;
-  const liquidBranchOutletDiameterMm =
-    readNumberProperty(element.properties, "liquidBranchOutletDiameterMm") ??
-    6.35;
+  // Testing mode: keep all inlet/outlet cores uniform per line kind.
+  const gasInletDiameterMm = TEST_GAS_BRANCH_CORE_DIAMETER_MM;
+  const gasRunOutletDiameterMm = TEST_GAS_BRANCH_CORE_DIAMETER_MM;
+  const gasBranchOutletDiameterMm = TEST_GAS_BRANCH_CORE_DIAMETER_MM;
+  const liquidInletDiameterMm = TEST_LIQUID_BRANCH_CORE_DIAMETER_MM;
+  const liquidRunOutletDiameterMm = TEST_LIQUID_BRANCH_CORE_DIAMETER_MM;
+  const liquidBranchOutletDiameterMm = TEST_LIQUID_BRANCH_CORE_DIAMETER_MM;
 
   const gasMaxOuterDiameterMm = Math.max(
     resolveCopperBodyDiameterMm(gasInletDiameterMm, wallAllowanceMm),
@@ -1067,50 +1192,8 @@ export function buildRefrigerantBranchKitModel(
     maxOuterRadiusMm + DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM + 8,
   );
   const offset = bounds.center;
-  const translateLine = (
-    line: RefrigerantBranchKitLineSpec,
-  ): RefrigerantBranchKitLineSpec => ({
-    ...line,
-    inletTube: {
-      ...line.inletTube,
-      points: translatePoints(line.inletTube.points, offset),
-    },
-    inletRunTube: {
-      ...line.inletRunTube,
-      points: translatePoints(line.inletRunTube.points, offset),
-    },
-    mainTube: {
-      ...line.mainTube,
-      points: translatePoints(line.mainTube.points, offset),
-    },
-    branchTube: {
-      ...line.branchTube,
-      points: translatePoints(line.branchTube.points, offset),
-    },
-    inletReducer: translateReducer(line.inletReducer, offset),
-    manifold: translateManifold(line.manifold, offset),
-    junction: translateJunction(line.junction, offset),
-    splitNode: {
-      ...line.splitNode,
-      center: translatePoint(line.splitNode.center, offset),
-    },
-    inletTerminal: {
-      ...line.inletTerminal,
-      point: translatePoint(line.inletTerminal.point, offset),
-    },
-    runOutletTerminal: {
-      ...line.runOutletTerminal,
-      point: translatePoint(line.runOutletTerminal.point, offset),
-    },
-    branchOutletTerminal: {
-      ...line.branchOutletTerminal,
-      point: translatePoint(line.branchOutletTerminal.point, offset),
-    },
-    bands: line.bands.map((band) => translateBand(band, offset)),
-  });
-
-  const translatedGas = translateLine(gas);
-  const translatedLiquid = translateLine(liquid);
+  const translatedGas = translateBranchKitLine(gas, offset);
+  const translatedLiquid = translateBranchKitLine(liquid, offset);
   const heightMm =
     Math.max(gasMaxOuterDiameterMm, liquidMaxOuterDiameterMm) +
     DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM * 2;
@@ -1135,6 +1218,45 @@ export function buildRefrigerantBranchKitModel(
       x: 0,
       y: bounds.minY - offset.y,
     },
+  };
+}
+
+export function buildRefrigerantBranchKitViewModel(
+  element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties">,
+): RefrigerantBranchKitModelSpec {
+  const model = buildRefrigerantBranchKitModel(element);
+  const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+  if (lineSelection === "both") {
+    return model;
+  }
+
+  const selectedLine =
+    lineSelection === "gas" ? model.gas : model.liquid;
+  const selectedPoints = collectBranchKitLineBoundsPoints(selectedLine);
+  const selectedMaxOuterDiameterMm = getBranchKitLineMaxOuterDiameter(selectedLine);
+  const selectedBounds = computeBounds(
+    selectedPoints,
+    selectedMaxOuterDiameterMm / 2 +
+      DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM +
+      8,
+  );
+  const offset = selectedBounds.center;
+
+  return {
+    ...model,
+    bounds: {
+      ...selectedBounds,
+      minX: selectedBounds.minX - offset.x,
+      minY: selectedBounds.minY - offset.y,
+      maxX: selectedBounds.maxX - offset.x,
+      maxY: selectedBounds.maxY - offset.y,
+      center: { x: 0, y: 0 },
+    },
+    widthMm: selectedBounds.width,
+    depthMm: selectedBounds.height,
+    gas: translateBranchKitLine(model.gas, offset),
+    liquid: translateBranchKitLine(model.liquid, offset),
+    labelAnchor: translatePoint(model.labelAnchor, offset),
   };
 }
 

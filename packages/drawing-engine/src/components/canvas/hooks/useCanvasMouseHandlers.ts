@@ -153,8 +153,16 @@ export interface UseCanvasMouseHandlersOptions {
     source: AcEquipmentDefinition,
   ) => {
     point: Point2D;
+    center: Point2D;
     rotationDeg: number;
     valid: boolean;
+    roomId?: string | null;
+    wallId?: string | null;
+    invalidReason?: string | null;
+    widthMm?: number;
+    depthMm?: number;
+    heightMm?: number;
+    placementProperties?: Record<string, unknown>;
   };
   scheduleDimensionLayerRefresh: () => void;
   setViewTransform: (zoom: number, pan: Point2D) => void;

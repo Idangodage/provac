@@ -171,9 +171,17 @@ export interface UseRendererSyncOptions {
         point: Point2D,
         source: AcEquipmentDefinition | HvacElement,
     ) => {
+        center: Point2D;
         point: Point2D;
         rotationDeg: number;
         valid: boolean;
+        roomId?: string | null;
+        wallId?: string | null;
+        invalidReason?: string | null;
+        widthMm?: number;
+        depthMm?: number;
+        heightMm?: number;
+        placementProperties?: Record<string, unknown>;
     };
 
     // Tool hooks that need cleanup

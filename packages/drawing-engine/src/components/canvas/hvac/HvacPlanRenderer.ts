@@ -28,13 +28,21 @@ import {
   type RefrigerantPipeBundleConnection,
 } from "./refrigerantPipePairModel";
 import {
-  buildRefrigerantBranchKitModel,
+  buildRefrigerantPipeEndpointRenderStateMap,
+  buildRefrigerantPipeRenderChainStateMap,
+  type RefrigerantPipeEndpointRenderState,
+  type RefrigerantPipeRenderChainState,
+} from "./refrigerantPipeRenderState";
+import {
+  buildRefrigerantBranchKitViewModel,
   DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
   getRefrigerantBranchKitPlanBounds,
   getRefrigerantBranchKitTerminalSpecs,
   isRefrigerantBranchKitElement,
   isRefrigerantBranchKitType,
+  resolveRefrigerantBranchKitLineSelection,
   REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
+  type RefrigerantBranchTerminalRole,
 } from "./refrigerantBranchKitModel";
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from "./refrigerantPipeDimensions";
 import {
@@ -107,6 +115,255 @@ function normalizeDirection(point: Point2D): Point2D {
   return { x: point.x / length, y: point.y / length };
 }
 
+function addPoints(a: Point2D, b: Point2D): Point2D {
+  return { x: a.x + b.x, y: a.y + b.y };
+}
+
+function subtractPoints(a: Point2D, b: Point2D): Point2D {
+  return { x: a.x - b.x, y: a.y - b.y };
+}
+
+function scalePoint(point: Point2D, factor: number): Point2D {
+  return { x: point.x * factor, y: point.y * factor };
+}
+
+function dotProduct(a: Point2D, b: Point2D): number {
+  return a.x * b.x + a.y * b.y;
+}
+
+function averagePoints(points: Point2D[]): Point2D {
+  if (points.length === 0) {
+    return { x: 0, y: 0 };
+  }
+  const sum = points.reduce(
+    (acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }),
+    { x: 0, y: 0 },
+  );
+  return {
+    x: sum.x / points.length,
+    y: sum.y / points.length,
+  };
+}
+
+function normalizePoint(value: unknown): Point2D | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("x" in value) ||
+    !("y" in value)
+  ) {
+    return null;
+  }
+  const candidate = value as { x?: unknown; y?: unknown };
+  if (
+    typeof candidate.x !== "number" ||
+    !Number.isFinite(candidate.x) ||
+    typeof candidate.y !== "number" ||
+    !Number.isFinite(candidate.y)
+  ) {
+    return null;
+  }
+  return { x: candidate.x, y: candidate.y };
+}
+
+function resolveInlineBranchKitRenderCenter(
+  element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties" | "rotation">,
+): Point2D | null {
+  if (
+    !isRefrigerantBranchKitElement(element) ||
+    element.properties.branchKitPlacementMode !== "inline-pipe-run"
+  ) {
+    return null;
+  }
+  const anchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
+  if (!anchorPoint) {
+    return null;
+  }
+
+  const model = buildRefrigerantBranchKitViewModel(element);
+  const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+  const lines =
+    lineSelection === "gas"
+      ? [model.gas]
+      : lineSelection === "liquid"
+        ? [model.liquid]
+        : [model.gas, model.liquid];
+  const anchorLocal = averagePoints(
+    lines.flatMap((line) => [line.inletTerminal.point, line.runOutletTerminal.point]),
+  );
+  return subtractPoints(anchorPoint, rotatePoint(anchorLocal, element.rotation ?? 0));
+}
+
+type PipeTrimWindow = {
+  anchorPoint: Point2D;
+  direction: Point2D;
+  backwardMm: number;
+  forwardMm: number;
+};
+
+function appendUniquePolylinePoint(points: Point2D[], point: Point2D): void {
+  const previous = points[points.length - 1];
+  if (
+    previous &&
+    Math.hypot(previous.x - point.x, previous.y - point.y) <= 0.2
+  ) {
+    return;
+  }
+  points.push(point);
+}
+
+function trimPolylineWithWindow(
+  points: Point2D[],
+  window: PipeTrimWindow,
+): Point2D[][] {
+  if (
+    points.length < 2 ||
+    (window.backwardMm <= 0.1 && window.forwardMm <= 0.1)
+  ) {
+    return [points];
+  }
+
+  let bestSegmentIndex = -1;
+  let bestProjectionMm = 0;
+  let bestDistanceMm = 10;
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index]!;
+    const end = points[index + 1]!;
+    const delta = subtractPoints(end, start);
+    const lengthMm = Math.hypot(delta.x, delta.y);
+    if (lengthMm <= 0.2) {
+      continue;
+    }
+    const segmentDirection = normalizeDirection(delta);
+    if (Math.abs(dotProduct(segmentDirection, window.direction)) < 0.985) {
+      continue;
+    }
+    const projectedMm = Math.min(
+      lengthMm,
+      Math.max(0, dotProduct(subtractPoints(window.anchorPoint, start), segmentDirection)),
+    );
+    const projectedPoint = addPoints(
+      start,
+      scalePoint(segmentDirection, projectedMm),
+    );
+    const distanceMm = Math.hypot(
+      projectedPoint.x - window.anchorPoint.x,
+      projectedPoint.y - window.anchorPoint.y,
+    );
+    if (distanceMm >= bestDistanceMm) {
+      continue;
+    }
+    bestDistanceMm = distanceMm;
+    bestSegmentIndex = index;
+    bestProjectionMm = projectedMm;
+  }
+
+  if (bestSegmentIndex < 0) {
+    return [points];
+  }
+
+  const segmentStart = points[bestSegmentIndex]!;
+  const segmentEnd = points[bestSegmentIndex + 1]!;
+  const segmentDirection = normalizeDirection(
+    subtractPoints(segmentEnd, segmentStart),
+  );
+  const segmentLengthMm = Math.hypot(
+    segmentEnd.x - segmentStart.x,
+    segmentEnd.y - segmentStart.y,
+  );
+  const cutStartMm = Math.max(0, bestProjectionMm - window.backwardMm);
+  const cutEndMm = Math.min(segmentLengthMm, bestProjectionMm + window.forwardMm);
+  if (cutEndMm - cutStartMm <= 0.2) {
+    return [points];
+  }
+
+  const beforePoints: Point2D[] = [];
+  for (let index = 0; index <= bestSegmentIndex; index += 1) {
+    appendUniquePolylinePoint(beforePoints, points[index]!);
+  }
+  if (cutStartMm > 0.2) {
+    appendUniquePolylinePoint(
+      beforePoints,
+      addPoints(segmentStart, scalePoint(segmentDirection, cutStartMm)),
+    );
+  }
+
+  const afterPoints: Point2D[] = [];
+  if (cutEndMm < segmentLengthMm - 0.2) {
+    appendUniquePolylinePoint(
+      afterPoints,
+      addPoints(segmentStart, scalePoint(segmentDirection, cutEndMm)),
+    );
+  }
+  for (let index = bestSegmentIndex + 1; index < points.length; index += 1) {
+    appendUniquePolylinePoint(afterPoints, points[index]!);
+  }
+
+  return [beforePoints, afterPoints].filter((polyline) => polyline.length >= 2);
+}
+
+function trimPolylineWithWindows(
+  points: Point2D[],
+  windows: PipeTrimWindow[],
+): Point2D[][] {
+  return windows.reduce<Point2D[][]>(
+    (polylines, window) =>
+      polylines.flatMap((polyline) => trimPolylineWithWindow(polyline, window)),
+    [points],
+  );
+}
+
+function trimPolylineEndLocal(
+  points: Point2D[],
+  trimLengthMm: number,
+): Point2D[] {
+  if (points.length < 2 || trimLengthMm <= 0.01) {
+    return points;
+  }
+
+  const segmentLengths: number[] = [];
+  let totalLength = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1]!;
+    const end = points[index]!;
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    segmentLengths.push(length);
+    totalLength += length;
+  }
+
+  const targetLength = Math.max(totalLength - trimLengthMm, 0);
+  if (targetLength <= 0.01) {
+    return [points[0]!];
+  }
+  if (targetLength >= totalLength - 0.01) {
+    return points;
+  }
+
+  const trimmed: Point2D[] = [points[0]!];
+  let traversed = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1]!;
+    const end = points[index]!;
+    const length = segmentLengths[index - 1]!;
+    if (traversed + length < targetLength - 0.01) {
+      trimmed.push(end);
+      traversed += length;
+      continue;
+    }
+
+    const remaining = targetLength - traversed;
+    const t = length > 0.01 ? remaining / length : 0;
+    trimmed.push({
+      x: start.x + (end.x - start.x) * t,
+      y: start.y + (end.y - start.y) * t,
+    });
+    break;
+  }
+
+  return trimmed;
+}
+
 function clampFontSize(widthPx: number): number {
   return Math.max(8, Math.min(11, widthPx * 0.08));
 }
@@ -115,6 +372,14 @@ export class HvacPlanRenderer {
   private canvas: fabric.Canvas;
   private groups = new Map<string, HvacGroup>();
   private hvacData = new Map<string, HvacElement>();
+  private pipeEndpointStateMap = new Map<
+    string,
+    RefrigerantPipeEndpointRenderState
+  >();
+  private pipeRenderChainStateMap = new Map<
+    string,
+    RefrigerantPipeRenderChainState
+  >();
   private selectedIds = new Set<string>();
   private hoveredId: string | null = null;
   private placementPreview: HvacGroup[] = [];
@@ -213,6 +478,110 @@ export class HvacPlanRenderer {
     nextElement: HvacElement,
   ): boolean {
     return previousElement !== nextElement;
+  }
+
+  private rebuildRefrigerantPipeRenderStateMaps(elements: HvacElement[]): void {
+    this.pipeEndpointStateMap =
+      buildRefrigerantPipeEndpointRenderStateMap(elements);
+    this.pipeRenderChainStateMap = buildRefrigerantPipeRenderChainStateMap(
+      elements,
+      this.pipeEndpointStateMap,
+    );
+  }
+
+  private getInlineBranchKitTrimWindows(
+    sourceIds: Set<string>,
+    lineKind: "gas" | "liquid",
+  ): PipeTrimWindow[] {
+    const windows: PipeTrimWindow[] = [];
+
+    this.hvacData.forEach((element) => {
+      if (
+        !isRefrigerantBranchKitElement(element) ||
+        element.properties.branchKitPlacementMode !== "inline-pipe-run"
+      ) {
+        return;
+      }
+      const sourceElementId =
+        typeof element.properties.branchKitSnapSourceElementId === "string"
+          ? element.properties.branchKitSnapSourceElementId
+          : null;
+      if (!sourceElementId || !sourceIds.has(sourceElementId)) {
+        return;
+      }
+
+      const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+      if (lineSelection !== "both" && lineSelection !== lineKind) {
+        return;
+      }
+
+      const anchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
+      const direction = normalizeDirection(
+        normalizePoint(element.properties.branchKitSnapDirection) ?? { x: 1, y: 0 },
+      );
+      if (!anchorPoint) {
+        return;
+      }
+
+      const branchKit = buildRefrigerantBranchKitViewModel(element);
+      const selectedLine =
+        lineSelection === "gas"
+          ? branchKit.gas
+          : lineSelection === "liquid"
+            ? branchKit.liquid
+            : lineKind === "gas"
+              ? branchKit.gas
+              : branchKit.liquid;
+
+      const localAxis = normalizeDirection(
+        subtractPoints(
+          selectedLine.runOutletTerminal.point,
+          selectedLine.inletTerminal.point,
+        ),
+      );
+      const insulatedMainPoints = trimPolylineEndLocal(
+        selectedLine.mainTube.points,
+        selectedLine.runOutletTerminal.socketLengthMm,
+      );
+      const insulatedPoints = [
+        ...selectedLine.inletRunTube.points,
+        ...insulatedMainPoints,
+      ];
+      const projectedScalars = insulatedPoints.map((localPoint) =>
+        dotProduct(
+          subtractPoints(localPoint, {
+            x:
+              (selectedLine.inletTerminal.point.x +
+                selectedLine.runOutletTerminal.point.x) /
+              2,
+            y:
+              (selectedLine.inletTerminal.point.y +
+                selectedLine.runOutletTerminal.point.y) /
+              2,
+          }),
+          localAxis,
+        ),
+      );
+      if (projectedScalars.length === 0) {
+        return;
+      }
+      const minScalar = Math.min(...projectedScalars);
+      const maxScalar = Math.max(...projectedScalars);
+      const backwardMm = Math.max(0, -minScalar);
+      const forwardMm = Math.max(0, maxScalar);
+      if (backwardMm <= 0.2 && forwardMm <= 0.2) {
+        return;
+      }
+
+      windows.push({
+        anchorPoint,
+        direction,
+        backwardMm,
+        forwardMm,
+      });
+    });
+
+    return windows;
   }
 
   private isObjectVisibleInViewport(
@@ -415,45 +784,219 @@ export class HvacPlanRenderer {
 
       if (element.type === "refrigerant-pipe") {
         const visual = buildRefrigerantPipeVisual(element);
+        const chainState = this.pipeRenderChainStateMap.get(element.id) ?? null;
+        if (chainState && !chainState.renderAsHead) {
+          return;
+        }
         const startPoint = this.getRenderedObjectCenterMm(group, "hvac-snap-start");
         const endPoint = this.getRenderedObjectCenterMm(group, "hvac-snap-end");
-        const outerPoints = visual.outerPoints;
+        const outerPoints = chainState?.outerPoints ?? visual.outerPoints;
+        const headElement =
+          chainState ? this.hvacData.get(chainState.headId) ?? element : element;
+        const tailElement =
+          chainState ? this.hvacData.get(chainState.tailId) ?? element : element;
+        const headVisual = chainState
+          ? buildRefrigerantPipeVisual(headElement)
+          : visual;
+        const tailVisual = chainState
+          ? buildRefrigerantPipeVisual(tailElement)
+          : visual;
+        const lineKind = chainState?.lineKind ?? visual.lineKind;
+        const outerDiameterMm = chainState
+          ? chainState.outerRadiusMm * 2
+          : visual.outerDiameterMm;
+        const elevationMm = chainState
+          ? chainState.elevationMm
+          : element.elevation + visual.localZMm;
 
-        if (!visual.startConnection && startPoint && outerPoints.length >= 2) {
+        if (!headVisual.startConnection && startPoint && outerPoints.length >= 2) {
           const nextPoint = outerPoints[1]!;
           const firstPoint = outerPoints[0]!;
           renderedPipeEndpoints.push({
             key: `${element.id}:start`,
             elementId: element.id,
             bundleId: visual.bundleId,
-            lineKind: visual.lineKind,
+            lineKind,
             point: startPoint,
             direction: {
               x: (firstPoint.x - nextPoint.x) / Math.max(Math.hypot(firstPoint.x - nextPoint.x, firstPoint.y - nextPoint.y), 0.0001),
               y: (firstPoint.y - nextPoint.y) / Math.max(Math.hypot(firstPoint.x - nextPoint.x, firstPoint.y - nextPoint.y), 0.0001),
             },
-            elevationMm: element.elevation + visual.localZMm,
-            outerDiameterMm: visual.outerDiameterMm,
+            elevationMm,
+            outerDiameterMm,
           });
         }
 
-        if (endPoint && outerPoints.length >= 2) {
+        if (!tailVisual.endConnection && endPoint && outerPoints.length >= 2) {
           const lastPoint = outerPoints[outerPoints.length - 1]!;
           const previousPoint = outerPoints[outerPoints.length - 2]!;
           renderedPipeEndpoints.push({
             key: `${element.id}:end`,
             elementId: element.id,
             bundleId: visual.bundleId,
-            lineKind: visual.lineKind,
+            lineKind,
             point: endPoint,
             direction: {
               x: (lastPoint.x - previousPoint.x) / Math.max(Math.hypot(lastPoint.x - previousPoint.x, lastPoint.y - previousPoint.y), 0.0001),
               y: (lastPoint.y - previousPoint.y) / Math.max(Math.hypot(lastPoint.x - previousPoint.x, lastPoint.y - previousPoint.y), 0.0001),
             },
-            elevationMm: element.elevation + visual.localZMm,
-            outerDiameterMm: visual.outerDiameterMm,
+            elevationMm,
+            outerDiameterMm,
           });
         }
+        return;
+      }
+
+      if (isRefrigerantBranchKitElement(element)) {
+        const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+        const branchKit = buildRefrigerantBranchKitViewModel(element);
+        const terminalMap = new Map(
+          getRefrigerantBranchKitTerminalSpecs(branchKit).map((terminal) => [
+            `${terminal.kind}:${terminal.role}`,
+            terminal,
+          ]),
+        );
+        const roles: RefrigerantBranchTerminalRole[] = [
+          "inlet",
+          "run-outlet",
+          "branch-outlet",
+        ];
+
+        roles.forEach((role) => {
+          const rotation = element.rotation ?? 0;
+          let gasTerminal = terminalMap.get(`gas:${role}`);
+          let liquidTerminal = terminalMap.get(`liquid:${role}`);
+          let gasPoint =
+            this.getRenderedObjectCenterMm(group, `hvac-branch-snap-gas-${role}`);
+          let liquidPoint =
+            this.getRenderedObjectCenterMm(group, `hvac-branch-snap-liquid-${role}`);
+          let gasDirection: Point2D;
+          let liquidDirection: Point2D;
+          let averageDirection: Point2D;
+          let guideReference: "gas" | "liquid" | undefined;
+
+          if (lineSelection === "both") {
+            if (!gasTerminal || !liquidTerminal || !gasPoint || !liquidPoint) {
+              return;
+            }
+            gasDirection = normalizeDirection(
+              rotatePoint(gasTerminal.direction, rotation),
+            );
+            liquidDirection = normalizeDirection(
+              rotatePoint(liquidTerminal.direction, rotation),
+            );
+            averageDirection = normalizeDirection({
+              x: gasDirection.x + liquidDirection.x,
+              y: gasDirection.y + liquidDirection.y,
+            });
+          } else {
+            const selectedKind = lineSelection;
+            const counterpartKind = selectedKind === "gas" ? "liquid" : "gas";
+            const selectedTerminal = terminalMap.get(`${selectedKind}:${role}`);
+            const counterpartTerminal = terminalMap.get(
+              `${counterpartKind}:${role}`,
+            );
+            const selectedPoint = this.getRenderedObjectCenterMm(
+              group,
+              `hvac-branch-snap-${selectedKind}-${role}`,
+            );
+            if (!selectedTerminal || !selectedPoint) {
+              return;
+            }
+
+            const direction = normalizeDirection(
+              rotatePoint(selectedTerminal.direction, rotation),
+            );
+            const normal = { x: -direction.y, y: direction.x };
+            const selectedOuterDiameterMm = selectedTerminal.outerDiameterMm;
+            const counterpartOuterDiameterMm =
+              counterpartTerminal?.outerDiameterMm ?? selectedOuterDiameterMm;
+            const gasOuterDiameterMm =
+              selectedKind === "gas"
+                ? selectedOuterDiameterMm
+                : counterpartOuterDiameterMm;
+            const liquidOuterDiameterMm =
+              selectedKind === "liquid"
+                ? selectedOuterDiameterMm
+                : counterpartOuterDiameterMm;
+            const centerSpacingMm =
+              gasOuterDiameterMm / 2 +
+              liquidOuterDiameterMm / 2 +
+              DEFAULT_REFRIGERANT_PIPE_GAP_MM;
+
+            if (selectedKind === "gas") {
+              gasPoint = selectedPoint;
+              liquidPoint = {
+                x: selectedPoint.x + normal.x * centerSpacingMm,
+                y: selectedPoint.y + normal.y * centerSpacingMm,
+              };
+            } else {
+              liquidPoint = selectedPoint;
+              gasPoint = {
+                x: selectedPoint.x - normal.x * centerSpacingMm,
+                y: selectedPoint.y - normal.y * centerSpacingMm,
+              };
+            }
+
+            gasTerminal = gasTerminal ?? {
+              ...selectedTerminal,
+              kind: "gas" as const,
+              outerDiameterMm: gasOuterDiameterMm,
+            };
+            liquidTerminal = liquidTerminal ?? {
+              ...selectedTerminal,
+              kind: "liquid" as const,
+              outerDiameterMm: liquidOuterDiameterMm,
+            };
+            gasDirection = direction;
+            liquidDirection = direction;
+            averageDirection = direction;
+            guideReference = selectedKind;
+          }
+
+          if (!gasTerminal || !liquidTerminal || !gasPoint || !liquidPoint) {
+            return;
+          }
+
+          const gasDistance = Math.hypot(
+            gasPoint.x - point.x,
+            gasPoint.y - point.y,
+          );
+          const liquidDistance = Math.hypot(
+            liquidPoint.x - point.x,
+            liquidPoint.y - point.y,
+          );
+          const nearestDistance = Math.min(gasDistance, liquidDistance);
+          if (nearestDistance > bestDistance) {
+            return;
+          }
+
+          bestDistance = nearestDistance;
+          bestTarget = {
+            point: {
+              x: (gasPoint.x + liquidPoint.x) / 2,
+              y: (gasPoint.y + liquidPoint.y) / 2,
+            },
+            gasPoint,
+            liquidPoint,
+            gasFieldPoint: gasPoint,
+            liquidFieldPoint: liquidPoint,
+            gasOuterDiameterMm: gasTerminal.outerDiameterMm,
+            liquidOuterDiameterMm: liquidTerminal.outerDiameterMm,
+            gasDirection,
+            liquidDirection,
+            direction: averageDirection,
+            elevationMm:
+              element.elevation +
+              (branchKit.gas.centerlineZMm + branchKit.liquid.centerlineZMm) / 2,
+            gasElevationMm: element.elevation + branchKit.gas.centerlineZMm,
+            liquidElevationMm: element.elevation + branchKit.liquid.centerlineZMm,
+            connectionKind: "field-pipe",
+            guideReference,
+            sourceElementId: element.id,
+            terminalRole: role,
+          };
+        });
         return;
       }
 
@@ -938,6 +1481,71 @@ export class HvacPlanRenderer {
     switch (element.type) {
       case "refrigerant-pipe": {
         const visual = buildRefrigerantPipeVisual(element);
+        const chainState = this.pipeRenderChainStateMap.get(element.id) ?? null;
+        const headElement =
+          chainState && chainState.renderAsHead
+            ? this.hvacData.get(chainState.headId) ?? element
+            : element;
+        const tailElement =
+          chainState && chainState.renderAsHead
+            ? this.hvacData.get(chainState.tailId) ?? element
+            : element;
+        const headVisual =
+          chainState && chainState.renderAsHead
+            ? buildRefrigerantPipeVisual(headElement)
+            : visual;
+        const tailVisual =
+          chainState && chainState.renderAsHead
+            ? buildRefrigerantPipeVisual(tailElement)
+            : visual;
+        const renderCenter = elementCenter(headElement);
+        const localizePoint = (point: Point2D): Point2D => ({
+          x: point.x - renderCenter.x,
+          y: point.y - renderCenter.y,
+        });
+        const localOuterPoints =
+          chainState && chainState.renderAsHead
+            ? chainState.outerPoints.map(localizePoint)
+            : visual.localOuterPoints;
+        const localStub =
+          chainState && chainState.renderAsHead && chainState.absoluteStub
+            ? {
+                start: localizePoint(chainState.absoluteStub.start),
+                end: localizePoint(chainState.absoluteStub.end),
+              }
+            : visual.localStub;
+        const outerDiameterMm =
+          chainState && chainState.renderAsHead
+            ? chainState.outerRadiusMm * 2
+            : visual.outerDiameterMm;
+        const coreDiameterMm =
+          chainState && chainState.renderAsHead
+            ? chainState.coreRadiusMm * 2
+            : visual.coreRadiusMm * 2;
+        const startConnection =
+          chainState && chainState.renderAsHead
+            ? headVisual.startConnection
+            : visual.startConnection;
+        const endConnection =
+          chainState && chainState.renderAsHead
+            ? tailVisual.endConnection
+            : visual.endConnection;
+        const isChainHiddenMember = Boolean(chainState && !chainState.renderAsHead);
+        const trimSourceIds = new Set<string>([
+          headElement.id,
+          element.id,
+          ...(headVisual.bundleId ? [headVisual.bundleId] : []),
+        ]);
+        const trimmedAbsolutePolylineSets = trimPolylineWithWindows(
+          chainState?.outerPoints ?? visual.outerPoints,
+          this.getInlineBranchKitTrimWindows(
+            trimSourceIds,
+            chainState?.lineKind ?? visual.lineKind,
+          ),
+        );
+        const localOuterPointSets = trimmedAbsolutePolylineSets.map((polyline) =>
+          polyline.map(localizePoint),
+        );
         const insulationEdgeStroke = options.valid
           ? "rgba(171,184,196,0.98)"
           : "rgba(220,38,38,0.28)";
@@ -951,71 +1559,99 @@ export class HvacPlanRenderer {
           : visual.lineKind === "gas"
             ? "#dc2626"
             : "#f97316";
-        const corePoints = buildContinuousCorePoints(
-          visual.localStub,
-          visual.localOuterPoints,
+        const corePointSets = localOuterPointSets.map((polyline, index) =>
+          index === 0 ? buildContinuousCorePoints(localStub, polyline) : polyline,
         );
 
         if (options.includeInteractionHalos) {
           createPipeHaloRectSegment(
-            visual.localStub,
-            visual.outerDiameterMm,
+            localStub,
+            outerDiameterMm,
             palette.halo,
             0.16,
             "hvac-selection",
           );
-          createPipeHaloPolyline(
-            visual.localOuterPoints,
-            visual.outerDiameterMm,
-            palette.halo,
-            0.16,
-            "hvac-selection",
+          localOuterPointSets.forEach((polyline) =>
+            createPipeHaloPolyline(
+              polyline,
+              outerDiameterMm,
+              palette.halo,
+              0.16,
+              "hvac-selection",
+            ),
           );
           createPipeHaloRectSegment(
-            visual.localStub,
-            visual.outerDiameterMm,
+            localStub,
+            outerDiameterMm,
             palette.hover,
             0.12,
             "hvac-hover",
           );
-          createPipeHaloPolyline(
-            visual.localOuterPoints,
-            visual.outerDiameterMm,
-            palette.hover,
-            0.12,
-            "hvac-hover",
+          localOuterPointSets.forEach((polyline) =>
+            createPipeHaloPolyline(
+              polyline,
+              outerDiameterMm,
+              palette.hover,
+              0.12,
+              "hvac-hover",
+            ),
           );
         }
 
-        renderPipePolyline(
-          visual.localOuterPoints,
-          insulationEdgeStroke,
-          visual.outerDiameterMm + 3,
-          "hvac-detail",
-        );
-        renderPipePolyline(
-          visual.localOuterPoints,
-          insulationStroke,
-          visual.outerDiameterMm,
-          "hvac-detail",
-        );
+        if (isChainHiddenMember) {
+          renderPipeRectSegment(
+            visual.localStub,
+            "rgba(0,0,0,0.001)",
+            visual.outerDiameterMm + 8 / MM_TO_PX,
+            "hvac-detail",
+          );
+          renderPipePolyline(
+            visual.localOuterPoints,
+            "rgba(0,0,0,0.001)",
+            visual.outerDiameterMm + 8 / MM_TO_PX,
+            "hvac-detail",
+          );
+          break;
+        }
+
+        localOuterPointSets.forEach((polyline) => {
+          renderPipePolyline(
+            polyline,
+            insulationEdgeStroke,
+            outerDiameterMm + 3,
+            "hvac-detail",
+          );
+          renderPipePolyline(
+            polyline,
+            insulationStroke,
+            outerDiameterMm,
+            "hvac-detail",
+          );
+        });
         renderPipeRectSegment(
-          visual.localStub,
+          localStub,
           coreStroke,
-          visual.coreRadiusMm * 2,
+          coreDiameterMm,
           "hvac-detail",
         );
-        renderPipePolyline(
-          corePoints,
-          coreStroke,
-          visual.coreRadiusMm * 2,
-          "hvac-detail",
-          "miter",
+        corePointSets.forEach((polyline) =>
+          renderPipePolyline(
+            polyline,
+            coreStroke,
+            coreDiameterMm,
+            "hvac-detail",
+            "miter",
+          ),
         );
-        if (visual.localOuterPoints.length >= 1) {
-          createHiddenSnapPoint(visual.localOuterPoints[0]!, "hvac-snap-start");
+        const firstOuterPoints = localOuterPointSets[0] ?? [];
+        const lastOuterPoints =
+          localOuterPointSets[localOuterPointSets.length - 1] ?? [];
+        if (!startConnection && firstOuterPoints.length >= 1) {
+          createHiddenSnapPoint(firstOuterPoints[0]!, "hvac-snap-start");
+        }
+        if (!endConnection && lastOuterPoints.length >= 1) {
           createHiddenSnapPoint(
-            visual.localOuterPoints[visual.localOuterPoints.length - 1]!,
+            lastOuterPoints[lastOuterPoints.length - 1]!,
             "hvac-snap-end",
           );
         }
@@ -1252,7 +1888,10 @@ export class HvacPlanRenderer {
         break;
       }
       case "refrigerant-branch-kit": {
-        const branchKit = buildRefrigerantBranchKitModel(element);
+        const branchKit = buildRefrigerantBranchKitViewModel(element);
+        const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+        const renderGasLine = lineSelection !== "liquid";
+        const renderLiquidLine = lineSelection !== "gas";
         customPlanBounds = getRefrigerantBranchKitPlanBounds(branchKit);
         const edgeStroke = options.valid
           ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.insulationEdge
@@ -1459,6 +2098,14 @@ export class HvacPlanRenderer {
           line: typeof branchKit.gas,
           bodyStroke: string,
         ): void => {
+          const manifoldRunConnectorPoints =
+            line.inletRunTube.points.length >= 1 && line.mainTube.points.length >= 1
+              ? [
+                  line.inletRunTube.points[line.inletRunTube.points.length - 1]!,
+                  line.mainTube.points[0]!,
+                ]
+              : [];
+
           const renderCopperPolyline = (
             points: Point2D[],
             diameterMm: number,
@@ -1517,6 +2164,11 @@ export class HvacPlanRenderer {
             line.inletRunTube.outerDiameterMm,
             `hvac-branch-${line.kind}-inlet-run-insulation`,
           );
+          renderInsulationPolyline(
+            manifoldRunConnectorPoints,
+            line.mainTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-manifold-run-insulation`,
+          );
           renderManifoldBody(
             line.manifold,
             insulationFill,
@@ -1541,6 +2193,11 @@ export class HvacPlanRenderer {
             line.inletRunTube.points,
             line.inletRunTube.outerDiameterMm,
             `hvac-branch-${line.kind}-inlet-run`,
+          );
+          renderCopperPolyline(
+            manifoldRunConnectorPoints,
+            line.mainTube.outerDiameterMm,
+            `hvac-branch-${line.kind}-manifold-run`,
           );
           renderCopperPolyline(
             line.mainTube.points,
@@ -1569,19 +2226,27 @@ export class HvacPlanRenderer {
           });
         };
 
-        renderLine(
-          branchKit.gas,
-          options.valid
-            ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.gasCopper
-            : "#dc2626",
-        );
-        renderLine(
-          branchKit.liquid,
-          options.valid
-            ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.liquidCopper
-            : "#f97316",
-        );
-        getRefrigerantBranchKitTerminalSpecs(branchKit).forEach((terminal) => {
+        if (renderGasLine) {
+          renderLine(
+            branchKit.gas,
+            options.valid
+              ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.gasCopper
+              : "#dc2626",
+          );
+        }
+        if (renderLiquidLine) {
+          renderLine(
+            branchKit.liquid,
+            options.valid
+              ? REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.liquidCopper
+              : "#f97316",
+          );
+        }
+        getRefrigerantBranchKitTerminalSpecs(branchKit)
+          .filter((terminal) =>
+            lineSelection === "both" ? true : terminal.kind === lineSelection,
+          )
+          .forEach((terminal) => {
           createHiddenSnapPoint(
             terminal.point,
             `hvac-branch-snap-${terminal.kind}-${terminal.role}`,
@@ -2603,7 +3268,9 @@ export class HvacPlanRenderer {
       includeInteractionHalos?: boolean;
     },
   ): HvacGroup {
-    const center = toCanvas(elementCenter(element));
+    const center = toCanvas(
+      resolveInlineBranchKitRenderCenter(element) ?? elementCenter(element),
+    );
     const isPipeElement = isRefrigerantPipeElementType(element.type);
     const isDuctElement = isGiDuctElementType(element.type);
     const isDuctedUnit = element.type === "ducted-ac";
@@ -2657,6 +3324,14 @@ export class HvacPlanRenderer {
     rotationDeg: number,
     valid: boolean,
   ): void {
+    const branchKitModel = isRefrigerantBranchKitType(definition.type)
+      ? buildRefrigerantBranchKitViewModel({
+          type: definition.type,
+          subtype: definition.subtype,
+          modelLabel: definition.modelLabel,
+          properties: definition.defaultProperties ?? {},
+        })
+      : null;
     const previewElement: HvacElement = {
       id: "__hvac-placement-preview__",
       type: definition.type,
@@ -2665,14 +3340,17 @@ export class HvacPlanRenderer {
       modelLabel: definition.modelLabel,
       position,
       rotation: rotationDeg,
-      width: definition.widthMm,
-      depth: definition.depthMm,
-      height: definition.heightMm,
+      width: branchKitModel?.widthMm ?? definition.widthMm,
+      depth: branchKitModel?.depthMm ?? definition.depthMm,
+      height: branchKitModel?.heightMm ?? definition.heightMm,
       elevation: definition.elevationMm,
       mountType: definition.mountType,
       label: definition.name,
       supplyZoneRatio: definition.supplyZoneRatio ?? 0.5,
-      properties: {},
+      properties: {
+        definitionId: definition.id,
+        ...(definition.defaultProperties ?? {}),
+      },
     };
 
     this.renderElementPreview(previewElement, valid);
@@ -2722,6 +3400,8 @@ export class HvacPlanRenderer {
     options: SyncHvacElementsOptions = {},
   ): void {
     const { force = false } = options;
+    const previousData = new Map(this.hvacData);
+    this.rebuildRefrigerantPipeRenderStateMaps(elements);
     const nextElementIds = new Set(elements.map((element) => element.id));
     let changed = force;
 
@@ -2732,8 +3412,10 @@ export class HvacPlanRenderer {
       }
     });
 
+    this.hvacData = new Map(elements.map((element) => [element.id, element]));
+
     elements.forEach((element) => {
-      const previousElement = this.hvacData.get(element.id);
+      const previousElement = previousData.get(element.id);
       const hasGroup = this.groups.has(element.id);
       if (
         !force &&
@@ -2773,5 +3455,7 @@ export class HvacPlanRenderer {
     this.groups.forEach((group) => this.canvas.remove(group));
     this.groups.clear();
     this.hvacData.clear();
+    this.pipeEndpointStateMap.clear();
+    this.pipeRenderChainStateMap.clear();
   }
 }
