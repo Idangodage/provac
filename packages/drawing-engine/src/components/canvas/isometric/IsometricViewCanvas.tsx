@@ -476,9 +476,11 @@ function resolveInlineBranchKitRenderCenter(
       : lineSelection === "liquid"
         ? [model.liquid]
         : [model.gas, model.liquid];
-  const anchorLocal = averagePoints(
-    lines.flatMap((line) => [line.inletTerminal.point, line.runOutletTerminal.point]),
-  );
+  const anchorLocal =
+    normalizePoint(element.properties.branchKitSnapAnchorLocal) ??
+    averagePoints(
+      lines.flatMap((line) => [line.inletTerminal.point, line.runOutletTerminal.point]),
+    );
   const rotatedAnchor = rotatePoint2D(anchorLocal, element.rotation);
   return {
     x: anchorPoint.x - rotatedAnchor.x,

@@ -11,6 +11,7 @@ import {
   type RefrigerantPipeConnectionKind,
   type RefrigerantPipeBundleConnection,
 } from '../hvac/refrigerantPipePairModel';
+import { findNearestVisibleRefrigerantPipeBundleTarget } from '../hvac/refrigerantPipeRenderState';
 
 export interface UseRefrigerantPipeToolOptions {
   fabricRef: React.RefObject<fabric.Canvas | null>;
@@ -252,10 +253,41 @@ export function useRefrigerantPipeTool(
       // excluded or not found — this ensures field pipe endpoints and other
       // branch kit terminals are still reachable.
       if (!bundle) {
-        bundle = findNearestRefrigerantPipeBundleTarget(hvacElements, point, thresholdMm);
+        bundle =
+          findNearestVisibleRefrigerantPipeBundleTarget(
+            hvacElements,
+            point,
+            thresholdMm,
+          ) ??
+          findNearestRefrigerantPipeBundleTarget(
+            hvacElements,
+            point,
+            thresholdMm,
+          );
         if (shouldExcludeBundle(bundle)) {
           bundle = null;
         }
+      }
+      const visibleFieldBundle =
+        findNearestVisibleRefrigerantPipeBundleTarget(
+          hvacElements,
+          point,
+          thresholdMm,
+        ) ?? null;
+      const modelBundle =
+        findNearestRefrigerantPipeBundleTarget(
+          hvacElements,
+          point,
+          thresholdMm,
+        ) ?? null;
+
+      if (!shouldExcludeBundle(visibleFieldBundle)) {
+        bundle = visibleFieldBundle;
+      } else if (bundle?.connectionKind === 'field-pipe') {
+        bundle =
+          !shouldExcludeBundle(modelBundle) ? modelBundle : null;
+      } else if (!bundle && !shouldExcludeBundle(modelBundle)) {
+        bundle = modelBundle;
       }
     }
 

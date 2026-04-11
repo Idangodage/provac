@@ -702,6 +702,7 @@ export function useCanvasMouseHandlers(
           placement.point,
           placement.rotationDeg,
           placement.valid,
+          placement.placementProperties,
         );
         return;
       }

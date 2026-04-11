@@ -1143,6 +1143,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
                 placement.point,
                 placement.rotationDeg,
                 placement.valid,
+                placement.placementProperties,
             );
         }
     }, [pendingPlacementDefinition, pendingPlacementEquipmentDefinition, computeHvacPlacement, hvacRendererRef, mousePositionRef, objectRendererRef, placementCursorRef, setPlacementValid, setPlacementRotationDeg]);
@@ -1156,6 +1157,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
             placement.point,
             placement.rotationDeg,
             placement.valid,
+            placement.placementProperties,
         );
     }, [pendingPlacementEquipmentDefinition, placementRotationDeg, computeHvacPlacement, hvacRendererRef, placementCursorRef, setPlacementValid]);
 

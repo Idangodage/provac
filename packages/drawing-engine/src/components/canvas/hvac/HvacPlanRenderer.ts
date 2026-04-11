@@ -30,8 +30,10 @@ import {
 import {
   buildRefrigerantPipeEndpointRenderStateMap,
   buildRefrigerantPipeRenderChainStateMap,
+  getVisibleRefrigerantPipeStraightSegmentTargets,
   type RefrigerantPipeEndpointRenderState,
   type RefrigerantPipeRenderChainState,
+  type VisibleRefrigerantPipeSegmentTarget,
 } from "./refrigerantPipeRenderState";
 import {
   buildRefrigerantBranchKitViewModel,
@@ -168,30 +170,128 @@ function normalizePoint(value: unknown): Point2D | null {
 
 function resolveInlineBranchKitRenderCenter(
   element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties" | "rotation">,
-): Point2D | null {
+  pipeTargets: VisibleRefrigerantPipeSegmentTarget[],
+): { anchorPoint: Point2D; anchorLocal: Point2D } | null {
   if (
     !isRefrigerantBranchKitElement(element) ||
     element.properties.branchKitPlacementMode !== "inline-pipe-run"
   ) {
     return null;
   }
-  const anchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
-  if (!anchorPoint) {
+  const initialAnchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
+  if (!initialAnchorPoint) {
     return null;
+  }
+  let anchorPoint: Point2D = initialAnchorPoint;
+
+  const snapSegmentStart = normalizePoint(element.properties.branchKitSnapSegmentStart);
+  const snapSegmentEnd = normalizePoint(element.properties.branchKitSnapSegmentEnd);
+  const snapProjectedDistanceMm =
+    typeof element.properties.branchKitSnapProjectedDistanceMm === "number" &&
+    Number.isFinite(element.properties.branchKitSnapProjectedDistanceMm)
+      ? element.properties.branchKitSnapProjectedDistanceMm
+      : null;
+  if (snapSegmentStart && snapSegmentEnd) {
+    const segmentDelta = subtractPoints(snapSegmentEnd, snapSegmentStart);
+    const segmentLengthMm = Math.hypot(segmentDelta.x, segmentDelta.y);
+    if (segmentLengthMm > 0.2) {
+      const segmentDirection = {
+        x: segmentDelta.x / segmentLengthMm,
+        y: segmentDelta.y / segmentLengthMm,
+      };
+      const projectedMm =
+        snapProjectedDistanceMm !== null
+          ? Math.min(segmentLengthMm, Math.max(0, snapProjectedDistanceMm))
+          : Math.min(
+              segmentLengthMm,
+              Math.max(
+                0,
+                dotProduct(
+                  subtractPoints(initialAnchorPoint, snapSegmentStart),
+                  segmentDirection,
+                ),
+              ),
+            );
+      anchorPoint = addPoints(
+        snapSegmentStart,
+        scalePoint(segmentDirection, projectedMm),
+      );
+    }
   }
 
   const model = buildRefrigerantBranchKitViewModel(element);
   const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
-  const lines =
-    lineSelection === "gas"
-      ? [model.gas]
-      : lineSelection === "liquid"
-        ? [model.liquid]
-        : [model.gas, model.liquid];
-  const anchorLocal = averagePoints(
-    lines.flatMap((line) => [line.inletTerminal.point, line.runOutletTerminal.point]),
+  const desiredLineKind = lineSelection === "liquid" ? "liquid" : "gas";
+  const sourceElementId =
+    typeof element.properties.branchKitSnapSourceElementId === "string"
+      ? element.properties.branchKitSnapSourceElementId
+      : null;
+  const snapDirection = normalizeDirection(
+    normalizePoint(element.properties.branchKitSnapDirection) ?? { x: 1, y: 0 },
   );
-  return subtractPoints(anchorPoint, rotatePoint(anchorLocal, element.rotation ?? 0));
+  const matchingTargets = pipeTargets.filter(
+    (target) =>
+      target.lineKind === desiredLineKind &&
+      (!sourceElementId ||
+        target.elementId === sourceElementId ||
+        target.bundleId === sourceElementId),
+  );
+  const fallbackTargets = sourceElementId
+    ? pipeTargets.filter((target) => target.lineKind === desiredLineKind)
+    : matchingTargets;
+  const targets = matchingTargets.length > 0 ? matchingTargets : fallbackTargets;
+  if (targets.length > 0) {
+    let bestPoint: Point2D | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const target of targets) {
+      const segmentDx = target.end.x - target.start.x;
+      const segmentDy = target.end.y - target.start.y;
+      const segmentLength = Math.hypot(segmentDx, segmentDy);
+      if (segmentLength <= 0.2) {
+        continue;
+      }
+      const direction = { x: segmentDx / segmentLength, y: segmentDy / segmentLength };
+      const projectedMm = Math.min(
+        segmentLength,
+        Math.max(0, dotProduct(subtractPoints(anchorPoint, target.start), direction)),
+      );
+      const projectedPoint = addPoints(target.start, scalePoint(direction, projectedMm));
+      const distanceMm = Math.hypot(
+        projectedPoint.x - anchorPoint.x,
+        projectedPoint.y - anchorPoint.y,
+      );
+      const directionPenalty = (1 - Math.abs(dotProduct(direction, snapDirection))) * 36;
+      const score = distanceMm + directionPenalty;
+      if (score < bestScore) {
+        bestScore = score;
+        bestPoint = projectedPoint;
+      }
+    }
+    const maxReprojectScoreMm = sourceElementId ? 60 : 24;
+    if (bestPoint && bestScore <= maxReprojectScoreMm) {
+      anchorPoint = bestPoint;
+    }
+  }
+
+  const anchorLocal =
+    normalizePoint(element.properties.branchKitSnapAnchorLocal) ??
+    resolveBranchKitAnchorLocal(model, lineSelection);
+  return { anchorPoint, anchorLocal };
+}
+
+function resolveBranchKitAnchorLocal(
+  model: ReturnType<typeof buildRefrigerantBranchKitViewModel>,
+  lineSelection: ReturnType<typeof resolveRefrigerantBranchKitLineSelection>,
+): Point2D {
+  // The inline snap anchor must match the specific pipe we snap to.
+  // resolveInlineBranchKitRenderCenter snaps to the gas pipe for 'both'
+  // and 'gas', and to the liquid pipe for 'liquid'.  The anchor must
+  // lie on that same line's trunk so the trunk aligns with the pipe.
+  const anchorLine =
+    lineSelection === "liquid" ? model.liquid : model.gas;
+  return averagePoints(
+    [anchorLine.inletTerminal.point, anchorLine.runOutletTerminal.point],
+  );
 }
 
 type PipeTrimWindow = {
@@ -1360,6 +1460,57 @@ export class HvacPlanRenderer {
       objects.push(snapPoint);
     };
 
+    const createVisibleSnapPoint = (
+      localPoint: Point2D,
+      name: string,
+      color: string,
+    ): void => {
+      const radiusPx = 4.2;
+      const ring = new fabric.Circle({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        radius: radiusPx,
+        originX: "center",
+        originY: "center",
+        fill: "rgba(255,255,255,0.2)",
+        stroke: color,
+        strokeWidth: 1.4,
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+      });
+      this.annotate(ring, element.id, `${name}-ring`);
+      objects.push(ring);
+
+      const crossH = new fabric.Rect({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        width: radiusPx * 2.8,
+        height: 1.2,
+        originX: "center",
+        originY: "center",
+        fill: color,
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+      });
+      const crossV = new fabric.Rect({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        width: 1.2,
+        height: radiusPx * 2.8,
+        originX: "center",
+        originY: "center",
+        fill: color,
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+      });
+      this.annotate(crossH, element.id, `${name}-cross-h`);
+      this.annotate(crossV, element.id, `${name}-cross-v`);
+      objects.push(crossH, crossV);
+    };
+
     const buildContinuousCorePoints = (
       stub: { start: Point2D; end: Point2D } | null,
       points: Point2D[],
@@ -1640,7 +1791,7 @@ export class HvacPlanRenderer {
             coreStroke,
             coreDiameterMm,
             "hvac-detail",
-            "miter",
+            "round",
           ),
         );
         const firstOuterPoints = localOuterPointSets[0] ?? [];
@@ -1678,6 +1829,7 @@ export class HvacPlanRenderer {
               },
             })
           : baseVisual;
+
         const toPx = (valueMm: number): number => valueMm * MM_TO_PX;
         const insulationEdgeStroke = options.valid
           ? "rgba(171,184,196,0.98)"
@@ -1876,20 +2028,24 @@ export class HvacPlanRenderer {
           gasCoreStroke,
           visual.gasCoreRadiusMm * 2,
           "hvac-detail",
-          "miter",
+          "round",
         );
         renderPolyline(
           liquidCorePoints,
           liquidCoreStroke,
           visual.liquidCoreRadiusMm * 2,
           "hvac-detail",
-          "miter",
+          "round",
         );
         break;
       }
       case "refrigerant-branch-kit": {
         const branchKit = buildRefrigerantBranchKitViewModel(element);
         const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+        const branchAnchorLocal =
+          normalizePoint(element.properties.branchKitSnapAnchorLocal) ??
+          resolveBranchKitAnchorLocal(branchKit, lineSelection);
+
         const renderGasLine = lineSelection !== "liquid";
         const renderLiquidLine = lineSelection !== "gas";
         customPlanBounds = getRefrigerantBranchKitPlanBounds(branchKit);
@@ -2252,6 +2408,14 @@ export class HvacPlanRenderer {
             `hvac-branch-snap-${terminal.kind}-${terminal.role}`,
           );
         });
+        createHiddenSnapPoint(branchAnchorLocal, "hvac-branch-center-snap");
+        if (element.properties.branchKitPlacementMode === "inline-pipe-run") {
+          createVisibleSnapPoint(
+            branchAnchorLocal,
+            "hvac-branch-center-snap-visible",
+            options.valid ? "#0ea5e9" : "#dc2626",
+          );
+        }
         break;
       }
       case "ceiling-cassette-ac": {
@@ -3158,12 +3322,13 @@ export class HvacPlanRenderer {
         customPlanBounds !== null
           ? toPx(customPlanBounds.minY) - 8
           : -halfD - 8;
+      const fontSize = clampFontSize(widthPx);
       const label = new fabric.Text(element.label.toUpperCase(), {
         left: 0,
         top: labelTopPx,
         originX: "center",
         originY: "bottom",
-        fontSize: clampFontSize(widthPx),
+        fontSize,
         fontFamily: "monospace",
         fontWeight: "500",
         fill: palette.stroke,
@@ -3268,9 +3433,11 @@ export class HvacPlanRenderer {
       includeInteractionHalos?: boolean;
     },
   ): HvacGroup {
-    const center = toCanvas(
-      resolveInlineBranchKitRenderCenter(element) ?? elementCenter(element),
+    const pipeTargets = getVisibleRefrigerantPipeStraightSegmentTargets(
+      Array.from(this.hvacData.values()),
     );
+    const inlineResult = resolveInlineBranchKitRenderCenter(element, pipeTargets);
+    
     const isPipeElement = isRefrigerantPipeElementType(element.type);
     const isDuctElement = isGiDuctElementType(element.type);
     const isDuctedUnit = element.type === "ducted-ac";
@@ -3282,9 +3449,6 @@ export class HvacPlanRenderer {
     });
 
     const group = new fabric.Group(objects, {
-      left: center.x,
-      top: center.y,
-      angle: element.rotation ?? 0,
       originX: "center",
       originY: "center",
       selectable: options.selectable ?? true,
@@ -3296,6 +3460,43 @@ export class HvacPlanRenderer {
       lockRotation: true,
       objectCaching: false,
     }) as HvacGroup;
+
+    if (inlineResult) {
+      const centerMm = subtractPoints(
+        inlineResult.anchorPoint,
+        rotatePoint(inlineResult.anchorLocal, element.rotation ?? 0),
+      );
+      const centerPx = toCanvas(centerMm);
+      group.set({
+        left: centerPx.x,
+        top: centerPx.y,
+        angle: element.rotation ?? 0,
+      });
+      group.setCoords();
+
+      // Final exact lock: use the rendered branch-center snap marker itself and
+      // translate the group so that marker lands exactly on the target anchor.
+      const renderedAnchor = this.getRenderedObjectCenterMm(
+        group,
+        "hvac-branch-center-snap",
+      );
+      if (renderedAnchor) {
+        const renderedAnchorPx = toCanvas(renderedAnchor);
+        const targetAnchorPx = toCanvas(inlineResult.anchorPoint);
+        group.set({
+          left: (group.left ?? centerPx.x) + (targetAnchorPx.x - renderedAnchorPx.x),
+          top: (group.top ?? centerPx.y) + (targetAnchorPx.y - renderedAnchorPx.y),
+        });
+      }
+    } else {
+      const center = toCanvas(elementCenter(element));
+      group.set({
+        left: center.x,
+        top: center.y,
+        angle: element.rotation ?? 0,
+      });
+    }
+
     group.id = element.id;
     group.hvacElementId = element.id;
     group.name = `hvac-${element.id}`;
@@ -3323,6 +3524,7 @@ export class HvacPlanRenderer {
     position: Point2D,
     rotationDeg: number,
     valid: boolean,
+    placementProperties?: Record<string, unknown>,
   ): void {
     const branchKitModel = isRefrigerantBranchKitType(definition.type)
       ? buildRefrigerantBranchKitViewModel({
@@ -3350,6 +3552,7 @@ export class HvacPlanRenderer {
       properties: {
         definitionId: definition.id,
         ...(definition.defaultProperties ?? {}),
+        ...(placementProperties ?? {}),
       },
     };
 

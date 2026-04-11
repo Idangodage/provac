@@ -53,12 +53,120 @@ import {
   isRefrigerantPipeElementType,
   translateRefrigerantPipeElementProperties,
 } from "../hvac/refrigerantPipePairModel";
+import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
 import type { WallRenderer } from "../wall/WallRenderer";
 import type { ObjectRenderer } from "../object/ObjectRenderer";
 import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
 import type { UseOffsetToolResult } from "./useOffsetTool";
 import type { UseTrimToolResult } from "./useTrimTool";
 import type { UseExtendToolResult } from "./useExtendTool";
+
+type NamedFabricObject = fabric.Object & {
+  name?: string;
+};
+
+function normalizeCanvasPoint(value: unknown): Point2D | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("x" in value) ||
+    !("y" in value)
+  ) {
+    return null;
+  }
+  const candidate = value as { x?: unknown; y?: unknown };
+  if (
+    typeof candidate.x !== "number" ||
+    !Number.isFinite(candidate.x) ||
+    typeof candidate.y !== "number" ||
+    !Number.isFinite(candidate.y)
+  ) {
+    return null;
+  }
+  return { x: candidate.x, y: candidate.y };
+}
+
+function getFabricGroupObjectCenterMm(
+  group: fabric.Object,
+  objectName: string,
+): Point2D | null {
+  if (typeof (group as fabric.Group).getObjects !== "function") {
+    return null;
+  }
+  const object = (group as fabric.Group)
+    .getObjects()
+    .find((candidate) => (candidate as NamedFabricObject).name === objectName);
+  if (!object || typeof object.getRelativeCenterPoint !== "function") {
+    return null;
+  }
+
+  const centerInParentPlane = object.getRelativeCenterPoint();
+  const centerPx = object.group
+    ? (() => {
+        const matrix = object.group.calcTransformMatrix();
+        return {
+          x:
+            matrix[0] * centerInParentPlane.x +
+            matrix[2] * centerInParentPlane.y +
+            matrix[4],
+          y:
+            matrix[1] * centerInParentPlane.x +
+            matrix[3] * centerInParentPlane.y +
+            matrix[5],
+        };
+      })()
+    : centerInParentPlane;
+
+  if (!Number.isFinite(centerPx.x) || !Number.isFinite(centerPx.y)) {
+    return null;
+  }
+
+  return {
+    x: centerPx.x / MM_TO_PX,
+    y: centerPx.y / MM_TO_PX,
+  };
+}
+
+function setInlineBranchKitTargetTransform(
+  target: fabric.Object,
+  centerMm: Point2D,
+  rotationDeg: number,
+  anchorPointMm: Point2D | null,
+): void {
+  target.set({
+    left: centerMm.x * MM_TO_PX,
+    top: centerMm.y * MM_TO_PX,
+    angle: rotationDeg,
+  });
+  if (!anchorPointMm) {
+    target.setCoords();
+    return;
+  }
+
+  const renderedAnchor = getFabricGroupObjectCenterMm(
+    target,
+    "hvac-branch-center-snap",
+  );
+  if (renderedAnchor) {
+    const renderedAnchorPx = {
+      x: renderedAnchor.x * MM_TO_PX,
+      y: renderedAnchor.y * MM_TO_PX,
+    };
+    const targetAnchorPx = {
+      x: anchorPointMm.x * MM_TO_PX,
+      y: anchorPointMm.y * MM_TO_PX,
+    };
+    target.set({
+      left:
+        ((target.left as number | undefined) ?? centerMm.x * MM_TO_PX) +
+        (targetAnchorPx.x - renderedAnchorPx.x),
+      top:
+        ((target.top as number | undefined) ?? centerMm.y * MM_TO_PX) +
+        (targetAnchorPx.y - renderedAnchorPx.y),
+    });
+  }
+  target.setCoords();
+}
 
 // =============================================================================
 // Options
@@ -1433,11 +1541,26 @@ export function useCanvasEventBinding(
         };
         const placement = computeHvacPlacement(movedCenterMm, existing);
         if (placement.valid) {
-          target.set({
-            left: placement.center.x * MM_TO_PX,
-            top: placement.center.y * MM_TO_PX,
-            angle: placement.rotationDeg,
-          });
+          const inlineAnchorPoint = isRefrigerantBranchKitElement(existing)
+            ? normalizeCanvasPoint(
+                placement.placementProperties?.branchKitSnapPoint ??
+                  existing.properties.branchKitSnapPoint,
+              )
+            : null;
+          if (inlineAnchorPoint) {
+            setInlineBranchKitTargetTransform(
+              target,
+              placement.center,
+              placement.rotationDeg,
+              inlineAnchorPoint,
+            );
+          } else {
+            target.set({
+              left: placement.center.x * MM_TO_PX,
+              top: placement.center.y * MM_TO_PX,
+              angle: placement.rotationDeg,
+            });
+          }
         }
         return;
       }
@@ -1668,11 +1791,27 @@ export function useCanvasEventBinding(
 
         const placement = computeHvacPlacement(centerMm, existing);
         if (!placement.valid) {
-          target.set({
-            left: (existing.position.x + existing.width / 2) * MM_TO_PX,
-            top: (existing.position.y + existing.depth / 2) * MM_TO_PX,
-            angle: existing.rotation,
-          });
+          const existingCenterMm = {
+            x: existing.position.x + existing.width / 2,
+            y: existing.position.y + existing.depth / 2,
+          };
+          const existingInlineAnchorPoint = isRefrigerantBranchKitElement(existing)
+            ? normalizeCanvasPoint(existing.properties.branchKitSnapPoint)
+            : null;
+          if (existingInlineAnchorPoint) {
+            setInlineBranchKitTargetTransform(
+              target,
+              existingCenterMm,
+              existing.rotation,
+              existingInlineAnchorPoint,
+            );
+          } else {
+            target.set({
+              left: existingCenterMm.x * MM_TO_PX,
+              top: existingCenterMm.y * MM_TO_PX,
+              angle: existing.rotation,
+            });
+          }
           fabricRef.current?.requestRenderAll();
           setProcessingStatus(
             placement.invalidReason ??
@@ -1716,11 +1855,26 @@ export function useCanvasEventBinding(
           });
         }
 
-        target.set({
-          left: placement.center.x * MM_TO_PX,
-          top: placement.center.y * MM_TO_PX,
-          angle: nextRotation,
-        });
+        const nextInlineAnchorPoint = isRefrigerantBranchKitElement(existing)
+          ? normalizeCanvasPoint(
+              placement.placementProperties?.branchKitSnapPoint ??
+                nextProperties.branchKitSnapPoint,
+            )
+          : null;
+        if (nextInlineAnchorPoint) {
+          setInlineBranchKitTargetTransform(
+            target,
+            placement.center,
+            nextRotation,
+            nextInlineAnchorPoint,
+          );
+        } else {
+          target.set({
+            left: placement.center.x * MM_TO_PX,
+            top: placement.center.y * MM_TO_PX,
+            angle: nextRotation,
+          });
+        }
         fabricRef.current?.requestRenderAll();
         return;
       }

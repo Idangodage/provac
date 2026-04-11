@@ -1057,6 +1057,14 @@ export function isRefrigerantBranchKitElement(
 export function resolveRefrigerantBranchKitLineSelection(
   element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties">,
 ): RefrigerantBranchKitLineSelection {
+  const snapLineSelection =
+    typeof element.properties.branchKitSnapLineKind === "string"
+      ? element.properties.branchKitSnapLineKind.toLowerCase().trim()
+      : "";
+  if (snapLineSelection === "gas" || snapLineSelection === "liquid") {
+    return snapLineSelection;
+  }
+
   const rawSelection =
     typeof element.properties.branchKitLineKind === "string"
       ? element.properties.branchKitLineKind.toLowerCase().trim()
@@ -1081,7 +1089,21 @@ export function resolveRefrigerantBranchKitLineSelection(
     return "liquid";
   }
 
-  return "both";
+  const definitionId =
+    typeof element.properties.definitionId === "string"
+      ? element.properties.definitionId.toLowerCase().trim()
+      : "";
+  if (definitionId === "ac-branch-kit-dis-22-1g") {
+    return "gas";
+  }
+  if (definitionId === "ac-branch-kit-dis-22-1g-liquid") {
+    return "liquid";
+  }
+
+  // Use gas as the safe fallback for legacy/ambiguous branch-kit metadata.
+  // Returning "both" shifts the inline anchor to bundle center, which can
+  // visually offset gas branch kits from the gas field-pipe centerline.
+  return "gas";
 }
 
 export function buildRefrigerantBranchKitModel(

@@ -396,22 +396,28 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
 
         if (branchKitGeometry) {
             const snapThresholdMm = Math.max(160, branchKitGeometry.requiredSpanMm * 0.35);
-            const snappedSegment = branchKitGeometry.lineSelection === 'both'
+            const findSnappedSegment = (thresholdMm: number) =>
+                branchKitGeometry.lineSelection === 'both'
                 ? findNearestVisibleRefrigerantPipeBundleSegmentTarget(
                     hvacElements,
                     point,
-                    snapThresholdMm,
+                    thresholdMm,
                     { minSegmentLengthMm: branchKitGeometry.requiredSpanMm + 1 },
                 )
                 : findNearestVisibleRefrigerantPipeSegmentTarget(
                     hvacElements,
                     point,
-                    snapThresholdMm,
+                    thresholdMm,
                     {
                         lineKind: branchKitGeometry.lineSelection,
                         minSegmentLengthMm: branchKitGeometry.requiredSpanMm + 1,
                     },
                 );
+            // Cursor-driven branch-kit placement should lock to the nearest valid
+            // refrigerant centerline so the preview glides along the run.
+            const snappedSegment =
+                findSnappedSegment(snapThresholdMm)
+                ?? findSnappedSegment(Number.POSITIVE_INFINITY);
             if (!snappedSegment) {
                 return defaultResult(point, {
                     invalidReason: 'Branch kit must snap to an existing straight refrigerant pipe run.',
@@ -453,6 +459,8 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
                 invalidReason: null,
                 placementProperties: {
                     branchKitPlacementMode: 'inline-pipe-run',
+                    branchKitSnapLineKind: branchKitGeometry.lineSelection,
+                    branchKitSnapAnchorLocal: branchKitGeometry.anchorLocal,
                     branchKitSnapSourceElementId: snappedSegment.sourceElementId ?? null,
                     branchKitSnapConnectionKind: snapConnectionKind,
                     branchKitSnapPoint: anchorPoint,
