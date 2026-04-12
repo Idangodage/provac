@@ -1404,17 +1404,18 @@ function buildBundleGuideRoutes(
   const desiredParallelOffsets = resolveParallelBundleOffsets(startBundleConnection, centerSpacingMm);
   const desiredGasToLiquidOffset =
     desiredParallelOffsets.liquidOffsetMm - desiredParallelOffsets.gasOffsetMm;
-  const DEGENERATE_FIELD_OFFSET_TOLERANCE_MM = 0.5;
-  const hasDegenerateFieldOffsets =
-    isFieldPipeConnection
-    && Math.abs(gasToLiquidOffset) < DEGENERATE_FIELD_OFFSET_TOLERANCE_MM;
-  const effectiveGasToLiquidOffset = hasDegenerateFieldOffsets
+
+  // For field-pipe connections, always use centerSpacingMm-based offsets because
+  // offsetPolyline applies offsets perpendicular to route direction (which may differ
+  // from branch-kit direction). Port-based offsets only work when route direction
+  // matches branch-kit direction.
+  const effectiveGasToLiquidOffset = isFieldPipeConnection
     ? desiredGasToLiquidOffset
     : gasToLiquidOffset;
-  const effectiveGasPortOffset = hasDegenerateFieldOffsets
+  const effectiveGasPortOffset = isFieldPipeConnection
     ? desiredParallelOffsets.gasOffsetMm
     : gasPortOffset;
-  const effectiveLiquidPortOffset = hasDegenerateFieldOffsets
+  const effectiveLiquidPortOffset = isFieldPipeConnection
     ? desiredParallelOffsets.liquidOffsetMm
     : liquidPortOffset;
 
@@ -1469,10 +1470,16 @@ function buildBundleGuideRoutes(
           { preserveFirstBearing: isUnitPortConnection },
         );
     const desiredLiquidOffset = desiredGasToLiquidOffset;
+    // For field-pipe connections, build liquid route independently from its port
+    // instead of offsetting from gas route. This ensures correct alignment when
+    // route direction differs from branch-kit outlet direction.
     const liquidGuidePoints = isFieldPipeConnection
-      ? gasGuidePoints.length >= 1
-        ? dedupeConsecutivePoints(offsetPolyline(gasGuidePoints, effectiveGasToLiquidOffset))
-        : []
+      ? buildFieldRoutePoints(
+          normalizedGuideRoutePoints,
+          startBundleConnection.liquidFieldPoint,
+          startBundleConnection.liquidDirection ?? direction,
+          startTakeoffLengthMm,
+        )
       : buildTwoFortyFiveOffsetTakeoffPoints(
           gasGuidePoints,
           startBundleConnection.gasFieldPoint,
@@ -1485,9 +1492,18 @@ function buildBundleGuideRoutes(
     return {
       gasGuidePoints,
       liquidGuidePoints,
-      bundleGuidePoints: gasGuidePoints.length >= 1
-        ? dedupeConsecutivePoints(offsetPolyline(gasGuidePoints, desiredLiquidOffset / 2))
-        : [bundleCenter],
+      // For field-pipe, build bundle center route directly from the actual center
+      // instead of offsetting from gas/liquid (which were built independently).
+      bundleGuidePoints: isFieldPipeConnection
+        ? buildFieldRoutePoints(
+            normalizedGuideRoutePoints,
+            bundleCenter,
+            direction,
+            startTakeoffLengthMm,
+          )
+        : gasGuidePoints.length >= 1
+          ? dedupeConsecutivePoints(offsetPolyline(gasGuidePoints, desiredLiquidOffset / 2))
+          : [bundleCenter],
     };
   }
 
@@ -1542,10 +1558,16 @@ function buildBundleGuideRoutes(
           { preserveFirstBearing: isUnitPortConnection },
         );
     const desiredGasOffset = desiredParallelOffsets.gasOffsetMm - desiredParallelOffsets.liquidOffsetMm;
+    // For field-pipe connections, build gas route independently from its port
+    // instead of offsetting from liquid route. This ensures correct alignment when
+    // route direction differs from branch-kit outlet direction.
     const gasGuidePoints = isFieldPipeConnection
-      ? liquidGuidePoints.length >= 1
-        ? dedupeConsecutivePoints(offsetPolyline(liquidGuidePoints, -effectiveGasToLiquidOffset))
-        : []
+      ? buildFieldRoutePoints(
+          normalizedGuideRoutePoints,
+          startBundleConnection.gasFieldPoint,
+          startBundleConnection.gasDirection ?? direction,
+          startTakeoffLengthMm,
+        )
       : buildTwoFortyFiveOffsetTakeoffPoints(
           liquidGuidePoints,
           startBundleConnection.liquidFieldPoint,
@@ -1558,9 +1580,18 @@ function buildBundleGuideRoutes(
     return {
       gasGuidePoints,
       liquidGuidePoints,
-      bundleGuidePoints: liquidGuidePoints.length >= 1
-        ? dedupeConsecutivePoints(offsetPolyline(liquidGuidePoints, desiredGasOffset / 2))
-        : [bundleCenter],
+      // For field-pipe, build bundle center route directly from the actual center
+      // instead of offsetting from gas/liquid (which were built independently).
+      bundleGuidePoints: isFieldPipeConnection
+        ? buildFieldRoutePoints(
+            normalizedGuideRoutePoints,
+            bundleCenter,
+            direction,
+            startTakeoffLengthMm,
+          )
+        : liquidGuidePoints.length >= 1
+          ? dedupeConsecutivePoints(offsetPolyline(liquidGuidePoints, desiredGasOffset / 2))
+          : [bundleCenter],
     };
   }
 
@@ -1579,10 +1610,16 @@ function buildBundleGuideRoutes(
         startTakeoffLengthMm,
         { preserveFirstBearing: isUnitPortConnection },
       );
+  // For field-pipe connections, build gas and liquid routes independently from
+  // their respective port positions instead of offsetting from bundle center.
+  // This ensures correct alignment when route direction differs from branch-kit direction.
   const gasGuidePoints = isFieldPipeConnection
-    ? bundleGuidePoints.length >= 1
-      ? dedupeConsecutivePoints(offsetPolyline(bundleGuidePoints, effectiveGasPortOffset))
-      : []
+    ? buildFieldRoutePoints(
+        normalizedGuideRoutePoints,
+        startBundleConnection.gasFieldPoint,
+        startBundleConnection.gasDirection ?? direction,
+        startTakeoffLengthMm,
+      )
     : buildTwoFortyFiveOffsetTakeoffPoints(
         bundleGuidePoints,
         bundleCenter,
@@ -1593,9 +1630,12 @@ function buildBundleGuideRoutes(
         startTakeoffLengthMm,
       );
   const liquidGuidePoints = isFieldPipeConnection
-    ? bundleGuidePoints.length >= 1
-      ? dedupeConsecutivePoints(offsetPolyline(bundleGuidePoints, effectiveLiquidPortOffset))
-      : []
+    ? buildFieldRoutePoints(
+        normalizedGuideRoutePoints,
+        startBundleConnection.liquidFieldPoint,
+        startBundleConnection.liquidDirection ?? direction,
+        startTakeoffLengthMm,
+      )
     : buildTwoFortyFiveOffsetTakeoffPoints(
         bundleGuidePoints,
         bundleCenter,
