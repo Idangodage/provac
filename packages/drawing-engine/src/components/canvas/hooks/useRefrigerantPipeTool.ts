@@ -44,8 +44,11 @@ export interface UseRefrigerantPipeToolResult {
 const PIPE_ROUTE_ANGLE_SNAP_DEG = 45;
 const PIPE_SNAP_MARKER_RADIUS_PX = 14;
 const PIPE_SNAP_MARKER_RADIUS_SELECTED_PX = 17;
-const PIPE_SNAP_THRESHOLD_PX = 64;
+const PIPE_SNAP_THRESHOLD_PX = 15;
+const PIPE_HOVER_PREVIEW_LENGTH_MM = 100;
+const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
 type RefrigerantPipeHoverSelection = 'gas' | 'liquid' | null;
+type RefrigerantPipeSnapSource = 'model' | 'rendered' | 'visible' | null;
 
 function createRefrigerantBundleId(): string {
   return `refrigerant-bundle-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -78,6 +81,37 @@ function resolveBundleHoverSelection(
   return gasDistance <= liquidDistance ? 'gas' : 'liquid';
 }
 
+function isPipeRoutingDebugEnabled(): boolean {
+  const root = globalThis as Record<string, unknown>;
+  if (root.__HVAC_PIPE_ROUTING_DEBUG__ === true) {
+    return true;
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      return window.localStorage.getItem('hvac.pipe.debug') === '1';
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function toDebugPointString(point: Point2D): string {
+  return `${point.x.toFixed(2)}, ${point.y.toFixed(2)}`;
+}
+
+function formatPortTooltip(
+  bundle: RefrigerantPipeBundleConnection,
+  hoverSelection: RefrigerantPipeHoverSelection,
+): string {
+  const isLiquid = hoverSelection === 'liquid';
+  const diameterMm = isLiquid
+    ? bundle.liquidOuterDiameterMm ?? 0
+    : bundle.gasOuterDiameterMm ?? 0;
+  const label = isLiquid ? 'Liquid Port' : 'Gas Port';
+  return `${label} — Ø${diameterMm.toFixed(2)}mm`;
+}
+
 export function useRefrigerantPipeTool(
   options: UseRefrigerantPipeToolOptions,
 ): UseRefrigerantPipeToolResult {
@@ -100,7 +134,9 @@ export function useRefrigerantPipeTool(
   const previewPointRef = useRef<Point2D | null>(null);
   const shiftPressedRef = useRef(false);
   const snapMarkersRef = useRef<fabric.FabricObject[]>([]);
+  const debugOverlaysRef = useRef<fabric.FabricObject[]>([]);
   const snapMarkerKindRef = useRef<RefrigerantPipeConnectionKind | null>(null);
+  const debugEnabledRef = useRef(isPipeRoutingDebugEnabled());
 
   const clearSnapMarkers = useCallback(() => {
     const canvas = fabricRef.current;
@@ -113,6 +149,114 @@ export function useRefrigerantPipeTool(
     snapMarkerKindRef.current = null;
     canvas.requestRenderAll();
   }, [fabricRef]);
+
+  const clearDebugOverlays = useCallback(() => {
+    const canvas = fabricRef.current;
+    if (!canvas || debugOverlaysRef.current.length === 0) {
+      return;
+    }
+    debugOverlaysRef.current.forEach((overlay) => canvas.remove(overlay));
+    debugOverlaysRef.current = [];
+    canvas.requestRenderAll();
+  }, [fabricRef]);
+
+  const renderDebugOverlays = useCallback((
+    bundle: RefrigerantPipeBundleConnection | null,
+    snappedPoint: Point2D | null,
+    snapSource: RefrigerantPipeSnapSource,
+  ) => {
+    if (!debugEnabledRef.current) {
+      clearDebugOverlays();
+      return;
+    }
+    const canvas = fabricRef.current;
+    if (!canvas) {
+      return;
+    }
+    clearDebugOverlays();
+    if (!bundle || !snappedPoint) {
+      return;
+    }
+
+    const createMarker = (point: Point2D, color: string): void => {
+      const marker = new fabric.Circle({
+        left: point.x * MM_TO_PX,
+        top: point.y * MM_TO_PX,
+        radius: 4,
+        originX: 'center',
+        originY: 'center',
+        fill: color,
+        stroke: '#0f172a',
+        strokeWidth: 1,
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+      });
+      debugOverlaysRef.current.push(marker);
+      canvas.add(marker);
+      canvas.bringObjectToFront(marker);
+    };
+
+    const createVector = (origin: Point2D, direction: Point2D, color: string): void => {
+      const vectorLengthMm = 40;
+      const endpoint = {
+        x: origin.x + direction.x * vectorLengthMm,
+        y: origin.y + direction.y * vectorLengthMm,
+      };
+      const line = new fabric.Line(
+        [
+          origin.x * MM_TO_PX,
+          origin.y * MM_TO_PX,
+          endpoint.x * MM_TO_PX,
+          endpoint.y * MM_TO_PX,
+        ],
+        {
+          stroke: color,
+          strokeWidth: 2,
+          selectable: false,
+          evented: false,
+          excludeFromExport: true,
+        },
+      );
+      debugOverlaysRef.current.push(line);
+      canvas.add(line);
+      canvas.bringObjectToFront(line);
+    };
+
+    createMarker(bundle.gasPoint, '#ea580c');
+    createMarker(bundle.liquidPoint, '#2563eb');
+    createMarker(snappedPoint, '#10b981');
+    createVector(bundle.gasPoint, bundle.gasDirection ?? bundle.direction, '#ea580c');
+    createVector(bundle.liquidPoint, bundle.liquidDirection ?? bundle.direction, '#2563eb');
+
+    const debugLabel = new fabric.Text(
+      `snap:${snapSource ?? 'none'} start:${toDebugPointString(snappedPoint)}`,
+      {
+        left: snappedPoint.x * MM_TO_PX + 8,
+        top: snappedPoint.y * MM_TO_PX - 14,
+        originX: 'left',
+        originY: 'center',
+        fontSize: 12,
+        fontFamily: 'monospace',
+        fill: '#0f172a',
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+      },
+    );
+    debugOverlaysRef.current.push(debugLabel);
+    canvas.add(debugLabel);
+    canvas.bringObjectToFront(debugLabel);
+    canvas.requestRenderAll();
+  }, [clearDebugOverlays, fabricRef]);
+
+  const logDebug = useCallback((message: string, payload: Record<string, unknown>) => {
+    if (!debugEnabledRef.current) {
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.debug(`[pipe-routing] ${message}`, payload);
+  }, []);
 
   const renderSnapMarkers = useCallback((bundle: RefrigerantPipeBundleConnection | null) => {
     const canvas = fabricRef.current;
@@ -137,8 +281,8 @@ export function useRefrigerantPipeTool(
     const markerFill = 'rgba(37,99,235,0.2)';
     const markerStroke = 'rgba(29,78,216,0.98)';
     const markerStrokeWidth = 4;
-    const selectedMarkerFill = 'rgba(14,116,144,0.4)';
-    const selectedMarkerStroke = 'rgba(8,145,178,1)';
+    const selectedMarkerFill = 'rgba(34,197,94,0.36)';
+    const selectedMarkerStroke = 'rgba(22,163,74,1)';
     const selectedMarkerStrokeWidth = 5;
     const hoveredPipe = resolveBundleHoverSelection(bundle, bundle.point);
     const createPipeCenterMarker = (
@@ -190,13 +334,20 @@ export function useRefrigerantPipeTool(
       const config = markerConfigs[index]!;
       const pipeKind = index === 0 ? 'gas' : 'liquid';
       const isSelected = hoveredPipe === pipeKind;
+      const markerRadius = Math.max(
+        isSelected ? PIPE_SNAP_MARKER_RADIUS_SELECTED_PX : PIPE_SNAP_MARKER_RADIUS_PX,
+        Math.min(
+          isSelected ? PIPE_SNAP_MARKER_RADIUS_SELECTED_PX + 1 : PIPE_SNAP_MARKER_RADIUS_PX + 1,
+          config.diameterMm * MM_TO_PX * (isSelected ? 0.26 : 0.22),
+        ),
+      );
       marker.set({
         left: config.point.x * MM_TO_PX,
         top: config.point.y * MM_TO_PX,
       });
       if (marker instanceof fabric.Circle) {
         marker.set({
-          radius: Math.max(4, Math.min(6, config.diameterMm * MM_TO_PX * (isSelected ? 0.18 : 0.16))),
+          radius: markerRadius,
           fill: isSelected ? selectedMarkerFill : markerFill,
           stroke: isSelected ? selectedMarkerStroke : markerStroke,
           strokeWidth: isSelected ? selectedMarkerStrokeWidth : markerStrokeWidth,
@@ -218,14 +369,17 @@ export function useRefrigerantPipeTool(
     previewPointRef.current = null;
     clearPreview();
     clearSnapMarkers();
-  }, [clearPreview, clearSnapMarkers]);
+    clearDebugOverlays();
+  }, [clearDebugOverlays, clearPreview, clearSnapMarkers]);
 
   const snapPoint = useCallback((point: Point2D, allowBundleSnap: boolean): {
     point: Point2D;
     bundle: RefrigerantPipeBundleConnection | null;
+    source: RefrigerantPipeSnapSource;
   } => {
-    const thresholdMm = Math.max(14, PIPE_SNAP_THRESHOLD_PX / Math.max(zoom * MM_TO_PX, 0.01));
+    const thresholdMm = PIPE_SNAP_THRESHOLD_PX / Math.max(zoom * MM_TO_PX, 0.01);
     let bundle: RefrigerantPipeBundleConnection | null = null;
+    let source: RefrigerantPipeSnapSource = null;
     if (allowBundleSnap) {
       const shouldExcludeBundle = (candidate: RefrigerantPipeBundleConnection | null): boolean => {
         if (!candidate || !startBundleRef.current?.sourceElementId) {
@@ -234,7 +388,7 @@ export function useRefrigerantPipeTool(
         if (candidate.sourceElementId !== startBundleRef.current.sourceElementId) {
           return false;
         }
-        // Same element: only exclude the exact same terminal role — allow
+        // Same element: only exclude the exact same terminal role; allow
         // snapping to a different terminal (e.g. run-outlet vs branch-outlet)
         // on the same branch kit so the user can connect a field pipe between
         // different outlets.
@@ -245,29 +399,11 @@ export function useRefrigerantPipeTool(
         );
       };
 
-      bundle = hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(point, thresholdMm) ?? null;
-      if (shouldExcludeBundle(bundle)) {
-        bundle = null;
-      }
-      // Fall back to the model-based snap targets when the rendered target was
-      // excluded or not found — this ensures field pipe endpoints and other
-      // branch kit terminals are still reachable.
-      if (!bundle) {
-        bundle =
-          findNearestVisibleRefrigerantPipeBundleTarget(
-            hvacElements,
-            point,
-            thresholdMm,
-          ) ??
-          findNearestRefrigerantPipeBundleTarget(
-            hvacElements,
-            point,
-            thresholdMm,
-          );
-        if (shouldExcludeBundle(bundle)) {
-          bundle = null;
-        }
-      }
+      const renderedBundle =
+        hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(
+          point,
+          thresholdMm,
+        ) ?? null;
       const visibleFieldBundle =
         findNearestVisibleRefrigerantPipeBundleTarget(
           hvacElements,
@@ -281,13 +417,36 @@ export function useRefrigerantPipeTool(
           thresholdMm,
         ) ?? null;
 
-      if (!shouldExcludeBundle(visibleFieldBundle)) {
-        bundle = visibleFieldBundle;
-      } else if (bundle?.connectionKind === 'field-pipe') {
-        bundle =
-          !shouldExcludeBundle(modelBundle) ? modelBundle : null;
-      } else if (!bundle && !shouldExcludeBundle(modelBundle)) {
-        bundle = modelBundle;
+      const renderedCandidate = !shouldExcludeBundle(renderedBundle)
+        ? renderedBundle
+        : null;
+      const visibleFieldCandidate = !shouldExcludeBundle(visibleFieldBundle)
+        ? visibleFieldBundle
+        : null;
+      const modelCandidate = !shouldExcludeBundle(modelBundle)
+        ? modelBundle
+        : null;
+
+      // Routing datum must always be centerline model data. Use rendered targets
+      // only as fallback when model targets are not available.
+      if (modelCandidate) {
+        bundle = modelCandidate;
+        source = 'model';
+      } else if (renderedCandidate) {
+        bundle = renderedCandidate;
+        source = 'rendered';
+      } else if (visibleFieldCandidate) {
+        bundle = visibleFieldCandidate;
+        source = 'visible';
+      } else {
+        bundle = null;
+        source = null;
+      }
+
+      if (bundle?.connectionKind === 'field-pipe' && source !== 'model') {
+        // Do not allow continuation from rendered geometry for field-pipe snaps.
+        bundle = null;
+        source = null;
       }
     }
 
@@ -313,19 +472,21 @@ export function useRefrigerantPipeTool(
         : applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG);
     }
 
-    return { point: nextPoint, bundle: snappedBundle };
+    return { point: nextPoint, bundle: snappedBundle, source };
   }, [gridSize, hvacElements, hvacRendererRef, snapToGrid, zoom]);
 
   const renderRoutePreview = useCallback((
     routePoints: Point2D[],
     endBundleConnection: RefrigerantPipeBundleConnection | null = null,
+    startBundleConnectionOverride: RefrigerantPipeBundleConnection | null = null,
   ) => {
     if (routePoints.length < 2) {
       clearPreview();
       return;
     }
     const previewElements = buildRefrigerantPipeElements(routePoints, {
-      startBundleConnection: startBundleRef.current,
+      startBundleConnection:
+        startBundleConnectionOverride ?? startBundleRef.current,
       endBundleConnection,
     });
     hvacRendererRef.current?.renderElementPreviews(
@@ -365,20 +526,94 @@ export function useRefrigerantPipeTool(
       startBundleConnection: startBundleRef.current,
       endBundleConnection: endBundleRef.current,
     });
+    if (debugEnabledRef.current && startBundleRef.current) {
+      nextElements.forEach((element) => {
+        const properties = (element.properties ?? {}) as {
+          lineKind?: string;
+          routePoints?: Array<{ x?: unknown; y?: unknown }>;
+        };
+        if (!Array.isArray(properties.routePoints) || properties.routePoints.length < 1) {
+          return;
+        }
+        const firstPoint = properties.routePoints[0];
+        if (
+          !firstPoint
+          || typeof firstPoint.x !== 'number'
+          || typeof firstPoint.y !== 'number'
+        ) {
+          return;
+        }
+        const expectedStart = properties.lineKind === 'liquid'
+          ? startBundleRef.current?.liquidFieldPoint ?? null
+          : startBundleRef.current?.gasFieldPoint ?? null;
+        if (!expectedStart) {
+          return;
+        }
+        const deviation = distance(
+          { x: firstPoint.x, y: firstPoint.y },
+          expectedStart,
+        );
+        if (deviation > PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM) {
+          logDebug('CENTERLINE_CONTINUITY_DEVIATION', {
+            lineKind: properties.lineKind ?? 'gas',
+            deviationMm: deviation,
+            expectedStart: toDebugPointString(expectedStart),
+            committedStart: toDebugPointString({ x: firstPoint.x, y: firstPoint.y }),
+          });
+        }
+
+        if (endBundleRef.current) {
+          const lastPoint = properties.routePoints[properties.routePoints.length - 1];
+          if (
+            lastPoint
+            && typeof lastPoint.x === 'number'
+            && typeof lastPoint.y === 'number'
+          ) {
+            const expectedEnd = properties.lineKind === 'liquid'
+              ? endBundleRef.current.liquidFieldPoint
+              : endBundleRef.current.gasFieldPoint;
+            const endDeviation = distance(
+              { x: lastPoint.x, y: lastPoint.y },
+              expectedEnd,
+            );
+            if (endDeviation > PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM) {
+              logDebug('CENTERLINE_END_CONTINUITY_DEVIATION', {
+                lineKind: properties.lineKind ?? 'gas',
+                deviationMm: endDeviation,
+                expectedEnd: toDebugPointString(expectedEnd),
+                committedEnd: toDebugPointString({ x: lastPoint.x, y: lastPoint.y }),
+              });
+            }
+          }
+        }
+      });
+    }
     const elementIds = addHvacElements(nextElements);
     setSelectedIds(elementIds);
     resetDrawing();
     return true;
-  }, [addHvacElements, resetDrawing, setProcessingStatus, setSelectedIds]);
+  }, [addHvacElements, logDebug, resetDrawing, setProcessingStatus, setSelectedIds]);
 
   const handleMouseDown = useCallback((point: Point2D) => {
-    const { point: snappedPoint, bundle } = snapPoint(point, true);
+    const { point: snappedPoint, bundle, source } = snapPoint(point, true);
 
     if (routePointsRef.current.length === 0) {
       routePointsRef.current = [snappedPoint];
       startBundleRef.current = bundle;
       previewPointRef.current = null;
       renderSnapMarkers(bundle);
+      renderDebugOverlays(bundle, snappedPoint, source);
+      if (bundle) {
+        logDebug('SNAP_LOCKED', {
+          source,
+          connectionKind: bundle.connectionKind,
+          sourceElementId: bundle.sourceElementId ?? null,
+          start: toDebugPointString(snappedPoint),
+          gasPoint: toDebugPointString(bundle.gasPoint),
+          liquidPoint: toDebugPointString(bundle.liquidPoint),
+          guideReference: bundle.guideReference ?? null,
+        });
+      }
       clearPreview();
       return;
     }
@@ -391,6 +626,12 @@ export function useRefrigerantPipeTool(
     // If we snapped to a bundle endpoint, auto-commit the route
     if (bundle) {
       endBundleRef.current = bundle;
+      logDebug('SNAP_LOCKED_END', {
+        source,
+        connectionKind: bundle.connectionKind,
+        sourceElementId: bundle.sourceElementId ?? null,
+        end: toDebugPointString(snappedPoint),
+      });
       commitRoute(snappedPoint);
       return;
     }
@@ -398,13 +639,59 @@ export function useRefrigerantPipeTool(
     routePointsRef.current = [...routePointsRef.current, snappedPoint];
     previewPointRef.current = null;
     renderRoutePreview(routePointsRef.current);
-  }, [clearPreview, commitRoute, renderRoutePreview, renderSnapMarkers, snapPoint]);
+  }, [
+    clearPreview,
+    commitRoute,
+    logDebug,
+    renderDebugOverlays,
+    renderRoutePreview,
+    renderSnapMarkers,
+    snapPoint,
+  ]);
 
   const handleMouseMove = useCallback((point: Point2D) => {
-    const { point: snappedPoint, bundle } = snapPoint(point, true);
+    const { point: snappedPoint, bundle, source } = snapPoint(point, true);
+    renderDebugOverlays(bundle, snappedPoint, source);
+    if (bundle && source !== 'model') {
+      logDebug('NON_MODEL_SNAP_SOURCE', {
+        source,
+        connectionKind: bundle.connectionKind,
+        sourceElementId: bundle.sourceElementId ?? null,
+      });
+    }
 
     if (routePointsRef.current.length === 0) {
       renderSnapMarkers(bundle);
+      if (bundle) {
+        setProcessingStatus(
+          formatPortTooltip(bundle, resolveBundleHoverSelection(bundle, point)),
+          false,
+        );
+      } else {
+        setProcessingStatus('', false);
+      }
+      if (bundle?.connectionKind === 'unit-port') {
+        const hoveredPipe = resolveBundleHoverSelection(bundle, point);
+        // Use bundle centerline as preview datum so route normalization keeps
+        // one straight line and only the selected line performs the 45 takeoff.
+        const startPoint = bundle.point;
+        const startDirection = bundle.direction;
+        const previewEnd = {
+          x: startPoint.x + startDirection.x * PIPE_HOVER_PREVIEW_LENGTH_MM,
+          y: startPoint.y + startDirection.y * PIPE_HOVER_PREVIEW_LENGTH_MM,
+        };
+        renderRoutePreview(
+          [startPoint, previewEnd],
+          null,
+          {
+            ...bundle,
+            point: startPoint,
+            guideReference: hoveredPipe ?? bundle.guideReference,
+          },
+        );
+      } else {
+        clearPreview();
+      }
       return;
     }
 
@@ -414,7 +701,15 @@ export function useRefrigerantPipeTool(
       [...routePointsRef.current, snappedPoint],
       bundle,
     );
-  }, [renderRoutePreview, renderSnapMarkers, snapPoint]);
+  }, [
+    clearPreview,
+    logDebug,
+    renderDebugOverlays,
+    renderRoutePreview,
+    renderSnapMarkers,
+    setProcessingStatus,
+    snapPoint,
+  ]);
 
   const handleDoubleClick = useCallback(() => {
     void commitRoute(previewPointRef.current ?? undefined);

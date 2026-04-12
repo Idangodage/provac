@@ -16,6 +16,10 @@ import {
     type RefrigerantBranchKitLineSelection,
 } from '../hvac/refrigerantBranchKitModel';
 import {
+    findNearestRefrigerantPipeBundleSegmentTarget,
+    findNearestRefrigerantPipeSegmentTarget,
+} from '../hvac/refrigerantPipePairModel';
+import {
     findNearestVisibleRefrigerantPipeBundleSegmentTarget,
     findNearestVisibleRefrigerantPipeSegmentTarget,
 } from '../hvac/refrigerantPipeRenderState';
@@ -396,23 +400,46 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
 
         if (branchKitGeometry) {
             const snapThresholdMm = Math.max(160, branchKitGeometry.requiredSpanMm * 0.35);
-            const findSnappedSegment = (thresholdMm: number) =>
-                branchKitGeometry.lineSelection === 'both'
-                ? findNearestVisibleRefrigerantPipeBundleSegmentTarget(
-                    hvacElements,
-                    point,
-                    thresholdMm,
-                    { minSegmentLengthMm: branchKitGeometry.requiredSpanMm + 1 },
-                )
-                : findNearestVisibleRefrigerantPipeSegmentTarget(
-                    hvacElements,
-                    point,
-                    thresholdMm,
-                    {
-                        lineKind: branchKitGeometry.lineSelection,
-                        minSegmentLengthMm: branchKitGeometry.requiredSpanMm + 1,
-                    },
+            const findSnappedSegment = (thresholdMm: number) => {
+                const minimumSegmentLengthMm = branchKitGeometry.requiredSpanMm + 1;
+                if (branchKitGeometry.lineSelection === 'both') {
+                    return (
+                        findNearestRefrigerantPipeBundleSegmentTarget(
+                            hvacElements,
+                            point,
+                            thresholdMm,
+                            { minSegmentLengthMm: minimumSegmentLengthMm },
+                        )
+                        ?? findNearestVisibleRefrigerantPipeBundleSegmentTarget(
+                            hvacElements,
+                            point,
+                            thresholdMm,
+                            { minSegmentLengthMm: minimumSegmentLengthMm },
+                        )
+                    );
+                }
+
+                return (
+                    findNearestRefrigerantPipeSegmentTarget(
+                        hvacElements,
+                        point,
+                        thresholdMm,
+                        {
+                            lineKind: branchKitGeometry.lineSelection,
+                            minSegmentLengthMm: minimumSegmentLengthMm,
+                        },
+                    )
+                    ?? findNearestVisibleRefrigerantPipeSegmentTarget(
+                        hvacElements,
+                        point,
+                        thresholdMm,
+                        {
+                            lineKind: branchKitGeometry.lineSelection,
+                            minSegmentLengthMm: minimumSegmentLengthMm,
+                        },
+                    )
                 );
+            };
             // Cursor-driven branch-kit placement should lock to the nearest valid
             // refrigerant centerline so the preview glides along the run.
             const snappedSegment =

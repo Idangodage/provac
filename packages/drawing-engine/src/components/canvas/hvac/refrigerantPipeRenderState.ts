@@ -383,7 +383,7 @@ export function getVisibleRefrigerantPipeStraightSegmentTargets(
 
   elements.forEach((element) => {
     if (element.type === "refrigerant-pipe-pair") {
-      const pairVisual = buildRefrigerantPipePairVisual(element);
+      const pairVisual = buildRefrigerantPipePairVisual(element, elements);
       const processPoints = (points: Point2D[], lineKind: "gas" | "liquid", outerDiameterMm: number, elevationMm: number) => {
         if (points.length < 2) return;
         for (let index = 0; index < points.length - 1; index += 1) {

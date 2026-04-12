@@ -1,17 +1,11 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState, useEffect } from "react";
 
+import DrawingEditorWrapper from "@/components/editors/DrawingEditorWrapper";
 import { trpc } from "@/lib/trpc";
-
-// Dynamically import the entire drawing editor to avoid SSR issues with Konva
-const DrawingEditorWrapper = dynamic(
-  () => import("@/components/editors/DrawingEditorWrapper"),
-  { ssr: false, loading: () => <CanvasLoading /> }
-);
 
 function parseCanvasData(input: unknown): unknown {
   if (!input) return undefined;

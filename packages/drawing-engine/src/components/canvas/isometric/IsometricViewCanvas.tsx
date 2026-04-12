@@ -33,17 +33,21 @@ import { buildGiDuctVisual } from "../hvac/giDuctModel";
 import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
+  findNearestRefrigerantPipeBundleSegmentTarget,
 } from "../hvac/refrigerantPipePairModel";
 import {
   buildRefrigerantPipeEndpointRenderStateMap,
   buildRefrigerantPipeRenderChainStateMap,
+  getVisibleRefrigerantPipeStraightSegmentTargets,
   type RefrigerantPipeEndpointRenderState,
   type RefrigerantPipeRenderChainState,
+  type VisibleRefrigerantPipeSegmentTarget,
 } from "../hvac/refrigerantPipeRenderState";
 import {
   buildRefrigerantBranchKitViewModel,
   DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
   isRefrigerantBranchKitElement,
+  resolveRefrigerantBranchKitInlineAnchorLocal,
   resolveRefrigerantBranchKitLineSelection,
   REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
 } from "../hvac/refrigerantBranchKitModel";
@@ -420,6 +424,43 @@ function rotatePoint2D(point: Point2D, angleDeg: number): Point2D {
   };
 }
 
+function normalizeDirection(point: Point2D): Point2D {
+  const length = Math.hypot(point.x, point.y);
+  if (length < 0.0001) {
+    return { x: 1, y: 0 };
+  }
+  return { x: point.x / length, y: point.y / length };
+}
+
+function addPoints(a: Point2D, b: Point2D): Point2D {
+  return { x: a.x + b.x, y: a.y + b.y };
+}
+
+function subtractPoints(a: Point2D, b: Point2D): Point2D {
+  return { x: a.x - b.x, y: a.y - b.y };
+}
+
+function scalePoint(point: Point2D, factor: number): Point2D {
+  return { x: point.x * factor, y: point.y * factor };
+}
+
+function dotProduct(a: Point2D, b: Point2D): number {
+  return a.x * b.x + a.y * b.y;
+}
+
+function normalizeAngleDeg(value: number): number {
+  let normalized = value % 360;
+  if (normalized < 0) {
+    normalized += 360;
+  }
+  return normalized;
+}
+
+function smallestAngleDifferenceDeg(a: number, b: number): number {
+  const diff = Math.abs(normalizeAngleDeg(a) - normalizeAngleDeg(b));
+  return Math.min(diff, 360 - diff);
+}
+
 function averagePoints(points: Point2D[]): Point2D {
   if (points.length === 0) {
     return { x: 0, y: 0 };
@@ -457,7 +498,10 @@ function normalizePoint(value: unknown): Point2D | null {
 
 function resolveInlineBranchKitRenderCenter(
   element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties" | "rotation">,
-): Point2D | null {
+  elevationMm: number,
+  pipeTargets: VisibleRefrigerantPipeSegmentTarget[],
+  allElements: HvacElement[],
+): { center: Point2D; elevationMm: number; rotationDeg: number } | null {
   if (
     !isRefrigerantBranchKitElement(element) ||
     element.properties.branchKitPlacementMode !== "inline-pipe-run"
@@ -468,23 +512,184 @@ function resolveInlineBranchKitRenderCenter(
   if (!anchorPoint) {
     return null;
   }
+  let resolvedAnchorPoint: Point2D = anchorPoint;
   const model = buildRefrigerantBranchKitViewModel(element);
   const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
-  const lines =
-    lineSelection === "gas"
-      ? [model.gas]
-      : lineSelection === "liquid"
-        ? [model.liquid]
-        : [model.gas, model.liquid];
-  const anchorLocal =
-    normalizePoint(element.properties.branchKitSnapAnchorLocal) ??
-    averagePoints(
-      lines.flatMap((line) => [line.inletTerminal.point, line.runOutletTerminal.point]),
+  const anchorLine = lineSelection === "liquid" ? model.liquid : model.gas;
+  let resolvedAnchorElevationMm = elevationMm + anchorLine.centerlineZMm;
+
+  const snapSegmentStart = normalizePoint(element.properties.branchKitSnapSegmentStart);
+  const snapSegmentEnd = normalizePoint(element.properties.branchKitSnapSegmentEnd);
+  const snapProjectedDistanceMm =
+    typeof element.properties.branchKitSnapProjectedDistanceMm === "number" &&
+    Number.isFinite(element.properties.branchKitSnapProjectedDistanceMm)
+      ? element.properties.branchKitSnapProjectedDistanceMm
+      : null;
+  if (snapSegmentStart && snapSegmentEnd) {
+    const segmentDelta = subtractPoints(snapSegmentEnd, snapSegmentStart);
+    const segmentLengthMm = Math.hypot(segmentDelta.x, segmentDelta.y);
+    if (segmentLengthMm > 0.2) {
+      const segmentDirection = {
+        x: segmentDelta.x / segmentLengthMm,
+        y: segmentDelta.y / segmentLengthMm,
+      };
+      const projectedMm =
+        snapProjectedDistanceMm !== null
+          ? Math.min(segmentLengthMm, Math.max(0, snapProjectedDistanceMm))
+          : Math.min(
+              segmentLengthMm,
+              Math.max(
+                0,
+                dotProduct(
+                  subtractPoints(anchorPoint, snapSegmentStart),
+                  segmentDirection,
+                ),
+              ),
+            );
+      resolvedAnchorPoint = addPoints(
+        snapSegmentStart,
+        scalePoint(segmentDirection, projectedMm),
+      );
+    }
+  }
+
+  const desiredLineKind = lineSelection === "liquid" ? "liquid" : "gas";
+  const sourceElementId =
+    typeof element.properties.branchKitSnapSourceElementId === "string"
+      ? element.properties.branchKitSnapSourceElementId
+      : null;
+  const snapDirection = normalizeDirection(
+    normalizePoint(element.properties.branchKitSnapDirection) ?? { x: 1, y: 0 },
+  );
+  let resolvedAxisDirection = snapDirection;
+
+  const modelProjectionElements = (() => {
+    if (!sourceElementId) {
+      return allElements;
+    }
+    const byElementId = allElements.filter(
+      (candidate) => candidate.id === sourceElementId,
     );
-  const rotatedAnchor = rotatePoint2D(anchorLocal, element.rotation);
+    return byElementId.length > 0 ? byElementId : allElements;
+  })();
+  const modelProjection =
+    modelProjectionElements.length > 0
+      ? findNearestRefrigerantPipeBundleSegmentTarget(
+          modelProjectionElements,
+          resolvedAnchorPoint,
+          sourceElementId ? 120 : 64,
+          { minSegmentLengthMm: 30 },
+        )
+      : null;
+  if (modelProjection) {
+    resolvedAnchorPoint = desiredLineKind === "liquid"
+      ? modelProjection.liquidPoint
+      : modelProjection.gasPoint;
+    resolvedAnchorElevationMm = desiredLineKind === "liquid"
+      ? modelProjection.liquidElevationMm
+      : modelProjection.gasElevationMm;
+    resolvedAxisDirection =
+      dotProduct(modelProjection.direction, snapDirection) >= 0
+        ? modelProjection.direction
+        : scalePoint(modelProjection.direction, -1);
+  }
+  const matchingTargets = pipeTargets.filter(
+    (target) =>
+      target.lineKind === desiredLineKind &&
+      (!sourceElementId ||
+        target.elementId === sourceElementId ||
+        target.bundleId === sourceElementId),
+  );
+  const fallbackTargets = sourceElementId
+    ? pipeTargets.filter((target) => target.lineKind === desiredLineKind)
+    : matchingTargets;
+  const targets = matchingTargets.length > 0 ? matchingTargets : fallbackTargets;
+  if (!modelProjection && targets.length > 0) {
+    let bestPoint: Point2D | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    let bestElevationMm: number | null = null;
+    let bestDirection: Point2D | null = null;
+    for (const target of targets) {
+      const segmentDx = target.end.x - target.start.x;
+      const segmentDy = target.end.y - target.start.y;
+      const segmentLength = Math.hypot(segmentDx, segmentDy);
+      if (segmentLength <= 0.2) {
+        continue;
+      }
+      const direction = { x: segmentDx / segmentLength, y: segmentDy / segmentLength };
+      const projectedMm = Math.min(
+        segmentLength,
+        Math.max(
+          0,
+          dotProduct(subtractPoints(resolvedAnchorPoint, target.start), direction),
+        ),
+      );
+      const projectedPoint = addPoints(target.start, scalePoint(direction, projectedMm));
+      const distanceMm = Math.hypot(
+        projectedPoint.x - resolvedAnchorPoint.x,
+        projectedPoint.y - resolvedAnchorPoint.y,
+      );
+      const directionPenalty = (1 - Math.abs(dotProduct(direction, snapDirection))) * 36;
+      const score = distanceMm + directionPenalty;
+      if (score < bestScore) {
+        bestScore = score;
+        bestPoint = projectedPoint;
+        bestElevationMm = target.elevationMm;
+        bestDirection =
+          dotProduct(direction, snapDirection) >= 0
+            ? direction
+            : scalePoint(direction, -1);
+      }
+    }
+    const maxReprojectScoreMm = sourceElementId ? 60 : 24;
+    if (bestPoint && bestScore <= maxReprojectScoreMm) {
+      resolvedAnchorPoint = bestPoint;
+      if (bestElevationMm !== null) {
+        resolvedAnchorElevationMm = bestElevationMm;
+      }
+      if (bestDirection) {
+        resolvedAxisDirection = bestDirection;
+      }
+    }
+  }
+
+  const canonicalAnchorLocal = resolveRefrigerantBranchKitInlineAnchorLocal(
+    model,
+    lineSelection,
+  );
+  const storedAnchorLocal = normalizePoint(element.properties.branchKitSnapAnchorLocal);
+  const anchorLocal = (() => {
+    if (!storedAnchorLocal) {
+      return canonicalAnchorLocal;
+    }
+    const MAX_INLINE_ANCHOR_LOCAL_DRIFT_MM = 1;
+    const driftMm = Math.hypot(
+      storedAnchorLocal.x - canonicalAnchorLocal.x,
+      storedAnchorLocal.y - canonicalAnchorLocal.y,
+    );
+    return driftMm <= MAX_INLINE_ANCHOR_LOCAL_DRIFT_MM
+      ? storedAnchorLocal
+      : canonicalAnchorLocal;
+  })();
+  const fallbackRotationDeg = element.rotation ?? 0;
+  const axisAngleDeg = normalizeAngleDeg(
+    (Math.atan2(resolvedAxisDirection.y, resolvedAxisDirection.x) * 180) / Math.PI,
+  );
+  const candidateRotationA = axisAngleDeg;
+  const candidateRotationB = normalizeAngleDeg(axisAngleDeg + 180);
+  const rotationDeg =
+    smallestAngleDifferenceDeg(candidateRotationA, fallbackRotationDeg)
+      <= smallestAngleDifferenceDeg(candidateRotationB, fallbackRotationDeg)
+      ? candidateRotationA
+      : candidateRotationB;
+  const rotatedAnchor = rotatePoint2D(anchorLocal, rotationDeg);
   return {
-    x: anchorPoint.x - rotatedAnchor.x,
-    y: anchorPoint.y - rotatedAnchor.y,
+    center: {
+      x: resolvedAnchorPoint.x - rotatedAnchor.x,
+      y: resolvedAnchorPoint.y - rotatedAnchor.y,
+    },
+    elevationMm: resolvedAnchorElevationMm - anchorLine.centerlineZMm,
+    rotationDeg,
   };
 }
 
@@ -591,7 +796,7 @@ function projectLabels(
   width: number,
   height: number,
 ): ScreenLabel[] {
-  return anchors.flatMap((anchor) => {
+  const labels = anchors.flatMap((anchor) => {
     const projected = anchor.position.clone().project(camera);
     if (
       !Number.isFinite(projected.x) ||
@@ -613,6 +818,30 @@ function projectLabels(
       },
     ];
   });
+
+  const BRANCH_LABEL_PROXIMITY_PX = 120;
+  const BRANCH_LABEL_VERTICAL_PX = 24;
+  const BRANCH_LABEL_SPREAD_PX = 54;
+  const branchLabels = labels.filter((label) =>
+    label.text.toLowerCase().includes("copper branch kit"),
+  );
+  for (let index = 0; index < branchLabels.length; index += 1) {
+    for (let compareIndex = index + 1; compareIndex < branchLabels.length; compareIndex += 1) {
+      const left = branchLabels[index]!;
+      const right = branchLabels[compareIndex]!;
+      const closeInX = Math.abs(left.x - right.x) < BRANCH_LABEL_PROXIMITY_PX;
+      const closeInY = Math.abs(left.y - right.y) < BRANCH_LABEL_VERTICAL_PX;
+      if (!closeInX || !closeInY) {
+        continue;
+      }
+      left.x = Math.max(12, left.x - BRANCH_LABEL_SPREAD_PX);
+      right.x = Math.min(width - 12, right.x + BRANCH_LABEL_SPREAD_PX);
+      left.y = Math.max(12, left.y - 8);
+      right.y = Math.min(height - 12, right.y + 8);
+    }
+  }
+
+  return labels;
 }
 
 function solidPalette(
@@ -1740,8 +1969,10 @@ function addVentSlats(
 
 function createHvacEquipmentMesh(
   element: HvacElement,
+  allElements: HvacElement[],
   pipeEndpointStateMap?: Map<string, RefrigerantPipeEndpointRenderState>,
   pipeRenderChainStateMap?: Map<string, RefrigerantPipeRenderChainState>,
+  pipeTargets?: VisibleRefrigerantPipeSegmentTarget[],
 ): THREE.Group {
   if (element.type === "accessory" && isRefrigerantBranchKitElement(element)) {
     return createHvacEquipmentMesh(
@@ -1749,8 +1980,10 @@ function createHvacEquipmentMesh(
         ...element,
         type: "refrigerant-branch-kit",
       },
+      allElements,
       pipeEndpointStateMap,
       pipeRenderChainStateMap,
+      pipeTargets,
     );
   }
 
@@ -1759,17 +1992,26 @@ function createHvacEquipmentMesh(
   const height = Math.max(80, element.height);
   const palette = hvacPaletteForElement(element);
   const group = new THREE.Group();
+  const inlinePlacement =
+    resolveInlineBranchKitRenderCenter(
+      element,
+      element.elevation,
+      pipeTargets ?? [],
+      allElements,
+    );
   const renderCenter =
-    resolveInlineBranchKitRenderCenter(element) ?? {
+    inlinePlacement?.center ?? {
       x: element.position.x + width / 2,
       y: element.position.y + depth / 2,
     };
   group.position.set(
     renderCenter.x,
     renderCenter.y,
-    element.elevation,
+    inlinePlacement?.elevationMm ?? element.elevation,
   );
-  group.rotation.z = THREE.MathUtils.degToRad(element.rotation);
+  group.rotation.z = THREE.MathUtils.degToRad(
+    inlinePlacement?.rotationDeg ?? element.rotation,
+  );
   group.name = `hvac-${element.id}`;
 
   const bodyHeight = Math.max(height * 0.68, Math.min(height, 120));
@@ -2432,7 +2674,7 @@ function createHvacEquipmentMesh(
       break;
     }
     case "refrigerant-pipe-pair": {
-      const visual = buildRefrigerantPipePairVisual(element);
+      const visual = buildRefrigerantPipePairVisual(element, allElements);
       const insulationColor = "#1f2021";
       const gasColor = "#c5894d";
       const liquidColor = "#dca25d";
@@ -2504,7 +2746,12 @@ function createHvacEquipmentMesh(
           new THREE.Vector3(stub.end.x, stub.end.y, z),
           radius,
           color,
-          { opacity, renderOrder },
+          {
+            opacity,
+            renderOrder,
+            capStart: false,
+            capEnd: false,
+          },
         );
         if (segment) {
           group.add(segment);
@@ -2555,7 +2802,7 @@ function createHvacEquipmentMesh(
         gasColor,
         1,
         19,
-        isFieldPipeStart,
+        isFieldPipeStart || Boolean(visual.gasLocalStub),
         false,
         "elbow",
       );
@@ -2566,7 +2813,7 @@ function createHvacEquipmentMesh(
         liquidColor,
         1,
         19,
-        isFieldPipeStart,
+        isFieldPipeStart || Boolean(visual.liquidLocalStub),
         false,
         "elbow",
       );
@@ -2648,7 +2895,12 @@ function createHvacEquipmentMesh(
           new THREE.Vector3(stub.end.x, stub.end.y, z),
           radius,
           color,
-          { opacity, renderOrder },
+          {
+            opacity,
+            renderOrder,
+            capStart: false,
+            capEnd: false,
+          },
         );
         if (segment) {
           group.add(segment);
@@ -2684,7 +2936,7 @@ function createHvacEquipmentMesh(
           coreColor,
           1,
           19,
-          chainState.openStart,
+          chainState.openStart || Boolean(chainState.absoluteStub),
           chainState.openEnd,
           "elbow",
         );
@@ -2714,7 +2966,7 @@ function createHvacEquipmentMesh(
           coreColor,
           1,
           19,
-          endpointState.openStart,
+          endpointState.openStart || Boolean(visual.localStub),
           endpointState.openEnd,
           "elbow",
         );
@@ -4289,12 +4541,17 @@ export function IsometricViewCanvas({
       hvacElements,
       pipeEndpointStateMap,
     );
+    const pipeTargets = getVisibleRefrigerantPipeStraightSegmentTargets(
+      hvacElements,
+    );
 
     hvacElements.forEach((element) => {
       const mesh = createHvacEquipmentMesh(
         element,
+        hvacElements,
         pipeEndpointStateMap,
         pipeRenderChainStateMap,
+        pipeTargets,
       );
       mesh.updateMatrixWorld(true);
       const meshBounds = new THREE.Box3().setFromObject(mesh);

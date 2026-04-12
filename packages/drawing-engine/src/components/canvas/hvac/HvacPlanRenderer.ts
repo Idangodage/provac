@@ -22,6 +22,7 @@ import { buildGiDuctVisual, isGiDuctElementType } from "./giDuctModel";
 import {
   buildRefrigerantPipeVisual,
   buildRefrigerantPipePairVisual,
+  findNearestRefrigerantPipeBundleSegmentTarget,
   findNearestRefrigerantPipeBundleTarget as findNearestRefrigerantPipeBundleTargetFromModel,
   isRefrigerantPipeElementType,
   isRefrigerantPipePairType,
@@ -42,6 +43,8 @@ import {
   getRefrigerantBranchKitTerminalSpecs,
   isRefrigerantBranchKitElement,
   isRefrigerantBranchKitType,
+  resolveRefrigerantBranchKitConnectionIdentity,
+  resolveRefrigerantBranchKitInlineAnchorLocal,
   resolveRefrigerantBranchKitLineSelection,
   REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
   type RefrigerantBranchTerminalRole,
@@ -133,6 +136,19 @@ function dotProduct(a: Point2D, b: Point2D): number {
   return a.x * b.x + a.y * b.y;
 }
 
+function normalizeAngleDeg(value: number): number {
+  let normalized = value % 360;
+  if (normalized < 0) {
+    normalized += 360;
+  }
+  return normalized;
+}
+
+function smallestAngleDifferenceDeg(a: number, b: number): number {
+  const diff = Math.abs(normalizeAngleDeg(a) - normalizeAngleDeg(b));
+  return Math.min(diff, 360 - diff);
+}
+
 function averagePoints(points: Point2D[]): Point2D {
   if (points.length === 0) {
     return { x: 0, y: 0 };
@@ -171,7 +187,8 @@ function normalizePoint(value: unknown): Point2D | null {
 function resolveInlineBranchKitRenderCenter(
   element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties" | "rotation">,
   pipeTargets: VisibleRefrigerantPipeSegmentTarget[],
-): { anchorPoint: Point2D; anchorLocal: Point2D } | null {
+  allElements: HvacElement[],
+): { anchorPoint: Point2D; anchorLocal: Point2D; rotationDeg: number } | null {
   if (
     !isRefrigerantBranchKitElement(element) ||
     element.properties.branchKitPlacementMode !== "inline-pipe-run"
@@ -229,6 +246,35 @@ function resolveInlineBranchKitRenderCenter(
   const snapDirection = normalizeDirection(
     normalizePoint(element.properties.branchKitSnapDirection) ?? { x: 1, y: 0 },
   );
+  let resolvedAxisDirection = snapDirection;
+
+  const modelProjectionElements = (() => {
+    if (!sourceElementId) {
+      return allElements;
+    }
+    const byElementId = allElements.filter(
+      (candidate) => candidate.id === sourceElementId,
+    );
+    return byElementId.length > 0 ? byElementId : allElements;
+  })();
+  const modelProjection =
+    modelProjectionElements.length > 0
+      ? findNearestRefrigerantPipeBundleSegmentTarget(
+          modelProjectionElements,
+          anchorPoint,
+          sourceElementId ? 120 : 64,
+          { minSegmentLengthMm: 30 },
+        )
+      : null;
+  if (modelProjection) {
+    anchorPoint = desiredLineKind === "liquid"
+      ? modelProjection.liquidPoint
+      : modelProjection.gasPoint;
+    resolvedAxisDirection =
+      dotProduct(modelProjection.direction, snapDirection) >= 0
+        ? modelProjection.direction
+        : scalePoint(modelProjection.direction, -1);
+  }
   const matchingTargets = pipeTargets.filter(
     (target) =>
       target.lineKind === desiredLineKind &&
@@ -240,9 +286,10 @@ function resolveInlineBranchKitRenderCenter(
     ? pipeTargets.filter((target) => target.lineKind === desiredLineKind)
     : matchingTargets;
   const targets = matchingTargets.length > 0 ? matchingTargets : fallbackTargets;
-  if (targets.length > 0) {
+  if (!modelProjection && targets.length > 0) {
     let bestPoint: Point2D | null = null;
     let bestScore = Number.POSITIVE_INFINITY;
+    let bestDirection: Point2D | null = null;
     for (const target of targets) {
       const segmentDx = target.end.x - target.start.x;
       const segmentDy = target.end.y - target.start.y;
@@ -265,33 +312,66 @@ function resolveInlineBranchKitRenderCenter(
       if (score < bestScore) {
         bestScore = score;
         bestPoint = projectedPoint;
+        bestDirection =
+          dotProduct(direction, snapDirection) >= 0
+            ? direction
+            : scalePoint(direction, -1);
       }
     }
     const maxReprojectScoreMm = sourceElementId ? 60 : 24;
     if (bestPoint && bestScore <= maxReprojectScoreMm) {
       anchorPoint = bestPoint;
+      if (bestDirection) {
+        resolvedAxisDirection = bestDirection;
+      }
     }
   }
 
-  const anchorLocal =
-    normalizePoint(element.properties.branchKitSnapAnchorLocal) ??
-    resolveBranchKitAnchorLocal(model, lineSelection);
-  return { anchorPoint, anchorLocal };
+  const anchorLocal = resolveStableInlineBranchKitAnchorLocal(
+    element,
+    model,
+    lineSelection,
+  );
+  const fallbackRotationDeg = element.rotation ?? 0;
+  const axisAngleDeg = normalizeAngleDeg(
+    (Math.atan2(resolvedAxisDirection.y, resolvedAxisDirection.x) * 180) / Math.PI,
+  );
+  const candidateRotationA = axisAngleDeg;
+  const candidateRotationB = normalizeAngleDeg(axisAngleDeg + 180);
+  const rotationDeg =
+    smallestAngleDifferenceDeg(candidateRotationA, fallbackRotationDeg)
+      <= smallestAngleDifferenceDeg(candidateRotationB, fallbackRotationDeg)
+      ? candidateRotationA
+      : candidateRotationB;
+
+  return { anchorPoint, anchorLocal, rotationDeg };
 }
 
 function resolveBranchKitAnchorLocal(
   model: ReturnType<typeof buildRefrigerantBranchKitViewModel>,
   lineSelection: ReturnType<typeof resolveRefrigerantBranchKitLineSelection>,
 ): Point2D {
-  // The inline snap anchor must match the specific pipe we snap to.
-  // resolveInlineBranchKitRenderCenter snaps to the gas pipe for 'both'
-  // and 'gas', and to the liquid pipe for 'liquid'.  The anchor must
-  // lie on that same line's trunk so the trunk aligns with the pipe.
-  const anchorLine =
-    lineSelection === "liquid" ? model.liquid : model.gas;
-  return averagePoints(
-    [anchorLine.inletTerminal.point, anchorLine.runOutletTerminal.point],
+  return resolveRefrigerantBranchKitInlineAnchorLocal(model, lineSelection);
+}
+
+function resolveStableInlineBranchKitAnchorLocal(
+  element: Pick<HvacElement, "properties">,
+  model: ReturnType<typeof buildRefrigerantBranchKitViewModel>,
+  lineSelection: ReturnType<typeof resolveRefrigerantBranchKitLineSelection>,
+): Point2D {
+  const canonicalAnchorLocal = resolveBranchKitAnchorLocal(model, lineSelection);
+  const storedAnchorLocal = normalizePoint(element.properties.branchKitSnapAnchorLocal);
+  if (!storedAnchorLocal) {
+    return canonicalAnchorLocal;
+  }
+  const MAX_INLINE_ANCHOR_LOCAL_DRIFT_MM = 1;
+  const driftMm = Math.hypot(
+    storedAnchorLocal.x - canonicalAnchorLocal.x,
+    storedAnchorLocal.y - canonicalAnchorLocal.y,
   );
+  return driftMm <= MAX_INLINE_ANCHOR_LOCAL_DRIFT_MM
+    ? storedAnchorLocal
+    : canonicalAnchorLocal;
 }
 
 type PipeTrimWindow = {
@@ -594,6 +674,8 @@ export class HvacPlanRenderer {
     lineKind: "gas" | "liquid",
   ): PipeTrimWindow[] {
     const windows: PipeTrimWindow[] = [];
+    const allElements = Array.from(this.hvacData.values());
+    const pipeTargets = getVisibleRefrigerantPipeStraightSegmentTargets(allElements);
 
     this.hvacData.forEach((element) => {
       if (
@@ -615,15 +697,27 @@ export class HvacPlanRenderer {
         return;
       }
 
-      const anchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
-      const direction = normalizeDirection(
-        normalizePoint(element.properties.branchKitSnapDirection) ?? { x: 1, y: 0 },
+      const inlineResult = resolveInlineBranchKitRenderCenter(
+        element,
+        pipeTargets,
+        allElements,
       );
-      if (!anchorPoint) {
+      if (!inlineResult) {
         return;
       }
-
       const branchKit = buildRefrigerantBranchKitViewModel(element);
+      const inlineCenter = subtractPoints(
+        inlineResult.anchorPoint,
+        rotatePoint(inlineResult.anchorLocal, inlineResult.rotationDeg),
+      );
+      const lineAnchorLocal = resolveBranchKitAnchorLocal(
+        branchKit,
+        lineKind === "liquid" ? "liquid" : "gas",
+      );
+      const anchorPoint = addPoints(
+        inlineCenter,
+        rotatePoint(lineAnchorLocal, inlineResult.rotationDeg),
+      );
       const selectedLine =
         lineSelection === "gas"
           ? branchKit.gas
@@ -638,6 +732,9 @@ export class HvacPlanRenderer {
           selectedLine.runOutletTerminal.point,
           selectedLine.inletTerminal.point,
         ),
+      );
+      const direction = normalizeDirection(
+        rotatePoint(localAxis, inlineResult.rotationDeg),
       );
       const insulatedMainPoints = trimPolylineEndLocal(
         selectedLine.mainTube.points,
@@ -875,6 +972,10 @@ export class HvacPlanRenderer {
       elevationMm: number;
       outerDiameterMm: number;
     }> = [];
+    const pipeTargets = getVisibleRefrigerantPipeStraightSegmentTargets(
+      Array.from(this.hvacData.values()),
+    );
+    const CENTERLINE_IDENTITY_TOLERANCE_MM = 1;
 
     this.groups.forEach((group, id) => {
       const element = this.hvacData.get(id);
@@ -950,12 +1051,24 @@ export class HvacPlanRenderer {
       if (isRefrigerantBranchKitElement(element)) {
         const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
         const branchKit = buildRefrigerantBranchKitViewModel(element);
-        const terminalMap = new Map(
-          getRefrigerantBranchKitTerminalSpecs(branchKit).map((terminal) => [
-            `${terminal.kind}:${terminal.role}`,
-            terminal,
-          ]),
+        const inlineResult = resolveInlineBranchKitRenderCenter(
+          element,
+          pipeTargets,
+          Array.from(this.hvacData.values()),
         );
+        const identityCenter = inlineResult
+          ? subtractPoints(
+              inlineResult.anchorPoint,
+              rotatePoint(inlineResult.anchorLocal, inlineResult.rotationDeg),
+            )
+          : null;
+        const renderedBranchCenter = identityCenter ??
+          this.getRenderedObjectCenterMm(group, "hvac-branch-center-snap") ??
+          this.getRenderedObjectCenterMm(group, "hvac-branch-center-snap-visible") ??
+          {
+            x: element.position.x + element.width / 2,
+            y: element.position.y + element.depth / 2,
+          };
         const roles: RefrigerantBranchTerminalRole[] = [
           "inlet",
           "run-outlet",
@@ -963,100 +1076,73 @@ export class HvacPlanRenderer {
         ];
 
         roles.forEach((role) => {
-          const rotation = element.rotation ?? 0;
-          let gasTerminal = terminalMap.get(`gas:${role}`);
-          let liquidTerminal = terminalMap.get(`liquid:${role}`);
-          let gasPoint =
-            this.getRenderedObjectCenterMm(group, `hvac-branch-snap-gas-${role}`);
-          let liquidPoint =
-            this.getRenderedObjectCenterMm(group, `hvac-branch-snap-liquid-${role}`);
-          let gasDirection: Point2D;
-          let liquidDirection: Point2D;
-          let averageDirection: Point2D;
-          let guideReference: "gas" | "liquid" | undefined;
-
-          if (lineSelection === "both") {
-            if (!gasTerminal || !liquidTerminal || !gasPoint || !liquidPoint) {
-              return;
-            }
-            gasDirection = normalizeDirection(
-              rotatePoint(gasTerminal.direction, rotation),
-            );
-            liquidDirection = normalizeDirection(
-              rotatePoint(liquidTerminal.direction, rotation),
-            );
-            averageDirection = normalizeDirection({
-              x: gasDirection.x + liquidDirection.x,
-              y: gasDirection.y + liquidDirection.y,
-            });
-          } else {
-            const selectedKind = lineSelection;
-            const counterpartKind = selectedKind === "gas" ? "liquid" : "gas";
-            const selectedTerminal = terminalMap.get(`${selectedKind}:${role}`);
-            const counterpartTerminal = terminalMap.get(
-              `${counterpartKind}:${role}`,
-            );
-            const selectedPoint = this.getRenderedObjectCenterMm(
-              group,
-              `hvac-branch-snap-${selectedKind}-${role}`,
-            );
-            if (!selectedTerminal || !selectedPoint) {
-              return;
-            }
-
-            const direction = normalizeDirection(
-              rotatePoint(selectedTerminal.direction, rotation),
-            );
-            const normal = { x: -direction.y, y: direction.x };
-            const selectedOuterDiameterMm = selectedTerminal.outerDiameterMm;
-            const counterpartOuterDiameterMm =
-              counterpartTerminal?.outerDiameterMm ?? selectedOuterDiameterMm;
-            const gasOuterDiameterMm =
-              selectedKind === "gas"
-                ? selectedOuterDiameterMm
-                : counterpartOuterDiameterMm;
-            const liquidOuterDiameterMm =
-              selectedKind === "liquid"
-                ? selectedOuterDiameterMm
-                : counterpartOuterDiameterMm;
-            const centerSpacingMm =
-              gasOuterDiameterMm / 2 +
-              liquidOuterDiameterMm / 2 +
-              DEFAULT_REFRIGERANT_PIPE_GAP_MM;
-
-            if (selectedKind === "gas") {
-              gasPoint = selectedPoint;
-              liquidPoint = {
-                x: selectedPoint.x + normal.x * centerSpacingMm,
-                y: selectedPoint.y + normal.y * centerSpacingMm,
-              };
-            } else {
-              liquidPoint = selectedPoint;
-              gasPoint = {
-                x: selectedPoint.x - normal.x * centerSpacingMm,
-                y: selectedPoint.y - normal.y * centerSpacingMm,
-              };
-            }
-
-            gasTerminal = gasTerminal ?? {
-              ...selectedTerminal,
-              kind: "gas" as const,
-              outerDiameterMm: gasOuterDiameterMm,
-            };
-            liquidTerminal = liquidTerminal ?? {
-              ...selectedTerminal,
-              kind: "liquid" as const,
-              outerDiameterMm: liquidOuterDiameterMm,
-            };
-            gasDirection = direction;
-            liquidDirection = direction;
-            averageDirection = direction;
-            guideReference = selectedKind;
-          }
-
-          if (!gasTerminal || !liquidTerminal || !gasPoint || !liquidPoint) {
+          const identity = resolveRefrigerantBranchKitConnectionIdentity({
+            model: branchKit,
+            role,
+            lineSelection,
+            worldCenter: renderedBranchCenter,
+            rotationDeg: element.rotation ?? 0,
+          });
+          if (!identity) {
             return;
           }
+
+          const renderedGasSnap = this.getRenderedObjectCenterMm(
+            group,
+            `hvac-branch-snap-gas-${role}`,
+          );
+          const renderedLiquidSnap = this.getRenderedObjectCenterMm(
+            group,
+            `hvac-branch-snap-liquid-${role}`,
+          );
+          const gasSnapDeltaMm = renderedGasSnap
+            ? Math.hypot(
+                renderedGasSnap.x - identity.gasPoint.x,
+                renderedGasSnap.y - identity.gasPoint.y,
+              )
+            : 0;
+          const liquidSnapDeltaMm = renderedLiquidSnap
+            ? Math.hypot(
+                renderedLiquidSnap.x - identity.liquidPoint.x,
+                renderedLiquidSnap.y - identity.liquidPoint.y,
+              )
+            : 0;
+          let shouldLogCenterlineMismatch = false;
+          if (typeof window !== "undefined") {
+            try {
+              shouldLogCenterlineMismatch =
+                window.localStorage.getItem("hvac.pipe.debug") === "1" ||
+                (window as unknown as { __HVAC_PIPE_ROUTING_DEBUG__?: boolean })
+                  .__HVAC_PIPE_ROUTING_DEBUG__ === true;
+            } catch {
+              shouldLogCenterlineMismatch = false;
+            }
+          }
+          if (
+            shouldLogCenterlineMismatch &&
+            (
+              gasSnapDeltaMm > CENTERLINE_IDENTITY_TOLERANCE_MM ||
+              liquidSnapDeltaMm > CENTERLINE_IDENTITY_TOLERANCE_MM
+            )
+          ) {
+            // eslint-disable-next-line no-console
+            console.warn("[hvac-centerline] branch snap mismatch", {
+              elementId: element.id,
+              role,
+              lineSelection,
+              gasSnapDeltaMm,
+              liquidSnapDeltaMm,
+            });
+          }
+
+          const gasTerminal = identity.gasTerminal;
+          const liquidTerminal = identity.liquidTerminal;
+          const gasPoint = identity.gasPoint;
+          const liquidPoint = identity.liquidPoint;
+          const gasDirection = identity.gasDirection;
+          const liquidDirection = identity.liquidDirection;
+          const averageDirection = identity.direction;
+          const guideReference = identity.guideReference;
 
           const gasDistance = Math.hypot(
             gasPoint.x - point.x,
@@ -1687,13 +1773,12 @@ export class HvacPlanRenderer {
           element.id,
           ...(headVisual.bundleId ? [headVisual.bundleId] : []),
         ]);
-        const trimmedAbsolutePolylineSets = trimPolylineWithWindows(
+        // Keep plan-view pipe centerlines identical to modeled geometry.
+        // Branch-kit trim-window splitting is 2D-only and can introduce
+        // segment drift artifacts that are not present in 3D.
+        const trimmedAbsolutePolylineSets = [
           chainState?.outerPoints ?? visual.outerPoints,
-          this.getInlineBranchKitTrimWindows(
-            trimSourceIds,
-            chainState?.lineKind ?? visual.lineKind,
-          ),
-        );
+        ];
         const localOuterPointSets = trimmedAbsolutePolylineSets.map((polyline) =>
           polyline.map(localizePoint),
         );
@@ -1809,11 +1894,12 @@ export class HvacPlanRenderer {
         break;
       }
       case "refrigerant-pipe-pair": {
-        const baseVisual = buildRefrigerantPipePairVisual(element);
+        const hvacContext = Array.from(this.hvacData.values());
+        const baseVisual = buildRefrigerantPipePairVisual(element, hvacContext);
         const inferredStartBundle =
           !baseVisual.startBundleConnection && baseVisual.routePoints.length > 0
             ? findNearestRefrigerantPipeBundleTargetFromModel(
-                Array.from(this.hvacData.values()).filter(
+                hvacContext.filter(
                   (candidate) => candidate.id !== element.id,
                 ),
                 baseVisual.routePoints[0]!,
@@ -1827,7 +1913,7 @@ export class HvacPlanRenderer {
                 ...element.properties,
                 startBundleConnection: inferredStartBundle,
               },
-            })
+            }, hvacContext)
           : baseVisual;
 
         const toPx = (valueMm: number): number => valueMm * MM_TO_PX;
@@ -2042,9 +2128,11 @@ export class HvacPlanRenderer {
       case "refrigerant-branch-kit": {
         const branchKit = buildRefrigerantBranchKitViewModel(element);
         const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
-        const branchAnchorLocal =
-          normalizePoint(element.properties.branchKitSnapAnchorLocal) ??
-          resolveBranchKitAnchorLocal(branchKit, lineSelection);
+        const branchAnchorLocal = resolveStableInlineBranchKitAnchorLocal(
+          element,
+          branchKit,
+          lineSelection,
+        );
 
         const renderGasLine = lineSelection !== "liquid";
         const renderLiquidLine = lineSelection !== "gas";
@@ -3433,10 +3521,15 @@ export class HvacPlanRenderer {
       includeInteractionHalos?: boolean;
     },
   ): HvacGroup {
+    const allElements = Array.from(this.hvacData.values());
     const pipeTargets = getVisibleRefrigerantPipeStraightSegmentTargets(
-      Array.from(this.hvacData.values()),
+      allElements,
     );
-    const inlineResult = resolveInlineBranchKitRenderCenter(element, pipeTargets);
+    const inlineResultWithModel = resolveInlineBranchKitRenderCenter(
+      element,
+      pipeTargets,
+      allElements,
+    );
     
     const isPipeElement = isRefrigerantPipeElementType(element.type);
     const isDuctElement = isGiDuctElementType(element.type);
@@ -3461,16 +3554,16 @@ export class HvacPlanRenderer {
       objectCaching: false,
     }) as HvacGroup;
 
-    if (inlineResult) {
+    if (inlineResultWithModel) {
       const centerMm = subtractPoints(
-        inlineResult.anchorPoint,
-        rotatePoint(inlineResult.anchorLocal, element.rotation ?? 0),
+        inlineResultWithModel.anchorPoint,
+        rotatePoint(inlineResultWithModel.anchorLocal, inlineResultWithModel.rotationDeg),
       );
       const centerPx = toCanvas(centerMm);
       group.set({
         left: centerPx.x,
         top: centerPx.y,
-        angle: element.rotation ?? 0,
+        angle: inlineResultWithModel.rotationDeg,
       });
       group.setCoords();
 
@@ -3482,7 +3575,7 @@ export class HvacPlanRenderer {
       );
       if (renderedAnchor) {
         const renderedAnchorPx = toCanvas(renderedAnchor);
-        const targetAnchorPx = toCanvas(inlineResult.anchorPoint);
+        const targetAnchorPx = toCanvas(inlineResultWithModel.anchorPoint);
         group.set({
           left: (group.left ?? centerPx.x) + (targetAnchorPx.x - renderedAnchorPx.x),
           top: (group.top ?? centerPx.y) + (targetAnchorPx.y - renderedAnchorPx.y),

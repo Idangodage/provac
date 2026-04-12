@@ -106,6 +106,17 @@ export interface RefrigerantBranchKitModelSpec {
   labelAnchor: Point2D;
 }
 
+export interface RefrigerantBranchKitConnectionIdentity {
+  gasTerminal: RefrigerantBranchKitTerminalSpec;
+  liquidTerminal: RefrigerantBranchKitTerminalSpec;
+  gasPoint: Point2D;
+  liquidPoint: Point2D;
+  gasDirection: Point2D;
+  liquidDirection: Point2D;
+  direction: Point2D;
+  guideReference?: RefrigerantBranchLineKind;
+}
+
 export const REFRIGERANT_BRANCH_KIT_COLOR_PALETTE = {
   insulationBody: "#bb7645",
   insulationEdge: "#865230",
@@ -229,6 +240,28 @@ function dedupeConsecutivePoints(points: Point2D[]): Point2D[] {
     }
   });
   return deduped;
+}
+
+function normalizeDirection(point: Point2D): Point2D {
+  const length = Math.hypot(point.x, point.y);
+  if (length < 0.0001) {
+    return { x: 1, y: 0 };
+  }
+  return { x: point.x / length, y: point.y / length };
+}
+
+function rotatePoint(point: Point2D, angleDeg: number): Point2D {
+  const radians = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    x: point.x * cos - point.y * sin,
+    y: point.x * sin + point.y * cos,
+  };
+}
+
+function addPoint(a: Point2D, b: Point2D): Point2D {
+  return { x: a.x + b.x, y: a.y + b.y };
 }
 
 function computeBounds(
@@ -1299,4 +1332,73 @@ export function getRefrigerantBranchKitTerminalSpecs(
     model.liquid.runOutletTerminal,
     model.liquid.branchOutletTerminal,
   ];
+}
+
+export function resolveRefrigerantBranchKitInlineAnchorLocal(
+  model: RefrigerantBranchKitModelSpec,
+  lineSelection: RefrigerantBranchKitLineSelection,
+): Point2D {
+  // Inline routing anchors to the trunk centerline of the selected line.
+  // For "both", use gas as canonical datum so 2D/3D and snapping are identical.
+  const anchorLine = lineSelection === "liquid" ? model.liquid : model.gas;
+  return {
+    x: (anchorLine.inletTerminal.point.x + anchorLine.runOutletTerminal.point.x) / 2,
+    y: (anchorLine.inletTerminal.point.y + anchorLine.runOutletTerminal.point.y) / 2,
+  };
+}
+
+export function resolveRefrigerantBranchKitConnectionIdentity(options: {
+  model: RefrigerantBranchKitModelSpec;
+  role: RefrigerantBranchTerminalRole;
+  lineSelection: RefrigerantBranchKitLineSelection;
+  worldCenter: Point2D;
+  rotationDeg: number;
+}): RefrigerantBranchKitConnectionIdentity | null {
+  const { model, role, lineSelection, worldCenter, rotationDeg } = options;
+  const terminalMap = new Map(
+    getRefrigerantBranchKitTerminalSpecs(model).map((terminal) => [
+      `${terminal.kind}:${terminal.role}`,
+      terminal,
+    ]),
+  );
+  const gasTerminal = terminalMap.get(`gas:${role}`);
+  const liquidTerminal = terminalMap.get(`liquid:${role}`);
+  if (!gasTerminal || !liquidTerminal) {
+    return null;
+  }
+
+  const gasPoint = addPoint(worldCenter, rotatePoint(gasTerminal.point, rotationDeg));
+  const liquidPoint = addPoint(worldCenter, rotatePoint(liquidTerminal.point, rotationDeg));
+  const gasDirection = normalizeDirection(
+    rotatePoint(gasTerminal.direction, rotationDeg),
+  );
+  const liquidDirection = normalizeDirection(
+    rotatePoint(liquidTerminal.direction, rotationDeg),
+  );
+
+  if (lineSelection === "both") {
+    return {
+      gasTerminal,
+      liquidTerminal,
+      gasPoint,
+      liquidPoint,
+      gasDirection,
+      liquidDirection,
+      direction: normalizeDirection({
+        x: gasDirection.x + liquidDirection.x,
+        y: gasDirection.y + liquidDirection.y,
+      }),
+    };
+  }
+
+  return {
+    gasTerminal,
+    liquidTerminal,
+    gasPoint,
+    liquidPoint,
+    gasDirection,
+    liquidDirection,
+    direction: lineSelection === "gas" ? gasDirection : liquidDirection,
+    guideReference: lineSelection,
+  };
 }

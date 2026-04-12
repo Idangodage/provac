@@ -7,9 +7,9 @@ export function SignOutButton() {
     if (typeof window !== "undefined") {
       localStorage.removeItem("provacx-organization-id");
     }
-    // Clear all auth-related cookies and redirect to login
+    // Clear all auth-related cookies and redirect to landing page
     await signOut({
-      callbackUrl: "/login",
+      callbackUrl: "/",
       redirect: true,
     });
   };
