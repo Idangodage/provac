@@ -1274,10 +1274,19 @@ function resolveParallelBundleOffsets(
   const gasPortOffset = dot(subtract(startBundleConnection.gasFieldPoint, bundleCenter), perpDir);
   const liquidPortOffset = dot(subtract(startBundleConnection.liquidFieldPoint, bundleCenter), perpDir);
 
-  // For both unit-port and field-pipe connections, use standard centerSpacingMm-based
-  // offsets to ensure consistent gap. The sign is determined by the relative position
-  // of gas vs liquid ports. This is critical because offsetPolyline applies offsets
-  // perpendicular to the route direction (which may differ from branch-kit direction).
+  // For field-pipe connections (branch kits), use the ACTUAL port offsets.
+  // This ensures offset calculations align with the exact branch kit outlet positions.
+  // The parallel route will then start from the correct positions when the first
+  // segment direction matches the branch kit direction.
+  if (startBundleConnection.connectionKind === 'field-pipe') {
+    return {
+      gasOffsetMm: gasPortOffset,
+      liquidOffsetMm: liquidPortOffset,
+    };
+  }
+
+  // For unit-port connections, use standard centerSpacingMm-based offsets
+  // to ensure consistent gap regardless of unit port variations.
   const offsetSign = Math.sign(liquidPortOffset - gasPortOffset) || 1;
   return {
     gasOffsetMm: -offsetSign * centerSpacingMm / 2,
@@ -1751,204 +1760,6 @@ function anchorGuideRouteStart(
   return anchored;
 }
 
-function enforceStartRouteBearing(
-  routePoints: Point2D[],
-  startPoint: Point2D | null,
-  startDirection: Point2D | null,
-  takeoffLengthMm: number,
-): Point2D[] {
-  if (!startPoint || !startDirection) {
-    return routePoints;
-  }
-
-  const anchored = anchorGuideRouteStart(routePoints, startPoint);
-  const minimumTakeoffMm = Math.max(10, Math.min(64, takeoffLengthMm));
-  if (anchored.length < 2) {
-    return dedupeConsecutivePoints([
-      startPoint,
-      add(startPoint, scale(startDirection, minimumTakeoffMm)),
-    ]);
-  }
-
-  const nextPoint = anchored[1]!;
-  const projectedDistance = dot(subtract(nextPoint, startPoint), startDirection);
-  const targetDistance = Math.max(projectedDistance, minimumTakeoffMm);
-  const takeoffPoint = add(startPoint, scale(startDirection, targetDistance));
-
-  const nextDirection = normalizeDirection(subtract(nextPoint, startPoint));
-  const directionDot = clamp(dot(nextDirection, startDirection), -1, 1);
-  const deviationDeg = Math.acos(directionDot) * (180 / Math.PI);
-  const shouldLogDeviation = isPipeRoutingDebugEnabled() && deviationDeg > 2;
-  if (shouldLogDeviation) {
-    // eslint-disable-next-line no-console
-    console.debug("[pipe-routing] START_BEARING_CORRECTION", {
-      deviationDeg,
-      startPoint,
-      nextPoint,
-      startDirection,
-      takeoffLengthMm: minimumTakeoffMm,
-    });
-  }
-
-  if (
-    Math.hypot(takeoffPoint.x - nextPoint.x, takeoffPoint.y - nextPoint.y) <= 0.2
-  ) {
-    return anchored;
-  }
-
-  return dedupeConsecutivePoints([
-    anchored[0]!,
-    takeoffPoint,
-    ...anchored.slice(1),
-  ]);
-}
-
-/**
- * Corrects the start of a field-pipe route to ensure:
- * 1. The pipe starts from the exact branch kit outlet position (fieldPoint)
- * 2. The initial segment follows the branch kit outlet direction
- * 3. A smooth junction is created to transition to the parallel route
- *
- * The problem: When the route direction differs from the branch kit direction,
- * offsetPolyline offsets perpendicular to the route direction, causing
- * the parallel route to start from a different lateral position than the
- * branch kit outlet. This creates a visible misalignment in 2D.
- *
- * The solution: Find where the outlet-aligned takeoff segment intersects with
- * the parallel route, and create a smooth transition at that point.
- */
-function correctFieldPipeStartRoute(
-  routePoints: Point2D[],
-  fieldPoint: Point2D | null,
-  direction: Point2D | null,
-  parallelBasePoints: Point2D[],
-  takeoffLengthMm: number,
-): Point2D[] {
-  if (!fieldPoint || !direction || routePoints.length < 2) {
-    return routePoints;
-  }
-
-  const minimumTakeoffMm = Math.max(10, Math.min(64, takeoffLengthMm));
-
-  // Find the best junction point on the parallel route
-  // Look for the point on parallel base route that's closest to the
-  // projected takeoff line (fieldPoint + t * direction)
-  if (parallelBasePoints.length < 2) {
-    // Fall back to simple bearing enforcement
-    const takeoffEnd = add(fieldPoint, scale(direction, minimumTakeoffMm));
-    const firstRoutePt = routePoints[0]!;
-    const distToFirst = Math.hypot(
-      takeoffEnd.x - firstRoutePt.x,
-      takeoffEnd.y - firstRoutePt.y,
-    );
-    if (distToFirst <= 0.5) {
-      return dedupeConsecutivePoints([fieldPoint, ...routePoints]);
-    }
-    return dedupeConsecutivePoints([
-      fieldPoint,
-      takeoffEnd,
-      ...routePoints.slice(1),
-    ]);
-  }
-
-  // Find where the takeoff line intersects or comes closest to the parallel route
-  let bestJunctionPoint: Point2D | null = null;
-  let bestJunctionDistance = Number.POSITIVE_INFINITY;
-  let bestParallelIndex = -1;
-
-  // Check each segment of the parallel route for intersection or closest approach
-  for (let i = 0; i < parallelBasePoints.length - 1; i++) {
-    const segStart = parallelBasePoints[i]!;
-    const segEnd = parallelBasePoints[i + 1]!;
-    const segDir = subtract(segEnd, segStart);
-    const segLength = Math.hypot(segDir.x, segDir.y);
-    if (segLength < 0.1) continue;
-
-    const segNormDir = { x: segDir.x / segLength, y: segDir.y / segLength };
-
-    // Find intersection of takeoff ray with this segment's line
-    const determinant = direction.x * segDir.y - direction.y * segDir.x;
-    if (Math.abs(determinant) > 0.0001) {
-      const delta = subtract(segStart, fieldPoint);
-      const t = (delta.x * segDir.y - delta.y * segDir.x) / determinant;
-      const u = (delta.x * direction.y - delta.y * direction.x) / determinant;
-
-      if (t >= minimumTakeoffMm * 0.5 && u >= -0.1 && u <= 1.1) {
-        const intersectionPoint = add(fieldPoint, scale(direction, t));
-        // Clamp to segment
-        const clampedU = Math.max(0, Math.min(1, u));
-        const clampedPoint = add(segStart, scale(segNormDir, clampedU * segLength));
-        const distFromLine = Math.hypot(
-          intersectionPoint.x - clampedPoint.x,
-          intersectionPoint.y - clampedPoint.y,
-        );
-
-        if (distFromLine < bestJunctionDistance || 
-            (Math.abs(distFromLine - bestJunctionDistance) < 0.5 && t < bestJunctionDistance)) {
-          bestJunctionDistance = distFromLine;
-          bestJunctionPoint = clampedPoint;
-          bestParallelIndex = i + 1;
-        }
-      }
-    }
-
-    // Also check closest approach to segment endpoints
-    const projToStart = dot(subtract(segStart, fieldPoint), direction);
-    if (projToStart >= minimumTakeoffMm * 0.5) {
-      const projectedPoint = add(fieldPoint, scale(direction, projToStart));
-      const lateralDist = Math.hypot(
-        projectedPoint.x - segStart.x,
-        projectedPoint.y - segStart.y,
-      );
-      if (lateralDist < bestJunctionDistance) {
-        bestJunctionDistance = lateralDist;
-        bestJunctionPoint = segStart;
-        bestParallelIndex = i;
-      }
-    }
-  }
-
-  // If we found a good junction point, use it
-  if (bestJunctionPoint && bestParallelIndex >= 0 && bestJunctionDistance < 100) {
-    const takeoffDistance = Math.max(
-      minimumTakeoffMm,
-      dot(subtract(bestJunctionPoint, fieldPoint), direction),
-    );
-    const takeoffEnd = add(fieldPoint, scale(direction, takeoffDistance));
-
-    // Check if takeoffEnd is close to bestJunctionPoint
-    const takeoffToJunction = Math.hypot(
-      takeoffEnd.x - bestJunctionPoint.x,
-      takeoffEnd.y - bestJunctionPoint.y,
-    );
-
-    if (takeoffToJunction <= 1.5) {
-      // Takeoff end is very close to junction - use junction directly
-      return dedupeConsecutivePoints([
-        fieldPoint,
-        bestJunctionPoint,
-        ...parallelBasePoints.slice(bestParallelIndex),
-      ]);
-    }
-
-    // Need an explicit junction bend
-    return dedupeConsecutivePoints([
-      fieldPoint,
-      takeoffEnd,
-      bestJunctionPoint,
-      ...parallelBasePoints.slice(bestParallelIndex),
-    ]);
-  }
-
-  // Fall back to original bearing enforcement
-  const takeoffEnd = add(fieldPoint, scale(direction, minimumTakeoffMm));
-  return dedupeConsecutivePoints([
-    fieldPoint,
-    takeoffEnd,
-    ...routePoints.slice(1),
-  ]);
-}
-
 function buildResolvedPipeRoutePoints(
   options: {
     gasGuidePoints: Point2D[];
@@ -1972,13 +1783,48 @@ function buildResolvedPipeRoutePoints(
     centerSpacingMm,
     bendRadiusMm,
   } = options;
-  const enforcedTakeoffLengthMm = Math.max(10, centerSpacingMm * 0.85);
-  const shouldEnforceStartBearing =
-    startBundleConnection?.connectionKind === 'field-pipe';
-  const shouldRoundGuidePaths = shouldEnforceStartBearing;
+  
+  const isFieldPipeStart = startBundleConnection?.connectionKind === 'field-pipe';
+  const isUnitPortStart = startBundleConnection?.connectionKind === 'unit-port';
   const preserveFieldStartSegment = Boolean(startBundleConnection);
 
   // Simplify guide paths
+  const simplifiedBundleGuidePoints = simplifyNearlyCollinearPoints(
+    bundleGuidePoints,
+    { preserveFirstSegment: preserveFieldStartSegment },
+  );
+
+  // For FIELD-PIPE connections: Use a simple approach -
+  // Translate the bundle center route to align with gas/liquid outlet centers.
+  // This ensures the pipe centerline passes through the branch kit outlet center.
+  if (isFieldPipeStart && startBundleConnection && simplifiedBundleGuidePoints.length >= 1) {
+    const roundedBundleCenter = roundPolylineCorners(simplifiedBundleGuidePoints, bendRadiusMm);
+    
+    if (roundedBundleCenter.length >= 1) {
+      const bundleStartPoint = roundedBundleCenter[0]!;
+      
+      // Compute translation to move bundle center route to start at gas/liquid field points
+      const gasTranslation = subtract(startBundleConnection.gasFieldPoint, bundleStartPoint);
+      const liquidTranslation = subtract(startBundleConnection.liquidFieldPoint, bundleStartPoint);
+      
+      // Translate entire route to align centerline with outlet center
+      let gasRoutePoints = roundedBundleCenter.map((pt) => add(pt, gasTranslation));
+      let liquidRoutePoints = roundedBundleCenter.map((pt) => add(pt, liquidTranslation));
+      
+      // Anchor end points if end connection exists
+      if (endBundleConnection) {
+        gasRoutePoints = anchorGuideRouteEnd(gasRoutePoints, endBundleConnection.gasFieldPoint);
+        liquidRoutePoints = anchorGuideRouteEnd(liquidRoutePoints, endBundleConnection.liquidFieldPoint);
+      }
+      
+      return {
+        gasRoutePoints: dedupeConsecutivePoints(gasRoutePoints),
+        liquidRoutePoints: dedupeConsecutivePoints(liquidRoutePoints),
+      };
+    }
+  }
+
+  // For UNIT-PORT connections: Use the existing offset-based approach
   const simplifiedGasGuidePoints = simplifyNearlyCollinearPoints(
     gasGuidePoints,
     { preserveFirstSegment: preserveFieldStartSegment },
@@ -1987,20 +1833,14 @@ function buildResolvedPipeRoutePoints(
     liquidGuidePoints,
     { preserveFirstSegment: preserveFieldStartSegment },
   );
-  const simplifiedBundleGuidePoints = simplifyNearlyCollinearPoints(
-    bundleGuidePoints,
-    { preserveFirstSegment: preserveFieldStartSegment },
-  );
 
   // Round guides only for field-pipe starts; skip for unit-port (preserves 45-degree)
-  const processedGasGuidePoints = shouldRoundGuidePaths && simplifiedGasGuidePoints.length >= 1
+  const processedGasGuidePoints = simplifiedGasGuidePoints.length >= 1
     ? dedupeConsecutivePoints(roundPolylineCorners(simplifiedGasGuidePoints, bendRadiusMm))
     : simplifiedGasGuidePoints;
-  const processedLiquidGuidePoints = shouldRoundGuidePaths && simplifiedLiquidGuidePoints.length >= 1
+  const processedLiquidGuidePoints = simplifiedLiquidGuidePoints.length >= 1
     ? dedupeConsecutivePoints(roundPolylineCorners(simplifiedLiquidGuidePoints, bendRadiusMm))
     : simplifiedLiquidGuidePoints;
-
-  const isUnitPortStart = startBundleConnection?.connectionKind === 'unit-port';
 
   // For unit-port starts, only keep the 45-degree takeoff segment (first 3 points)
   // from the guide. The rest comes from centerline-parallel routes for constant spacing.
@@ -2053,36 +1893,11 @@ function buildResolvedPipeRoutePoints(
     endBundleConnection?.liquidFieldPoint ?? null,
   );
 
-  // Enforce start bearing only for field-pipe
-  // For field-pipe connections, we need to correct the lateral position of the junction
-  // point to ensure the pipe starts from the exact branch kit outlet position and smoothly
-  // transitions to the parallel route.
-  const correctedGasRoutePoints = shouldEnforceStartBearing
-    ? correctFieldPipeStartRoute(
-        anchoredGasRoutePoints,
-        startBundleConnection?.gasFieldPoint ?? null,
-        startBundleConnection
-          ? startBundleConnection.gasDirection ?? startBundleConnection.direction
-          : null,
-        gasParallelBasePoints,
-        enforcedTakeoffLengthMm,
-      )
-    : anchoredGasRoutePoints;
-  const correctedLiquidRoutePoints = shouldEnforceStartBearing
-    ? correctFieldPipeStartRoute(
-        anchoredLiquidRoutePoints,
-        startBundleConnection?.liquidFieldPoint ?? null,
-        startBundleConnection
-          ? startBundleConnection.liquidDirection ?? startBundleConnection.direction
-          : null,
-        liquidParallelBasePoints,
-        enforcedTakeoffLengthMm,
-      )
-    : anchoredLiquidRoutePoints;
-
+  // For unit-port connections, use the anchored routes directly
+  // (Field-pipe connections are handled above with the translation approach)
   return {
-    gasRoutePoints: correctedGasRoutePoints,
-    liquidRoutePoints: correctedLiquidRoutePoints,
+    gasRoutePoints: anchoredGasRoutePoints,
+    liquidRoutePoints: anchoredLiquidRoutePoints,
   };
 }
 
