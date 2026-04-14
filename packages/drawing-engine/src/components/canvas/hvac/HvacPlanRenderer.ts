@@ -1891,6 +1891,23 @@ export class HvacPlanRenderer {
             "hvac-snap-end",
           );
         }
+        const stabilizerRadiusPx = Math.max(
+          toPx(visual.bounds.width / 2),
+          toPx(visual.bounds.height / 2),
+        ) + toPx(outerDiameterMm + 10);
+        objects.push(new fabric.Rect({
+          left: 0,
+          top: 0,
+          width: stabilizerRadiusPx * 2,
+          height: stabilizerRadiusPx * 2,
+          originX: "center",
+          originY: "center",
+          fill: "transparent",
+          strokeWidth: 0,
+          selectable: false,
+          evented: false,
+        }));
+        
         break;
       }
       case "refrigerant-pipe-pair": {
@@ -2123,6 +2140,23 @@ export class HvacPlanRenderer {
           "hvac-detail",
           "round",
         );
+        const stabilizerRadiusPx = Math.max(
+          toPx(visual.bounds.width / 2),
+          toPx(visual.bounds.height / 2),
+        ) + toPx(Math.max(visual.gasOuterDiameterMm, visual.liquidOuterDiameterMm) + 10);
+        objects.push(new fabric.Rect({
+          left: 0,
+          top: 0,
+          width: stabilizerRadiusPx * 2,
+          height: stabilizerRadiusPx * 2,
+          originX: "center",
+          originY: "center",
+          fill: "transparent",
+          strokeWidth: 0,
+          selectable: false,
+          evented: false,
+        }));
+        
         break;
       }
       case "refrigerant-branch-kit": {

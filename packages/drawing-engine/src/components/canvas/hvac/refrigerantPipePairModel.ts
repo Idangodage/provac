@@ -986,9 +986,45 @@ function resolveInlineBranchKitCenter(
   if (element.properties.branchKitPlacementMode !== 'inline-pipe-run') {
     return null;
   }
-  const anchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
-  if (!anchorPoint) {
+  const initialAnchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
+  if (!initialAnchorPoint) {
     return null;
+  }
+  let anchorPoint: Point2D = initialAnchorPoint;
+
+  const snapSegmentStart = normalizePoint(element.properties.branchKitSnapSegmentStart);
+  const snapSegmentEnd = normalizePoint(element.properties.branchKitSnapSegmentEnd);
+  const snapProjectedDistanceMm =
+    typeof element.properties.branchKitSnapProjectedDistanceMm === "number" &&
+    Number.isFinite(element.properties.branchKitSnapProjectedDistanceMm)
+      ? element.properties.branchKitSnapProjectedDistanceMm
+      : null;
+  if (snapSegmentStart && snapSegmentEnd) {
+    const segmentDelta = subtract(snapSegmentEnd, snapSegmentStart);
+    const segmentLengthMm = Math.hypot(segmentDelta.x, segmentDelta.y);
+    if (segmentLengthMm > 0.2) {
+      const segmentDirection = {
+        x: segmentDelta.x / segmentLengthMm,
+        y: segmentDelta.y / segmentLengthMm,
+      };
+      const projectedMm =
+        snapProjectedDistanceMm !== null
+          ? Math.min(segmentLengthMm, Math.max(0, snapProjectedDistanceMm))
+          : Math.min(
+              segmentLengthMm,
+              Math.max(
+                0,
+                dot(
+                  subtract(initialAnchorPoint, snapSegmentStart),
+                  segmentDirection,
+                ),
+              ),
+            );
+      anchorPoint = add(
+        snapSegmentStart,
+        { x: segmentDirection.x * projectedMm, y: segmentDirection.y * projectedMm },
+      );
+    }
   }
   const canonicalAnchorLocal = resolveRefrigerantBranchKitInlineAnchorLocal(
     model,
@@ -1717,19 +1753,11 @@ function mergeGuideRouteWithParallelRoute(
   ) {
     const guideJoinPoint = guidePoints[bestGuideIndex]!;
     const parallelJoinPoint = parallelPoints[bestParallelIndex]!;
-    const splicePoint =
-      bestDistance <= 0.2
-        ? guideJoinPoint
-        : {
-            x: (guideJoinPoint.x + parallelJoinPoint.x) / 2,
-            y: (guideJoinPoint.y + parallelJoinPoint.y) / 2,
-          };
+    
     return dedupeConsecutivePoints([
       ...guidePoints.slice(0, bestGuideIndex),
-      splicePoint,
-      ...parallelPoints.slice(
-        bestDistance <= 0.2 ? bestParallelIndex + 1 : bestParallelIndex,
-      ),
+      parallelJoinPoint,
+      ...parallelPoints.slice(bestParallelIndex + 1),
     ]);
   }
 
@@ -1857,14 +1885,18 @@ function buildResolvedPipeRoutePoints(
     startBundleConnection,
     centerSpacingMm,
   );
-  const roundedBundleCenter = simplifiedBundleGuidePoints.length >= 1
-    ? roundPolylineCorners(simplifiedBundleGuidePoints, bendRadiusMm)
+  const sharpGasParallelBasePoints = simplifiedBundleGuidePoints.length >= 1
+    ? dedupeConsecutivePoints(offsetPolyline(simplifiedBundleGuidePoints, gasOffsetMm))
     : [];
-  const gasParallelBasePoints = roundedBundleCenter.length >= 1
-    ? dedupeConsecutivePoints(offsetPolyline(roundedBundleCenter, gasOffsetMm))
+  const sharpLiquidParallelBasePoints = simplifiedBundleGuidePoints.length >= 1
+    ? dedupeConsecutivePoints(offsetPolyline(simplifiedBundleGuidePoints, liquidOffsetMm))
     : [];
-  const liquidParallelBasePoints = roundedBundleCenter.length >= 1
-    ? dedupeConsecutivePoints(offsetPolyline(roundedBundleCenter, liquidOffsetMm))
+
+  const gasParallelBasePoints = sharpGasParallelBasePoints.length >= 1
+    ? dedupeConsecutivePoints(roundPolylineCorners(sharpGasParallelBasePoints, bendRadiusMm))
+    : [];
+  const liquidParallelBasePoints = sharpLiquidParallelBasePoints.length >= 1
+    ? dedupeConsecutivePoints(roundPolylineCorners(sharpLiquidParallelBasePoints, bendRadiusMm))
     : [];
 
   // Merge guide geometry (45-degree at start) with parallel routes (constant spacing)
