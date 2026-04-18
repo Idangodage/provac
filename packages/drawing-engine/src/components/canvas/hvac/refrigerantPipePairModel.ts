@@ -1083,7 +1083,7 @@ function computeCompactBendRadius(
 }
 
 function computeConnectionOverlapLength(maxOuterDiameterMm: number): number {
-  return 0;
+  return Math.max(2.5, Math.min(6, maxOuterDiameterMm * 0.2));
 }
 
 function computeExposedConnectionTailLength(outerDiameterMm: number): number {

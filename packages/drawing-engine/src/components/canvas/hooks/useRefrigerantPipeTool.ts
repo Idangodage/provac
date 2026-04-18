@@ -58,27 +58,10 @@ function distance(a: Point2D, b: Point2D): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function resolveBundleSnapDistanceMm(
-  bundle: RefrigerantPipeBundleConnection,
-  point: Point2D,
-): number {
-  return Math.min(
-    distance(point, bundle.gasPoint),
-    distance(point, bundle.liquidPoint),
-    distance(point, bundle.point),
-  );
-}
-
 function resolveBundleSnapPoint(
   bundle: RefrigerantPipeBundleConnection,
   cursorPoint: Point2D,
 ): Point2D {
-  if (bundle.connectionKind === 'unit-port') {
-    // Pipe-pair routing datum for unit ports must stay on bundle centerline.
-    // Hover selection still controls guideReference (gas/liquid lead), but the
-    // authored route points should not start at an individual pipe port.
-    return bundle.point;
-  }
   const selectedPipe = resolveBundleHoverSelection(bundle, cursorPoint);
   if (selectedPipe === 'gas') {
     return bundle.gasPoint;
@@ -444,60 +427,17 @@ export function useRefrigerantPipeTool(
         ? modelBundle
         : null;
 
-      const candidates: Array<{
-        bundle: RefrigerantPipeBundleConnection;
-        source: RefrigerantPipeSnapSource;
-        distanceMm: number;
-        sourceRank: number;
-      }> = [];
+      // Routing datum must always be centerline model data. Use rendered targets
+      // only as fallback when model targets are not available.
       if (modelCandidate) {
-        candidates.push({
-          bundle: modelCandidate,
-          source: 'model',
-          distanceMm: resolveBundleSnapDistanceMm(modelCandidate, point),
-          sourceRank: 0,
-        });
-      }
-      if (renderedCandidate) {
-        candidates.push({
-          bundle: renderedCandidate,
-          source: 'rendered',
-          distanceMm: resolveBundleSnapDistanceMm(renderedCandidate, point),
-          sourceRank: 1,
-        });
-      }
-      if (visibleFieldCandidate) {
-        candidates.push({
-          bundle: visibleFieldCandidate,
-          source: 'visible',
-          distanceMm: resolveBundleSnapDistanceMm(visibleFieldCandidate, point),
-          sourceRank: 2,
-        });
-      }
-      const compareCandidates = (
-        a: { distanceMm: number; sourceRank: number },
-        b: { distanceMm: number; sourceRank: number },
-      ): number => {
-        const distanceDelta = a.distanceMm - b.distanceMm;
-        if (Math.abs(distanceDelta) > 0.2) {
-          return distanceDelta;
-        }
-        return a.sourceRank - b.sourceRank;
-      };
-
-      const nearestUnitPortCandidate = candidates
-        .filter((candidate) => candidate.bundle.connectionKind === 'unit-port')
-        .sort(compareCandidates)[0];
-      const nearestAnyCandidate = candidates.sort(compareCandidates)[0];
-      // Prefer unit-port snaps when available near the cursor so field-pipe
-      // endpoints do not "steal" the snap from indoor unit ports.
-      const selectedCandidate =
-        nearestUnitPortCandidate && nearestUnitPortCandidate.distanceMm <= thresholdMm * 1.15
-          ? nearestUnitPortCandidate
-          : nearestAnyCandidate;
-      if (selectedCandidate) {
-        bundle = selectedCandidate.bundle;
-        source = selectedCandidate.source;
+        bundle = modelCandidate;
+        source = 'model';
+      } else if (renderedCandidate) {
+        bundle = renderedCandidate;
+        source = 'rendered';
+      } else if (visibleFieldCandidate) {
+        bundle = visibleFieldCandidate;
+        source = 'visible';
       } else {
         bundle = null;
         source = null;
@@ -516,10 +456,7 @@ export function useRefrigerantPipeTool(
           return {
             ...bundle,
             point: resolveBundleSnapPoint(bundle, point),
-            guideReference:
-              bundle.connectionKind === 'unit-port'
-                ? (selectedPipe ?? bundle.guideReference)
-                : bundle.guideReference,
+            guideReference: selectedPipe ?? bundle.guideReference,
           };
         })()
       : null;

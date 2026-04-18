@@ -52,27 +52,8 @@ import { snapPointToGrid } from "../snapping";
 import {
   isRefrigerantPipeElementType,
   translateRefrigerantPipeElementProperties,
-  resolveUnitPortBundle,
-  resolveBundleTargetsForElement,
-  type RefrigerantPipeBundleConnection,
-  type RefrigerantPipeConnection,
 } from "../hvac/refrigerantPipePairModel";
 import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
-import {
-  findConnectedPipeElements,
-  getFixedEndInfo,
-  getExistingRoutePoints,
-  getStoredLeadPivotPoint,
-  buildReroutedPipePairProperties,
-  buildReroutedSinglePipeProperties,
-  buildReroutedPipeElementFrame,
-  getMovingEndBundleConnection,
-  getMovingEndPipeConnection,
-} from "../hvac/pipeConnectionResolver";
-import {
-  reroutePipeBundleCenterline,
-  reroutePipeCenterline,
-} from "../hvac/pipeRouteOptimizer";
 import type { WallRenderer } from "../wall/WallRenderer";
 import type { ObjectRenderer } from "../object/ObjectRenderer";
 import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
@@ -465,7 +446,6 @@ export function useCanvasEventBinding(
 ): UseCanvasEventBindingResult {
   const latestOptionsRef = useRef(options);
   latestOptionsRef.current = options;
-  const liveUpdatedHvacDragIdsRef = useRef<Set<string>>(new Set());
   const { fabricRef, outerRef, wheelRafId } = options;
 
   useEffect(() => {
@@ -1440,211 +1420,6 @@ export function useCanvasEventBinding(
       setWallContextMenu({ wallId, x, y });
     };
 
-    // ── Reroute connected pipes when a unit (or branch-kit) moves ──
-    // Finds all pipe elements connected to the moved element and computes
-    // a new optimal route from the fixed anchor to the new port position.
-    // Handles three cases:
-    //   1. Unit moves → pipes connected via unit-port reroute from field-pipe anchor
-    //   2. Branch-kit moves → pipes connected via field-pipe reroute from unit-port anchor
-    //   3. Both ends are unit-ports → the stationary unit is the anchor
-    const rerouteConnectedPipes = (
-      movedElementId: string,
-      movedElement: HvacElement,
-      allElements: readonly HvacElement[],
-      updateFn: (
-        id: string,
-        updates: Partial<HvacElement>,
-        options?: { skipHistory?: boolean },
-      ) => void,
-      skipHistory: boolean,
-    ) => {
-      const connectedPipes = findConnectedPipeElements(movedElementId, allElements);
-      if (connectedPipes.length === 0) return;
-      const contextElements = allElements.map((candidate) =>
-        candidate.id === movedElementId ? movedElement : candidate,
-      );
-
-      // Resolve all bundle targets from the moved element (works for both
-      // AC units and branch-kits). For a unit this returns one target; for
-      // a branch-kit it may return multiple (inlet, run-outlet, branch-outlet).
-      const movedBundles = resolveBundleTargetsForElement(movedElement);
-      // Also try the simpler unit-port resolver (covers generic port types)
-      const unitBundle = resolveUnitPortBundle(movedElement);
-      const pickClosestBundle = (
-        bundles: readonly RefrigerantPipeBundleConnection[],
-        referencePoint: Point2D | null,
-        resolveCandidatePoint: (bundle: RefrigerantPipeBundleConnection) => Point2D,
-      ): RefrigerantPipeBundleConnection | null => {
-        if (bundles.length === 0) return null;
-        if (!referencePoint) return bundles[0]!;
-        return bundles.reduce((best, candidate) => {
-          const bestPoint = resolveCandidatePoint(best);
-          const candidatePoint = resolveCandidatePoint(candidate);
-          const bestDist = Math.hypot(
-            bestPoint.x - referencePoint.x,
-            bestPoint.y - referencePoint.y,
-          );
-          const candDist = Math.hypot(
-            candidatePoint.x - referencePoint.x,
-            candidatePoint.y - referencePoint.y,
-          );
-          return candDist < bestDist ? candidate : best;
-        });
-      };
-
-      for (const info of connectedPipes) {
-        const { pipeElement, movingEnd, fixedEnd, isPipePair } = info;
-        const fixedInfo = getFixedEndInfo(pipeElement, fixedEnd);
-        if (!fixedInfo) continue;
-        const existingRoute = getExistingRoutePoints(pipeElement);
-        const lockedPivotPoint = getStoredLeadPivotPoint(pipeElement, movingEnd);
-        if (isPipePair) {
-          // Find the best matching bundle for the moving end.
-          // For branch-kits with multiple terminals, match by terminalRole.
-          const existingMovingConn = getMovingEndBundleConnection(pipeElement, movingEnd);
-          let newBundle: RefrigerantPipeBundleConnection | null = null;
-
-          if (existingMovingConn?.terminalRole && movedBundles.length > 0) {
-            newBundle = movedBundles.find(
-              (b) => b.terminalRole === existingMovingConn.terminalRole,
-            ) ?? null;
-          }
-          if (!newBundle && movedBundles.length === 1) {
-            newBundle = movedBundles[0]!;
-          }
-          if (!newBundle && unitBundle) {
-            newBundle = unitBundle;
-          }
-          if (!newBundle && movedBundles.length > 0) {
-            newBundle = pickClosestBundle(
-              movedBundles,
-              existingMovingConn?.point ?? null,
-              (bundle) => bundle.point,
-            );
-          }
-          if (!newBundle) continue;
-
-          const rerouteResult = reroutePipeBundleCenterline({
-            fixedBundlePoint: fixedInfo.point,
-            fixedDirection: fixedInfo.direction,
-            movedBundlePoint: newBundle.point,
-            movedDirection: newBundle.direction,
-            existingRoutePoints: existingRoute,
-            fixedEnd,
-            lockedPivotPoint,
-          });
-
-          const updatedMovingBundle: RefrigerantPipeBundleConnection = {
-            ...newBundle,
-            sourceElementId: movedElementId,
-            guideReference: existingMovingConn?.guideReference ?? newBundle.guideReference,
-            terminalRole: existingMovingConn?.terminalRole ?? newBundle.terminalRole,
-          };
-
-          const newProperties = buildReroutedPipePairProperties({
-            existingProperties: pipeElement.properties,
-            movingEnd,
-            newRoutePoints: rerouteResult.routePoints,
-            newMovingEndBundle: updatedMovingBundle,
-            leadPivotPoint: rerouteResult.pivotPoint,
-          });
-          const frame = buildReroutedPipeElementFrame(
-            pipeElement,
-            newProperties,
-            contextElements,
-          );
-
-          updateFn(
-            pipeElement.id,
-            {
-              position: frame.position,
-              width: frame.width,
-              depth: frame.depth,
-              properties: newProperties,
-            },
-            skipHistory ? { skipHistory: true } : undefined,
-          );
-          continue;
-        }
-
-        // Single refrigerant lines: reroute from fixed anchor to moved line port.
-        const existingMovingConn = getMovingEndPipeConnection(pipeElement, movingEnd);
-        if (!existingMovingConn) continue;
-
-        const lineKind =
-          pipeElement.properties.lineKind === "liquid" ? "liquid" : "gas";
-        let newBundle: RefrigerantPipeBundleConnection | null = null;
-        if (movedBundles.length === 1) {
-          newBundle = movedBundles[0]!;
-        }
-        if (!newBundle && unitBundle) {
-          newBundle = unitBundle;
-        }
-        if (!newBundle && movedBundles.length > 0) {
-          newBundle = pickClosestBundle(
-            movedBundles,
-            existingMovingConn.portPoint,
-            (bundle) => (lineKind === "gas" ? bundle.gasPoint : bundle.liquidPoint),
-          );
-        }
-        if (!newBundle) continue;
-
-        const movedPortPoint =
-          lineKind === "gas" ? newBundle.gasPoint : newBundle.liquidPoint;
-        const movedDirection =
-          lineKind === "gas"
-            ? (newBundle.gasDirection ?? newBundle.direction)
-            : (newBundle.liquidDirection ?? newBundle.direction);
-        const movedElevationMm =
-          lineKind === "gas"
-            ? newBundle.gasElevationMm
-            : newBundle.liquidElevationMm;
-
-        const rerouteResult = reroutePipeCenterline({
-          fixedPoint: fixedInfo.point,
-          fixedDirection: fixedInfo.direction,
-          movedPoint: movedPortPoint,
-          movedDirection,
-          existingRoutePoints: existingRoute,
-          fixedEnd,
-          lockedPivotPoint,
-        });
-
-        const updatedMovingConnection: RefrigerantPipeConnection = {
-          ...existingMovingConn,
-          portPoint: movedPortPoint,
-          direction: movedDirection,
-          elevationMm: movedElevationMm,
-          connectionKind: newBundle.connectionKind,
-          sourceElementId: movedElementId,
-        };
-
-        const newProperties = buildReroutedSinglePipeProperties({
-          existingProperties: pipeElement.properties,
-          movingEnd,
-          newRoutePoints: rerouteResult.routePoints,
-          newMovingEndConnection: updatedMovingConnection,
-          leadPivotPoint: rerouteResult.pivotPoint,
-        });
-        const frame = buildReroutedPipeElementFrame(
-          pipeElement,
-          newProperties,
-          contextElements,
-        );
-
-        updateFn(
-          pipeElement.id,
-          {
-            position: frame.position,
-            width: frame.width,
-            depth: frame.depth,
-            properties: newProperties,
-          },
-          skipHistory ? { skipHistory: true } : undefined,
-        );
-      }
-    };
-
     const handleObjectMoving = (
       event: fabric.CanvasEvents["object:moving"],
     ) => {
@@ -1661,7 +1436,6 @@ export function useCanvasEventBinding(
         resolveOpeningWidthMm,
         computePlacement,
         computeHvacPlacement,
-        updateHvacElement,
         handleSelectObjectMoving,
       } = latestOptionsRef.current;
       if (!event.target || tool !== "select") return;
@@ -1767,65 +1541,6 @@ export function useCanvasEventBinding(
         };
         const placement = computeHvacPlacement(movedCenterMm, existing);
         if (placement.valid) {
-          const nextPosition = placement.point;
-          const nextRotation = placement.rotationDeg;
-          const nextRoomId = placement.roomId ?? undefined;
-          const nextWallId = placement.wallId ?? undefined;
-          const nextProperties = placement.placementProperties
-            ? {
-                ...existing.properties,
-                ...placement.placementProperties,
-              }
-            : existing.properties;
-          const changed =
-            Math.abs(existing.position.x - nextPosition.x) > 0.01 ||
-            Math.abs(existing.position.y - nextPosition.y) > 0.01 ||
-            Math.abs(existing.rotation - nextRotation) > 0.01 ||
-            Math.abs(existing.width - placement.widthMm) > 0.01 ||
-            Math.abs(existing.depth - placement.depthMm) > 0.01 ||
-            Math.abs(existing.height - placement.heightMm) > 0.01 ||
-            existing.roomId !== nextRoomId ||
-            existing.wallId !== nextWallId ||
-            nextProperties !== existing.properties;
-
-          if (changed) {
-            updateHvacElement(
-              hvacId,
-              {
-                position: nextPosition,
-                rotation: nextRotation,
-                width: placement.widthMm,
-                depth: placement.depthMm,
-                height: placement.heightMm,
-                roomId: nextRoomId,
-                wallId: nextWallId,
-                properties: nextProperties,
-              },
-              { skipHistory: true },
-            );
-            liveUpdatedHvacDragIdsRef.current.add(hvacId);
-
-            // ── Reroute connected pipes in real-time ──
-            const movedUnit: HvacElement = {
-              ...existing,
-              position: nextPosition,
-              rotation: nextRotation,
-              width: placement.widthMm,
-              depth: placement.depthMm,
-              height: placement.heightMm,
-              roomId: nextRoomId,
-              wallId: nextWallId,
-              properties: nextProperties,
-            };
-            rerouteConnectedPipes(
-              hvacId,
-              movedUnit,
-              hvacElements,
-              updateHvacElement,
-              true, // skipHistory during live drag
-            );
-          }
-
           const inlineAnchorPoint = isRefrigerantBranchKitElement(existing)
             ? normalizeCanvasPoint(
                 placement.placementProperties?.branchKitSnapPoint ??
@@ -2071,7 +1786,6 @@ export function useCanvasEventBinding(
             angle: existing.rotation,
           });
           fabricRef.current?.requestRenderAll();
-          liveUpdatedHvacDragIdsRef.current.delete(hvacId);
           return;
         }
 
@@ -2104,7 +1818,6 @@ export function useCanvasEventBinding(
               "Move blocked: AC equipment cannot be placed there.",
             false,
           );
-          liveUpdatedHvacDragIdsRef.current.delete(hvacId);
           return;
         }
 
@@ -2140,31 +1853,6 @@ export function useCanvasEventBinding(
             wallId: nextWallId,
             properties: nextProperties,
           });
-        } else if (liveUpdatedHvacDragIdsRef.current.has(hvacId)) {
-          // Drag was live-synced with skipHistory; commit one undo checkpoint on release.
-          useSmartDrawingStore.getState().saveToHistory("Update AC equipment");
-        }
-
-        // ── Final reroute of connected pipes on drop ──
-        {
-          const droppedUnit: HvacElement = {
-            ...existing,
-            position: nextPosition,
-            rotation: nextRotation,
-            width: placement.widthMm,
-            depth: placement.depthMm,
-            height: placement.heightMm,
-            roomId: nextRoomId,
-            wallId: nextWallId,
-            properties: nextProperties,
-          };
-          rerouteConnectedPipes(
-            hvacId,
-            droppedUnit,
-            hvacElements,
-            updateHvacElement,
-            false, // commit to history on final drop
-          );
         }
 
         const nextInlineAnchorPoint = isRefrigerantBranchKitElement(existing)
@@ -2188,7 +1876,6 @@ export function useCanvasEventBinding(
           });
         }
         fabricRef.current?.requestRenderAll();
-        liveUpdatedHvacDragIdsRef.current.delete(hvacId);
         return;
       }
       finalizeHandleDrag();
@@ -2231,7 +1918,6 @@ export function useCanvasEventBinding(
       latestOptionsRef.current.stopMiddlePan();
       latestOptionsRef.current.finalizeHandleDrag();
       latestOptionsRef.current.finishOpeningPointerInteraction();
-      liveUpdatedHvacDragIdsRef.current.clear();
     };
 
     const handleSelectDragMouseMove = (event: MouseEvent) => {
@@ -2327,7 +2013,6 @@ export function useCanvasEventBinding(
         cancelAnimationFrame(wheelRafId.current);
         wheelRafId.current = null;
       }
-      liveUpdatedHvacDragIdsRef.current.clear();
     };
   }, [fabricRef, outerRef, wheelRafId]);
 

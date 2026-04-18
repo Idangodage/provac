@@ -2821,7 +2821,7 @@ function createHvacEquipmentMesh(
       break;
     }
     case "refrigerant-pipe": {
-      const visual = buildRefrigerantPipeVisual(element, allElements);
+      const visual = buildRefrigerantPipeVisual(element);
       const insulationColor = "#e6edf2";
       const coreColor = visual.lineKind === "gas" ? "#c5894d" : "#dca25d";
       const chainState = pipeRenderChainStateMap?.get(element.id) ?? null;
