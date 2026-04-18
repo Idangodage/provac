@@ -4008,7 +4008,7 @@ export const useDrawingStore = create<DrawingState>()(
             y: existing.position.y + duplicateOffset.y,
           },
           properties: isRefrigerantPipeElementType(existing.type)
-            ? translateRefrigerantPipeElementProperties(existing.type, existing.properties, duplicateOffset)
+            ? translateRefrigerantPipeElementProperties(existing.type, existing.properties, duplicateOffset, { preserveFieldAnchors: false })
             : existing.properties,
         });
         set((state) => ({

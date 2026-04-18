@@ -8,6 +8,7 @@ import {
   DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_PIPE_GAP_MM,
+  DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM,
   INCH_MM,
 } from './refrigerantPipeDimensions';
 import {
@@ -25,8 +26,9 @@ import {
 } from './refrigerantBranchKitModel';
 
 export const ONE_INCH_MM = INCH_MM;
-export const DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM = ONE_INCH_MM;
+export { DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM };
 export const DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM = 2600;
+// 1-inch gap between outer insulation surfaces
 const REQUIRED_REFRIGERANT_PIPE_GAP_MM = ONE_INCH_MM;
 const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
 
@@ -986,45 +988,9 @@ function resolveInlineBranchKitCenter(
   if (element.properties.branchKitPlacementMode !== 'inline-pipe-run') {
     return null;
   }
-  const initialAnchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
-  if (!initialAnchorPoint) {
+  const anchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
+  if (!anchorPoint) {
     return null;
-  }
-  let anchorPoint: Point2D = initialAnchorPoint;
-
-  const snapSegmentStart = normalizePoint(element.properties.branchKitSnapSegmentStart);
-  const snapSegmentEnd = normalizePoint(element.properties.branchKitSnapSegmentEnd);
-  const snapProjectedDistanceMm =
-    typeof element.properties.branchKitSnapProjectedDistanceMm === "number" &&
-    Number.isFinite(element.properties.branchKitSnapProjectedDistanceMm)
-      ? element.properties.branchKitSnapProjectedDistanceMm
-      : null;
-  if (snapSegmentStart && snapSegmentEnd) {
-    const segmentDelta = subtract(snapSegmentEnd, snapSegmentStart);
-    const segmentLengthMm = Math.hypot(segmentDelta.x, segmentDelta.y);
-    if (segmentLengthMm > 0.2) {
-      const segmentDirection = {
-        x: segmentDelta.x / segmentLengthMm,
-        y: segmentDelta.y / segmentLengthMm,
-      };
-      const projectedMm =
-        snapProjectedDistanceMm !== null
-          ? Math.min(segmentLengthMm, Math.max(0, snapProjectedDistanceMm))
-          : Math.min(
-              segmentLengthMm,
-              Math.max(
-                0,
-                dot(
-                  subtract(initialAnchorPoint, snapSegmentStart),
-                  segmentDirection,
-                ),
-              ),
-            );
-      anchorPoint = add(
-        snapSegmentStart,
-        { x: segmentDirection.x * projectedMm, y: segmentDirection.y * projectedMm },
-      );
-    }
   }
   const canonicalAnchorLocal = resolveRefrigerantBranchKitInlineAnchorLocal(
     model,
@@ -1079,11 +1045,14 @@ function computeCompactBendRadius(
   centerSpacingMm: number,
   maxOuterDiameterMm: number,
 ): number {
-  return Math.max(6, maxOuterDiameterMm * 0.42, centerSpacingMm * 0.12);
+  // Use a small, visually tight bend radius.
+  // The actual inner/outer pipe radii will be adjusted concentrically
+  // to maintain constant gap through bends.
+  return Math.max(6, maxOuterDiameterMm * 0.5, centerSpacingMm * 0.4);
 }
 
 function computeConnectionOverlapLength(maxOuterDiameterMm: number): number {
-  return 0;
+  return Math.max(2.5, Math.min(6, maxOuterDiameterMm * 0.2));
 }
 
 function computeExposedConnectionTailLength(outerDiameterMm: number): number {
@@ -1310,23 +1279,13 @@ function resolveParallelBundleOffsets(
   const gasPortOffset = dot(subtract(startBundleConnection.gasFieldPoint, bundleCenter), perpDir);
   const liquidPortOffset = dot(subtract(startBundleConnection.liquidFieldPoint, bundleCenter), perpDir);
 
-  // For field-pipe connections (branch kits), use the ACTUAL port offsets.
-  // This ensures offset calculations align with the exact branch kit outlet positions.
-  // The parallel route will then start from the correct positions when the first
-  // segment direction matches the branch kit direction.
-  if (startBundleConnection.connectionKind === 'field-pipe') {
-    return {
-      gasOffsetMm: gasPortOffset,
-      liquidOffsetMm: liquidPortOffset,
-    };
-  }
-
-  // For unit-port connections, use standard centerSpacingMm-based offsets
-  // to ensure consistent gap regardless of unit port variations.
-  const offsetSign = Math.sign(liquidPortOffset - gasPortOffset) || 1;
+  // Use ACTUAL port offsets for both field-pipe and unit-port connections.
+  // This ensures pipe centerlines align exactly with the connection points
+  // (gasFieldPoint / liquidFieldPoint) rather than using a generic centerSpacingMm
+  // that may differ from the actual port spacing (e.g., 42mm vs 44.45mm).
   return {
-    gasOffsetMm: -offsetSign * centerSpacingMm / 2,
-    liquidOffsetMm: offsetSign * centerSpacingMm / 2,
+    gasOffsetMm: gasPortOffset,
+    liquidOffsetMm: liquidPortOffset,
   };
 }
 
@@ -1753,11 +1712,19 @@ function mergeGuideRouteWithParallelRoute(
   ) {
     const guideJoinPoint = guidePoints[bestGuideIndex]!;
     const parallelJoinPoint = parallelPoints[bestParallelIndex]!;
-    
+    const splicePoint =
+      bestDistance <= 0.2
+        ? guideJoinPoint
+        : {
+            x: (guideJoinPoint.x + parallelJoinPoint.x) / 2,
+            y: (guideJoinPoint.y + parallelJoinPoint.y) / 2,
+          };
     return dedupeConsecutivePoints([
       ...guidePoints.slice(0, bestGuideIndex),
-      parallelJoinPoint,
-      ...parallelPoints.slice(bestParallelIndex + 1),
+      splicePoint,
+      ...parallelPoints.slice(
+        bestDistance <= 0.2 ? bestParallelIndex + 1 : bestParallelIndex,
+      ),
     ]);
   }
 
@@ -1881,22 +1848,29 @@ function buildResolvedPipeRoutePoints(
     : processedLiquidGuidePoints;
 
   // Compute centerline-parallel base routes (constant spacing through bends)
+  // Key: offset the straight-line guide FIRST, then round with the SAME radius.
+  // This maintains consistent visual appearance and parallel pipe geometry.
   const { gasOffsetMm, liquidOffsetMm } = resolveParallelBundleOffsets(
     startBundleConnection,
     centerSpacingMm,
   );
-  const sharpGasParallelBasePoints = simplifiedBundleGuidePoints.length >= 1
+  
+  // Offset the NON-ROUNDED bundle guide to get straight-line gas/liquid paths
+  const gasOffsetGuide = simplifiedBundleGuidePoints.length >= 1
     ? dedupeConsecutivePoints(offsetPolyline(simplifiedBundleGuidePoints, gasOffsetMm))
     : [];
-  const sharpLiquidParallelBasePoints = simplifiedBundleGuidePoints.length >= 1
+  const liquidOffsetGuide = simplifiedBundleGuidePoints.length >= 1
     ? dedupeConsecutivePoints(offsetPolyline(simplifiedBundleGuidePoints, liquidOffsetMm))
     : [];
-
-  const gasParallelBasePoints = sharpGasParallelBasePoints.length >= 1
-    ? dedupeConsecutivePoints(roundPolylineCorners(sharpGasParallelBasePoints, bendRadiusMm))
+  
+  // Round each pipe's guide with the SAME radius for visual consistency.
+  // Using identical radius creates parallel curves with constant separation
+  // at entry/exit points of each bend.
+  const gasParallelBasePoints = gasOffsetGuide.length >= 1
+    ? dedupeConsecutivePoints(roundPolylineCorners(gasOffsetGuide, bendRadiusMm))
     : [];
-  const liquidParallelBasePoints = sharpLiquidParallelBasePoints.length >= 1
-    ? dedupeConsecutivePoints(roundPolylineCorners(sharpLiquidParallelBasePoints, bendRadiusMm))
+  const liquidParallelBasePoints = liquidOffsetGuide.length >= 1
+    ? dedupeConsecutivePoints(roundPolylineCorners(liquidOffsetGuide, bendRadiusMm))
     : [];
 
   // Merge guide geometry (45-degree at start) with parallel routes (constant spacing)

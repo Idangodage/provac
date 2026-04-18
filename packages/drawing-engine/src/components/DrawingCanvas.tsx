@@ -64,7 +64,26 @@ import {
 import {
   isRefrigerantPipeElementType,
   translateRefrigerantPipeElementProperties,
+  resolveUnitPortBundle,
+  resolveBundleTargetsForElement,
+  type RefrigerantPipeBundleConnection,
+  type RefrigerantPipeConnection,
 } from "./canvas/hvac/refrigerantPipePairModel";
+import {
+  findConnectedPipeElements,
+  getFixedEndInfo,
+  getExistingRoutePoints,
+  getStoredLeadPivotPoint,
+  buildReroutedPipePairProperties,
+  buildReroutedSinglePipeProperties,
+  buildReroutedPipeElementFrame,
+  getMovingEndBundleConnection,
+  getMovingEndPipeConnection,
+} from "./canvas/hvac/pipeConnectionResolver";
+import {
+  reroutePipeBundleCenterline,
+  reroutePipeCenterline,
+} from "./canvas/hvac/pipeRouteOptimizer";
 import {
   installCanvasRenderScheduler,
   restoreCanvasRenderScheduler,
@@ -841,6 +860,10 @@ export function DrawingCanvas({
           continue;
         }
 
+        const movedProps = {
+          ...element.properties,
+          ...(placement.placementProperties ?? {}),
+        };
         updateHvacElement(element.id, {
           position: placement.point,
           rotation: placement.rotationDeg,
@@ -849,11 +872,189 @@ export function DrawingCanvas({
           height: placement.heightMm,
           roomId: placement.roomId ?? undefined,
           wallId: placement.wallId ?? undefined,
-          properties: {
-            ...element.properties,
-            ...(placement.placementProperties ?? {}),
-          },
+          properties: movedProps,
         });
+
+        // Reroute connected pipes after keyboard nudge
+        const movedUnit = {
+          ...element,
+          position: placement.point,
+          rotation: placement.rotationDeg,
+          width: placement.widthMm,
+          depth: placement.depthMm,
+          height: placement.heightMm,
+          roomId: placement.roomId ?? undefined,
+          wallId: placement.wallId ?? undefined,
+          properties: movedProps,
+        };
+        const connectedPipes = findConnectedPipeElements(element.id, hvacElements);
+        const movedBundles = resolveBundleTargetsForElement(movedUnit);
+        const unitBundle = resolveUnitPortBundle(movedUnit);
+        const contextElements = hvacElements.map((candidate) =>
+          candidate.id === element.id ? movedUnit : candidate,
+        );
+        const pickClosestBundle = (
+          bundles: readonly RefrigerantPipeBundleConnection[],
+          referencePoint: Point2D | null,
+          resolveCandidatePoint: (bundle: RefrigerantPipeBundleConnection) => Point2D,
+        ): RefrigerantPipeBundleConnection | null => {
+          if (bundles.length === 0) return null;
+          if (!referencePoint) return bundles[0]!;
+          return bundles.reduce((best, candidate) => {
+            const bestPoint = resolveCandidatePoint(best);
+            const candidatePoint = resolveCandidatePoint(candidate);
+            const bestDist = Math.hypot(
+              bestPoint.x - referencePoint.x,
+              bestPoint.y - referencePoint.y,
+            );
+            const candidateDist = Math.hypot(
+              candidatePoint.x - referencePoint.x,
+              candidatePoint.y - referencePoint.y,
+            );
+            return candidateDist < bestDist ? candidate : best;
+          });
+        };
+
+        for (const info of connectedPipes) {
+          const fixedInfo = getFixedEndInfo(info.pipeElement, info.fixedEnd);
+          if (!fixedInfo) continue;
+          const existingRoute = getExistingRoutePoints(info.pipeElement);
+          const lockedPivotPoint = getStoredLeadPivotPoint(
+            info.pipeElement,
+            info.movingEnd,
+          );
+
+          if (info.isPipePair) {
+            const existingMovingConn = getMovingEndBundleConnection(
+              info.pipeElement,
+              info.movingEnd,
+            );
+            let newBundle: RefrigerantPipeBundleConnection | null = null;
+            if (existingMovingConn?.terminalRole && movedBundles.length > 0) {
+              newBundle =
+                movedBundles.find(
+                  (b) => b.terminalRole === existingMovingConn.terminalRole,
+                ) ?? null;
+            }
+            if (!newBundle && movedBundles.length === 1) newBundle = movedBundles[0]!;
+            if (!newBundle && unitBundle) newBundle = unitBundle;
+            if (!newBundle && movedBundles.length > 0) {
+              newBundle = pickClosestBundle(
+                movedBundles,
+                existingMovingConn?.point ?? null,
+                (bundle) => bundle.point,
+              );
+            }
+            if (!newBundle) continue;
+
+            const rerouteResult = reroutePipeBundleCenterline({
+              fixedBundlePoint: fixedInfo.point,
+              fixedDirection: fixedInfo.direction,
+              movedBundlePoint: newBundle.point,
+              movedDirection: newBundle.direction,
+              existingRoutePoints: existingRoute,
+              fixedEnd: info.fixedEnd,
+              lockedPivotPoint,
+            });
+            const updatedMovingBundle: RefrigerantPipeBundleConnection = {
+              ...newBundle,
+              sourceElementId: element.id,
+              guideReference:
+                existingMovingConn?.guideReference ?? newBundle.guideReference,
+              terminalRole:
+                existingMovingConn?.terminalRole ?? newBundle.terminalRole,
+            };
+            const newProperties = buildReroutedPipePairProperties({
+              existingProperties: info.pipeElement.properties,
+              movingEnd: info.movingEnd,
+              newRoutePoints: rerouteResult.routePoints,
+              newMovingEndBundle: updatedMovingBundle,
+              leadPivotPoint: rerouteResult.pivotPoint,
+            });
+            const frame = buildReroutedPipeElementFrame(
+              info.pipeElement,
+              newProperties,
+              contextElements,
+            );
+            updateHvacElement(info.pipeElement.id, {
+              position: frame.position,
+              width: frame.width,
+              depth: frame.depth,
+              properties: newProperties,
+            });
+            continue;
+          }
+
+          const existingMovingConn = getMovingEndPipeConnection(
+            info.pipeElement,
+            info.movingEnd,
+          );
+          if (!existingMovingConn) continue;
+          const lineKind =
+            info.pipeElement.properties.lineKind === "liquid" ? "liquid" : "gas";
+
+          let newBundle: RefrigerantPipeBundleConnection | null = null;
+          if (movedBundles.length === 1) newBundle = movedBundles[0]!;
+          if (!newBundle && unitBundle) newBundle = unitBundle;
+          if (!newBundle && movedBundles.length > 0) {
+            newBundle = pickClosestBundle(
+              movedBundles,
+              existingMovingConn.portPoint,
+              (bundle) =>
+                lineKind === "gas" ? bundle.gasPoint : bundle.liquidPoint,
+            );
+          }
+          if (!newBundle) continue;
+
+          const movedPortPoint =
+            lineKind === "gas" ? newBundle.gasPoint : newBundle.liquidPoint;
+          const movedDirection =
+            lineKind === "gas"
+              ? (newBundle.gasDirection ?? newBundle.direction)
+              : (newBundle.liquidDirection ?? newBundle.direction);
+          const movedElevationMm =
+            lineKind === "gas"
+              ? newBundle.gasElevationMm
+              : newBundle.liquidElevationMm;
+
+          const rerouteResult = reroutePipeCenterline({
+            fixedPoint: fixedInfo.point,
+            fixedDirection: fixedInfo.direction,
+            movedPoint: movedPortPoint,
+            movedDirection,
+            existingRoutePoints: existingRoute,
+            fixedEnd: info.fixedEnd,
+            lockedPivotPoint,
+          });
+
+          const updatedMovingConnection: RefrigerantPipeConnection = {
+            ...existingMovingConn,
+            portPoint: movedPortPoint,
+            direction: movedDirection,
+            elevationMm: movedElevationMm,
+            connectionKind: newBundle.connectionKind,
+            sourceElementId: element.id,
+          };
+          const newProperties = buildReroutedSinglePipeProperties({
+            existingProperties: info.pipeElement.properties,
+            movingEnd: info.movingEnd,
+            newRoutePoints: rerouteResult.routePoints,
+            newMovingEndConnection: updatedMovingConnection,
+            leadPivotPoint: rerouteResult.pivotPoint,
+          });
+          const frame = buildReroutedPipeElementFrame(
+            info.pipeElement,
+            newProperties,
+            contextElements,
+          );
+          updateHvacElement(info.pipeElement.id, {
+            position: frame.position,
+            width: frame.width,
+            depth: frame.depth,
+            properties: newProperties,
+          });
+        }
+
         movedEquipment = true;
       }
 
