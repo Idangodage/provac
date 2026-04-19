@@ -37,11 +37,16 @@ import {
   MIN_WALL_THICKNESS,
 } from "../types/wall";
 
+import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
+import {
+  buildRefrigerantPipeVisual,
+  resolveRefrigerantPipeSpec,
+  type RefrigerantPipeMaterial,
+} from "./canvas/hvac/refrigerantPipePairModel";
 import {
   circularMeetingFootprintMm,
   squareMeetingFootprintMm,
 } from "./canvas/object/three3d/geometry/meeting-tables";
-import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
 import { fromMillimeters, toMillimeters } from "./canvas/scale";
 
 type PropertyUnit = "mm" | "in" | "ft";
@@ -1368,6 +1373,274 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   const updateProperties = (properties: Record<string, unknown>) => {
     updateHvacElement(selectedEquipment.id, { properties });
   };
+
+  if (selectedEquipment.type === "refrigerant-pipe") {
+    const pipeSpec = resolveRefrigerantPipeSpec(selectedEquipment.properties);
+    const pipeVisual = buildRefrigerantPipeVisual({
+      position: selectedEquipment.position,
+      width: selectedEquipment.width,
+      depth: selectedEquipment.depth,
+      elevation: selectedEquipment.elevation,
+      properties: selectedEquipment.properties,
+    });
+    const routeLengthMm = pipeVisual.segmentVisuals.reduce(
+      (total, segment) => total + segment.lengthMm,
+      0,
+    );
+
+    const applyPipeRouteUpdate = (
+      nextRoutePoints: { x: number; y: number }[],
+      nextMaterials: RefrigerantPipeMaterial[],
+    ) => {
+      const segmentCount = Math.max(0, nextRoutePoints.length - 1);
+      const normalizedMaterials = Array.from(
+        { length: segmentCount },
+        (_, index) =>
+          nextMaterials[index] === "hard" ? "hard" : "flexible",
+      );
+      const nextProperties = {
+        ...selectedEquipment.properties,
+        routePoints: nextRoutePoints,
+        segmentMaterials: normalizedMaterials,
+      };
+      const nextVisual = buildRefrigerantPipeVisual({
+        position: selectedEquipment.position,
+        width: selectedEquipment.width,
+        depth: selectedEquipment.depth,
+        elevation: selectedEquipment.elevation,
+        properties: nextProperties,
+      });
+
+      updateHvacElement(selectedEquipment.id, {
+        position: {
+          x: nextVisual.bounds.minX,
+          y: nextVisual.bounds.minY,
+        },
+        width: nextVisual.bounds.width,
+        depth: nextVisual.bounds.height,
+        height: Math.max(1, nextVisual.outerRadiusMm * 2),
+        properties: nextProperties,
+      });
+    };
+
+    const updateSegmentMaterial = (
+      segmentIndex: number,
+      material: RefrigerantPipeMaterial,
+    ) => {
+      if (
+        segmentIndex < 0 ||
+        segmentIndex >= pipeSpec.segmentMaterials.length
+      ) {
+        return;
+      }
+      const nextMaterials = [...pipeSpec.segmentMaterials];
+      nextMaterials[segmentIndex] = material;
+      applyPipeRouteUpdate(pipeSpec.routePoints, nextMaterials);
+    };
+
+    const insertVertexAtSegment = (segmentIndex: number) => {
+      if (
+        segmentIndex < 0 ||
+        segmentIndex >= pipeSpec.routePoints.length - 1
+      ) {
+        return;
+      }
+      const start = pipeSpec.routePoints[segmentIndex]!;
+      const end = pipeSpec.routePoints[segmentIndex + 1]!;
+      const midpoint = {
+        x: (start.x + end.x) / 2,
+        y: (start.y + end.y) / 2,
+      };
+      const nextRoutePoints = [...pipeSpec.routePoints];
+      nextRoutePoints.splice(segmentIndex + 1, 0, midpoint);
+      const inheritedMaterial =
+        pipeSpec.segmentMaterials[segmentIndex] ?? "flexible";
+      const nextMaterials = [...pipeSpec.segmentMaterials];
+      nextMaterials.splice(segmentIndex + 1, 0, inheritedMaterial);
+      applyPipeRouteUpdate(nextRoutePoints, nextMaterials);
+    };
+
+    const removeVertex = (vertexIndex: number) => {
+      if (
+        vertexIndex <= 0 ||
+        vertexIndex >= pipeSpec.routePoints.length - 1 ||
+        pipeSpec.routePoints.length <= 2
+      ) {
+        return;
+      }
+      const nextRoutePoints = pipeSpec.routePoints.filter(
+        (_, index) => index !== vertexIndex,
+      );
+      const nextMaterials: RefrigerantPipeMaterial[] = [];
+      for (let index = 0; index < pipeSpec.segmentMaterials.length; index += 1) {
+        if (index === vertexIndex - 1) {
+          const left = pipeSpec.segmentMaterials[index] ?? "flexible";
+          const right = pipeSpec.segmentMaterials[index + 1] ?? left;
+          nextMaterials.push(left === right ? left : "flexible");
+          index += 1;
+          continue;
+        }
+        if (index === vertexIndex) {
+          continue;
+        }
+        nextMaterials.push(pipeSpec.segmentMaterials[index] ?? "flexible");
+      }
+      applyPipeRouteUpdate(nextRoutePoints, nextMaterials);
+    };
+
+    const updateVertexCoordinate = (
+      vertexIndex: number,
+      axis: "x" | "y",
+      nextValueMm: number,
+    ) => {
+      if (!Number.isFinite(nextValueMm)) {
+        return;
+      }
+      const nextRoutePoints = pipeSpec.routePoints.map((point, index) =>
+        index === vertexIndex ? { ...point, [axis]: nextValueMm } : point,
+      );
+      applyPipeRouteUpdate(nextRoutePoints, pipeSpec.segmentMaterials);
+    };
+
+    return (
+      <div className="space-y-2">
+        <PropertyRow label="Label">
+          <input
+            type="text"
+            value={selectedEquipment.label}
+            onChange={(e) =>
+              updateHvacElement(selectedEquipment.id, { label: e.target.value })
+            }
+            className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+          />
+        </PropertyRow>
+        <PropertyRow label="Line">
+          <span className="text-sm capitalize text-slate-700">
+            {pipeSpec.lineKind}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Length">
+          <span className="text-sm text-slate-700">
+            {fromMm(routeLengthMm, propertyUnit).toFixed(2)}{" "}
+            {formatUnit(propertyUnit)}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Ports">
+          <span className="text-xs text-slate-600">
+            {pipeSpec.startConnection?.connectionKind ?? "none"} →{" "}
+            {pipeSpec.endConnection?.connectionKind ?? "none"}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Invalid hard segments">
+          <span className="text-sm text-slate-700">
+            {pipeVisual.invalidHardSegmentCount}
+          </span>
+        </PropertyRow>
+
+        <div className="rounded border border-amber-200/80 bg-white/90 p-2">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Segment Materials
+          </div>
+          {pipeSpec.segmentMaterials.length === 0 ? (
+            <p className="text-xs text-slate-500">No editable segments.</p>
+          ) : (
+            <div className="space-y-2">
+              {pipeSpec.segmentMaterials.map((material, index) => (
+                <div
+                  key={`pipe-segment-${index}`}
+                  className="flex items-center gap-2"
+                >
+                  <span className="w-14 text-xs text-slate-500">
+                    S{index + 1}
+                  </span>
+                  <select
+                    value={material}
+                    onChange={(e) =>
+                      updateSegmentMaterial(
+                        index,
+                        e.target.value as RefrigerantPipeMaterial,
+                      )
+                    }
+                    className="w-32 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  >
+                    <option value="hard">Hard copper</option>
+                    <option value="flexible">Flexible copper</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => insertVertexAtSegment(index)}
+                    className="rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-amber-50"
+                  >
+                    Split
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded border border-amber-200/80 bg-white/90 p-2">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Vertices
+          </div>
+          <div className="space-y-2">
+            {pipeSpec.routePoints.map((point, index) => {
+              const endpoint =
+                index === 0 || index === pipeSpec.routePoints.length - 1;
+              return (
+                <div
+                  key={`pipe-vertex-${index}`}
+                  className="flex items-center gap-1"
+                >
+                  <span className="w-10 text-xs text-slate-500">
+                    V{index + 1}
+                  </span>
+                  <input
+                    type="number"
+                    step={propertyUnit === "mm" ? 1 : 0.01}
+                    value={fromMm(point.x, propertyUnit).toFixed(2)}
+                    onChange={(e) =>
+                      updateVertexCoordinate(
+                        index,
+                        "x",
+                        toMm(Number.parseFloat(e.target.value), propertyUnit),
+                      )
+                    }
+                    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  />
+                  <input
+                    type="number"
+                    step={propertyUnit === "mm" ? 1 : 0.01}
+                    value={fromMm(point.y, propertyUnit).toFixed(2)}
+                    onChange={(e) =>
+                      updateVertexCoordinate(
+                        index,
+                        "y",
+                        toMm(Number.parseFloat(e.target.value), propertyUnit),
+                      )
+                    }
+                    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  />
+                  <button
+                    type="button"
+                    disabled={endpoint}
+                    onClick={() => removeVertex(index)}
+                    className={`rounded px-2 py-1 text-xs ${
+                      endpoint
+                        ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"
+                        : "border border-rose-200 bg-white text-rose-600 hover:bg-rose-50"
+                    }`}
+                  >
+                    Delete
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (selectedEquipment.type === "duct") {
     const ductVisual = buildGiDuctVisual(selectedEquipment);

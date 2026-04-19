@@ -8,6 +8,14 @@ import * as fabric from "fabric";
 
 import type { AcEquipmentDefinition } from "../../../data";
 import type { HvacElement, Point2D } from "../../../types";
+import { MM_TO_PX } from "../scale";
+import {
+  getCanvasViewportBounds,
+  hasMeaningfulViewportZoomChange,
+  isViewportBoundsContained,
+  type ViewportBounds,
+} from "../viewportVisibility";
+
 import {
   buildCeilingCassetteModel,
   getCeilingCassettePipePortEndpointLocal,
@@ -19,23 +27,6 @@ import {
   getDuctedIndoorUnitPlanBounds,
 } from "./ductedIndoorUnitModel";
 import { buildGiDuctVisual, isGiDuctElementType } from "./giDuctModel";
-import {
-  buildRefrigerantPipeVisual,
-  buildRefrigerantPipePairVisual,
-  findNearestRefrigerantPipeBundleSegmentTarget,
-  findNearestRefrigerantPipeBundleTarget as findNearestRefrigerantPipeBundleTargetFromModel,
-  isRefrigerantPipeElementType,
-  isRefrigerantPipePairType,
-  type RefrigerantPipeBundleConnection,
-} from "./refrigerantPipePairModel";
-import {
-  buildRefrigerantPipeEndpointRenderStateMap,
-  buildRefrigerantPipeRenderChainStateMap,
-  getVisibleRefrigerantPipeStraightSegmentTargets,
-  type RefrigerantPipeEndpointRenderState,
-  type RefrigerantPipeRenderChainState,
-  type VisibleRefrigerantPipeSegmentTarget,
-} from "./refrigerantPipeRenderState";
 import {
   buildRefrigerantBranchKitViewModel,
   DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
@@ -51,19 +42,28 @@ import {
 } from "./refrigerantBranchKitModel";
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from "./refrigerantPipeDimensions";
 import {
+  buildRefrigerantPipeVisual,
+  buildRefrigerantPipePairVisual,
+  findNearestRefrigerantPipeBundleSegmentTarget,
+  findNearestRefrigerantPipeBundleTarget as findNearestRefrigerantPipeBundleTargetFromModel,
+  isRefrigerantPipeElementType,
+  type RefrigerantPipeBundleConnection,
+} from "./refrigerantPipePairModel";
+import {
+  buildRefrigerantPipeEndpointRenderStateMap,
+  buildRefrigerantPipeRenderChainStateMap,
+  getVisibleRefrigerantPipeStraightSegmentTargets,
+  type RefrigerantPipeEndpointRenderState,
+  type RefrigerantPipeRenderChainState,
+  type VisibleRefrigerantPipeSegmentTarget,
+} from "./refrigerantPipeRenderState";
+import {
   getUnitPipePortEndpointLocal,
   getUnitPipePortRenderMetrics,
   getUnitPipePortSpec,
   GENERIC_PIPE_PORT_TYPES,
   ALL_PIPE_PORT_TYPES,
 } from "./unitPipePortModel";
-import { MM_TO_PX } from "../scale";
-import {
-  getCanvasViewportBounds,
-  hasMeaningfulViewportZoomChange,
-  isViewportBoundsContained,
-  type ViewportBounds,
-} from "../viewportVisibility";
 
 type NamedObject = fabric.Object & {
   id?: string;
@@ -147,20 +147,6 @@ function normalizeAngleDeg(value: number): number {
 function smallestAngleDifferenceDeg(a: number, b: number): number {
   const diff = Math.abs(normalizeAngleDeg(a) - normalizeAngleDeg(b));
   return Math.min(diff, 360 - diff);
-}
-
-function averagePoints(points: Point2D[]): Point2D {
-  if (points.length === 0) {
-    return { x: 0, y: 0 };
-  }
-  const sum = points.reduce(
-    (acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }),
-    { x: 0, y: 0 },
-  );
-  return {
-    x: sum.x / points.length,
-    y: sum.y / points.length,
-  };
 }
 
 function normalizePoint(value: unknown): Point2D | null {
@@ -380,119 +366,6 @@ type PipeTrimWindow = {
   backwardMm: number;
   forwardMm: number;
 };
-
-function appendUniquePolylinePoint(points: Point2D[], point: Point2D): void {
-  const previous = points[points.length - 1];
-  if (
-    previous &&
-    Math.hypot(previous.x - point.x, previous.y - point.y) <= 0.2
-  ) {
-    return;
-  }
-  points.push(point);
-}
-
-function trimPolylineWithWindow(
-  points: Point2D[],
-  window: PipeTrimWindow,
-): Point2D[][] {
-  if (
-    points.length < 2 ||
-    (window.backwardMm <= 0.1 && window.forwardMm <= 0.1)
-  ) {
-    return [points];
-  }
-
-  let bestSegmentIndex = -1;
-  let bestProjectionMm = 0;
-  let bestDistanceMm = 10;
-
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const start = points[index]!;
-    const end = points[index + 1]!;
-    const delta = subtractPoints(end, start);
-    const lengthMm = Math.hypot(delta.x, delta.y);
-    if (lengthMm <= 0.2) {
-      continue;
-    }
-    const segmentDirection = normalizeDirection(delta);
-    if (Math.abs(dotProduct(segmentDirection, window.direction)) < 0.985) {
-      continue;
-    }
-    const projectedMm = Math.min(
-      lengthMm,
-      Math.max(0, dotProduct(subtractPoints(window.anchorPoint, start), segmentDirection)),
-    );
-    const projectedPoint = addPoints(
-      start,
-      scalePoint(segmentDirection, projectedMm),
-    );
-    const distanceMm = Math.hypot(
-      projectedPoint.x - window.anchorPoint.x,
-      projectedPoint.y - window.anchorPoint.y,
-    );
-    if (distanceMm >= bestDistanceMm) {
-      continue;
-    }
-    bestDistanceMm = distanceMm;
-    bestSegmentIndex = index;
-    bestProjectionMm = projectedMm;
-  }
-
-  if (bestSegmentIndex < 0) {
-    return [points];
-  }
-
-  const segmentStart = points[bestSegmentIndex]!;
-  const segmentEnd = points[bestSegmentIndex + 1]!;
-  const segmentDirection = normalizeDirection(
-    subtractPoints(segmentEnd, segmentStart),
-  );
-  const segmentLengthMm = Math.hypot(
-    segmentEnd.x - segmentStart.x,
-    segmentEnd.y - segmentStart.y,
-  );
-  const cutStartMm = Math.max(0, bestProjectionMm - window.backwardMm);
-  const cutEndMm = Math.min(segmentLengthMm, bestProjectionMm + window.forwardMm);
-  if (cutEndMm - cutStartMm <= 0.2) {
-    return [points];
-  }
-
-  const beforePoints: Point2D[] = [];
-  for (let index = 0; index <= bestSegmentIndex; index += 1) {
-    appendUniquePolylinePoint(beforePoints, points[index]!);
-  }
-  if (cutStartMm > 0.2) {
-    appendUniquePolylinePoint(
-      beforePoints,
-      addPoints(segmentStart, scalePoint(segmentDirection, cutStartMm)),
-    );
-  }
-
-  const afterPoints: Point2D[] = [];
-  if (cutEndMm < segmentLengthMm - 0.2) {
-    appendUniquePolylinePoint(
-      afterPoints,
-      addPoints(segmentStart, scalePoint(segmentDirection, cutEndMm)),
-    );
-  }
-  for (let index = bestSegmentIndex + 1; index < points.length; index += 1) {
-    appendUniquePolylinePoint(afterPoints, points[index]!);
-  }
-
-  return [beforePoints, afterPoints].filter((polyline) => polyline.length >= 2);
-}
-
-function trimPolylineWithWindows(
-  points: Point2D[],
-  windows: PipeTrimWindow[],
-): Point2D[][] {
-  return windows.reduce<Point2D[][]>(
-    (polylines, window) =>
-      polylines.flatMap((polyline) => trimPolylineWithWindow(polyline, window)),
-    [points],
-  );
-}
 
 function trimPolylineEndLocal(
   points: Point2D[],
@@ -1476,6 +1349,8 @@ export class HvacPlanRenderer {
       strokeWidthMm: number,
       name: string,
       lineJoin: "round" | "miter" = "round",
+      strokeDashMm?: number[],
+      lineCap: "butt" | "round" = "butt",
     ): void => {
       if (points.length < 2) {
         return;
@@ -1486,9 +1361,12 @@ export class HvacPlanRenderer {
           fill: undefined,
           stroke,
           strokeWidth: Math.max(toPx(strokeWidthMm), 1),
-          strokeLineCap: "butt",
+          strokeLineCap: lineCap,
           strokeLineJoin: lineJoin,
           strokeMiterLimit: lineJoin === "miter" ? 8 : 4,
+          strokeDashArray: strokeDashMm?.map((segmentMm) =>
+            Math.max(1, toPx(segmentMm)),
+          ),
           selectable: false,
           evented: false,
         },
@@ -1740,10 +1618,6 @@ export class HvacPlanRenderer {
           x: point.x - renderCenter.x,
           y: point.y - renderCenter.y,
         });
-        const localOuterPoints =
-          chainState && chainState.renderAsHead
-            ? chainState.outerPoints.map(localizePoint)
-            : visual.localOuterPoints;
         const localStub =
           chainState && chainState.renderAsHead && chainState.absoluteStub
             ? {
@@ -1768,11 +1642,6 @@ export class HvacPlanRenderer {
             ? tailVisual.endConnection
             : visual.endConnection;
         const isChainHiddenMember = Boolean(chainState && !chainState.renderAsHead);
-        const trimSourceIds = new Set<string>([
-          headElement.id,
-          element.id,
-          ...(headVisual.bundleId ? [headVisual.bundleId] : []),
-        ]);
         // Keep plan-view pipe centerlines identical to modeled geometry.
         // Branch-kit trim-window splitting is 2D-only and can introduce
         // segment drift artifacts that are not present in 3D.
@@ -1795,9 +1664,29 @@ export class HvacPlanRenderer {
           : visual.lineKind === "gas"
             ? "#dc2626"
             : "#f97316";
-        const corePointSets = localOuterPointSets.map((polyline, index) =>
-          index === 0 ? buildContinuousCorePoints(localStub, polyline) : polyline,
-        );
+        const materialAwareSegments =
+          !chainState?.renderAsHead && visual.segmentVisuals.length > 0
+            ? visual.segmentVisuals
+            : [];
+        const FLEXIBLE_PIPE_DASH_PATTERN_MM = [12, 10];
+        const insulationPointSets = materialAwareSegments.length > 0
+          ? materialAwareSegments.map((segment, index) =>
+              index === 0
+                ? buildContinuousCorePoints(localStub, segment.localPoints)
+                : segment.localPoints,
+            )
+          : localOuterPointSets.map((polyline, index) =>
+              index === 0 ? buildContinuousCorePoints(localStub, polyline) : polyline,
+            );
+        const corePointSets = materialAwareSegments.length > 0
+          ? materialAwareSegments.map((segment, index) =>
+              index === 0
+                ? buildContinuousCorePoints(localStub, segment.localPoints)
+                : segment.localPoints,
+            )
+          : localOuterPointSets.map((polyline, index) =>
+              index === 0 ? buildContinuousCorePoints(localStub, polyline) : polyline,
+            );
 
         if (options.includeInteractionHalos) {
           createPipeHaloRectSegment(
@@ -1850,35 +1739,109 @@ export class HvacPlanRenderer {
           break;
         }
 
-        localOuterPointSets.forEach((polyline) => {
-          renderPipePolyline(
-            polyline,
-            insulationEdgeStroke,
-            outerDiameterMm + 3,
-            "hvac-detail",
-          );
-          renderPipePolyline(
-            polyline,
-            insulationStroke,
-            outerDiameterMm,
-            "hvac-detail",
-          );
-        });
+        renderPipeRectSegment(
+          localStub,
+          insulationEdgeStroke,
+          outerDiameterMm + 3,
+          "hvac-detail",
+        );
+        renderPipeRectSegment(
+          localStub,
+          insulationStroke,
+          outerDiameterMm,
+          "hvac-detail",
+        );
+        if (materialAwareSegments.length > 0) {
+          insulationPointSets.forEach((polyline) => {
+            renderPipePolyline(
+              polyline,
+              insulationEdgeStroke,
+              outerDiameterMm + 3,
+              "hvac-detail",
+              "round",
+              undefined,
+              "butt",
+            );
+            renderPipePolyline(
+              polyline,
+              insulationStroke,
+              outerDiameterMm,
+              "hvac-detail",
+              "round",
+              undefined,
+              "butt",
+            );
+          });
+        } else {
+          insulationPointSets.forEach((polyline) => {
+            renderPipePolyline(
+              polyline,
+              insulationEdgeStroke,
+              outerDiameterMm + 3,
+              "hvac-detail",
+              "round",
+              undefined,
+              "butt",
+            );
+            renderPipePolyline(
+              polyline,
+              insulationStroke,
+              outerDiameterMm,
+              "hvac-detail",
+              "round",
+              undefined,
+              "butt",
+            );
+          });
+        }
         renderPipeRectSegment(
           localStub,
           coreStroke,
           coreDiameterMm,
           "hvac-detail",
         );
-        corePointSets.forEach((polyline) =>
-          renderPipePolyline(
-            polyline,
-            coreStroke,
-            coreDiameterMm,
-            "hvac-detail",
-            "round",
-          ),
-        );
+        if (materialAwareSegments.length > 0) {
+          corePointSets.forEach((polyline, index) => {
+            const segment = materialAwareSegments[index];
+            if (!segment) {
+              return;
+            }
+            renderPipePolyline(
+              polyline,
+              coreStroke,
+              coreDiameterMm,
+              "hvac-detail",
+              "round",
+              segment.material === "flexible"
+                ? FLEXIBLE_PIPE_DASH_PATTERN_MM
+                : undefined,
+              "round",
+            );
+            if (segment.invalidHardGeometry) {
+              renderPipePolyline(
+                segment.localPoints,
+                "rgba(220,38,38,0.9)",
+                coreDiameterMm + 4,
+                "hvac-detail",
+                "round",
+                undefined,
+                "round",
+              );
+            }
+          });
+        } else {
+          corePointSets.forEach((polyline) =>
+            renderPipePolyline(
+              polyline,
+              coreStroke,
+              coreDiameterMm,
+              "hvac-detail",
+              "round",
+              undefined,
+              "round",
+            ),
+          );
+        }
         const firstOuterPoints = localOuterPointSets[0] ?? [];
         const lastOuterPoints =
           localOuterPointSets[localOuterPointSets.length - 1] ?? [];

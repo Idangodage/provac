@@ -33,7 +33,6 @@ import type {
   SymbolInstance2D,
   Wall,
 } from "../../../types";
-
 import type {
   MarqueeSelectionState,
   OpeningPointerInteraction,
@@ -47,19 +46,21 @@ import {
   clampValue,
   hideActiveSelectionChrome,
 } from "../../DrawingCanvas.types";
-import { MM_TO_PX } from "../scale";
-import { snapPointToGrid } from "../snapping";
+import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
+import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
 import {
   isRefrigerantPipeElementType,
+  resolveRefrigerantPipeUnitPortReconnectionUpdates,
   translateRefrigerantPipeElementProperties,
 } from "../hvac/refrigerantPipePairModel";
-import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
-import type { WallRenderer } from "../wall/WallRenderer";
 import type { ObjectRenderer } from "../object/ObjectRenderer";
-import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
+import { MM_TO_PX } from "../scale";
+import { snapPointToGrid } from "../snapping";
+import type { WallRenderer } from "../wall/WallRenderer";
+
+import type { UseExtendToolResult } from "./useExtendTool";
 import type { UseOffsetToolResult } from "./useOffsetTool";
 import type { UseTrimToolResult } from "./useTrimTool";
-import type { UseExtendToolResult } from "./useExtendTool";
 
 type NamedFabricObject = fabric.Object & {
   name?: string;
@@ -1843,6 +1844,17 @@ export function useCanvasEventBinding(
           nextProperties !== existing.properties;
 
         if (changed) {
+          const movedElement: HvacElement = {
+            ...existing,
+            position: nextPosition,
+            rotation: nextRotation,
+            width: placement.widthMm,
+            depth: placement.depthMm,
+            height: placement.heightMm,
+            roomId: nextRoomId ?? undefined,
+            wallId: nextWallId ?? undefined,
+            properties: nextProperties,
+          };
           updateHvacElement(hvacId, {
             position: nextPosition,
             rotation: nextRotation,
@@ -1852,6 +1864,17 @@ export function useCanvasEventBinding(
             roomId: nextRoomId,
             wallId: nextWallId,
             properties: nextProperties,
+          });
+          const connectedPipeUpdates =
+            resolveRefrigerantPipeUnitPortReconnectionUpdates(
+              hvacElements,
+              movedElement,
+            );
+          connectedPipeUpdates.forEach((pipeUpdate) => {
+            if (pipeUpdate.id === hvacId) {
+              return;
+            }
+            updateHvacElement(pipeUpdate.id, pipeUpdate.updates);
           });
         }
 

@@ -1,6 +1,7 @@
 import type { HvacElement, Point2D } from "../../../types";
-import { buildRefrigerantPipeVisual, buildRefrigerantPipePairVisual } from "./refrigerantPipePairModel";
+
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from "./refrigerantPipeDimensions";
+import { buildRefrigerantPipeVisual, buildRefrigerantPipePairVisual } from "./refrigerantPipePairModel";
 
 export type RefrigerantPipeEndpointRenderState = {
   openStart: boolean;
@@ -180,6 +181,23 @@ function appendPipeChainMemberPoints(
   );
 }
 
+function buildContinuousPipeCorePoints(
+  stub: { start: Point2D; end: Point2D } | null,
+  points: Point2D[],
+): Point2D[] {
+  if (!stub) {
+    return [...points];
+  }
+  if (points.length === 0) {
+    return [stub.end];
+  }
+  const firstPoint = points[0]!;
+  if (Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <= 0.2) {
+    return [...points];
+  }
+  return [stub.end, ...points];
+}
+
 function absoluteStubFromPipeVisual(
   visual: ReturnType<typeof buildRefrigerantPipeVisual>,
 ): { start: Point2D; end: Point2D } | null {
@@ -341,6 +359,10 @@ export function buildRefrigerantPipeRenderChainStateMap(
     });
 
     const absoluteStub = absoluteStubFromPipeVisual(headVisual);
+    const corePoints = buildContinuousPipeCorePoints(
+      absoluteStub,
+      outerPoints,
+    );
     const headEndpointState = endpointStates.get(headId) ?? {
       openStart: false,
       openEnd: false,
@@ -357,7 +379,7 @@ export function buildRefrigerantPipeRenderChainStateMap(
         tailId,
         outerPoints,
         outerRadiusMm: headVisual.outerRadiusMm,
-        corePoints: [...outerPoints],
+        corePoints,
         coreRadiusMm: headVisual.coreRadiusMm,
         absoluteStub: index === 0 ? absoluteStub : null,
         elevationMm: headElement.elevation + headVisual.localZMm,

@@ -17,15 +17,13 @@ import { useDrawingInteractionStore } from "../store/interactionStore";
 import type { Point2D, SymbolInstance2D, Wall } from "../types";
 import { generateId } from "../utils/geometry";
 
-import { hideActiveSelectionChrome } from "./DrawingCanvas.types";
-import type {
-  DrawingCanvasProps,
-  CanvasState,
-  MarqueeSelectionState,
-  OpeningPointerInteraction,
+import {
+  hideActiveSelectionChrome,
+  type DrawingCanvasProps,
+  type CanvasState,
+  type MarqueeSelectionState,
+  type OpeningPointerInteraction,
 } from "./DrawingCanvas.types";
-export type { DrawingCanvasProps } from "./DrawingCanvas.types";
-
 import {
   Grid,
   PageLayout,
@@ -63,12 +61,14 @@ import {
 } from "./canvas";
 import {
   isRefrigerantPipeElementType,
+  resolveRefrigerantPipeUnitPortReconnectionUpdates,
   translateRefrigerantPipeElementProperties,
 } from "./canvas/hvac/refrigerantPipePairModel";
 import {
   installCanvasRenderScheduler,
   restoreCanvasRenderScheduler,
 } from "./canvas/renderScheduler";
+export type { DrawingCanvasProps } from "./DrawingCanvas.types";
 
 // =============================================================================
 // Component
@@ -766,7 +766,7 @@ export function DrawingCanvas({
     handleDoubleClick: handleDuctDoubleClick,
     handleKeyDown: handleDuctKeyDown,
     handleKeyUp: handleDuctKeyUp,
-    cancelDrawing: cancelDuctDrawing,
+    cancelDrawing: _cancelDuctDrawing,
   } = useDuctTool({
     fabricRef,
     hvacRendererRef,
@@ -785,7 +785,7 @@ export function DrawingCanvas({
     handleDoubleClick: handleRefrigerantPipeDoubleClick,
     handleKeyDown: handleRefrigerantPipeKeyDown,
     handleKeyUp: handleRefrigerantPipeKeyUp,
-    cancelDrawing: cancelRefrigerantPipeDrawing,
+    cancelDrawing: _cancelRefrigerantPipeDrawing,
   } = useRefrigerantPipeTool({
     fabricRef,
     hvacRendererRef,
@@ -853,6 +853,31 @@ export function DrawingCanvas({
             ...element.properties,
             ...(placement.placementProperties ?? {}),
           },
+        });
+        const movedElement = {
+          ...element,
+          position: placement.point,
+          rotation: placement.rotationDeg,
+          width: placement.widthMm,
+          depth: placement.depthMm,
+          height: placement.heightMm,
+          roomId: placement.roomId ?? undefined,
+          wallId: placement.wallId ?? undefined,
+          properties: {
+            ...element.properties,
+            ...(placement.placementProperties ?? {}),
+          },
+        };
+        const connectedPipeUpdates =
+          resolveRefrigerantPipeUnitPortReconnectionUpdates(
+            hvacElements,
+            movedElement,
+          );
+        connectedPipeUpdates.forEach((pipeUpdate) => {
+          if (pipeUpdate.id === element.id) {
+            return;
+          }
+          updateHvacElement(pipeUpdate.id, pipeUpdate.updates);
         });
         movedEquipment = true;
       }
