@@ -1770,6 +1770,7 @@ export function DrawingCanvas({
     setHoveredElement,
     setTool,
     setProcessingStatus,
+    saveToHistory,
     updateSymbol,
     updateHvacElement,
     placePendingObject,

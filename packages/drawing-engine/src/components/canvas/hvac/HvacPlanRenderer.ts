@@ -18,7 +18,7 @@ import {
 
 import {
   buildCeilingCassetteModel,
-  getCeilingCassettePipePortEndpointLocal,
+  getCeilingCassettePipePortConnectionLocal,
 } from "./ceilingCassetteModel";
 import {
   buildDuctedIndoorUnitModel,
@@ -58,7 +58,7 @@ import {
   type VisibleRefrigerantPipeSegmentTarget,
 } from "./refrigerantPipeRenderState";
 import {
-  getUnitPipePortEndpointLocal,
+  getUnitPipePortConnectionLocal,
   getUnitPipePortRenderMetrics,
   getUnitPipePortSpec,
   GENERIC_PIPE_PORT_TYPES,
@@ -1911,6 +1911,7 @@ export class HvacPlanRenderer {
           strokeWidthMm: number,
           name: string,
           lineJoin: "round" | "miter" = "round",
+          lineCap: "butt" | "round" = "butt",
         ): void => {
           if (points.length < 2) {
             return;
@@ -1921,7 +1922,7 @@ export class HvacPlanRenderer {
               fill: undefined,
               stroke,
               strokeWidth: Math.max(toPx(strokeWidthMm), 1),
-              strokeLineCap: "butt",
+              strokeLineCap: lineCap,
               strokeLineJoin: lineJoin,
               strokeMiterLimit: lineJoin === "miter" ? 8 : 4,
               selectable: false,
@@ -1931,40 +1932,7 @@ export class HvacPlanRenderer {
           this.annotate(polyline, element.id, name);
           objects.push(polyline);
         };
-
-        const renderRectSegment = (
-          stub: { start: Point2D; end: Point2D } | null,
-          fill: string,
-          widthMm: number,
-          name: string,
-        ): void => {
-          if (!stub) {
-            return;
-          }
-          const dx = stub.end.x - stub.start.x;
-          const dy = stub.end.y - stub.start.y;
-          const lengthMm = Math.hypot(dx, dy);
-          if (lengthMm <= 0.2) {
-            return;
-          }
-
-          const segment = new fabric.Rect({
-            left: toPx((stub.start.x + stub.end.x) / 2),
-            top: toPx((stub.start.y + stub.end.y) / 2),
-            width: Math.max(toPx(lengthMm), 1),
-            height: Math.max(toPx(widthMm), 1),
-            angle: (Math.atan2(dy, dx) * 180) / Math.PI,
-            originX: "center",
-            originY: "center",
-            fill,
-            selectable: false,
-            evented: false,
-          });
-          this.annotate(segment, element.id, name);
-          objects.push(segment);
-        };
-
-        const buildContinuousCorePoints = (
+        const buildContinuousOuterPoints = (
           stub: { start: Point2D; end: Point2D } | null,
           points: Point2D[],
         ): Point2D[] => {
@@ -1983,12 +1951,11 @@ export class HvacPlanRenderer {
           }
           return [stub.end, ...points];
         };
-
-        const gasCorePoints = buildContinuousCorePoints(
+        const gasLocalContinuousOuterPoints = buildContinuousOuterPoints(
           visual.gasLocalStub,
           visual.gasLocalOuterPoints,
         );
-        const liquidCorePoints = buildContinuousCorePoints(
+        const liquidLocalContinuousOuterPoints = buildContinuousOuterPoints(
           visual.liquidLocalStub,
           visual.liquidLocalOuterPoints,
         );
@@ -2002,7 +1969,7 @@ export class HvacPlanRenderer {
             "hvac-selection",
           );
           createPipeHaloPolyline(
-            visual.gasLocalOuterPoints,
+            gasLocalContinuousOuterPoints,
             visual.gasOuterDiameterMm,
             palette.halo,
             0.16,
@@ -2016,7 +1983,7 @@ export class HvacPlanRenderer {
             "hvac-selection",
           );
           createPipeHaloPolyline(
-            visual.liquidLocalOuterPoints,
+            liquidLocalContinuousOuterPoints,
             visual.liquidOuterDiameterMm,
             palette.halo,
             0.16,
@@ -2030,7 +1997,7 @@ export class HvacPlanRenderer {
             "hvac-hover",
           );
           createPipeHaloPolyline(
-            visual.gasLocalOuterPoints,
+            gasLocalContinuousOuterPoints,
             visual.gasOuterDiameterMm,
             palette.hover,
             0.12,
@@ -2044,7 +2011,7 @@ export class HvacPlanRenderer {
             "hvac-hover",
           );
           createPipeHaloPolyline(
-            visual.liquidLocalOuterPoints,
+            liquidLocalContinuousOuterPoints,
             visual.liquidOuterDiameterMm,
             palette.hover,
             0.12,
@@ -2053,54 +2020,46 @@ export class HvacPlanRenderer {
         }
 
         renderPolyline(
-          visual.gasLocalOuterPoints,
+          gasLocalContinuousOuterPoints,
           insulationEdgeStroke,
           visual.gasOuterDiameterMm + 3,
           "hvac-detail",
         );
         renderPolyline(
-          visual.liquidLocalOuterPoints,
+          liquidLocalContinuousOuterPoints,
           insulationEdgeStroke,
           visual.liquidOuterDiameterMm + 3,
           "hvac-detail",
         );
         renderPolyline(
-          visual.gasLocalOuterPoints,
+          gasLocalContinuousOuterPoints,
           insulationStroke,
           visual.gasOuterDiameterMm,
           "hvac-detail",
         );
         renderPolyline(
-          visual.liquidLocalOuterPoints,
+          liquidLocalContinuousOuterPoints,
           insulationStroke,
           visual.liquidOuterDiameterMm,
           "hvac-detail",
         );
 
-        renderRectSegment(
-          visual.gasLocalStub,
-          gasCoreStroke,
-          visual.gasCoreRadiusMm * 2,
-          "hvac-detail",
-        );
-        renderRectSegment(
-          visual.liquidLocalStub,
-          liquidCoreStroke,
-          visual.liquidCoreRadiusMm * 2,
-          "hvac-detail",
-        );
+        // Keep the exposed indoor-unit stub and routed copper core in one path
+        // so the 2D plan view does not show a seam at the connection.
         renderPolyline(
-          gasCorePoints,
+          visual.gasLocalContinuousCorePoints,
           gasCoreStroke,
           visual.gasCoreRadiusMm * 2,
           "hvac-detail",
           "round",
+          "round",
         );
         renderPolyline(
-          liquidCorePoints,
+          visual.liquidLocalContinuousCorePoints,
           liquidCoreStroke,
           visual.liquidCoreRadiusMm * 2,
           "hvac-detail",
+          "round",
           "round",
         );
         const stabilizerRadiusPx = Math.max(
@@ -2693,7 +2652,7 @@ export class HvacPlanRenderer {
           );
           if (port.kind === "gas" || port.kind === "liquid") {
             createHiddenSnapPoint(
-              getCeilingCassettePipePortEndpointLocal(port),
+              getCeilingCassettePipePortConnectionLocal(port),
               `hvac-snap-${port.kind}`,
             );
           }
@@ -3388,7 +3347,7 @@ export class HvacPlanRenderer {
           this.annotate(pipeRun, element.id, `hvac-port-${port.kind}-pipe`);
           objects.push(pipeRun);
           createHiddenSnapPoint(
-            getUnitPipePortEndpointLocal(port),
+            getUnitPipePortConnectionLocal(port),
             `hvac-snap-${port.kind}`,
           );
         });

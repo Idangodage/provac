@@ -58,20 +58,6 @@ function distance(a: Point2D, b: Point2D): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function resolveBundleSnapPoint(
-  bundle: RefrigerantPipeBundleConnection,
-  cursorPoint: Point2D,
-): Point2D {
-  const selectedPipe = resolveBundleHoverSelection(bundle, cursorPoint);
-  if (selectedPipe === 'gas') {
-    return bundle.gasPoint;
-  }
-  if (selectedPipe === 'liquid') {
-    return bundle.liquidPoint;
-  }
-  return bundle.point;
-}
-
 function resolveBundleHoverSelection(
   bundle: RefrigerantPipeBundleConnection,
   cursorPoint: Point2D,
@@ -79,6 +65,15 @@ function resolveBundleHoverSelection(
   const gasDistance = distance(cursorPoint, bundle.gasPoint);
   const liquidDistance = distance(cursorPoint, bundle.liquidPoint);
   return gasDistance <= liquidDistance ? 'gas' : 'liquid';
+}
+
+function resolveBundleMarkerSelection(
+  bundle: RefrigerantPipeBundleConnection,
+): RefrigerantPipeHoverSelection {
+  if (bundle.guideReference === 'gas' || bundle.guideReference === 'liquid') {
+    return bundle.guideReference;
+  }
+  return resolveBundleHoverSelection(bundle, bundle.point);
 }
 
 function isPipeRoutingDebugEnabled(): boolean {
@@ -284,7 +279,7 @@ export function useRefrigerantPipeTool(
     const selectedMarkerFill = 'rgba(34,197,94,0.36)';
     const selectedMarkerStroke = 'rgba(22,163,74,1)';
     const selectedMarkerStrokeWidth = 5;
-    const hoveredPipe = resolveBundleHoverSelection(bundle, bundle.point);
+    const hoveredPipe = resolveBundleMarkerSelection(bundle);
     const createPipeCenterMarker = (
       point: Point2D,
       diameterMm: number,
@@ -455,7 +450,6 @@ export function useRefrigerantPipeTool(
           const selectedPipe = resolveBundleHoverSelection(bundle, point);
           return {
             ...bundle,
-            point: resolveBundleSnapPoint(bundle, point),
             guideReference: selectedPipe ?? bundle.guideReference,
           };
         })()

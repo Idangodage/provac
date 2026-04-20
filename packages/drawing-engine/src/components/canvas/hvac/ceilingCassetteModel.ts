@@ -89,6 +89,15 @@ export function getCeilingCassettePipePortEndpointLocal(
   };
 }
 
+export function getCeilingCassettePipePortConnectionLocal(
+  port: CeilingCassettePipePortSpec,
+): { x: number; y: number } {
+  return {
+    x: port.x + port.collarLength - port.flangeThickness * 0.15,
+    y: port.y,
+  };
+}
+
 function clampValue(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }

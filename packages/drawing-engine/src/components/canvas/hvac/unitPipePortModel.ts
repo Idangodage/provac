@@ -94,6 +94,14 @@ export function getUnitPipePortEndpointLocal(port: UnitPipePort): Point2D {
   };
 }
 
+export function getUnitPipePortConnectionLocal(port: UnitPipePort): Point2D {
+  const metrics = getUnitPipePortRenderMetrics(port);
+  return {
+    x: metrics.pipeStartX,
+    y: port.localY,
+  };
+}
+
 type UnitElement = Pick<
   HvacElement,
   "type" | "width" | "depth" | "height" | "properties"

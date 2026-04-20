@@ -11,6 +11,7 @@
 
 import type * as fabric from "fabric";
 import {
+  useCallback,
   useEffect,
   useRef,
   type Dispatch,
@@ -397,6 +398,7 @@ export interface UseCanvasEventBindingOptions {
   setHoveredElement: (id: string | null) => void;
   setTool: (tool: DrawingTool) => void;
   setProcessingStatus: (message: string, loading: boolean) => void;
+  saveToHistory: (description: string) => void;
   updateSymbol: (id: string, updates: Partial<SymbolInstance2D>) => void;
   updateHvacElement: (
     id: string,
@@ -448,6 +450,29 @@ export function useCanvasEventBinding(
   const latestOptionsRef = useRef(options);
   latestOptionsRef.current = options;
   const { fabricRef, outerRef, wheelRafId } = options;
+
+  const syncConnectedRefrigerantPipes = useCallback(
+    (
+      elements: HvacElement[],
+      movedElement: HvacElement,
+      updateHvacElement: UseCanvasEventBindingOptions["updateHvacElement"],
+    ) => {
+      const connectedPipeUpdates =
+        resolveRefrigerantPipeUnitPortReconnectionUpdates(
+          elements,
+          movedElement,
+        );
+      connectedPipeUpdates.forEach((pipeUpdate) => {
+        if (pipeUpdate.id === movedElement.id) {
+          return;
+        }
+        updateHvacElement(pipeUpdate.id, pipeUpdate.updates, {
+          skipHistory: true,
+        });
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     const canvas = fabricRef.current;
@@ -1437,6 +1462,7 @@ export function useCanvasEventBinding(
         resolveOpeningWidthMm,
         computePlacement,
         computeHvacPlacement,
+        updateHvacElement,
         handleSelectObjectMoving,
       } = latestOptionsRef.current;
       if (!event.target || tool !== "select") return;
@@ -1542,6 +1568,45 @@ export function useCanvasEventBinding(
         };
         const placement = computeHvacPlacement(movedCenterMm, existing);
         if (placement.valid) {
+          const nextPosition = placement.point;
+          const nextRotation = placement.rotationDeg;
+          const nextRoomId = placement.roomId ?? undefined;
+          const nextWallId = placement.wallId ?? undefined;
+          const nextProperties = placement.placementProperties
+            ? {
+                ...existing.properties,
+                ...placement.placementProperties,
+              }
+            : existing.properties;
+          const changed =
+            Math.abs(existing.position.x - nextPosition.x) > 0.01 ||
+            Math.abs(existing.position.y - nextPosition.y) > 0.01 ||
+            Math.abs(existing.rotation - nextRotation) > 0.01 ||
+            Math.abs(existing.width - placement.widthMm) > 0.01 ||
+            Math.abs(existing.depth - placement.depthMm) > 0.01 ||
+            Math.abs(existing.height - placement.heightMm) > 0.01 ||
+            existing.roomId !== nextRoomId ||
+            existing.wallId !== nextWallId ||
+            nextProperties !== existing.properties;
+
+          if (changed) {
+            syncConnectedRefrigerantPipes(
+              hvacElements,
+              {
+                ...existing,
+                position: nextPosition,
+                rotation: nextRotation,
+                width: placement.widthMm,
+                depth: placement.depthMm,
+                height: placement.heightMm,
+                roomId: nextRoomId,
+                wallId: nextWallId,
+                properties: nextProperties,
+              },
+              updateHvacElement,
+            );
+          }
+
           const inlineAnchorPoint = isRefrigerantBranchKitElement(existing)
             ? normalizeCanvasPoint(
                 placement.placementProperties?.branchKitSnapPoint ??
@@ -1586,6 +1651,7 @@ export function useCanvasEventBinding(
         computeHvacPlacement,
         fabricRef,
         setProcessingStatus,
+        saveToHistory,
         buildHostedOpeningSymbolProperties,
         syncOpeningForSymbol,
         updateSymbol,
@@ -1792,6 +1858,11 @@ export function useCanvasEventBinding(
 
         const placement = computeHvacPlacement(centerMm, existing);
         if (!placement.valid) {
+          syncConnectedRefrigerantPipes(
+            hvacElements,
+            existing,
+            updateHvacElement,
+          );
           const existingCenterMm = {
             x: existing.position.x + existing.width / 2,
             y: existing.position.y + existing.depth / 2,
@@ -1855,27 +1926,26 @@ export function useCanvasEventBinding(
             wallId: nextWallId ?? undefined,
             properties: nextProperties,
           };
-          updateHvacElement(hvacId, {
-            position: nextPosition,
-            rotation: nextRotation,
-            width: placement.widthMm,
-            depth: placement.depthMm,
-            height: placement.heightMm,
-            roomId: nextRoomId,
-            wallId: nextWallId,
-            properties: nextProperties,
-          });
-          const connectedPipeUpdates =
-            resolveRefrigerantPipeUnitPortReconnectionUpdates(
-              hvacElements,
-              movedElement,
-            );
-          connectedPipeUpdates.forEach((pipeUpdate) => {
-            if (pipeUpdate.id === hvacId) {
-              return;
-            }
-            updateHvacElement(pipeUpdate.id, pipeUpdate.updates);
-          });
+          updateHvacElement(
+            hvacId,
+            {
+              position: nextPosition,
+              rotation: nextRotation,
+              width: placement.widthMm,
+              depth: placement.depthMm,
+              height: placement.heightMm,
+              roomId: nextRoomId,
+              wallId: nextWallId,
+              properties: nextProperties,
+            },
+            { skipHistory: true },
+          );
+          syncConnectedRefrigerantPipes(
+            hvacElements,
+            movedElement,
+            updateHvacElement,
+          );
+          saveToHistory("Update AC equipment");
         }
 
         const nextInlineAnchorPoint = isRefrigerantBranchKitElement(existing)
