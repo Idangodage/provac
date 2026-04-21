@@ -1837,6 +1837,41 @@ export class HvacPlanRenderer {
           visual.gasLocalContinuousOuterPoints;
         const liquidLocalContinuousOuterPoints =
           visual.liquidLocalContinuousOuterPoints;
+        const isUnitPortStartConnection =
+          visual.startBundleConnection?.connectionKind === "unit-port";
+        const trimPolylineStart = (
+          points: Point2D[],
+          trimMm: number,
+        ): Point2D[] => {
+          if (!isUnitPortStartConnection || trimMm <= 0.01 || points.length < 2) {
+            return points;
+          }
+          const start = points[0]!;
+          const next = points[1]!;
+          const dx = next.x - start.x;
+          const dy = next.y - start.y;
+          const lengthMm = Math.hypot(dx, dy);
+          if (lengthMm <= trimMm + 0.05) {
+            return points;
+          }
+          const t = trimMm / lengthMm;
+          return [
+            {
+              x: start.x + dx * t,
+              y: start.y + dy * t,
+            },
+            ...points.slice(1),
+          ];
+        };
+        const edgeStartTrimMm = 1.2;
+        const gasLocalOuterEdgePoints = trimPolylineStart(
+          gasLocalContinuousOuterPoints,
+          edgeStartTrimMm,
+        );
+        const liquidLocalOuterEdgePoints = trimPolylineStart(
+          liquidLocalContinuousOuterPoints,
+          edgeStartTrimMm,
+        );
 
         if (options.includeInteractionHalos) {
           createPipeHaloRectSegment(
@@ -1898,28 +1933,36 @@ export class HvacPlanRenderer {
         }
 
         renderPolyline(
-          gasLocalContinuousOuterPoints,
+          gasLocalOuterEdgePoints,
           insulationEdgeStroke,
           visual.gasOuterDiameterMm + 3,
           "hvac-detail",
+          "round",
+          "butt",
         );
         renderPolyline(
-          liquidLocalContinuousOuterPoints,
+          liquidLocalOuterEdgePoints,
           insulationEdgeStroke,
           visual.liquidOuterDiameterMm + 3,
           "hvac-detail",
+          "round",
+          "butt",
         );
         renderPolyline(
           gasLocalContinuousOuterPoints,
           insulationStroke,
           visual.gasOuterDiameterMm,
           "hvac-detail",
+          "round",
+          "round",
         );
         renderPolyline(
           liquidLocalContinuousOuterPoints,
           insulationStroke,
           visual.liquidOuterDiameterMm,
           "hvac-detail",
+          "round",
+          "round",
         );
 
         // Keep the exposed indoor-unit stub and routed copper core in one path

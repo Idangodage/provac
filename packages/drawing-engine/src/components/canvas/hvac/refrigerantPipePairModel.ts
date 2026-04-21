@@ -2413,8 +2413,40 @@ function buildResolvedPipeRoutePoints(
     endBundleConnection?.liquidFieldPoint ?? null,
   );
 
-  // For unit-port connections, use the anchored routes directly
-  // (Field-pipe connections are handled above with the translation approach)
+  // Keep unit-port drag behavior visually smooth by stabilizing curved bends
+  // after endpoint anchoring. Re-anchor once more to guarantee exact endpoints.
+  if (isUnitPortStart) {
+    const unitPortDragBendRadiusMm = Math.max(8, bendRadiusMm * 0.65);
+    const roundedAnchoredGasRoutePoints = anchoredGasRoutePoints.length >= 3
+      ? dedupeConsecutivePoints(
+          roundPolylineCorners(anchoredGasRoutePoints, unitPortDragBendRadiusMm),
+        )
+      : anchoredGasRoutePoints;
+    const roundedAnchoredLiquidRoutePoints = anchoredLiquidRoutePoints.length >= 3
+      ? dedupeConsecutivePoints(
+          roundPolylineCorners(anchoredLiquidRoutePoints, unitPortDragBendRadiusMm),
+        )
+      : anchoredLiquidRoutePoints;
+    return {
+      gasRoutePoints: anchorGuideRouteEnd(
+        anchorGuideRouteStart(
+          roundedAnchoredGasRoutePoints,
+          startBundleConnection?.gasFieldPoint ?? null,
+        ),
+        endBundleConnection?.gasFieldPoint ?? null,
+      ),
+      liquidRoutePoints: anchorGuideRouteEnd(
+        anchorGuideRouteStart(
+          roundedAnchoredLiquidRoutePoints,
+          startBundleConnection?.liquidFieldPoint ?? null,
+        ),
+        endBundleConnection?.liquidFieldPoint ?? null,
+      ),
+    };
+  }
+
+  // For non-unit-port starts, use the anchored routes directly
+  // (field-pipe connections are handled above with the translation approach).
   return {
     gasRoutePoints: anchoredGasRoutePoints,
     liquidRoutePoints: anchoredLiquidRoutePoints,
@@ -4116,6 +4148,55 @@ function isUnitPortBundleConnectionFromSource(
   );
 }
 
+function remapRouteEndpointsForMovedConnection(
+  routePoints: Point2D[],
+  options: {
+    previousStart?: Point2D | null;
+    nextStart?: Point2D | null;
+    previousEnd?: Point2D | null;
+    nextEnd?: Point2D | null;
+    anchorSnapRadiusMm?: number;
+  },
+): Point2D[] {
+  if (routePoints.length === 0) {
+    return routePoints;
+  }
+
+  const anchorSnapRadiusMm = options.anchorSnapRadiusMm ?? 180;
+  const remapped = [...routePoints];
+
+  if (options.previousStart && options.nextStart) {
+    const delta = subtract(options.nextStart, options.previousStart);
+    if (Math.hypot(delta.x, delta.y) > 0.01) {
+      const firstPoint = remapped[0]!;
+      const firstDistance = Math.hypot(
+        firstPoint.x - options.previousStart.x,
+        firstPoint.y - options.previousStart.y,
+      );
+      if (firstDistance <= anchorSnapRadiusMm) {
+        remapped[0] = add(firstPoint, delta);
+      }
+    }
+  }
+
+  if (options.previousEnd && options.nextEnd && remapped.length > 1) {
+    const delta = subtract(options.nextEnd, options.previousEnd);
+    if (Math.hypot(delta.x, delta.y) > 0.01) {
+      const lastIndex = remapped.length - 1;
+      const lastPoint = remapped[lastIndex]!;
+      const lastDistance = Math.hypot(
+        lastPoint.x - options.previousEnd.x,
+        lastPoint.y - options.previousEnd.y,
+      );
+      if (lastDistance <= anchorSnapRadiusMm) {
+        remapped[lastIndex] = add(lastPoint, delta);
+      }
+    }
+  }
+
+  return remapped;
+}
+
 export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
   elements: HvacElement[],
   movedSourceElement: HvacElement,
@@ -4181,9 +4262,20 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
       ) {
         return;
       }
+      const nextRoutePoints = remapRouteEndpointsForMovedConnection(
+        spec.routePoints,
+        {
+          previousStart: syncStart ? spec.startConnection?.portPoint ?? null : null,
+          nextStart: syncStart ? nextStartConnection?.portPoint ?? null : null,
+          previousEnd: syncEnd ? spec.endConnection?.portPoint ?? null : null,
+          nextEnd: syncEnd ? nextEndConnection?.portPoint ?? null : null,
+          anchorSnapRadiusMm: 160,
+        },
+      );
 
       const nextProperties: Record<string, unknown> = {
         ...element.properties,
+        routePoints: nextRoutePoints,
         startConnection: nextStartConnection,
         endConnection: nextEndConnection,
       };
@@ -4275,9 +4367,20 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
     ) {
       return;
     }
+    const nextRoutePoints = remapRouteEndpointsForMovedConnection(
+      normalizePointArray(element.properties.routePoints),
+      {
+        previousStart: syncStart ? startBundleConnection?.point ?? null : null,
+        nextStart: syncStart ? nextStartBundleConnection?.point ?? null : null,
+        previousEnd: syncEnd ? endBundleConnection?.point ?? null : null,
+        nextEnd: syncEnd ? nextEndBundleConnection?.point ?? null : null,
+        anchorSnapRadiusMm: 220,
+      },
+    );
 
     const nextProperties: Record<string, unknown> = {
       ...element.properties,
+      routePoints: nextRoutePoints,
       startBundleConnection: nextStartBundleConnection,
       endBundleConnection: nextEndBundleConnection,
     };

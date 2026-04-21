@@ -14,7 +14,7 @@ export function computeIndoorRefrigerantPortStubLengthMm(
   const normalizedDiameter = Number.isFinite(pipeDiameterMm) && pipeDiameterMm > 0
     ? pipeDiameterMm
     : DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM;
-  return Math.max(26, Math.min(32, normalizedDiameter * 1.9));
+  return Math.max(52, Math.min(64, normalizedDiameter * 3.8));
 }
 
 export function computeIndoorDrainPortStubLengthMm(
@@ -23,5 +23,5 @@ export function computeIndoorDrainPortStubLengthMm(
   const normalizedDiameter = Number.isFinite(pipeDiameterMm) && pipeDiameterMm > 0
     ? pipeDiameterMm
     : 32;
-  return Math.max(32, Math.min(40, normalizedDiameter * 1.1));
+  return Math.max(64, Math.min(80, normalizedDiameter * 2.2));
 }
