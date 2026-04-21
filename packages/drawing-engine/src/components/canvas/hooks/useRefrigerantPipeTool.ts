@@ -2,8 +2,6 @@ import * as fabric from 'fabric';
 import { useCallback, useEffect, useRef } from 'react';
 
 import type { HvacElement, Point2D } from '../../../types';
-import { MM_TO_PX } from '../scale';
-import { snapPointToGrid, applyAngularConstraint, applyOrthogonalConstraint } from '../snapping';
 import type { HvacPlanRenderer } from '../hvac/HvacPlanRenderer';
 import {
   buildRefrigerantPipeElements,
@@ -12,6 +10,8 @@ import {
   type RefrigerantPipeBundleConnection,
 } from '../hvac/refrigerantPipePairModel';
 import { findNearestVisibleRefrigerantPipeBundleTarget } from '../hvac/refrigerantPipeRenderState';
+import { MM_TO_PX } from '../scale';
+import { snapPointToGrid, applyAngularConstraint, applyOrthogonalConstraint } from '../snapping';
 
 export interface UseRefrigerantPipeToolOptions {
   fabricRef: React.RefObject<fabric.Canvas | null>;
@@ -45,7 +45,6 @@ const PIPE_ROUTE_ANGLE_SNAP_DEG = 45;
 const PIPE_SNAP_MARKER_RADIUS_PX = 14;
 const PIPE_SNAP_MARKER_RADIUS_SELECTED_PX = 17;
 const PIPE_SNAP_THRESHOLD_PX = 15;
-const PIPE_HOVER_PREVIEW_LENGTH_MM = 100;
 const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
 type RefrigerantPipeHoverSelection = 'gas' | 'liquid' | null;
 type RefrigerantPipeSnapSource = 'model' | 'rendered' | 'visible' | null;
@@ -664,28 +663,7 @@ export function useRefrigerantPipeTool(
       } else {
         setProcessingStatus('', false);
       }
-      if (bundle?.connectionKind === 'unit-port') {
-        const hoveredPipe = resolveBundleHoverSelection(bundle, point);
-        // Use bundle centerline as preview datum so route normalization keeps
-        // one straight line and only the selected line performs the 45 takeoff.
-        const startPoint = bundle.point;
-        const startDirection = bundle.direction;
-        const previewEnd = {
-          x: startPoint.x + startDirection.x * PIPE_HOVER_PREVIEW_LENGTH_MM,
-          y: startPoint.y + startDirection.y * PIPE_HOVER_PREVIEW_LENGTH_MM,
-        };
-        renderRoutePreview(
-          [startPoint, previewEnd],
-          null,
-          {
-            ...bundle,
-            point: startPoint,
-            guideReference: hoveredPipe ?? bundle.guideReference,
-          },
-        );
-      } else {
-        clearPreview();
-      }
+      clearPreview();
       return;
     }
 

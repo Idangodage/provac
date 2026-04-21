@@ -2759,7 +2759,7 @@ function createHvacEquipmentMesh(
       };
 
       addRouteTube(
-        visual.gasLocalOuterPoints,
+        visual.gasLocalContinuousOuterPoints,
         visual.gasLocalZMm,
         visual.gasOuterRadiusMm,
         insulationColor,
@@ -2769,7 +2769,7 @@ function createHvacEquipmentMesh(
         false,
       );
       addRouteTube(
-        visual.liquidLocalOuterPoints,
+        visual.liquidLocalContinuousOuterPoints,
         visual.liquidLocalZMm,
         visual.liquidOuterRadiusMm,
         insulationColor,
@@ -2821,7 +2821,7 @@ function createHvacEquipmentMesh(
       break;
     }
     case "refrigerant-pipe": {
-      const visual = buildRefrigerantPipeVisual(element);
+      const visual = buildRefrigerantPipeVisual(element, allElements);
       const insulationColor = "#e6edf2";
       const coreColor = visual.lineKind === "gas" ? "#c5894d" : "#dca25d";
       const chainState = pipeRenderChainStateMap?.get(element.id) ?? null;
@@ -2912,7 +2912,7 @@ function createHvacEquipmentMesh(
         group.rotation.z = 0;
 
         addRouteTube(
-          chainState.outerPoints,
+          chainState.continuousOuterPoints,
           chainState.elevationMm,
           chainState.outerRadiusMm,
           insulationColor,
@@ -2942,7 +2942,7 @@ function createHvacEquipmentMesh(
         );
       } else {
         addRouteTube(
-          visual.localOuterPoints,
+          visual.localContinuousOuterPoints,
           visual.localZMm,
           visual.outerRadiusMm,
           insulationColor,

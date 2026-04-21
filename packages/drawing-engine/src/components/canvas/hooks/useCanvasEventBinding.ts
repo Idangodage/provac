@@ -1462,6 +1462,7 @@ export function useCanvasEventBinding(
         resolveOpeningWidthMm,
         computePlacement,
         computeHvacPlacement,
+        hvacRendererRef,
         updateHvacElement,
         handleSelectObjectMoving,
       } = latestOptionsRef.current;
@@ -1551,10 +1552,12 @@ export function useCanvasEventBinding(
 
         const existing = hvacElements.find((entry) => entry.id === hvacId);
         if (!existing) {
+          hvacRendererRef.current?.clearSceneElementOverrides();
           return;
         }
 
         if (isRefrigerantPipeElementType(existing.type)) {
+          hvacRendererRef.current?.clearSceneElementOverrides();
           target.set({
             angle: existing.rotation,
           });
@@ -1590,21 +1593,25 @@ export function useCanvasEventBinding(
             nextProperties !== existing.properties;
 
           if (changed) {
+            const movedElement: HvacElement = {
+              ...existing,
+              position: nextPosition,
+              rotation: nextRotation,
+              width: placement.widthMm,
+              depth: placement.depthMm,
+              height: placement.heightMm,
+              roomId: nextRoomId,
+              wallId: nextWallId,
+              properties: nextProperties,
+            };
+            hvacRendererRef.current?.setSceneElementOverrides([movedElement]);
             syncConnectedRefrigerantPipes(
               hvacElements,
-              {
-                ...existing,
-                position: nextPosition,
-                rotation: nextRotation,
-                width: placement.widthMm,
-                depth: placement.depthMm,
-                height: placement.heightMm,
-                roomId: nextRoomId,
-                wallId: nextWallId,
-                properties: nextProperties,
-              },
+              movedElement,
               updateHvacElement,
             );
+          } else {
+            hvacRendererRef.current?.clearSceneElementOverrides();
           }
 
           const inlineAnchorPoint = isRefrigerantBranchKitElement(existing)
@@ -1627,6 +1634,8 @@ export function useCanvasEventBinding(
               angle: placement.rotationDeg,
             });
           }
+        } else {
+          hvacRendererRef.current?.clearSceneElementOverrides();
         }
         return;
       }
@@ -1641,6 +1650,7 @@ export function useCanvasEventBinding(
         isDraggingObjectRef,
         resolveObjectIdFromTarget,
         resolveHvacIdFromTarget,
+        hvacRendererRef,
         symbols,
         hvacElements,
         objectDefinitionsById,
@@ -1664,6 +1674,7 @@ export function useCanvasEventBinding(
         isDraggingObjectRef.current = false;
         if (canvas) canvas.skipTargetFind = false;
       }
+      hvacRendererRef.current?.clearSceneElementOverrides();
 
       if (!event.target) return;
       const objectId = resolveObjectIdFromTarget(event.target);
@@ -2008,6 +2019,7 @@ export function useCanvasEventBinding(
     };
 
     const handleWindowBlur = () => {
+      latestOptionsRef.current.hvacRendererRef.current?.clearSceneElementOverrides();
       latestOptionsRef.current.stopMiddlePan();
       latestOptionsRef.current.finalizeHandleDrag();
       latestOptionsRef.current.finishOpeningPointerInteraction();

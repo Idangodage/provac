@@ -1,5 +1,8 @@
 import type { HvacElement } from '../../../types';
+
 import {
+  computeIndoorDrainPortStubLengthMm,
+  computeIndoorRefrigerantPortStubLengthMm,
   DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
 } from './refrigerantPipeDimensions';
@@ -360,11 +363,16 @@ export function buildCeilingCassetteModel(
 
   const gasPortRadius = Math.max(4.5, gasPipeDiameterMm / 2);
   const liquidPortRadius = Math.max(3, liquidPipeDiameterMm / 2);
-  // Fixed port stub length: 68mm horizontal extension
-  const gasPortLength = 68;
-  const liquidPortLength = 68;
+  const gasPortLength = computeIndoorRefrigerantPortStubLengthMm(
+    gasPipeDiameterMm,
+  );
+  const liquidPortLength = computeIndoorRefrigerantPortStubLengthMm(
+    liquidPipeDiameterMm,
+  );
   const drainPortRadius = Math.max(5, drainPipeDiameterMm / 2);
-  const drainPortLength = Math.max(42, baseWidth * 0.15);
+  const drainPortLength = computeIndoorDrainPortStubLengthMm(
+    drainPipeDiameterMm,
+  );
 
   const pipePorts: CeilingCassettePipePortSpec[] = [
     buildPipePortSpec({

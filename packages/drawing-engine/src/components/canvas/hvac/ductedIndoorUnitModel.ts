@@ -1,5 +1,8 @@
 import type { HvacElement } from "../../../types";
+
 import {
+  computeIndoorDrainPortStubLengthMm,
+  computeIndoorRefrigerantPortStubLengthMm,
   DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
   DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
@@ -499,9 +502,15 @@ export function buildDuctedIndoorUnitModel(
   const liquidPortRadius = Math.max(3, liquidPipeDiameterMm / 2);
   const drainPortRadius = Math.max(7, drainPipeDiameterMm / 2);
   const casingFaceX = casingInset.x + casingInset.width / 2;
-  const gasPortLength = Math.max(78, baseWidth * 0.165);
-  const liquidPortLength = Math.max(64, baseWidth * 0.14);
-  const drainPortLength = Math.max(92, baseWidth * 0.19);
+  const gasPortLength = computeIndoorRefrigerantPortStubLengthMm(
+    gasPipeDiameterMm,
+  );
+  const liquidPortLength = computeIndoorRefrigerantPortStubLengthMm(
+    liquidPipeDiameterMm,
+  );
+  const drainPortLength = computeIndoorDrainPortStubLengthMm(
+    drainPipeDiameterMm,
+  );
 
   const pipePorts: DuctedIndoorUnitPipePortSpec[] = [
     buildPipePortSpec({

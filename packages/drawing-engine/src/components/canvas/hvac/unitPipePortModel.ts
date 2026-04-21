@@ -10,12 +10,14 @@
  */
 
 import type { HvacElement, Point2D } from "../../../types";
+
+import { buildDuctedIndoorUnitModel } from "./ductedIndoorUnitModel";
 import {
+  computeIndoorRefrigerantPortStubLengthMm,
   DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
   DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
 } from "./refrigerantPipeDimensions";
-import { buildDuctedIndoorUnitModel } from "./ductedIndoorUnitModel";
 
 export interface UnitPipePort {
   kind: "gas" | "liquid";
@@ -143,9 +145,15 @@ export function getUnitPipePortSpec(
     readProperty(props, "refrigerantLiquidPipeDiameterMm") ??
     DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM;
   const portRadius = DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM / 2;
-  // Fixed center-to-center spacing: 42mm vertical, 68mm horizontal stub length
+  // Fixed center-to-center spacing with compact service stub lengths sized from the pipe.
   const PIPE_PORT_CENTER_SPACING_MM = 42;
-  const PIPE_PORT_LENGTH_MM = 68;
+  const indoorGasPortLength = computeIndoorRefrigerantPortStubLengthMm(
+    gasDiameter,
+  );
+  const indoorLiquidPortLength = computeIndoorRefrigerantPortStubLengthMm(
+    liquidDiameter,
+  );
+  const outdoorPortLength = 68;
   const gasOffsetY = -PIPE_PORT_CENTER_SPACING_MM / 2;
   const liquidOffsetY = PIPE_PORT_CENTER_SPACING_MM / 2;
 
@@ -165,7 +173,7 @@ export function getUnitPipePortSpec(
             localY: gasOffsetY,
             localZ: heightMm * 0.85,
             radius: portRadius,
-            length: PIPE_PORT_LENGTH_MM,
+            length: outdoorPortLength,
             color: "#c5894d",
           },
           {
@@ -174,7 +182,7 @@ export function getUnitPipePortSpec(
             localY: liquidOffsetY,
             localZ: heightMm * 0.78,
             radius: Math.max(3, liquidDiameter / 2),
-            length: PIPE_PORT_LENGTH_MM,
+            length: outdoorPortLength,
             color: "#dca25d",
           },
         ],
@@ -196,7 +204,7 @@ export function getUnitPipePortSpec(
             localY: gasOffsetY,
             localZ: heightMm * 0.3,
             radius: portRadius,
-            length: PIPE_PORT_LENGTH_MM,
+            length: indoorGasPortLength,
             color: "#c5894d",
           },
           {
@@ -205,7 +213,7 @@ export function getUnitPipePortSpec(
             localY: liquidOffsetY,
             localZ: heightMm * 0.22,
             radius: Math.max(3, liquidDiameter / 2),
-            length: PIPE_PORT_LENGTH_MM,
+            length: indoorLiquidPortLength,
             color: "#dca25d",
           },
         ],
@@ -227,7 +235,7 @@ export function getUnitPipePortSpec(
             localY: gasOffsetY,
             localZ: heightMm * 0.75,
             radius: portRadius,
-            length: PIPE_PORT_LENGTH_MM,
+            length: indoorGasPortLength,
             color: "#c5894d",
           },
           {
@@ -236,7 +244,7 @@ export function getUnitPipePortSpec(
             localY: liquidOffsetY,
             localZ: heightMm * 0.65,
             radius: Math.max(3, liquidDiameter / 2),
-            length: PIPE_PORT_LENGTH_MM,
+            length: indoorLiquidPortLength,
             color: "#dca25d",
           },
         ],

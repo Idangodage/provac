@@ -13,6 +13,7 @@ export type RefrigerantPipeRenderChainState = {
   headId: string;
   tailId: string;
   outerPoints: Point2D[];
+  continuousOuterPoints: Point2D[];
   outerRadiusMm: number;
   corePoints: Point2D[];
   coreRadiusMm: number;
@@ -239,7 +240,7 @@ export function buildRefrigerantPipeEndpointRenderStateMap(
     if (element.type !== "refrigerant-pipe") {
       return;
     }
-    const visual = buildRefrigerantPipeVisual(element);
+    const visual = buildRefrigerantPipeVisual(element, elements);
     visuals.set(element.id, visual);
     states.set(element.id, {
       openStart: visual.startConnection?.connectionKind === "field-pipe",
@@ -289,7 +290,7 @@ export function buildRefrigerantPipeRenderChainStateMap(
     if (element.type !== "refrigerant-pipe") {
       return;
     }
-    const visual = buildRefrigerantPipeVisual(element);
+    const visual = buildRefrigerantPipeVisual(element, elements);
     visuals.set(element.id, visual);
     ownership.set(`${visual.bundleId ?? element.id}|${visual.lineKind}`, element.id);
   });
@@ -359,6 +360,10 @@ export function buildRefrigerantPipeRenderChainStateMap(
     });
 
     const absoluteStub = absoluteStubFromPipeVisual(headVisual);
+    const continuousOuterPoints = buildContinuousPipeCorePoints(
+      absoluteStub,
+      outerPoints,
+    );
     const corePoints = buildContinuousPipeCorePoints(
       absoluteStub,
       outerPoints,
@@ -378,6 +383,7 @@ export function buildRefrigerantPipeRenderChainStateMap(
         headId,
         tailId,
         outerPoints,
+        continuousOuterPoints,
         outerRadiusMm: headVisual.outerRadiusMm,
         corePoints,
         coreRadiusMm: headVisual.coreRadiusMm,
@@ -443,12 +449,12 @@ export function getVisibleRefrigerantPipeStraightSegmentTargets(
       return;
     }
 
-    const visual = buildRefrigerantPipeVisual(element);
+    const visual = buildRefrigerantPipeVisual(element, elements);
     const headElement =
       chainState ? elements.find((candidate) => candidate.id === chainState.headId) ?? element : element;
     const headVisual =
       chainState && headElement.type === "refrigerant-pipe"
-        ? buildRefrigerantPipeVisual(headElement)
+        ? buildRefrigerantPipeVisual(headElement, elements)
         : visual;
     const points = chainState?.outerPoints ?? visual.outerPoints;
     const sourceElementId = chainState?.headId ?? (headElement.id ?? element.id);
@@ -509,7 +515,7 @@ export function getVisibleRefrigerantPipeEndpointTargets(
       return;
     }
 
-    const visual = buildRefrigerantPipeVisual(element);
+    const visual = buildRefrigerantPipeVisual(element, elements);
     const headElement =
       chainState
         ? elements.find((candidate) => candidate.id === chainState.headId) ?? element
@@ -523,10 +529,10 @@ export function getVisibleRefrigerantPipeEndpointTargets(
     }
 
     const headVisual = chainState
-      ? buildRefrigerantPipeVisual(headElement)
+      ? buildRefrigerantPipeVisual(headElement, elements)
       : visual;
     const tailVisual = chainState
-      ? buildRefrigerantPipeVisual(tailElement)
+      ? buildRefrigerantPipeVisual(tailElement, elements)
       : visual;
     const points = chainState?.outerPoints ?? visual.outerPoints;
     const lineKind = chainState?.lineKind ?? visual.lineKind;
