@@ -52,7 +52,6 @@ import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel
 import {
   isRefrigerantPipeElementType,
   resolveRefrigerantPipeUnitPortReconnectionUpdates,
-  translateRefrigerantPipeElementProperties,
 } from "../hvac/refrigerantPipePairModel";
 import type { ObjectRenderer } from "../object/ObjectRenderer";
 import { MM_TO_PX } from "../scale";
@@ -282,6 +281,7 @@ export interface UseCanvasEventBindingOptions {
   getTargetMeta: (target: fabric.Object | null | undefined) => {
     isWallControl?: boolean;
     isRoomControl?: boolean;
+    isPipeControl?: boolean;
     wallId?: string | null;
     roomId?: string | null;
   };
@@ -1163,6 +1163,42 @@ export function useCanvasEventBinding(
         return;
       }
 
+      const prioritizedControlTarget =
+        candidateTargets.find((target) => {
+          const meta = getTargetMeta(
+            target as fabric.Object | null | undefined,
+          );
+          return Boolean(
+            meta.isWallControl || meta.isRoomControl || meta.isPipeControl,
+          );
+        }) ?? null;
+
+      if (!scenePoint) {
+        updateSelectionFromTarget(prioritizedControlTarget ?? hitTarget);
+        return;
+      }
+
+      const wallPointMm = {
+        x: scenePoint.x / MM_TO_PX,
+        y: scenePoint.y / MM_TO_PX,
+      };
+
+      if (prioritizedControlTarget) {
+        suppressNextFabricSelectionSync();
+        const prioritizedMeta = getTargetMeta(prioritizedControlTarget);
+        if (prioritizedMeta.roomId) {
+          setPersistentRoomControlId(prioritizedMeta.roomId);
+        } else if (!prioritizedMeta.isRoomControl) {
+          setPersistentRoomControlId(null);
+        }
+        handleSelectMouseDown(
+          prioritizedControlTarget,
+          wallPointMm,
+          addToSelection,
+        );
+        return;
+      }
+
       const hvacId =
         candidateTargets
           .map((target) => resolveHvacIdFromTarget(target))
@@ -1180,21 +1216,6 @@ export function useCanvasEventBinding(
         return;
       }
 
-      if (!scenePoint) {
-        updateSelectionFromTarget(hitTarget);
-        return;
-      }
-      const wallPointMm = {
-        x: scenePoint.x / MM_TO_PX,
-        y: scenePoint.y / MM_TO_PX,
-      };
-      const prioritizedWallOrRoomTarget =
-        candidateTargets.find((target) => {
-          const meta = getTargetMeta(
-            target as fabric.Object | null | undefined,
-          );
-          return Boolean(meta.isWallControl || meta.isRoomControl);
-        }) ?? null;
       const prioritizedDimensionControlTarget =
         candidateTargets.find((target) => {
           const typed = target as fabric.Object & {
@@ -1203,7 +1224,7 @@ export function useCanvasEventBinding(
           return Boolean(typed.isDimensionControl);
         }) ?? null;
       const targetMeta = getTargetMeta(
-        prioritizedWallOrRoomTarget ?? hitTarget,
+        hitTarget,
       );
       const directWallId =
         candidateTargets
@@ -1231,26 +1252,12 @@ export function useCanvasEventBinding(
           ? Math.max(10, Math.min(28, Math.min(...roomWallThicknesses) * 0.35))
           : 14;
       const isRoomAreaClick = roomInteriorDistance > roomInteriorThreshold;
-      if (prioritizedWallOrRoomTarget) {
-        suppressNextFabricSelectionSync();
-        const prioritizedMeta = getTargetMeta(prioritizedWallOrRoomTarget);
-        if (prioritizedMeta.roomId) {
-          setPersistentRoomControlId(prioritizedMeta.roomId);
-        } else if (!prioritizedMeta.isRoomControl) {
-          setPersistentRoomControlId(null);
-        }
-        handleSelectMouseDown(
-          prioritizedWallOrRoomTarget,
-          wallPointMm,
-          addToSelection,
-        );
-        return;
-      }
       if (
         clickedRoomId &&
         isRoomAreaClick &&
         !targetMeta.isRoomControl &&
         !targetMeta.isWallControl &&
+        !targetMeta.isPipeControl &&
         !targetMeta.wallId
       ) {
         const roomSelectionIds = [clickedRoomId];
@@ -1305,7 +1312,7 @@ export function useCanvasEventBinding(
       }
       setPersistentRoomControlId(null);
       handleSelectMouseDown(
-        prioritizedWallOrRoomTarget ?? hitTarget,
+        hitTarget,
         wallPointMm,
         addToSelection,
       );
@@ -1557,10 +1564,17 @@ export function useCanvasEventBinding(
         }
 
         if (isRefrigerantPipeElementType(existing.type)) {
+          const existingCenterMm = {
+            x: existing.position.x + existing.width / 2,
+            y: existing.position.y + existing.depth / 2,
+          };
           hvacRendererRef.current?.clearSceneElementOverrides();
           target.set({
+            left: existingCenterMm.x * MM_TO_PX,
+            top: existingCenterMm.y * MM_TO_PX,
             angle: existing.rotation,
           });
+          fabricRef.current?.requestRenderAll();
           return;
         }
 
@@ -1836,31 +1850,9 @@ export function useCanvasEventBinding(
             x: existing.position.x + existing.width / 2,
             y: existing.position.y + existing.depth / 2,
           };
-          const deltaMm = {
-            x: centerMm.x - existingCenterMm.x,
-            y: centerMm.y - existingCenterMm.y,
-          };
-          const nextPosition = {
-            x: existing.position.x + deltaMm.x,
-            y: existing.position.y + deltaMm.y,
-          };
-          const changed =
-            Math.abs(deltaMm.x) > 0.01 || Math.abs(deltaMm.y) > 0.01;
-
-          if (changed) {
-            updateHvacElement(hvacId, {
-              position: nextPosition,
-              properties: translateRefrigerantPipeElementProperties(
-                existing.type,
-                existing.properties,
-                deltaMm,
-              ),
-            });
-          }
-
           target.set({
-            left: centerMm.x * MM_TO_PX,
-            top: centerMm.y * MM_TO_PX,
+            left: existingCenterMm.x * MM_TO_PX,
+            top: existingCenterMm.y * MM_TO_PX,
             angle: existing.rotation,
           });
           fabricRef.current?.requestRenderAll();

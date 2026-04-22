@@ -8,6 +8,7 @@ import {
   findNearestRefrigerantPipeBundleTarget,
   type RefrigerantPipeConnectionKind,
   type RefrigerantPipeBundleConnection,
+  type RefrigerantPipeMaterial,
 } from '../hvac/refrigerantPipePairModel';
 import { findNearestVisibleRefrigerantPipeBundleTarget } from '../hvac/refrigerantPipeRenderState';
 import { MM_TO_PX } from '../scale';
@@ -17,6 +18,7 @@ export interface UseRefrigerantPipeToolOptions {
   fabricRef: React.RefObject<fabric.Canvas | null>;
   hvacRendererRef: React.RefObject<HvacPlanRenderer | null>;
   activeTool: string;
+  pipeMaterialMode: RefrigerantPipeMaterial;
   hvacElements: HvacElement[];
   zoom: number;
   snapToGrid: boolean;
@@ -113,6 +115,7 @@ export function useRefrigerantPipeTool(
     fabricRef,
     hvacRendererRef,
     activeTool,
+    pipeMaterialMode,
     hvacElements,
     zoom,
     snapToGrid,
@@ -455,18 +458,20 @@ export function useRefrigerantPipeTool(
       : null;
 
     let nextPoint = snappedBundle?.point ?? point;
-    if (snapToGrid && !snappedBundle) {
+    if (pipeMaterialMode === 'hard' && snapToGrid && !snappedBundle) {
       nextPoint = snapPointToGrid(nextPoint, gridSize);
     }
     if (!snappedBundle && routePointsRef.current.length > 0) {
       const previousPoint = routePointsRef.current[routePointsRef.current.length - 1]!;
       nextPoint = shiftPressedRef.current
         ? applyOrthogonalConstraint(previousPoint, nextPoint)
-        : applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG);
+        : pipeMaterialMode === 'hard'
+          ? applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG)
+          : nextPoint;
     }
 
     return { point: nextPoint, bundle: snappedBundle, source };
-  }, [gridSize, hvacElements, hvacRendererRef, snapToGrid, zoom]);
+  }, [gridSize, hvacElements, hvacRendererRef, pipeMaterialMode, snapToGrid, zoom]);
 
   const renderRoutePreview = useCallback((
     routePoints: Point2D[],
@@ -478,6 +483,7 @@ export function useRefrigerantPipeTool(
       return;
     }
     const previewElements = buildRefrigerantPipeElements(routePoints, {
+      segmentMaterialMode: pipeMaterialMode,
       startBundleConnection:
         startBundleConnectionOverride ?? startBundleRef.current,
       endBundleConnection,
@@ -495,7 +501,7 @@ export function useRefrigerantPipeTool(
       })),
       true,
     );
-  }, [clearPreview, hvacRendererRef]);
+  }, [clearPreview, hvacRendererRef, pipeMaterialMode]);
 
   const commitRoute = useCallback((candidateFinalPoint?: Point2D) => {
     const routePoints = [...routePointsRef.current];
@@ -516,6 +522,7 @@ export function useRefrigerantPipeTool(
 
     const nextElements = buildRefrigerantPipeElements(dedupedPoints, {
       bundleId: createRefrigerantBundleId(),
+      segmentMaterialMode: pipeMaterialMode,
       startBundleConnection: startBundleRef.current,
       endBundleConnection: endBundleRef.current,
     });
@@ -585,7 +592,14 @@ export function useRefrigerantPipeTool(
     setSelectedIds(elementIds);
     resetDrawing();
     return true;
-  }, [addHvacElements, logDebug, resetDrawing, setProcessingStatus, setSelectedIds]);
+  }, [
+    addHvacElements,
+    logDebug,
+    pipeMaterialMode,
+    resetDrawing,
+    setProcessingStatus,
+    setSelectedIds,
+  ]);
 
   const handleMouseDown = useCallback((point: Point2D) => {
     const { point: snappedPoint, bundle, source } = snapPoint(point, true);

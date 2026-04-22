@@ -25,6 +25,8 @@ import type {
     SplineMethod,
 } from '../types';
 
+export type RefrigerantPipeDrawMode = 'hard' | 'flexible';
+
 // =============================================================================
 // State Types
 // =============================================================================
@@ -49,6 +51,7 @@ export interface DrawingState {
 
     // Tool State
     activeTool: DrawingTool;
+    refrigerantPipeDrawMode: RefrigerantPipeDrawMode;
     activeLayerId: string | null;
     selectedElementIds: string[];
     hoveredElementId: string | null;
@@ -148,6 +151,7 @@ export interface SelectionActions {
 }
 
 export interface ToolActions {
+    setRefrigerantPipeDrawMode: (mode: RefrigerantPipeDrawMode) => void;
     setActiveTool: (tool: DrawingTool) => void;
     setTool: (tool: DrawingTool) => void;
 }

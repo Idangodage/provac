@@ -191,6 +191,7 @@ export function DrawingCanvas({
   // Store
   const {
     activeTool: tool,
+    refrigerantPipeDrawMode,
     zoom: documentZoom,
     panOffset: documentPanOffset,
     displayUnit,
@@ -261,6 +262,7 @@ export function DrawingCanvas({
   } = useSmartDrawingStore(
     (state) => ({
       activeTool: state.activeTool,
+      refrigerantPipeDrawMode: state.refrigerantPipeDrawMode,
       zoom: state.zoom,
       panOffset: state.panOffset,
       displayUnit: state.displayUnit,
@@ -790,6 +792,7 @@ export function DrawingCanvas({
     fabricRef,
     hvacRendererRef,
     activeTool: tool,
+    pipeMaterialMode: refrigerantPipeDrawMode,
     hvacElements,
     zoom: viewportZoom,
     snapToGrid: resolvedSnapToGrid,
@@ -904,12 +907,14 @@ export function DrawingCanvas({
     selectedIds,
     wallSettings,
     zoom: viewportZoom,
+    hvacElements,
     setSelectedIds,
     setHoveredElement,
     getWall,
     updateWall,
     updateWalls,
     updateWallBevel,
+    updateHvacElement,
     resetWallBevel,
     getCornerBevelDots,
     moveRoom,

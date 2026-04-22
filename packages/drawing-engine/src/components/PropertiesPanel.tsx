@@ -2825,6 +2825,41 @@ function WallToolSection() {
   );
 }
 
+function RefrigerantPipeToolSection() {
+  const { refrigerantPipeDrawMode, setRefrigerantPipeDrawMode } =
+    useSmartDrawingStore(
+      (state) => ({
+        refrigerantPipeDrawMode: state.refrigerantPipeDrawMode,
+        setRefrigerantPipeDrawMode: state.setRefrigerantPipeDrawMode,
+      }),
+      shallow,
+    );
+
+  return (
+    <div className="space-y-2">
+      <PropertyRow label="Pipe Type">
+        <div className="flex items-center gap-1">
+          <TabButton
+            active={refrigerantPipeDrawMode === "flexible"}
+            label="Flexible copper"
+            onClick={() => setRefrigerantPipeDrawMode("flexible")}
+          />
+          <TabButton
+            active={refrigerantPipeDrawMode === "hard"}
+            label="Hard copper"
+            onClick={() => setRefrigerantPipeDrawMode("hard")}
+          />
+        </div>
+      </PropertyRow>
+      <p className="text-[11px] leading-5 text-slate-500">
+        {refrigerantPipeDrawMode === "hard"
+          ? "Hard mode constrains routing to straight, 45°, and 90° style runs with rigid fitting geometry."
+          : "Flexible mode keeps free-angle routing so you can place multiple vertices for real on-site laying paths."}
+      </p>
+    </div>
+  );
+}
+
 function DimensionSection() {
   const {
     dimensions,
@@ -3790,6 +3825,12 @@ export function PropertiesPanel({
           hasSelectedWall) && (
           <CollapsibleSection title="Wall Tool" defaultOpen={false}>
             <WallToolSection />
+          </CollapsibleSection>
+        )}
+
+        {activeTool === "refrigerant-pipe" && (
+          <CollapsibleSection title="Refrigerant Pipe Tool" defaultOpen>
+            <RefrigerantPipeToolSection />
           </CollapsibleSection>
         )}
 

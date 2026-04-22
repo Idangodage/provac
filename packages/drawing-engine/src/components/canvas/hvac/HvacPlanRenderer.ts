@@ -721,20 +721,61 @@ export class HvacPlanRenderer {
 
   private syncHvacVisualState(): void {
     this.groups.forEach((group, id) => {
+      const isSelected = this.selectedIds.has(id);
       const selectionHalos = group
         .getObjects()
         .filter((obj) => (obj as NamedObject).name === "hvac-selection");
       const hoverHalos = group
         .getObjects()
         .filter((obj) => (obj as NamedObject).name === "hvac-hover");
+      const pipeControlHandles = group
+        .getObjects()
+        .filter(
+          (obj) =>
+            Boolean(
+              (
+                obj as fabric.FabricObject & {
+                  isPipeHandle?: boolean;
+                  isPipeVertexHandle?: boolean;
+                }
+              ).isPipeHandle ??
+                (
+                  obj as fabric.FabricObject & {
+                    isPipeVertexHandle?: boolean;
+                  }
+                ).isPipeVertexHandle,
+            ),
+        );
       selectionHalos.forEach((selectionHalo) => {
-        selectionHalo.set("visible", this.selectedIds.has(id));
+        selectionHalo.set("visible", isSelected);
       });
       hoverHalos.forEach((hoverHalo) => {
         hoverHalo.set(
           "visible",
-          this.hoveredId === id && !this.selectedIds.has(id),
+          this.hoveredId === id && !isSelected,
         );
+      });
+      pipeControlHandles.forEach((handle) => {
+        const typedHandle = handle as fabric.FabricObject & {
+          controlType?: string;
+          pipeControlDraggable?: boolean;
+          pipeVertexDraggable?: boolean;
+        };
+        handle.set("visible", isSelected);
+        const isPipeControl =
+          typedHandle.controlType === "pipe-vertex-handle" ||
+          typedHandle.controlType === "pipe-segment-handle";
+        const isDraggableControl = Boolean(
+          typedHandle.pipeControlDraggable ?? typedHandle.pipeVertexDraggable,
+        );
+        if (isPipeControl) {
+          handle.set(
+            "evented",
+            isSelected && isDraggableControl,
+          );
+        } else {
+          handle.set("evented", false);
+        }
       });
       group.set("dirty", true);
     });
@@ -1365,6 +1406,242 @@ export class HvacPlanRenderer {
       objects.push(crossH, crossV);
     };
 
+    const createPipeVertexHandle = (
+      localPoint: Point2D,
+      vertexIndex: number,
+      options: {
+        draggable: boolean;
+        endpoint: boolean;
+        visible: boolean;
+      },
+    ): void => {
+      const viewportZoom = Math.max(this.canvas.getZoom(), 0.01);
+      const baseOuterRadius = options.endpoint ? 4.8 : 6.2;
+      const targetScreenOuterRadius = options.endpoint ? 7.5 : 9.5;
+      const outerRadius = Math.max(
+        baseOuterRadius,
+        targetScreenOuterRadius / viewportZoom,
+      );
+      const innerRadius = Math.max(
+        options.endpoint ? 1.9 : 2.4,
+        (options.endpoint ? 3.2 : 4.1) / viewportZoom,
+      );
+      const strokeColor = options.endpoint ? "#0f766e" : "#2563eb";
+      const fillColor = options.endpoint
+        ? "rgba(255,255,255,0.92)"
+        : "rgba(255,255,255,0.96)";
+      const outer = new fabric.Circle({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        radius: outerRadius,
+        originX: "center",
+        originY: "center",
+        fill: fillColor,
+        stroke: strokeColor,
+        strokeWidth: 2.2,
+        selectable: false,
+        evented: false,
+        visible: options.visible,
+        excludeFromExport: true,
+      }) as fabric.Circle & {
+        isPipeControl?: boolean;
+        isPipeHandle?: boolean;
+        isPipeVertexHandle?: boolean;
+        controlType?: string;
+        pipeId?: string;
+        pipeVertexIndex?: number;
+        pipeControlDraggable?: boolean;
+        pipeVertexDraggable?: boolean;
+      };
+      outer.isPipeHandle = true;
+      outer.isPipeVertexHandle = true;
+      outer.pipeControlDraggable = options.draggable;
+      outer.pipeVertexDraggable = options.draggable;
+      if (options.draggable) {
+        outer.isPipeControl = true;
+        outer.controlType = "pipe-vertex-handle";
+        outer.pipeId = element.id;
+        outer.pipeVertexIndex = vertexIndex;
+      }
+
+      const inner = new fabric.Circle({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        radius: innerRadius,
+        originX: "center",
+        originY: "center",
+        fill: strokeColor,
+        strokeWidth: 0,
+        selectable: false,
+        evented: false,
+        visible: options.visible,
+        excludeFromExport: true,
+      }) as fabric.Circle & {
+        isPipeHandle?: boolean;
+        isPipeVertexHandle?: boolean;
+      };
+      inner.isPipeHandle = true;
+      inner.isPipeVertexHandle = true;
+
+      const hitRadius = options.draggable
+        ? Math.max(outerRadius + 5, 14 / viewportZoom)
+        : outerRadius;
+      const hit = new fabric.Circle({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        radius: hitRadius,
+        originX: "center",
+        originY: "center",
+        fill: options.draggable ? "rgba(0,0,0,0.001)" : "transparent",
+        strokeWidth: 0,
+        selectable: false,
+        evented: options.visible && options.draggable,
+        visible: options.visible,
+        excludeFromExport: true,
+      }) as fabric.Circle & {
+        isPipeControl?: boolean;
+        isPipeHandle?: boolean;
+        isPipeVertexHandle?: boolean;
+        controlType?: string;
+        pipeId?: string;
+        pipeVertexIndex?: number;
+        pipeControlDraggable?: boolean;
+        pipeVertexDraggable?: boolean;
+      };
+      hit.isPipeHandle = true;
+      hit.isPipeVertexHandle = true;
+      if (options.draggable) {
+        hit.isPipeControl = true;
+        hit.controlType = "pipe-vertex-handle";
+        hit.pipeId = element.id;
+        hit.pipeVertexIndex = vertexIndex;
+        hit.pipeControlDraggable = true;
+        hit.pipeVertexDraggable = true;
+      }
+
+      this.annotate(
+        outer,
+        element.id,
+        `hvac-pipe-vertex-${vertexIndex}${options.draggable ? "-control" : "-marker"}`,
+      );
+      this.annotate(inner, element.id, `hvac-pipe-vertex-core-${vertexIndex}`);
+      this.annotate(hit, element.id, `hvac-pipe-vertex-hit-${vertexIndex}`);
+      objects.push(outer, inner, hit);
+    };
+
+    const createPipeSegmentHandle = (
+      localPoint: Point2D,
+      startIndex: number,
+      endIndex: number,
+      options: {
+        visible: boolean;
+      },
+    ): void => {
+      const viewportZoom = Math.max(this.canvas.getZoom(), 0.01);
+      const outerRadius = Math.max(6, 10 / viewportZoom);
+      const innerRadius = Math.max(2.2, 4 / viewportZoom);
+      const strokeColor = "#b45309";
+      const outer = new fabric.Circle({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        radius: outerRadius,
+        originX: "center",
+        originY: "center",
+        fill: "rgba(255,255,255,0.95)",
+        stroke: strokeColor,
+        strokeWidth: 2.2,
+        selectable: false,
+        evented: false,
+        visible: options.visible,
+        excludeFromExport: true,
+      }) as fabric.Circle & {
+        isPipeControl?: boolean;
+        isPipeHandle?: boolean;
+        isPipeVertexHandle?: boolean;
+        controlType?: string;
+        pipeId?: string;
+        pipeSegmentStartIndex?: number;
+        pipeSegmentEndIndex?: number;
+        pipeControlDraggable?: boolean;
+      };
+      outer.isPipeHandle = true;
+      outer.isPipeVertexHandle = true;
+      outer.isPipeControl = true;
+      outer.controlType = "pipe-segment-handle";
+      outer.pipeId = element.id;
+      outer.pipeSegmentStartIndex = startIndex;
+      outer.pipeSegmentEndIndex = endIndex;
+      outer.pipeControlDraggable = true;
+
+      const inner = new fabric.Circle({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        radius: innerRadius,
+        originX: "center",
+        originY: "center",
+        fill: strokeColor,
+        strokeWidth: 0,
+        selectable: false,
+        evented: false,
+        visible: options.visible,
+        excludeFromExport: true,
+      }) as fabric.Circle & {
+        isPipeHandle?: boolean;
+        isPipeVertexHandle?: boolean;
+      };
+      inner.isPipeHandle = true;
+      inner.isPipeVertexHandle = true;
+
+      const hitRadius = Math.max(outerRadius + 5, 14 / viewportZoom);
+      const hit = new fabric.Circle({
+        left: toPx(localPoint.x),
+        top: toPx(localPoint.y),
+        radius: hitRadius,
+        originX: "center",
+        originY: "center",
+        fill: "rgba(0,0,0,0.001)",
+        strokeWidth: 0,
+        selectable: false,
+        evented: options.visible,
+        visible: options.visible,
+        excludeFromExport: true,
+      }) as fabric.Circle & {
+        isPipeControl?: boolean;
+        isPipeHandle?: boolean;
+        isPipeVertexHandle?: boolean;
+        controlType?: string;
+        pipeId?: string;
+        pipeSegmentStartIndex?: number;
+        pipeSegmentEndIndex?: number;
+        pipeControlDraggable?: boolean;
+      };
+      hit.isPipeHandle = true;
+      hit.isPipeVertexHandle = true;
+      hit.isPipeControl = true;
+      hit.controlType = "pipe-segment-handle";
+      hit.pipeId = element.id;
+      hit.pipeSegmentStartIndex = startIndex;
+      hit.pipeSegmentEndIndex = endIndex;
+      hit.pipeControlDraggable = true;
+
+      this.annotate(
+        outer,
+        element.id,
+        `hvac-pipe-segment-${startIndex}-${endIndex}`,
+      );
+      this.annotate(
+        inner,
+        element.id,
+        `hvac-pipe-segment-core-${startIndex}-${endIndex}`,
+      );
+      this.annotate(
+        hit,
+        element.id,
+        `hvac-pipe-segment-hit-${startIndex}-${endIndex}`,
+      );
+      objects.push(outer, inner, hit);
+    };
+
     const buildContinuousCorePoints = (
       stub: { start: Point2D; end: Point2D } | null,
       points: Point2D[],
@@ -1382,6 +1659,187 @@ export class HvacPlanRenderer {
         return points;
       }
       return [stub.end, ...points];
+    };
+
+    const distancePointToSegmentMm = (
+      point: Point2D,
+      start: Point2D,
+      end: Point2D,
+    ): number => {
+      const segment = subtractPoints(end, start);
+      const lengthSq = segment.x * segment.x + segment.y * segment.y;
+      if (lengthSq <= 1e-8) {
+        return Math.hypot(point.x - start.x, point.y - start.y);
+      }
+      const projected = Math.max(
+        0,
+        Math.min(
+          1,
+          ((point.x - start.x) * segment.x + (point.y - start.y) * segment.y) /
+            lengthSq,
+        ),
+      );
+      const closest = {
+        x: start.x + segment.x * projected,
+        y: start.y + segment.y * projected,
+      };
+      return Math.hypot(point.x - closest.x, point.y - closest.y);
+    };
+
+    const simplifyHandleVertexIndices = (
+      points: Point2D[],
+      toleranceMm: number,
+    ): number[] => {
+      const count = points.length;
+      if (count <= 2) {
+        return count === 2 ? [0, 1] : [0];
+      }
+
+      const keep = new Set<number>([0, count - 1]);
+      const visit = (startIndex: number, endIndex: number): void => {
+        if (endIndex - startIndex <= 1) {
+          return;
+        }
+        const startPoint = points[startIndex]!;
+        const endPoint = points[endIndex]!;
+        let farthestIndex = -1;
+        let farthestDistance = -1;
+        for (let index = startIndex + 1; index < endIndex; index += 1) {
+          const distance = distancePointToSegmentMm(
+            points[index]!,
+            startPoint,
+            endPoint,
+          );
+          if (distance > farthestDistance) {
+            farthestDistance = distance;
+            farthestIndex = index;
+          }
+        }
+        if (farthestIndex >= 0 && farthestDistance > toleranceMm) {
+          keep.add(farthestIndex);
+          visit(startIndex, farthestIndex);
+          visit(farthestIndex, endIndex);
+        }
+      };
+      visit(0, count - 1);
+      return Array.from(keep).sort((left, right) => left - right);
+    };
+
+    const buildPipeHandleVertexIndices = (points: Point2D[]): number[] => {
+      if (points.length <= 2) {
+        return points.length === 2 ? [0, 1] : [0];
+      }
+      // Route points can include dense arc samples. Simplify to logical bend controls.
+      const HANDLE_SIMPLIFY_TOLERANCE_MM = 8;
+      const simplified = simplifyHandleVertexIndices(
+        points,
+        HANDLE_SIMPLIFY_TOLERANCE_MM,
+      );
+      if (simplified.length > 2) {
+        return simplified;
+      }
+      // Keep one interior control when the path has curvature, so bends remain editable.
+      const start = points[0]!;
+      const end = points[points.length - 1]!;
+      let candidateIndex = -1;
+      let candidateDistance = 0;
+      for (let index = 1; index < points.length - 1; index += 1) {
+        const distance = distancePointToSegmentMm(points[index]!, start, end);
+        if (distance > candidateDistance) {
+          candidateDistance = distance;
+          candidateIndex = index;
+        }
+      }
+      if (candidateIndex > 0 && candidateDistance > 1) {
+        return [0, candidateIndex, points.length - 1];
+      }
+      return simplified;
+    };
+
+    const classifyHardDirection = (
+      start: Point2D,
+      end: Point2D,
+    ): "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW" | null => {
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      if (Math.abs(dx) <= 0.5 && Math.abs(dy) <= 0.5) {
+        return null;
+      }
+      if (Math.abs(dx) <= 0.75) {
+        return dy > 0 ? "S" : "N";
+      }
+      if (Math.abs(dy) <= 0.75) {
+        return dx > 0 ? "E" : "W";
+      }
+      if (Math.abs(Math.abs(dx) - Math.abs(dy)) <= 1.5) {
+        if (dx > 0 && dy < 0) return "NE";
+        if (dx > 0 && dy > 0) return "SE";
+        if (dx < 0 && dy < 0) return "NW";
+        return "SW";
+      }
+      return null;
+    };
+
+    const buildHardSegmentHandleSpecs = (
+      points: Point2D[],
+      segmentMaterials: Array<"hard" | "flexible">,
+      options: {
+        lockStart: boolean;
+        lockEnd: boolean;
+      },
+    ): Array<{
+      startIndex: number;
+      endIndex: number;
+      midPoint: Point2D;
+    }> => {
+      if (points.length < 2) {
+        return [];
+      }
+      const specs: Array<{
+        startIndex: number;
+        endIndex: number;
+        midPoint: Point2D;
+      }> = [];
+      const segmentCount = points.length - 1;
+      const lastIndex = points.length - 1;
+      const MIN_MOVABLE_HARD_SEGMENT_MM = 24;
+
+      for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
+        if ((segmentMaterials[segmentIndex] ?? "flexible") !== "hard") {
+          continue;
+        }
+        const startIndex = segmentIndex;
+        const endIndex = segmentIndex + 1;
+        if (
+          (startIndex === 0 && options.lockStart) ||
+          (endIndex === lastIndex && options.lockEnd)
+        ) {
+          continue;
+        }
+        const startPoint = points[startIndex]!;
+        const endPoint = points[endIndex]!;
+        const direction = classifyHardDirection(startPoint, endPoint);
+        if (!direction) {
+          continue;
+        }
+        const segmentLengthMm = Math.hypot(
+          endPoint.x - startPoint.x,
+          endPoint.y - startPoint.y,
+        );
+        if (segmentLengthMm < MIN_MOVABLE_HARD_SEGMENT_MM) {
+          continue;
+        }
+        specs.push({
+          startIndex,
+          endIndex,
+          midPoint: {
+            x: (startPoint.x + endPoint.x) / 2,
+            y: (startPoint.y + endPoint.y) / 2,
+          },
+        });
+      }
+
+      return specs;
     };
 
     const createRectOutlineHalo = (
@@ -1624,6 +2082,68 @@ export class HvacPlanRenderer {
           );
         }
 
+        const showVertexHandles = options.includeInteractionHalos;
+        const vertexHandlesVisible = this.selectedIds.has(element.id);
+        const handleVertexIndices = buildPipeHandleVertexIndices(
+          visual.routePoints,
+        );
+        const vertexHandleSpecs =
+          showVertexHandles && handleVertexIndices.length >= 2
+            ? handleVertexIndices.map((vertexIndex, handleOrderIndex) => {
+                const routePoint = visual.routePoints[vertexIndex]!;
+                const isEndpoint =
+                  handleOrderIndex === 0 ||
+                  handleOrderIndex === handleVertexIndices.length - 1;
+                const leftMaterial =
+                  vertexIndex > 0
+                    ? visual.segmentMaterials[vertexIndex - 1] ?? "flexible"
+                    : visual.segmentMaterials[0] ?? "flexible";
+                const rightMaterial =
+                  vertexIndex < visual.segmentMaterials.length
+                    ? visual.segmentMaterials[vertexIndex] ?? leftMaterial
+                    : leftMaterial;
+                const isFlexibleVertex =
+                  leftMaterial === "flexible" || rightMaterial === "flexible";
+                if (!isFlexibleVertex) {
+                  return null;
+                }
+                return {
+                  localPoint: localizePoint(routePoint),
+                  vertexIndex,
+                  draggable: !isEndpoint,
+                  endpoint: isEndpoint,
+                  visible: vertexHandlesVisible,
+                };
+              })
+                .filter(
+                  (
+                    spec,
+                  ): spec is {
+                    localPoint: Point2D;
+                    vertexIndex: number;
+                    draggable: boolean;
+                    endpoint: boolean;
+                    visible: boolean;
+                  } => Boolean(spec),
+                )
+            : [];
+        const segmentHandleSpecs =
+          showVertexHandles
+            ? buildHardSegmentHandleSpecs(
+                visual.routePoints,
+                visual.segmentMaterials,
+                {
+                  lockStart: Boolean(visual.startConnection),
+                  lockEnd: Boolean(visual.endConnection),
+                },
+              ).map((segmentSpec) => ({
+                startIndex: segmentSpec.startIndex,
+                endIndex: segmentSpec.endIndex,
+                localPoint: localizePoint(segmentSpec.midPoint),
+                visible: vertexHandlesVisible,
+              }))
+            : [];
+
         if (isChainHiddenMember) {
           renderPipeRectSegment(
             visual.localStub,
@@ -1636,6 +2156,21 @@ export class HvacPlanRenderer {
             "rgba(0,0,0,0.001)",
             visual.outerDiameterMm + 8 / MM_TO_PX,
             "hvac-detail",
+          );
+          vertexHandleSpecs.forEach((handle) =>
+            createPipeVertexHandle(handle.localPoint, handle.vertexIndex, {
+              draggable: handle.draggable,
+              endpoint: handle.endpoint,
+              visible: handle.visible,
+            }),
+          );
+          segmentHandleSpecs.forEach((handle) =>
+            createPipeSegmentHandle(
+              handle.localPoint,
+              handle.startIndex,
+              handle.endIndex,
+              { visible: handle.visible },
+            ),
           );
           break;
         }
@@ -1771,6 +2306,21 @@ export class HvacPlanRenderer {
           selectable: false,
           evented: false,
         }));
+        vertexHandleSpecs.forEach((handle) =>
+          createPipeVertexHandle(handle.localPoint, handle.vertexIndex, {
+            draggable: handle.draggable,
+            endpoint: handle.endpoint,
+            visible: handle.visible,
+          }),
+        );
+        segmentHandleSpecs.forEach((handle) =>
+          createPipeSegmentHandle(
+            handle.localPoint,
+            handle.startIndex,
+            handle.endIndex,
+            { visible: handle.visible },
+          ),
+        );
         
         break;
       }

@@ -181,6 +181,7 @@ export interface UseCanvasMouseHandlersOptions {
   getTargetMeta: (target: fabric.Object | null | undefined) => {
     isWallControl?: boolean;
     isRoomControl?: boolean;
+    isPipeControl?: boolean;
     wallId?: string;
   };
   resolveObjectIdFromTarget: (
@@ -851,12 +852,14 @@ export function useCanvasMouseHandlers(
           x: rawPoint.x / MM_TO_PX,
           y: rawPoint.y / MM_TO_PX,
         };
-        const prioritizedWallOrRoomTarget =
+        const prioritizedControlTarget =
           candidateTargets.find((target) => {
             const meta = getTargetMeta(
               target as fabric.Object | null | undefined,
             );
-            return Boolean(meta.isWallControl || meta.isRoomControl);
+            return Boolean(
+              meta.isWallControl || meta.isRoomControl || meta.isPipeControl,
+            );
           }) ?? null;
         const hoveredObjectId =
           candidateTargets
@@ -900,12 +903,12 @@ export function useCanvasMouseHandlers(
             return;
           }
         }
-        if (prioritizedWallOrRoomTarget) {
+        if (prioritizedControlTarget) {
           const prioritizedMeta = getTargetMeta(
-            prioritizedWallOrRoomTarget as fabric.Object | null | undefined,
+            prioritizedControlTarget as fabric.Object | null | undefined,
           );
           wallRenderer?.setHoveredWall(prioritizedMeta.wallId ?? null);
-          handleSelectMouseMove(selectPoint, prioritizedWallOrRoomTarget);
+          handleSelectMouseMove(selectPoint, prioritizedControlTarget);
           return;
         }
 

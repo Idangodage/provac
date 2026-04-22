@@ -29,6 +29,7 @@ import {
 import type { FurnitureProjectionInput } from '../components/canvas/elevation';
 import {
   isRefrigerantPipeElementType,
+  type RefrigerantPipeMaterial,
   translateRefrigerantPipeElementProperties,
 } from '../components/canvas/hvac/refrigerantPipePairModel';
 import { DEFAULT_ARCHITECTURAL_OBJECT_LIBRARY } from '../data';
@@ -1751,6 +1752,7 @@ export interface DrawingState {
 
   // Tool State
   activeTool: DrawingTool;
+  refrigerantPipeDrawMode: RefrigerantPipeMaterial;
   activeLayerId: string | null;
   selectedElementIds: string[];
   hoveredElementId: string | null;
@@ -1949,6 +1951,7 @@ export interface DrawingState {
   deleteSelected: () => void;
 
   // Actions - Tools
+  setRefrigerantPipeDrawMode: (mode: RefrigerantPipeMaterial) => void;
   setActiveTool: (tool: DrawingTool) => void;
 
   // Alias for backward compatibility
@@ -2060,6 +2063,7 @@ export const useDrawingStore = create<DrawingState>()(
       processingStatus: '',
       detectedElements: [],
       activeTool: 'select',
+      refrigerantPipeDrawMode: 'hard',
       activeLayerId: 'default',
       selectedElementIds: [],
       hoveredElementId: null,
@@ -4336,6 +4340,12 @@ export const useDrawingStore = create<DrawingState>()(
       exportData: () => get().exportToJSON(),
 
       // Tool Actions
+      setRefrigerantPipeDrawMode: (mode) =>
+        set((state) =>
+          state.refrigerantPipeDrawMode === mode
+            ? state
+            : { refrigerantPipeDrawMode: mode }
+        ),
       setActiveTool: (tool) => set((state) => {
         const partitionToolActive = isPartitionWallTool(tool);
         return {

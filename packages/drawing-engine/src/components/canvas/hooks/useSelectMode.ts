@@ -14,7 +14,7 @@ import { useRef, useCallback, useEffect } from 'react';
 import type { MutableRefObject } from 'react';
 
 import { WallRotationOperation } from '../../../operations';
-import type { Point2D, Room, Wall, WallSettings } from '../../../types';
+import type { HvacElement, Point2D, Room, Wall, WallSettings } from '../../../types';
 import {
   MAX_WALL_THICKNESS,
   MIN_WALL_LENGTH,
@@ -26,6 +26,11 @@ import {
   type CornerEnd,
 } from '../../../utils/wallBevel';
 import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
+import {
+  buildRefrigerantPipeVisual,
+  resolveRefrigerantPipeSpec,
+  type RefrigerantPipeMaterial,
+} from '../hvac/refrigerantPipePairModel';
 import { isRoomIsolatedFromAttachments } from '../room/roomIsolation';
 import { MM_TO_PX } from '../scale';
 import { computeWallBodyPolygon } from '../wall/WallGeometry';
@@ -62,6 +67,8 @@ type WallControlType =
   | 'wall-thickness-interior'
   | 'wall-thickness-exterior'
   | 'wall-rotation-handle'
+  | 'pipe-vertex-handle'
+  | 'pipe-segment-handle'
   | 'room-center-handle'
   | 'room-rotation-handle'
   | 'room-corner-handle'
@@ -85,6 +92,7 @@ export interface UseSelectModeOptions {
   selectedIds: string[];
   wallSettings: WallSettings;
   zoom: number;
+  hvacElements: HvacElement[];
   setSelectedIds: (ids: string[]) => void;
   setHoveredElement: (id: string | null) => void;
   getWall: (id: string) => Wall | undefined;
@@ -98,6 +106,11 @@ export interface UseSelectModeOptions {
     end: CornerEnd,
     bevel: Partial<{ outerOffset: number; innerOffset: number }>,
     options?: WallUpdateOptions
+  ) => void;
+  updateHvacElement: (
+    id: string,
+    updates: Partial<HvacElement>,
+    options?: { skipHistory?: boolean },
   ) => void;
   resetWallBevel: (wallId: string, end: CornerEnd) => void;
   getCornerBevelDots: (cornerPoint: Point2D) => {
@@ -123,11 +136,16 @@ interface TargetMeta {
   id?: string;
   wallId?: string;
   roomId?: string;
+  pipeId?: string;
+  pipeVertexIndex?: number;
+  pipeSegmentStartIndex?: number;
+  pipeSegmentEndIndex?: number;
   controlType?: WallControlType;
   cornerIndex?: number;
   scaleDirection?: 'NW' | 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W';
   isWallControl?: boolean;
   isRoomControl?: boolean;
+  isPipeControl?: boolean;
   roomBoundarySelectionKey?: string;
   roomBoundaryStartPoint?: Point2D;
   roomBoundaryEndPoint?: Point2D;
@@ -230,6 +248,27 @@ interface RotateDragState {
   operation: WallRotationOperation;
 }
 
+interface PipeVertexDragState {
+  mode: 'pipe-vertex';
+  pipeId: string;
+  vertexIndex: number;
+  startPointer: Point2D;
+  baselineRoutePoints: Point2D[];
+  segmentMaterials: RefrigerantPipeMaterial[];
+  baselineProperties: Record<string, unknown>;
+}
+
+interface PipeSegmentDragState {
+  mode: 'pipe-segment';
+  pipeId: string;
+  startIndex: number;
+  endIndex: number;
+  startPointer: Point2D;
+  baselineRoutePoints: Point2D[];
+  segmentMaterials: RefrigerantPipeMaterial[];
+  baselineProperties: Record<string, unknown>;
+}
+
 type DragState =
   | IdleDragState
   | ThicknessDragState
@@ -239,7 +278,9 @@ type DragState =
   | RoomCornerDragState
   | RoomScaleDragState
   | RoomRotateDragState
-  | RotateDragState;
+  | RotateDragState
+  | PipeVertexDragState
+  | PipeSegmentDragState;
 
 interface DragApplyResult {
   label: string;
@@ -311,6 +352,29 @@ function midpoint(a: Point2D, b: Point2D): Point2D {
 
 function wallLength(wall: Pick<Wall, 'startPoint' | 'endPoint'>): number {
   return magnitude(subtract(wall.endPoint, wall.startPoint));
+}
+
+type HardDirection8 = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
+
+function classifyHardDirection(start: Point2D, end: Point2D): HardDirection8 | null {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (Math.abs(dx) <= 0.5 && Math.abs(dy) <= 0.5) {
+    return null;
+  }
+  if (Math.abs(dx) <= 0.75) {
+    return dy > 0 ? 'S' : 'N';
+  }
+  if (Math.abs(dy) <= 0.75) {
+    return dx > 0 ? 'E' : 'W';
+  }
+  if (Math.abs(Math.abs(dx) - Math.abs(dy)) <= 1.5) {
+    if (dx > 0 && dy < 0) return 'NE';
+    if (dx > 0 && dy > 0) return 'SE';
+    if (dx < 0 && dy < 0) return 'NW';
+    return 'SW';
+  }
+  return null;
 }
 
 function wallDirection(wall: Pick<Wall, 'startPoint' | 'endPoint'>): Point2D {
@@ -606,12 +670,14 @@ export function useSelectMode({
   selectedIds,
   wallSettings,
   zoom,
+  hvacElements,
   setSelectedIds,
   setHoveredElement,
   getWall,
   updateWall,
   updateWalls,
   updateWallBevel,
+  updateHvacElement,
   resetWallBevel,
   getCornerBevelDots,
   moveRoom,
@@ -650,12 +716,14 @@ export function useSelectMode({
     selectedIds,
     wallSettings,
     zoom,
+    hvacElements,
     setSelectedIds,
     setHoveredElement,
     getWall,
     updateWall,
     updateWalls,
     updateWallBevel,
+    updateHvacElement,
     resetWallBevel,
     getCornerBevelDots,
     moveRoom,
@@ -680,19 +748,21 @@ export function useSelectMode({
   useEffect(() => {
     optionsRef.current = {
       walls,
-      rooms,
-      selectedIds,
-      wallSettings,
-      zoom,
-      setSelectedIds,
-      setHoveredElement,
-      getWall,
-      updateWall,
-      updateWalls,
-      updateWallBevel,
-      resetWallBevel,
-      getCornerBevelDots,
-      moveRoom,
+    rooms,
+    selectedIds,
+    wallSettings,
+    zoom,
+    hvacElements,
+    setSelectedIds,
+    setHoveredElement,
+    getWall,
+    updateWall,
+    updateWalls,
+    updateWallBevel,
+    updateHvacElement,
+    resetWallBevel,
+    getCornerBevelDots,
+    moveRoom,
       connectWalls,
       selectWallSegmentWithinInterval,
       detectRooms,
@@ -708,11 +778,13 @@ export function useSelectMode({
     selectedIds,
     wallSettings,
     zoom,
+    hvacElements,
     setSelectedIds,
     setHoveredElement,
     updateWall,
     updateWalls,
     updateWallBevel,
+    updateHvacElement,
     resetWallBevel,
     getCornerBevelDots,
     moveRoom,
@@ -1182,6 +1254,10 @@ export function useSelectMode({
     return optionsRef.current.getWall(wallId) ?? optionsRef.current.walls.find((wall) => wall.id === wallId);
   }, []);
 
+  const findHvacById = useCallback((hvacId: string): HvacElement | undefined => {
+    return optionsRef.current.hvacElements.find((element) => element.id === hvacId);
+  }, []);
+
   const findRoomById = useCallback((roomId: string): Room | undefined => {
     return optionsRef.current.rooms.find((room) => room.id === roomId);
   }, []);
@@ -1414,7 +1490,10 @@ export function useSelectMode({
   }, []);
 
   const getTargetMeta = useCallback((target: FabricObject | undefined | null): TargetMeta => {
-    const typed = target as FabricObject & TargetMeta & { group?: TargetMeta };
+    const typed = target as FabricObject &
+      TargetMeta & {
+        group?: TargetMeta;
+      };
     const group = typed?.group;
 
     const wallId =
@@ -1435,19 +1514,29 @@ export function useSelectMode({
     const roomBoundarySelectionKey = typed?.roomBoundarySelectionKey ?? group?.roomBoundarySelectionKey;
     const roomBoundaryStartPoint = typed?.roomBoundaryStartPoint ?? group?.roomBoundaryStartPoint;
     const roomBoundaryEndPoint = typed?.roomBoundaryEndPoint ?? group?.roomBoundaryEndPoint;
+    const pipeId = typed?.pipeId ?? group?.pipeId;
+    const pipeVertexIndex = typed?.pipeVertexIndex ?? group?.pipeVertexIndex;
+    const pipeSegmentStartIndex = typed?.pipeSegmentStartIndex ?? group?.pipeSegmentStartIndex;
+    const pipeSegmentEndIndex = typed?.pipeSegmentEndIndex ?? group?.pipeSegmentEndIndex;
     const isWallControl = Boolean(typed?.isWallControl && controlType);
     const isRoomControl = Boolean(typed?.isRoomControl && controlType);
+    const isPipeControl = Boolean(typed?.isPipeControl && controlType);
 
     return {
       name: typed?.name,
       id,
       wallId,
       roomId,
+      pipeId,
+      pipeVertexIndex,
+      pipeSegmentStartIndex,
+      pipeSegmentEndIndex,
       controlType,
       cornerIndex,
       scaleDirection,
       isWallControl,
       isRoomControl,
+      isPipeControl,
       roomBoundarySelectionKey,
       roomBoundaryStartPoint,
       roomBoundaryEndPoint,
@@ -1461,7 +1550,7 @@ export function useSelectMode({
           targets
             .map((target) => {
               const meta = getTargetMeta(target);
-              return meta.wallId ?? meta.roomId ?? meta.id;
+              return meta.wallId ?? meta.roomId ?? meta.pipeId ?? meta.id;
             })
             .filter((id): id is string => Boolean(id))
         )
@@ -1653,6 +1742,83 @@ export function useSelectMode({
 
   const beginControlDrag = useCallback((meta: TargetMeta, point: Point2D) => {
     if (!meta.controlType) return false;
+
+    if (
+      meta.controlType === 'pipe-segment-handle' &&
+      meta.pipeId &&
+      typeof meta.pipeSegmentStartIndex === 'number' &&
+      typeof meta.pipeSegmentEndIndex === 'number'
+    ) {
+      const pipeElement = findHvacById(meta.pipeId);
+      if (!pipeElement || pipeElement.type !== 'refrigerant-pipe') {
+        return false;
+      }
+      const pipeSpec = resolveRefrigerantPipeSpec(pipeElement.properties);
+      const startIndex = meta.pipeSegmentStartIndex;
+      const endIndex = meta.pipeSegmentEndIndex;
+      const lastIndex = pipeSpec.routePoints.length - 1;
+      const lockStart = Boolean(pipeSpec.startConnection);
+      const lockEnd = Boolean(pipeSpec.endConnection);
+      if (
+        startIndex < 0 ||
+        endIndex > lastIndex ||
+        (lockStart && startIndex === 0) ||
+        (lockEnd && endIndex === lastIndex) ||
+        endIndex <= startIndex
+      ) {
+        return false;
+      }
+      for (let segmentIndex = startIndex; segmentIndex < endIndex; segmentIndex += 1) {
+        if ((pipeSpec.segmentMaterials[segmentIndex] ?? 'flexible') !== 'hard') {
+          return false;
+        }
+      }
+
+      isWallHandleDraggingRef.current = true;
+      resetDragDynamics(point);
+      dragStateRef.current = {
+        mode: 'pipe-segment',
+        pipeId: pipeElement.id,
+        startIndex,
+        endIndex,
+        startPointer: { ...point },
+        baselineRoutePoints: pipeSpec.routePoints.map((routePoint) => ({ ...routePoint })),
+        segmentMaterials: [...pipeSpec.segmentMaterials],
+        baselineProperties: { ...pipeElement.properties },
+      };
+      return true;
+    }
+
+    if (
+      meta.controlType === 'pipe-vertex-handle' &&
+      meta.pipeId &&
+      typeof meta.pipeVertexIndex === 'number'
+    ) {
+      const pipeElement = findHvacById(meta.pipeId);
+      if (!pipeElement || pipeElement.type !== 'refrigerant-pipe') {
+        return false;
+      }
+      const pipeSpec = resolveRefrigerantPipeSpec(pipeElement.properties);
+      if (
+        meta.pipeVertexIndex <= 0 ||
+        meta.pipeVertexIndex >= pipeSpec.routePoints.length - 1
+      ) {
+        return false;
+      }
+
+      isWallHandleDraggingRef.current = true;
+      resetDragDynamics(point);
+      dragStateRef.current = {
+        mode: 'pipe-vertex',
+        pipeId: pipeElement.id,
+        vertexIndex: meta.pipeVertexIndex,
+        startPointer: { ...point },
+        baselineRoutePoints: pipeSpec.routePoints.map((routePoint) => ({ ...routePoint })),
+        segmentMaterials: [...pipeSpec.segmentMaterials],
+        baselineProperties: { ...pipeElement.properties },
+      };
+      return true;
+    }
 
     if (meta.controlType === 'room-center-handle' && meta.roomId) {
       const room = findRoomById(meta.roomId);
@@ -1952,7 +2118,15 @@ export function useSelectMode({
     }
 
     return false;
-  }, [buildEndpointConstraints, canRotateWall, findRoomById, findWallById, resetDragDynamics, showGhostWalls]);
+  }, [
+    buildEndpointConstraints,
+    canRotateWall,
+    findHvacById,
+    findRoomById,
+    findWallById,
+    resetDragDynamics,
+    showGhostWalls,
+  ]);
 
   const computePerpendicularSnap = useCallback(
     (state: EndpointDragState, candidatePoint: Point2D): { snapped: Point2D; line?: { start: Point2D; end: Point2D } } => {
@@ -1999,6 +2173,305 @@ export function useSelectMode({
   const applyDrag = useCallback((point: Point2D): DragApplyResult | null => {
     const state = dragStateRef.current;
     if (state.mode === 'idle') return null;
+
+    if (state.mode === 'pipe-segment') {
+      const pipeElement = findHvacById(state.pipeId);
+      if (!pipeElement || pipeElement.type !== 'refrigerant-pipe') {
+        return null;
+      }
+
+      const startPoint = state.baselineRoutePoints[state.startIndex];
+      const endPoint = state.baselineRoutePoints[state.endIndex];
+      if (!startPoint || !endPoint) {
+        return null;
+      }
+      const segmentVector = subtract(endPoint, startPoint);
+      const segmentLength = magnitude(segmentVector);
+      if (segmentLength < 0.01) {
+        return null;
+      }
+      const mainDirection = classifyHardDirection(startPoint, endPoint);
+      if (!mainDirection) {
+        return null;
+      }
+      const SQRT_HALF = Math.SQRT1_2;
+      const directionUnit: Record<HardDirection8, Point2D> = {
+        E: { x: 1, y: 0 },
+        NE: { x: SQRT_HALF, y: -SQRT_HALF },
+        N: { x: 0, y: -1 },
+        NW: { x: -SQRT_HALF, y: -SQRT_HALF },
+        W: { x: -1, y: 0 },
+        SW: { x: -SQRT_HALF, y: SQRT_HALF },
+        S: { x: 0, y: 1 },
+        SE: { x: SQRT_HALF, y: SQRT_HALF },
+      };
+      const direction = directionUnit[mainDirection];
+      const segmentNormal = {
+        x: -direction.y,
+        y: direction.x,
+      };
+      const pointerDelta = subtract(point, state.startPointer);
+      const projectedDistance = dot(pointerDelta, segmentNormal);
+      let appliedDistance = projectedDistance;
+      if (optionsRef.current.wallSettings.snapToGrid) {
+        const gridSize = Math.max(optionsRef.current.wallSettings.gridSize, 1);
+        appliedDistance = Math.round(appliedDistance / gridSize) * gridSize;
+      }
+      const appliedDelta = scale(segmentNormal, appliedDistance);
+      let movedStart = add(startPoint, appliedDelta);
+      let movedEnd = add(endPoint, appliedDelta);
+
+      const intersectLines = (
+        lineAPoint: Point2D,
+        lineADirection: Point2D,
+        lineBPoint: Point2D,
+        lineBDirection: Point2D,
+      ): Point2D | null => {
+        const determinant =
+          lineADirection.x * lineBDirection.y -
+          lineADirection.y * lineBDirection.x;
+        if (Math.abs(determinant) <= 0.0001) {
+          return null;
+        }
+        const delta = subtract(lineBPoint, lineAPoint);
+        const t =
+          (delta.x * lineBDirection.y - delta.y * lineBDirection.x) /
+          determinant;
+        return add(lineAPoint, scale(lineADirection, t));
+      };
+
+      const leftSegmentMaterial = state.segmentMaterials[state.startIndex - 1] ?? 'flexible';
+      const rightSegmentMaterial = state.segmentMaterials[state.endIndex] ?? 'flexible';
+      const previousPoint =
+        state.startIndex > 0 ? state.baselineRoutePoints[state.startIndex - 1] : null;
+      const nextPoint =
+        state.endIndex + 1 < state.baselineRoutePoints.length
+          ? state.baselineRoutePoints[state.endIndex + 1]
+          : null;
+      const baselineLeftDirection =
+        previousPoint && leftSegmentMaterial === 'hard'
+          ? classifyHardDirection(previousPoint, startPoint)
+          : null;
+      const baselineRightDirection =
+        nextPoint && rightSegmentMaterial === 'hard'
+          ? classifyHardDirection(endPoint, nextPoint)
+          : null;
+      const movedLinePoint = add(startPoint, appliedDelta);
+
+      if (previousPoint && baselineLeftDirection) {
+        const leftIntersection = intersectLines(
+          movedLinePoint,
+          direction,
+          previousPoint,
+          directionUnit[baselineLeftDirection],
+        );
+        if (!leftIntersection) {
+          optionsRef.current.setProcessingStatus(
+            'Hard copper move blocked: left joint is collinear; move adjacent segment.',
+            false,
+          );
+          return {
+            label: 'Hard segment constrained (left collinear)',
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        movedStart = leftIntersection;
+      }
+      if (nextPoint && baselineRightDirection) {
+        const rightIntersection = intersectLines(
+          movedLinePoint,
+          direction,
+          nextPoint,
+          directionUnit[baselineRightDirection],
+        );
+        if (!rightIntersection) {
+          optionsRef.current.setProcessingStatus(
+            'Hard copper move blocked: right joint is collinear; move adjacent segment.',
+            false,
+          );
+          return {
+            label: 'Hard segment constrained (right collinear)',
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        movedEnd = rightIntersection;
+      }
+
+      const movedMainDirection = classifyHardDirection(movedStart, movedEnd);
+      if (!movedMainDirection || movedMainDirection !== mainDirection) {
+        optionsRef.current.setProcessingStatus(
+          'Hard copper move blocked: segment must remain straight hard direction.',
+          false,
+        );
+        return {
+          label: 'Hard segment constrained (straight direction)',
+          point: midpoint(startPoint, endPoint),
+        };
+      }
+      const nextRoutePoints = state.baselineRoutePoints.map((routePoint, index) => {
+        if (index === state.startIndex) {
+          return movedStart;
+        }
+        if (index === state.endIndex) {
+          return movedEnd;
+        }
+        return { ...routePoint };
+      });
+      if (previousPoint && baselineLeftDirection) {
+        const nextLeftDirection = classifyHardDirection(
+          nextRoutePoints[state.startIndex - 1]!,
+          nextRoutePoints[state.startIndex]!,
+        );
+        if (!nextLeftDirection || nextLeftDirection !== baselineLeftDirection) {
+          optionsRef.current.setProcessingStatus(
+            'Hard copper move blocked: preserve left fitting orientation.',
+            false,
+          );
+          return {
+            label: 'Hard segment constrained (left fitting)',
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+      }
+      if (nextPoint && baselineRightDirection) {
+        const nextRightDirection = classifyHardDirection(
+          nextRoutePoints[state.endIndex]!,
+          nextRoutePoints[state.endIndex + 1]!,
+        );
+        if (!nextRightDirection || nextRightDirection !== baselineRightDirection) {
+          optionsRef.current.setProcessingStatus(
+            'Hard copper move blocked: preserve right fitting orientation.',
+            false,
+          );
+          return {
+            label: 'Hard segment constrained (right fitting)',
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+      }
+      const segmentCount = Math.max(0, nextRoutePoints.length - 1);
+      const normalizedMaterials = Array.from(
+        { length: segmentCount },
+          (_, index) =>
+            state.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible',
+      );
+      const nextProperties = {
+        ...state.baselineProperties,
+        routePoints: nextRoutePoints,
+        segmentMaterials: normalizedMaterials,
+      };
+      const nextVisual = buildRefrigerantPipeVisual(
+        {
+          ...pipeElement,
+          properties: nextProperties,
+        },
+        optionsRef.current.hvacElements,
+      );
+      if (nextVisual.invalidHardSegmentCount > 0) {
+        optionsRef.current.setProcessingStatus(
+          'Hard copper move blocked: keep installable 45°/90° fittings.',
+          false,
+        );
+        return {
+          label: 'Hard segment constrained (45°/90° fittings)',
+          point: midpoint(startPoint, endPoint),
+        };
+      }
+
+      optionsRef.current.updateHvacElement(
+        pipeElement.id,
+        {
+          position: {
+            x: nextVisual.bounds.minX,
+            y: nextVisual.bounds.minY,
+          },
+          width: nextVisual.bounds.width,
+          depth: nextVisual.bounds.height,
+          height: Math.max(1, nextVisual.outerRadiusMm * 2),
+          properties: nextProperties,
+        },
+        { skipHistory: true },
+      );
+      return {
+        label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+        point: midpoint(movedStart, movedEnd),
+      };
+    }
+
+    if (state.mode === 'pipe-vertex') {
+      const pipeElement = findHvacById(state.pipeId);
+      if (!pipeElement || pipeElement.type !== 'refrigerant-pipe') {
+        return null;
+      }
+
+      let nextPoint = { ...point };
+      const leftMaterial =
+        state.segmentMaterials[state.vertexIndex - 1] ?? 'flexible';
+      const rightMaterial =
+        state.segmentMaterials[state.vertexIndex] ?? leftMaterial;
+      const touchesHardSegment =
+        leftMaterial === 'hard' || rightMaterial === 'hard';
+      if (touchesHardSegment) {
+        nextPoint = snapToGrid(nextPoint, optionsRef.current.wallSettings.gridSize);
+      } else if (
+        optionsRef.current.wallSettings.snapToGrid &&
+        modifierKeysRef.current.shift
+      ) {
+        nextPoint = snapToGrid(nextPoint, optionsRef.current.wallSettings.gridSize);
+      }
+
+      const nextRoutePoints = state.baselineRoutePoints.map((routePoint, index) =>
+        index === state.vertexIndex ? nextPoint : { ...routePoint },
+      );
+      const segmentCount = Math.max(0, nextRoutePoints.length - 1);
+      const normalizedMaterials = Array.from(
+        { length: segmentCount },
+        (_, index) =>
+          state.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible',
+      );
+      const nextProperties = {
+        ...state.baselineProperties,
+        routePoints: nextRoutePoints,
+        segmentMaterials: normalizedMaterials,
+      };
+      const nextVisual = buildRefrigerantPipeVisual(
+        {
+          ...pipeElement,
+          properties: nextProperties,
+        },
+        optionsRef.current.hvacElements,
+      );
+      if (touchesHardSegment && nextVisual.invalidHardSegmentCount > 0) {
+        optionsRef.current.setProcessingStatus(
+          'Hard copper edit blocked: keep installable 45°/90° fittings.',
+          false,
+        );
+        return {
+          label: 'Hard segment constrained (45°/90° fittings)',
+          point: state.baselineRoutePoints[state.vertexIndex] ?? nextPoint,
+        };
+      }
+
+      optionsRef.current.updateHvacElement(
+        pipeElement.id,
+        {
+          position: {
+            x: nextVisual.bounds.minX,
+            y: nextVisual.bounds.minY,
+          },
+          width: nextVisual.bounds.width,
+          depth: nextVisual.bounds.height,
+          height: Math.max(1, nextVisual.outerRadiusMm * 2),
+          properties: nextProperties,
+        },
+        { skipHistory: true },
+      );
+
+      return {
+        label: `Pipe vertex V${state.vertexIndex + 1}`,
+        point: nextPoint,
+      };
+    }
 
     if (state.mode === 'thickness') {
       const baseline = state.baselineWall;
@@ -2802,6 +3275,7 @@ export function useSelectMode({
     clearSnapIndicators,
     connectWallsIfNeeded,
     computePerpendicularSnap,
+    findHvacById,
     findWallById,
     findRoomById,
     findRoomMagneticSnap,
@@ -2866,6 +3340,7 @@ export function useSelectMode({
         const hoveredId =
           meta.wallId ??
           meta.roomId ??
+          meta.pipeId ??
           (meta.name?.startsWith('wall-') || meta.name?.startsWith('room-') ? meta.id : null) ??
           null;
         optionsRef.current.setHoveredElement(hoveredId);
@@ -2906,6 +3381,12 @@ export function useSelectMode({
     const mode = dragStateRef.current.mode;
     if (mode !== 'idle' && dragChangedRef.current) {
       const action =
+        mode === 'pipe-segment'
+          ? 'Move refrigerant pipe hard segment'
+          :
+        mode === 'pipe-vertex'
+          ? 'Edit refrigerant pipe vertex'
+          :
         mode === 'thickness'
           ? 'Adjust wall thickness'
           : mode === 'move'
@@ -2921,8 +3402,19 @@ export function useSelectMode({
                     : mode === 'room-move'
                       ? 'Move room'
                       : 'Edit wall endpoint';
-      optionsRef.current.detectRooms();
-      optionsRef.current.regenerateElevations();
+      const affectsWallGeometry =
+        mode === 'thickness' ||
+        mode === 'move' ||
+        mode === 'rotate' ||
+        mode === 'room-rotate' ||
+        mode === 'room-corner' ||
+        mode === 'room-scale' ||
+        mode === 'room-move' ||
+        mode === 'endpoint';
+      if (affectsWallGeometry) {
+        optionsRef.current.detectRooms();
+        optionsRef.current.regenerateElevations();
+      }
       optionsRef.current.saveToHistory(action);
     }
 
@@ -2959,9 +3451,9 @@ export function useSelectMode({
     ) => {
       const meta = getTargetMeta(target);
 
-      if ((meta.isWallControl || meta.isRoomControl) && beginControlDrag(meta, scenePoint)) {
+      if ((meta.isWallControl || meta.isRoomControl || meta.isPipeControl) && beginControlDrag(meta, scenePoint)) {
         optionsRef.current.onDragStateChange?.(true);
-        const selectedPrimaryId = meta.wallId ?? meta.roomId;
+        const selectedPrimaryId = meta.wallId ?? meta.roomId ?? meta.pipeId;
         if (selectedPrimaryId && !optionsRef.current.selectedIds.includes(selectedPrimaryId)) {
           optionsRef.current.setSelectedIds([selectedPrimaryId]);
         }
@@ -2971,6 +3463,7 @@ export function useSelectMode({
       const clickedId =
         meta.wallId ??
         meta.roomId ??
+        meta.pipeId ??
         (meta.name?.startsWith('wall-') || meta.name?.startsWith('room-') ? meta.id : undefined);
       if (clickedId) {
         if (addToSelection) {

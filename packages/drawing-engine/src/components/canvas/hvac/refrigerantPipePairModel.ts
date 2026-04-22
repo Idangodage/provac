@@ -3046,6 +3046,7 @@ export function buildRefrigerantPipeElement(
   options: {
     label?: string;
     lineKind: RefrigerantPipeLineKind;
+    segmentMaterialMode?: RefrigerantPipeMaterial;
     segmentMaterials?: RefrigerantPipeMaterial[];
     pipeDiameterMm: number;
     outerDiameterMm: number;
@@ -3077,9 +3078,16 @@ export function buildRefrigerantPipeElement(
     options.startConnection ?? null,
     options.endConnection ?? null,
   );
+  const centerlineSegmentCount = Math.max(0, centerlineRoutePoints.length - 1);
+  const forcedSegmentMaterials = options.segmentMaterialMode
+    ? Array.from(
+        { length: centerlineSegmentCount },
+        () => options.segmentMaterialMode,
+      )
+    : options.segmentMaterials;
   const segmentMaterials = normalizeSegmentMaterialArray(
-    options.segmentMaterials,
-    Math.max(0, centerlineRoutePoints.length - 1),
+    forcedSegmentMaterials,
+    centerlineSegmentCount,
     {
       startConnection: options.startConnection ?? null,
       endConnection: options.endConnection ?? null,
@@ -3147,6 +3155,7 @@ export function buildRefrigerantPipeElements(
     liquidPipeDiameterMm?: number;
     insulationThicknessMm?: number;
     pipeGapMm?: number;
+    segmentMaterialMode?: RefrigerantPipeMaterial;
     bundleId?: string;
     startBundleConnection?: RefrigerantPipeBundleConnection | null;
     endBundleConnection?: RefrigerantPipeBundleConnection | null;
@@ -3227,6 +3236,7 @@ export function buildRefrigerantPipeElements(
     buildRefrigerantPipeElement(gasRoutePoints, {
       lineKind: 'gas',
       label: 'Gas Pipe',
+      segmentMaterialMode: options?.segmentMaterialMode,
       pipeDiameterMm: gasPipeDiameterMm,
       outerDiameterMm: gasOuterDiameterMm,
       insulationThicknessMm,
@@ -3257,6 +3267,7 @@ export function buildRefrigerantPipeElements(
     buildRefrigerantPipeElement(liquidRoutePoints, {
       lineKind: 'liquid',
       label: 'Liquid Pipe',
+      segmentMaterialMode: options?.segmentMaterialMode,
       pipeDiameterMm: liquidPipeDiameterMm,
       outerDiameterMm: liquidOuterDiameterMm,
       insulationThicknessMm,
