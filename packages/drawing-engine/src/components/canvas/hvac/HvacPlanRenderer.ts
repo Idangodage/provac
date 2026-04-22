@@ -46,6 +46,7 @@ import {
   findNearestRefrigerantPipeBundleSegmentTarget,
   findNearestRefrigerantPipeBundleTarget as findNearestRefrigerantPipeBundleTargetFromModel,
   isRefrigerantPipeElementType,
+  resolveRefrigerantPipeSpec,
   type RefrigerantPipeBundleConnection,
 } from "./refrigerantPipePairModel";
 import {
@@ -2082,8 +2083,44 @@ export class HvacPlanRenderer {
           );
         }
 
-        const showVertexHandles = options.includeInteractionHalos;
-        const vertexHandlesVisible = this.selectedIds.has(element.id);
+        const bundleControlContext = (() => {
+          if (!visual.bundleId) {
+            return {
+              owner: true,
+              selected: this.selectedIds.has(element.id),
+            };
+          }
+          const bundleMembers = this.getRenderSceneElements()
+            .filter((candidate) => candidate.type === "refrigerant-pipe")
+            .map((candidate) => ({
+              element: candidate,
+              spec: resolveRefrigerantPipeSpec(candidate.properties),
+            }))
+            .filter((entry) => entry.spec.bundleId === visual.bundleId);
+          if (bundleMembers.length === 0) {
+            return {
+              owner: true,
+              selected: this.selectedIds.has(element.id),
+            };
+          }
+          const gasOwner = bundleMembers.find(
+            (entry) => entry.spec.lineKind === "gas",
+          )?.element.id;
+          const ownerId = gasOwner
+            ?? bundleMembers
+              .map((entry) => entry.element.id)
+              .sort((left, right) => left.localeCompare(right))[0]!;
+          return {
+            owner: ownerId === element.id,
+            selected: bundleMembers.some((entry) =>
+              this.selectedIds.has(entry.element.id),
+            ),
+          };
+        })();
+        const showVertexHandles =
+          options.includeInteractionHalos && bundleControlContext.owner;
+        const vertexHandlesVisible =
+          showVertexHandles && bundleControlContext.selected;
         const handleVertexIndices = buildPipeHandleVertexIndices(
           visual.routePoints,
         );
@@ -2107,10 +2144,15 @@ export class HvacPlanRenderer {
                 if (!isFlexibleVertex) {
                   return null;
                 }
+                const canDragEndpoint = isEndpoint
+                  ? (handleOrderIndex === 0
+                    ? !startConnection
+                    : !endConnection)
+                  : true;
                 return {
                   localPoint: localizePoint(routePoint),
                   vertexIndex,
-                  draggable: !isEndpoint,
+                  draggable: canDragEndpoint,
                   endpoint: isEndpoint,
                   visible: vertexHandlesVisible,
                 };

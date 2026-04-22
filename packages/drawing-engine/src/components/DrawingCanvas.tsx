@@ -427,12 +427,12 @@ export function DrawingCanvas({
   );
   const konvaPipeEditorEnabled = useMemo(() => {
     if (typeof window === "undefined") {
-      return true;
+      return false;
     }
     try {
-      return window.localStorage.getItem("hvac.pipe.engine") !== "fabric";
+      return window.localStorage.getItem("hvac.pipe.engine") === "konva";
     } catch {
-      return true;
+      return false;
     }
   }, []);
   const selectedRefrigerantPipeCount = useMemo(() => {

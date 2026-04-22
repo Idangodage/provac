@@ -310,107 +310,139 @@ export function PipeKonvaInteractionLayer({
       appliedDistance = Math.round(appliedDistance / gridSize) * gridSize;
     }
     const appliedDelta = scale(segmentNormal, appliedDistance);
-    const movedLinePoint = add(startPoint, appliedDelta);
-    let movedStart = add(startPoint, appliedDelta);
-    let movedEnd = add(endPoint, appliedDelta);
+    const routePoints = state.baselineRoutePoints;
+    const pointCount = routePoints.length;
+    const terminalIndex = pointCount - 1;
+    const isHardSegment = (segmentIndex: number): boolean =>
+      (state.segmentMaterials[segmentIndex] ?? 'flexible') === 'hard';
+    const hardSegmentDirection = (segmentIndex: number): HardDirection8 | null => {
+      if (segmentIndex < 0 || segmentIndex >= pointCount - 1) {
+        return null;
+      }
+      return classifyHardDirection(routePoints[segmentIndex]!, routePoints[segmentIndex + 1]!);
+    };
 
-    const leftMaterial = state.segmentMaterials[state.startIndex - 1] ?? 'flexible';
-    const rightMaterial = state.segmentMaterials[state.endIndex] ?? 'flexible';
-    const previousPoint =
-      state.startIndex > 0 ? state.baselineRoutePoints[state.startIndex - 1] : null;
-    const nextPoint =
-      state.endIndex + 1 < state.baselineRoutePoints.length
-        ? state.baselineRoutePoints[state.endIndex + 1]
-        : null;
-    const baselineLeftDirection =
-      previousPoint && leftMaterial === 'hard'
-        ? classifyHardDirection(previousPoint, startPoint)
-        : null;
-    const baselineRightDirection =
-      nextPoint && rightMaterial === 'hard'
-        ? classifyHardDirection(endPoint, nextPoint)
-        : null;
+    let moveStartIndex = state.startIndex;
+    let moveEndIndex = state.endIndex;
+
+    while (moveStartIndex > 0) {
+      const leftSegmentIndex = moveStartIndex - 1;
+      if (!isHardSegment(leftSegmentIndex)) {
+        break;
+      }
+      const leftDirection = hardSegmentDirection(leftSegmentIndex);
+      if (!leftDirection || !areParallel(DIRECTION_UNIT[leftDirection], direction)) {
+        break;
+      }
+      if (state.lockStart && leftSegmentIndex === 0) {
+        node.position({
+          x: state.lastValidHandlePoint.x * MM_TO_PX,
+          y: state.lastValidHandlePoint.y * MM_TO_PX,
+        });
+        return;
+      }
+      moveStartIndex -= 1;
+    }
+
+    while (moveEndIndex < terminalIndex) {
+      const rightSegmentIndex = moveEndIndex;
+      if (!isHardSegment(rightSegmentIndex)) {
+        break;
+      }
+      const rightDirection = hardSegmentDirection(rightSegmentIndex);
+      if (!rightDirection || !areParallel(DIRECTION_UNIT[rightDirection], direction)) {
+        break;
+      }
+      if (state.lockEnd && rightSegmentIndex === terminalIndex - 1) {
+        node.position({
+          x: state.lastValidHandlePoint.x * MM_TO_PX,
+          y: state.lastValidHandlePoint.y * MM_TO_PX,
+        });
+        return;
+      }
+      moveEndIndex += 1;
+    }
+
     const movedPointOverrides = new Map<number, Point2D>();
+    for (let index = moveStartIndex; index <= moveEndIndex; index += 1) {
+      movedPointOverrides.set(index, add(routePoints[index]!, appliedDelta));
+    }
 
-    if (previousPoint && baselineLeftDirection) {
-      const previousDirection = DIRECTION_UNIT[baselineLeftDirection];
-      if (areParallel(previousDirection, direction)) {
-        const previousIndex = state.startIndex - 1;
-        if (!(state.lockStart && previousIndex === 0)) {
-          movedPointOverrides.set(previousIndex, add(previousPoint, appliedDelta));
-        } else {
-          node.position({
-            x: state.lastValidHandlePoint.x * MM_TO_PX,
-            y: state.lastValidHandlePoint.y * MM_TO_PX,
-          });
-          return;
-        }
-      } else {
-        const intersection = intersectLines(
-          movedLinePoint,
-          direction,
-          previousPoint,
-          previousDirection,
-        );
-        if (!intersection) {
-          node.position({
-            x: state.lastValidHandlePoint.x * MM_TO_PX,
-            y: state.lastValidHandlePoint.y * MM_TO_PX,
-          });
-          return;
-        }
-        movedStart = intersection;
+    const leftBoundarySegmentIndex = moveStartIndex - 1;
+    if (leftBoundarySegmentIndex >= 0 && isHardSegment(leftBoundarySegmentIndex)) {
+      const fixedPoint = routePoints[leftBoundarySegmentIndex]!;
+      const leftDirection = hardSegmentDirection(leftBoundarySegmentIndex);
+      const movedBoundaryPoint = movedPointOverrides.get(moveStartIndex)!;
+      if (!leftDirection || areParallel(DIRECTION_UNIT[leftDirection], direction)) {
+        node.position({
+          x: state.lastValidHandlePoint.x * MM_TO_PX,
+          y: state.lastValidHandlePoint.y * MM_TO_PX,
+        });
+        return;
       }
-    }
-    if (nextPoint && baselineRightDirection) {
-      const nextDirection = DIRECTION_UNIT[baselineRightDirection];
-      if (areParallel(nextDirection, direction)) {
-        const nextIndex = state.endIndex + 1;
-        const terminalIndex = state.baselineRoutePoints.length - 1;
-        if (!(state.lockEnd && nextIndex === terminalIndex)) {
-          movedPointOverrides.set(nextIndex, add(nextPoint, appliedDelta));
-        } else {
-          node.position({
-            x: state.lastValidHandlePoint.x * MM_TO_PX,
-            y: state.lastValidHandlePoint.y * MM_TO_PX,
-          });
-          return;
-        }
-      } else {
-        const intersection = intersectLines(
-          movedLinePoint,
-          direction,
-          nextPoint,
-          nextDirection,
-        );
-        if (!intersection) {
-          node.position({
-            x: state.lastValidHandlePoint.x * MM_TO_PX,
-            y: state.lastValidHandlePoint.y * MM_TO_PX,
-          });
-          return;
-        }
-        movedEnd = intersection;
+      const intersection = intersectLines(
+        movedBoundaryPoint,
+        direction,
+        fixedPoint,
+        DIRECTION_UNIT[leftDirection],
+      );
+      if (!intersection) {
+        node.position({
+          x: state.lastValidHandlePoint.x * MM_TO_PX,
+          y: state.lastValidHandlePoint.y * MM_TO_PX,
+        });
+        return;
       }
+      movedPointOverrides.set(moveStartIndex, intersection);
     }
 
-    const movedMainDirection = classifyHardDirection(movedStart, movedEnd);
-    if (!movedMainDirection || movedMainDirection !== mainDirection) {
-      return;
+    const rightBoundarySegmentIndex = moveEndIndex;
+    if (rightBoundarySegmentIndex < terminalIndex && isHardSegment(rightBoundarySegmentIndex)) {
+      const fixedPoint = routePoints[rightBoundarySegmentIndex + 1]!;
+      const rightDirection = hardSegmentDirection(rightBoundarySegmentIndex);
+      const movedBoundaryPoint = movedPointOverrides.get(moveEndIndex)!;
+      if (!rightDirection || areParallel(DIRECTION_UNIT[rightDirection], direction)) {
+        node.position({
+          x: state.lastValidHandlePoint.x * MM_TO_PX,
+          y: state.lastValidHandlePoint.y * MM_TO_PX,
+        });
+        return;
+      }
+      const intersection = intersectLines(
+        movedBoundaryPoint,
+        direction,
+        fixedPoint,
+        DIRECTION_UNIT[rightDirection],
+      );
+      if (!intersection) {
+        node.position({
+          x: state.lastValidHandlePoint.x * MM_TO_PX,
+          y: state.lastValidHandlePoint.y * MM_TO_PX,
+        });
+        return;
+      }
+      movedPointOverrides.set(moveEndIndex, intersection);
     }
 
-    movedPointOverrides.set(state.startIndex, movedStart);
-    movedPointOverrides.set(state.endIndex, movedEnd);
     const nextRoutePoints = state.baselineRoutePoints.map(
       (routePoint, index): Point2D => movedPointOverrides.get(index) ?? { ...routePoint },
     );
+    const movedStart = nextRoutePoints[state.startIndex]!;
+    const movedEnd = nextRoutePoints[state.endIndex]!;
+    const movedMainDirection = classifyHardDirection(movedStart, movedEnd);
+    if (!movedMainDirection || movedMainDirection !== mainDirection) {
+      node.position({
+        x: state.lastValidHandlePoint.x * MM_TO_PX,
+        y: state.lastValidHandlePoint.y * MM_TO_PX,
+      });
+      return;
+    }
 
     const nextMidpoint = midpoint(movedStart, movedEnd);
     node.position({
       x: nextMidpoint.x * MM_TO_PX,
       y: nextMidpoint.y * MM_TO_PX,
     });
-    state.lastValidHandlePoint = nextMidpoint;
 
     if (!shouldApplyDragUpdate(state.lastAppliedAtMs, forceApply)) {
       return;
@@ -434,6 +466,10 @@ export function PipeKonvaInteractionLayer({
       hvacElements,
     );
     if (nextVisual.invalidHardSegmentCount > 0) {
+      node.position({
+        x: state.lastValidHandlePoint.x * MM_TO_PX,
+        y: state.lastValidHandlePoint.y * MM_TO_PX,
+      });
       return;
     }
 
@@ -452,6 +488,7 @@ export function PipeKonvaInteractionLayer({
       { skipHistory: true },
     );
     state.lastAppliedAtMs = performance.now();
+    state.lastValidHandlePoint = nextMidpoint;
     state.updated = true;
   };
 

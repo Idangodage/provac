@@ -1258,6 +1258,80 @@ export function useSelectMode({
     return optionsRef.current.hvacElements.find((element) => element.id === hvacId);
   }, []);
 
+  const syncPipeBundleMates = useCallback((
+    sourceElement: HvacElement,
+    baselineRoutePoints: Point2D[],
+    nextRoutePoints: Point2D[],
+  ) => {
+    if (sourceElement.type !== 'refrigerant-pipe') {
+      return;
+    }
+    const sourceSpec = resolveRefrigerantPipeSpec(sourceElement.properties);
+    if (!sourceSpec.bundleId) {
+      return;
+    }
+    if (baselineRoutePoints.length !== nextRoutePoints.length) {
+      return;
+    }
+
+    const perPointDelta = nextRoutePoints.map((point, index) =>
+      subtract(point, baselineRoutePoints[index]!),
+    );
+
+    optionsRef.current.hvacElements.forEach((candidate) => {
+      if (candidate.id === sourceElement.id || candidate.type !== 'refrigerant-pipe') {
+        return;
+      }
+      const candidateSpec = resolveRefrigerantPipeSpec(candidate.properties);
+      if (candidateSpec.bundleId !== sourceSpec.bundleId) {
+        return;
+      }
+      if (candidateSpec.routePoints.length !== perPointDelta.length) {
+        return;
+      }
+
+      const nextCandidateRoutePoints = candidateSpec.routePoints.map((point, index) =>
+        add(point, perPointDelta[index]!),
+      );
+      const segmentCount = Math.max(0, nextCandidateRoutePoints.length - 1);
+      const normalizedMaterials = Array.from(
+        { length: segmentCount },
+        (_, index) =>
+          candidateSpec.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible',
+      );
+      const nextCandidateProperties = {
+        ...candidate.properties,
+        routePoints: nextCandidateRoutePoints,
+        segmentMaterials: normalizedMaterials,
+      };
+      const nextCandidateVisual = buildRefrigerantPipeVisual(
+        {
+          ...candidate,
+          properties: nextCandidateProperties,
+        },
+        optionsRef.current.hvacElements,
+      );
+      if (nextCandidateVisual.invalidHardSegmentCount > 0) {
+        return;
+      }
+
+      optionsRef.current.updateHvacElement(
+        candidate.id,
+        {
+          position: {
+            x: nextCandidateVisual.bounds.minX,
+            y: nextCandidateVisual.bounds.minY,
+          },
+          width: nextCandidateVisual.bounds.width,
+          depth: nextCandidateVisual.bounds.height,
+          height: Math.max(1, nextCandidateVisual.outerRadiusMm * 2),
+          properties: nextCandidateProperties,
+        },
+        { skipHistory: true },
+      );
+    });
+  }, []);
+
   const findRoomById = useCallback((roomId: string): Room | undefined => {
     return optionsRef.current.rooms.find((room) => room.id === roomId);
   }, []);
@@ -1799,9 +1873,15 @@ export function useSelectMode({
         return false;
       }
       const pipeSpec = resolveRefrigerantPipeSpec(pipeElement.properties);
+      const lastVertexIndex = pipeSpec.routePoints.length - 1;
+      if (meta.pipeVertexIndex < 0 || meta.pipeVertexIndex > lastVertexIndex) {
+        return false;
+      }
+      const isStartEndpoint = meta.pipeVertexIndex === 0;
+      const isEndEndpoint = meta.pipeVertexIndex === lastVertexIndex;
       if (
-        meta.pipeVertexIndex <= 0 ||
-        meta.pipeVertexIndex >= pipeSpec.routePoints.length - 1
+        (isStartEndpoint && Boolean(pipeSpec.startConnection)) ||
+        (isEndEndpoint && Boolean(pipeSpec.endConnection))
       ) {
         return false;
       }
@@ -2185,15 +2265,11 @@ export function useSelectMode({
       if (!startPoint || !endPoint) {
         return null;
       }
-      const segmentVector = subtract(endPoint, startPoint);
-      const segmentLength = magnitude(segmentVector);
-      if (segmentLength < 0.01) {
-        return null;
-      }
       const mainDirection = classifyHardDirection(startPoint, endPoint);
       if (!mainDirection) {
         return null;
       }
+
       const SQRT_HALF = Math.SQRT1_2;
       const directionUnit: Record<HardDirection8, Point2D> = {
         E: { x: 1, y: 0 },
@@ -2213,13 +2289,15 @@ export function useSelectMode({
       const pointerDelta = subtract(point, state.startPointer);
       const projectedDistance = dot(pointerDelta, segmentNormal);
       let appliedDistance = projectedDistance;
-      if (optionsRef.current.wallSettings.snapToGrid) {
+      if (
+        optionsRef.current.wallSettings.snapToGrid &&
+        modifierKeysRef.current.shift
+      ) {
         const gridSize = Math.max(optionsRef.current.wallSettings.gridSize, 1);
         appliedDistance = Math.round(appliedDistance / gridSize) * gridSize;
       }
       const appliedDelta = scale(segmentNormal, appliedDistance);
-      let movedStart = add(startPoint, appliedDelta);
-      let movedEnd = add(endPoint, appliedDelta);
+      const movedLinePoint = add(startPoint, appliedDelta);
 
       const intersectLines = (
         lineAPoint: Point2D,
@@ -2240,120 +2318,140 @@ export function useSelectMode({
         return add(lineAPoint, scale(lineADirection, t));
       };
 
-      const leftSegmentMaterial = state.segmentMaterials[state.startIndex - 1] ?? 'flexible';
-      const rightSegmentMaterial = state.segmentMaterials[state.endIndex] ?? 'flexible';
-      const previousPoint =
-        state.startIndex > 0 ? state.baselineRoutePoints[state.startIndex - 1] : null;
-      const nextPoint =
-        state.endIndex + 1 < state.baselineRoutePoints.length
-          ? state.baselineRoutePoints[state.endIndex + 1]
-          : null;
-      const baselineLeftDirection =
-        previousPoint && leftSegmentMaterial === 'hard'
-          ? classifyHardDirection(previousPoint, startPoint)
-          : null;
-      const baselineRightDirection =
-        nextPoint && rightSegmentMaterial === 'hard'
-          ? classifyHardDirection(endPoint, nextPoint)
-          : null;
-      const movedLinePoint = add(startPoint, appliedDelta);
+      const areParallel = (a: Point2D, b: Point2D): boolean =>
+        Math.abs(a.x * b.y - a.y * b.x) <= 0.0001;
+      const routePoints = state.baselineRoutePoints;
+      const pointCount = routePoints.length;
+      const terminalIndex = pointCount - 1;
+      const baselineSpec = resolveRefrigerantPipeSpec(state.baselineProperties);
+      const lockStart = Boolean(baselineSpec.startConnection);
+      const lockEnd = Boolean(baselineSpec.endConnection);
+      const isHardSegment = (segmentIndex: number): boolean =>
+        (state.segmentMaterials[segmentIndex] ?? 'flexible') === 'hard';
+      const hardSegmentDirection = (segmentIndex: number): HardDirection8 | null => {
+        if (segmentIndex < 0 || segmentIndex >= pointCount - 1) {
+          return null;
+        }
+        return classifyHardDirection(
+          routePoints[segmentIndex]!,
+          routePoints[segmentIndex + 1]!,
+        );
+      };
 
-      if (previousPoint && baselineLeftDirection) {
+      let moveStartIndex = state.startIndex;
+      let moveEndIndex = state.endIndex;
+
+      while (moveStartIndex > 0) {
+        const leftSegmentIndex = moveStartIndex - 1;
+        if (!isHardSegment(leftSegmentIndex)) {
+          break;
+        }
+        const leftDirection = hardSegmentDirection(leftSegmentIndex);
+        if (!leftDirection || !areParallel(directionUnit[leftDirection], direction)) {
+          break;
+        }
+        if (lockStart && leftSegmentIndex === 0) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        moveStartIndex -= 1;
+      }
+
+      while (moveEndIndex < terminalIndex) {
+        const rightSegmentIndex = moveEndIndex;
+        if (!isHardSegment(rightSegmentIndex)) {
+          break;
+        }
+        const rightDirection = hardSegmentDirection(rightSegmentIndex);
+        if (!rightDirection || !areParallel(directionUnit[rightDirection], direction)) {
+          break;
+        }
+        if (lockEnd && rightSegmentIndex === terminalIndex - 1) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        moveEndIndex += 1;
+      }
+
+      const movedPointOverrides = new Map<number, Point2D>();
+      for (let index = moveStartIndex; index <= moveEndIndex; index += 1) {
+        movedPointOverrides.set(index, add(routePoints[index]!, appliedDelta));
+      }
+
+      const leftBoundarySegmentIndex = moveStartIndex - 1;
+      if (leftBoundarySegmentIndex >= 0 && isHardSegment(leftBoundarySegmentIndex)) {
+        const fixedPoint = routePoints[leftBoundarySegmentIndex]!;
+        const leftDirection = hardSegmentDirection(leftBoundarySegmentIndex);
+        const movedBoundaryPoint = movedPointOverrides.get(moveStartIndex)!;
+        if (!leftDirection || areParallel(directionUnit[leftDirection], direction)) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
         const leftIntersection = intersectLines(
-          movedLinePoint,
+          movedBoundaryPoint,
           direction,
-          previousPoint,
-          directionUnit[baselineLeftDirection],
+          fixedPoint,
+          directionUnit[leftDirection],
         );
         if (!leftIntersection) {
-          optionsRef.current.setProcessingStatus(
-            'Hard copper move blocked: left joint is collinear; move adjacent segment.',
-            false,
-          );
           return {
-            label: 'Hard segment constrained (left collinear)',
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
             point: midpoint(startPoint, endPoint),
           };
         }
-        movedStart = leftIntersection;
-      }
-      if (nextPoint && baselineRightDirection) {
-        const rightIntersection = intersectLines(
-          movedLinePoint,
-          direction,
-          nextPoint,
-          directionUnit[baselineRightDirection],
-        );
-        if (!rightIntersection) {
-          optionsRef.current.setProcessingStatus(
-            'Hard copper move blocked: right joint is collinear; move adjacent segment.',
-            false,
-          );
-          return {
-            label: 'Hard segment constrained (right collinear)',
-            point: midpoint(startPoint, endPoint),
-          };
-        }
-        movedEnd = rightIntersection;
+        movedPointOverrides.set(moveStartIndex, leftIntersection);
       }
 
+      const rightBoundarySegmentIndex = moveEndIndex;
+      if (rightBoundarySegmentIndex < terminalIndex && isHardSegment(rightBoundarySegmentIndex)) {
+        const fixedPoint = routePoints[rightBoundarySegmentIndex + 1]!;
+        const rightDirection = hardSegmentDirection(rightBoundarySegmentIndex);
+        const movedBoundaryPoint = movedPointOverrides.get(moveEndIndex)!;
+        if (!rightDirection || areParallel(directionUnit[rightDirection], direction)) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        const rightIntersection = intersectLines(
+          movedBoundaryPoint,
+          direction,
+          fixedPoint,
+          directionUnit[rightDirection],
+        );
+        if (!rightIntersection) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        movedPointOverrides.set(moveEndIndex, rightIntersection);
+      }
+
+      const nextRoutePoints = state.baselineRoutePoints.map(
+        (routePoint, index): Point2D => movedPointOverrides.get(index) ?? { ...routePoint },
+      );
+      const movedStart = nextRoutePoints[state.startIndex]!;
+      const movedEnd = nextRoutePoints[state.endIndex]!;
       const movedMainDirection = classifyHardDirection(movedStart, movedEnd);
       if (!movedMainDirection || movedMainDirection !== mainDirection) {
-        optionsRef.current.setProcessingStatus(
-          'Hard copper move blocked: segment must remain straight hard direction.',
-          false,
-        );
         return {
-          label: 'Hard segment constrained (straight direction)',
+          label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
           point: midpoint(startPoint, endPoint),
         };
       }
-      const nextRoutePoints = state.baselineRoutePoints.map((routePoint, index) => {
-        if (index === state.startIndex) {
-          return movedStart;
-        }
-        if (index === state.endIndex) {
-          return movedEnd;
-        }
-        return { ...routePoint };
-      });
-      if (previousPoint && baselineLeftDirection) {
-        const nextLeftDirection = classifyHardDirection(
-          nextRoutePoints[state.startIndex - 1]!,
-          nextRoutePoints[state.startIndex]!,
-        );
-        if (!nextLeftDirection || nextLeftDirection !== baselineLeftDirection) {
-          optionsRef.current.setProcessingStatus(
-            'Hard copper move blocked: preserve left fitting orientation.',
-            false,
-          );
-          return {
-            label: 'Hard segment constrained (left fitting)',
-            point: midpoint(startPoint, endPoint),
-          };
-        }
-      }
-      if (nextPoint && baselineRightDirection) {
-        const nextRightDirection = classifyHardDirection(
-          nextRoutePoints[state.endIndex]!,
-          nextRoutePoints[state.endIndex + 1]!,
-        );
-        if (!nextRightDirection || nextRightDirection !== baselineRightDirection) {
-          optionsRef.current.setProcessingStatus(
-            'Hard copper move blocked: preserve right fitting orientation.',
-            false,
-          );
-          return {
-            label: 'Hard segment constrained (right fitting)',
-            point: midpoint(startPoint, endPoint),
-          };
-        }
-      }
+
       const segmentCount = Math.max(0, nextRoutePoints.length - 1);
       const normalizedMaterials = Array.from(
         { length: segmentCount },
-          (_, index) =>
-            state.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible',
+        (_, index) =>
+          state.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible',
       );
       const nextProperties = {
         ...state.baselineProperties,
@@ -2368,12 +2466,8 @@ export function useSelectMode({
         optionsRef.current.hvacElements,
       );
       if (nextVisual.invalidHardSegmentCount > 0) {
-        optionsRef.current.setProcessingStatus(
-          'Hard copper move blocked: keep installable 45°/90° fittings.',
-          false,
-        );
         return {
-          label: 'Hard segment constrained (45°/90° fittings)',
+          label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
           point: midpoint(startPoint, endPoint),
         };
       }
@@ -2391,6 +2485,11 @@ export function useSelectMode({
           properties: nextProperties,
         },
         { skipHistory: true },
+      );
+      syncPipeBundleMates(
+        pipeElement,
+        state.baselineRoutePoints,
+        nextRoutePoints,
       );
       return {
         label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
@@ -2411,7 +2510,11 @@ export function useSelectMode({
         state.segmentMaterials[state.vertexIndex] ?? leftMaterial;
       const touchesHardSegment =
         leftMaterial === 'hard' || rightMaterial === 'hard';
-      if (touchesHardSegment) {
+      if (
+        touchesHardSegment &&
+        optionsRef.current.wallSettings.snapToGrid &&
+        modifierKeysRef.current.shift
+      ) {
         nextPoint = snapToGrid(nextPoint, optionsRef.current.wallSettings.gridSize);
       } else if (
         optionsRef.current.wallSettings.snapToGrid &&
@@ -2442,12 +2545,8 @@ export function useSelectMode({
         optionsRef.current.hvacElements,
       );
       if (touchesHardSegment && nextVisual.invalidHardSegmentCount > 0) {
-        optionsRef.current.setProcessingStatus(
-          'Hard copper edit blocked: keep installable 45°/90° fittings.',
-          false,
-        );
         return {
-          label: 'Hard segment constrained (45°/90° fittings)',
+          label: `Pipe vertex V${state.vertexIndex + 1}`,
           point: state.baselineRoutePoints[state.vertexIndex] ?? nextPoint,
         };
       }
@@ -2465,6 +2564,11 @@ export function useSelectMode({
           properties: nextProperties,
         },
         { skipHistory: true },
+      );
+      syncPipeBundleMates(
+        pipeElement,
+        state.baselineRoutePoints,
+        nextRoutePoints,
       );
 
       return {
@@ -3286,6 +3390,7 @@ export function useSelectMode({
     clearRotationGuide,
     showRoomRotationGuide,
     showSnapIndicator,
+    syncPipeBundleMates,
     updateWallIfChanged,
     updateWallsIfChanged,
   ]);
