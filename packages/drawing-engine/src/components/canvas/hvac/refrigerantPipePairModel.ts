@@ -859,6 +859,56 @@ interface RefrigerantPipeSegmentPathSpec {
   lengthMm: number;
 }
 
+function catmullRomPoint(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  t: number,
+): Point2D {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return {
+    x:
+      0.5 *
+      ((2 * p1.x) +
+        (-p0.x + p2.x) * t +
+        (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+        (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+    y:
+      0.5 *
+      ((2 * p1.y) +
+        (-p0.y + p2.y) * t +
+        (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+        (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
+  };
+}
+
+function buildFlexibleSegmentSplinePoints(
+  routePoints: Point2D[],
+  segmentIndex: number,
+): Point2D[] {
+  const start = routePoints[segmentIndex];
+  const end = routePoints[segmentIndex + 1];
+  if (!start || !end) {
+    return [];
+  }
+
+  const previous = routePoints[Math.max(0, segmentIndex - 1)] ?? start;
+  const next = routePoints[Math.min(routePoints.length - 1, segmentIndex + 2)] ?? end;
+  const spanLengthMm = Math.hypot(end.x - start.x, end.y - start.y);
+  const sampleCount = Math.max(5, Math.min(24, Math.round(spanLengthMm / 12)));
+  const sampled: Point2D[] = [start];
+
+  for (let sampleIndex = 1; sampleIndex < sampleCount; sampleIndex += 1) {
+    const t = sampleIndex / sampleCount;
+    sampled.push(catmullRomPoint(previous, start, end, next, t));
+  }
+  sampled.push(end);
+
+  return dedupeConsecutivePoints(sampled);
+}
+
 function buildRefrigerantPipeSegmentPaths(
   routePoints: Point2D[],
   segmentMaterials: RefrigerantPipeMaterial[],
@@ -878,7 +928,10 @@ function buildRefrigerantPipeSegmentPaths(
     const material = normalizedMaterials[index] ?? 'flexible';
     const hardSegmentRoute = material === 'hard'
       ? buildHardSegmentRoute(start, end)
-      : { points: [start, end], invalidHardGeometry: false };
+      : {
+        points: buildFlexibleSegmentSplinePoints(dedupedRoutePoints, index),
+        invalidHardGeometry: false,
+      };
     const segmentPoints = dedupeConsecutivePoints(hardSegmentRoute.points);
     if (segmentPoints.length < 2) {
       continue;

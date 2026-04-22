@@ -112,6 +112,7 @@ export interface UseRendererSyncOptions {
     pendingPlacementDefinition: ArchitecturalObjectDefinition | null;
     pendingPlacementEquipmentDefinition: AcEquipmentDefinition | null;
     placementRotationDeg: number;
+    konvaPipeEditorEnabled: boolean;
 
     // State setters
     setPlacementRotationDeg: React.Dispatch<React.SetStateAction<number>>;
@@ -256,6 +257,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         pendingPlacementDefinition,
         pendingPlacementEquipmentDefinition,
         placementRotationDeg,
+        konvaPipeEditorEnabled,
 
         setPlacementRotationDeg,
         setPlacementValid,
@@ -1011,9 +1013,23 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
 
     useEffect(() => {
         const hvacIds = new Set(hvacElements.map((element) => element.id));
-        const selectedHvacIds = selectedIds.filter((id) => hvacIds.has(id));
+        const selectedHvacIds = selectedIds.filter((id) => {
+            if (!hvacIds.has(id)) {
+                return false;
+            }
+            if (!konvaPipeEditorEnabled) {
+                return true;
+            }
+            const element = hvacElements.find((entry) => entry.id === id);
+            if (!element) {
+                return false;
+            }
+            // Konva editor currently handles only single-line refrigerant pipes.
+            // Keep Fabric controls active for pipe-pair elements.
+            return element.type !== 'refrigerant-pipe';
+        });
         hvacRendererRef.current?.setSelectedElements(selectedHvacIds);
-    }, [hvacElements, selectedIds, hvacRendererRef]);
+    }, [hvacElements, selectedIds, hvacRendererRef, konvaPipeEditorEnabled]);
 
     useEffect(() => {
         const hvacIds = new Set(hvacElements.map((element) => element.id));

@@ -64,6 +64,7 @@ import {
   resolveRefrigerantPipeUnitPortReconnectionUpdates,
   translateRefrigerantPipeElementProperties,
 } from "./canvas/hvac/refrigerantPipePairModel";
+import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
 import {
   installCanvasRenderScheduler,
   restoreCanvasRenderScheduler,
@@ -424,6 +425,29 @@ export function DrawingCanvas({
     () => new Set(walls.map((wall) => wall.id)),
     [walls],
   );
+  const konvaPipeEditorEnabled = useMemo(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+    try {
+      return window.localStorage.getItem("hvac.pipe.engine") !== "fabric";
+    } catch {
+      return true;
+    }
+  }, []);
+  const selectedRefrigerantPipeCount = useMemo(() => {
+    const selectedSet = new Set(selectedIds);
+    return hvacElements.reduce((count, element) => {
+      if (!selectedSet.has(element.id)) {
+        return count;
+      }
+      return element.type === "refrigerant-pipe" ? count + 1 : count;
+    }, 0);
+  }, [hvacElements, selectedIds]);
+  const konvaPipeOverlayActive =
+    konvaPipeEditorEnabled &&
+    tool === "select" &&
+    selectedRefrigerantPipeCount > 0;
   const wallById = useMemo(
     () => new Map(walls.map((wall) => [wall.id, wall])),
     [walls],
@@ -1556,6 +1580,7 @@ export function DrawingCanvas({
     offsetTool,
     trimTool,
     extendTool,
+    konvaPipeEditorEnabled: konvaPipeOverlayActive,
   });
 
   // ---------------------------------------------------------------------------
@@ -1846,6 +1871,20 @@ export function DrawingCanvas({
         />
         <canvas ref={canvasRef} className="relative z-[2] block" />
         {/* [SNAP WIRE] Overlay canvas for snap indicators — sits on top, pointer-events: none */}
+        <PipeKonvaInteractionLayer
+          enabled={konvaPipeOverlayActive}
+          width={hostWidth}
+          height={hostHeight}
+          viewportZoom={viewportZoom}
+          panOffset={panOffset}
+          hvacElements={hvacElements}
+          selectedIds={selectedIds}
+          wallSettings={wallSettings}
+          updateHvacElement={updateHvacElement}
+          saveToHistory={saveToHistory}
+          setProcessingStatus={setProcessingStatus}
+          setSelectedIds={setSelectedIds}
+        />
         <canvas
           ref={snapOverlayRef}
           className="absolute left-0 top-0 z-[10] block"

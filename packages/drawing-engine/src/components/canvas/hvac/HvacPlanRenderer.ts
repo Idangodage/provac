@@ -1484,7 +1484,7 @@ export class HvacPlanRenderer {
       inner.isPipeVertexHandle = true;
 
       const hitRadius = options.draggable
-        ? Math.max(outerRadius + 5, 14 / viewportZoom)
+        ? Math.max(outerRadius + 7, 20 / viewportZoom)
         : outerRadius;
       const hit = new fabric.Circle({
         left: toPx(localPoint.x),
@@ -1538,8 +1538,8 @@ export class HvacPlanRenderer {
       },
     ): void => {
       const viewportZoom = Math.max(this.canvas.getZoom(), 0.01);
-      const outerRadius = Math.max(6, 10 / viewportZoom);
-      const innerRadius = Math.max(2.2, 4 / viewportZoom);
+      const outerRadius = Math.max(7, 12 / viewportZoom);
+      const innerRadius = Math.max(2.4, 4.5 / viewportZoom);
       const strokeColor = "#b45309";
       const outer = new fabric.Circle({
         left: toPx(localPoint.x),
@@ -1592,7 +1592,7 @@ export class HvacPlanRenderer {
       inner.isPipeHandle = true;
       inner.isPipeVertexHandle = true;
 
-      const hitRadius = Math.max(outerRadius + 5, 14 / viewportZoom);
+      const hitRadius = Math.max(outerRadius + 7, 20 / viewportZoom);
       const hit = new fabric.Circle({
         left: toPx(localPoint.x),
         top: toPx(localPoint.y),
@@ -2188,7 +2188,12 @@ export class HvacPlanRenderer {
           "hvac-detail",
         );
         if (materialAwareSegments.length > 0) {
-          insulationPointSets.forEach((polyline) => {
+          insulationPointSets.forEach((polyline, index) => {
+            const segment = materialAwareSegments[index];
+            if (!segment) {
+              return;
+            }
+            const cap = segment.material === "flexible" ? "round" : "butt";
             renderPipePolyline(
               polyline,
               insulationEdgeStroke,
@@ -2196,7 +2201,7 @@ export class HvacPlanRenderer {
               "hvac-detail",
               "round",
               undefined,
-              "butt",
+              cap,
             );
             renderPipePolyline(
               polyline,
@@ -2205,7 +2210,7 @@ export class HvacPlanRenderer {
               "hvac-detail",
               "round",
               undefined,
-              "butt",
+              cap,
             );
           });
         } else {
@@ -2242,6 +2247,7 @@ export class HvacPlanRenderer {
             if (!segment) {
               return;
             }
+            const cap = segment.material === "flexible" ? "round" : "butt";
             renderPipePolyline(
               polyline,
               coreStroke,
@@ -2251,7 +2257,7 @@ export class HvacPlanRenderer {
               segment.material === "flexible"
                 ? FLEXIBLE_PIPE_DASH_PATTERN_MM
                 : undefined,
-              "butt",
+              cap,
             );
             if (segment.invalidHardGeometry) {
               renderPipePolyline(
