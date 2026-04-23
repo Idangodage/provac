@@ -852,6 +852,8 @@ export function useCanvasMouseHandlers(
           x: rawPoint.x / MM_TO_PX,
           y: rawPoint.y / MM_TO_PX,
         };
+        const hoveredHvacIdAtCanvasPoint =
+          hvacRendererRef.current?.findElementAtCanvasPoint(rawPoint) ?? null;
         const prioritizedControlTarget =
           candidateTargets.find((target) => {
             const meta = getTargetMeta(
@@ -878,7 +880,8 @@ export function useCanvasMouseHandlers(
           candidateTargets
             .map((target) => resolveHvacIdFromTarget(target))
             .find((entry): entry is string => Boolean(entry)) ??
-          resolveHvacIdFromTarget(hitTarget);
+          resolveHvacIdFromTarget(hitTarget) ??
+          hoveredHvacIdAtCanvasPoint;
         if (hoveredHvacId) {
           wallRenderer?.setHoveredWall(null);
           setHoveredElement(hoveredHvacId);

@@ -918,6 +918,7 @@ export function useCanvasEventBinding(
         resolveOpeningIdFromTarget,
         projectPointToSegment,
         resolveSectionLineIdFromTarget,
+        hvacRendererRef,
         resolveHvacIdFromTarget,
         resolveObjectIdFromTarget,
         getTargetMeta,
@@ -991,6 +992,12 @@ export function useCanvasEventBinding(
         event.e?.shiftKey || event.e?.ctrlKey || event.e?.metaKey,
       );
       const scenePoint = event.e ? canvas.getScenePoint(event.e) : null;
+      const hvacIdAtCanvasPoint = scenePoint
+        ? hvacRendererRef.current?.findElementAtCanvasPoint({
+            x: scenePoint.x,
+            y: scenePoint.y,
+          }) ?? null
+        : null;
       const wallPoint = scenePoint
         ? {
             x: scenePoint.x / MM_TO_PX,
@@ -1203,7 +1210,8 @@ export function useCanvasEventBinding(
         candidateTargets
           .map((target) => resolveHvacIdFromTarget(target))
           .find((entry): entry is string => Boolean(entry)) ??
-        resolveHvacIdFromTarget(hitTarget);
+        resolveHvacIdFromTarget(hitTarget) ??
+        hvacIdAtCanvasPoint;
       if (hvacId) {
         suppressNextFabricSelectionSync();
         setPersistentRoomControlId(null);

@@ -100,6 +100,15 @@ function elementCenter(
   };
 }
 
+function isIndoorUnitElementType(type: HvacElement["type"]): boolean {
+  return (
+    type === "wall-mounted-ac" ||
+    type === "ceiling-cassette-ac" ||
+    type === "ceiling-suspended-ac" ||
+    type === "ducted-ac"
+  );
+}
+
 function rotatePoint(point: Point2D, angleDeg: number): Point2D {
   const radians = (angleDeg * Math.PI) / 180;
   const cos = Math.cos(radians);
@@ -1233,6 +1242,7 @@ export class HvacPlanRenderer {
     const isPipeElement = isRefrigerantPipeElementType(element.type);
     const isDuctElement = isGiDuctElementType(element.type);
     const isBranchKitElement = isRefrigerantBranchKitElement(element);
+    const isIndoorUnitElement = isIndoorUnitElementType(element.type);
     const baseWidthPx = Math.max(20, element.width * MM_TO_PX);
     const baseDepthPx = Math.max(12, element.depth * MM_TO_PX);
     const widthPx = baseWidthPx;
@@ -3863,6 +3873,42 @@ export class HvacPlanRenderer {
       }
     }
 
+    if (isIndoorUnitElement) {
+      const hitAreaPaddingMm = 8 / MM_TO_PX;
+      const hitBounds = customPlanBounds
+        ? {
+            centerX: (customPlanBounds.minX + customPlanBounds.maxX) / 2,
+            centerY: (customPlanBounds.minY + customPlanBounds.maxY) / 2,
+            width: customPlanBounds.maxX - customPlanBounds.minX + hitAreaPaddingMm,
+            height:
+              customPlanBounds.maxY - customPlanBounds.minY + hitAreaPaddingMm,
+          }
+        : {
+            centerX: 0,
+            centerY: 0,
+            width: element.width + hitAreaPaddingMm,
+            height: element.depth + hitAreaPaddingMm,
+          };
+      // Keep indoor-unit hit testing solid even when the rendered model has
+      // transparent cavities or extends beyond the base casing.
+      const hitArea = new fabric.Rect({
+        left: toPx(hitBounds.centerX),
+        top: toPx(hitBounds.centerY),
+        width: Math.max(toPx(hitBounds.width), 1),
+        height: Math.max(toPx(hitBounds.height), 1),
+        originX: "center",
+        originY: "center",
+        fill: "rgba(255,255,255,0.003)",
+        strokeWidth: 0,
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+        objectCaching: false,
+      });
+      this.annotate(hitArea, element.id, "hvac-hit-area");
+      interactionUnderlays.unshift(hitArea);
+    }
+
     if (interactionUnderlays.length > 0) {
       objects.unshift(...interactionUnderlays);
     }
@@ -3999,8 +4045,7 @@ export class HvacPlanRenderer {
     const isPipeElement = isRefrigerantPipeElementType(element.type);
     const isDuctElement = isGiDuctElementType(element.type);
     const isDuctedUnit = element.type === "ducted-ac";
-    const usesPreciseHitTesting =
-      isPipeElement || element.type === "ceiling-cassette-ac";
+    const usesPreciseHitTesting = isPipeElement;
     const objects = this.createBaseObjects(element, {
       valid: options.valid ?? true,
       includeInteractionHalos: options.includeInteractionHalos ?? true,
@@ -4054,6 +4099,7 @@ export class HvacPlanRenderer {
         angle: element.rotation ?? 0,
       });
     }
+    group.setCoords();
 
     group.id = element.id;
     group.hvacElementId = element.id;
@@ -4203,6 +4249,25 @@ export class HvacPlanRenderer {
     this.selectedIds = new Set(ids);
     this.syncHvacVisualState();
     this.canvas.requestRenderAll();
+  }
+
+  findElementAtCanvasPoint(canvasPointPx: Point2D): string | null {
+    const point = new fabric.Point(canvasPointPx.x, canvasPointPx.y);
+    const objects = this.canvas.getObjects();
+    for (let index = objects.length - 1; index >= 0; index -= 1) {
+      const object = objects[index] as HvacGroup;
+      const hvacElementId = object.hvacElementId;
+      if (!hvacElementId || !object.visible || !object.evented) {
+        continue;
+      }
+      if (this.groups.get(hvacElementId) !== object) {
+        continue;
+      }
+      if (object.containsPoint(point)) {
+        return hvacElementId;
+      }
+    }
+    return null;
   }
 
   setHoveredElement(id: string | null): void {
