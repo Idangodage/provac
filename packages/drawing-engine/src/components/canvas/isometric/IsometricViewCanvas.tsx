@@ -1,28 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as THREE from "three";
 import {
   difference,
   featureCollection,
   polygon as turfPolygon,
 } from "@turf/turf";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import type { ArchitecturalObjectDefinition } from "../../../data";
 import type {
+  Dimension2D,
+  DimensionSettings,
   HvacElement,
   Point2D,
   Room,
   SymbolInstance2D,
   Wall,
 } from "../../../types";
-import { buildIsometricWallBandsSignature } from "./wallBands";
-import { buildIsometricWallBandsInBackground } from "./isometricWallBandsWorkerClient";
-import {
-  createWallOpenings3D,
-  type OpeningRenderOptions,
-} from "./Opening3DRenderer";
+import { DEFAULT_DIMENSION_SETTINGS } from "../../../types";
+import { resolveDimensionGeometry } from "../dimension/dimensionGeometry";
 import { buildCeilingCassetteModel } from "../hvac/ceilingCassetteModel";
 import {
   buildDuctedIndoorUnitModel,
@@ -30,6 +28,14 @@ import {
   getDuctedIndoorUnitOpeningPlanProjection,
 } from "../hvac/ductedIndoorUnitModel";
 import { buildGiDuctVisual } from "../hvac/giDuctModel";
+import {
+  buildRefrigerantBranchKitViewModel,
+  DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
+  isRefrigerantBranchKitElement,
+  resolveRefrigerantBranchKitInlineAnchorLocal,
+  resolveRefrigerantBranchKitLineSelection,
+  REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
+} from "../hvac/refrigerantBranchKitModel";
 import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
@@ -43,16 +49,16 @@ import {
   type RefrigerantPipeRenderChainState,
   type VisibleRefrigerantPipeSegmentTarget,
 } from "../hvac/refrigerantPipeRenderState";
-import {
-  buildRefrigerantBranchKitViewModel,
-  DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
-  isRefrigerantBranchKitElement,
-  resolveRefrigerantBranchKitInlineAnchorLocal,
-  resolveRefrigerantBranchKitLineSelection,
-  REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
-} from "../hvac/refrigerantBranchKitModel";
+import { buildHvacElementMesh } from "../hvac/three3d";
 import { hasRenderer } from "../object/FurnitureSymbolRenderer";
 import { createOptimizedFurnitureModel3D } from "../object/three3d/Furniture3DRenderer";
+
+import {
+  createWallOpenings3D,
+  type OpeningRenderOptions,
+} from "./Opening3DRenderer";
+import { buildIsometricWallBandsInBackground } from "./isometricWallBandsWorkerClient";
+import { buildIsometricWallBandsSignature } from "./wallBands";
 
 const VIEW_MARGIN = 1.14;
 const EPSILON = 0.001;
@@ -64,6 +70,11 @@ const MAX_POLAR_ANGLE = THREE.MathUtils.degToRad(88);
 const MIN_CAMERA_DISTANCE = 250;
 const MAX_CAMERA_DISTANCE = 160000;
 const OPENING_SURFACE_INSET_MM = 2;
+const DIMENSION_LINE_COLOR = "#b45309";
+const DIMENSION_AREA_COLOR = "#0f766e";
+const DIMENSION_PLANE_LIFT_MM = 28;
+const DIMENSION_LABEL_LIFT_MM = 28;
+const DIMENSION_TERMINATOR_SIZE_MM = 72;
 
 type WallPalette = {
   top: string;
@@ -111,6 +122,10 @@ type ScreenLabel = {
   color: string;
 };
 
+type TurfPolygonGeometry =
+  | { type: "Polygon"; coordinates: number[][][] }
+  | { type: "MultiPolygon"; coordinates: number[][][][] };
+
 type SceneState = {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -127,6 +142,12 @@ export interface IsometricViewCanvasProps {
   symbols: SymbolInstance2D[];
   hvacElements: HvacElement[];
   objectDefinitions: ArchitecturalObjectDefinition[];
+  dimensions?: Dimension2D[];
+  dimensionSettings?: DimensionSettings;
+  interactive?: boolean;
+  showViewLabel?: boolean;
+  showControlsOverlay?: boolean;
+  showResetControl?: boolean;
   viewLabel?: string;
 }
 
@@ -225,8 +246,19 @@ function openRing(ring: number[][]): Point2D[] {
   return sanitizeRing(opened);
 }
 
-function extractPolygonRings(geometry: any): Point2D[][][] {
-  if (!geometry) {
+function isTurfPolygonGeometry(geometry: unknown): geometry is TurfPolygonGeometry {
+  if (typeof geometry !== "object" || geometry === null) {
+    return false;
+  }
+  const candidate = geometry as { type?: unknown; coordinates?: unknown };
+  return (
+    (candidate.type === "Polygon" || candidate.type === "MultiPolygon") &&
+    Array.isArray(candidate.coordinates)
+  );
+}
+
+function extractPolygonRings(geometry: unknown): Point2D[][][] {
+  if (!isTurfPolygonGeometry(geometry)) {
     return [];
   }
   if (geometry.type === "Polygon") {
@@ -267,8 +299,8 @@ function decomposePolygonForThree(rings: Point2D[][]): Point2D[][][] {
     }
 
     const differenceResult = difference(
-      featureCollection([outerFeature, ...holeFeatures] as any) as any,
-    ) as any;
+      featureCollection([outerFeature, ...holeFeatures]),
+    );
     const polygons = extractPolygonRings(differenceResult?.geometry);
     if (polygons.length > 0) {
       return polygons;
@@ -320,7 +352,7 @@ function readNumberProperty(
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function readFlexibleNumberProperty(
+function _readFlexibleNumberProperty(
   properties: Record<string, unknown>,
   key: string,
 ): number | null {
@@ -461,7 +493,7 @@ function smallestAngleDifferenceDeg(a: number, b: number): number {
   return Math.min(diff, 360 - diff);
 }
 
-function averagePoints(points: Point2D[]): Point2D {
+function _averagePoints(points: Point2D[]): Point2D {
   if (points.length === 0) {
     return { x: 0, y: 0 };
   }
@@ -844,6 +876,266 @@ function projectLabels(
   return labels;
 }
 
+function worldPoint(point: Point2D, elevation: number): THREE.Vector3 {
+  return new THREE.Vector3(point.x, point.y, elevation);
+}
+
+function createOverlayLineMaterial(
+  color: string,
+  opacity: number = 0.96,
+): THREE.LineBasicMaterial {
+  return new THREE.LineBasicMaterial({
+    color,
+    transparent: opacity < 1,
+    opacity,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  });
+}
+
+function createOverlayLine(
+  points: THREE.Vector3[],
+  color: string,
+  opacity: number = 0.96,
+): THREE.Line | null {
+  if (points.length < 2) {
+    return null;
+  }
+
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const line = new THREE.Line(
+    geometry,
+    createOverlayLineMaterial(color, opacity),
+  );
+  line.renderOrder = 40;
+  return line;
+}
+
+function createOverlayLineSegments(
+  points: THREE.Vector3[],
+  color: string,
+  opacity: number = 0.96,
+): THREE.LineSegments | null {
+  if (points.length < 2) {
+    return null;
+  }
+
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const segments = new THREE.LineSegments(
+    geometry,
+    createOverlayLineMaterial(color, opacity),
+  );
+  segments.renderOrder = 40;
+  return segments;
+}
+
+function createDimensionTick(
+  point: Point2D,
+  direction: Point2D,
+  normal: Point2D,
+  elevation: number,
+  color: string,
+): THREE.Line | null {
+  const tangent = new THREE.Vector3(direction.x, direction.y, 0).normalize();
+  const outward = new THREE.Vector3(normal.x, normal.y, 0).normalize();
+  const tickVector = tangent
+    .clone()
+    .multiplyScalar(DIMENSION_TERMINATOR_SIZE_MM * 0.42)
+    .add(outward.clone().multiplyScalar(DIMENSION_TERMINATOR_SIZE_MM * 0.24));
+  const center = worldPoint(point, elevation);
+  return createOverlayLine(
+    [center.clone().sub(tickVector), center.clone().add(tickVector)],
+    color,
+    0.98,
+  );
+}
+
+function createAngularArc(
+  vertex: Point2D,
+  radius: number,
+  startAngle: number,
+  deltaAngle: number,
+  elevation: number,
+  color: string,
+): THREE.Line | null {
+  const segmentCount = Math.max(
+    16,
+    Math.ceil(Math.abs(deltaAngle) / (Math.PI / 24)),
+  );
+  const points: THREE.Vector3[] = [];
+
+  for (let index = 0; index <= segmentCount; index += 1) {
+    const t = index / segmentCount;
+    const angle = startAngle + deltaAngle * t;
+    points.push(
+      worldPoint(
+        {
+          x: vertex.x + Math.cos(angle) * radius,
+          y: vertex.y + Math.sin(angle) * radius,
+        },
+        elevation,
+      ),
+    );
+  }
+
+  return createOverlayLine(points, color, 0.98);
+}
+
+function createDimensionOverlay(params: {
+  dimensions: Dimension2D[];
+  walls: Wall[];
+  rooms: Room[];
+  settings: DimensionSettings;
+  planeElevation: number;
+}): { group: THREE.Group | null; anchors: LabelAnchor[]; planPoints: Point2D[] } {
+  const { dimensions, walls, rooms, settings, planeElevation } = params;
+  if (!settings.showLayer || dimensions.length === 0) {
+    return { group: null, anchors: [], planPoints: [] };
+  }
+
+  const group = new THREE.Group();
+  group.name = "dimension-overlay";
+  group.renderOrder = 40;
+  const anchors: LabelAnchor[] = [];
+  const planPoints: Point2D[] = [];
+
+  dimensions.forEach((dimension) => {
+    if (!dimension.visible) {
+      return;
+    }
+
+    const resolved = resolveDimensionGeometry(dimension, walls, rooms, settings);
+    if (!resolved) {
+      return;
+    }
+
+    if (resolved.kind === "linear") {
+      const extensionSegments = createOverlayLineSegments(
+        [
+          worldPoint(resolved.extensionAStart, planeElevation),
+          worldPoint(resolved.extensionAEnd, planeElevation),
+          worldPoint(resolved.extensionBStart, planeElevation),
+          worldPoint(resolved.extensionBEnd, planeElevation),
+        ],
+        DIMENSION_LINE_COLOR,
+        0.7,
+      );
+      const dimensionLine = createOverlayLine(
+        [
+          worldPoint(resolved.dimensionStart, planeElevation),
+          worldPoint(resolved.dimensionEnd, planeElevation),
+        ],
+        DIMENSION_LINE_COLOR,
+        0.98,
+      );
+      const startTick = createDimensionTick(
+        resolved.dimensionStart,
+        resolved.direction,
+        resolved.normal,
+        planeElevation,
+        DIMENSION_LINE_COLOR,
+      );
+      const endTick = createDimensionTick(
+        resolved.dimensionEnd,
+        resolved.direction,
+        resolved.normal,
+        planeElevation,
+        DIMENSION_LINE_COLOR,
+      );
+
+      [extensionSegments, dimensionLine, startTick, endTick].forEach((item) => {
+        if (item) {
+          group.add(item);
+        }
+      });
+
+      anchors.push({
+        key: `dimension-${dimension.id}`,
+        position: worldPoint(
+          resolved.textPosition,
+          planeElevation + DIMENSION_LABEL_LIFT_MM,
+        ),
+        text: resolved.label,
+        color: DIMENSION_LINE_COLOR,
+      });
+
+      planPoints.push(
+        resolved.start,
+        resolved.end,
+        resolved.dimensionStart,
+        resolved.dimensionEnd,
+        resolved.extensionAEnd,
+        resolved.extensionBEnd,
+      );
+      return;
+    }
+
+    if (resolved.kind === "angular") {
+      const legSegments = createOverlayLineSegments(
+        [
+          worldPoint(resolved.vertex, planeElevation),
+          worldPoint(resolved.arcStart, planeElevation),
+          worldPoint(resolved.vertex, planeElevation),
+          worldPoint(resolved.arcEnd, planeElevation),
+        ],
+        DIMENSION_LINE_COLOR,
+        0.72,
+      );
+      const arc = createAngularArc(
+        resolved.vertex,
+        resolved.radius,
+        resolved.startAngle,
+        resolved.deltaAngle,
+        planeElevation,
+        DIMENSION_LINE_COLOR,
+      );
+
+      [legSegments, arc].forEach((item) => {
+        if (item) {
+          group.add(item);
+        }
+      });
+
+      anchors.push({
+        key: `dimension-${dimension.id}`,
+        position: worldPoint(
+          resolved.textPosition,
+          planeElevation + DIMENSION_LABEL_LIFT_MM,
+        ),
+        text: resolved.label,
+        color: DIMENSION_LINE_COLOR,
+      });
+
+      planPoints.push(
+        resolved.vertex,
+        resolved.legA,
+        resolved.legB,
+        resolved.arcStart,
+        resolved.arcEnd,
+      );
+      return;
+    }
+
+    anchors.push({
+      key: `dimension-${dimension.id}`,
+      position: worldPoint(
+        resolved.textPosition,
+        planeElevation + DIMENSION_LABEL_LIFT_MM,
+      ),
+      text: resolved.label,
+      color: DIMENSION_AREA_COLOR,
+    });
+    planPoints.push(resolved.textPosition);
+  });
+
+  return {
+    group: group.children.length > 0 ? group : null,
+    anchors,
+    planPoints,
+  };
+}
+
 function solidPalette(
   category: ArchitecturalObjectDefinition["category"] | "hvac" | "unknown",
 ): SolidPalette {
@@ -1182,7 +1474,7 @@ function createLocalCylinderMesh(
  * The sprite lives in 3D space, always faces the camera, and scales with
  * distance — the standard approach for professional CAD/BIM labels.
  */
-function createTextSprite(
+function _createTextSprite(
   text: string,
   color: string,
   options?: {
@@ -1261,7 +1553,7 @@ function createTextSprite(
  * Computes the midpoint along a polyline at 50% of its total arc length.
  * Returns { point, tangent } where tangent is the normalised direction at that point.
  */
-function polylineMidpoint(points: Point2D[]): {
+function _polylineMidpoint(points: Point2D[]): {
   point: Point2D;
   tangent: Point2D;
 } | null {
@@ -1407,7 +1699,7 @@ function createTaperedCylinderBetweenPoints(
   return mesh;
 }
 
-function createSmoothTubeAlongPoints(
+function _createSmoothTubeAlongPoints(
   points: THREE.Vector3[],
   radius: number,
   color: string,
@@ -1974,6 +2266,16 @@ function createHvacEquipmentMesh(
   pipeRenderChainStateMap?: Map<string, RefrigerantPipeRenderChainState>,
   pipeTargets?: VisibleRefrigerantPipeSegmentTarget[],
 ): THREE.Group {
+  const sharedMesh = buildHvacElementMesh(element, {
+    allElements,
+    pipeEndpointStateMap,
+    pipeRenderChainStateMap,
+    pipeTargets,
+  });
+  if (sharedMesh) {
+    return sharedMesh;
+  }
+
   if (element.type === "accessory" && isRefrigerantBranchKitElement(element)) {
     return createHvacEquipmentMesh(
       {
@@ -3300,7 +3602,7 @@ function createHvacEquipmentMesh(
           12,
           opening.openingHeight - mouthLipThickness * 2.2,
         );
-        const mouthLipWidth = Math.max(
+        const _mouthLipWidth = Math.max(
           12,
           opening.openingWidth - mouthLipThickness * 2.2,
         );
@@ -4014,6 +4316,12 @@ export function IsometricViewCanvas({
   symbols,
   hvacElements,
   objectDefinitions,
+  dimensions = [],
+  dimensionSettings = DEFAULT_DIMENSION_SETTINGS,
+  interactive = true,
+  showViewLabel = true,
+  showControlsOverlay = true,
+  showResetControl = true,
   viewLabel = "ISOMETRIC VIEW",
 }: IsometricViewCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -4025,6 +4333,7 @@ export function IsometricViewCanvas({
   const renderRequestedRef = useRef(true);
   const hasAutoFitRef = useRef(false);
   const isInteractingRef = useRef(false);
+  const interactiveRef = useRef(interactive);
   const wallBandRequestIdRef = useRef(0);
   const lastResolvedWallBandSignatureRef = useRef("");
   const pendingWallBandSignatureRef = useRef("");
@@ -4036,6 +4345,7 @@ export function IsometricViewCanvas({
   const [resolvedWallBandSignature, setResolvedWallBandSignature] =
     useState("");
   const [isWallBandsPending, setIsWallBandsPending] = useState(false);
+  interactiveRef.current = interactive;
 
   const definitionsById = useMemo(
     () =>
@@ -4128,6 +4438,23 @@ export function IsometricViewCanvas({
       });
   }, [wallBandSignature, walls]);
 
+  useEffect(() => {
+    const sceneState = sceneRef.current;
+    const canvas = canvasRef.current;
+    if (!sceneState || !canvas) {
+      return;
+    }
+
+    isInteractingRef.current = false;
+    sceneState.controls.enabled = interactive;
+    sceneState.controls.enablePan = interactive;
+    sceneState.controls.enableRotate = interactive;
+    sceneState.controls.enableZoom = interactive;
+    canvas.style.cursor = interactive ? "grab" : "default";
+    canvas.style.touchAction = interactive ? "none" : "auto";
+    renderRequestedRef.current = true;
+  }, [interactive]);
+
   const renderViewport = useCallback(() => {
     const sceneState = sceneRef.current;
     if (!sceneState) {
@@ -4163,6 +4490,26 @@ export function IsometricViewCanvas({
     renderRequestedRef.current = true;
     renderViewport();
   }, [renderViewport]);
+
+  useEffect(() => {
+    if (interactive) {
+      return;
+    }
+
+    const sceneState = sceneRef.current;
+    const box = boundsRef.current;
+    if (!sceneState || !box) {
+      return;
+    }
+
+    const { camera, controls } = sceneState;
+    const { width, height } = sizeRef.current;
+    const target = fitCameraToBox(camera, box, width, height);
+    controls.target.copy(target);
+    controls.update();
+    renderRequestedRef.current = true;
+    renderViewport();
+  }, [interactive, renderViewport]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -4283,9 +4630,10 @@ export function IsometricViewCanvas({
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.enablePan = true;
-    controls.enableRotate = true;
-    controls.enableZoom = true;
+    controls.enabled = interactiveRef.current;
+    controls.enablePan = interactiveRef.current;
+    controls.enableRotate = interactiveRef.current;
+    controls.enableZoom = interactiveRef.current;
     controls.screenSpacePanning = true;
     controls.zoomToCursor = true;
     controls.zoomSpeed = 1.1;
@@ -4304,12 +4652,12 @@ export function IsometricViewCanvas({
       ONE: THREE.TOUCH.ROTATE,
       TWO: THREE.TOUCH.DOLLY_PAN,
     };
-    controls.cursorStyle = "grab";
+    controls.cursorStyle = interactiveRef.current ? "grab" : "auto";
     if (container) {
       controls.listenToKeyEvents(container);
     }
-    canvas.style.cursor = "grab";
-    canvas.style.touchAction = "none";
+    canvas.style.cursor = interactiveRef.current ? "grab" : "default";
+    canvas.style.touchAction = interactiveRef.current ? "none" : "auto";
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
     const keyLight = new THREE.DirectionalLight(0xfff6ee, 1.15);
@@ -4353,7 +4701,7 @@ export function IsometricViewCanvas({
 
     let frameId = 0;
     let idleFrames = 0;
-    const MAX_IDLE_FRAMES = 180; // Stop rendering after ~3 seconds of no change
+    const _MAX_IDLE_FRAMES = 180; // Stop rendering after ~3 seconds of no change
 
     const animate = () => {
       frameId = window.requestAnimationFrame(animate);
@@ -4781,6 +5129,23 @@ export function IsometricViewCanvas({
       }
     });
 
+    const dimensionOverlay = createDimensionOverlay({
+      dimensions,
+      walls,
+      rooms,
+      settings: dimensionSettings,
+      planeElevation: lowestElevation + DIMENSION_PLANE_LIFT_MM,
+    });
+    if (dimensionOverlay.group) {
+      geometryRoot.add(dimensionOverlay.group);
+    }
+    if (dimensionOverlay.anchors.length > 0) {
+      labelAnchors.push(...dimensionOverlay.anchors);
+    }
+    if (dimensionOverlay.planPoints.length > 0) {
+      planPoints.push(...dimensionOverlay.planPoints);
+    }
+
     const hasGeometry = geometryRoot.children.length > 0;
     setIsEmpty(!hasGeometry);
 
@@ -4809,7 +5174,7 @@ export function IsometricViewCanvas({
 
     const box = new THREE.Box3().setFromObject(geometryRoot);
     boundsRef.current = box.clone();
-    controls.enabled = true;
+    controls.enabled = interactive;
     updateControlDistanceLimits(controls, box);
     if (!hasAutoFitRef.current || !box.containsPoint(controls.target)) {
       const target = fitCameraToBox(camera, box, width, height);
@@ -4823,10 +5188,13 @@ export function IsometricViewCanvas({
   }, [
     activeWallBands,
     definitionsById,
+    dimensionSettings,
+    dimensions,
     hvacElements,
     openingRenderOptionsById,
     rooms,
     symbols,
+    interactive,
     walls,
     wallsById,
   ]);
@@ -4835,8 +5203,12 @@ export function IsometricViewCanvas({
     <div
       ref={containerRef}
       className={`relative overflow-hidden ${className}`}
-      tabIndex={0}
-      onPointerDown={() => containerRef.current?.focus()}
+      tabIndex={interactive ? 0 : -1}
+      onPointerDown={() => {
+        if (interactive) {
+          containerRef.current?.focus();
+        }
+      }}
       style={{
         minHeight: 220,
         background: "linear-gradient(180deg, #faf5ea 0%, #f1eadf 100%)",
@@ -4846,15 +5218,17 @@ export function IsometricViewCanvas({
       <canvas
         ref={canvasRef}
         className="block h-full w-full"
-        onDoubleClick={resetView}
+        onDoubleClick={interactive ? resetView : undefined}
       />
       <div className="pointer-events-none absolute inset-0">
-        <div
-          className="absolute left-1/2 top-1 -translate-x-1/2 text-[12px] tracking-[0.18em] text-slate-600"
-          style={{ fontFamily: "monospace" }}
-        >
-          {viewLabel}
-        </div>
+        {showViewLabel && (
+          <div
+            className="absolute left-1/2 top-1 -translate-x-1/2 text-[12px] tracking-[0.18em] text-slate-600"
+            style={{ fontFamily: "monospace" }}
+          >
+            {viewLabel}
+          </div>
+        )}
         {webglInitError && (
           <div
             className="absolute left-1/2 top-1/2 w-[min(92%,680px)] -translate-x-1/2 -translate-y-1/2 rounded border border-rose-300/70 bg-white/90 px-4 py-3 text-center text-sm text-rose-700 shadow"
@@ -4893,7 +5267,7 @@ export function IsometricViewCanvas({
             {label.text}
           </div>
         ))}
-        {!isEmpty && !webglInitError && (
+        {interactive && showControlsOverlay && !isEmpty && !webglInitError && (
           <div
             className="absolute bottom-3 left-3 rounded border border-slate-300/55 bg-white/76 px-3 py-1.5 text-[11px] text-slate-600 shadow-sm"
             style={{ fontFamily: "monospace" }}
@@ -4902,17 +5276,19 @@ export function IsometricViewCanvas({
           </div>
         )}
       </div>
-      <div className="absolute right-3 top-3 flex gap-2">
-        <button
-          type="button"
-          onClick={resetView}
-          disabled={isEmpty || Boolean(webglInitError)}
-          className="rounded border border-amber-300/80 bg-white/88 px-3 py-1.5 text-xs text-slate-700 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-          style={{ fontFamily: "monospace" }}
-        >
-          Reset View
-        </button>
-      </div>
+      {interactive && showResetControl && (
+        <div className="absolute right-3 top-3 flex gap-2">
+          <button
+            type="button"
+            onClick={resetView}
+            disabled={isEmpty || Boolean(webglInitError)}
+            className="rounded border border-amber-300/80 bg-white/88 px-3 py-1.5 text-xs text-slate-700 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+            style={{ fontFamily: "monospace" }}
+          >
+            Reset View
+          </button>
+        </div>
+      )}
     </div>
   );
 }

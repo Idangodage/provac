@@ -189,7 +189,8 @@ export function getUnitPipePortSpec(
       };
     }
 
-    case "wall-mounted-ac": {
+    case "wall-mounted-ac":
+    case "split-ac": {
       // Ports exit from the back/bottom of the unit (+x = away from wall)
       const portX = element.width * 0.38;
       const heightMm = readNumber(element.height, 320);
@@ -302,6 +303,7 @@ export function getUnitPipePortSpec(
 export const GENERIC_PIPE_PORT_TYPES: ReadonlySet<string> = new Set([
   "outdoor-unit",
   "wall-mounted-ac",
+  "split-ac",
   "ceiling-suspended-ac",
   "ducted-ac",
 ]);
@@ -311,6 +313,7 @@ export const ALL_PIPE_PORT_TYPES: ReadonlySet<string> = new Set([
   "ceiling-cassette-ac",
   "outdoor-unit",
   "wall-mounted-ac",
+  "split-ac",
   "ceiling-suspended-ac",
   "ducted-ac",
 ]);

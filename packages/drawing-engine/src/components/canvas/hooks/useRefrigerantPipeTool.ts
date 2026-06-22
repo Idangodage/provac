@@ -104,8 +104,11 @@ function formatPortTooltip(
   const diameterMm = isLiquid
     ? bundle.liquidOuterDiameterMm ?? 0
     : bundle.gasOuterDiameterMm ?? 0;
-  const label = isLiquid ? 'Liquid Port' : 'Gas Port';
-  return `${label} — Ø${diameterMm.toFixed(2)}mm`;
+  const lineLabel = isLiquid ? 'Liquid' : 'Gas';
+  const terminalLabel = bundle.terminalRole
+    ? bundle.terminalRole.replace('-', ' ')
+    : 'port';
+  return `Snap ${lineLabel} ${terminalLabel} | OD ${diameterMm.toFixed(2)} mm`;
 }
 
 export function useRefrigerantPipeTool(
@@ -267,26 +270,40 @@ export function useRefrigerantPipeTool(
 
     const markerConfigs = [
       {
+        pipeKind: 'gas' as const,
         point: bundle.gasPoint,
         diameterMm: bundle.gasOuterDiameterMm ?? 60,
       },
       {
+        pipeKind: 'liquid' as const,
         point: bundle.liquidPoint,
         diameterMm: bundle.liquidOuterDiameterMm ?? 56,
       },
     ];
-    const markerFill = 'rgba(37,99,235,0.2)';
-    const markerStroke = 'rgba(29,78,216,0.98)';
+    const markerTheme = {
+      gas: {
+        fill: 'rgba(234,88,12,0.22)',
+        stroke: 'rgba(234,88,12,0.98)',
+        selectedFill: 'rgba(234,88,12,0.36)',
+        selectedStroke: 'rgba(194,65,12,1)',
+      },
+      liquid: {
+        fill: 'rgba(37,99,235,0.22)',
+        stroke: 'rgba(37,99,235,0.98)',
+        selectedFill: 'rgba(37,99,235,0.36)',
+        selectedStroke: 'rgba(29,78,216,1)',
+      },
+    } as const;
     const markerStrokeWidth = 4;
-    const selectedMarkerFill = 'rgba(34,197,94,0.36)';
-    const selectedMarkerStroke = 'rgba(22,163,74,1)';
     const selectedMarkerStrokeWidth = 5;
     const hoveredPipe = resolveBundleMarkerSelection(bundle);
     const createPipeCenterMarker = (
       point: Point2D,
       diameterMm: number,
+      pipeKind: 'gas' | 'liquid',
       isSelected: boolean,
     ): fabric.Circle => {
+      const theme = markerTheme[pipeKind];
       const markerRadius = Math.max(
         isSelected ? PIPE_SNAP_MARKER_RADIUS_SELECTED_PX : PIPE_SNAP_MARKER_RADIUS_PX,
         Math.min(
@@ -300,8 +317,8 @@ export function useRefrigerantPipeTool(
         radius: markerRadius,
         originX: 'center',
         originY: 'center',
-        fill: isSelected ? selectedMarkerFill : markerFill,
-        stroke: isSelected ? selectedMarkerStroke : markerStroke,
+        fill: isSelected ? theme.selectedFill : theme.fill,
+        stroke: isSelected ? theme.selectedStroke : theme.stroke,
         strokeWidth: isSelected ? selectedMarkerStrokeWidth : markerStrokeWidth,
         selectable: false,
         evented: false,
@@ -315,9 +332,13 @@ export function useRefrigerantPipeTool(
 
     if (shouldRecreateMarkers) {
       clearSnapMarkers();
-      snapMarkersRef.current = markerConfigs.map(({ point, diameterMm }, index) => {
-        const pipeKind = index === 0 ? 'gas' : 'liquid';
-        const marker = createPipeCenterMarker(point, diameterMm, hoveredPipe === pipeKind);
+      snapMarkersRef.current = markerConfigs.map(({ point, diameterMm, pipeKind }) => {
+        const marker = createPipeCenterMarker(
+          point,
+          diameterMm,
+          pipeKind,
+          hoveredPipe === pipeKind,
+        );
         canvas.add(marker);
         canvas.bringObjectToFront(marker);
         return marker;
@@ -329,7 +350,8 @@ export function useRefrigerantPipeTool(
 
     snapMarkersRef.current.forEach((marker, index) => {
       const config = markerConfigs[index]!;
-      const pipeKind = index === 0 ? 'gas' : 'liquid';
+      const pipeKind = config.pipeKind;
+      const theme = markerTheme[pipeKind];
       const isSelected = hoveredPipe === pipeKind;
       const markerRadius = Math.max(
         isSelected ? PIPE_SNAP_MARKER_RADIUS_SELECTED_PX : PIPE_SNAP_MARKER_RADIUS_PX,
@@ -345,8 +367,8 @@ export function useRefrigerantPipeTool(
       if (marker instanceof fabric.Circle) {
         marker.set({
           radius: markerRadius,
-          fill: isSelected ? selectedMarkerFill : markerFill,
-          stroke: isSelected ? selectedMarkerStroke : markerStroke,
+          fill: isSelected ? theme.selectedFill : theme.fill,
+          stroke: isSelected ? theme.selectedStroke : theme.stroke,
           strokeWidth: isSelected ? selectedMarkerStrokeWidth : markerStrokeWidth,
         });
       }

@@ -36,16 +36,16 @@ import type {
     MarqueeSelectionState,
     OpeningPointerInteraction,
 } from '../../DrawingCanvas.types';
-import { getToolCursor } from '../toolUtils';
-import { MM_TO_PX } from '../scale';
-import { formatDimensionLength } from '../dimension/dimensionGeometry';
-import type { WallRenderer } from '../wall/WallRenderer';
-import type { RoomRenderer } from '../room/RoomRenderer';
 import type { DimensionRenderer } from '../dimension/DimensionRenderer';
-import type { ObjectRenderer } from '../object/ObjectRenderer';
+import { formatDimensionLength } from '../dimension/dimensionGeometry';
 import type { SectionLineRenderer } from '../elevation/SectionLineRenderer';
 import type { HvacPlanRenderer } from '../hvac/HvacPlanRenderer';
-import { startDragPerfTimer, endDragPerfTimer } from '../perf/dragPerf';
+import type { ObjectRenderer } from '../object/ObjectRenderer';
+import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
+import type { RoomRenderer } from '../room/RoomRenderer';
+import { MM_TO_PX } from '../scale';
+import { getToolCursor } from '../toolUtils';
+import type { WallRenderer } from '../wall/WallRenderer';
 
 const DRAG_AUTO_DIMENSION_MIN_INTERVAL_MS = 120;
 
@@ -109,6 +109,7 @@ export interface UseRendererSyncOptions {
     activeRoomDragId: string | null;
     persistentRoomControlId: string | null;
     openingInteractionActive: boolean;
+    projectionViewOnly?: boolean;
     pendingPlacementDefinition: ArchitecturalObjectDefinition | null;
     pendingPlacementEquipmentDefinition: AcEquipmentDefinition | null;
     placementRotationDeg: number;
@@ -254,6 +255,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         activeRoomDragId,
         persistentRoomControlId,
         openingInteractionActive,
+        projectionViewOnly = false,
         pendingPlacementDefinition,
         pendingPlacementEquipmentDefinition,
         placementRotationDeg,
@@ -1187,11 +1189,14 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         const effectiveTool = isSpacePressed ? 'pan' : tool;
         const allowSelection =
             effectiveTool === 'select' &&
+            !projectionViewOnly &&
             !pendingPlacementDefinition &&
             !pendingPlacementEquipmentDefinition &&
             !openingInteractionActive;
         const pointerCursor = canvasState.isPanning
             ? 'grabbing'
+            : projectionViewOnly
+                ? 'grab'
             : (pendingPlacementDefinition || pendingPlacementEquipmentDefinition)
                 ? 'crosshair'
                 : getToolCursor(effectiveTool);
@@ -1264,7 +1269,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
             hideActiveSelectionChrome(canvas);
         }
         canvas.renderAll();
-    }, [tool, isSpacePressed, canvasState.isPanning, pendingPlacementDefinition, pendingPlacementEquipmentDefinition, openingInteractionActive, fabricRef, marqueeSelectionRef, lastMarqueeSelectionRef, applyMarqueeFilterRef]);
+    }, [tool, isSpacePressed, canvasState.isPanning, projectionViewOnly, pendingPlacementDefinition, pendingPlacementEquipmentDefinition, openingInteractionActive, fabricRef, marqueeSelectionRef, lastMarqueeSelectionRef, applyMarqueeFilterRef]);
 
     return {
         refreshDimensionLayer,

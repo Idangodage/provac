@@ -500,6 +500,7 @@ export function SmartDrawingEditor({
     sketches,
     annotations,
     dimensions,
+    dimensionSettings,
     symbols,
     walls,
     rooms,
@@ -519,6 +520,7 @@ export function SmartDrawingEditor({
     sketches: state.sketches,
     annotations: state.annotations,
     dimensions: state.dimensions,
+    dimensionSettings: state.dimensionSettings,
     symbols: state.symbols,
     walls: state.walls,
     rooms: state.rooms,
@@ -595,7 +597,6 @@ export function SmartDrawingEditor({
     () => [...DEFAULT_ARCHITECTURAL_OBJECT_LIBRARY, ...customLibraryObjects],
     [customLibraryObjects]
   );
-
   // Calculate total element count
   const elementCount = sketches.length + annotations.length + dimensions.length + symbols.length + walls.length + rooms.length + hvacElements.length;
   const placedEquipmentCountByType = useMemo(() => {
@@ -1371,7 +1372,6 @@ export function SmartDrawingEditor({
                 Iso
               </button>
             </div>
-            <div className="h-5 w-px shrink-0 bg-amber-200/80" />
             <div className="min-w-0 flex-1 self-stretch">
               <AttributeQuickToolbar className="h-full w-full !px-0" keepSpaceWhenHidden />
             </div>
@@ -1486,6 +1486,8 @@ export function SmartDrawingEditor({
                 symbols={symbols}
                 hvacElements={hvacElements}
                 objectDefinitions={architecturalObjects}
+                dimensions={dimensions}
+                dimensionSettings={dimensionSettings}
                 viewLabel="ISOMETRIC VIEW"
               />
             </Suspense>

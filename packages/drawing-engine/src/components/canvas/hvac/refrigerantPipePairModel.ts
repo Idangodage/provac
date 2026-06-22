@@ -10,6 +10,7 @@ import {
   resolveRefrigerantBranchKitConnectionIdentity,
   resolveRefrigerantBranchKitInlineAnchorLocal,
   resolveRefrigerantBranchKitLineSelection,
+  type RefrigerantBranchLineKind,
   type RefrigerantBranchTerminalRole,
 } from './refrigerantBranchKitModel';
 import {
@@ -3464,6 +3465,19 @@ interface RefrigerantPipeStraightSegmentTarget {
   outerDiameterMm: number;
 }
 
+interface BranchKitLineTerminalTarget {
+  key: string;
+  elementId: string;
+  lineKind: RefrigerantBranchLineKind;
+  role: RefrigerantBranchTerminalRole;
+  point: Point2D;
+  direction: Point2D;
+  outerDiameterMm: number;
+  elevationMm: number;
+  snapSourceElementId?: string;
+  snapProjectedDistanceMm?: number;
+}
+
 export interface RefrigerantPipeSegmentConnection {
   point: Point2D;
   direction: Point2D;
@@ -3715,6 +3729,257 @@ function buildFieldPipeBundleSnapTargets(
   return targets;
 }
 
+function readStringProperty(
+  properties: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = properties[key];
+  return typeof value === 'string' && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function readFiniteNumberProperty(
+  properties: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = properties[key];
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function getBranchTerminalByRole(
+  line: ReturnType<typeof buildRefrigerantBranchKitViewModel>['gas'],
+  role: RefrigerantBranchTerminalRole,
+) {
+  switch (role) {
+    case 'inlet':
+      return line.inletTerminal;
+    case 'run-outlet':
+      return line.runOutletTerminal;
+    case 'branch-outlet':
+      return line.branchOutletTerminal;
+    default:
+      return null;
+  }
+}
+
+function collectBranchKitLineTerminalTargets(
+  element: HvacPipeSnapSource,
+): BranchKitLineTerminalTarget[] {
+  const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+  if (lineSelection === 'both') {
+    return [];
+  }
+
+  const model = buildRefrigerantBranchKitViewModel(element);
+  const inlinePlacement = resolveInlineBranchKitCenter(
+    element,
+    lineSelection,
+    model,
+  );
+  const center = inlinePlacement?.center ?? absoluteCenter(element);
+  const rotationDeg = inlinePlacement?.rotationDeg ?? (element.rotation ?? 0);
+  const line = lineSelection === 'gas' ? model.gas : model.liquid;
+  const roles: RefrigerantBranchTerminalRole[] = [
+    'inlet',
+    'run-outlet',
+    'branch-outlet',
+  ];
+
+  return roles.flatMap((role): BranchKitLineTerminalTarget[] => {
+    const terminal = getBranchTerminalByRole(line, role);
+    if (!terminal) {
+      return [];
+    }
+
+    return [{
+      key: `${element.id}:${lineSelection}:${role}`,
+      elementId: element.id,
+      lineKind: lineSelection,
+      role,
+      point: localToWorld(center, terminal.point, rotationDeg),
+      direction: normalizeDirection(rotateLocalPoint(terminal.direction, rotationDeg)),
+      outerDiameterMm: terminal.outerDiameterMm,
+      elevationMm: element.elevation + line.centerlineZMm,
+      snapSourceElementId: readStringProperty(
+        element.properties,
+        'branchKitSnapSourceElementId',
+      ),
+      snapProjectedDistanceMm: readFiniteNumberProperty(
+        element.properties,
+        'branchKitSnapProjectedDistanceMm',
+      ),
+    }];
+  });
+}
+
+function buildSelfContainedBranchKitBundleTargets(
+  element: HvacPipeSnapSource,
+): RefrigerantPipeBundleConnection[] {
+  const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+  if (lineSelection !== 'both') {
+    return [];
+  }
+
+  const model = buildRefrigerantBranchKitViewModel(element);
+  const inlinePlacement = resolveInlineBranchKitCenter(
+    element,
+    lineSelection,
+    model,
+  );
+  const center = inlinePlacement?.center ?? absoluteCenter(element);
+  const rotationDeg = inlinePlacement?.rotationDeg ?? (element.rotation ?? 0);
+  const roles: RefrigerantBranchTerminalRole[] = [
+    'inlet',
+    'run-outlet',
+    'branch-outlet',
+  ];
+
+  return roles.flatMap((role): RefrigerantPipeBundleConnection[] => {
+    const identity = resolveRefrigerantBranchKitConnectionIdentity({
+      model,
+      role,
+      lineSelection,
+      worldCenter: center,
+      rotationDeg,
+    });
+    if (!identity) {
+      return [];
+    }
+
+    return [{
+      point: computeBundleCenter(identity.gasPoint, identity.liquidPoint),
+      gasPoint: identity.gasPoint,
+      liquidPoint: identity.liquidPoint,
+      gasFieldPoint: identity.gasPoint,
+      liquidFieldPoint: identity.liquidPoint,
+      gasOuterDiameterMm: identity.gasTerminal.outerDiameterMm,
+      liquidOuterDiameterMm: identity.liquidTerminal.outerDiameterMm,
+      gasDirection: identity.gasDirection,
+      liquidDirection: identity.liquidDirection,
+      direction: identity.direction,
+      elevationMm:
+        element.elevation +
+        (model.gas.centerlineZMm + model.liquid.centerlineZMm) / 2,
+      gasElevationMm: element.elevation + model.gas.centerlineZMm,
+      liquidElevationMm: element.elevation + model.liquid.centerlineZMm,
+      connectionKind: 'field-pipe',
+      sourceElementId: element.id,
+      terminalRole: role,
+    }];
+  });
+}
+
+function buildPairedBranchKitBundleTargets(
+  elements: HvacPipeSnapSource[],
+): RefrigerantPipeBundleConnection[] {
+  const terminalTargets = elements.flatMap((element) =>
+    isRefrigerantBranchKitElement(element)
+      ? collectBranchKitLineTerminalTargets(element)
+      : [],
+  );
+  const gasTargets = terminalTargets.filter((target) => target.lineKind === 'gas');
+  const liquidTargets = terminalTargets.filter((target) => target.lineKind === 'liquid');
+  const candidates: Array<{
+    gas: BranchKitLineTerminalTarget;
+    liquid: BranchKitLineTerminalTarget;
+    score: number;
+  }> = [];
+
+  gasTargets.forEach((gas) => {
+    liquidTargets.forEach((liquid) => {
+      if (gas.role !== liquid.role) {
+        return;
+      }
+
+      const directionDot = dot(gas.direction, liquid.direction);
+      if (directionDot < 0.92) {
+        return;
+      }
+
+      const delta = subtract(liquid.point, gas.point);
+      const spacingMm = Math.hypot(delta.x, delta.y);
+      if (spacingMm < 0.01) {
+        return;
+      }
+
+      const direction = normalizeDirection(add(gas.direction, liquid.direction));
+      const lateralAlignment = Math.abs(
+        dot(normalizeDirection(delta), direction),
+      );
+      if (lateralAlignment > 0.35) {
+        return;
+      }
+
+      const expectedSpacingMm =
+        gas.outerDiameterMm / 2 +
+        liquid.outerDiameterMm / 2 +
+        REQUIRED_REFRIGERANT_PIPE_GAP_MM;
+      const maxReasonableSpacingMm = Math.max(600, expectedSpacingMm * 8);
+      if (spacingMm > maxReasonableSpacingMm) {
+        return;
+      }
+
+      const sharesSnappedSource = Boolean(
+        gas.snapSourceElementId &&
+        liquid.snapSourceElementId &&
+        gas.snapSourceElementId === liquid.snapSourceElementId,
+      );
+      const projectedDistanceDelta =
+        isFiniteNumber(gas.snapProjectedDistanceMm) &&
+        isFiniteNumber(liquid.snapProjectedDistanceMm)
+          ? Math.abs(gas.snapProjectedDistanceMm - liquid.snapProjectedDistanceMm)
+          : 0;
+      const spacingErrorMm = Math.abs(spacingMm - expectedSpacingMm);
+
+      candidates.push({
+        gas,
+        liquid,
+        score:
+          spacingErrorMm +
+          projectedDistanceDelta * 0.25 +
+          (sharesSnappedSource ? 0 : 250),
+      });
+    });
+  });
+
+  candidates.sort((a, b) => a.score - b.score);
+
+  const usedKeys = new Set<string>();
+  const targets: RefrigerantPipeBundleConnection[] = [];
+  candidates.forEach(({ gas, liquid }) => {
+    if (usedKeys.has(gas.key) || usedKeys.has(liquid.key)) {
+      return;
+    }
+    usedKeys.add(gas.key);
+    usedKeys.add(liquid.key);
+
+    const direction = normalizeDirection(add(gas.direction, liquid.direction));
+    targets.push({
+      point: computeBundleCenter(gas.point, liquid.point),
+      gasPoint: gas.point,
+      liquidPoint: liquid.point,
+      gasFieldPoint: gas.point,
+      liquidFieldPoint: liquid.point,
+      gasOuterDiameterMm: gas.outerDiameterMm,
+      liquidOuterDiameterMm: liquid.outerDiameterMm,
+      gasDirection: gas.direction,
+      liquidDirection: liquid.direction,
+      direction,
+      elevationMm: (gas.elevationMm + liquid.elevationMm) / 2,
+      gasElevationMm: gas.elevationMm,
+      liquidElevationMm: liquid.elevationMm,
+      connectionKind: 'field-pipe',
+      sourceElementId: `branch-pair:${gas.elementId}:${liquid.elementId}`,
+      terminalRole: gas.role,
+    });
+  });
+
+  return targets;
+}
+
 function interpolatePointOnAxis(
   axisPoint: Point2D,
   axisDirection: Point2D,
@@ -3899,11 +4164,6 @@ export function getRefrigerantPipeBundleSnapTargets(
   elements: HvacPipeSnapSource[],
 ): RefrigerantPipeBundleConnection[] {
   const targets: RefrigerantPipeBundleConnection[] = [];
-  const branchRoles: RefrigerantBranchTerminalRole[] = [
-    'inlet',
-    'run-outlet',
-    'branch-outlet',
-  ];
 
   elements.forEach((element) => {
     const unitPortTarget = resolveUnitPortBundleConnectionForElement(element);
@@ -3913,65 +4173,14 @@ export function getRefrigerantPipeBundleSnapTargets(
     }
 
     if (isRefrigerantBranchKitElement(element)) {
-      const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
-      const model = buildRefrigerantBranchKitViewModel(element);
-      const inlinePlacement = resolveInlineBranchKitCenter(
-        element,
-        lineSelection,
-        model,
-      );
-      const center = inlinePlacement?.center ?? absoluteCenter(element);
-      const rotationDeg = inlinePlacement?.rotationDeg ?? (element.rotation ?? 0);
-
-      branchRoles.forEach((role) => {
-        const identity = resolveRefrigerantBranchKitConnectionIdentity({
-          model,
-          role,
-          lineSelection,
-          worldCenter: center,
-          rotationDeg,
-        });
-        if (!identity) {
-          return;
-        }
-
-        const gasTerminal = identity.gasTerminal;
-        const liquidTerminal = identity.liquidTerminal;
-        const gasPoint = identity.gasPoint;
-        const liquidPoint = identity.liquidPoint;
-        const gasDirection = identity.gasDirection;
-        const liquidDirection = identity.liquidDirection;
-        const direction = identity.direction;
-        const guideReference = identity.guideReference;
-
-        targets.push({
-          point: computeBundleCenter(gasPoint, liquidPoint),
-          gasPoint,
-          liquidPoint,
-          gasFieldPoint: gasPoint,
-          liquidFieldPoint: liquidPoint,
-          gasOuterDiameterMm: gasTerminal.outerDiameterMm,
-          liquidOuterDiameterMm: liquidTerminal.outerDiameterMm,
-          gasDirection,
-          liquidDirection,
-          direction,
-          elevationMm:
-            element.elevation +
-            (model.gas.centerlineZMm + model.liquid.centerlineZMm) / 2,
-          gasElevationMm: element.elevation + model.gas.centerlineZMm,
-          liquidElevationMm: element.elevation + model.liquid.centerlineZMm,
-          connectionKind: 'field-pipe',
-          guideReference,
-          sourceElementId: element.id,
-          terminalRole: role,
-        });
-      });
+      targets.push(...buildSelfContainedBranchKitBundleTargets(element));
       return;
     }
   });
 
   return [
     ...targets,
+    ...buildPairedBranchKitBundleTargets(elements),
     ...buildFieldPipeBundleSnapTargets(elements),
   ];
 }

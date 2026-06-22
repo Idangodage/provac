@@ -446,6 +446,7 @@ export class HvacPlanRenderer {
   private placementPreview: HvacGroup[] = [];
   private lastVisibilityBounds: ViewportBounds | null = null;
   private lastVisibilityZoom: number | null = null;
+  private projectionPlanOpacity = 1;
 
   constructor(canvas: fabric.Canvas) {
     this.canvas = canvas;
@@ -721,7 +722,9 @@ export class HvacPlanRenderer {
     this.lastVisibilityBounds = visibleBounds;
     this.lastVisibilityZoom = zoom;
     this.groups.forEach((group) => {
-      const visible = this.isObjectVisibleInViewport(group, visibleBounds);
+      const visible =
+        this.projectionPlanOpacity > 0.001 &&
+        this.isObjectVisibleInViewport(group, visibleBounds);
       if (group.visible !== visible) {
         group.set("visible", visible);
         group.set("dirty", true);
@@ -731,6 +734,7 @@ export class HvacPlanRenderer {
 
   private syncHvacVisualState(): void {
     this.groups.forEach((group, id) => {
+      const projectionVisible = this.projectionPlanOpacity > 0.001;
       const isSelected = this.selectedIds.has(id);
       const selectionHalos = group
         .getObjects()
@@ -787,9 +791,31 @@ export class HvacPlanRenderer {
           handle.set("evented", false);
         }
       });
+      group.set({
+        opacity: this.projectionPlanOpacity,
+        visible: projectionVisible && group.visible,
+        evented: projectionVisible,
+        selectable: projectionVisible,
+      });
       group.set("dirty", true);
     });
     this.bringPipeElementsToFront();
+  }
+
+  setProjectionPlanOpacity(opacity: number): void {
+    const nextOpacity = Math.min(
+      1,
+      Math.max(0, Number.isFinite(opacity) ? opacity : 1),
+    );
+    if (Math.abs(this.projectionPlanOpacity - nextOpacity) <= 0.001) {
+      return;
+    }
+
+    this.projectionPlanOpacity = nextOpacity;
+    this.lastVisibilityBounds = null;
+    this.refreshViewportVisibility(true);
+    this.syncHvacVisualState();
+    this.canvas.requestRenderAll();
   }
 
   private bringPipeElementsToFront(): void {
@@ -951,6 +977,9 @@ export class HvacPlanRenderer {
 
       if (isRefrigerantBranchKitElement(element)) {
         const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
+        if (lineSelection !== "both") {
+          return;
+        }
         const branchKit = buildRefrigerantBranchKitViewModel(element);
         const inlineResult = resolveInlineBranchKitRenderCenter(
           element,

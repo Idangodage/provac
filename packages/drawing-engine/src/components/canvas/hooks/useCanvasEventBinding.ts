@@ -201,6 +201,7 @@ export interface UseCanvasEventBindingOptions {
   objectDefinitionsById: Map<string, ArchitecturalObjectDefinition>;
   resolvedSnapToGrid: boolean;
   effectiveSnapGridSize: number;
+  projectionViewOnly?: boolean;
   pendingPlacementDefinition: ArchitecturalObjectDefinition | null;
   pendingPlacementEquipmentDefinition: AcEquipmentDefinition | null;
   sectionLineDrawingState: {
@@ -725,6 +726,7 @@ export function useCanvasEventBinding(
     ) => {
       const {
         tool,
+        projectionViewOnly,
         suppressFabricSelectionSyncRef,
         openingPointerInteractionRef,
         setPersistentRoomControlId,
@@ -736,7 +738,7 @@ export function useCanvasEventBinding(
         resolveRoomIdFromTarget,
         updateSelectionFromTargets,
       } = latestOptionsRef.current;
-      if (tool !== "select") return;
+      if (tool !== "select" || projectionViewOnly) return;
       hideActiveSelectionChrome(canvas);
       const nativeEvent = event.e as MouseEvent | PointerEvent | undefined;
       if (
@@ -792,6 +794,7 @@ export function useCanvasEventBinding(
     ) => {
       const {
         tool,
+        projectionViewOnly,
         suppressFabricSelectionSyncRef,
         openingPointerInteractionRef,
         setPersistentRoomControlId,
@@ -803,7 +806,7 @@ export function useCanvasEventBinding(
         resolveRoomIdFromTarget,
         updateSelectionFromTargets,
       } = latestOptionsRef.current;
-      if (tool !== "select") return;
+      if (tool !== "select" || projectionViewOnly) return;
       hideActiveSelectionChrome(canvas);
       const nativeEvent = event.e as MouseEvent | PointerEvent | undefined;
       if (
@@ -858,6 +861,7 @@ export function useCanvasEventBinding(
       event: fabric.CanvasEvents["selection:cleared"],
     ) => {
       const {
+        projectionViewOnly,
         suppressFabricSelectionSyncRef,
         applyMarqueeFilterRef,
         openingPointerInteractionRef,
@@ -865,6 +869,8 @@ export function useCanvasEventBinding(
         setSelectedIds,
         isWallHandleDraggingRef,
       } = latestOptionsRef.current;
+      if (projectionViewOnly) return;
+
       const nativeEvent = event?.e as MouseEvent | PointerEvent | undefined;
       if (
         nativeEvent?.shiftKey ||
@@ -898,6 +904,7 @@ export function useCanvasEventBinding(
         closeDimensionContextMenu,
         closeSectionLineContextMenu,
         closeObjectContextMenu,
+        projectionViewOnly,
         pendingPlacementDefinition,
         pendingPlacementEquipmentDefinition,
         tool,
@@ -939,6 +946,10 @@ export function useCanvasEventBinding(
       closeDimensionContextMenu();
       closeSectionLineContextMenu();
       closeObjectContextMenu();
+      if (projectionViewOnly) {
+        setHoveredElement(null);
+        return;
+      }
       if (pendingPlacementDefinition || pendingPlacementEquipmentDefinition)
         return;
       if (tool !== "select") return;
@@ -1345,6 +1356,7 @@ export function useCanvasEventBinding(
         setObjectContextMenu,
         resolveWallIdFromTarget,
         selectWallSegmentAtPoint,
+        projectionViewOnly,
       } = latestOptionsRef.current;
       if (tool !== "select") {
         closeWallContextMenu();
@@ -1354,9 +1366,18 @@ export function useCanvasEventBinding(
         return;
       }
 
-      const target = canvas.findTarget(
-        event as unknown as fabric.TPointerEvent,
-      );
+      const previousSkipTargetFind = canvas.skipTargetFind;
+      if (projectionViewOnly && event.shiftKey) {
+        canvas.skipTargetFind = false;
+      }
+      let target: fabric.Object | undefined;
+      try {
+        target = canvas.findTarget(
+          event as unknown as fabric.TPointerEvent,
+        );
+      } finally {
+        canvas.skipTargetFind = previousSkipTargetFind;
+      }
       const scenePoint = canvas.getScenePoint(
         event as unknown as fabric.TPointerEvent,
       );

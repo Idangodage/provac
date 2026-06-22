@@ -59,17 +59,189 @@ import {
   SectionLineRenderer,
   HvacPlanRenderer,
 } from "./canvas";
+import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
 import {
   isRefrigerantPipeElementType,
   resolveRefrigerantPipeUnitPortReconnectionUpdates,
   translateRefrigerantPipeElementProperties,
 } from "./canvas/hvac/refrigerantPipePairModel";
-import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
+import {
+  getPlanProjectionVisualState,
+  hasProjectableHvac3D,
+  HvacProjectionLayer,
+  ProjectionAxisGizmo,
+  type ProjectionAxisGizmoVector,
+} from "./canvas/hvac/three3d";
+import {
+  HybridProjectionLayer,
+  type Hybrid3DViewState,
+} from "./canvas/hybrid/HybridProjectionLayer";
 import {
   installCanvasRenderScheduler,
   restoreCanvasRenderScheduler,
 } from "./canvas/renderScheduler";
 export type { DrawingCanvasProps } from "./DrawingCanvas.types";
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function resolveProjectionVectorBlend(
+  vector: ProjectionAxisGizmoVector,
+): number {
+  return clampNumber(
+    Math.max(Math.abs(vector.x), Math.abs(vector.y), Math.abs(vector.z)),
+    0,
+    1,
+  );
+}
+
+const DEFAULT_HYBRID_VIEW: Hybrid3DViewState = {
+  blend: 0,
+  yawDeg: -42,
+  pitchDeg: 58,
+  targetMm: { x: 0, y: 0 },
+  distanceMm: 8000,
+  perspectiveStrength: 0.72,
+  isInteracting: false,
+};
+
+const DEFAULT_HVAC_PROJECTION_VECTOR: ProjectionAxisGizmoVector = {
+  x: 0,
+  y: 0,
+  z: 0,
+};
+
+type HybridAnchorScreen = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type Vector3Like = {
+  x: number;
+  y: number;
+  z: number;
+};
+
+function dot3(first: Vector3Like, second: Vector3Like): number {
+  return first.x * second.x + first.y * second.y + first.z * second.z;
+}
+
+function normalize3(vector: Vector3Like): Vector3Like {
+  const length = Math.hypot(vector.x, vector.y, vector.z) || 1;
+  return {
+    x: vector.x / length,
+    y: vector.y / length,
+    z: vector.z / length,
+  };
+}
+
+function getHybridCameraBasis(view: Hybrid3DViewState) {
+  const yaw = (view.yawDeg * Math.PI) / 180;
+  const pitch = (clampNumber(view.pitchDeg, 18, 82) * Math.PI) / 180;
+  const horizontal = Math.cos(pitch);
+  const direction = normalize3({
+    x: Math.cos(yaw) * horizontal,
+    y: Math.sin(yaw) * horizontal,
+    z: Math.sin(pitch),
+  });
+  const lookDirection = {
+    x: -direction.x,
+    y: -direction.y,
+    z: -direction.z,
+  };
+  const right = normalize3({
+    x: -Math.sin(yaw),
+    y: Math.cos(yaw),
+    z: 0,
+  });
+  const up = normalize3({
+    x: right.y * lookDirection.z - right.z * lookDirection.y,
+    y: right.z * lookDirection.x - right.x * lookDirection.z,
+    z: right.x * lookDirection.y - right.y * lookDirection.x,
+  });
+
+  return { direction, lookDirection, right, up };
+}
+
+function projectHybridPointToScreen(
+  view: Hybrid3DViewState,
+  pointMm: Point2D,
+  screen: HybridAnchorScreen,
+) {
+  const basis = getHybridCameraBasis(view);
+  const distance = clampNumber(view.distanceMm, 800, 220000);
+  const target = { x: view.targetMm.x, y: view.targetMm.y, z: 220 };
+  const camera = {
+    x: target.x + basis.direction.x * distance,
+    y: target.y + basis.direction.y * distance,
+    z: target.z + basis.direction.z * distance,
+  };
+  const point = { x: pointMm.x, y: pointMm.y, z: 0 };
+  const relative = {
+    x: point.x - camera.x,
+    y: point.y - camera.y,
+    z: point.z - camera.z,
+  };
+  const depth = Math.max(1, dot3(relative, basis.lookDirection));
+  const fovDeg = 30 + clampNumber(view.perspectiveStrength, 0, 1) * 14;
+  const tanHalfFov = Math.tan((fovDeg * Math.PI) / 360);
+  const aspect = Math.max(0.01, screen.width / Math.max(1, screen.height));
+  const ndcX = dot3(relative, basis.right) / (depth * tanHalfFov * aspect);
+  const ndcY = dot3(relative, basis.up) / (depth * tanHalfFov);
+
+  return {
+    x: ((ndcX + 1) / 2) * screen.width,
+    y: ((1 - ndcY) / 2) * screen.height,
+    depth,
+    basis,
+    tanHalfFov,
+    aspect,
+  };
+}
+
+function stabilizeHybridAnchor(
+  candidate: Hybrid3DViewState,
+  anchorPointMm: Point2D,
+  anchorScreen: HybridAnchorScreen,
+): Hybrid3DViewState {
+  let next = candidate;
+
+  for (let index = 0; index < 3; index += 1) {
+    const projected = projectHybridPointToScreen(
+      next,
+      anchorPointMm,
+      anchorScreen,
+    );
+    const deltaX = projected.x - anchorScreen.x;
+    const deltaY = projected.y - anchorScreen.y;
+    if (Math.hypot(deltaX, deltaY) < 0.35) {
+      break;
+    }
+
+    const verticalSpan = 2 * projected.tanHalfFov * projected.depth;
+    const horizontalSpan = verticalSpan * projected.aspect;
+    const rightOffset = (deltaX / Math.max(1, anchorScreen.width)) * horizontalSpan;
+    const upOffset = (-deltaY / Math.max(1, anchorScreen.height)) * verticalSpan;
+    next = {
+      ...next,
+      targetMm: {
+        x:
+          next.targetMm.x +
+          projected.basis.right.x * rightOffset +
+          projected.basis.up.x * upOffset,
+        y:
+          next.targetMm.y +
+          projected.basis.right.y * rightOffset +
+          projected.basis.up.y * upOffset,
+      },
+    };
+  }
+
+  return next;
+}
 
 // =============================================================================
 // Component
@@ -151,6 +323,15 @@ export function DrawingCanvas({
   const suppressFabricSelectionSyncRef = useRef(0);
   const dimensionRefreshFrameRef = useRef<number | null>(null);
   const autoDimensionSyncFrameRef = useRef<number | null>(null);
+  const hybridBlendFrameRef = useRef<number | null>(null);
+  const hybridDragRef = useRef<{
+    active: boolean;
+    startClientX: number;
+    startClientY: number;
+    startView: Hybrid3DViewState;
+    anchorPointMm: Point2D;
+    anchorScreen: HybridAnchorScreen;
+  } | null>(null);
 
   // Drag interaction state
   const isDraggingObjectRef = useRef(false);
@@ -174,6 +355,12 @@ export function DrawingCanvas({
     isDrawing: false,
     drawingPoints: [],
   });
+  const [hybridView, setHybridView] =
+    useState<Hybrid3DViewState>(DEFAULT_HYBRID_VIEW);
+  const [hvacProjectionVector, setHvacProjectionVector] =
+    useState<ProjectionAxisGizmoVector>(DEFAULT_HVAC_PROJECTION_VECTOR);
+  const hybridViewRef = useRef<Hybrid3DViewState>(DEFAULT_HYBRID_VIEW);
+  const hybridViewOnly = hybridView.blend > 0.05;
 
   const setViewportSizeIfChanged = useCallback(
     (width: number, height: number) => {
@@ -253,6 +440,7 @@ export function DrawingCanvas({
     createRoomWalls,
     moveRoom,
     hvacElements,
+    resetViewRequestId,
     addHvacElement,
     addHvacElements,
     updateHvacElement,
@@ -323,6 +511,7 @@ export function DrawingCanvas({
       createRoomWalls: state.createRoomWalls,
       moveRoom: state.moveRoom,
       hvacElements: state.hvacElements,
+      resetViewRequestId: state.resetViewRequestId,
       addHvacElement: state.addHvacElement,
       addHvacElements: state.addHvacElements,
       updateHvacElement: state.updateHvacElement,
@@ -380,6 +569,22 @@ export function DrawingCanvas({
     }),
     [panOffset.x, panOffset.y, safePaperPerRealRatio],
   );
+  const hvacProjectionAvailable = useMemo(
+    () => hasProjectableHvac3D(hvacElements),
+    [hvacElements],
+  );
+  const hvacProjectionBlend = resolveProjectionVectorBlend(hvacProjectionVector);
+  const effectiveHvacProjectionBlend = hvacProjectionAvailable
+    ? hvacProjectionBlend
+    : 0;
+  const visibleHvacProjectionBlend =
+    hybridView.blend > 0.001 ? 0 : effectiveHvacProjectionBlend;
+  const hvacProjectionVisualState = useMemo(
+    () => getPlanProjectionVisualState(visibleHvacProjectionBlend),
+    [visibleHvacProjectionBlend],
+  );
+  const projectionViewOnly =
+    hybridViewOnly || effectiveHvacProjectionBlend > 0.05;
   const rulerMousePosition = useMemo(
     () => ({
       x: mousePosition.x * safePaperPerRealRatio,
@@ -407,6 +612,127 @@ export function DrawingCanvas({
     : { x: 0, y: 0 };
   const hostWidth = Math.max(1, viewportSize.width - originOffset.x);
   const hostHeight = Math.max(1, viewportSize.height - originOffset.y);
+  const hybridDrawingBounds = useMemo(() => {
+    const points: Point2D[] = [];
+    rooms.forEach((room) => {
+      points.push(...room.vertices);
+      room.holes?.forEach((hole) => points.push(...hole));
+    });
+    walls.forEach((wall) => {
+      points.push(wall.startPoint, wall.endPoint);
+    });
+    hvacElements.forEach((element) => {
+      points.push(
+        element.position,
+        { x: element.position.x + element.width, y: element.position.y },
+        {
+          x: element.position.x + element.width,
+          y: element.position.y + element.depth,
+        },
+        { x: element.position.x, y: element.position.y + element.depth },
+      );
+    });
+    symbols.forEach((symbol) => points.push(symbol.position));
+
+    if (points.length === 0) {
+      return {
+        center: { x: pageConfig.width / 2, y: pageConfig.height / 2 },
+        radius: Math.max(pageConfig.width, pageConfig.height) / 2,
+      };
+    }
+
+    const bounds = points.reduce(
+      (acc, point) => ({
+        minX: Math.min(acc.minX, point.x),
+        minY: Math.min(acc.minY, point.y),
+        maxX: Math.max(acc.maxX, point.x),
+        maxY: Math.max(acc.maxY, point.y),
+      }),
+      {
+        minX: Number.POSITIVE_INFINITY,
+        minY: Number.POSITIVE_INFINITY,
+        maxX: Number.NEGATIVE_INFINITY,
+        maxY: Number.NEGATIVE_INFINITY,
+      },
+    );
+    const width = Math.max(1, bounds.maxX - bounds.minX);
+    const height = Math.max(1, bounds.maxY - bounds.minY);
+    return {
+      center: {
+        x: bounds.minX + width / 2,
+        y: bounds.minY + height / 2,
+      },
+      radius: Math.max(width, height, Math.hypot(width, height) / 2),
+    };
+  }, [hvacElements, pageConfig.height, pageConfig.width, rooms, symbols, walls]);
+  const planLayerOpacity = clampNumber(1 - hybridView.blend, 0, 1);
+  const projectionContextActive = visibleHvacProjectionBlend > 0.001;
+  const pageContextOpacity = projectionContextActive
+    ? Math.max(0.5, hvacProjectionVisualState.planOpacity)
+    : 1;
+  const gridContextOpacity = projectionContextActive
+    ? hvacProjectionVisualState.gridOpacity
+    : 1;
+  const drawingContextOpacity = projectionContextActive
+    ? Math.max(0.26, hvacProjectionVisualState.planOpacity)
+    : 1;
+  const projectionPlaneStyle = useMemo(
+    () => {
+      const projectionActive = visibleHvacProjectionBlend > 0.001;
+      const axisX = projectionActive ? hvacProjectionVector.x : 0;
+      const axisY = projectionActive ? hvacProjectionVector.y : 0;
+      const axisZ = projectionActive ? hvacProjectionVector.z : 0;
+      const shiftX =
+        hvacProjectionVisualState.pageShiftX + axisX * 68 - axisY * 18;
+      const shiftY =
+        hvacProjectionVisualState.pageShiftY - axisY * 46 - axisZ * 24;
+      const tiltX =
+        hvacProjectionVisualState.pageTiltXDeg + axisY * 24 + axisZ * 5;
+      const tiltY = -axisX * 18;
+      const tiltZ =
+        hvacProjectionVisualState.pageTiltZDeg + axisX * 24 - axisY * 8;
+
+      return {
+        opacity: planLayerOpacity,
+        transform: projectionActive
+          ? [
+              `translate3d(${shiftX}px, ${shiftY}px, 0)`,
+              "perspective(2600px)",
+              `rotateX(${tiltX}deg)`,
+              `rotateY(${tiltY}deg)`,
+              `rotateZ(${tiltZ}deg)`,
+              `scale(${hvacProjectionVisualState.pageScale})`,
+            ].join(" ")
+          : "none",
+        transformOrigin: "50% 50%",
+        transformStyle: "preserve-3d" as const,
+        transition:
+          hybridView.blend > 0
+            ? "opacity 120ms linear"
+            : "transform 140ms ease-out, opacity 120ms linear",
+        willChange: "transform, opacity",
+      };
+    },
+    [
+      hvacProjectionVisualState.pageScale,
+      hvacProjectionVisualState.pageShiftX,
+      hvacProjectionVisualState.pageShiftY,
+      hvacProjectionVisualState.pageTiltXDeg,
+      hvacProjectionVisualState.pageTiltZDeg,
+      hvacProjectionVector.x,
+      hvacProjectionVector.y,
+      hvacProjectionVector.z,
+      hybridView.blend,
+      planLayerOpacity,
+      visibleHvacProjectionBlend,
+    ],
+  );
+
+  useEffect(() => {
+    hvacRendererRef.current?.setProjectionPlanOpacity(
+      hvacProjectionVisualState.hvacPlanOpacity,
+    );
+  }, [fabricCanvas, hvacProjectionVisualState.hvacPlanOpacity]);
   const objectDefinitionsById = useMemo(
     () =>
       new Map(
@@ -506,6 +832,288 @@ export function DrawingCanvas({
     deleteSymbol: deleteSymbol as (id: string) => void,
     updateSymbol,
   });
+
+  useEffect(() => {
+    hybridViewRef.current = hybridView;
+  }, [hybridView]);
+
+  const commitHybridView = useCallback(
+    (
+      updater:
+        | Hybrid3DViewState
+        | ((previous: Hybrid3DViewState) => Hybrid3DViewState),
+    ) => {
+      setHybridView((previous) => {
+        const next =
+          typeof updater === "function" ? updater(previous) : updater;
+        hybridViewRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const animateHybridBlend = useCallback(
+    (targetBlend: number) => {
+      const target = clampNumber(targetBlend, 0, 1);
+      if (typeof window === "undefined") {
+        commitHybridView((previous) => ({
+          ...previous,
+          blend: target,
+          isInteracting: target > 0 ? previous.isInteracting : false,
+        }));
+        return;
+      }
+
+      if (hybridBlendFrameRef.current !== null) {
+        window.cancelAnimationFrame(hybridBlendFrameRef.current);
+        hybridBlendFrameRef.current = null;
+      }
+
+      const startBlend = hybridViewRef.current.blend;
+      const startedAt = performance.now();
+      const durationMs = target > startBlend ? 140 : 110;
+      const step = (timestamp: number) => {
+        const rawProgress = clampNumber(
+          (timestamp - startedAt) / durationMs,
+          0,
+          1,
+        );
+        const easedProgress = 1 - Math.pow(1 - rawProgress, 3);
+        const nextBlend =
+          startBlend + (target - startBlend) * easedProgress;
+        commitHybridView((previous) => ({
+          ...previous,
+          blend: nextBlend,
+          isInteracting:
+            target > 0 ? previous.isInteracting : rawProgress < 1,
+        }));
+        if (rawProgress < 1) {
+          hybridBlendFrameRef.current = window.requestAnimationFrame(step);
+          return;
+        }
+        hybridBlendFrameRef.current = null;
+        commitHybridView((previous) => ({
+          ...previous,
+          blend: target,
+          isInteracting: target > 0 ? previous.isInteracting : false,
+        }));
+      };
+
+      hybridBlendFrameRef.current = window.requestAnimationFrame(step);
+    },
+    [commitHybridView],
+  );
+
+  const resetHybridView = useCallback(() => {
+    hybridDragRef.current = null;
+    commitHybridView((previous) => ({
+      ...previous,
+      isInteracting: false,
+    }));
+    animateHybridBlend(0);
+  }, [animateHybridBlend, commitHybridView]);
+
+  useEffect(() => {
+    if (resetViewRequestId > 0) {
+      resetHybridView();
+    }
+  }, [resetHybridView, resetViewRequestId]);
+
+  useEffect(() => {
+    if (hybridViewRef.current.blend > 0.001) {
+      return;
+    }
+    commitHybridView((previous) => ({
+      ...previous,
+      targetMm: hybridDrawingBounds.center,
+      distanceMm: Math.max(2500, hybridDrawingBounds.radius * 2.6),
+    }));
+  }, [commitHybridView, hybridDrawingBounds.center, hybridDrawingBounds.radius]);
+
+  const handleHybridWebglUnavailable = useCallback(() => {
+    resetHybridView();
+  }, [resetHybridView]);
+
+  useEffect(() => {
+    const canvas = fabricRef.current;
+    const upperCanvasEl = canvas?.upperCanvasEl;
+    if (!canvas || !upperCanvasEl) {
+      return;
+    }
+
+    const closeAllContextMenus = () => {
+      closeWallContextMenu();
+      closeDimensionContextMenu();
+      closeSectionLineContextMenu();
+      closeObjectContextMenu();
+    };
+
+    const scenePointFromEvent = (event: MouseEvent): Point2D => {
+      const scenePoint = canvas.getScenePoint(
+        event as unknown as fabric.TPointerEvent,
+      );
+      return {
+        x: scenePoint.x / MM_TO_PX,
+        y: scenePoint.y / MM_TO_PX,
+      };
+    };
+
+    const stopPlainRmbEvent = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    };
+
+    const finishHybridDrag = () => {
+      if (!hybridDragRef.current?.active) {
+        return;
+      }
+      hybridDragRef.current = null;
+      commitHybridView((previous) => ({
+        ...previous,
+        blend: Math.max(previous.blend, 1),
+        isInteracting: false,
+      }));
+    };
+
+    const handleRightMouseDown = (event: MouseEvent) => {
+      if (event.button !== 2 || event.shiftKey) {
+        return;
+      }
+      stopPlainRmbEvent(event);
+      closeAllContextMenus();
+      const anchorPointMm = scenePointFromEvent(event);
+      const canvasBounds = upperCanvasEl.getBoundingClientRect();
+      const anchorScreen: HybridAnchorScreen = {
+        x: event.clientX - canvasBounds.left,
+        y: event.clientY - canvasBounds.top,
+        width: Math.max(1, canvasBounds.width || hostWidth),
+        height: Math.max(1, canvasBounds.height || hostHeight),
+      };
+      const current = hybridViewRef.current;
+      const nextView = stabilizeHybridAnchor(
+        {
+          ...current,
+          blend: Math.max(current.blend, 0.08),
+          targetMm:
+            current.blend > 0.05
+              ? current.targetMm
+              : hybridDrawingBounds.center,
+          distanceMm:
+            current.blend > 0.05
+              ? current.distanceMm
+              : Math.max(2500, hybridDrawingBounds.radius * 2.6),
+          isInteracting: true,
+        },
+        anchorPointMm,
+        anchorScreen,
+      );
+      hybridDragRef.current = {
+        active: true,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startView: nextView,
+        anchorPointMm,
+        anchorScreen,
+      };
+      commitHybridView(nextView);
+      animateHybridBlend(1);
+    };
+
+    const handleRightMouseMove = (event: MouseEvent) => {
+      const drag = hybridDragRef.current;
+      if (!drag?.active) {
+        return;
+      }
+      if ((event.buttons & 2) !== 2) {
+        finishHybridDrag();
+        return;
+      }
+      stopPlainRmbEvent(event);
+      const dx = event.clientX - drag.startClientX;
+      const dy = event.clientY - drag.startClientY;
+      const nextPitch = clampNumber(
+        drag.startView.pitchDeg - dy * 0.16,
+        24,
+        78,
+      );
+      commitHybridView((previous) =>
+        stabilizeHybridAnchor(
+          {
+            ...previous,
+            blend: Math.max(previous.blend, 0.08),
+            yawDeg: drag.startView.yawDeg + dx * 0.22,
+            pitchDeg: nextPitch,
+            perspectiveStrength: clampNumber(
+              0.52 + (78 - nextPitch) / 70,
+              0.45,
+              1,
+            ),
+            targetMm: drag.startView.targetMm,
+            distanceMm: drag.startView.distanceMm,
+            isInteracting: true,
+          },
+          drag.anchorPointMm,
+          drag.anchorScreen,
+        ),
+      );
+    };
+
+    const handleRightMouseUp = (event: MouseEvent) => {
+      if (event.button !== 2 && !hybridDragRef.current?.active) {
+        return;
+      }
+      if (hybridDragRef.current?.active) {
+        stopPlainRmbEvent(event);
+      }
+      finishHybridDrag();
+    };
+
+    const handleContextMenu = (event: MouseEvent) => {
+      if (event.shiftKey) {
+        return;
+      }
+      stopPlainRmbEvent(event);
+    };
+
+    const handleDoubleClick = (event: MouseEvent) => {
+      if (hybridViewRef.current.blend <= 0.05) {
+        return;
+      }
+      stopPlainRmbEvent(event);
+      resetHybridView();
+    };
+
+    upperCanvasEl.addEventListener("mousedown", handleRightMouseDown, true);
+    upperCanvasEl.addEventListener("contextmenu", handleContextMenu, true);
+    upperCanvasEl.addEventListener("dblclick", handleDoubleClick, true);
+    window.addEventListener("mousemove", handleRightMouseMove, true);
+    window.addEventListener("mouseup", handleRightMouseUp, true);
+    window.addEventListener("blur", finishHybridDrag);
+
+    return () => {
+      upperCanvasEl.removeEventListener("mousedown", handleRightMouseDown, true);
+      upperCanvasEl.removeEventListener("contextmenu", handleContextMenu, true);
+      upperCanvasEl.removeEventListener("dblclick", handleDoubleClick, true);
+      window.removeEventListener("mousemove", handleRightMouseMove, true);
+      window.removeEventListener("mouseup", handleRightMouseUp, true);
+      window.removeEventListener("blur", finishHybridDrag);
+    };
+  }, [
+    animateHybridBlend,
+    closeDimensionContextMenu,
+    closeObjectContextMenu,
+    closeSectionLineContextMenu,
+    closeWallContextMenu,
+    commitHybridView,
+    fabricCanvas,
+    hostHeight,
+    hostWidth,
+    hybridDrawingBounds.center,
+    hybridDrawingBounds.radius,
+    resetHybridView,
+  ]);
 
   const pendingPlacementDefinition = pendingPlacementObjectId
     ? (objectDefinitionsById.get(pendingPlacementObjectId) ?? null)
@@ -649,6 +1257,13 @@ export function DrawingCanvas({
       ) {
         window.cancelAnimationFrame(mousePositionFrameRef.current);
         mousePositionFrameRef.current = null;
+      }
+      if (
+        hybridBlendFrameRef.current !== null &&
+        typeof window !== "undefined"
+      ) {
+        window.cancelAnimationFrame(hybridBlendFrameRef.current);
+        hybridBlendFrameRef.current = null;
       }
       resetInteractionState();
     };
@@ -1501,6 +2116,22 @@ export function DrawingCanvas({
     canvas.renderAll();
   }, [backgroundColor]);
 
+  useEffect(() => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+
+    if (projectionViewOnly) {
+      canvas.discardActiveObject();
+      hideActiveSelectionChrome(canvas);
+      canvas.skipTargetFind = true;
+      canvas.requestRenderAll();
+      return;
+    }
+
+    canvas.skipTargetFind = false;
+    canvas.requestRenderAll();
+  }, [projectionViewOnly]);
+
   // ---------------------------------------------------------------------------
   // Renderer Synchronisation
   // ---------------------------------------------------------------------------
@@ -1557,6 +2188,7 @@ export function DrawingCanvas({
     activeRoomDragId,
     persistentRoomControlId,
     openingInteractionActive,
+    projectionViewOnly,
     pendingPlacementDefinition,
     pendingPlacementEquipmentDefinition,
     placementRotationDeg,
@@ -1615,6 +2247,7 @@ export function DrawingCanvas({
       isSpacePressed,
       pendingPlacementDefinition,
       pendingPlacementEquipmentDefinition,
+      projectionViewOnly,
       isWallDrawing,
       isRoomDrawing,
       roomStartCorner,
@@ -1706,6 +2339,7 @@ export function DrawingCanvas({
     >,
     resolvedSnapToGrid,
     effectiveSnapGridSize,
+    projectionViewOnly,
     pendingPlacementDefinition,
     pendingPlacementEquipmentDefinition,
     sectionLineDrawingState,
@@ -1846,49 +2480,99 @@ export function DrawingCanvas({
           overflow: "hidden",
         }}
       >
-        <PageLayout
-          pageWidth={pageConfig.width}
-          pageHeight={pageConfig.height}
-          zoom={zoom}
-          panOffset={overlayPanOffset}
-        />
-        <Grid
-          pageWidth={pageConfig.width}
-          pageHeight={pageConfig.height}
-          zoom={zoom}
-          panOffset={overlayPanOffset}
-          gridSize={resolvedGridSize}
-          showGrid={resolvedShowGrid}
-          viewportWidth={hostWidth}
-          viewportHeight={hostHeight}
-          gridMode={gridMode}
-          paperUnit={paperUnit}
-          realWorldUnit={resolvedRealWorldUnit}
-          scaleDrawing={safeScaleDrawing}
-          scaleReal={safeScaleReal}
-          majorGridSize={majorGridSize}
-          gridSubdivisions={safeGridSubdivisions}
-        />
-        <canvas ref={canvasRef} className="relative z-[2] block" />
-        {/* [SNAP WIRE] Overlay canvas for snap indicators — sits on top, pointer-events: none */}
-        <PipeKonvaInteractionLayer
-          enabled={konvaPipeOverlayActive}
+          <div
+            className="absolute inset-0"
+            style={projectionPlaneStyle}
+          >
+          <div
+            className="absolute inset-0"
+            style={{
+              opacity: pageContextOpacity,
+              transition: "opacity 140ms ease-out",
+            }}
+          >
+            <PageLayout
+              pageWidth={pageConfig.width}
+              pageHeight={pageConfig.height}
+              zoom={zoom}
+              panOffset={overlayPanOffset}
+            />
+          </div>
+          <div
+            className="absolute inset-0"
+            style={{
+              opacity: gridContextOpacity,
+              transition: "opacity 140ms ease-out",
+            }}
+          >
+            <Grid
+              pageWidth={pageConfig.width}
+              pageHeight={pageConfig.height}
+              zoom={zoom}
+              panOffset={overlayPanOffset}
+              gridSize={resolvedGridSize}
+              showGrid={resolvedShowGrid}
+              viewportWidth={hostWidth}
+              viewportHeight={hostHeight}
+              gridMode={gridMode}
+              paperUnit={paperUnit}
+              realWorldUnit={resolvedRealWorldUnit}
+              scaleDrawing={safeScaleDrawing}
+              scaleReal={safeScaleReal}
+              majorGridSize={majorGridSize}
+              gridSubdivisions={safeGridSubdivisions}
+            />
+          </div>
+          <canvas
+            ref={canvasRef}
+            className="relative z-[2] block"
+            style={{
+              opacity: drawingContextOpacity,
+              transition: "opacity 140ms ease-out",
+            }}
+          />
+          <PipeKonvaInteractionLayer
+            enabled={konvaPipeOverlayActive && !projectionViewOnly}
+            width={hostWidth}
+            height={hostHeight}
+            viewportZoom={viewportZoom}
+            panOffset={panOffset}
+            hvacElements={hvacElements}
+            selectedIds={selectedIds}
+            wallSettings={wallSettings}
+            updateHvacElement={updateHvacElement}
+            saveToHistory={saveToHistory}
+            setProcessingStatus={setProcessingStatus}
+            setSelectedIds={setSelectedIds}
+          />
+          <canvas
+            ref={snapOverlayRef}
+            className="absolute left-0 top-0 z-[10] block"
+            style={{ pointerEvents: "none" }}
+          />
+          <HvacProjectionLayer
+            className="z-[7]"
+            width={hostWidth}
+            height={hostHeight}
+            zoom={zoom}
+            drawingScale={safePaperPerRealRatio}
+            panOffset={panOffset}
+            blend={visibleHvacProjectionBlend}
+            hvacElements={hvacElements}
+          />
+        </div>
+        <HybridProjectionLayer
           width={hostWidth}
           height={hostHeight}
-          viewportZoom={viewportZoom}
-          panOffset={panOffset}
+          pageWidth={pageConfig.width}
+          pageHeight={pageConfig.height}
+          view={hybridView}
+          walls={walls}
+          rooms={rooms}
+          symbols={symbols}
+          objectDefinitions={objectDefinitions}
           hvacElements={hvacElements}
-          selectedIds={selectedIds}
-          wallSettings={wallSettings}
-          updateHvacElement={updateHvacElement}
-          saveToHistory={saveToHistory}
-          setProcessingStatus={setProcessingStatus}
-          setSelectedIds={setSelectedIds}
-        />
-        <canvas
-          ref={snapOverlayRef}
-          className="absolute left-0 top-0 z-[10] block"
-          style={{ pointerEvents: "none" }}
+          onWebglUnavailable={handleHybridWebglUnavailable}
         />
       </div>
 
@@ -2041,28 +2725,43 @@ export function DrawingCanvas({
           </div>
         )}
 
-      <Rulers
-        pageWidth={pageConfig.width}
-        pageHeight={pageConfig.height}
-        zoom={zoom}
-        panOffset={overlayPanOffset}
-        viewportWidth={hostWidth}
-        viewportHeight={hostHeight}
-        showRulers={resolvedShowRulers}
-        rulerSize={rulerSize}
-        originOffset={originOffset}
-        gridSize={resolvedGridSize}
-        displayUnit={resolvedRealWorldUnit}
-        mousePosition={rulerMousePosition}
-        rulerMode={rulerMode}
-        paperUnit={paperUnit}
-        realWorldUnit={resolvedRealWorldUnit}
-        scaleDrawing={safeScaleDrawing}
-        scaleReal={safeScaleReal}
-        majorTickInterval={majorTickInterval}
-        tickSubdivisions={tickSubdivisions}
-        showRulerLabels={showRulerLabels}
+      <ProjectionAxisGizmo
+        className="absolute bottom-4 right-4 z-[26]"
+        disabled={!hvacProjectionAvailable || hybridViewOnly}
+        value={hvacProjectionVector}
+        onChange={setHvacProjectionVector}
+        onReset={() => setHvacProjectionVector(DEFAULT_HVAC_PROJECTION_VECTOR)}
       />
+
+      <div
+        style={{
+          opacity: planLayerOpacity,
+          transition: hybridView.blend > 0 ? "opacity 120ms linear" : undefined,
+        }}
+      >
+        <Rulers
+          pageWidth={pageConfig.width}
+          pageHeight={pageConfig.height}
+          zoom={zoom}
+          panOffset={overlayPanOffset}
+          viewportWidth={hostWidth}
+          viewportHeight={hostHeight}
+          showRulers={resolvedShowRulers}
+          rulerSize={rulerSize}
+          originOffset={originOffset}
+          gridSize={resolvedGridSize}
+          displayUnit={resolvedRealWorldUnit}
+          mousePosition={rulerMousePosition}
+          rulerMode={rulerMode}
+          paperUnit={paperUnit}
+          realWorldUnit={resolvedRealWorldUnit}
+          scaleDrawing={safeScaleDrawing}
+          scaleReal={safeScaleReal}
+          majorTickInterval={majorTickInterval}
+          tickSubdivisions={tickSubdivisions}
+          showRulerLabels={showRulerLabels}
+        />
+      </div>
     </div>
   );
 }

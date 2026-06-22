@@ -22,23 +22,17 @@ import type {
   Wall,
   WallSettings,
 } from "../../../types";
-import type {
-  CanvasState,
-  MarqueeSelectionState,
+import {
+  MAX_ZOOM,
+  MIN_ZOOM,
+  WHEEL_ZOOM_SENSITIVITY,
+  type CanvasState,
+  type MarqueeSelectionState,
 } from "../../DrawingCanvas.types";
 import type { DimensionRenderer } from "../dimension/DimensionRenderer";
+import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
 import type { ObjectRenderer } from "../object/ObjectRenderer";
 import type { RoomRenderer } from "../room/RoomRenderer";
-import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
-import type { WallRenderer } from "../wall/WallRenderer";
-import type { UseExtendToolResult } from "./useExtendTool";
-import type { UseOffsetToolResult } from "./useOffsetTool";
-import type { UseTrimToolResult } from "./useTrimTool";
-import {
-  MIN_ZOOM,
-  MAX_ZOOM,
-  WHEEL_ZOOM_SENSITIVITY,
-} from "../../DrawingCanvas.types";
 import { MM_TO_PX } from "../scale";
 import { snapPointToGrid } from "../snapping";
 import { isDrawingTool, renderDrawingPreview } from "../toolUtils";
@@ -47,7 +41,12 @@ import {
   panForZoomAtViewportPoint,
   panFromViewportDelta,
 } from "../viewTransform";
+import type { WallRenderer } from "../wall/WallRenderer";
 import { snapWallPoint } from "../wall/WallSnapping";
+
+import type { UseExtendToolResult } from "./useExtendTool";
+import type { UseOffsetToolResult } from "./useOffsetTool";
+import type { UseTrimToolResult } from "./useTrimTool";
 
 // =============================================================================
 // Types
@@ -83,6 +82,7 @@ export interface UseCanvasMouseHandlersOptions {
   isSpacePressed: boolean;
   pendingPlacementDefinition: ArchitecturalObjectDefinition | null;
   pendingPlacementEquipmentDefinition: AcEquipmentDefinition | null;
+  projectionViewOnly?: boolean;
   isWallDrawing: boolean;
   isRoomDrawing: boolean;
   roomStartCorner: Point2D | null;
@@ -248,6 +248,7 @@ export function useCanvasMouseHandlers(
     isSpacePressed,
     pendingPlacementDefinition,
     pendingPlacementEquipmentDefinition,
+    projectionViewOnly = false,
     isWallDrawing,
     isRoomDrawing,
     roomStartCorner,
@@ -372,7 +373,7 @@ export function useCanvasMouseHandlers(
         return;
       }
 
-      const shouldPan = tool === "pan" || isSpacePressed;
+      const shouldPan = tool === "pan" || isSpacePressed || projectionViewOnly;
       if (shouldPan) {
         const nextState: CanvasState = {
           ...canvasStateRef.current,
@@ -608,6 +609,11 @@ export function useCanvasMouseHandlers(
           lastPanPoint: { x: viewportPoint.x, y: viewportPoint.y },
         };
         canvasStateRef.current = nextState;
+        return;
+      }
+
+      if (projectionViewOnly) {
+        setHoveredElement(null);
         return;
       }
 
@@ -961,6 +967,7 @@ export function useCanvasMouseHandlers(
       middlePanRef,
       pendingPlacementDefinition,
       pendingPlacementEquipmentDefinition,
+      projectionViewOnly,
       computePlacement,
       computeHvacPlacement,
       isWallDrawing,
@@ -1021,6 +1028,10 @@ export function useCanvasMouseHandlers(
       };
       canvasStateRef.current = nextState;
       setCanvasState(nextState);
+      return;
+    }
+
+    if (projectionViewOnly) {
       return;
     }
 
@@ -1086,6 +1097,7 @@ export function useCanvasMouseHandlers(
   }, [
     tool,
     addSketch,
+    projectionViewOnly,
     handleDimensionSelectMouseUp,
     handleSelectMouseUp,
     getSelectionRect,

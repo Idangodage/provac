@@ -9,6 +9,7 @@ const nextCliPath = path.join(appDir, "node_modules", "next", "dist", "bin", "ne
 const normalizedAppDir = path.normalize(appDir).toLowerCase();
 const normalizedNextCliPath = path.normalize(nextCliPath).toLowerCase();
 const nextCliMarker = path.normalize(path.join("next", "dist", "bin", "next")).toLowerCase();
+const WINDOWS_PROCESS_SCAN_TIMEOUT_MS = 2500;
 
 function commandLineMatchesNextDev(commandLine) {
   if (typeof commandLine !== "string") {
@@ -35,14 +36,21 @@ function findExistingDevProcess() {
       ],
       {
         encoding: "utf8",
+        timeout: WINDOWS_PROCESS_SCAN_TIMEOUT_MS,
       }
     );
 
-    if (result.status !== 0 || !result.stdout.trim()) {
+    if (result.error || result.status !== 0 || !result.stdout.trim()) {
       return null;
     }
 
-    const parsed = JSON.parse(result.stdout);
+    let parsed;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      return null;
+    }
+
     const processes = Array.isArray(parsed) ? parsed : [parsed];
 
     return (
