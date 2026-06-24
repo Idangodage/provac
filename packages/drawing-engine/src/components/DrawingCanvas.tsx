@@ -59,6 +59,7 @@ import {
   SectionLineRenderer,
   HvacPlanRenderer,
 } from "./canvas";
+import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
 import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
 import {
   isRefrigerantPipeElementType,
@@ -2544,6 +2545,17 @@ export function DrawingCanvas({
             saveToHistory={saveToHistory}
             setProcessingStatus={setProcessingStatus}
             setSelectedIds={setSelectedIds}
+          />
+          <PipeClashOverlay
+            enabled={!projectionViewOnly}
+            width={hostWidth}
+            height={hostHeight}
+            viewportZoom={viewportZoom}
+            panOffset={panOffset}
+            hvacElements={hvacElements}
+            selectedIds={selectedIds}
+            updateHvacElement={updateHvacElement}
+            setProcessingStatus={setProcessingStatus}
           />
           <canvas
             ref={snapOverlayRef}

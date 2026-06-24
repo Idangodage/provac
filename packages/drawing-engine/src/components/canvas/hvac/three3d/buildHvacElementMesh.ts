@@ -9,6 +9,8 @@ import {
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
 } from "../ductedIndoorUnitModel";
 import { buildGiDuctVisual } from "../giDuctModel";
+import type { PipeBypass } from "../pipeBypass";
+import { computeFittingRunMm } from "../pipeRoutingRules";
 import {
   buildRefrigerantBranchKitViewModel,
   isRefrigerantBranchKitElement,
@@ -551,6 +553,189 @@ function createTubeAlongPoints(
   }
 
   return group.children.length > 0 ? group : null;
+}
+
+interface ElevationProfileSpan {
+  /** Arc-length where the rise fitting starts (base level). */
+  riseStartMm: number;
+  /** Arc-length where the raised level is reached. */
+  riseEndMm: number;
+  /** Arc-length where the return fitting starts (raised level). */
+  fallStartMm: number;
+  /** Arc-length where the route is back at base level. */
+  fallEndMm: number;
+  /** Signed vertical offset (+ above, - below). */
+  riseSignedMm: number;
+}
+
+function cumulativeArcLengths(points: Point2D[]): number[] {
+  const lengths = [0];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1]!;
+    const current = points[index]!;
+    lengths.push(
+      lengths[index - 1]! + Math.hypot(current.x - previous.x, current.y - previous.y),
+    );
+  }
+  return lengths;
+}
+
+/** Arc-length of the closest point on the polyline to `target`. */
+function projectArcLength(
+  points: Point2D[],
+  lengths: number[],
+  target: Point2D,
+): number {
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestArcLength = 0;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index]!;
+    const end = points[index + 1]!;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const segmentLengthSq = dx * dx + dy * dy;
+    let t = 0;
+    if (segmentLengthSq > 1e-9) {
+      t = ((target.x - start.x) * dx + (target.y - start.y) * dy) / segmentLengthSq;
+      t = Math.min(1, Math.max(0, t));
+    }
+    const projX = start.x + dx * t;
+    const projY = start.y + dy * t;
+    const distance = Math.hypot(target.x - projX, target.y - projY);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestArcLength = lengths[index]! + Math.hypot(projX - start.x, projY - start.y);
+    }
+  }
+  return bestArcLength;
+}
+
+/** Plan point at a given arc-length along the polyline. */
+function pointAtArcLength(
+  points: Point2D[],
+  lengths: number[],
+  arcLength: number,
+): Point2D {
+  const total = lengths[lengths.length - 1] ?? 0;
+  const clamped = Math.min(total, Math.max(0, arcLength));
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const segmentLength = lengths[index + 1]! - lengths[index]!;
+    if (clamped <= lengths[index + 1]! || index === points.length - 2) {
+      const localT = segmentLength > 1e-9 ? (clamped - lengths[index]!) / segmentLength : 0;
+      const start = points[index]!;
+      const end = points[index + 1]!;
+      return {
+        x: start.x + (end.x - start.x) * localT,
+        y: start.y + (end.y - start.y) * localT,
+      };
+    }
+  }
+  return points[points.length - 1]!;
+}
+
+/**
+ * Builds a 3D polyline that follows the plan route but ramps up/down across each
+ * bypass span, producing a real Z-type offset (rise → cross → return) using the
+ * stored fitting geometry. Falls back to a flat tube when there are no bypasses.
+ */
+function buildElevationProfiledPoints(
+  points: Point2D[],
+  baseZ: number,
+  centerOffset: Point2D,
+  bypasses: PipeBypass[],
+): THREE.Vector3[] {
+  if (points.length < 2 || bypasses.length === 0) {
+    return points.map((point) => new THREE.Vector3(point.x, point.y, baseZ));
+  }
+
+  const lengths = cumulativeArcLengths(points);
+  const total = lengths[lengths.length - 1] ?? 0;
+
+  const spans: ElevationProfileSpan[] = [];
+  bypasses.forEach((bypass) => {
+    const riseSignedMm = bypass.bypassElevationMm - bypass.baseElevationMm;
+    if (Math.abs(riseSignedMm) < 0.5) {
+      return;
+    }
+    const enterLocal = {
+      x: bypass.enterPoint.x - centerOffset.x,
+      y: bypass.enterPoint.y - centerOffset.y,
+    };
+    const exitLocal = {
+      x: bypass.exitPoint.x - centerOffset.x,
+      y: bypass.exitPoint.y - centerOffset.y,
+    };
+    let sEnter = projectArcLength(points, lengths, enterLocal);
+    let sExit = projectArcLength(points, lengths, exitLocal);
+    if (sEnter > sExit) {
+      [sEnter, sExit] = [sExit, sEnter];
+    }
+    const spanLength = sExit - sEnter;
+    if (spanLength < 4) {
+      return;
+    }
+    // Keep both ramps inside the span; never let them overlap.
+    const desiredRun = Math.max(
+      8,
+      computeFittingRunMm(Math.abs(riseSignedMm), bypass.fittingAngleDeg),
+    );
+    const run = Math.min(desiredRun, spanLength * 0.45);
+    spans.push({
+      riseStartMm: sEnter,
+      riseEndMm: sEnter + run,
+      fallStartMm: sExit - run,
+      fallEndMm: sExit,
+      riseSignedMm,
+    });
+  });
+
+  if (spans.length === 0) {
+    return points.map((point) => new THREE.Vector3(point.x, point.y, baseZ));
+  }
+
+  const zOffsetAt = (arcLength: number): number => {
+    let offset = 0;
+    spans.forEach((span) => {
+      if (arcLength <= span.riseStartMm || arcLength >= span.fallEndMm) {
+        return;
+      }
+      let factor: number;
+      if (arcLength < span.riseEndMm) {
+        factor = (arcLength - span.riseStartMm) / Math.max(1e-6, span.riseEndMm - span.riseStartMm);
+      } else if (arcLength <= span.fallStartMm) {
+        factor = 1;
+      } else {
+        factor = (span.fallEndMm - arcLength) / Math.max(1e-6, span.fallEndMm - span.fallStartMm);
+      }
+      const value = factor * span.riseSignedMm;
+      if (Math.abs(value) > Math.abs(offset)) {
+        offset = value;
+      }
+    });
+    return offset;
+  };
+
+  // Sample at every original vertex plus each span breakpoint, so the ramp
+  // corners (fittings) are represented exactly.
+  const sampleSet = new Set<number>(lengths);
+  spans.forEach((span) => {
+    [span.riseStartMm, span.riseEndMm, span.fallStartMm, span.fallEndMm].forEach((value) => {
+      sampleSet.add(Math.min(total, Math.max(0, value)));
+    });
+  });
+  const samples = Array.from(sampleSet).sort((a, b) => a - b);
+
+  const result: THREE.Vector3[] = [];
+  let previousArcLength = Number.NEGATIVE_INFINITY;
+  samples.forEach((arcLength) => {
+    if (arcLength - previousArcLength < 0.25) {
+      return;
+    }
+    previousArcLength = arcLength;
+    const planPoint = pointAtArcLength(points, lengths, arcLength);
+    result.push(new THREE.Vector3(planPoint.x, planPoint.y, baseZ + zOffsetAt(arcLength)));
+  });
+  return result;
 }
 
 function hvacPaletteForElement(element: HvacElement): Hvac3DPalette {
@@ -1811,6 +1996,7 @@ export function buildHvacElementMesh(
       const visual = buildRefrigerantPipeVisual(effectiveElement, context.allElements);
       const insulationColor = "#e6edf2";
       const coreColor = visual.lineKind === "gas" ? "#c5894d" : "#dca25d";
+      const bypasses = visual.bypasses;
       const chainState = context.pipeRenderChainStateMap?.get(effectiveElement.id) ?? null;
       if (chainState && !chainState.renderAsHead) {
         return group;
@@ -1836,17 +2022,21 @@ export function buildHvacElementMesh(
         return [stub.end, ...points];
       };
 
+      // Raise/lower the tube across each Z-offset bypass span. `centerOffset`
+      // maps the world-space bypass points into the tube's coordinate space
+      // (local bounds-centred for the standalone branch, absolute for chains).
       const addRouteTube = (
         points: Point2D[],
         z: number,
         radius: number,
         color: string,
         renderOrder: number,
+        centerOffset: Point2D,
         openStart = false,
         openEnd = false,
       ): void => {
         const tube = createTubeAlongPoints(
-          points.map((point) => new THREE.Vector3(point.x, point.y, z)),
+          buildElevationProfiledPoints(points, z, centerOffset, bypasses),
           radius,
           color,
           {
@@ -1890,12 +2080,14 @@ export function buildHvacElementMesh(
       if (chainState) {
         group.position.set(0, 0, 0);
         group.rotation.z = 0;
+        const absoluteOffset: Point2D = { x: 0, y: 0 };
         addRouteTube(
           chainState.continuousOuterPoints,
           chainState.elevationMm,
           chainState.outerRadiusMm,
           insulationColor,
           18,
+          absoluteOffset,
           chainState.openStart,
           chainState.openEnd,
         );
@@ -1912,16 +2104,19 @@ export function buildHvacElementMesh(
           chainState.coreRadiusMm,
           coreColor,
           19,
+          absoluteOffset,
           chainState.openStart || Boolean(chainState.absoluteStub),
           chainState.openEnd,
         );
       } else {
+        const localOffset = visual.bounds.center;
         addRouteTube(
           visual.localContinuousOuterPoints,
           visual.localZMm,
           visual.outerRadiusMm,
           insulationColor,
           18,
+          localOffset,
           endpointState.openStart,
           endpointState.openEnd,
         );
@@ -1932,6 +2127,7 @@ export function buildHvacElementMesh(
           visual.coreRadiusMm,
           coreColor,
           19,
+          localOffset,
           endpointState.openStart || Boolean(visual.localStub),
           endpointState.openEnd,
         );

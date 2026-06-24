@@ -5,6 +5,15 @@ import {
   getCeilingCassettePipePortEndpointLocal,
 } from './ceilingCassetteModel';
 import {
+  normalizeBypasses,
+  translateBypasses,
+  type PipeBypass,
+} from './pipeBypass';
+import {
+  DEFAULT_PIPE_ROUTING_ELEVATION_MM,
+  getActivePipeRoutingSettings,
+} from './pipeRoutingSettings';
+import {
   buildRefrigerantBranchKitViewModel,
   isRefrigerantBranchKitElement,
   resolveRefrigerantBranchKitConnectionIdentity,
@@ -27,8 +36,21 @@ import {
 
 export const ONE_INCH_MM = INCH_MM;
 export const DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM = ONE_INCH_MM;
-export const DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM = 2600;
-const REQUIRED_REFRIGERANT_PIPE_GAP_MM = ONE_INCH_MM;
+export const DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM = DEFAULT_PIPE_ROUTING_ELEVATION_MM;
+
+/**
+ * Active intra-pair gas/liquid clear gap (mm). Reads the document's configurable
+ * {@link PipeRoutingSettings.defaultPipeGapMm} (defaults to 1" = 25.4 mm) so a
+ * spacing change recomputes geometry the same way a property edit would.
+ */
+function resolvedPipeGapMm(): number {
+  return getActivePipeRoutingSettings().defaultPipeGapMm;
+}
+
+/** Active fallback pipe centerline elevation (mm), configurable via settings. */
+function resolvedPipeElevationMm(): number {
+  return getActivePipeRoutingSettings().defaultPipeElevationMm;
+}
 const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
 
 export type RefrigerantPipeConnectionKind = 'unit-port' | 'field-pipe';
@@ -138,6 +160,8 @@ export interface RefrigerantPipeSpec {
   bundleId?: string;
   startConnection: RefrigerantPipeConnection | null;
   endConnection: RefrigerantPipeConnection | null;
+  /** Z-type offset bypasses that clear clashes with existing pipes. */
+  bypasses: PipeBypass[];
 }
 
 export interface RefrigerantPipeVisualSpec extends RefrigerantPipeSpec {
@@ -409,7 +433,7 @@ function repairDegenerateBundlePoints(options: {
   const repairedSpacingMm =
     gasOuterDiameterMm / 2 +
     liquidOuterDiameterMm / 2 +
-    REQUIRED_REFRIGERANT_PIPE_GAP_MM;
+    resolvedPipeGapMm();
   const existingDelta = subtract(options.liquidPoint, options.gasPoint);
   const normalSign = Math.sign(dot(existingDelta, normal)) || 1;
 
@@ -524,14 +548,14 @@ function normalizeBundleConnection(value: unknown): RefrigerantPipeBundleConnect
     gasDirection: gasDirection ? normalizeDirection(gasDirection) : undefined,
     liquidDirection: liquidDirection ? normalizeDirection(liquidDirection) : undefined,
     direction: normalizedDirection,
-    elevationMm: readNumber(candidate.elevationMm, DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM),
+    elevationMm: readNumber(candidate.elevationMm, resolvedPipeElevationMm()),
     gasElevationMm: readNumber(
       candidate.gasElevationMm,
-      readNumber(candidate.elevationMm, DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM),
+      readNumber(candidate.elevationMm, resolvedPipeElevationMm()),
     ),
     liquidElevationMm: readNumber(
       candidate.liquidElevationMm,
-      readNumber(candidate.elevationMm, DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM),
+      readNumber(candidate.elevationMm, resolvedPipeElevationMm()),
     ),
     connectionKind: normalizeConnectionKind(candidate.connectionKind),
     guideReference,
@@ -628,7 +652,7 @@ function normalizePipeConnection(value: unknown): RefrigerantPipeConnection | nu
   return {
     portPoint,
     direction: normalizeDirection(direction),
-    elevationMm: readNumber(candidate.elevationMm, DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM),
+    elevationMm: readNumber(candidate.elevationMm, resolvedPipeElevationMm()),
     connectionKind: normalizeConnectionKind(candidate.connectionKind),
     sourceElementId: typeof candidate.sourceElementId === 'string' ? candidate.sourceElementId : undefined,
   };
@@ -1142,7 +1166,7 @@ export function resolveRefrigerantPipePairSpec(
     gasOuterDiameterMm,
     liquidOuterDiameterMm,
     insulationThicknessMm,
-    pipeGapMm: REQUIRED_REFRIGERANT_PIPE_GAP_MM,
+    pipeGapMm: resolvedPipeGapMm(),
     startBundleConnection,
     endBundleConnection,
   };
@@ -1218,6 +1242,7 @@ export function resolveRefrigerantPipeSpec(
     bundleId: typeof properties.bundleId === 'string' ? properties.bundleId : undefined,
     startConnection,
     endConnection,
+    bypasses: normalizeBypasses(properties.bypasses),
   };
 }
 
@@ -1249,6 +1274,7 @@ export function translateRefrigerantPipeProperties(
     endConnection: nextEndConnection,
     centerline_start: centerlineStart ? add(centerlineStart, delta) : properties.centerline_start,
     centerline_end: centerlineEnd ? add(centerlineEnd, delta) : properties.centerline_end,
+    bypasses: translateBypasses(properties.bypasses, delta),
   };
 }
 
@@ -1320,7 +1346,7 @@ function buildUnitPortBundleConnection(options: {
     actualPortSpacingMm,
     options.gasOuterDiameterMm / 2 +
       options.liquidOuterDiameterMm / 2 +
-      REQUIRED_REFRIGERANT_PIPE_GAP_MM,
+      resolvedPipeGapMm(),
   );
 
   if (
@@ -2871,7 +2897,7 @@ export function buildRefrigerantPipePairVisual(
     ? spec.startBundleConnection.liquidElevationMm - baseElevationMm
     : liquidOuterRadiusMm;
   const centerSpacingMm =
-    gasOuterRadiusMm + liquidOuterRadiusMm + REQUIRED_REFRIGERANT_PIPE_GAP_MM;
+    gasOuterRadiusMm + liquidOuterRadiusMm + resolvedPipeGapMm();
   const bendRadiusMm = Math.max(
     12,
     computeCompactBendRadius(
@@ -3126,7 +3152,7 @@ export function buildRefrigerantPipeElement(
         ? options.startConnection.elevationMm - outerRadiusMm
         : options.endConnection
           ? options.endConnection.elevationMm - outerRadiusMm
-        : DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM;
+        : resolvedPipeElevationMm();
   const centerlineRoutePoints = resolveCenterlinePathWithConnections(
     routePoints,
     options.startConnection ?? null,
@@ -3232,7 +3258,7 @@ export function buildRefrigerantPipeElements(
   );
   const gasOuterRadiusMm = gasOuterDiameterMm / 2;
   const liquidOuterRadiusMm = liquidOuterDiameterMm / 2;
-  const pipeGapMm = REQUIRED_REFRIGERANT_PIPE_GAP_MM;
+  const pipeGapMm = resolvedPipeGapMm();
   const centerSpacingMm = gasOuterRadiusMm + liquidOuterRadiusMm + pipeGapMm;
   const bendRadiusMm = Math.max(
     12,
@@ -3386,7 +3412,7 @@ export function buildRefrigerantPipePairElement(
             gasCenterElevationMm - gasOuterRadiusMm,
             liquidCenterElevationMm - liquidOuterRadiusMm,
           )
-        : options?.startBundleConnection?.elevationMm ?? DEFAULT_REFRIGERANT_PIPE_ELEVATION_MM;
+        : options?.startBundleConnection?.elevationMm ?? resolvedPipeElevationMm();
   const resolvedHeightMm =
     isFiniteNumber(gasCenterElevationMm) && isFiniteNumber(liquidCenterElevationMm)
       ? Math.max(
@@ -3402,7 +3428,7 @@ export function buildRefrigerantPipePairElement(
     gasOuterDiameterMm,
     liquidOuterDiameterMm,
     insulationThicknessMm,
-    pipeGapMm: REQUIRED_REFRIGERANT_PIPE_GAP_MM,
+    pipeGapMm: resolvedPipeGapMm(),
     startBundleConnection: options?.startBundleConnection ?? null,
   };
   const visual = buildRefrigerantPipePairVisual({
@@ -3675,7 +3701,7 @@ function buildFieldPipeBundleSnapTargets(
       const expectedSpacingMm =
         gasEndpoint.outerDiameterMm / 2
         + liquidEndpoint.outerDiameterMm / 2
-        + REQUIRED_REFRIGERANT_PIPE_GAP_MM;
+        + resolvedPipeGapMm();
       const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
       const spacingErrorMm = Math.abs(distanceMm - expectedSpacingMm);
       const sharesBundleId = Boolean(
@@ -3916,7 +3942,7 @@ function buildPairedBranchKitBundleTargets(
       const expectedSpacingMm =
         gas.outerDiameterMm / 2 +
         liquid.outerDiameterMm / 2 +
-        REQUIRED_REFRIGERANT_PIPE_GAP_MM;
+        resolvedPipeGapMm();
       const maxReasonableSpacingMm = Math.max(600, expectedSpacingMm * 8);
       if (spacingMm > maxReasonableSpacingMm) {
         return;
@@ -4065,7 +4091,7 @@ function computeStraightBundleSegmentTargets(
       const expectedSpacingMm =
         gasSegment.outerDiameterMm / 2 +
         liquidSegment.outerDiameterMm / 2 +
-        REQUIRED_REFRIGERANT_PIPE_GAP_MM;
+        resolvedPipeGapMm();
       const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
       const spacingErrorMm = Math.abs(spacingMm - expectedSpacingMm);
       const sharesBundleId = Boolean(

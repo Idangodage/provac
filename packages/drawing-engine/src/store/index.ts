@@ -28,6 +28,12 @@ import {
 } from '../components/canvas/elevation';
 import type { FurnitureProjectionInput } from '../components/canvas/elevation';
 import {
+  DEFAULT_PIPE_ROUTING_SETTINGS,
+  resolvePipeRoutingSettings,
+  setActivePipeRoutingSettings,
+  type PipeRoutingSettings,
+} from '../components/canvas/hvac/pipeRoutingSettings';
+import {
   isRefrigerantPipeElementType,
   type RefrigerantPipeMaterial,
   translateRefrigerantPipeElementProperties,
@@ -1733,6 +1739,7 @@ export interface DrawingState {
   rooms: Room[];
   materialLibrary: typeof DEFAULT_ARCHITECTURAL_MATERIALS;
   hvacDesignConditions: HvacDesignConditions;
+  pipeRoutingSettings: PipeRoutingSettings;
   wallDrawingState: WallDrawingState;
   wallSettings: WallSettings;
   sectionLines: SectionLine[];
@@ -1898,6 +1905,7 @@ export interface DrawingState {
   updateRoom: (id: string, updates: Partial<Room>) => void;
   updateRoom3DAttributes: (id: string, updates: Partial<Room3D>) => void;
   setHvacDesignConditions: (updates: Partial<HvacDesignConditions>) => void;
+  setPipeRoutingSettings: (updates: Partial<PipeRoutingSettings>) => void;
   applyRoomTemplateToSelectedRooms: (templateId: string) => void;
   deleteRoom: (id: string) => void;
   getRoom: (id: string) => Room | undefined;
@@ -2042,6 +2050,7 @@ export const useDrawingStore = create<DrawingState>()(
       rooms: [],
       materialLibrary: [...DEFAULT_ARCHITECTURAL_MATERIALS],
       hvacDesignConditions: { ...DEFAULT_HVAC_DESIGN_CONDITIONS },
+      pipeRoutingSettings: { ...DEFAULT_PIPE_ROUTING_SETTINGS },
       wallDrawingState: { ...DEFAULT_WALL_DRAWING_STATE },
       wallSettings: { ...DEFAULT_WALL_SETTINGS },
       sectionLines: [],
@@ -3529,6 +3538,19 @@ export const useDrawingStore = create<DrawingState>()(
         }));
       },
 
+      setPipeRoutingSettings: (updates) => {
+        set((state) => {
+          const next = resolvePipeRoutingSettings({
+            ...state.pipeRoutingSettings,
+            ...updates,
+          });
+          // Keep the geometry/clash engines' active settings in sync so a
+          // config change recomputes routes the same way a property edit does.
+          setActivePipeRoutingSettings(next);
+          return { pipeRoutingSettings: next };
+        });
+      },
+
       applyRoomTemplateToSelectedRooms: (templateId) => {
         const template = DEFAULT_ROOM_HVAC_TEMPLATES.find((entry) => entry.id === templateId);
         if (!template) return;
@@ -4598,6 +4620,7 @@ export const useDrawingStore = create<DrawingState>()(
           wallSettings,
           dimensionSettings,
           hvacDesignConditions,
+          pipeRoutingSettings,
           materialLibrary,
         } = get();
 
@@ -4620,6 +4643,7 @@ export const useDrawingStore = create<DrawingState>()(
           wallSettings,
           dimensionSettings,
           hvacDesignConditions,
+          pipeRoutingSettings,
           materialLibrary,
           attributeEnvelope,
           scale: importedDrawing?.scale || 100,
@@ -4763,6 +4787,14 @@ export const useDrawingStore = create<DrawingState>()(
               : DEFAULT_HVAC_DESIGN_CONDITIONS.seasonalVariation.winterAdjustment,
           };
 
+          const nextPipeRoutingSettings = resolvePipeRoutingSettings(
+            typeof data.pipeRoutingSettings === 'object' && data.pipeRoutingSettings
+              ? (data.pipeRoutingSettings as Partial<PipeRoutingSettings>)
+              : null,
+          );
+          // Sync the geometry/clash engines with the loaded document's settings.
+          setActivePipeRoutingSettings(nextPipeRoutingSettings);
+
           const nextElevationSettings = {
             ...DEFAULT_ELEVATION_SETTINGS,
             ...(typeof data.elevationSettings === 'object' && data.elevationSettings ? data.elevationSettings : {}),
@@ -4814,6 +4846,7 @@ export const useDrawingStore = create<DrawingState>()(
             sectionLineDrawingState: { ...DEFAULT_SECTION_LINE_DRAWING_STATE },
             wallSettings: nextWallSettings,
             hvacDesignConditions: nextHvacDesignConditions,
+            pipeRoutingSettings: nextPipeRoutingSettings,
             materialLibrary: nextMaterialLibrary,
           });
           lastRoomTopologyHash = '';

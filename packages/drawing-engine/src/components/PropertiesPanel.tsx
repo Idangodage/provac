@@ -39,6 +39,10 @@ import {
 
 import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
 import {
+  DEFAULT_PIPE_ROUTING_SETTINGS,
+  type PipeRoutingSettings,
+} from "./canvas/hvac/pipeRoutingSettings";
+import {
   buildRefrigerantPipeVisual,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeMaterial,
@@ -2825,15 +2829,118 @@ function WallToolSection() {
   );
 }
 
+function RoutingSettingRow({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  isDefault,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix: string;
+  isDefault: boolean;
+  onCommit: (value: number) => void;
+}) {
+  return (
+    <PropertyRow label={label}>
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => {
+            const parsed = Number.parseFloat(e.target.value);
+            if (Number.isFinite(parsed)) {
+              onCommit(Math.min(max, Math.max(min, parsed)));
+            }
+          }}
+          className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
+        />
+        <span className="w-7 text-[11px] text-slate-500">{suffix}</span>
+        {!isDefault && (
+          <span
+            className="text-[10px] font-medium uppercase text-amber-600"
+            title="Changed from default"
+          >
+            ●
+          </span>
+        )}
+      </div>
+    </PropertyRow>
+  );
+}
+
 function RefrigerantPipeToolSection() {
-  const { refrigerantPipeDrawMode, setRefrigerantPipeDrawMode } =
-    useSmartDrawingStore(
-      (state) => ({
-        refrigerantPipeDrawMode: state.refrigerantPipeDrawMode,
-        setRefrigerantPipeDrawMode: state.setRefrigerantPipeDrawMode,
-      }),
-      shallow,
-    );
+  const {
+    refrigerantPipeDrawMode,
+    setRefrigerantPipeDrawMode,
+    pipeRoutingSettings,
+    setPipeRoutingSettings,
+  } = useSmartDrawingStore(
+    (state) => ({
+      refrigerantPipeDrawMode: state.refrigerantPipeDrawMode,
+      setRefrigerantPipeDrawMode: state.setRefrigerantPipeDrawMode,
+      pipeRoutingSettings: state.pipeRoutingSettings,
+      setPipeRoutingSettings: state.setPipeRoutingSettings,
+    }),
+    shallow,
+  );
+
+  const settingFields: Array<{
+    key: keyof PipeRoutingSettings;
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+    suffix: string;
+  }> = [
+    {
+      key: "defaultPipeGapMm",
+      label: "Gas/Liquid Gap",
+      min: 0,
+      max: 300,
+      step: 1,
+      suffix: "mm",
+    },
+    {
+      key: "zOffsetClearanceMm",
+      label: "Clash Clearance",
+      min: 0,
+      max: 300,
+      step: 1,
+      suffix: "mm",
+    },
+    {
+      key: "zOffsetStartDistanceMm",
+      label: "Offset Lead-in",
+      min: 0,
+      max: 400,
+      step: 5,
+      suffix: "mm",
+    },
+    {
+      key: "snapRadiusPx",
+      label: "Snap Radius",
+      min: 4,
+      max: 60,
+      step: 1,
+      suffix: "px",
+    },
+  ];
+
+  const isModified = settingFields.some(
+    (field) =>
+      pipeRoutingSettings[field.key] !== DEFAULT_PIPE_ROUTING_SETTINGS[field.key],
+  );
 
   return (
     <div className="space-y-2">
@@ -2856,6 +2963,49 @@ function RefrigerantPipeToolSection() {
           ? "Hard mode constrains routing to straight, 45°, and 90° style runs with rigid fitting geometry."
           : "Flexible mode keeps free-angle routing so you can place multiple vertices for real on-site laying paths."}
       </p>
+
+      <div className="mt-2 border-t border-slate-100 pt-2">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Routing Engineering
+          </span>
+          <button
+            type="button"
+            disabled={!isModified}
+            onClick={() =>
+              setPipeRoutingSettings({ ...DEFAULT_PIPE_ROUTING_SETTINGS })
+            }
+            className={`text-[11px] font-medium ${
+              isModified
+                ? "text-amber-600 hover:text-amber-700"
+                : "cursor-default text-slate-300"
+            }`}
+          >
+            Reset
+          </button>
+        </div>
+        {settingFields.map((field) => (
+          <RoutingSettingRow
+            key={field.key}
+            label={field.label}
+            value={pipeRoutingSettings[field.key]}
+            min={field.min}
+            max={field.max}
+            step={field.step}
+            suffix={field.suffix}
+            isDefault={
+              pipeRoutingSettings[field.key] ===
+              DEFAULT_PIPE_ROUTING_SETTINGS[field.key]
+            }
+            onCommit={(value) => setPipeRoutingSettings({ [field.key]: value })}
+          />
+        ))}
+        <p className="mt-1 text-[11px] leading-5 text-slate-500">
+          Gap sets the clear spacing between paired gas and liquid pipes. Clash
+          clearance is the gap kept where a run crosses another pipe (drives the
+          Z-offset rise in 3D).
+        </p>
+      </div>
     </div>
   );
 }

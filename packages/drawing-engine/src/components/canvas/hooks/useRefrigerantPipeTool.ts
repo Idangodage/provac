@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef } from 'react';
 
 import type { HvacElement, Point2D } from '../../../types';
 import type { HvacPlanRenderer } from '../hvac/HvacPlanRenderer';
+import { planBundleBypasses } from '../hvac/pipeClashRouting';
+import { getActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
 import {
   buildRefrigerantPipeElements,
   findNearestRefrigerantPipeBundleTarget,
@@ -46,7 +48,6 @@ export interface UseRefrigerantPipeToolResult {
 const PIPE_ROUTE_ANGLE_SNAP_DEG = 45;
 const PIPE_SNAP_MARKER_RADIUS_PX = 14;
 const PIPE_SNAP_MARKER_RADIUS_SELECTED_PX = 17;
-const PIPE_SNAP_THRESHOLD_PX = 15;
 const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
 type RefrigerantPipeHoverSelection = 'gas' | 'liquid' | null;
 type RefrigerantPipeSnapSource = 'model' | 'rendered' | 'visible' | null;
@@ -396,7 +397,8 @@ export function useRefrigerantPipeTool(
     bundle: RefrigerantPipeBundleConnection | null;
     source: RefrigerantPipeSnapSource;
   } => {
-    const thresholdMm = PIPE_SNAP_THRESHOLD_PX / Math.max(zoom * MM_TO_PX, 0.01);
+    const thresholdMm =
+      getActivePipeRoutingSettings().snapRadiusPx / Math.max(zoom * MM_TO_PX, 0.01);
     let bundle: RefrigerantPipeBundleConnection | null = null;
     let source: RefrigerantPipeSnapSource = null;
     if (allowBundleSnap) {
@@ -610,12 +612,57 @@ export function useRefrigerantPipeTool(
         }
       });
     }
+    // Detect clashes with existing routed pipes and auto-create Z-offset
+    // bypasses (best-effort — never blocks committing an otherwise valid route).
+    try {
+      const stagedElements = nextElements.map((element, index) => ({
+        ...element,
+        id: `__refrigerant-pipe-new__-${index}`,
+      })) as HvacElement[];
+      const scene = [...hvacElements, ...stagedElements];
+      const routingSettings = getActivePipeRoutingSettings();
+      const plan = planBundleBypasses(
+        scene,
+        stagedElements.map((element) => element.id),
+        {
+          mode: 'auto',
+          clearanceMm: routingSettings.zOffsetClearanceMm,
+          fittingAngleDeg: routingSettings.bypassFittingAngleDeg,
+          ceilingLimitMm: routingSettings.ceilingLimitMm,
+          floorLimitMm: routingSettings.floorLimitMm,
+        },
+      );
+      if (plan.clashCount > 0) {
+        stagedElements.forEach((stagedElement, index) => {
+          const bypasses = plan.byElementId.get(stagedElement.id);
+          if (bypasses && bypasses.length > 0) {
+            nextElements[index]!.properties = {
+              ...(nextElements[index]?.properties ?? {}),
+              bypasses,
+            };
+          }
+        });
+        const directionLabel = plan.recommendedDirection === 'below' ? 'Below' : 'Above';
+        const clashWord = plan.clashCount > 1 ? 'clashes' : 'clash';
+        setProcessingStatus(
+          `${plan.clashCount} pipe ${clashWord} bypassed — Offset ${directionLabel} +${routingSettings.zOffsetClearanceMm} mm clearance`,
+          false,
+        );
+      }
+    } catch (error) {
+      if (debugEnabledRef.current) {
+        // eslint-disable-next-line no-console
+        console.debug('[pipe-routing] clash detection failed', error);
+      }
+    }
+
     const elementIds = addHvacElements(nextElements);
     setSelectedIds(elementIds);
     resetDrawing();
     return true;
   }, [
     addHvacElements,
+    hvacElements,
     logDebug,
     pipeMaterialMode,
     resetDrawing,
