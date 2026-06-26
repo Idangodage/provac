@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   bendRadiusFromDiameterMm,
+  buildRouteCornerNodes,
   classifyNode,
   splitPolylineAtStation,
   type IncidentSegment,
@@ -79,6 +80,44 @@ describe('splitPolylineAtStation', () => {
 
   it('returns null for a degenerate polyline', () => {
     expect(splitPolylineAtStation([{ x: 0, y: 0 }], { x: 0, y: 0 })).toBeNull();
+  });
+});
+
+describe('buildRouteCornerNodes', () => {
+  it('returns no corners for a route with fewer than 3 points', () => {
+    expect(buildRouteCornerNodes([{ x: 0, y: 0 }, { x: 100, y: 0 }], 28.6)).toEqual([]);
+  });
+
+  it('classifies a straight pass-through vertex as a coupling (no bend radius)', () => {
+    const nodes = buildRouteCornerNodes(
+      [{ x: 0, y: 0 }, { x: 500, y: 0 }, { x: 1000, y: 0 }],
+      28.6,
+    );
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.type).toBe('coupling');
+    expect(nodes[0]!.turnAngleDeg).toBeCloseTo(0, 6);
+    expect(nodes[0]!.bendRadiusMm).toBe(0);
+  });
+
+  it('classifies a right-angle corner as an elbow with k=1.5 bend radius', () => {
+    const nodes = buildRouteCornerNodes(
+      [{ x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 1000, y: 1000 }],
+      28.6,
+    );
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.type).toBe('elbow');
+    expect(nodes[0]!.index).toBe(1);
+    expect(nodes[0]!.turnAngleDeg).toBeCloseTo(90, 6);
+    expect(nodes[0]!.bendRadiusMm).toBeCloseTo(42.9, 6);
+  });
+
+  it('reports each bend of a multi-corner route', () => {
+    const nodes = buildRouteCornerNodes(
+      [{ x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 1000, y: 1000 }, { x: 2000, y: 1000 }],
+      28.6,
+    );
+    expect(nodes).toHaveLength(2);
+    expect(nodes.every((n) => n.type === 'elbow')).toBe(true);
   });
 });
 

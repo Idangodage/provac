@@ -186,3 +186,80 @@ export function bendRadiusFromDiameterMm(
 ): number {
   return Math.max(0, diameterMm) * k;
 }
+
+function subtract(a: Point2D, b: Point2D): Point2D {
+  return { x: a.x - b.x, y: a.y - b.y };
+}
+
+function normalizeOrNull(v: Point2D): Point2D | null {
+  const length = Math.hypot(v.x, v.y);
+  if (length < 1e-9) {
+    return null;
+  }
+  return { x: v.x / length, y: v.y / length };
+}
+
+/** A classified interior vertex of a drawn route polyline. */
+export interface RouteCornerNode {
+  /** Index of the vertex within the route's points array. */
+  index: number;
+  position: Point2D;
+  /** 'elbow' at a bend, 'coupling' where the route runs straight through. */
+  type: Extract<PipeNodeType, 'elbow' | 'coupling'>;
+  /** Deviation from straight, degrees: 0 = straight, 90 = right angle. */
+  turnAngleDeg: number;
+  /** Elbow centerline radius (mm); 0 for a straight pass-through. */
+  bendRadiusMm: number;
+}
+
+export interface RouteCornerOptions {
+  collinearToleranceDeg?: number;
+  bendRadiusFactor?: number;
+}
+
+/**
+ * Walks a route polyline and classifies each INTERIOR vertex as an elbow (a real
+ * bend that W4 renders as a swept-radius fitting) or a coupling (straight
+ * pass-through). Endpoints are not corners. Degenerate (zero-length) legs are
+ * skipped. The pipe diameter is uniform along a route, so a corner is never a
+ * reducer.
+ */
+export function buildRouteCornerNodes(
+  points: Point2D[],
+  diameterMm: number,
+  options?: RouteCornerOptions,
+): RouteCornerNode[] {
+  const nodes: RouteCornerNode[] = [];
+  if (points.length < 3) {
+    return nodes;
+  }
+  const collinearToleranceDeg = options?.collinearToleranceDeg ?? DEFAULT_COLLINEAR_TOLERANCE_DEG;
+  const k = options?.bendRadiusFactor ?? DEFAULT_BEND_RADIUS_FACTOR;
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const current = points[i]!;
+    // Outward directions from the vertex along each incident leg.
+    const toPrev = normalizeOrNull(subtract(points[i - 1]!, current));
+    const toNext = normalizeOrNull(subtract(points[i + 1]!, current));
+    if (!toPrev || !toNext) {
+      continue;
+    }
+    const type = classifyNode(
+      [
+        { segmentId: `${i - 1}`, direction: toPrev, diameterMm },
+        { segmentId: `${i}`, direction: toNext, diameterMm },
+      ],
+      { collinearToleranceDeg },
+    );
+    const betweenDeg = (Math.acos(Math.max(-1, Math.min(1, dot(toPrev, toNext)))) * 180) / Math.PI;
+    const turnAngleDeg = 180 - betweenDeg; // 0 straight … 180 hairpin
+    const isElbow = type === 'elbow';
+    nodes.push({
+      index: i,
+      position: current,
+      type: isElbow ? 'elbow' : 'coupling',
+      turnAngleDeg,
+      bendRadiusMm: isElbow ? bendRadiusFromDiameterMm(diameterMm, k) : 0,
+    });
+  }
+  return nodes;
+}
