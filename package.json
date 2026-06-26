@@ -8,6 +8,7 @@
     "dev": "turbo dev",
     "lint": "turbo lint",
     "type-check": "turbo type-check",
+    "test": "turbo test",
     "setup:check": "node scripts/doctor.mjs",
     "clean": "turbo clean && rimraf node_modules .turbo .next",
     "setup:env": "node scripts/setup-env.mjs",
