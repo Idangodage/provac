@@ -839,7 +839,7 @@ export function useRefrigerantPipeTool(
     }
     let insertion = null;
     try {
-      insertion = buildBranchKitInsertion(proposal, startBundle);
+      insertion = buildBranchKitInsertion(proposal, startBundle, hvacElements);
     } catch (error) {
       if (debugEnabledRef.current) {
         // eslint-disable-next-line no-console
@@ -872,6 +872,7 @@ export function useRefrigerantPipeTool(
   }, [
     addHvacElements,
     deleteHvacElement,
+    hvacElements,
     resetDrawing,
     setProcessingStatus,
     setSelectedIds,

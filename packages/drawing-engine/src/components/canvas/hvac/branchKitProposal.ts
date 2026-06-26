@@ -43,6 +43,7 @@ import {
   getActivePipeRoutingSettings,
   type PipeRoutingSettings,
 } from './pipeRoutingSettings';
+import { splitPolylineAtStation } from './pipeTopology';
 import {
   buildRefrigerantBranchKitViewModel,
   resolveRefrigerantBranchKitConnectionIdentity,
@@ -794,9 +795,61 @@ function polylinesIntersect(p: Point2D[], q: Point2D[]): boolean {
  * (when the unit's gas/liquid order is opposed to the run's) is resolved as a
  * clean over/under. No run elements are removed.
  */
+function readSnapSourceElementId(element: Omit<HvacElement, 'id'>): string | null {
+  const value = (element.properties as { branchKitSnapSourceElementId?: unknown })
+    .branchKitSnapSourceElementId;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Splits a single-line run element at the tee station into connected run-in /
+ * run-out halves. Each half keeps the original line's properties, clears the
+ * connection at the cut (tee) end, takes a side-specific bundleId so the
+ * gas/liquid halves of the same sub-run pair up, and carries the `teeId`
+ * linkage. Returns null if the polyline can't be cleanly split (e.g. the
+ * station resolves to an endpoint) so the caller can fall back to the overlay.
+ */
+export function buildTeeRunHalves(
+  run: HvacElement,
+  station: Point2D,
+  teeId: string,
+): [HvacElement, HvacElement] | null {
+  const split = splitPolylineAtStation(readRoutePoints(run), station);
+  if (!split) {
+    return null;
+  }
+  const baseProps = (run.properties ?? {}) as Record<string, unknown>;
+  const runIn: HvacElement = {
+    ...run,
+    id: createBranchKitElementId('refrigerant-run-in'),
+    properties: {
+      ...baseProps,
+      routePoints: split.before,
+      bundleId: `${teeId}-in`,
+      endConnection: null, // cut end opens at the tee
+      teeId,
+      teeRole: 'run-in',
+    },
+  };
+  const runOut: HvacElement = {
+    ...run,
+    id: createBranchKitElementId('refrigerant-run-out'),
+    properties: {
+      ...baseProps,
+      routePoints: split.after,
+      bundleId: `${teeId}-out`,
+      startConnection: null, // cut end opens at the tee
+      teeId,
+      teeRole: 'run-out',
+    },
+  };
+  return [runIn, runOut];
+}
+
 export function buildBranchKitInsertion(
   proposal: BranchKitProposal,
   startBundle: RefrigerantPipeBundleConnection,
+  sceneElements: HvacElement[] = [],
 ): BranchKitInsertion | null {
   if (proposal.validity === 'invalid') {
     return null;
@@ -904,9 +957,45 @@ export function buildBranchKitInsertion(
     elementsToAdd.push(liquidConnection);
   }
 
+  // Real flow-connected tee (W3b, opt-in via enableRealTeeTopology): split the
+  // tapped gas + liquid runs at the kit station into run-in/run-out halves and
+  // remove the originals, so the network is genuinely connected through the kit
+  // rather than overlaid on an intact run. The kit elements switch to fixed
+  // (absolute) placement so they no longer depend on the now-deleted run element
+  // for positioning. If either run can't be cleanly split (station at an end,
+  // run not in scene) we leave the run intact and fall back to the overlay.
+  let removeElementIds: string[] = [];
+  if (getActivePipeRoutingSettings().enableRealTeeTopology && sceneElements.length > 0) {
+    const teeId = createBranchKitElementId('refrigerant-tee');
+    const gasRunId = readSnapSourceElementId(proposal.gasGhost.element);
+    const liquidRunId = readSnapSourceElementId(proposal.liquidGhost.element);
+    const gasRun = gasRunId ? sceneElements.find((e) => e.id === gasRunId) ?? null : null;
+    const liquidRun = liquidRunId
+      ? sceneElements.find((e) => e.id === liquidRunId) ?? null
+      : null;
+    if (gasRun && liquidRun) {
+      const gasHalves = buildTeeRunHalves(gasRun, proposal.gasGhost.stationPoint, teeId);
+      const liquidHalves = buildTeeRunHalves(liquidRun, proposal.liquidGhost.stationPoint, teeId);
+      if (gasHalves && liquidHalves) {
+        elementsToAdd.push(...gasHalves, ...liquidHalves);
+        removeElementIds = [gasRun.id, liquidRun.id];
+        gasKitElement.properties = {
+          ...gasKitElement.properties,
+          branchKitPlacementMode: 'fixed',
+          teeId,
+        };
+        liquidKitElement.properties = {
+          ...liquidKitElement.properties,
+          branchKitPlacementMode: 'fixed',
+          teeId,
+        };
+      }
+    }
+  }
+
   return {
     elementsToAdd,
-    removeElementIds: [],
+    removeElementIds,
     kitElementIds: [gasKitId, liquidKitId],
   };
 }
