@@ -199,6 +199,72 @@ function normalizeOrNull(v: Point2D): Point2D | null {
   return { x: v.x / length, y: v.y / length };
 }
 
+/**
+ * Rounds the interior corners of a polyline into circular arcs of the given
+ * radius, approximated by `segmentsPerCorner` short chords each. The setback at
+ * a corner is clamped to half the shorter adjacent leg so arcs of consecutive
+ * corners never overlap. Straight / degenerate corners and very short legs pass
+ * through unchanged; endpoints are preserved. Pure geometry — this is what W4's
+ * swept-radius elbow rendering builds its path from, and it is unit-tested in
+ * isolation.
+ */
+export function filletPolyline(
+  points: Point2D[],
+  radiusMm: number,
+  segmentsPerCorner = 6,
+): Point2D[] {
+  if (points.length < 3 || radiusMm <= 0) {
+    return points.slice();
+  }
+  const out: Point2D[] = [points[0]!];
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const prev = points[i - 1]!;
+    const curr = points[i]!;
+    const next = points[i + 1]!;
+    const uPrev = normalizeOrNull(subtract(prev, curr));
+    const uNext = normalizeOrNull(subtract(next, curr));
+    const lenPrev = Math.hypot(prev.x - curr.x, prev.y - curr.y);
+    const lenNext = Math.hypot(next.x - curr.x, next.y - curr.y);
+    if (!uPrev || !uNext) {
+      out.push(curr);
+      continue;
+    }
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot(uPrev, uNext)))); // 0..PI
+    if (angle > Math.PI - 1e-3 || angle < 1e-3) {
+      // Straight pass-through (or hairpin we can't fillet) — keep the vertex.
+      out.push(curr);
+      continue;
+    }
+    const halfAngle = angle / 2;
+    const maxSetback = Math.min(lenPrev, lenNext) / 2;
+    const setback = Math.min(radiusMm / Math.tan(halfAngle), maxSetback);
+    const effectiveRadius = setback * Math.tan(halfAngle);
+    const t1 = { x: curr.x + uPrev.x * setback, y: curr.y + uPrev.y * setback };
+    const t2 = { x: curr.x + uNext.x * setback, y: curr.y + uNext.y * setback };
+    const bisector = normalizeOrNull({ x: uPrev.x + uNext.x, y: uPrev.y + uNext.y });
+    if (!bisector) {
+      out.push(curr);
+      continue;
+    }
+    const centerDist = effectiveRadius / Math.sin(halfAngle);
+    const center = { x: curr.x + bisector.x * centerDist, y: curr.y + bisector.y * centerDist };
+    const a1 = Math.atan2(t1.y - center.y, t1.x - center.x);
+    const a2 = Math.atan2(t2.y - center.y, t2.x - center.x);
+    let delta = a2 - a1;
+    while (delta > Math.PI) delta -= 2 * Math.PI;
+    while (delta < -Math.PI) delta += 2 * Math.PI;
+    const steps = Math.max(1, Math.floor(segmentsPerCorner));
+    out.push(t1);
+    for (let s = 1; s < steps; s += 1) {
+      const a = a1 + (delta * s) / steps;
+      out.push({ x: center.x + effectiveRadius * Math.cos(a), y: center.y + effectiveRadius * Math.sin(a) });
+    }
+    out.push(t2);
+  }
+  out.push(points[points.length - 1]!);
+  return out;
+}
+
 /** A classified interior vertex of a drawn route polyline. */
 export interface RouteCornerNode {
   /** Index of the vertex within the route's points array. */

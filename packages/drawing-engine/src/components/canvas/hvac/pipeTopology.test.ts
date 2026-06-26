@@ -4,6 +4,7 @@ import {
   bendRadiusFromDiameterMm,
   buildRouteCornerNodes,
   classifyNode,
+  filletPolyline,
   splitPolylineAtStation,
   type IncidentSegment,
 } from './pipeTopology';
@@ -118,6 +119,44 @@ describe('buildRouteCornerNodes', () => {
     );
     expect(nodes).toHaveLength(2);
     expect(nodes.every((n) => n.type === 'elbow')).toBe(true);
+  });
+});
+
+describe('filletPolyline', () => {
+  it('returns the polyline unchanged for < 3 points or radius <= 0', () => {
+    const line = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+    expect(filletPolyline(line, 50)).toEqual(line);
+    const corner = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }];
+    expect(filletPolyline(corner, 0)).toEqual(corner);
+  });
+
+  it('leaves a straight pass-through vertex untouched', () => {
+    const straight = [{ x: 0, y: 0 }, { x: 500, y: 0 }, { x: 1000, y: 0 }];
+    expect(filletPolyline(straight, 100)).toEqual(straight);
+  });
+
+  it('replaces a right-angle corner with an arc (removes the sharp vertex)', () => {
+    const r = 100;
+    const out = filletPolyline([{ x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 1000, y: 1000 }], r, 6);
+    // endpoints preserved, more points than the original 3, sharp corner gone
+    expect(out[0]).toEqual({ x: 0, y: 0 });
+    expect(out[out.length - 1]).toEqual({ x: 1000, y: 1000 });
+    expect(out.length).toBeGreaterThan(3);
+    expect(out.some((p) => p.x === 1000 && p.y === 0)).toBe(false);
+    // every arc point sits radius r from the fillet center (900,100) for this 90° corner
+    const center = { x: 900, y: 100 };
+    const arc = out.slice(1, -1);
+    for (const p of arc) {
+      expect(Math.hypot(p.x - center.x, p.y - center.y)).toBeCloseTo(r, 3);
+    }
+  });
+
+  it('clamps the setback so a tight corner cannot overshoot its legs', () => {
+    // Legs of length 100; a huge radius would overshoot, so setback clamps to 50.
+    const out = filletPolyline([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }], 10000, 4);
+    const t1 = out[1]!; // first tangent point, along the incoming leg from the corner
+    expect(t1.x).toBeCloseTo(50, 6); // corner.x(100) - setback(50)
+    expect(t1.y).toBeCloseTo(0, 6);
   });
 });
 
