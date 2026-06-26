@@ -87,6 +87,7 @@ export default function SmartDrawingPage() {
       projectId={projectId}
       projectName={project.name}
       initialData={initialData}
+      drawingId={latestDrawing?.id}
     />
   );
 }

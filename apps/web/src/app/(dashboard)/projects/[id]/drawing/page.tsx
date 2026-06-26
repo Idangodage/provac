@@ -73,6 +73,7 @@ export default function DrawingPage() {
       projectId={projectId}
       projectName={project.name}
       initialData={parseCanvasData(latestDrawing?.canvasData)}
+      drawingId={latestDrawing?.id}
     />
   );
 }
