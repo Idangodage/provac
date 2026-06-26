@@ -3020,6 +3020,26 @@ function RefrigerantPipeToolSection() {
         crossing.
       </p>
 
+      <PropertyRow label="Branch tee mode">
+        <div className="flex items-center gap-1">
+          <TabButton
+            active={!pipeRoutingSettings.enableRealTeeTopology}
+            label="Overlay"
+            onClick={() => setPipeRoutingSettings({ enableRealTeeTopology: false })}
+          />
+          <TabButton
+            active={pipeRoutingSettings.enableRealTeeTopology}
+            label="Real tee"
+            onClick={() => setPipeRoutingSettings({ enableRealTeeTopology: true })}
+          />
+        </div>
+      </PropertyRow>
+      <p className="text-[11px] leading-5 text-slate-500">
+        Overlay: the branch kit is drawn on top of the intact run. Real tee
+        (experimental): accepting a kit splits the run into two flow-connected
+        segments through a real tee node.
+      </p>
+
       <div className="mt-2 border-t border-slate-100 pt-2">
         <div className="mb-1 flex items-center justify-between">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
