@@ -1174,7 +1174,11 @@ export function resolveRefrigerantPipePairSpec(
     gasOuterDiameterMm,
     liquidOuterDiameterMm,
     insulationThicknessMm,
-    pipeGapMm: resolvedPipeGapMm(),
+    // Per-element spacing is authoritative: a pair remembers the gap it was
+    // drawn with (stamped into properties at creation). Fall back to the live
+    // document setting only for legacy/unset elements, so changing the document
+    // gap no longer drifts the spacing of pairs drawn earlier (A3).
+    pipeGapMm: readNumber(properties.pipeGapMm, resolvedPipeGapMm()),
     startBundleConnection,
     endBundleConnection,
   };
@@ -3029,8 +3033,11 @@ export function buildRefrigerantPipePairVisual(
   const liquidLocalZMm = spec.startBundleConnection
     ? spec.startBundleConnection.liquidElevationMm - baseElevationMm
     : liquidOuterRadiusMm;
+  // Use the spec's stored gap (authoritative per element) rather than re-reading
+  // the live document setting, so an existing pair holds its center-to-center
+  // spacing when the document default changes (A3).
   const centerSpacingMm =
-    gasOuterRadiusMm + liquidOuterRadiusMm + resolvedPipeGapMm();
+    gasOuterRadiusMm + liquidOuterRadiusMm + spec.pipeGapMm;
   const bendRadiusMm = Math.max(
     12,
     computeCompactBendRadius(

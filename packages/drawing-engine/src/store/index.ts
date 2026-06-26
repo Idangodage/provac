@@ -111,16 +111,8 @@ import {
 } from '../utils/wallBevel';
 
 // Import from extracted modules
-import {
-  DEFAULT_PAGE_CONFIG,
-  DEFAULT_LAYERS,
-} from './defaults';
-import {
-  createEmptyHistorySnapshot,
-  createHistoryEntry,
-  createHistorySnapshot,
-} from './helpers';
 import { buildAutoDetectedRooms, createRoomModel } from './autoDetectedRooms';
+import { syncAutoDimensionsInBackground } from './autoDimensionWorkerClient';
 import {
   autoManagedDimensionSignature,
   buildAutoWallDimensions,
@@ -130,13 +122,22 @@ import {
   mergeAutoManagedDimensions,
   normalizeDimensionPayload,
 } from './autoManagedDimensions';
+import { CURRENT_HVAC_SCHEMA_VERSION, migrateCanvasData } from './canvasDataMigration';
+import {
+  DEFAULT_PAGE_CONFIG,
+  DEFAULT_LAYERS,
+} from './defaults';
 import { regenerateElevationsInBackground } from './elevationGenerationWorkerClient';
+import {
+  createEmptyHistorySnapshot,
+  createHistoryEntry,
+  createHistorySnapshot,
+} from './helpers';
 import {
   inferRoomType,
   roomTopologyHash,
   roomTypeFillColor,
 } from './roomDetection';
-import { syncAutoDimensionsInBackground } from './autoDimensionWorkerClient';
 import { detectRoomsInBackground } from './roomDetectionWorkerClient';
 
 const AUTO_TRIM_TOLERANCE_MM = 120;
@@ -4638,6 +4639,7 @@ export const useDrawingStore = create<DrawingState>()(
         return JSON.stringify({
           version: '1.0',
           attributeSchemaVersion: 1,
+          hvacSchemaVersion: CURRENT_HVAC_SCHEMA_VERSION,
           dimensions,
           annotations,
           sketches,
@@ -4663,7 +4665,13 @@ export const useDrawingStore = create<DrawingState>()(
 
       importFromJSON: (json) => {
         try {
-          const data = JSON.parse(json);
+          // Single load chokepoint for every source (localStorage, DB canvasData,
+          // file import). Run the tolerant versioned migrator before the
+          // defensive per-field reads below so the HVAC schema can evolve safely.
+          // `as typeof parsed` keeps the historical `any` typing JSON.parse gave
+          // the rest of this function (the migrator is structurally faithful).
+          const parsed = JSON.parse(json);
+          const data = migrateCanvasData(parsed).data as typeof parsed;
           const rawWalls = Array.isArray(data.walls) ? data.walls : [];
           const importedWalls: Wall[] = rawWalls.map((rawWall: Partial<Wall>) => {
             const baseWall: Wall = {
