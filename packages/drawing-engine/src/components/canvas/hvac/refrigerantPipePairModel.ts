@@ -4389,8 +4389,14 @@ export function findNearestRefrigerantPipeBundleSegmentTarget(
     elements,
     minimumSegmentLengthMm,
   );
+  // Deterministic selection: rank candidates by distance quantized into a small
+  // tie window, breaking near-ties by the stable sourceElementId. This stops the
+  // chosen run from flip-flopping between two near-equidistant parallel mains as
+  // the cursor jitters (B2).
+  const TIE_BREAK_EPS_MM = 1;
   let bestTarget: RefrigerantPipeBundleSegmentConnection | null = null;
-  let bestDistance = thresholdMm;
+  let bestBucket = Number.POSITIVE_INFINITY;
+  let bestSourceId = '';
 
   targets.forEach((target) => {
     const segmentDirection = normalizeDirection(
@@ -4414,7 +4420,16 @@ export function findNearestRefrigerantPipeBundleSegmentTarget(
       point.x - bundlePoint.x,
       point.y - bundlePoint.y,
     );
-    if (distanceMm > bestDistance) {
+    if (distanceMm > thresholdMm) {
+      return;
+    }
+    const candidateBucket = Math.round(distanceMm / TIE_BREAK_EPS_MM);
+    const candidateSourceId = target.sourceElementId ?? '';
+    if (
+      bestTarget &&
+      (candidateBucket > bestBucket ||
+        (candidateBucket === bestBucket && candidateSourceId >= bestSourceId))
+    ) {
       return;
     }
 
@@ -4433,7 +4448,8 @@ export function findNearestRefrigerantPipeBundleSegmentTarget(
       liquidStartScalar,
       segmentStartScalar + projectedScalar,
     );
-    bestDistance = distanceMm;
+    bestBucket = candidateBucket;
+    bestSourceId = candidateSourceId;
     bestTarget = {
       ...target,
       point: bundlePoint,
