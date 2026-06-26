@@ -83,6 +83,47 @@ function distance(a: Point2D, b: Point2D): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+/**
+ * Snaps `target` toward the grid while keeping it exactly on the ray from
+ * `from` through `target`. This lets an angle-constrained segment (ortho / 45°)
+ * land near the grid without a full two-axis round knocking it off its bearing —
+ * e.g. a plumb riser from an off-grid port keeps the port's x and only its
+ * landing distance snaps. Guards a zero/degenerate grid or length.
+ */
+function snapAlongRayToGrid(from: Point2D, target: Point2D, gridSize: number): Point2D {
+  if (!Number.isFinite(gridSize) || gridSize <= 0) {
+    return target;
+  }
+  const dx = target.x - from.x;
+  const dy = target.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) {
+    return target;
+  }
+  const snapped = snapPointToGrid(target, gridSize);
+  const ux = dx / length;
+  const uy = dy / length;
+  // Project the grid-snapped point back onto the constrained bearing.
+  const t = (snapped.x - from.x) * ux + (snapped.y - from.y) * uy;
+  return { x: from.x + ux * t, y: from.y + uy * t };
+}
+
+/**
+ * Live HUD text for the in-progress segment: length (mm) and bearing. The plan
+ * canvas y-axis increases downward, so we negate dy to make 0° = right and
+ * 90° = up, matching what a draughtsman expects to read.
+ */
+function formatSegmentReadout(from: Point2D, to: Point2D): string {
+  const dxMm = to.x - from.x;
+  const dyMm = to.y - from.y;
+  const lengthMm = Math.hypot(dxMm, dyMm);
+  let angleDeg = (Math.atan2(-dyMm, dxMm) * 180) / Math.PI;
+  if (angleDeg < 0) {
+    angleDeg += 360;
+  }
+  return `L ${Math.round(lengthMm)} mm · ∠ ${Math.round(angleDeg)}°`;
+}
+
 function resolveBundleHoverSelection(
   bundle: RefrigerantPipeBundleConnection,
   cursorPoint: Point2D,
@@ -158,6 +199,8 @@ export function useRefrigerantPipeTool(
   const endBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
   const previewPointRef = useRef<Point2D | null>(null);
   const shiftPressedRef = useRef(false);
+  // Alt = momentary freehand override (bypasses angle + grid snapping).
+  const altPressedRef = useRef(false);
   // --- Branch-kit proposal state (real-time) ---
   const branchKitProposalRef = useRef<BranchKitProposal | null>(null);
   const proposalFlipRef = useRef(false);
@@ -525,22 +568,44 @@ export function useRefrigerantPipeTool(
       : null;
 
     let nextPoint = snappedBundle?.point ?? point;
-    if (pipeMaterialMode === 'hard' && snapToGrid && !snappedBundle) {
-      nextPoint = snapPointToGrid(nextPoint, gridSize);
-    }
-    if (!snappedBundle && routePointsRef.current.length > 0) {
-      const previousPoint = routePointsRef.current[routePointsRef.current.length - 1]!;
+    // Alt = momentary freehand override: skip angle + grid snapping so a vertex
+    // can be placed exactly under the cursor.
+    const freehand = altPressedRef.current;
+    // Grid snap applies whenever the document setting is on and we are not bound
+    // to a port/bundle (its position is authoritative) — for BOTH hard and
+    // flexible routes (previously, incorrectly, restricted to hard mode).
+    const gridActive = snapToGrid && !snappedBundle && !freehand;
+    const previousPoint =
+      !snappedBundle && routePointsRef.current.length > 0
+        ? routePointsRef.current[routePointsRef.current.length - 1]!
+        : null;
+
+    if (previousPoint && !freehand) {
       // Resolve the effective angle constraint. `auto` keeps the legacy,
       // material-driven behaviour (hard ⇒ 45°, flexible ⇒ free); the explicit
       // modes give the user direct control over clean L / 45° / free routing.
       const effectiveAngleMode = pipeAngleMode === 'auto'
         ? (pipeMaterialMode === 'hard' ? 'diagonal' : 'free')
         : pipeAngleMode;
-      nextPoint = shiftPressedRef.current || effectiveAngleMode === 'ortho'
-        ? applyOrthogonalConstraint(previousPoint, nextPoint)
-        : effectiveAngleMode === 'diagonal'
-          ? applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG)
-          : nextPoint;
+      const ortho = shiftPressedRef.current || effectiveAngleMode === 'ortho';
+      const angleConstrained = ortho || effectiveAngleMode === 'diagonal';
+      if (ortho) {
+        nextPoint = applyOrthogonalConstraint(previousPoint, nextPoint);
+      } else if (effectiveAngleMode === 'diagonal') {
+        nextPoint = applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG);
+      }
+      if (gridActive) {
+        // Land near the grid while preserving the constrained bearing, so an
+        // axis-aligned riser/main keeps its alignment to the previous vertex
+        // instead of being knocked off by a full two-axis grid round — fixes A2
+        // sub-grid drift that the previous "grid-then-angle" order reintroduced.
+        nextPoint = angleConstrained
+          ? snapAlongRayToGrid(previousPoint, nextPoint, gridSize)
+          : snapPointToGrid(nextPoint, gridSize);
+      }
+    } else if (gridActive) {
+      // First vertex (no previous point): snap freely to the grid.
+      nextPoint = snapPointToGrid(nextPoint, gridSize);
     }
 
     return { point: nextPoint, bundle: snappedBundle, source };
@@ -946,6 +1011,17 @@ export function useRefrigerantPipeTool(
         [...routePointsRef.current, snappedPoint],
         bundle,
       );
+      // Live HUD: in-progress segment length + bearing from the previous vertex,
+      // with the snap target appended when the endpoint binds to a port.
+      const previousVertex =
+        routePointsRef.current[routePointsRef.current.length - 1]!;
+      const readout = formatSegmentReadout(previousVertex, snappedPoint);
+      setProcessingStatus(
+        bundle
+          ? `${readout} · ${formatPortTooltip(bundle, resolveBundleHoverSelection(bundle, point))}`
+          : readout,
+        false,
+      );
     }
   }, [
     clearBranchKitProposal,
@@ -972,6 +1048,10 @@ export function useRefrigerantPipeTool(
       shiftPressedRef.current = true;
       return false;
     }
+    if (event.key === 'Alt') {
+      altPressedRef.current = true;
+      return false;
+    }
     if (event.key === 'Escape') {
       if (routePointsRef.current.length === 0) {
         return false;
@@ -991,6 +1071,9 @@ export function useRefrigerantPipeTool(
   const handleKeyUp = useCallback((event: KeyboardEvent) => {
     if (event.key === 'Shift') {
       shiftPressedRef.current = false;
+    }
+    if (event.key === 'Alt') {
+      altPressedRef.current = false;
     }
   }, []);
 

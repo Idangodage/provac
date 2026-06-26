@@ -1,6 +1,6 @@
 import type { HvacElement, Point2D } from "../../../types";
 
-import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from "./refrigerantPipeDimensions";
+import { getActivePipeRoutingSettings } from "./pipeRoutingSettings";
 import { buildRefrigerantPipeVisual, buildRefrigerantPipePairVisual } from "./refrigerantPipePairModel";
 
 export type RefrigerantPipeEndpointRenderState = {
@@ -622,7 +622,7 @@ export function findNearestVisibleRefrigerantPipeBundleTarget(
       const expectedSpacingMm =
         gasEndpoint.outerDiameterMm / 2 +
         liquidEndpoint.outerDiameterMm / 2 +
-        DEFAULT_REFRIGERANT_PIPE_GAP_MM;
+        getActivePipeRoutingSettings().defaultPipeGapMm;
       const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
       const spacingErrorMm = Math.abs(distanceMm - expectedSpacingMm);
       const sharesBundleId = Boolean(
@@ -830,7 +830,7 @@ export function findNearestVisibleRefrigerantPipeBundleSegmentTarget(
       const expectedSpacingMm =
         gasSegment.outerDiameterMm / 2 +
         liquidSegment.outerDiameterMm / 2 +
-        DEFAULT_REFRIGERANT_PIPE_GAP_MM;
+        getActivePipeRoutingSettings().defaultPipeGapMm;
       const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
       const spacingErrorMm = Math.abs(spacingMm - expectedSpacingMm);
       const sharesBundleId = Boolean(
