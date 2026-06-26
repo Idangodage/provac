@@ -132,6 +132,14 @@ export interface RefrigerantPipePairVisualSpec extends RefrigerantPipePairSpec {
 
 export type RefrigerantPipeLineKind = 'gas' | 'liquid';
 export type RefrigerantPipeMaterial = 'hard' | 'flexible';
+/**
+ * Angle constraint applied to each drawn route vertex.
+ * - `auto`     — material-driven (hard ⇒ 45°, flexible ⇒ free); the legacy default.
+ * - `free`     — no constraint (any angle).
+ * - `ortho`    — 90° only (clean L-shaped plan runs).
+ * - `diagonal` — 45° increments.
+ */
+export type RefrigerantPipeAngleMode = 'auto' | 'free' | 'ortho' | 'diagonal';
 
 export interface RefrigerantPipeSegmentVisualSpec {
   index: number;
@@ -1554,11 +1562,18 @@ function smallestAngleDifferenceDeg(a: number, b: number): number {
   return Math.min(diff, 360 - diff);
 }
 
-function resolveInlineBranchKitCenter(
-  element: HvacPipeSnapSource,
+/**
+ * Single source of truth for an inline branch kit's world placement. Positions
+ * the kit purely from its stored snap metadata (no live re-snap), so the kit
+ * renders exactly where its terminals/snap-targets are — used by both the snap
+ * builders here and the 2D/3D renderers (which previously each kept a divergent
+ * copy that re-snapped, causing gaps where pipes meet the kit).
+ */
+export function resolveInlineBranchKitCenter(
+  element: Pick<HvacElement, 'properties' | 'rotation'>,
   lineSelection: ReturnType<typeof resolveRefrigerantBranchKitLineSelection>,
   model: ReturnType<typeof buildRefrigerantBranchKitViewModel>,
-): { center: Point2D; rotationDeg: number } | null {
+): { center: Point2D; anchorPoint: Point2D; anchorLocal: Point2D; rotationDeg: number } | null {
   if (element.properties.branchKitPlacementMode !== 'inline-pipe-run') {
     return null;
   }
@@ -1640,6 +1655,8 @@ function resolveInlineBranchKitCenter(
       x: anchorPoint.x - rotatedAnchorLocal.x,
       y: anchorPoint.y - rotatedAnchorLocal.y,
     },
+    anchorPoint,
+    anchorLocal,
     rotationDeg,
   };
 }
@@ -2448,23 +2465,27 @@ function buildResolvedPipeRoutePoints(
     ? processedLiquidGuidePoints.slice(0, MAX_UNIT_PORT_TAKEOFF_POINTS)
     : processedLiquidGuidePoints;
 
-  // Compute centerline-parallel base routes (constant spacing through bends)
+  // Compute centerline-parallel base routes (constant spacing through bends).
+  // Round the *centerline* once, then offset both pipes from that smooth curve,
+  // so gas and liquid stay perfectly parallel (concentric) through every bend —
+  // no miter spikes and no independent per-line rounding that pulls them apart.
+  // The centerline radius is enlarged by the pipe offset so the inner pipe keeps
+  // a valid (non-inverted) arc.
   const { gasOffsetMm, liquidOffsetMm } = resolveParallelBundleOffsets(
     startBundleConnection,
     centerSpacingMm,
   );
-  const sharpGasParallelBasePoints = simplifiedBundleGuidePoints.length >= 1
-    ? dedupeConsecutivePoints(offsetPolyline(simplifiedBundleGuidePoints, gasOffsetMm))
+  const maxOffsetMm = Math.max(Math.abs(gasOffsetMm), Math.abs(liquidOffsetMm));
+  const centerlineBendRadiusMm = Math.max(bendRadiusMm, maxOffsetMm + bendRadiusMm);
+  const gasParallelBasePoints = simplifiedBundleGuidePoints.length >= 1
+    ? dedupeConsecutivePoints(
+        roundAndOffsetPolyline(simplifiedBundleGuidePoints, centerlineBendRadiusMm, gasOffsetMm),
+      )
     : [];
-  const sharpLiquidParallelBasePoints = simplifiedBundleGuidePoints.length >= 1
-    ? dedupeConsecutivePoints(offsetPolyline(simplifiedBundleGuidePoints, liquidOffsetMm))
-    : [];
-
-  const gasParallelBasePoints = sharpGasParallelBasePoints.length >= 1
-    ? dedupeConsecutivePoints(roundPolylineCorners(sharpGasParallelBasePoints, bendRadiusMm))
-    : [];
-  const liquidParallelBasePoints = sharpLiquidParallelBasePoints.length >= 1
-    ? dedupeConsecutivePoints(roundPolylineCorners(sharpLiquidParallelBasePoints, bendRadiusMm))
+  const liquidParallelBasePoints = simplifiedBundleGuidePoints.length >= 1
+    ? dedupeConsecutivePoints(
+        roundAndOffsetPolyline(simplifiedBundleGuidePoints, centerlineBendRadiusMm, liquidOffsetMm),
+      )
     : [];
 
   // Merge guide geometry (45-degree at start) with parallel routes (constant spacing)
@@ -2651,6 +2672,118 @@ function roundPolylineCorners(
 
   rounded.push(points[points.length - 1]!);
   return dedupeConsecutivePoints(rounded);
+}
+
+/**
+ * Offsets a centerline polyline by `offsetMm` while rounding its corners as TRUE
+ * CONCENTRIC ARCS (same arc centre as the centerline, radius adjusted by the
+ * offset). This avoids the cusp that `offsetPolyline(roundPolylineCorners(...))`
+ * produces on the inner pipe — offsetting a finely-faceted arc by a distance
+ * larger than its segment length self-intersects. Used to build the gas/liquid
+ * pair so both lines bend smoothly and stay parallel.
+ */
+function roundAndOffsetPolyline(
+  points: Point2D[],
+  radiusMm: number,
+  offsetMm: number,
+): Point2D[] {
+  if (points.length < 2) {
+    return [...points];
+  }
+  if (points.length < 3 || radiusMm < 0.5) {
+    return offsetPolyline(points, offsetMm);
+  }
+
+  const result: Point2D[] = [];
+  const firstDirection = normalizeDirection(subtract(points[1]!, points[0]!));
+  result.push(add(points[0]!, scale(perpendicular(firstDirection), offsetMm)));
+
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const previous = points[index - 1]!;
+    const current = points[index]!;
+    const next = points[index + 1]!;
+    const incoming = subtract(current, previous);
+    const outgoing = subtract(next, current);
+    const incomingLength = Math.hypot(incoming.x, incoming.y);
+    const outgoingLength = Math.hypot(outgoing.x, outgoing.y);
+    const incomingDirection = normalizeDirection(incoming);
+    const outgoingDirection = normalizeDirection(outgoing);
+    // Fallback offset point (miter of the two offset legs) for corners we don't
+    // round.
+    const miterPoint = (() => {
+      const p1 = add(current, scale(perpendicular(incomingDirection), offsetMm));
+      const p2 = add(current, scale(perpendicular(outgoingDirection), offsetMm));
+      return (
+        lineIntersection(p1, incomingDirection, p2, outgoingDirection) ?? p1
+      );
+    })();
+    if (incomingLength < 0.01 || outgoingLength < 0.01) {
+      result.push(miterPoint);
+      continue;
+    }
+    const dotValue = Math.max(
+      -0.9999,
+      Math.min(0.9999, dot(scale(incomingDirection, -1), outgoingDirection)),
+    );
+    const interiorAngle = Math.acos(dotValue);
+    if (interiorAngle < 0.2 || interiorAngle > Math.PI - 0.2) {
+      result.push(miterPoint);
+      continue;
+    }
+    const idealTangentDistance = radiusMm / Math.tan(interiorAngle / 2);
+    const tangentDistance = Math.min(
+      idealTangentDistance,
+      incomingLength * 0.45,
+      outgoingLength * 0.45,
+    );
+    if (!Number.isFinite(tangentDistance) || tangentDistance < 0.5) {
+      result.push(miterPoint);
+      continue;
+    }
+    const tangentStart = subtract(current, scale(incomingDirection, tangentDistance));
+    const tangentEnd = add(current, scale(outgoingDirection, tangentDistance));
+    const turn =
+      incomingDirection.x * outgoingDirection.y - incomingDirection.y * outgoingDirection.x;
+    const normalSign = turn >= 0 ? 1 : -1;
+    const center = lineIntersection(
+      tangentStart,
+      scale(perpendicular(incomingDirection), normalSign),
+      tangentEnd,
+      scale(perpendicular(outgoingDirection), normalSign),
+    );
+    if (!center) {
+      result.push(miterPoint);
+      continue;
+    }
+    const startAngle = Math.atan2(tangentStart.y - center.y, tangentStart.x - center.x);
+    const endAngle = Math.atan2(tangentEnd.y - center.y, tangentEnd.x - center.x);
+    let sweepAngle = endAngle - startAngle;
+    if (normalSign > 0 && sweepAngle <= 0) {
+      sweepAngle += Math.PI * 2;
+    } else if (normalSign < 0 && sweepAngle >= 0) {
+      sweepAngle -= Math.PI * 2;
+    }
+    const arcRadius = Math.hypot(tangentStart.x - center.x, tangentStart.y - center.y);
+    // Concentric offset radius: toward the centre (normalSign side) shrinks it.
+    const offsetRadius = Math.max(0.5, arcRadius - normalSign * offsetMm);
+    const segmentCount = Math.max(
+      4,
+      Math.min(14, Math.ceil((Math.abs(sweepAngle) * offsetRadius) / Math.max(8, radiusMm * 0.5))),
+    );
+    for (let segment = 0; segment <= segmentCount; segment += 1) {
+      const angle = startAngle + sweepAngle * (segment / segmentCount);
+      result.push({
+        x: center.x + Math.cos(angle) * offsetRadius,
+        y: center.y + Math.sin(angle) * offsetRadius,
+      });
+    }
+  }
+
+  const lastDirection = normalizeDirection(
+    subtract(points[points.length - 1]!, points[points.length - 2]!),
+  );
+  result.push(add(points[points.length - 1]!, scale(perpendicular(lastDirection), offsetMm)));
+  return dedupeConsecutivePoints(result);
 }
 
 function computeLocalStub(

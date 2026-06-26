@@ -311,6 +311,11 @@ function detectRouteClashes(
   ctx: ClashDetectionContext,
 ): PipeClash[] {
   const clashes: PipeClash[] = [];
+  // Endpoints of the whole route — clashes near these are intentional joins
+  // (the route connects to a unit port / branch-kit outlet on another pipe),
+  // not crossings to bypass.
+  const routeStart = routeSegments[0]?.start ?? null;
+  const routeEnd = routeSegments[routeSegments.length - 1]?.end ?? null;
   routeSegments.forEach((segment) => {
     obstacles.forEach((obstacle) => {
       if (!elevationEnvelopesOverlap(obstacle, ctx)) {
@@ -325,11 +330,26 @@ function detectRouteClashes(
         obstacle.end,
       );
       const isParallel = directionDot >= PARALLEL_DIRECTION_DOT;
-      // Crossing: real intersection. Overlap: parallel & running within the gap.
-      const isCrossing = result.distanceMm <= 1e-3 && !isParallel;
-      const isOverlap = isParallel && result.distanceMm < planGap;
-      const isNearCrossing = !isParallel && result.distanceMm < planGap;
-      if (!isCrossing && !isOverlap && !isNearCrossing) {
+      // Only genuine *crossings* warrant a Z-offset hop. Parallel runs that
+      // merely travel alongside each other (overlap) cannot be cleared by a
+      // local hop and are intentional in real layouts, so they are not clashes.
+      if (isParallel) {
+        return;
+      }
+      const isCrossing = result.distanceMm <= 1e-3;
+      const isNearCrossing = result.distanceMm < planGap;
+      if (!isCrossing && !isNearCrossing) {
+        return;
+      }
+      // Ignore the join where the route intentionally meets another pipe: if the
+      // closest point sits at the very start/end of the route within a fitting
+      // margin, it is a connection, not a crossing to bypass.
+      const joinMarginMm =
+        Math.max(obstacle.outerDiameterMm, ctx.movingOuterDiameterMm) + 24;
+      if (
+        (routeStart && distance(result.pointOnAB, routeStart) <= joinMarginMm) ||
+        (routeEnd && distance(result.pointOnAB, routeEnd) <= joinMarginMm)
+      ) {
         return;
       }
       const distanceAlongRouteMm =
@@ -339,7 +359,7 @@ function detectRouteClashes(
         point: result.pointOnAB,
         distanceAlongRouteMm,
         routeDirection: segment.direction,
-        kind: isOverlap ? 'overlap' : 'crossing',
+        kind: 'crossing',
       });
     });
   });

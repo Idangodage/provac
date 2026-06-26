@@ -155,8 +155,107 @@ export function PipeClashOverlay({
     return result;
   }, [hvacElements, selectedSet]);
 
+  // The selected refrigerant-pipe bundle (if any), used to detect clashes live.
+  const selectedBundleId = useMemo(() => {
+    const selected = hvacElements.find(
+      (element) => element.type === 'refrigerant-pipe' && selectedSet.has(element.id),
+    );
+    return selected ? readBundleId(selected) : null;
+  }, [hvacElements, selectedSet]);
+
+  const selectedBundleElementIds = useMemo(() => {
+    if (!selectedBundleId) {
+      return [];
+    }
+    return hvacElements
+      .filter(
+        (element) =>
+          element.type === 'refrigerant-pipe' && readBundleId(element) === selectedBundleId,
+      )
+      .map((element) => element.id);
+  }, [hvacElements, selectedBundleId]);
+
+  const selectedBundleHasBaked = useMemo(
+    () => visuals.some((visual) => visual.bundleId === selectedBundleId),
+    [visuals, selectedBundleId],
+  );
+
+  // Live clash detection: when a bundle is selected but has no applied offset,
+  // detect crossings on demand so the user can opt in to a bypass via the card.
+  const livePreview = useMemo(() => {
+    if (
+      !selectedBundleId ||
+      selectedBundleHasBaked ||
+      selectedBundleId === dismissedBundleId ||
+      selectedBundleElementIds.length === 0
+    ) {
+      return null;
+    }
+    let plan;
+    try {
+      plan = planBundleBypasses(hvacElements, selectedBundleElementIds, { mode: 'auto' });
+    } catch {
+      return null;
+    }
+    if (plan.clashCount === 0) {
+      return null;
+    }
+    const previewVisuals: PipeBypassVisual[] = [];
+    hvacElements.forEach((element) => {
+      if (element.type !== 'refrigerant-pipe') {
+        return;
+      }
+      const bypasses = plan.byElementId.get(element.id);
+      if (!bypasses || bypasses.length === 0) {
+        return;
+      }
+      const lineKind = readLineKind(element);
+      const outerDiameterMm = readOuterDiameterMm(element);
+      bypasses.forEach((bypass) => {
+        previewVisuals.push({
+          elementId: element.id,
+          bundleId: selectedBundleId,
+          lineKind,
+          outerDiameterMm,
+          bypass,
+          selected: true,
+        });
+      });
+    });
+    const representative = previewVisuals[0]?.bypass;
+    if (!representative) {
+      return null;
+    }
+    const clashCount = Math.max(
+      ...selectedBundleElementIds.map(
+        (id) => previewVisuals.filter((visual) => visual.elementId === id).length,
+      ),
+      1,
+    );
+    return {
+      visuals: previewVisuals,
+      card: {
+        bundleId: selectedBundleId,
+        elementIds: selectedBundleElementIds,
+        anchor: representative.obstaclePoint,
+        direction: representative.direction,
+        recommended: plan.recommendedDirection ?? representative.direction,
+        clearanceMm: representative.clearanceMm,
+        reason: representative.reason || 'Crossing detected — apply an offset to clear it.',
+        isAuto: true,
+        clashCount,
+      },
+    };
+  }, [
+    hvacElements,
+    selectedBundleElementIds,
+    selectedBundleId,
+    selectedBundleHasBaked,
+    dismissedBundleId,
+  ]);
+
   // The bundle whose suggestion card is shown: a selected pipe that has bypasses.
-  const activeBundle = useMemo(() => {
+  const bakedActiveBundle = useMemo(() => {
     const selectedVisual = visuals.find((visual) => visual.selected);
     if (!selectedVisual || selectedVisual.bundleId === dismissedBundleId) {
       return null;
@@ -194,35 +293,38 @@ export function PipeClashOverlay({
     };
   }, [visuals, hvacElements, dismissedBundleId]);
 
+  // An applied bypass (edit its direction) takes priority over a live proposal.
+  const activeCard = bakedActiveBundle ?? livePreview?.card ?? null;
+
   // Reset the dismissed flag when the selection moves to a different bundle.
   useEffect(() => {
-    if (!activeBundle && dismissedBundleId) {
-      const stillSelected = visuals.some(
-        (visual) => visual.selected && visual.bundleId === dismissedBundleId,
-      );
-      if (!stillSelected) {
-        setDismissedBundleId(null);
-      }
+    if (!activeCard && dismissedBundleId && selectedBundleId !== dismissedBundleId) {
+      setDismissedBundleId(null);
     }
-  }, [activeBundle, dismissedBundleId, visuals]);
+  }, [activeCard, dismissedBundleId, selectedBundleId]);
 
   const handleSelectDirection = (mode: BypassRoutingMode): void => {
-    if (!activeBundle) {
+    if (!activeCard) {
       return;
     }
-    const plan = planBundleBypasses(hvacElements, activeBundle.elementIds, { mode });
-    activeBundle.elementIds.forEach((id) => {
+    const plan = planBundleBypasses(hvacElements, activeCard.elementIds, { mode });
+    activeCard.elementIds.forEach((id) => {
       updateHvacElement(id, {
         properties: { bypasses: plan.byElementId.get(id) ?? [] },
       });
     });
     if (setProcessingStatus) {
       const label = mode === 'auto' ? 'Auto offset' : `Offset ${mode}`;
-      setProcessingStatus(`${label} applied · ${activeBundle.clearanceMm} mm clearance`, false);
+      setProcessingStatus(`${label} applied · ${activeCard.clearanceMm} mm clearance`, false);
     }
   };
 
-  if (!enabled || width <= 0 || height <= 0 || visuals.length === 0) {
+  if (
+    !enabled ||
+    width <= 0 ||
+    height <= 0 ||
+    (visuals.length === 0 && !livePreview)
+  ) {
     return null;
   }
 
@@ -231,10 +333,10 @@ export function PipeClashOverlay({
   const safeZoom = Math.max(viewportZoom, 0.01);
   const inv = 1 / safeZoom; // keeps UI glyph sizes constant on screen
 
-  const cardScreen = activeBundle
+  const cardScreen = activeCard
     ? {
-        x: stageOffsetX + viewportZoom * activeBundle.anchor.x * MM_TO_PX,
-        y: stageOffsetY + viewportZoom * activeBundle.anchor.y * MM_TO_PX,
+        x: stageOffsetX + viewportZoom * activeCard.anchor.x * MM_TO_PX,
+        y: stageOffsetY + viewportZoom * activeCard.anchor.y * MM_TO_PX,
       }
     : null;
 
@@ -256,21 +358,32 @@ export function PipeClashOverlay({
                 inv={inv}
               />
             ))}
+            {livePreview && (
+              <Group opacity={0.42}>
+                {livePreview.visuals.map((visual, index) => (
+                  <BypassShape
+                    key={`preview-${visual.elementId}-${visual.bypass.id}-${index}`}
+                    visual={visual}
+                    inv={inv}
+                  />
+                ))}
+              </Group>
+            )}
           </Layer>
         </Stage>
       </div>
-      {activeBundle && cardScreen && (
+      {activeCard && cardScreen && (
         <PipeClashSuggestionCard
           screenX={cardScreen.x}
           screenY={cardScreen.y}
-          direction={activeBundle.direction}
-          recommended={activeBundle.recommended}
-          clearanceMm={activeBundle.clearanceMm}
-          clashCount={activeBundle.clashCount}
-          isAuto={activeBundle.isAuto}
-          reason={activeBundle.reason}
+          direction={activeCard.direction}
+          recommended={activeCard.recommended}
+          clearanceMm={activeCard.clearanceMm}
+          clashCount={activeCard.clashCount}
+          isAuto={activeCard.isAuto}
+          reason={activeCard.reason}
           onSelect={handleSelectDirection}
-          onClose={() => setDismissedBundleId(activeBundle.bundleId)}
+          onClose={() => setDismissedBundleId(activeCard.bundleId)}
         />
       )}
     </>

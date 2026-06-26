@@ -2883,20 +2883,27 @@ function RefrigerantPipeToolSection() {
   const {
     refrigerantPipeDrawMode,
     setRefrigerantPipeDrawMode,
+    refrigerantPipeAngleMode,
+    setRefrigerantPipeAngleMode,
     pipeRoutingSettings,
     setPipeRoutingSettings,
   } = useSmartDrawingStore(
     (state) => ({
       refrigerantPipeDrawMode: state.refrigerantPipeDrawMode,
       setRefrigerantPipeDrawMode: state.setRefrigerantPipeDrawMode,
+      refrigerantPipeAngleMode: state.refrigerantPipeAngleMode,
+      setRefrigerantPipeAngleMode: state.setRefrigerantPipeAngleMode,
       pipeRoutingSettings: state.pipeRoutingSettings,
       setPipeRoutingSettings: state.setPipeRoutingSettings,
     }),
     shallow,
   );
 
+  type NumericPipeRoutingSettingKey = {
+    [K in keyof PipeRoutingSettings]: PipeRoutingSettings[K] extends number ? K : never;
+  }[keyof PipeRoutingSettings];
   const settingFields: Array<{
-    key: keyof PipeRoutingSettings;
+    key: NumericPipeRoutingSettingKey;
     label: string;
     min: number;
     max: number;
@@ -2962,6 +2969,55 @@ function RefrigerantPipeToolSection() {
         {refrigerantPipeDrawMode === "hard"
           ? "Hard mode constrains routing to straight, 45°, and 90° style runs with rigid fitting geometry."
           : "Flexible mode keeps free-angle routing so you can place multiple vertices for real on-site laying paths."}
+      </p>
+
+      <PropertyRow label="Angle">
+        <div className="flex items-center gap-1">
+          <TabButton
+            active={refrigerantPipeAngleMode === "auto"}
+            label="Auto"
+            onClick={() => setRefrigerantPipeAngleMode("auto")}
+          />
+          <TabButton
+            active={refrigerantPipeAngleMode === "free"}
+            label="Free"
+            onClick={() => setRefrigerantPipeAngleMode("free")}
+          />
+          <TabButton
+            active={refrigerantPipeAngleMode === "ortho"}
+            label="90°"
+            onClick={() => setRefrigerantPipeAngleMode("ortho")}
+          />
+          <TabButton
+            active={refrigerantPipeAngleMode === "diagonal"}
+            label="45°"
+            onClick={() => setRefrigerantPipeAngleMode("diagonal")}
+          />
+        </div>
+      </PropertyRow>
+      <p className="text-[11px] leading-5 text-slate-500">
+        Angle each segment snaps to while drawing. Use 90° for clean L-shaped
+        runs, Free for unconstrained laying. Hold Shift for right-angles anytime.
+      </p>
+
+      <PropertyRow label="Auto clash bypass">
+        <div className="flex items-center gap-1">
+          <TabButton
+            active={!pipeRoutingSettings.autoBypassOnCommit}
+            label="Off"
+            onClick={() => setPipeRoutingSettings({ autoBypassOnCommit: false })}
+          />
+          <TabButton
+            active={pipeRoutingSettings.autoBypassOnCommit}
+            label="On"
+            onClick={() => setPipeRoutingSettings({ autoBypassOnCommit: true })}
+          />
+        </div>
+      </PropertyRow>
+      <p className="text-[11px] leading-5 text-slate-500">
+        Off: routes commit exactly as drawn — select a crossing pipe to add an
+        offset hop from the card. On: hops are added automatically at every
+        crossing.
       </p>
 
       <div className="mt-2 border-t border-slate-100 pt-2">

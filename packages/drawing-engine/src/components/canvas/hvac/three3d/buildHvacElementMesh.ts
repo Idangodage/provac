@@ -22,6 +22,7 @@ import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
   findNearestRefrigerantPipeBundleSegmentTarget,
+  resolveInlineBranchKitCenter,
 } from "../refrigerantPipePairModel";
 import type {
   RefrigerantPipeEndpointRenderState,
@@ -1390,13 +1391,20 @@ function resolveInlineBranchKitRenderCenter(
       : candidateRotationB;
   const rotatedAnchor = rotatePoint2D(anchorLocal, rotationDeg);
 
+  // Override the XY center + rotation with the single inline-center source of
+  // truth (no live re-snap) so the kit body lands exactly on its connection
+  // center, matching 2D + the snap targets. The local logic above is kept only
+  // to align the kit's elevation to the run it sits on (`resolvedAnchorElevationMm`).
+  const inline = resolveInlineBranchKitCenter(element, lineSelection, model);
   return {
-    center: {
-      x: resolvedAnchorPoint.x - rotatedAnchor.x,
-      y: resolvedAnchorPoint.y - rotatedAnchor.y,
-    },
+    center: inline
+      ? inline.center
+      : {
+          x: resolvedAnchorPoint.x - rotatedAnchor.x,
+          y: resolvedAnchorPoint.y - rotatedAnchor.y,
+        },
     elevationMm: resolvedAnchorElevationMm - anchorLine.centerlineZMm,
-    rotationDeg,
+    rotationDeg: inline ? inline.rotationDeg : rotationDeg,
   };
 }
 

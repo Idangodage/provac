@@ -59,6 +59,7 @@ import {
   SectionLineRenderer,
   HvacPlanRenderer,
 } from "./canvas";
+import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
 import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
 import {
@@ -381,6 +382,7 @@ export function DrawingCanvas({
   const {
     activeTool: tool,
     refrigerantPipeDrawMode,
+    refrigerantPipeAngleMode,
     zoom: documentZoom,
     panOffset: documentPanOffset,
     displayUnit,
@@ -453,6 +455,7 @@ export function DrawingCanvas({
     (state) => ({
       activeTool: state.activeTool,
       refrigerantPipeDrawMode: state.refrigerantPipeDrawMode,
+      refrigerantPipeAngleMode: state.refrigerantPipeAngleMode,
       zoom: state.zoom,
       panOffset: state.panOffset,
       displayUnit: state.displayUnit,
@@ -1428,11 +1431,16 @@ export function DrawingCanvas({
     handleKeyDown: handleRefrigerantPipeKeyDown,
     handleKeyUp: handleRefrigerantPipeKeyUp,
     cancelDrawing: _cancelRefrigerantPipeDrawing,
+    branchKitProposal: refrigerantBranchKitProposal,
+    acceptBranchKitProposal: acceptRefrigerantBranchKit,
+    flipBranchKitProposal: flipRefrigerantBranchKit,
+    dismissBranchKitProposal: dismissRefrigerantBranchKit,
   } = useRefrigerantPipeTool({
     fabricRef,
     hvacRendererRef,
     activeTool: tool,
     pipeMaterialMode: refrigerantPipeDrawMode,
+    pipeAngleMode: refrigerantPipeAngleMode,
     hvacElements,
     zoom: viewportZoom,
     snapToGrid: resolvedSnapToGrid,
@@ -2557,6 +2565,26 @@ export function DrawingCanvas({
             updateHvacElement={updateHvacElement}
             setProcessingStatus={setProcessingStatus}
           />
+          {!projectionViewOnly &&
+            tool === "refrigerant-pipe" &&
+            refrigerantBranchKitProposal && (
+              <PipeBranchKitProposalCard
+                screenX={
+                  -panOffset.x * viewportZoom +
+                  viewportZoom * refrigerantBranchKitProposal.teePoint.x * MM_TO_PX
+                }
+                screenY={
+                  -panOffset.y * viewportZoom +
+                  viewportZoom * refrigerantBranchKitProposal.teePoint.y * MM_TO_PX
+                }
+                connectionLabel={refrigerantBranchKitProposal.connectionLabel}
+                validity={refrigerantBranchKitProposal.validity}
+                violations={refrigerantBranchKitProposal.violations}
+                onAccept={acceptRefrigerantBranchKit}
+                onFlip={flipRefrigerantBranchKit}
+                onDismiss={dismissRefrigerantBranchKit}
+              />
+            )}
           <canvas
             ref={snapOverlayRef}
             className="absolute left-0 top-0 z-[10] block"

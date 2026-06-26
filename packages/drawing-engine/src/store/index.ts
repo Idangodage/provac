@@ -35,6 +35,7 @@ import {
 } from '../components/canvas/hvac/pipeRoutingSettings';
 import {
   isRefrigerantPipeElementType,
+  type RefrigerantPipeAngleMode,
   type RefrigerantPipeMaterial,
   translateRefrigerantPipeElementProperties,
 } from '../components/canvas/hvac/refrigerantPipePairModel';
@@ -1760,6 +1761,7 @@ export interface DrawingState {
   // Tool State
   activeTool: DrawingTool;
   refrigerantPipeDrawMode: RefrigerantPipeMaterial;
+  refrigerantPipeAngleMode: RefrigerantPipeAngleMode;
   activeLayerId: string | null;
   selectedElementIds: string[];
   hoveredElementId: string | null;
@@ -1960,6 +1962,7 @@ export interface DrawingState {
 
   // Actions - Tools
   setRefrigerantPipeDrawMode: (mode: RefrigerantPipeMaterial) => void;
+  setRefrigerantPipeAngleMode: (mode: RefrigerantPipeAngleMode) => void;
   setActiveTool: (tool: DrawingTool) => void;
 
   // Alias for backward compatibility
@@ -2073,6 +2076,7 @@ export const useDrawingStore = create<DrawingState>()(
       detectedElements: [],
       activeTool: 'select',
       refrigerantPipeDrawMode: 'hard',
+      refrigerantPipeAngleMode: 'auto',
       activeLayerId: 'default',
       selectedElementIds: [],
       hoveredElementId: null,
@@ -4367,6 +4371,12 @@ export const useDrawingStore = create<DrawingState>()(
           state.refrigerantPipeDrawMode === mode
             ? state
             : { refrigerantPipeDrawMode: mode }
+        ),
+      setRefrigerantPipeAngleMode: (mode) =>
+        set((state) =>
+          state.refrigerantPipeAngleMode === mode
+            ? state
+            : { refrigerantPipeAngleMode: mode }
         ),
       setActiveTool: (tool) => set((state) => {
         const partitionToolActive = isPartitionWallTool(tool);

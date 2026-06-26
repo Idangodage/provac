@@ -1,13 +1,21 @@
 import * as fabric from 'fabric';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { HvacElement, Point2D } from '../../../types';
 import type { HvacPlanRenderer } from '../hvac/HvacPlanRenderer';
+import {
+  buildBranchKitInsertion,
+  describeBranchKitConnectionType,
+  proposeBranchKit,
+  type BranchKitProposal,
+  type BranchKitProposalValidity,
+} from '../hvac/branchKitProposal';
 import { planBundleBypasses } from '../hvac/pipeClashRouting';
 import { getActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
 import {
   buildRefrigerantPipeElements,
   findNearestRefrigerantPipeBundleTarget,
+  type RefrigerantPipeAngleMode,
   type RefrigerantPipeConnectionKind,
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeMaterial,
@@ -21,6 +29,7 @@ export interface UseRefrigerantPipeToolOptions {
   hvacRendererRef: React.RefObject<HvacPlanRenderer | null>;
   activeTool: string;
   pipeMaterialMode: RefrigerantPipeMaterial;
+  pipeAngleMode: RefrigerantPipeAngleMode;
   hvacElements: HvacElement[];
   zoom: number;
   snapToGrid: boolean;
@@ -35,6 +44,15 @@ export interface UseRefrigerantPipeToolOptions {
   setProcessingStatus: (status: string, isProcessing: boolean) => void;
 }
 
+/** Summary of the live branch-kit proposal, surfaced so the canvas can render
+ * the anchored "Insert branch kit" card. World coordinates (mm). */
+export interface RefrigerantPipeBranchKitProposalState {
+  teePoint: Point2D;
+  connectionLabel: string;
+  validity: BranchKitProposalValidity;
+  violations: string[];
+}
+
 export interface UseRefrigerantPipeToolResult {
   isDrawing: boolean;
   handleMouseDown: (point: Point2D) => void;
@@ -43,6 +61,11 @@ export interface UseRefrigerantPipeToolResult {
   handleKeyDown: (event: KeyboardEvent) => boolean;
   handleKeyUp: (event: KeyboardEvent) => void;
   cancelDrawing: () => void;
+  /** Live branch-kit proposal (or null) for the anchored insertion card. */
+  branchKitProposal: RefrigerantPipeBranchKitProposalState | null;
+  acceptBranchKitProposal: () => void;
+  flipBranchKitProposal: () => void;
+  dismissBranchKitProposal: () => void;
 }
 
 const PIPE_ROUTE_ANGLE_SNAP_DEG = 45;
@@ -120,6 +143,7 @@ export function useRefrigerantPipeTool(
     hvacRendererRef,
     activeTool,
     pipeMaterialMode,
+    pipeAngleMode,
     hvacElements,
     zoom,
     snapToGrid,
@@ -134,6 +158,16 @@ export function useRefrigerantPipeTool(
   const endBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
   const previewPointRef = useRef<Point2D | null>(null);
   const shiftPressedRef = useRef(false);
+  // --- Branch-kit proposal state (real-time) ---
+  const branchKitProposalRef = useRef<BranchKitProposal | null>(null);
+  const proposalFlipRef = useRef(false);
+  const proposalSuppressRef = useRef<{ active: boolean; at: Point2D | null }>({
+    active: false,
+    at: null,
+  });
+  const lastProposalCursorRef = useRef<Point2D | null>(null);
+  const [branchKitProposalState, setBranchKitProposalState] =
+    useState<RefrigerantPipeBranchKitProposalState | null>(null);
   const snapMarkersRef = useRef<fabric.FabricObject[]>([]);
   const debugOverlaysRef = useRef<fabric.FabricObject[]>([]);
   const snapMarkerKindRef = useRef<RefrigerantPipeConnectionKind | null>(null);
@@ -382,15 +416,24 @@ export function useRefrigerantPipeTool(
     hvacRendererRef.current?.clearPlacementPreview();
   }, [hvacRendererRef]);
 
+  const clearBranchKitProposal = useCallback(() => {
+    branchKitProposalRef.current = null;
+    setBranchKitProposalState((previous) => (previous ? null : previous));
+  }, []);
+
   const resetDrawing = useCallback(() => {
     routePointsRef.current = [];
     startBundleRef.current = null;
     endBundleRef.current = null;
     previewPointRef.current = null;
+    proposalFlipRef.current = false;
+    proposalSuppressRef.current = { active: false, at: null };
+    lastProposalCursorRef.current = null;
+    clearBranchKitProposal();
     clearPreview();
     clearSnapMarkers();
     clearDebugOverlays();
-  }, [clearDebugOverlays, clearPreview, clearSnapMarkers]);
+  }, [clearBranchKitProposal, clearDebugOverlays, clearPreview, clearSnapMarkers]);
 
   const snapPoint = useCallback((point: Point2D, allowBundleSnap: boolean): {
     point: Point2D;
@@ -487,45 +530,91 @@ export function useRefrigerantPipeTool(
     }
     if (!snappedBundle && routePointsRef.current.length > 0) {
       const previousPoint = routePointsRef.current[routePointsRef.current.length - 1]!;
-      nextPoint = shiftPressedRef.current
+      // Resolve the effective angle constraint. `auto` keeps the legacy,
+      // material-driven behaviour (hard ⇒ 45°, flexible ⇒ free); the explicit
+      // modes give the user direct control over clean L / 45° / free routing.
+      const effectiveAngleMode = pipeAngleMode === 'auto'
+        ? (pipeMaterialMode === 'hard' ? 'diagonal' : 'free')
+        : pipeAngleMode;
+      nextPoint = shiftPressedRef.current || effectiveAngleMode === 'ortho'
         ? applyOrthogonalConstraint(previousPoint, nextPoint)
-        : pipeMaterialMode === 'hard'
+        : effectiveAngleMode === 'diagonal'
           ? applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG)
           : nextPoint;
     }
 
     return { point: nextPoint, bundle: snappedBundle, source };
-  }, [gridSize, hvacElements, hvacRendererRef, pipeMaterialMode, snapToGrid, zoom]);
+  }, [gridSize, hvacElements, hvacRendererRef, pipeAngleMode, pipeMaterialMode, snapToGrid, zoom]);
 
   const renderRoutePreview = useCallback((
     routePoints: Point2D[],
     endBundleConnection: RefrigerantPipeBundleConnection | null = null,
     startBundleConnectionOverride: RefrigerantPipeBundleConnection | null = null,
+    ghostElements: Array<Omit<HvacElement, 'id'>> = [],
   ) => {
-    if (routePoints.length < 2) {
+    const pipePreviewElements = routePoints.length >= 2
+      ? buildRefrigerantPipeElements(routePoints, {
+          segmentMaterialMode: pipeMaterialMode,
+          startBundleConnection:
+            startBundleConnectionOverride ?? startBundleRef.current,
+          endBundleConnection,
+        }).map((previewElement, index) => ({
+          ...previewElement,
+          id: `__refrigerant-pipe-preview__-${index}`,
+          rotation: previewElement.rotation ?? 0,
+          category: previewElement.category ?? 'accessory',
+          subtype: previewElement.subtype ?? 'refrigerant-pipe',
+          modelLabel: previewElement.modelLabel ?? 'Refrigerant Pipe',
+          supplyZoneRatio: previewElement.supplyZoneRatio ?? 0,
+          properties: previewElement.properties ?? {},
+        }))
+      : [];
+    const ghostPreviewElements = ghostElements.map((ghost, index) => ({
+      ...ghost,
+      id: `__branch-kit-preview__-${index}`,
+    }));
+    const previewElements = [...pipePreviewElements, ...ghostPreviewElements];
+    if (previewElements.length === 0) {
       clearPreview();
       return;
     }
-    const previewElements = buildRefrigerantPipeElements(routePoints, {
-      segmentMaterialMode: pipeMaterialMode,
-      startBundleConnection:
-        startBundleConnectionOverride ?? startBundleRef.current,
-      endBundleConnection,
-    });
-    hvacRendererRef.current?.renderElementPreviews(
-      previewElements.map((previewElement, index) => ({
-        ...previewElement,
-        id: `__refrigerant-pipe-preview__-${index}`,
-        rotation: previewElement.rotation ?? 0,
-        category: previewElement.category ?? 'accessory',
-        subtype: previewElement.subtype ?? 'refrigerant-pipe',
-        modelLabel: previewElement.modelLabel ?? 'Refrigerant Pipe',
-        supplyZoneRatio: previewElement.supplyZoneRatio ?? 0,
-        properties: previewElement.properties ?? {},
-      })),
-      true,
-    );
+    hvacRendererRef.current?.renderElementPreviews(previewElements, true);
   }, [clearPreview, hvacRendererRef, pipeMaterialMode]);
+
+  const refreshBranchKitProposal = useCallback((
+    cursorPoint: Point2D,
+  ): BranchKitProposal | null => {
+    lastProposalCursorRef.current = cursorPoint;
+    const startBundle = startBundleRef.current;
+    if (routePointsRef.current.length === 0 || !startBundle) {
+      clearBranchKitProposal();
+      return null;
+    }
+    const suppress = proposalSuppressRef.current;
+    if (suppress.active) {
+      if (suppress.at && distance(cursorPoint, suppress.at) > 120) {
+        proposalSuppressRef.current = { active: false, at: null };
+      } else {
+        clearBranchKitProposal();
+        return null;
+      }
+    }
+    const proposal = proposeBranchKit(hvacElements, startBundle, cursorPoint, {
+      flip: proposalFlipRef.current,
+    });
+    if (!proposal) {
+      clearBranchKitProposal();
+      return null;
+    }
+    branchKitProposalRef.current = proposal;
+    setBranchKitProposalState({
+      teePoint: proposal.teePoint,
+      connectionLabel: describeBranchKitConnectionType(proposal.connectionType),
+      validity: proposal.validity,
+      violations: proposal.violations,
+    });
+    return proposal;
+  }, [clearBranchKitProposal, hvacElements]);
 
   const commitRoute = useCallback((candidateFinalPoint?: Point2D) => {
     const routePoints = [...routePointsRef.current];
@@ -613,46 +702,50 @@ export function useRefrigerantPipeTool(
       });
     }
     // Detect clashes with existing routed pipes and auto-create Z-offset
-    // bypasses (best-effort — never blocks committing an otherwise valid route).
-    try {
-      const stagedElements = nextElements.map((element, index) => ({
-        ...element,
-        id: `__refrigerant-pipe-new__-${index}`,
-      })) as HvacElement[];
-      const scene = [...hvacElements, ...stagedElements];
-      const routingSettings = getActivePipeRoutingSettings();
-      const plan = planBundleBypasses(
-        scene,
-        stagedElements.map((element) => element.id),
-        {
-          mode: 'auto',
-          clearanceMm: routingSettings.zOffsetClearanceMm,
-          fittingAngleDeg: routingSettings.bypassFittingAngleDeg,
-          ceilingLimitMm: routingSettings.ceilingLimitMm,
-          floorLimitMm: routingSettings.floorLimitMm,
-        },
-      );
-      if (plan.clashCount > 0) {
-        stagedElements.forEach((stagedElement, index) => {
-          const bypasses = plan.byElementId.get(stagedElement.id);
-          if (bypasses && bypasses.length > 0) {
-            nextElements[index]!.properties = {
-              ...(nextElements[index]?.properties ?? {}),
-              bypasses,
-            };
-          }
-        });
-        const directionLabel = plan.recommendedDirection === 'below' ? 'Below' : 'Above';
-        const clashWord = plan.clashCount > 1 ? 'clashes' : 'clash';
-        setProcessingStatus(
-          `${plan.clashCount} pipe ${clashWord} bypassed — Offset ${directionLabel} +${routingSettings.zOffsetClearanceMm} mm clearance`,
-          false,
+    // bypasses. Off by default — routes commit exactly as drawn and the user
+    // applies a bypass deliberately from the clash overlay card. Opt in via the
+    // `autoBypassOnCommit` routing setting.
+    if (getActivePipeRoutingSettings().autoBypassOnCommit) {
+      try {
+        const stagedElements = nextElements.map((element, index) => ({
+          ...element,
+          id: `__refrigerant-pipe-new__-${index}`,
+        })) as HvacElement[];
+        const scene = [...hvacElements, ...stagedElements];
+        const routingSettings = getActivePipeRoutingSettings();
+        const plan = planBundleBypasses(
+          scene,
+          stagedElements.map((element) => element.id),
+          {
+            mode: 'auto',
+            clearanceMm: routingSettings.zOffsetClearanceMm,
+            fittingAngleDeg: routingSettings.bypassFittingAngleDeg,
+            ceilingLimitMm: routingSettings.ceilingLimitMm,
+            floorLimitMm: routingSettings.floorLimitMm,
+          },
         );
-      }
-    } catch (error) {
-      if (debugEnabledRef.current) {
-        // eslint-disable-next-line no-console
-        console.debug('[pipe-routing] clash detection failed', error);
+        if (plan.clashCount > 0) {
+          stagedElements.forEach((stagedElement, index) => {
+            const bypasses = plan.byElementId.get(stagedElement.id);
+            if (bypasses && bypasses.length > 0) {
+              nextElements[index]!.properties = {
+                ...(nextElements[index]?.properties ?? {}),
+                bypasses,
+              };
+            }
+          });
+          const directionLabel = plan.recommendedDirection === 'below' ? 'Below' : 'Above';
+          const clashWord = plan.clashCount > 1 ? 'clashes' : 'clash';
+          setProcessingStatus(
+            `${plan.clashCount} pipe ${clashWord} bypassed — Offset ${directionLabel} +${routingSettings.zOffsetClearanceMm} mm clearance`,
+            false,
+          );
+        }
+      } catch (error) {
+        if (debugEnabledRef.current) {
+          // eslint-disable-next-line no-console
+          console.debug('[pipe-routing] clash detection failed', error);
+        }
       }
     }
 
@@ -669,6 +762,71 @@ export function useRefrigerantPipeTool(
     setProcessingStatus,
     setSelectedIds,
   ]);
+
+  const acceptBranchKitProposal = useCallback((): boolean => {
+    const proposal = branchKitProposalRef.current;
+    const startBundle = startBundleRef.current;
+    if (!proposal || !startBundle || proposal.validity === 'invalid') {
+      return false;
+    }
+    let insertion = null;
+    try {
+      insertion = buildBranchKitInsertion(proposal, startBundle);
+    } catch (error) {
+      if (debugEnabledRef.current) {
+        // eslint-disable-next-line no-console
+        console.debug('[pipe-routing] branch-kit insertion failed', error);
+      }
+      insertion = null;
+    }
+    if (!insertion) {
+      setProcessingStatus('Could not place a branch kit on this run.', false);
+      return false;
+    }
+    // Place the two joints + connect each line (gas/liquid) independently to its
+    // joint outlet so the connections never cross.
+    const addedIds = addHvacElements(
+      insertion.elementsToAdd as unknown as Parameters<typeof addHvacElements>[0],
+    );
+    setSelectedIds(insertion.kitElementIds.length > 0 ? insertion.kitElementIds : addedIds);
+    setProcessingStatus(
+      `Branch kit connected — ${describeBranchKitConnectionType(proposal.connectionType)}`,
+      false,
+    );
+    resetDrawing();
+    return true;
+  }, [
+    addHvacElements,
+    resetDrawing,
+    setProcessingStatus,
+    setSelectedIds,
+  ]);
+
+  const flipBranchKitProposal = useCallback(() => {
+    proposalFlipRef.current = !proposalFlipRef.current;
+    const cursor = lastProposalCursorRef.current ?? previewPointRef.current;
+    if (!cursor) {
+      return;
+    }
+    const proposal = refreshBranchKitProposal(cursor);
+    if (proposal) {
+      renderRoutePreview(
+        [...routePointsRef.current, proposal.teePoint],
+        null,
+        null,
+        [proposal.gasGhost.element, proposal.liquidGhost.element],
+      );
+    }
+  }, [refreshBranchKitProposal, renderRoutePreview]);
+
+  const dismissBranchKitProposal = useCallback(() => {
+    const cursor = lastProposalCursorRef.current ?? previewPointRef.current;
+    proposalSuppressRef.current = { active: true, at: cursor ?? null };
+    clearBranchKitProposal();
+    if (cursor && routePointsRef.current.length >= 1) {
+      renderRoutePreview([...routePointsRef.current, cursor]);
+    }
+  }, [clearBranchKitProposal, renderRoutePreview]);
 
   const handleMouseDown = useCallback((point: Point2D) => {
     const { point: snappedPoint, bundle, source } = snapPoint(point, true);
@@ -712,10 +870,22 @@ export function useRefrigerantPipeTool(
       return;
     }
 
+    // A live, valid branch-kit proposal: clicking accepts it (inserts the
+    // coordinated gas/liquid kits + inline-splits the tapped run).
+    const proposal = branchKitProposalRef.current;
+    if (proposal && proposal.validity !== 'invalid') {
+      if (acceptBranchKitProposal()) {
+        return;
+      }
+    }
+
     routePointsRef.current = [...routePointsRef.current, snappedPoint];
     previewPointRef.current = null;
+    clearBranchKitProposal();
     renderRoutePreview(routePointsRef.current);
   }, [
+    acceptBranchKitProposal,
+    clearBranchKitProposal,
     clearPreview,
     commitRoute,
     logDebug,
@@ -737,6 +907,7 @@ export function useRefrigerantPipeTool(
     }
 
     if (routePointsRef.current.length === 0) {
+      clearBranchKitProposal();
       renderSnapMarkers(bundle);
       if (bundle) {
         setProcessingStatus(
@@ -752,13 +923,35 @@ export function useRefrigerantPipeTool(
 
     previewPointRef.current = snappedPoint;
     renderSnapMarkers(bundle);
-    renderRoutePreview(
-      [...routePointsRef.current, snappedPoint],
-      bundle,
-    );
+
+    // When not snapping to an explicit endpoint, look for a branch-kit tee on a
+    // nearby run and show the dashed ghost kits + route. Otherwise plain route.
+    const proposal = bundle ? null : refreshBranchKitProposal(snappedPoint);
+    if (proposal) {
+      renderRoutePreview(
+        [...routePointsRef.current, proposal.teePoint],
+        null,
+        null,
+        [proposal.gasGhost.element, proposal.liquidGhost.element],
+      );
+      setProcessingStatus(
+        `Branch kit · ${describeBranchKitConnectionType(proposal.connectionType)}`,
+        false,
+      );
+    } else {
+      if (bundle) {
+        clearBranchKitProposal();
+      }
+      renderRoutePreview(
+        [...routePointsRef.current, snappedPoint],
+        bundle,
+      );
+    }
   }, [
+    clearBranchKitProposal,
     clearPreview,
     logDebug,
+    refreshBranchKitProposal,
     renderDebugOverlays,
     renderRoutePreview,
     renderSnapMarkers,
@@ -822,5 +1015,9 @@ export function useRefrigerantPipeTool(
     handleKeyDown,
     handleKeyUp,
     cancelDrawing,
+    branchKitProposal: branchKitProposalState,
+    acceptBranchKitProposal,
+    flipBranchKitProposal,
+    dismissBranchKitProposal,
   };
 }

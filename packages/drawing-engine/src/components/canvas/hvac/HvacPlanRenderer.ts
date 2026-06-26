@@ -43,9 +43,9 @@ import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from "./refrigerantPipeDimensions";
 import {
   buildRefrigerantPipeVisual,
   buildRefrigerantPipePairVisual,
-  findNearestRefrigerantPipeBundleSegmentTarget,
   findNearestRefrigerantPipeBundleTarget as findNearestRefrigerantPipeBundleTargetFromModel,
   isRefrigerantPipeElementType,
+  resolveInlineBranchKitCenter,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeBundleConnection,
 } from "./refrigerantPipePairModel";
@@ -135,25 +135,8 @@ function subtractPoints(a: Point2D, b: Point2D): Point2D {
   return { x: a.x - b.x, y: a.y - b.y };
 }
 
-function scalePoint(point: Point2D, factor: number): Point2D {
-  return { x: point.x * factor, y: point.y * factor };
-}
-
 function dotProduct(a: Point2D, b: Point2D): number {
   return a.x * b.x + a.y * b.y;
-}
-
-function normalizeAngleDeg(value: number): number {
-  let normalized = value % 360;
-  if (normalized < 0) {
-    normalized += 360;
-  }
-  return normalized;
-}
-
-function smallestAngleDifferenceDeg(a: number, b: number): number {
-  const diff = Math.abs(normalizeAngleDeg(a) - normalizeAngleDeg(b));
-  return Math.min(diff, 360 - diff);
 }
 
 function normalizePoint(value: unknown): Point2D | null {
@@ -179,165 +162,28 @@ function normalizePoint(value: unknown): Point2D | null {
 
 function resolveInlineBranchKitRenderCenter(
   element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties" | "rotation">,
-  pipeTargets: VisibleRefrigerantPipeSegmentTarget[],
-  allElements: HvacElement[],
+  _pipeTargets: VisibleRefrigerantPipeSegmentTarget[],
+  _allElements: HvacElement[],
 ): { anchorPoint: Point2D; anchorLocal: Point2D; rotationDeg: number } | null {
-  if (
-    !isRefrigerantBranchKitElement(element) ||
-    element.properties.branchKitPlacementMode !== "inline-pipe-run"
-  ) {
+  // Delegate to the single inline-center source of truth (no live re-snap) so
+  // the drawn kit lands exactly where its terminals/snap-targets are — see
+  // resolveInlineBranchKitCenter in refrigerantPipePairModel. (`_pipeTargets`
+  // / `_allElements` are retained for call-site compatibility; the previous
+  // live re-snap they fed caused the kit to render off its connection center.)
+  if (!isRefrigerantBranchKitElement(element)) {
     return null;
   }
-  const initialAnchorPoint = normalizePoint(element.properties.branchKitSnapPoint);
-  if (!initialAnchorPoint) {
-    return null;
-  }
-  let anchorPoint: Point2D = initialAnchorPoint;
-
-  const snapSegmentStart = normalizePoint(element.properties.branchKitSnapSegmentStart);
-  const snapSegmentEnd = normalizePoint(element.properties.branchKitSnapSegmentEnd);
-  const snapProjectedDistanceMm =
-    typeof element.properties.branchKitSnapProjectedDistanceMm === "number" &&
-    Number.isFinite(element.properties.branchKitSnapProjectedDistanceMm)
-      ? element.properties.branchKitSnapProjectedDistanceMm
-      : null;
-  if (snapSegmentStart && snapSegmentEnd) {
-    const segmentDelta = subtractPoints(snapSegmentEnd, snapSegmentStart);
-    const segmentLengthMm = Math.hypot(segmentDelta.x, segmentDelta.y);
-    if (segmentLengthMm > 0.2) {
-      const segmentDirection = {
-        x: segmentDelta.x / segmentLengthMm,
-        y: segmentDelta.y / segmentLengthMm,
-      };
-      const projectedMm =
-        snapProjectedDistanceMm !== null
-          ? Math.min(segmentLengthMm, Math.max(0, snapProjectedDistanceMm))
-          : Math.min(
-              segmentLengthMm,
-              Math.max(
-                0,
-                dotProduct(
-                  subtractPoints(initialAnchorPoint, snapSegmentStart),
-                  segmentDirection,
-                ),
-              ),
-            );
-      anchorPoint = addPoints(
-        snapSegmentStart,
-        scalePoint(segmentDirection, projectedMm),
-      );
-    }
-  }
-
-  const model = buildRefrigerantBranchKitViewModel(element);
   const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
-  const desiredLineKind = lineSelection === "liquid" ? "liquid" : "gas";
-  const sourceElementId =
-    typeof element.properties.branchKitSnapSourceElementId === "string"
-      ? element.properties.branchKitSnapSourceElementId
-      : null;
-  const snapDirection = normalizeDirection(
-    normalizePoint(element.properties.branchKitSnapDirection) ?? { x: 1, y: 0 },
-  );
-  let resolvedAxisDirection = snapDirection;
-
-  const modelProjectionElements = (() => {
-    if (!sourceElementId) {
-      return allElements;
-    }
-    const byElementId = allElements.filter(
-      (candidate) => candidate.id === sourceElementId,
-    );
-    return byElementId.length > 0 ? byElementId : allElements;
-  })();
-  const modelProjection =
-    modelProjectionElements.length > 0
-      ? findNearestRefrigerantPipeBundleSegmentTarget(
-          modelProjectionElements,
-          anchorPoint,
-          sourceElementId ? 120 : 64,
-          { minSegmentLengthMm: 30 },
-        )
-      : null;
-  if (modelProjection) {
-    anchorPoint = desiredLineKind === "liquid"
-      ? modelProjection.liquidPoint
-      : modelProjection.gasPoint;
-    resolvedAxisDirection =
-      dotProduct(modelProjection.direction, snapDirection) >= 0
-        ? modelProjection.direction
-        : scalePoint(modelProjection.direction, -1);
+  const model = buildRefrigerantBranchKitViewModel(element);
+  const inline = resolveInlineBranchKitCenter(element, lineSelection, model);
+  if (!inline) {
+    return null;
   }
-  const matchingTargets = pipeTargets.filter(
-    (target) =>
-      target.lineKind === desiredLineKind &&
-      (!sourceElementId ||
-        target.elementId === sourceElementId ||
-        target.bundleId === sourceElementId),
-  );
-  const fallbackTargets = sourceElementId
-    ? pipeTargets.filter((target) => target.lineKind === desiredLineKind)
-    : matchingTargets;
-  const targets = matchingTargets.length > 0 ? matchingTargets : fallbackTargets;
-  if (!modelProjection && targets.length > 0) {
-    let bestPoint: Point2D | null = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-    let bestDirection: Point2D | null = null;
-    for (const target of targets) {
-      const segmentDx = target.end.x - target.start.x;
-      const segmentDy = target.end.y - target.start.y;
-      const segmentLength = Math.hypot(segmentDx, segmentDy);
-      if (segmentLength <= 0.2) {
-        continue;
-      }
-      const direction = { x: segmentDx / segmentLength, y: segmentDy / segmentLength };
-      const projectedMm = Math.min(
-        segmentLength,
-        Math.max(0, dotProduct(subtractPoints(anchorPoint, target.start), direction)),
-      );
-      const projectedPoint = addPoints(target.start, scalePoint(direction, projectedMm));
-      const distanceMm = Math.hypot(
-        projectedPoint.x - anchorPoint.x,
-        projectedPoint.y - anchorPoint.y,
-      );
-      const directionPenalty = (1 - Math.abs(dotProduct(direction, snapDirection))) * 36;
-      const score = distanceMm + directionPenalty;
-      if (score < bestScore) {
-        bestScore = score;
-        bestPoint = projectedPoint;
-        bestDirection =
-          dotProduct(direction, snapDirection) >= 0
-            ? direction
-            : scalePoint(direction, -1);
-      }
-    }
-    const maxReprojectScoreMm = sourceElementId ? 60 : 24;
-    if (bestPoint && bestScore <= maxReprojectScoreMm) {
-      anchorPoint = bestPoint;
-      if (bestDirection) {
-        resolvedAxisDirection = bestDirection;
-      }
-    }
-  }
-
-  const anchorLocal = resolveStableInlineBranchKitAnchorLocal(
-    element,
-    model,
-    lineSelection,
-  );
-  const fallbackRotationDeg = element.rotation ?? 0;
-  const axisAngleDeg = normalizeAngleDeg(
-    (Math.atan2(resolvedAxisDirection.y, resolvedAxisDirection.x) * 180) / Math.PI,
-  );
-  const candidateRotationA = axisAngleDeg;
-  const candidateRotationB = normalizeAngleDeg(axisAngleDeg + 180);
-  const rotationDeg =
-    smallestAngleDifferenceDeg(candidateRotationA, fallbackRotationDeg)
-      <= smallestAngleDifferenceDeg(candidateRotationB, fallbackRotationDeg)
-      ? candidateRotationA
-      : candidateRotationB;
-
-  return { anchorPoint, anchorLocal, rotationDeg };
+  return {
+    anchorPoint: inline.anchorPoint,
+    anchorLocal: inline.anchorLocal,
+    rotationDeg: inline.rotationDeg,
+  };
 }
 
 function resolveBranchKitAnchorLocal(

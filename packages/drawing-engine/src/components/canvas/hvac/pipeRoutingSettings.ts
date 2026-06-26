@@ -38,20 +38,26 @@ export const DEFAULT_PIPE_ROUTING_ELEVATION_MM = 2600;
  * clash avoidance. All distances are millimetres unless noted.
  *
  * Field names follow the project's engineering spec. Some fields
- * (`defaultWallClearanceMm`, `defaultUnitClearanceMm`,
- * `defaultBranchKitClearanceMm`, `bendRadiusFactor`) are reserved for the
- * upcoming auto-routing workstream and are not yet consumed by the geometry
- * engine — they are persisted so the settings object is forward-compatible.
+ * (`defaultWallClearanceMm`, `bendRadiusFactor`) are reserved for the upcoming
+ * auto-routing workstream and are not yet consumed by the geometry engine —
+ * they are persisted so the settings object is forward-compatible.
+ *
+ * `defaultUnitClearanceMm`, `defaultBranchKitClearanceMm` and
+ * `minBranchKitSpacingMm` are consumed by the real-time branch-kit proposal
+ * engine ({@link ./branchKitProposal}) to keep a proposed tee clear of unit
+ * bodies, run ends and other kits.
  */
 export interface PipeRoutingSettings {
   /** Clear gap between the *insulated* gas and liquid pipes of one bundle. */
   defaultPipeGapMm: number;
   /** Reserved (auto-route): min clear distance a route keeps from walls. */
   defaultWallClearanceMm: number;
-  /** Reserved (auto-route): min clear distance a route keeps from unit bodies. */
+  /** Min clear distance a proposed branch tee keeps from indoor-unit bodies. */
   defaultUnitClearanceMm: number;
-  /** Reserved (auto-route): min clear distance kept around a branch kit. */
+  /** Straight run kept before/after a branch kit body on the tapped run. */
   defaultBranchKitClearanceMm: number;
+  /** Minimum centre-to-centre spacing between two branch kits. */
+  minBranchKitSpacingMm: number;
   /** Clear gap kept between insulated surfaces of two crossing pipe runs. */
   zOffsetClearanceMm: number;
   /** Straight run kept before the rise fitting begins, ahead of the obstacle. */
@@ -72,6 +78,12 @@ export interface PipeRoutingSettings {
   bypassFittingAngleDeg: 45 | 90;
   /** Clashes nearer than this along the route merge into one bypass. */
   clashMergeWindowMm: number;
+  /**
+   * When true, a freshly drawn route auto-bakes Z-offset bypass hops at every
+   * crossing on commit. When false (default), routes commit exactly as drawn and
+   * the user applies a bypass deliberately from the clash overlay card.
+   */
+  autoBypassOnCommit: boolean;
 }
 
 /**
@@ -83,6 +95,7 @@ export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
   defaultWallClearanceMm: 50,
   defaultUnitClearanceMm: 100,
   defaultBranchKitClearanceMm: 80,
+  minBranchKitSpacingMm: 300,
   zOffsetClearanceMm: MIN_INSULATED_CLEARANCE_MM, // 75 mm
   zOffsetStartDistanceMm: BYPASS_OFFSET_MARGIN_MM, // 60 mm
   bendRadiusFactor: 1,
@@ -93,6 +106,7 @@ export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
   floorLimitMm: DEFAULT_FLOOR_LIMIT_MM, // 150 mm
   bypassFittingAngleDeg: DEFAULT_BYPASS_FITTING_ANGLE_DEG, // 45°
   clashMergeWindowMm: CLASH_MERGE_WINDOW_MM, // 320 mm
+  autoBypassOnCommit: false, // clean commits by default; bypass is opt-in via the card
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -116,6 +130,12 @@ export function resolvePipeRoutingSettings(
       if (key === "bypassFittingAngleDeg") {
         if (value === 45 || value === 90) {
           merged.bypassFittingAngleDeg = value;
+        }
+        return;
+      }
+      if (key === "autoBypassOnCommit") {
+        if (typeof value === "boolean") {
+          merged.autoBypassOnCommit = value;
         }
         return;
       }
