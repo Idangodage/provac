@@ -1,0 +1,73 @@
+'use client';
+
+import type { Point2D } from '../../types';
+
+import { MM_TO_PX } from './scale';
+
+/**
+ * Canonical coordinate transforms (W5 / R3).
+ *
+ * The engine has historically derived screen<->world and world->3D mappings
+ * independently in each view (the Fabric plan viewport, the isometric Z-up mm
+ * scene, the oblique px-shear projection), which let the views drift
+ * geometrically. This module is the single, documented, deterministic source
+ * for those mappings so every view can be routed through it. Pure + unit-tested
+ * (the round-trip is pinned).
+ *
+ * Conventions:
+ * - World space is millimetres, +X right, +Y down the page (matching the Fabric
+ *   plan scene and every `*Mm` geometry field).
+ * - Screen space is pixels: screen = world * MM_TO_PX * zoom + pan.
+ * - 3D space is right-handed, Z-up in millimetres (matching the interactive
+ *   isometric view): worldTo3D(x, y, elevationZ) = (x, y, elevationZ). Plan +Y
+ *   maps to 3D +Y; pipe elevation maps to 3D +Z.
+ */
+
+export interface ViewTransform2D {
+  /** Zoom factor (1 = one scene-mm-pixel : one screen pixel). */
+  zoom: number;
+  /** Pan offset in screen pixels. */
+  panPx: Point2D;
+}
+
+export interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+function safeScale(zoom: number): number {
+  const k = MM_TO_PX * zoom;
+  if (!Number.isFinite(k) || Math.abs(k) < 1e-9) {
+    return 1e-9;
+  }
+  return k;
+}
+
+export function worldToScreen(worldMm: Point2D, view: ViewTransform2D): Point2D {
+  const k = MM_TO_PX * view.zoom;
+  return { x: worldMm.x * k + view.panPx.x, y: worldMm.y * k + view.panPx.y };
+}
+
+export function screenToWorld(screenPx: Point2D, view: ViewTransform2D): Point2D {
+  const k = safeScale(view.zoom);
+  return { x: (screenPx.x - view.panPx.x) / k, y: (screenPx.y - view.panPx.y) / k };
+}
+
+/** Pixels for a millimetre length at the given zoom (no pan). */
+export function worldLengthToScreen(lengthMm: number, zoom: number): number {
+  return lengthMm * MM_TO_PX * zoom;
+}
+
+/** Millimetres for a screen-pixel length at the given zoom. */
+export function screenLengthToWorld(lengthPx: number, zoom: number): number {
+  return lengthPx / safeScale(zoom);
+}
+
+/**
+ * Maps a plan-space point + elevation to the canonical Z-up 3D frame (mm). Plan
+ * (x, y) pass straight through; elevation becomes +Z.
+ */
+export function worldTo3D(worldMm: Point2D, elevationZMm: number): Vec3 {
+  return { x: worldMm.x, y: worldMm.y, z: elevationZMm };
+}
