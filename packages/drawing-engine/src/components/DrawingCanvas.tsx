@@ -447,6 +447,7 @@ export function DrawingCanvas({
     addHvacElement,
     addHvacElements,
     updateHvacElement,
+    deleteHvacElement,
     syncAutoDimensions,
     selectWallSegmentAtPoint,
     selectWallSegmentWithinInterval,
@@ -519,6 +520,7 @@ export function DrawingCanvas({
       addHvacElement: state.addHvacElement,
       addHvacElements: state.addHvacElements,
       updateHvacElement: state.updateHvacElement,
+      deleteHvacElement: state.deleteHvacElement,
       syncAutoDimensions: state.syncAutoDimensions,
       selectWallSegmentAtPoint: state.selectWallSegmentAtPoint,
       selectWallSegmentWithinInterval: state.selectWallSegmentWithinInterval,
@@ -1446,6 +1448,7 @@ export function DrawingCanvas({
     snapToGrid: resolvedSnapToGrid,
     gridSize: effectiveSnapGridSize,
     addHvacElements,
+    deleteHvacElement,
     setSelectedIds,
     setProcessingStatus,
   });

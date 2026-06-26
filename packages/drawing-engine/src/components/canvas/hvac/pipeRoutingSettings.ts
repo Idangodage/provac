@@ -84,6 +84,12 @@ export interface PipeRoutingSettings {
    * the user applies a bypass deliberately from the clash overlay card.
    */
   autoBypassOnCommit: boolean;
+  /**
+   * When true, accepting a branch kit splits the tapped run into two
+   * flow-connected edges at a real tee node (W3b). When false (default), the kit
+   * is overlaid on the intact run (legacy behaviour).
+   */
+  enableRealTeeTopology: boolean;
 }
 
 /**
@@ -107,6 +113,7 @@ export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
   bypassFittingAngleDeg: DEFAULT_BYPASS_FITTING_ANGLE_DEG, // 45°
   clashMergeWindowMm: CLASH_MERGE_WINDOW_MM, // 320 mm
   autoBypassOnCommit: false, // clean commits by default; bypass is opt-in via the card
+  enableRealTeeTopology: false, // opt-in: split the run into a real tee on accept (W3b)
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -136,6 +143,12 @@ export function resolvePipeRoutingSettings(
       if (key === "autoBypassOnCommit") {
         if (typeof value === "boolean") {
           merged.autoBypassOnCommit = value;
+        }
+        return;
+      }
+      if (key === "enableRealTeeTopology") {
+        if (typeof value === "boolean") {
+          merged.enableRealTeeTopology = value;
         }
         return;
       }

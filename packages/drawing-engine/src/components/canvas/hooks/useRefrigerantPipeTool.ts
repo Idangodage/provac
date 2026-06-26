@@ -40,6 +40,8 @@ export interface UseRefrigerantPipeToolOptions {
       Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>
     >
   ) => string[];
+  /** Remove an element by id — used to replace a tapped run with its split halves. */
+  deleteHvacElement: (id: string, options?: { skipHistory?: boolean }) => void;
   setSelectedIds: (ids: string[]) => void;
   setProcessingStatus: (status: string, isProcessing: boolean) => void;
 }
@@ -190,6 +192,7 @@ export function useRefrigerantPipeTool(
     snapToGrid,
     gridSize,
     addHvacElements,
+    deleteHvacElement,
     setSelectedIds,
     setProcessingStatus,
   } = options;
@@ -853,6 +856,12 @@ export function useRefrigerantPipeTool(
     const addedIds = addHvacElements(
       insertion.elementsToAdd as unknown as Parameters<typeof addHvacElements>[0],
     );
+    // Replace any tapped run(s) the insertion split into run-in/run-out halves.
+    // Empty unless the real-tee topology path produced a split (W3b); skipHistory
+    // so the add + removes collapse into the single "insert branch kit" undo step.
+    insertion.removeElementIds.forEach((id) => {
+      deleteHvacElement(id, { skipHistory: true });
+    });
     setSelectedIds(insertion.kitElementIds.length > 0 ? insertion.kitElementIds : addedIds);
     setProcessingStatus(
       `Branch kit connected — ${describeBranchKitConnectionType(proposal.connectionType)}`,
@@ -862,6 +871,7 @@ export function useRefrigerantPipeTool(
     return true;
   }, [
     addHvacElements,
+    deleteHvacElement,
     resetDrawing,
     setProcessingStatus,
     setSelectedIds,
