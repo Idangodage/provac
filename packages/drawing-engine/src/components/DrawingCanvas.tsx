@@ -62,6 +62,7 @@ import {
 import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
 import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
+import { PipeStudioOverlay } from "./canvas/hvac/PipeStudioOverlay";
 import {
   isRefrigerantPipeElementType,
   resolveRefrigerantPipeUnitPortReconnectionUpdates,
@@ -2556,6 +2557,16 @@ export function DrawingCanvas({
             saveToHistory={saveToHistory}
             setProcessingStatus={setProcessingStatus}
             setSelectedIds={setSelectedIds}
+          />
+          <PipeStudioOverlay
+            enabled={konvaPipeEditorEnabled && !projectionViewOnly}
+            width={hostWidth}
+            height={hostHeight}
+            viewportZoom={viewportZoom}
+            panOffset={panOffset}
+            hvacElements={hvacElements}
+            updateHvacElement={updateHvacElement}
+            saveToHistory={saveToHistory}
           />
           <PipeClashOverlay
             enabled={!projectionViewOnly}
