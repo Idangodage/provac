@@ -40,6 +40,7 @@ interface PipeStudioOverlayProps {
   viewportZoom: number;
   panOffset: Point2D;
   hvacElements: HvacElement[];
+  selectedIds: string[];
   updateHvacElement: (
     id: string,
     updates: Partial<HvacElement>,
@@ -107,12 +108,14 @@ export function PipeStudioOverlay({
   viewportZoom,
   panOffset,
   hvacElements,
+  selectedIds,
   updateHvacElement,
   saveToHistory,
 }: PipeStudioOverlayProps): JSX.Element | null {
   const gRef = useRef<SVGGElement | null>(null);
   const dragRef = useRef<{ id: string; vi: number } | null>(null);
   const [ghost, setGhost] = useState<{ id: string; route: Point2D[] } | null>(null);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   const view = viewportToViewTransform(viewportZoom, panOffset);
   const k = MM_TO_PX * view.zoom;
@@ -229,54 +232,59 @@ export function PipeStudioOverlay({
           {pipes.map((p) => {
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
             const pair = buildPipePair(route, { bendRadiusMm: p.bendMm, gapMm: p.isPair ? p.gapMm : 0 });
-            const insW = p.outerMm;
-            const coreW = Math.max(p.outerMm * 0.42, 4);
+            const insW = p.outerMm; // insulation outer diameter
+            const copperW = Math.max(p.outerMm * 0.55, 3); // copper tube
+            const highlightW = Math.max(copperW * 0.3, 1);
+            const lines = p.isPair ? [pair.gasPath, pair.liquidPath] : [pair.centerlinePath];
+            const selected = selectedSet.has(p.id);
             return (
               <g key={p.id}>
-                {p.isPair ? (
-                  <>
-                    <path d={pair.gasPath} fill="none" stroke="#B5D4F4" strokeWidth={insW} strokeLinecap="round" strokeLinejoin="round" />
-                    <path d={pair.liquidPath} fill="none" stroke="#FAC775" strokeWidth={insW * 0.9} strokeLinecap="round" strokeLinejoin="round" />
-                    <path d={pair.gasPath} fill="none" stroke="#185FA5" strokeWidth={coreW} strokeLinecap="round" strokeLinejoin="round" />
-                    <path d={pair.liquidPath} fill="none" stroke="#BA7517" strokeWidth={coreW * 0.9} strokeLinecap="round" strokeLinejoin="round" />
-                    <path d={pair.centerlinePath} fill="none" stroke="#888780" strokeWidth={hpx(1)} strokeDasharray={`${hpx(2)} ${hpx(5)}`} strokeOpacity={0.85} />
-                  </>
-                ) : (
-                  <>
-                    <path d={pair.centerlinePath} fill="none" stroke="#D3D1C7" strokeWidth={insW} strokeLinecap="round" strokeLinejoin="round" />
-                    <path d={pair.centerlinePath} fill="none" stroke="#B45309" strokeWidth={coreW} strokeLinecap="round" strokeLinejoin="round" />
-                  </>
-                )}
-                {route.slice(0, -1).map((_, si) => {
-                  const m = { x: (route[si]!.x + route[si + 1]!.x) / 2, y: (route[si]!.y + route[si + 1]!.y) / 2 };
-                  return (
-                    <g key={`ins-${si}`} style={{ cursor: 'copy', pointerEvents: 'auto' }} onPointerDown={(e) => onInsert(e, p.id, si, route)}>
-                      <circle cx={m.x} cy={m.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
-                      <circle cx={m.x} cy={m.y} r={insR} fill="#fff" stroke="#639922" strokeWidth={hpx(1.5)} style={{ pointerEvents: 'none' }} />
-                      <path
-                        d={`M ${m.x - hpx(2.4)} ${m.y} H ${m.x + hpx(2.4)} M ${m.x} ${m.y - hpx(2.4)} V ${m.y + hpx(2.4)}`}
-                        stroke="#3B6D11"
-                        strokeWidth={hpx(1.4)}
-                        style={{ pointerEvents: 'none' }}
-                      />
-                    </g>
-                  );
-                })}
-                {route.map((pt, vi) => {
-                  const ep = vi === 0 || vi === route.length - 1;
-                  return (
-                    <g
-                      key={`v-${vi}`}
-                      style={{ cursor: 'grab', pointerEvents: 'auto' }}
-                      onPointerDown={(e) => onVertexDown(e, p.id, vi, route)}
-                      onContextMenu={(e) => onDelete(e, p.id, vi, route)}
-                    >
-                      <circle cx={pt.x} cy={pt.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
-                      <circle cx={pt.x} cy={pt.y} r={handleR} fill="#fff" stroke={ep ? '#0F6E56' : '#185FA5'} strokeWidth={hpx(2)} style={{ pointerEvents: 'none' }} />
-                      <circle cx={pt.x} cy={pt.y} r={hpx(2.6)} fill={ep ? '#0F6E56' : '#185FA5'} style={{ pointerEvents: 'none' }} />
-                    </g>
-                  );
-                })}
+                {/* insulation sleeve */}
+                {lines.map((d, i) => (
+                  <path key={`ins-${i}`} d={d} fill="none" stroke="#E8DFCE" strokeWidth={insW} strokeLinecap="round" strokeLinejoin="round" />
+                ))}
+                {/* flexible copper tube */}
+                {lines.map((d, i) => (
+                  <path key={`cu-${i}`} d={d} fill="none" stroke="#B5742F" strokeWidth={copperW} strokeLinecap="round" strokeLinejoin="round" />
+                ))}
+                {/* copper sheen */}
+                {lines.map((d, i) => (
+                  <path key={`hi-${i}`} d={d} fill="none" stroke="#E3A968" strokeWidth={highlightW} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.75} />
+                ))}
+                {selected
+                  ? route.slice(0, -1).map((_, si) => {
+                      const m = { x: (route[si]!.x + route[si + 1]!.x) / 2, y: (route[si]!.y + route[si + 1]!.y) / 2 };
+                      return (
+                        <g key={`ins-h-${si}`} style={{ cursor: 'copy', pointerEvents: 'auto' }} onPointerDown={(e) => onInsert(e, p.id, si, route)}>
+                          <circle cx={m.x} cy={m.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
+                          <circle cx={m.x} cy={m.y} r={insR} fill="#fff" stroke="#639922" strokeWidth={hpx(1.5)} style={{ pointerEvents: 'none' }} />
+                          <path
+                            d={`M ${m.x - hpx(2.4)} ${m.y} H ${m.x + hpx(2.4)} M ${m.x} ${m.y - hpx(2.4)} V ${m.y + hpx(2.4)}`}
+                            stroke="#3B6D11"
+                            strokeWidth={hpx(1.4)}
+                            style={{ pointerEvents: 'none' }}
+                          />
+                        </g>
+                      );
+                    })
+                  : null}
+                {selected
+                  ? route.map((pt, vi) => {
+                      const ep = vi === 0 || vi === route.length - 1;
+                      return (
+                        <g
+                          key={`v-${vi}`}
+                          style={{ cursor: 'grab', pointerEvents: 'auto' }}
+                          onPointerDown={(e) => onVertexDown(e, p.id, vi, route)}
+                          onContextMenu={(e) => onDelete(e, p.id, vi, route)}
+                        >
+                          <circle cx={pt.x} cy={pt.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
+                          <circle cx={pt.x} cy={pt.y} r={handleR} fill="#fff" stroke={ep ? '#0F6E56' : '#185FA5'} strokeWidth={hpx(2)} style={{ pointerEvents: 'none' }} />
+                          <circle cx={pt.x} cy={pt.y} r={hpx(2.6)} fill={ep ? '#0F6E56' : '#185FA5'} style={{ pointerEvents: 'none' }} />
+                        </g>
+                      );
+                    })
+                  : null}
               </g>
             );
           })}

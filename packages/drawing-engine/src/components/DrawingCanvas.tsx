@@ -2565,6 +2565,7 @@ export function DrawingCanvas({
             viewportZoom={viewportZoom}
             panOffset={panOffset}
             hvacElements={hvacElements}
+            selectedIds={selectedIds}
             updateHvacElement={updateHvacElement}
             saveToHistory={saveToHistory}
           />
