@@ -112,7 +112,9 @@ function toPipeView(el: HvacElement): PipeView | null {
     lineKind: rawKind === 'gas' ? 'gas' : rawKind === 'liquid' ? 'liquid' : null,
     gapMm: readNumber(props.pipeGapMm, DEFAULT_REFRIGERANT_PIPE_GAP_MM),
     outerMm,
-    bendMm: Math.max(outerMm * 1.5, 36),
+    // Short-radius elbow: tight, realistic copper bend (~0.8x the insulated OD),
+    // not a long sweeping curve.
+    bendMm: Math.max(outerMm * 0.8, 12),
   };
 }
 
