@@ -216,7 +216,7 @@ export function PipeStudioOverlay({
   const insR = hpx(5);
 
   return (
-    <div className="absolute left-0 top-0 z-[8]" style={{ width, height }}>
+    <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
       <svg
         width={width}
         height={height}
