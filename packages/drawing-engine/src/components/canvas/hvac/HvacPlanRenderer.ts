@@ -26,6 +26,7 @@ import {
   getDuctedIndoorUnitPlanBounds,
 } from "./ductedIndoorUnitModel";
 import { buildGiDuctVisual, isGiDuctElementType } from "./giDuctModel";
+import { buildPipeCenterline, toPolyline } from "./pipeCenterline";
 import {
   buildRefrigerantBranchKitViewModel,
   DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
@@ -1172,8 +1173,27 @@ export class HvacPlanRenderer {
       if (points.length < 2) {
         return;
       }
+      // Smooth the drawn corners into true constant-radius arc bends (the
+      // canonical pipe centerline). This only reshapes the stroked line — the
+      // upstream offset / connection / branch-kit logic that produced `points`
+      // is untouched, and the object stays a fabric.Polyline. The radius adapts
+      // to the shortest leg so it never overruns a segment.
+      let renderPoints = points;
+      if (points.length >= 3) {
+        let shortest = Infinity;
+        for (let i = 1; i < points.length; i += 1) {
+          shortest = Math.min(
+            shortest,
+            Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y),
+          );
+        }
+        if (Number.isFinite(shortest) && shortest >= 1) {
+          const radiusMm = Math.max(8, Math.min(shortest * 0.45, 120));
+          renderPoints = toPolyline(buildPipeCenterline(points, radiusMm), 0.75);
+        }
+      }
       const polyline = new fabric.Polyline(
-        points.map((point) => ({ x: toPx(point.x), y: toPx(point.y) })),
+        renderPoints.map((point) => ({ x: toPx(point.x), y: toPx(point.y) })),
         {
           fill: undefined,
           stroke,

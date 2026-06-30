@@ -53,6 +53,10 @@ export type CenterlineSegment =
       anticlockwise: boolean;
       /** SVG arc `sweep-flag` (0|1) for this same arc. */
       sweepFlag: 0 | 1;
+      /** Unit direction of travel INTO the corner (incoming leg). */
+      inDir: Point2D;
+      /** Unit direction of travel OUT of the corner (outgoing leg). */
+      outDir: Point2D;
     };
 
 export interface PipeCenterline {
@@ -193,6 +197,8 @@ export function buildPipeCenterline(
           endAngle,
           anticlockwise: delta < 0,
           sweepFlag: delta >= 0 ? 1 : 0,
+          inDir: inU,
+          outDir: outU,
         });
         cursor = t2;
         continue;
