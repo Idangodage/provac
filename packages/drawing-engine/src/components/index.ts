@@ -15,3 +15,4 @@ export { PageLayout as DrawingPageLayout, type PageLayoutProps as DrawingPageLay
 export { ElevationViewCanvas, type ElevationViewCanvasProps } from './canvas/elevation';
 export { IsometricViewCanvas, type IsometricViewCanvasProps } from './canvas/isometric';
 export { HvacPlanRenderer } from './canvas/hvac';
+export { PipeStudioCanvas, type PipeStudioCanvasProps } from './canvas/hvac';

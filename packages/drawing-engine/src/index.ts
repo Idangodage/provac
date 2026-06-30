@@ -35,6 +35,16 @@ export {
   type IsometricViewCanvasProps,
 } from './components';
 
+// VRF refrigerant pipe editor (modern SVG editor) + shared pair geometry
+export {
+  PipeStudioCanvas,
+  type PipeStudioCanvasProps,
+  buildPipePair,
+  offsetCenterline,
+  type PipePair,
+  type PipePairOptions,
+} from './components/canvas/hvac';
+
 // Spatial hash for interaction proximity detection
 export {
   SpatialHash,
