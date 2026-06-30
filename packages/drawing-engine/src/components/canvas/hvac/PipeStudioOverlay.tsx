@@ -293,7 +293,7 @@ export function PipeStudioOverlay({
   saveToHistory,
 }: PipeStudioOverlayProps): JSX.Element | null {
   const gRef = useRef<SVGGElement | null>(null);
-  const dragRef = useRef<{ id: string; vi: number } | null>(null);
+  const dragRef = useRef<{ id: string; vi: number; startWorld: Point2D; startRoute: Point2D[] } | null>(null);
   const editedIdsRef = useRef<Set<string>>(new Set());
   // Each single line's bundle side, determined once and kept stable so editing a
   // vertex can't make the inferred side flip and drop the gap offset.
@@ -404,12 +404,17 @@ export function PipeStudioOverlay({
     [elementById, updateHvacElement, saveToHistory],
   );
 
-  const onVertexDown = useCallback((e: ReactPointerEvent, id: string, vi: number, route: Point2D[]) => {
-    e.stopPropagation();
-    dragRef.current = { id, vi };
-    setGhost({ id, route: route.map((p) => ({ ...p })) });
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-  }, []);
+  const onVertexDown = useCallback(
+    (e: ReactPointerEvent, id: string, vi: number, route: Point2D[]) => {
+      e.stopPropagation();
+      const startWorld = toWorld(e.clientX, e.clientY) ?? route[vi]!;
+      const startRoute = route.map((p) => ({ ...p }));
+      dragRef.current = { id, vi, startWorld, startRoute };
+      setGhost({ id, route: startRoute.map((p) => ({ ...p })) });
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+    },
+    [toWorld],
+  );
 
   const onPointerMove = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
@@ -417,7 +422,16 @@ export function PipeStudioOverlay({
       if (!drag) return;
       const w = toWorld(e.clientX, e.clientY);
       if (!w) return;
-      setGhost((g) => (g && g.id === drag.id ? { id: g.id, route: g.route.map((p, i) => (i === drag.vi ? w : p)) } : g));
+      // Move the underlying centerline vertex by the cursor delta, so the handle
+      // (rendered on the offset body) tracks the cursor while the route updates.
+      const dx = w.x - drag.startWorld.x;
+      const dy = w.y - drag.startWorld.y;
+      setGhost({
+        id: drag.id,
+        route: drag.startRoute.map((p, i) =>
+          i === drag.vi ? { x: p.x + dx, y: p.y + dy } : { x: p.x, y: p.y },
+        ),
+      });
     },
     [toWorld],
   );
@@ -547,6 +561,11 @@ export function PipeStudioOverlay({
                 },
               ];
             }
+            // Place the handles on the SAME offset as the visible body, so the
+            // dots / + sit on the pipe even when the gap shifts it. Edits still
+            // operate on the un-offset centerline (route).
+            const handleOff = p.isPair ? 0 : (p.offsetSign * gapSpreadMm) / 2;
+            const hRoute = handleOff === 0 ? route : offsetPolyline(route, handleOff);
             return (
               <g key={p.id}>
                 {/* insulation sleeves */}
@@ -562,8 +581,8 @@ export function PipeStudioOverlay({
                   <path key={`sheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={sheenW} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.7} />
                 ))}
                 {selected
-                  ? route.slice(0, -1).map((_, si) => {
-                      const m = { x: (route[si]!.x + route[si + 1]!.x) / 2, y: (route[si]!.y + route[si + 1]!.y) / 2 };
+                  ? hRoute.slice(0, -1).map((_, si) => {
+                      const m = { x: (hRoute[si]!.x + hRoute[si + 1]!.x) / 2, y: (hRoute[si]!.y + hRoute[si + 1]!.y) / 2 };
                       return (
                         <g key={`ins-h-${si}`} style={{ cursor: 'copy', pointerEvents: 'auto' }} onPointerDown={(e) => onInsert(e, p.id, si, route)}>
                           <circle cx={m.x} cy={m.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
@@ -579,8 +598,8 @@ export function PipeStudioOverlay({
                     })
                   : null}
                 {selected
-                  ? route.map((pt, vi) => {
-                      const ep = vi === 0 || vi === route.length - 1;
+                  ? hRoute.map((pt, vi) => {
+                      const ep = vi === 0 || vi === hRoute.length - 1;
                       return (
                         <g
                           key={`v-${vi}`}
