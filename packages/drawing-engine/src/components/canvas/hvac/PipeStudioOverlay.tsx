@@ -28,7 +28,7 @@ import type { HvacElement, Point2D } from '../../../types';
 import { viewportToViewTransform } from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
 
-import { buildPipeCenterline, toSvgPathData } from './pipeCenterline';
+import { buildPipeCenterline, toPolyline, toSvgPathData } from './pipeCenterline';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
@@ -79,6 +79,29 @@ function readRoute(value: unknown): Point2D[] {
 function routeMid(route: Point2D[]): Point2D {
   if (route.length === 0) return { x: 0, y: 0 };
   return route[Math.floor(route.length / 2)]!;
+}
+
+/** Closest point on a polyline to `pt` (used to sit handles on the rounded body). */
+function nearestOnPolyline(pt: Point2D, poly: Point2D[]): Point2D {
+  let best = poly[0] ?? pt;
+  let bd = Infinity;
+  for (let i = 0; i < poly.length - 1; i += 1) {
+    const a = poly[i]!;
+    const b = poly[i + 1]!;
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const l2 = abx * abx + aby * aby;
+    let t = l2 < 1e-9 ? 0 : ((pt.x - a.x) * abx + (pt.y - a.y) * aby) / l2;
+    t = Math.max(0, Math.min(1, t));
+    const px = a.x + abx * t;
+    const py = a.y + aby * t;
+    const d = (pt.x - px) ** 2 + (pt.y - py) ** 2;
+    if (d < bd) {
+      bd = d;
+      best = { x: px, y: py };
+    }
+  }
+  return best;
 }
 
 function firstDir(route: Point2D[]): Point2D {
@@ -566,6 +589,9 @@ export function PipeStudioOverlay({
             // operate on the un-offset centerline (route).
             const handleOff = p.isPair ? 0 : (p.offsetSign * gapSpreadMm) / 2;
             const hRoute = handleOff === 0 ? route : offsetPolyline(route, handleOff);
+            // The rendered (filleted) body the handles snap onto, so a vertex
+            // handle sits on the rounded fitting as the bend radius changes.
+            const bodyPoly = toPolyline(buildPipeCenterline(hRoute, bendRadiusMm), 1);
             return (
               <g key={p.id}>
                 {/* insulation sleeves */}
@@ -582,7 +608,8 @@ export function PipeStudioOverlay({
                 ))}
                 {selected
                   ? hRoute.slice(0, -1).map((_, si) => {
-                      const m = { x: (hRoute[si]!.x + hRoute[si + 1]!.x) / 2, y: (hRoute[si]!.y + hRoute[si + 1]!.y) / 2 };
+                      const mid = { x: (hRoute[si]!.x + hRoute[si + 1]!.x) / 2, y: (hRoute[si]!.y + hRoute[si + 1]!.y) / 2 };
+                      const m = nearestOnPolyline(mid, bodyPoly);
                       return (
                         <g key={`ins-h-${si}`} style={{ cursor: 'copy', pointerEvents: 'auto' }} onPointerDown={(e) => onInsert(e, p.id, si, route)}>
                           <circle cx={m.x} cy={m.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
@@ -598,8 +625,9 @@ export function PipeStudioOverlay({
                     })
                   : null}
                 {selected
-                  ? hRoute.map((pt, vi) => {
+                  ? hRoute.map((rawPt, vi) => {
                       const ep = vi === 0 || vi === hRoute.length - 1;
+                      const pt = ep ? rawPt : nearestOnPolyline(rawPt, bodyPoly);
                       return (
                         <g
                           key={`v-${vi}`}
