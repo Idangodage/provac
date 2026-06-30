@@ -247,23 +247,29 @@ export function PipeStudioOverlay({
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
             const pair = buildPipePair(route, { bendRadiusMm: p.bendMm, gapMm: p.isPair ? p.gapMm : 0 });
             const insW = p.outerMm; // insulation outer diameter
-            const copperW = Math.max(p.outerMm * 0.55, 3); // copper tube
-            const highlightW = Math.max(copperW * 0.3, 1);
-            const lines = p.isPair ? [pair.gasPath, pair.liquidPath] : [pair.centerlinePath];
+            const coreW = Math.max(p.outerMm * 0.55, 3); // copper tube
+            const sheenW = Math.max(coreW * 0.3, 1);
             const selected = selectedSet.has(p.id);
+            // Gas (suction) line reads blue; liquid line reads copper/amber.
+            const tubes = p.isPair
+              ? [
+                  { d: pair.gasPath, ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' },
+                  { d: pair.liquidPath, ins: '#F1E4CD', core: '#B5742F', sheen: '#E3A968' },
+                ]
+              : [{ d: pair.centerlinePath, ins: '#E8DFCE', core: '#B5742F', sheen: '#E3A968' }];
             return (
               <g key={p.id}>
-                {/* insulation sleeve */}
-                {lines.map((d, i) => (
-                  <path key={`ins-${i}`} d={d} fill="none" stroke="#E8DFCE" strokeWidth={insW} strokeLinecap="round" strokeLinejoin="round" />
+                {/* insulation sleeves */}
+                {tubes.map((t, i) => (
+                  <path key={`ins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={insW} strokeLinecap="round" strokeLinejoin="round" />
                 ))}
-                {/* flexible copper tube */}
-                {lines.map((d, i) => (
-                  <path key={`cu-${i}`} d={d} fill="none" stroke="#B5742F" strokeWidth={copperW} strokeLinecap="round" strokeLinejoin="round" />
+                {/* tube cores */}
+                {tubes.map((t, i) => (
+                  <path key={`core-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={coreW} strokeLinecap="round" strokeLinejoin="round" />
                 ))}
-                {/* copper sheen */}
-                {lines.map((d, i) => (
-                  <path key={`hi-${i}`} d={d} fill="none" stroke="#E3A968" strokeWidth={highlightW} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.75} />
+                {/* sheen */}
+                {tubes.map((t, i) => (
+                  <path key={`sheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={sheenW} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.7} />
                 ))}
                 {selected
                   ? route.map((pt, vi) => {
