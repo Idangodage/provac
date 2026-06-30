@@ -290,11 +290,24 @@ export function PipeStudioOverlay({
         }
       }
       if (partner && bestD < 600) {
-        const qMid = routeMid(partner.route);
+        // Measure the side at the SAME reference: p's start point + first-segment
+        // normal, against the nearest point on the partner. (Mixing midpoint with
+        // start-normal gave the wrong sign and made pipes cross.)
         const dir = firstDir(p.route);
         const perp = { x: -dir.y, y: dir.x };
-        const sep = { x: pMid.x - qMid.x, y: pMid.y - qMid.y };
-        p.offsetSign = sep.x * perp.x + sep.y * perp.y >= 0 ? 1 : -1;
+        const pRef = p.route[0]!;
+        let qRef = partner.route[0]!;
+        let qd = Infinity;
+        for (const qp of partner.route) {
+          const dd2 = Math.hypot(qp.x - pRef.x, qp.y - pRef.y);
+          if (dd2 < qd) {
+            qd = dd2;
+            qRef = qp;
+          }
+        }
+        const along = (pRef.x - qRef.x) * perp.x + (pRef.y - qRef.y) * perp.y;
+        p.offsetSign =
+          Math.abs(along) > 2 ? (along > 0 ? 1 : -1) : p.lineKind === 'liquid' ? -1 : 1;
       }
     }
     return list;
