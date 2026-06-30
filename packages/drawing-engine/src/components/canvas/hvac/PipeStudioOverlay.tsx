@@ -17,6 +17,7 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -325,7 +326,26 @@ export function PipeStudioOverlay({
   const [bendRadiusMm, setBendRadiusMm] = useState(24);
   // Relative spread added to the existing gap (0 = pipes as drawn).
   const [gapSpreadMm, setGapSpreadMm] = useState(0);
+  // Active pipe extension: which pipe end is being continued + the live cursor.
+  const [extend, setExtend] = useState<{ id: string; end: 'start' | 'end'; cursor: Point2D | null } | null>(null);
+  const orthoRef = useRef(false);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') orthoRef.current = true;
+      if (e.key === 'Escape' || e.key === 'Enter') setExtend(null);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') orthoRef.current = false;
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  }, []);
 
   const view = viewportToViewTransform(viewportZoom, panOffset);
   const k = MM_TO_PX * view.zoom;
@@ -487,6 +507,84 @@ export function PipeStudioOverlay({
     [commitRoute],
   );
 
+  // --- Pipe extension: continue a pipe from one of its open ends ------------
+  // Snap the live cursor to a nearby open pipe end (so an extension can connect
+  // to another pipe), else lock to 45deg increments off the anchor when Shift is
+  // held, else free.
+  const extendConstrain = useCallback(
+    (w: Point2D, anchor: Point2D, excludeId: string): Point2D => {
+      const tol = 14 / Math.max(k, 1e-6);
+      let best: Point2D | null = null;
+      let bd = tol;
+      for (const q of pipes) {
+        if (q.id === excludeId) continue;
+        for (const ep of [q.route[0], q.route[q.route.length - 1]]) {
+          if (!ep) continue;
+          const d = Math.hypot(ep.x - w.x, ep.y - w.y);
+          if (d < bd) {
+            bd = d;
+            best = ep;
+          }
+        }
+      }
+      if (best) return { x: best.x, y: best.y };
+      if (orthoRef.current) {
+        const dx = w.x - anchor.x;
+        const dy = w.y - anchor.y;
+        const dist = Math.hypot(dx, dy);
+        const step = Math.PI / 4;
+        const ang = Math.round(Math.atan2(dy, dx) / step) * step;
+        return { x: anchor.x + Math.cos(ang) * dist, y: anchor.y + Math.sin(ang) * dist };
+      }
+      return { x: w.x, y: w.y };
+    },
+    [pipes, k],
+  );
+
+  const startExtend = useCallback((e: ReactPointerEvent, id: string, end: 'start' | 'end') => {
+    e.stopPropagation();
+    setExtend({ id, end, cursor: null });
+  }, []);
+
+  const onExtendMove = useCallback(
+    (e: ReactPointerEvent) => {
+      const cx = e.clientX;
+      const cy = e.clientY;
+      setExtend((ex) => {
+        if (!ex) return ex;
+        const w = toWorld(cx, cy);
+        if (!w) return ex;
+        const pipe = pipes.find((p) => p.id === ex.id);
+        if (!pipe) return ex;
+        const anchor = ex.end === 'end' ? pipe.route[pipe.route.length - 1]! : pipe.route[0]!;
+        return { ...ex, cursor: extendConstrain(w, anchor, ex.id) };
+      });
+    },
+    [pipes, toWorld, extendConstrain],
+  );
+
+  const onExtendClick = useCallback(
+    (e: ReactMouseEvent) => {
+      if (!extend) return;
+      const w = toWorld(e.clientX, e.clientY);
+      if (!w) return;
+      const pipe = pipes.find((p) => p.id === extend.id);
+      if (!pipe) return;
+      const anchor = extend.end === 'end' ? pipe.route[pipe.route.length - 1]! : pipe.route[0]!;
+      const np = extendConstrain(w, anchor, extend.id);
+      // Skip a zero-length click on the anchor itself.
+      if (Math.hypot(np.x - anchor.x, np.y - anchor.y) < 0.5) return;
+      const next = extend.end === 'end' ? [...pipe.route, np] : [np, ...pipe.route];
+      commitRoute(extend.id, next, 'Extend refrigerant pipe');
+    },
+    [extend, pipes, toWorld, extendConstrain, commitRoute],
+  );
+
+  const finishExtend = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    setExtend(null);
+  }, []);
+
   if (!enabled || width <= 0 || height <= 0) return null;
 
   const handleR = hpx(6.5);
@@ -547,6 +645,28 @@ export function PipeStudioOverlay({
             />
             <span style={{ fontWeight: 500, minWidth: 46 }}>+{Math.round(gapSpreadMm)} mm</span>
           </label>
+        </div>
+      ) : null}
+      {extend ? (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 16,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            pointerEvents: 'none',
+            background: '#0F766E',
+            color: '#fff',
+            borderRadius: 8,
+            padding: '7px 14px',
+            fontSize: 12.5,
+            fontWeight: 500,
+            boxShadow: '0 2px 10px rgba(0,0,0,0.18)',
+            whiteSpace: 'nowrap',
+            zIndex: 20,
+          }}
+        >
+          Extending pipe — click to add a point · Shift = straight · snaps to pipe ends · right-click / Enter / Esc to finish
         </div>
       ) : null}
       <svg
@@ -642,10 +762,70 @@ export function PipeStudioOverlay({
                       );
                     })
                   : null}
+                {/* Extend grips: a teal "+" just past each open end. Click one to
+                    continue the pipe from that end (click to place, right-click /
+                    Enter / Esc to finish). */}
+                {selected
+                  ? (['start', 'end'] as const).map((end) => {
+                      const endIdx = end === 'end' ? hRoute.length - 1 : 0;
+                      const adjIdx = end === 'end' ? hRoute.length - 2 : 1;
+                      const e0 = hRoute[endIdx]!;
+                      const e1 = hRoute[adjIdx] ?? e0;
+                      const o = unit(e0.x - e1.x, e0.y - e1.y);
+                      const hx = e0.x + o.x * hpx(20);
+                      const hy = e0.y + o.y * hpx(20);
+                      const active = extend?.id === p.id && extend.end === end;
+                      return (
+                        <g
+                          key={`ext-${end}`}
+                          style={{ cursor: 'crosshair', pointerEvents: 'auto' }}
+                          onPointerDown={(e) => startExtend(e, p.id, end)}
+                        >
+                          <line x1={e0.x} y1={e0.y} x2={hx} y2={hy} stroke="#0F766E" strokeWidth={hpx(1.4)} strokeDasharray={`${hpx(3)} ${hpx(2)}`} style={{ pointerEvents: 'none' }} />
+                          <circle cx={hx} cy={hy} r={handleHit} fill="rgba(0,0,0,0.001)" />
+                          <circle cx={hx} cy={hy} r={hpx(7)} fill={active ? '#0F766E' : '#fff'} stroke="#0F766E" strokeWidth={hpx(1.8)} style={{ pointerEvents: 'none' }} />
+                          <path
+                            d={`M ${hx - hpx(3)} ${hy} H ${hx + hpx(3)} M ${hx} ${hy - hpx(3)} V ${hy + hpx(3)}`}
+                            stroke={active ? '#fff' : '#0F766E'}
+                            strokeWidth={hpx(1.6)}
+                            style={{ pointerEvents: 'none' }}
+                          />
+                        </g>
+                      );
+                    })
+                  : null}
+                {/* Live preview of the segment being added. */}
+                {extend?.id === p.id && extend.cursor
+                  ? (() => {
+                      const a = extend.end === 'end' ? hRoute[hRoute.length - 1]! : hRoute[0]!;
+                      const c = extend.cursor;
+                      return (
+                        <g style={{ pointerEvents: 'none' }}>
+                          <line x1={a.x} y1={a.y} x2={c.x} y2={c.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeDasharray={`${hpx(7)} ${hpx(4)}`} strokeLinecap="round" />
+                          <circle cx={c.x} cy={c.y} r={hpx(4)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.8)} />
+                        </g>
+                      );
+                    })()
+                  : null}
               </g>
             );
           })}
         </g>
+        {/* While extending, a transparent capture layer turns canvas clicks into
+            new pipe points (move = preview, click = place, right-click = finish). */}
+        {extend ? (
+          <rect
+            x={0}
+            y={0}
+            width={width}
+            height={height}
+            fill="rgba(0,0,0,0)"
+            style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
+            onPointerMove={onExtendMove}
+            onClick={onExtendClick}
+            onContextMenu={finishExtend}
+          />
+        ) : null}
       </svg>
     </div>
   );
