@@ -2559,7 +2559,7 @@ export function DrawingCanvas({
             setSelectedIds={setSelectedIds}
           />
           <PipeStudioOverlay
-            enabled={konvaPipeEditorEnabled && !projectionViewOnly}
+            enabled={!projectionViewOnly}
             width={hostWidth}
             height={hostHeight}
             viewportZoom={viewportZoom}
