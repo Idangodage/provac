@@ -291,6 +291,10 @@ export class HvacPlanRenderer {
   private selectedIds = new Set<string>();
   private hoveredId: string | null = null;
   private placementPreview: HvacGroup[] = [];
+  // When the SVG pipe-studio overlay owns the visible pipes, the Fabric pipe
+  // bodies are kept (selectable / snappable) but rendered invisible to avoid a
+  // double image that ignores the overlay's bend/gap controls.
+  private hideRefrigerantBodies = false;
   private lastVisibilityBounds: ViewportBounds | null = null;
   private lastVisibilityZoom: number | null = null;
   private projectionPlanOpacity = 1;
@@ -4137,7 +4141,40 @@ export class HvacPlanRenderer {
     this.refreshViewportVisibility(true);
     this.syncHvacVisualState();
     this.bringPipeElementsToFront();
+    this.applyRefrigerantBodyVisibility();
     this.canvas.requestRenderAll();
+  }
+
+  /**
+   * Hides/shows the Fabric refrigerant-pipe bodies (the SVG studio overlay draws
+   * the visible pipes when hidden). Objects stay evented so selection and
+   * draw-tool snapping keep working.
+   */
+  setHideRefrigerantBodies(hide: boolean): void {
+    if (this.hideRefrigerantBodies === hide) {
+      return;
+    }
+    this.hideRefrigerantBodies = hide;
+    this.applyRefrigerantBodyVisibility();
+    this.canvas.requestRenderAll();
+  }
+
+  private applyRefrigerantBodyVisibility(): void {
+    const targetOpacity = this.hideRefrigerantBodies ? 0 : 1;
+    this.groups.forEach((group, id) => {
+      const element = this.hvacData.get(id);
+      if (!element) {
+        return;
+      }
+      if (
+        element.type === "refrigerant-pipe" ||
+        element.type === "refrigerant-pipe-pair"
+      ) {
+        if (group.opacity !== targetOpacity) {
+          group.set("opacity", targetOpacity);
+        }
+      }
+    });
   }
 
   setSelectedElements(ids: string[]): void {

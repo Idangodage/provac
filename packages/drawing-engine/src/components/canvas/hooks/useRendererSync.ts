@@ -1007,6 +1007,13 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         hvacRendererRef.current.syncElements(hvacElements);
     }, [hvacElements, fabricCanvas, hvacRendererRef, roomRendererRef]);
 
+    // The SVG pipe-studio overlay draws the visible pipes in plan view, so hide
+    // the Fabric pipe bodies there (kept evented for selection / snapping) to
+    // avoid a double image. In projection view the overlay is off, so show them.
+    useEffect(() => {
+        hvacRendererRef.current?.setHideRefrigerantBodies(!projectionViewOnly);
+    }, [projectionViewOnly, hvacElements, fabricCanvas, hvacRendererRef]);
+
     useEffect(() => {
         const hvacIds = new Set(hvacElements.map((element) => element.id));
         const selectedHvacIds = selectedIds.filter((id) => {
