@@ -28,7 +28,8 @@ import type { HvacElement, Point2D } from '../../../types';
 import { viewportToViewTransform } from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
 
-import { buildPipePair } from './pipePairGeometry';
+import { buildPipeCenterline, toSvgPathData } from './pipeCenterline';
+import { buildPipePair, offsetCenterline } from './pipePairGeometry';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
@@ -413,23 +414,28 @@ export function PipeStudioOverlay({
         <g ref={gRef} transform={matrix}>
           {pipes.map((p) => {
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
-            const lineGap = p.isPair ? gapMm : 0;
-            const pair = buildPipePair(route, {
-              bendRadiusMm: Math.max(bendRadiusMm, lineGap / 2 + 4),
-              gapMm: lineGap,
-            });
+            const safeBend = Math.max(bendRadiusMm, gapMm / 2 + 4);
             const insW = p.outerMm; // insulation outer diameter
             const coreW = Math.max(p.outerMm * 0.55, 3); // copper tube
             const sheenW = Math.max(coreW * 0.3, 1);
             const selected = selectedSet.has(p.id);
             // Gas (suction) line reads blue; liquid line reads copper/amber.
-            // A pair draws both; a single pipe is coloured by its lineKind.
-            const tubes = p.isPair
-              ? [
-                  { d: pair.gasPath, ...GAS_COLORS },
-                  { d: pair.liquidPath, ...LIQUID_COLORS },
-                ]
-              : [{ d: pair.centerlinePath, ...(p.lineKind === 'gas' ? GAS_COLORS : LIQUID_COLORS) }];
+            // A pair draws both lines from one centerline; a single gas/liquid
+            // line is offset +/- gap/2 by its lineKind so the gap slider spaces a
+            // coincident bundle (cosmetic; the editable route is unchanged).
+            let tubes: { d: string; ins: string; core: string; sheen: string }[];
+            if (p.isPair) {
+              const pair = buildPipePair(route, { bendRadiusMm: safeBend, gapMm });
+              tubes = [
+                { d: pair.gasPath, ...GAS_COLORS },
+                { d: pair.liquidPath, ...LIQUID_COLORS },
+              ];
+            } else {
+              const off = p.lineKind === 'gas' ? gapMm / 2 : p.lineKind === 'liquid' ? -gapMm / 2 : 0;
+              const cl = buildPipeCenterline(route, safeBend);
+              const d = toSvgPathData(off === 0 ? cl : offsetCenterline(cl, off));
+              tubes = [{ d, ...(p.lineKind === 'liquid' ? LIQUID_COLORS : GAS_COLORS) }];
+            }
             return (
               <g key={p.id}>
                 {/* insulation sleeves */}
