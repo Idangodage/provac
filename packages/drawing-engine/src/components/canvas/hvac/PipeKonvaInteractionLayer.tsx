@@ -1,13 +1,16 @@
 import type Konva from 'konva';
-import { useMemo, useRef } from 'react';
-import { Circle, Group, Layer, Stage } from 'react-konva/lib/ReactKonvaCore';
+import { useMemo, useRef, useState } from 'react';
+import { Circle, Group, Layer, Path, Stage } from 'react-konva/lib/ReactKonvaCore';
 import 'konva/lib/shapes/Circle';
+import 'konva/lib/shapes/Path';
 
 import type { HvacElement, Point2D, WallSettings } from '../../../types';
 import { viewportToViewTransform } from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
 import { viewTransformToKonvaLayer } from '../viewTransform';
 
+import { buildPipeCenterline, toSvgPathData } from './pipeCenterline';
+import { beginPipeDrag, type PipeDragSession } from './pipeDragSession';
 import {
   buildRefrigerantPipeVisual,
   resolveRefrigerantPipeSpec,
@@ -268,6 +271,10 @@ export function PipeKonvaInteractionLayer({
   }, [selectedPipeElements]);
 
   const dragStateRef = useRef<DragState | null>(null);
+  const dragSessionRef = useRef<PipeDragSession | null>(null);
+  // Live drag preview route (world-mm). Rendered as a ghost; never written to
+  // the store until the gesture commits on drag-end.
+  const [ghostRoute, setGhostRoute] = useState<Point2D[] | null>(null);
 
   const resolvePipeElement = (pipeId: string): HvacElement | null => {
     const element = hvacElements.find((entry) => entry.id === pipeId);
@@ -275,6 +282,56 @@ export function PipeKonvaInteractionLayer({
       return null;
     }
     return element;
+  };
+
+  // Recomputes the store-update payload for a candidate route, or null if the
+  // move is geometrically invalid (a hard segment can't be solved).
+  const buildPipeUpdates = (
+    pipeElement: HvacElement,
+    route: Point2D[],
+    materials: RefrigerantPipeMaterial[],
+  ): Record<string, unknown> | null => {
+    const nextProperties = {
+      ...pipeElement.properties,
+      routePoints: route,
+      segmentMaterials: materials,
+    };
+    const visual = buildRefrigerantPipeVisual(
+      { ...pipeElement, properties: nextProperties },
+      hvacElements,
+    );
+    if (visual.invalidHardSegmentCount > 0) {
+      return null;
+    }
+    return {
+      position: { x: visual.bounds.minX, y: visual.bounds.minY },
+      width: visual.bounds.width,
+      depth: visual.bounds.height,
+      height: Math.max(1, visual.outerRadiusMm * 2),
+      properties: nextProperties,
+    };
+  };
+
+  // Commits the drag exactly once: one updateHvacElement + one saveToHistory.
+  const commitPipeDrag = (label: string): void => {
+    const session = dragSessionRef.current;
+    if (!session) {
+      return;
+    }
+    const pipeElement = resolvePipeElement(session.elementId);
+    if (!pipeElement) {
+      session.abort();
+      return;
+    }
+    session.commit(
+      {
+        updateHvacElement: (id, updates, options) =>
+          updateHvacElement(id, updates as Partial<HvacElement>, options),
+        saveToHistory,
+      },
+      (ghost) => buildPipeUpdates(pipeElement, ghost.route, ghost.materials),
+      label,
+    );
   };
 
   const handleSegmentDragMove = (
@@ -476,20 +533,15 @@ export function PipeKonvaInteractionLayer({
       return;
     }
 
-    updateHvacElement(
-      pipeElement.id,
-      {
-        position: {
-          x: nextVisual.bounds.minX,
-          y: nextVisual.bounds.minY,
-        },
-        width: nextVisual.bounds.width,
-        depth: nextVisual.bounds.height,
-        height: Math.max(1, nextVisual.outerRadiusMm * 2),
-        properties: nextProperties,
-      },
-      { skipHistory: true },
-    );
+    // Live preview only — no store write during the drag. The valid candidate
+    // is pushed to the drag session and rendered as a ghost; it commits once on
+    // drag-end (see commitPipeDrag). nextVisual above is still computed to reject
+    // invalid hard-segment solves.
+    dragSessionRef.current?.update({
+      route: nextRoutePoints.map((point) => ({ ...point })),
+      materials: normalizedMaterials,
+    });
+    setGhostRoute(nextRoutePoints);
     state.lastAppliedAtMs = performance.now();
     state.lastValidHandlePoint = nextMidpoint;
     state.updated = true;
@@ -552,20 +604,12 @@ export function PipeKonvaInteractionLayer({
       return;
     }
 
-    updateHvacElement(
-      pipeElement.id,
-      {
-        position: {
-          x: nextVisual.bounds.minX,
-          y: nextVisual.bounds.minY,
-        },
-        width: nextVisual.bounds.width,
-        depth: nextVisual.bounds.height,
-        height: Math.max(1, nextVisual.outerRadiusMm * 2),
-        properties: nextProperties,
-      },
-      { skipHistory: true },
-    );
+    // Live preview only — no store write during the drag (see commitPipeDrag).
+    dragSessionRef.current?.update({
+      route: nextRoutePoints.map((point) => ({ ...point })),
+      materials: normalizedMaterials,
+    });
+    setGhostRoute(nextRoutePoints);
     state.lastAppliedAtMs = performance.now();
     state.lastValidPoint = nextPoint;
     state.updated = true;
@@ -603,6 +647,22 @@ export function PipeKonvaInteractionLayer({
           scaleX={layerTransform.scaleX}
           scaleY={layerTransform.scaleY}
         >
+          {ghostRoute && ghostRoute.length >= 2 && (
+            <Path
+              data={toSvgPathData(
+                buildPipeCenterline(
+                  ghostRoute.map((point) => ({ x: point.x * MM_TO_PX, y: point.y * MM_TO_PX })),
+                  0,
+                ),
+              )}
+              stroke="#2563eb"
+              strokeWidth={Math.max(1.5, 2.5 / safeZoom)}
+              dash={[10 / safeZoom, 6 / safeZoom]}
+              opacity={0.85}
+              listening={false}
+              perfectDrawEnabled={false}
+            />
+          )}
           {handles.segmentHandles.map((handle) => (
             <Group key={`${handle.pipeId}-s-${handle.startIndex}-${handle.endIndex}`}>
               <Circle
@@ -652,6 +712,10 @@ export function PipeKonvaInteractionLayer({
                     lastAppliedAtMs: Number.NEGATIVE_INFINITY,
                     updated: false,
                   };
+                  dragSessionRef.current = beginPipeDrag(handle.pipeId, {
+                    route: pipeSpec.routePoints.map((point) => ({ ...point })),
+                    materials: [...pipeSpec.segmentMaterials],
+                  });
                 }}
                 onDragMove={(event) => {
                   if (dragStateRef.current?.kind !== 'segment') {
@@ -660,17 +724,21 @@ export function PipeKonvaInteractionLayer({
                   handleSegmentDragMove(event, dragStateRef.current);
                 }}
                 onDragEnd={(event) => {
-                  if (dragStateRef.current?.kind === 'segment') {
-                    handleSegmentDragMove(event, dragStateRef.current, true);
+                  const state = dragStateRef.current;
+                  if (state?.kind === 'segment') {
+                    handleSegmentDragMove(event, state, true);
+                    if (state.updated) {
+                      commitPipeDrag('Move refrigerant pipe hard segment');
+                      setProcessingStatus(
+                        `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+                        false,
+                      );
+                    }
                   }
-                  if (dragStateRef.current?.kind === 'segment' && dragStateRef.current.updated) {
-                    setProcessingStatus(
-                      `Hard segment S${dragStateRef.current.startIndex + 1}-${dragStateRef.current.endIndex + 1}`,
-                      false,
-                    );
-                    saveToHistory('Move refrigerant pipe hard segment');
-                  }
+                  dragSessionRef.current?.abort();
+                  dragSessionRef.current = null;
                   dragStateRef.current = null;
+                  setGhostRoute(null);
                 }}
               />
             </Group>
@@ -734,6 +802,10 @@ export function PipeKonvaInteractionLayer({
                     lastAppliedAtMs: Number.NEGATIVE_INFINITY,
                     updated: false,
                   };
+                  dragSessionRef.current = beginPipeDrag(handle.pipeId, {
+                    route: pipeSpec.routePoints.map((point) => ({ ...point })),
+                    materials: [...pipeSpec.segmentMaterials],
+                  });
                 }}
                 onDragMove={(event) => {
                   if (dragStateRef.current?.kind !== 'vertex') {
@@ -742,17 +814,18 @@ export function PipeKonvaInteractionLayer({
                   handleVertexDragMove(event, dragStateRef.current);
                 }}
                 onDragEnd={(event) => {
-                  if (dragStateRef.current?.kind === 'vertex') {
-                    handleVertexDragMove(event, dragStateRef.current, true);
+                  const state = dragStateRef.current;
+                  if (state?.kind === 'vertex') {
+                    handleVertexDragMove(event, state, true);
+                    if (state.updated) {
+                      commitPipeDrag('Edit refrigerant pipe vertex');
+                      setProcessingStatus(`Pipe vertex V${state.vertexIndex + 1}`, false);
+                    }
                   }
-                  if (dragStateRef.current?.kind === 'vertex' && dragStateRef.current.updated) {
-                    setProcessingStatus(
-                      `Pipe vertex V${dragStateRef.current.vertexIndex + 1}`,
-                      false,
-                    );
-                    saveToHistory('Edit refrigerant pipe vertex');
-                  }
+                  dragSessionRef.current?.abort();
+                  dragSessionRef.current = null;
                   dragStateRef.current = null;
+                  setGhostRoute(null);
                 }}
               />
               )}
