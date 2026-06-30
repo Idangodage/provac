@@ -29,7 +29,6 @@ import { viewportToViewTransform } from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
 
 import { buildPipeCenterline, toSvgPathData } from './pipeCenterline';
-import { buildPipePair, offsetCenterline } from './pipePairGeometry';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
@@ -88,6 +87,48 @@ function firstDir(route: Point2D[]): Point2D {
   const dy = route[1]!.y - route[0]!.y;
   const n = Math.hypot(dx, dy) || 1;
   return { x: dx / n, y: dy / n };
+}
+
+/**
+ * Offsets a SHARP route polyline perpendicular by `off` (left normal), mitred at
+ * corners. The caller fillets the result, so the bend radius stays independent
+ * of the offset (offsetting the centerline shifts position only, not the bend).
+ */
+function offsetPolyline(route: Point2D[], off: number): Point2D[] {
+  if (route.length < 2 || off === 0) return route.map((p) => ({ x: p.x, y: p.y }));
+  const segN = (i: number): Point2D => {
+    const dx = route[i + 1]!.x - route[i]!.x;
+    const dy = route[i + 1]!.y - route[i]!.y;
+    const n = Math.hypot(dx, dy) || 1;
+    return { x: -dy / n, y: dx / n };
+  };
+  const out: Point2D[] = [];
+  const last = route.length - 1;
+  for (let i = 0; i <= last; i += 1) {
+    if (i === 0) {
+      const n0 = segN(0);
+      out.push({ x: route[0]!.x + off * n0.x, y: route[0]!.y + off * n0.y });
+    } else if (i === last) {
+      const nl = segN(last - 1);
+      out.push({ x: route[last]!.x + off * nl.x, y: route[last]!.y + off * nl.y });
+    } else {
+      const a = segN(i - 1);
+      const b = segN(i);
+      let mx = a.x + b.x;
+      let my = a.y + b.y;
+      const ml = Math.hypot(mx, my);
+      if (ml < 1e-6) {
+        out.push({ x: route[i]!.x + off * b.x, y: route[i]!.y + off * b.y });
+      } else {
+        mx /= ml;
+        my /= ml;
+        const dotv = mx * a.x + my * a.y;
+        const scale = Math.min(Math.abs(dotv) > 1e-3 ? 1 / dotv : 1, 4);
+        out.push({ x: route[i]!.x + off * mx * scale, y: route[i]!.y + off * my * scale });
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -471,27 +512,28 @@ export function PipeStudioOverlay({
           {pipes.map((p) => {
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
             const pairGap = Math.max(0, p.gapMm + gapSpreadMm);
-            const safeBend = Math.max(bendRadiusMm, pairGap / 2 + 4);
             const insW = p.outerMm; // insulation outer diameter
             const coreW = Math.max(p.outerMm * 0.55, 3); // copper tube
             const sheenW = Math.max(coreW * 0.3, 1);
             const selected = selectedSet.has(p.id);
-            // Gas (suction) line reads blue; liquid line reads copper/amber.
-            // A pair draws both lines from one centerline; a single gas/liquid
-            // line is offset +/- gap/2 by its lineKind so the gap slider spaces a
-            // coincident bundle (cosmetic; the editable route is unchanged).
+            // Offset each line perpendicular, THEN fillet with the bend-radius
+            // slider value - so the gap only shifts position and never changes
+            // the bend radius of either line. Gas reads blue, liquid copper/amber.
+            const pathFor = (offMm: number) =>
+              toSvgPathData(buildPipeCenterline(offsetPolyline(route, offMm), bendRadiusMm));
             let tubes: { d: string; ins: string; core: string; sheen: string }[];
             if (p.isPair) {
-              const pair = buildPipePair(route, { bendRadiusMm: safeBend, gapMm: pairGap });
               tubes = [
-                { d: pair.gasPath, ...GAS_COLORS },
-                { d: pair.liquidPath, ...LIQUID_COLORS },
+                { d: pathFor(pairGap / 2), ...GAS_COLORS },
+                { d: pathFor(-pairGap / 2), ...LIQUID_COLORS },
               ];
             } else {
-              const off = (p.offsetSign * gapSpreadMm) / 2;
-              const cl = buildPipeCenterline(route, safeBend);
-              const d = toSvgPathData(off === 0 ? cl : offsetCenterline(cl, off));
-              tubes = [{ d, ...(p.lineKind === 'liquid' ? LIQUID_COLORS : GAS_COLORS) }];
+              tubes = [
+                {
+                  d: pathFor((p.offsetSign * gapSpreadMm) / 2),
+                  ...(p.lineKind === 'liquid' ? LIQUID_COLORS : GAS_COLORS),
+                },
+              ];
             }
             return (
               <g key={p.id}>
