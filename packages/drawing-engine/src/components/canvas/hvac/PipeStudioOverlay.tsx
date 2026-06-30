@@ -98,10 +98,87 @@ function simplifyRoute(route: Point2D[], tolMm: number): Point2D[] {
   return out;
 }
 
+function unit(ax: number, ay: number): { x: number; y: number; n: number } {
+  const n = Math.hypot(ax, ay);
+  return n < 1e-9 ? { x: 1, y: 0, n: 0 } : { x: ax / n, y: ay / n, n };
+}
+
+/** Intersection of two infinite lines (point + direction), or null if parallel. */
+function lineIntersect(p: Point2D, d1: Point2D, q: Point2D, d2: Point2D): Point2D | null {
+  const det = d1.x * d2.y - d1.y * d2.x;
+  if (Math.abs(det) < 1e-9) return null;
+  const t = ((q.x - p.x) * d2.y - (q.y - p.y) * d2.x) / det;
+  return { x: p.x + d1.x * t, y: p.y + d1.y * t };
+}
+
+/**
+ * Rebuilds a route as straight legs meeting at single corner vertices. A pipe
+ * run drawn/stored with rounded multi-point bends is collapsed to its real
+ * fittings: group segments into straight runs (by accumulated heading change),
+ * keep the long ones as legs, and place one vertex at each leg-to-leg
+ * intersection. Each elbow becomes exactly one vertex, ready for a short fillet.
+ * Falls back to the lightly-simplified route when it can't find clean legs.
+ */
+function reconstructCorners(route: Point2D[]): Point2D[] {
+  const cleaned = simplifyRoute(route, 1);
+  if (cleaned.length <= 3) return cleaned;
+
+  const segs: { aIdx: number; bIdx: number; dx: number; dy: number; len: number }[] = [];
+  for (let i = 0; i < cleaned.length - 1; i += 1) {
+    const dx = cleaned[i + 1]!.x - cleaned[i]!.x;
+    const dy = cleaned[i + 1]!.y - cleaned[i]!.y;
+    const l = Math.hypot(dx, dy);
+    if (l > 1e-6) segs.push({ aIdx: i, bIdx: i + 1, dx: dx / l, dy: dy / l, len: l });
+  }
+  if (segs.length < 2) return cleaned;
+
+  const HEADING_TOL = 0.2; // ~11deg: within this of the run's start heading -> same leg
+  type Run = { start: Point2D; end: Point2D; len: number };
+  const runs: Run[] = [];
+  let ref = segs[0]!;
+  let start = cleaned[segs[0]!.aIdx]!;
+  let end = cleaned[segs[0]!.bIdx]!;
+  let runLen = segs[0]!.len;
+  for (let i = 1; i < segs.length; i += 1) {
+    const s = segs[i]!;
+    const ang = Math.acos(Math.max(-1, Math.min(1, ref.dx * s.dx + ref.dy * s.dy)));
+    if (ang < HEADING_TOL) {
+      end = cleaned[s.bIdx]!;
+      runLen += s.len;
+    } else {
+      runs.push({ start, end, len: runLen });
+      ref = s;
+      start = cleaned[s.aIdx]!;
+      end = cleaned[s.bIdx]!;
+      runLen = s.len;
+    }
+  }
+  runs.push({ start, end, len: runLen });
+
+  const maxLen = Math.max(...runs.map((r) => r.len));
+  const minLeg = Math.max(6, maxLen * 0.15);
+  const legs = runs
+    .filter((r) => r.len >= minLeg)
+    .map((r) => {
+      const u = unit(r.end.x - r.start.x, r.end.y - r.start.y);
+      return { start: r.start, end: r.end, dir: { x: u.x, y: u.y } };
+    });
+  if (legs.length < 2) return cleaned;
+
+  const out: Point2D[] = [{ x: legs[0]!.start.x, y: legs[0]!.start.y }];
+  for (let i = 0; i < legs.length - 1; i += 1) {
+    const x = lineIntersect(legs[i]!.start, legs[i]!.dir, legs[i + 1]!.start, legs[i + 1]!.dir);
+    out.push(x ?? { x: legs[i]!.end.x, y: legs[i]!.end.y });
+  }
+  const last = legs[legs.length - 1]!;
+  out.push({ x: last.end.x, y: last.end.y });
+  return out;
+}
+
 function toPipeView(el: HvacElement): PipeView | null {
   if (el.type !== 'refrigerant-pipe' && el.type !== 'refrigerant-pipe-pair') return null;
   const props = (el.properties ?? {}) as Record<string, unknown>;
-  const route = simplifyRoute(readRoute(props.routePoints), 2);
+  const route = reconstructCorners(readRoute(props.routePoints));
   if (route.length < 2) return null;
   const outerMm = readNumber(props.outerDiameterMm, DEFAULT_OUTER_DIAMETER_MM);
   const rawKind = typeof props.lineKind === 'string' ? props.lineKind : null;
