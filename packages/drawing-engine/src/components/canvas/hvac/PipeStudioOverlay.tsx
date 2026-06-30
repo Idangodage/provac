@@ -60,6 +60,8 @@ interface PipeView {
   gapMm: number;
   outerMm: number;
   bendMm: number;
+  /** Which perpendicular side of its bundle partner this single line sits on. */
+  offsetSign: number;
 }
 
 function readNumber(value: unknown, fallback: number): number {
@@ -73,6 +75,19 @@ function readRoute(value: unknown): Point2D[] {
     if (p && typeof p.x === 'number' && typeof p.y === 'number') pts.push({ x: p.x, y: p.y });
   }
   return pts;
+}
+
+function routeMid(route: Point2D[]): Point2D {
+  if (route.length === 0) return { x: 0, y: 0 };
+  return route[Math.floor(route.length / 2)]!;
+}
+
+function firstDir(route: Point2D[]): Point2D {
+  if (route.length < 2) return { x: 1, y: 0 };
+  const dx = route[1]!.x - route[0]!.x;
+  const dy = route[1]!.y - route[0]!.y;
+  const n = Math.hypot(dx, dy) || 1;
+  return { x: dx / n, y: dy / n };
 }
 
 /**
@@ -207,6 +222,7 @@ function toPipeView(el: HvacElement, edited: boolean): PipeView | null {
     // Short-radius elbow: tight, realistic copper bend (~0.8x the insulated OD),
     // not a long sweeping curve.
     bendMm: Math.max(outerMm * 0.8, 12),
+    offsetSign: 0,
   };
 }
 
@@ -240,7 +256,8 @@ export function PipeStudioOverlay({
   const editedIdsRef = useRef<Set<string>>(new Set());
   const [ghost, setGhost] = useState<{ id: string; route: Point2D[] } | null>(null);
   const [bendRadiusMm, setBendRadiusMm] = useState(24);
-  const [gapMm, setGapMm] = useState(24);
+  // Relative spread added to the existing gap (0 = pipes as drawn).
+  const [gapSpreadMm, setGapSpreadMm] = useState(0);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   const view = viewportToViewTransform(viewportZoom, panOffset);
@@ -253,6 +270,32 @@ export function PipeStudioOverlay({
     for (const el of hvacElements) {
       const v = toPipeView(el, editedIdsRef.current.has(el.id));
       if (v) list.push(v);
+    }
+    // For single gas/liquid lines, find the bundle partner and record which
+    // perpendicular side this line sits on, so the gap spread pushes the two
+    // APART from where they are (never toward / through each other).
+    const singles = list.filter((p) => !p.isPair);
+    for (const p of singles) {
+      const pMid = routeMid(p.route);
+      let partner: PipeView | null = null;
+      let bestD = Infinity;
+      for (const q of singles) {
+        if (q === p) continue;
+        if (p.lineKind && q.lineKind && p.lineKind === q.lineKind) continue;
+        const qMid = routeMid(q.route);
+        const dd = Math.hypot(pMid.x - qMid.x, pMid.y - qMid.y);
+        if (dd < bestD) {
+          bestD = dd;
+          partner = q;
+        }
+      }
+      if (partner && bestD < 600) {
+        const qMid = routeMid(partner.route);
+        const dir = firstDir(p.route);
+        const perp = { x: -dir.y, y: dir.x };
+        const sep = { x: pMid.x - qMid.x, y: pMid.y - qMid.y };
+        p.offsetSign = sep.x * perp.x + sep.y * perp.y >= 0 ? 1 : -1;
+      }
     }
     return list;
   }, [hvacElements]);
@@ -392,14 +435,14 @@ export function PipeStudioOverlay({
             Pipe gap
             <input
               type="range"
-              min={2}
+              min={0}
               max={600}
               step={1}
-              value={gapMm}
-              onChange={(e) => setGapMm(Number(e.target.value))}
+              value={gapSpreadMm}
+              onChange={(e) => setGapSpreadMm(Number(e.target.value))}
               style={{ width: 120 }}
             />
-            <span style={{ fontWeight: 500, minWidth: 46 }}>{Math.round(gapMm)} mm</span>
+            <span style={{ fontWeight: 500, minWidth: 46 }}>+{Math.round(gapSpreadMm)} mm</span>
           </label>
         </div>
       ) : null}
@@ -414,7 +457,8 @@ export function PipeStudioOverlay({
         <g ref={gRef} transform={matrix}>
           {pipes.map((p) => {
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
-            const safeBend = Math.max(bendRadiusMm, gapMm / 2 + 4);
+            const pairGap = Math.max(0, p.gapMm + gapSpreadMm);
+            const safeBend = Math.max(bendRadiusMm, pairGap / 2 + 4);
             const insW = p.outerMm; // insulation outer diameter
             const coreW = Math.max(p.outerMm * 0.55, 3); // copper tube
             const sheenW = Math.max(coreW * 0.3, 1);
@@ -425,13 +469,13 @@ export function PipeStudioOverlay({
             // coincident bundle (cosmetic; the editable route is unchanged).
             let tubes: { d: string; ins: string; core: string; sheen: string }[];
             if (p.isPair) {
-              const pair = buildPipePair(route, { bendRadiusMm: safeBend, gapMm });
+              const pair = buildPipePair(route, { bendRadiusMm: safeBend, gapMm: pairGap });
               tubes = [
                 { d: pair.gasPath, ...GAS_COLORS },
                 { d: pair.liquidPath, ...LIQUID_COLORS },
               ];
             } else {
-              const off = p.lineKind === 'gas' ? gapMm / 2 : p.lineKind === 'liquid' ? -gapMm / 2 : 0;
+              const off = (p.offsetSign * gapSpreadMm) / 2;
               const cl = buildPipeCenterline(route, safeBend);
               const d = toSvgPathData(off === 0 ? cl : offsetCenterline(cl, off));
               tubes = [{ d, ...(p.lineKind === 'liquid' ? LIQUID_COLORS : GAS_COLORS) }];
