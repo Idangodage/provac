@@ -98,6 +98,16 @@ function simplifyRoute(route: Point2D[], tolMm: number): Point2D[] {
   return out;
 }
 
+/** Removes only coincident points (keeps intentional collinear vertices). */
+function dedupe(route: Point2D[], epsMm: number): Point2D[] {
+  const out: Point2D[] = [];
+  for (const p of route) {
+    const last = out[out.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > epsMm) out.push({ x: p.x, y: p.y });
+  }
+  return out;
+}
+
 function unit(ax: number, ay: number): { x: number; y: number; n: number } {
   const n = Math.hypot(ax, ay);
   return n < 1e-9 ? { x: 1, y: 0, n: 0 } : { x: ax / n, y: ay / n, n };
@@ -175,10 +185,14 @@ function reconstructCorners(route: Point2D[]): Point2D[] {
   return out;
 }
 
-function toPipeView(el: HvacElement): PipeView | null {
+function toPipeView(el: HvacElement, edited: boolean): PipeView | null {
   if (el.type !== 'refrigerant-pipe' && el.type !== 'refrigerant-pipe-pair') return null;
   const props = (el.properties ?? {}) as Record<string, unknown>;
-  const route = reconstructCorners(readRoute(props.routePoints));
+  const raw = readRoute(props.routePoints);
+  // Un-edited pipes get their rounded bends collapsed to clean corners. Once the
+  // user has edited a pipe we trust its route as-is (only drop coincident
+  // points), so inserted/collinear vertices are not simplified away.
+  const route = edited ? dedupe(raw, 0.5) : reconstructCorners(raw);
   if (route.length < 2) return null;
   const outerMm = readNumber(props.outerDiameterMm, DEFAULT_OUTER_DIAMETER_MM);
   const rawKind = typeof props.lineKind === 'string' ? props.lineKind : null;
@@ -222,6 +236,7 @@ export function PipeStudioOverlay({
 }: PipeStudioOverlayProps): JSX.Element | null {
   const gRef = useRef<SVGGElement | null>(null);
   const dragRef = useRef<{ id: string; vi: number } | null>(null);
+  const editedIdsRef = useRef<Set<string>>(new Set());
   const [ghost, setGhost] = useState<{ id: string; route: Point2D[] } | null>(null);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
@@ -233,7 +248,7 @@ export function PipeStudioOverlay({
   const pipes = useMemo(() => {
     const list: PipeView[] = [];
     for (const el of hvacElements) {
-      const v = toPipeView(el);
+      const v = toPipeView(el, editedIdsRef.current.has(el.id));
       if (v) list.push(v);
     }
     return list;
@@ -257,6 +272,9 @@ export function PipeStudioOverlay({
     (id: string, route: Point2D[], label: string) => {
       const el = elementById(id);
       if (!el) return;
+      // From now on this pipe's route is authoritative — stop re-collapsing it,
+      // so inserted/edited vertices persist.
+      editedIdsRef.current.add(id);
       const box = bbox(route);
       const margin = readNumber((el.properties as Record<string, unknown>)?.outerDiameterMm, DEFAULT_OUTER_DIAMETER_MM);
       updateHvacElement(
