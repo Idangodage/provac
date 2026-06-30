@@ -32,6 +32,8 @@ import { buildPipePair } from './pipePairGeometry';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
+const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
+const LIQUID_COLORS = { ins: '#F1E4CD', core: '#B5742F', sheen: '#E3A968' };
 
 interface PipeStudioOverlayProps {
   enabled: boolean;
@@ -53,6 +55,7 @@ interface PipeView {
   id: string;
   route: Point2D[];
   isPair: boolean;
+  lineKind: 'gas' | 'liquid' | null;
   gapMm: number;
   outerMm: number;
   bendMm: number;
@@ -101,10 +104,12 @@ function toPipeView(el: HvacElement): PipeView | null {
   const route = simplifyRoute(readRoute(props.routePoints), 2);
   if (route.length < 2) return null;
   const outerMm = readNumber(props.outerDiameterMm, DEFAULT_OUTER_DIAMETER_MM);
+  const rawKind = typeof props.lineKind === 'string' ? props.lineKind : null;
   return {
     id: el.id,
     route,
     isPair: el.type === 'refrigerant-pipe-pair',
+    lineKind: rawKind === 'gas' ? 'gas' : rawKind === 'liquid' ? 'liquid' : null,
     gapMm: readNumber(props.pipeGapMm, DEFAULT_REFRIGERANT_PIPE_GAP_MM),
     outerMm,
     bendMm: Math.max(outerMm * 1.5, 36),
@@ -251,12 +256,13 @@ export function PipeStudioOverlay({
             const sheenW = Math.max(coreW * 0.3, 1);
             const selected = selectedSet.has(p.id);
             // Gas (suction) line reads blue; liquid line reads copper/amber.
+            // A pair draws both; a single pipe is coloured by its lineKind.
             const tubes = p.isPair
               ? [
-                  { d: pair.gasPath, ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' },
-                  { d: pair.liquidPath, ins: '#F1E4CD', core: '#B5742F', sheen: '#E3A968' },
+                  { d: pair.gasPath, ...GAS_COLORS },
+                  { d: pair.liquidPath, ...LIQUID_COLORS },
                 ]
-              : [{ d: pair.centerlinePath, ins: '#E8DFCE', core: '#B5742F', sheen: '#E3A968' }];
+              : [{ d: pair.centerlinePath, ...(p.lineKind === 'gas' ? GAS_COLORS : LIQUID_COLORS) }];
             return (
               <g key={p.id}>
                 {/* insulation sleeves */}
