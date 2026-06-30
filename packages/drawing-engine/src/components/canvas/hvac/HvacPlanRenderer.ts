@@ -77,6 +77,13 @@ type HvacGroup = fabric.Group & {
 
 interface SyncHvacElementsOptions {
   force?: boolean;
+  /**
+   * Skip the scene-wide refrigerant-pipe endpoint/chain pairing-map rebuild
+   * (the dominant per-tick cost). Set while a handle is being dragged; the maps
+   * are rebuilt once when the drag ends. The dragged pipe body still follows via
+   * the per-element re-render. Ignored when `force` is set.
+   */
+  skipStateMapRebuild?: boolean;
 }
 
 interface VisualPalette {
@@ -4081,9 +4088,15 @@ export class HvacPlanRenderer {
     elements: HvacElement[],
     options: SyncHvacElementsOptions = {},
   ): void {
-    const { force = false } = options;
+    const { force = false, skipStateMapRebuild = false } = options;
     const previousData = new Map(this.hvacData);
-    this.rebuildRefrigerantPipeRenderStateMaps(elements);
+    // While a handle drag is in flight, the scene-wide endpoint/chain pairing
+    // maps are the per-tick bottleneck. Reuse the previous maps during the drag
+    // and rebuild once on release (when isHandleDragging flips false). Cross-pipe
+    // connection trims may look momentarily stale during the drag, then settle.
+    if (force || !skipStateMapRebuild) {
+      this.rebuildRefrigerantPipeRenderStateMaps(elements);
+    }
     const nextElementIds = new Set(elements.map((element) => element.id));
     let changed = force;
 

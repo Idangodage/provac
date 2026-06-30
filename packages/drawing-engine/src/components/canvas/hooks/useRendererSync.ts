@@ -1004,8 +1004,13 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
     useEffect(() => {
         roomRendererRef.current?.setHvacContext(hvacElements);
         if (!hvacRendererRef.current) return;
-        hvacRendererRef.current.syncElements(hvacElements);
-    }, [hvacElements, fabricCanvas, hvacRendererRef, roomRendererRef]);
+        // While a handle is being dragged, skip the scene-wide pipe state-map
+        // rebuild (the per-tick bottleneck during pipe/equipment drags). It runs
+        // once when the drag ends and isHandleDragging flips back to false.
+        hvacRendererRef.current.syncElements(hvacElements, {
+            skipStateMapRebuild: isHandleDragging,
+        });
+    }, [hvacElements, fabricCanvas, hvacRendererRef, roomRendererRef, isHandleDragging]);
 
     useEffect(() => {
         const hvacIds = new Set(hvacElements.map((element) => element.id));
