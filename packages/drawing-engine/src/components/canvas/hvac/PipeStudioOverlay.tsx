@@ -355,6 +355,20 @@ export function PipeStudioOverlay({
     gap: number;
     side: number;
   } | null>(null);
+  // Active BUNDLE extension from the shared-center grip: draw on the centerline,
+  // both lines fall out as symmetric +/- gap/2 offsets. aSide fixes which side
+  // line A sits on; the centerline anchor is recomputed live from the two ends.
+  const [bundleDraw, setBundleDraw] = useState<{
+    aId: string;
+    aEnd: 'start' | 'end';
+    bId: string;
+    bEnd: 'start' | 'end';
+    aSide: number;
+    gap: number;
+    outX: number;
+    outY: number;
+    cursor: Point2D | null;
+  } | null>(null);
   // Default behaviour when extending a bundled line: 'pair' grows both gas+liquid
   // together; 'single' grows only the grabbed line. Alt momentarily forces single.
   const [extendMode, setExtendMode] = useState<'pair' | 'single'>('pair');
@@ -364,9 +378,16 @@ export function PipeStudioOverlay({
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      // Ignore keys routed to a focused form control (e.g. the toolbar sliders),
+      // so Enter/Escape there can't silently abort an in-progress draw.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.key === 'Shift') orthoRef.current = true;
       if (e.key === 'Alt') setAltDown(true);
-      if (e.key === 'Escape' || e.key === 'Enter') setExtend(null);
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        setExtend(null);
+        setBundleDraw(null);
+      }
     };
     const up = (e: KeyboardEvent) => {
       if (e.key === 'Shift') orthoRef.current = false;
@@ -447,6 +468,78 @@ export function PipeStudioOverlay({
     }
     return list;
   }, [hvacElements]);
+
+  // Fail-safe: if a pipe being extended/drawn is deleted (or otherwise leaves the
+  // store) mid-draw, drop the draw so the capture overlay can't trap all input.
+  useEffect(() => {
+    if (extend && !pipes.some((p) => p.id === extend.id)) setExtend(null);
+    if (
+      bundleDraw &&
+      !(pipes.some((p) => p.id === bundleDraw.aId) && pipes.some((p) => p.id === bundleDraw.bId))
+    ) {
+      setBundleDraw(null);
+    }
+  }, [pipes, extend, bundleDraw]);
+
+  // When exactly the two lines of one bundle are selected, expose a single
+  // shared-center "extend" grip per bundle end (the common + the user asked for).
+  // The bundle's centerline endpoint is the midpoint of the two matching ends.
+  const bundleSelection = useMemo(() => {
+    if (selectedIds.length !== 2) return null;
+    const a = pipes.find((p) => p.id === selectedIds[0] && !p.isPair);
+    const b = pipes.find((p) => p.id === selectedIds[1] && !p.isPair);
+    if (!a || !b || a.route.length < 2 || b.route.length < 2) return null;
+    const sameBundle = !!a.bundleId && a.bundleId === b.bundleId;
+    const oppositeKind = !!a.lineKind && !!b.lineKind && a.lineKind !== b.lineKind;
+    if (!sameBundle && !oppositeKind) return null;
+    const aEnds = [
+      { end: 'start' as const, pt: a.route[0]! },
+      { end: 'end' as const, pt: a.route[a.route.length - 1]! },
+    ];
+    const bEnds = [
+      { end: 'start' as const, pt: b.route[0]! },
+      { end: 'end' as const, pt: b.route[b.route.length - 1]! },
+    ];
+    const d = (p: Point2D, q: Point2D) => Math.hypot(p.x - q.x, p.y - q.y);
+    // Pair a-start with the nearer b-end, a-end with the other.
+    const straight = d(aEnds[0].pt, bEnds[0].pt) <= d(aEnds[0].pt, bEnds[1].pt);
+    const pairs: [(typeof aEnds)[number], (typeof bEnds)[number]][] = straight
+      ? [
+          [aEnds[0], bEnds[0]],
+          [aEnds[1], bEnds[1]],
+        ]
+      : [
+          [aEnds[0], bEnds[1]],
+          [aEnds[1], bEnds[0]],
+        ];
+    // Inferred (no shared bundleId) pairs must actually sit close, or two
+    // unrelated gas/liquid lines would spawn a phantom grip between them.
+    if (!sameBundle) {
+      const maxPair = Math.max(d(pairs[0][0].pt, pairs[0][1].pt), d(pairs[1][0].pt, pairs[1][1].pt));
+      if (maxPair > 600) return null;
+    }
+    const ends = pairs.map(([ae, be], i) => {
+      const aPrev = ae.end === 'end' ? a.route[a.route.length - 2]! : a.route[1]!;
+      const out = unit(ae.pt.x - aPrev.x, ae.pt.y - aPrev.y);
+      // Bundle gap = the perpendicular spacing across the run heading, NOT the
+      // raw end-to-end distance (which inflates when the two ends are staggered
+      // along the run). Mirrors captureBundleFrame for the single-line path.
+      const gv = { x: be.pt.x - ae.pt.x, y: be.pt.y - ae.pt.y };
+      const perp = gv.x * -out.y + gv.y * out.x;
+      const gap = Math.abs(perp) > 1 ? Math.abs(perp) : Math.hypot(gv.x, gv.y);
+      return {
+        key: i,
+        aEnd: ae.end,
+        bEnd: be.end,
+        aPt: ae.pt,
+        bPt: be.pt,
+        center: { x: (ae.pt.x + be.pt.x) / 2, y: (ae.pt.y + be.pt.y) / 2 },
+        out: { x: out.x, y: out.y },
+        gap,
+      };
+    });
+    return { aId: a.id, bId: b.id, aKind: a.lineKind, ends };
+  }, [selectedIds, pipes]);
 
   const toWorld = useCallback((clientX: number, clientY: number): Point2D | null => {
     const g = gRef.current;
@@ -572,22 +665,25 @@ export function PipeStudioOverlay({
   // to another pipe), else lock to 45deg increments off the anchor when Shift is
   // held, else free.
   const extendConstrain = useCallback(
-    (w: Point2D, anchor: Point2D, excludeId: string): Point2D => {
-      const tol = 14 / Math.max(k, 1e-6);
-      let best: Point2D | null = null;
-      let bd = tol;
-      for (const q of pipes) {
-        if (q.id === excludeId) continue;
-        for (const ep of [q.route[0], q.route[q.route.length - 1]]) {
-          if (!ep) continue;
-          const d = Math.hypot(ep.x - w.x, ep.y - w.y);
-          if (d < bd) {
-            bd = d;
-            best = ep;
+    (w: Point2D, anchor: Point2D, exclude: string | Set<string>, enableSnap = true): Point2D => {
+      const skip = typeof exclude === 'string' ? new Set([exclude]) : exclude;
+      if (enableSnap) {
+        const tol = 14 / Math.max(k, 1e-6);
+        let best: Point2D | null = null;
+        let bd = tol;
+        for (const q of pipes) {
+          if (skip.has(q.id)) continue;
+          for (const ep of [q.route[0], q.route[q.route.length - 1]]) {
+            if (!ep) continue;
+            const d = Math.hypot(ep.x - w.x, ep.y - w.y);
+            if (d < bd) {
+              bd = d;
+              best = ep;
+            }
           }
         }
+        if (best) return { x: best.x, y: best.y };
       }
-      if (best) return { x: best.x, y: best.y };
       if (orthoRef.current) {
         const dx = w.x - anchor.x;
         const dy = w.y - anchor.y;
@@ -671,6 +767,7 @@ export function PipeStudioOverlay({
   const startExtend = useCallback(
     (e: ReactPointerEvent, id: string, end: 'start' | 'end') => {
       e.stopPropagation();
+      setBundleDraw(null);
       const pipe = pipes.find((p) => p.id === id);
       const frame = pipe ? captureBundleFrame(pipe, end) : null;
       setExtend({
@@ -738,7 +835,103 @@ export function PipeStudioOverlay({
   const finishExtend = useCallback((e: ReactMouseEvent) => {
     e.preventDefault();
     setExtend(null);
+    setBundleDraw(null);
   }, []);
+
+  // --- Bundle extension from the shared-center grip -------------------------
+  // Live centerline anchor + frozen gap/side for the active bundle draw.
+  const bundleAnchor = useCallback(
+    (bd: NonNullable<typeof bundleDraw>): Point2D | null => {
+      const a = pipes.find((p) => p.id === bd.aId);
+      const b = pipes.find((p) => p.id === bd.bId);
+      if (!a || !b) return null;
+      const aPt = bd.aEnd === 'end' ? a.route[a.route.length - 1]! : a.route[0]!;
+      const bPt = bd.bEnd === 'end' ? b.route[b.route.length - 1]! : b.route[0]!;
+      return { x: (aPt.x + bPt.x) / 2, y: (aPt.y + bPt.y) / 2 };
+    },
+    [pipes],
+  );
+
+  const startBundleDraw = useCallback(
+    (
+      e: ReactPointerEvent,
+      info: { aEnd: 'start' | 'end'; bEnd: 'start' | 'end'; aPt: Point2D; bPt: Point2D; center: Point2D; out: Point2D; gap: number },
+    ) => {
+      e.stopPropagation();
+      if (!bundleSelection) return;
+      setExtend(null);
+      // Side of line A across the run heading, so both lines stay on their side.
+      // Near-zero projection (ends staggered along the run) -> stable lineKind
+      // tiebreak instead of trusting numerical noise.
+      const perpX = -info.out.y;
+      const perpY = info.out.x;
+      const dot = (info.aPt.x - info.center.x) * perpX + (info.aPt.y - info.center.y) * perpY;
+      const aSide = Math.abs(dot) < 0.01 ? (bundleSelection.aKind === 'liquid' ? -1 : 1) : dot > 0 ? 1 : -1;
+      setBundleDraw({
+        aId: bundleSelection.aId,
+        aEnd: info.aEnd,
+        bId: bundleSelection.bId,
+        bEnd: info.bEnd,
+        aSide,
+        gap: info.gap,
+        outX: info.out.x,
+        outY: info.out.y,
+        cursor: null,
+      });
+    },
+    [bundleSelection],
+  );
+
+  const onBundleMove = useCallback(
+    (e: ReactPointerEvent) => {
+      const cx = e.clientX;
+      const cy = e.clientY;
+      setBundleDraw((bd) => {
+        if (!bd) return bd;
+        const w = toWorld(cx, cy);
+        if (!w) return bd;
+        const anchor = bundleAnchor(bd);
+        if (!anchor) return bd;
+        // No endpoint snap on the centerline: a bundle has no body there, so a
+        // snap would promise a connection the committed legs never make.
+        return { ...bd, cursor: extendConstrain(w, anchor, new Set([bd.aId, bd.bId]), false) };
+      });
+    },
+    [toWorld, bundleAnchor, extendConstrain],
+  );
+
+  const onBundleClick = useCallback(
+    (e: ReactMouseEvent) => {
+      if (!bundleDraw) return;
+      const w = toWorld(e.clientX, e.clientY);
+      if (!w) return;
+      const a = pipes.find((p) => p.id === bundleDraw.aId);
+      const b = pipes.find((p) => p.id === bundleDraw.bId);
+      const anchor = bundleAnchor(bundleDraw);
+      if (!a || !b || !anchor) return;
+      const cnp = extendConstrain(w, anchor, new Set([bundleDraw.aId, bundleDraw.bId]), false);
+      if (Math.hypot(cnp.x - anchor.x, cnp.y - anchor.y) < 0.5) return;
+      const dir = unit(cnp.x - anchor.x, cnp.y - anchor.y);
+      const nx = -dir.y;
+      const ny = dir.x;
+      // Keep line A on its frozen geometric side even when the user folds the new
+      // segment back over the run (the new normal flips, so re-align by dir.out).
+      const effSide = bundleDraw.aSide * (dir.x * bundleDraw.outX + dir.y * bundleDraw.outY >= 0 ? 1 : -1);
+      const half = bundleDraw.gap / 2;
+      const aNew = { x: cnp.x + nx * effSide * half, y: cnp.y + ny * effSide * half };
+      const bNew = { x: cnp.x - nx * effSide * half, y: cnp.y - ny * effSide * half };
+      const appendAt = (route: Point2D[], end: 'start' | 'end', pt: Point2D) =>
+        end === 'end' ? [...route, pt] : [pt, ...route];
+      commitPair(
+        a.id,
+        appendAt(a.route, bundleDraw.aEnd, aNew),
+        b.id,
+        appendAt(b.route, bundleDraw.bEnd, bNew),
+        'Extend refrigerant pipe pair',
+      );
+    },
+    [bundleDraw, pipes, toWorld, bundleAnchor, extendConstrain, commitPair],
+  );
 
   if (!enabled || width <= 0 || height <= 0) return null;
 
@@ -836,7 +1029,7 @@ export function PipeStudioOverlay({
           </span>
         </div>
       ) : null}
-      {extend ? (
+      {extend || bundleDraw ? (
         <div
           style={{
             position: 'absolute',
@@ -844,7 +1037,7 @@ export function PipeStudioOverlay({
             left: '50%',
             transform: 'translateX(-50%)',
             pointerEvents: 'none',
-            background: '#0F766E',
+            background: bundleDraw ? '#7C3AED' : '#0F766E',
             color: '#fff',
             borderRadius: 8,
             padding: '7px 14px',
@@ -855,10 +1048,12 @@ export function PipeStudioOverlay({
             zIndex: 20,
           }}
         >
-          {extendMode === 'single' || altDown || !extend.partnerId
-            ? 'Extending one line'
-            : 'Extending pipe — both bundle lines follow, holding the gap'}
-          {' · click to add a point · Shift = straight · Alt = this line only · right-click / Enter / Esc to finish'}
+          {bundleDraw
+            ? 'Extending bundle on the centerline — both lines stay centered, holding the gap'
+            : extendMode === 'single' || altDown || !extend?.partnerId
+              ? 'Extending one line'
+              : 'Extending pipe — both bundle lines follow, holding the gap'}
+          {' · click to add a point · Shift = straight · right-click / Enter / Esc to finish'}
         </div>
       ) : null}
       <svg
@@ -957,7 +1152,7 @@ export function PipeStudioOverlay({
                 {/* Extend grips: a teal "+" just past each open end. Click one to
                     continue the pipe from that end (click to place, right-click /
                     Enter / Esc to finish). */}
-                {selected
+                {selected && !bundleSelection
                   ? (['start', 'end'] as const).map((end) => {
                       const endIdx = end === 'end' ? hRoute.length - 1 : 0;
                       const adjIdx = end === 'end' ? hRoute.length - 2 : 1;
@@ -1023,10 +1218,88 @@ export function PipeStudioOverlay({
               </g>
             );
           })}
+          {/* Common shared-center extend grip(s): shown when both lines of one
+              bundle are selected and no draw is active. Positions track the
+              VISIBLE bodies, so the grip stays centered when gapSpread > 0. */}
+          {bundleSelection && !bundleDraw
+            ? (() => {
+                const la = pipes.find((p) => p.id === bundleSelection.aId);
+                const lb = pipes.find((p) => p.id === bundleSelection.bId);
+                const visEnd = (pipe: PipeView | undefined, end: 'start' | 'end', fallback: Point2D): Point2D => {
+                  if (!pipe) return fallback;
+                  const off = (pipe.offsetSign * gapSpreadMm) / 2;
+                  const r = off === 0 ? pipe.route : offsetPolyline(pipe.route, off);
+                  return end === 'end' ? r[r.length - 1]! : r[0]!;
+                };
+                return (
+                  <g>
+                    {bundleSelection.ends.map((en) => {
+                      const aVis = visEnd(la, en.aEnd, en.aPt);
+                      const bVis = visEnd(lb, en.bEnd, en.bPt);
+                      const cx = (aVis.x + bVis.x) / 2;
+                      const cy = (aVis.y + bVis.y) / 2;
+                      const gx = cx + en.out.x * hpx(22);
+                      const gy = cy + en.out.y * hpx(22);
+                      return (
+                        <g
+                          key={`bgrip-${en.key}`}
+                          style={{ cursor: 'crosshair', pointerEvents: 'auto' }}
+                          onPointerDown={(e) => startBundleDraw(e, en)}
+                        >
+                          <line x1={cx} y1={cy} x2={gx} y2={gy} stroke="#7C3AED" strokeWidth={hpx(1.4)} strokeDasharray={`${hpx(3)} ${hpx(2)}`} style={{ pointerEvents: 'none' }} />
+                          <circle cx={gx} cy={gy} r={handleHit + hpx(2)} fill="rgba(0,0,0,0.001)" />
+                          <circle cx={gx} cy={gy} r={hpx(9)} fill="#fff" stroke="#7C3AED" strokeWidth={hpx(2)} style={{ pointerEvents: 'none' }} />
+                          <path
+                            d={`M ${gx - hpx(4)} ${gy} H ${gx + hpx(4)} M ${gx} ${gy - hpx(4)} V ${gy + hpx(4)}`}
+                            stroke="#7C3AED"
+                            strokeWidth={hpx(2)}
+                            style={{ pointerEvents: 'none' }}
+                          />
+                          <circle cx={aVis.x} cy={aVis.y} r={hpx(2.4)} fill="#7C3AED" style={{ pointerEvents: 'none' }} />
+                          <circle cx={bVis.x} cy={bVis.y} r={hpx(2.4)} fill="#7C3AED" style={{ pointerEvents: 'none' }} />
+                        </g>
+                      );
+                    })}
+                  </g>
+                );
+              })()
+            : null}
+          {/* Live bundle preview — gated on the active draw only, so it never
+              blanks if the selection changes mid-draw. */}
+          {bundleDraw && bundleDraw.cursor
+            ? (() => {
+                const a = pipes.find((p) => p.id === bundleDraw.aId);
+                const b = pipes.find((p) => p.id === bundleDraw.bId);
+                const anchor = bundleAnchor(bundleDraw);
+                const c = bundleDraw.cursor;
+                if (!a || !b || !anchor || Math.hypot(c.x - anchor.x, c.y - anchor.y) < 0.5) return null;
+                const dir = unit(c.x - anchor.x, c.y - anchor.y);
+                const nx = -dir.y;
+                const ny = dir.x;
+                const effSide = bundleDraw.aSide * (dir.x * bundleDraw.outX + dir.y * bundleDraw.outY >= 0 ? 1 : -1);
+                const half = bundleDraw.gap / 2;
+                const aPt = bundleDraw.aEnd === 'end' ? a.route[a.route.length - 1]! : a.route[0]!;
+                const bPt = bundleDraw.bEnd === 'end' ? b.route[b.route.length - 1]! : b.route[0]!;
+                const aNew = { x: c.x + nx * effSide * half, y: c.y + ny * effSide * half };
+                const bNew = { x: c.x - nx * effSide * half, y: c.y - ny * effSide * half };
+                return (
+                  <g style={{ pointerEvents: 'none' }}>
+                    <line x1={anchor.x} y1={anchor.y} x2={c.x} y2={c.y} stroke="#7C3AED" strokeWidth={hpx(1.4)} strokeDasharray={`${hpx(4)} ${hpx(3)}`} strokeOpacity={0.7} />
+                    <line x1={aPt.x} y1={aPt.y} x2={aNew.x} y2={aNew.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeDasharray={`${hpx(7)} ${hpx(4)}`} strokeLinecap="round" />
+                    <line x1={bPt.x} y1={bPt.y} x2={bNew.x} y2={bNew.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeDasharray={`${hpx(7)} ${hpx(4)}`} strokeLinecap="round" />
+                    <line x1={aNew.x} y1={aNew.y} x2={bNew.x} y2={bNew.y} stroke="#7C3AED" strokeWidth={hpx(1)} strokeDasharray={`${hpx(2)} ${hpx(2)}`} strokeOpacity={0.6} />
+                    <circle cx={aNew.x} cy={aNew.y} r={hpx(3.6)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.7)} />
+                    <circle cx={bNew.x} cy={bNew.y} r={hpx(3.6)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.7)} />
+                    <circle cx={c.x} cy={c.y} r={hpx(2.6)} fill="#7C3AED" />
+                  </g>
+                );
+              })()
+            : null}
         </g>
         {/* While extending, a transparent capture layer turns canvas clicks into
-            new pipe points (move = preview, click = place, right-click = finish). */}
-        {extend ? (
+            new pipe points (move = preview, click = place, right-click = finish).
+            Dispatches to single-line or bundle-centerline draw. */}
+        {extend || bundleDraw ? (
           <rect
             x={0}
             y={0}
@@ -1034,8 +1307,8 @@ export function PipeStudioOverlay({
             height={height}
             fill="rgba(0,0,0,0)"
             style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
-            onPointerMove={onExtendMove}
-            onClick={onExtendClick}
+            onPointerMove={extend ? onExtendMove : onBundleMove}
+            onClick={extend ? onExtendClick : onBundleClick}
             onContextMenu={finishExtend}
           />
         ) : null}
