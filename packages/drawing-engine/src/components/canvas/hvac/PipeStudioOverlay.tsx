@@ -301,6 +301,15 @@ export function PipeStudioOverlay({
     setGhost(null);
   }, [ghost, commitRoute]);
 
+  const onInsert = useCallback(
+    (e: ReactPointerEvent, id: string, si: number, route: Point2D[]) => {
+      e.stopPropagation();
+      const mid = { x: (route[si]!.x + route[si + 1]!.x) / 2, y: (route[si]!.y + route[si + 1]!.y) / 2 };
+      commitRoute(id, [...route.slice(0, si + 1), mid, ...route.slice(si + 1)], 'Insert refrigerant pipe vertex');
+    },
+    [commitRoute],
+  );
+
   const onDelete = useCallback(
     (e: ReactMouseEvent, id: string, vi: number, route: Point2D[]) => {
       e.preventDefault();
@@ -315,6 +324,7 @@ export function PipeStudioOverlay({
 
   const handleR = hpx(6.5);
   const handleHit = hpx(11);
+  const insR = hpx(5);
 
   return (
     <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
@@ -356,6 +366,23 @@ export function PipeStudioOverlay({
                 {tubes.map((t, i) => (
                   <path key={`sheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={sheenW} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.7} />
                 ))}
+                {selected
+                  ? route.slice(0, -1).map((_, si) => {
+                      const m = { x: (route[si]!.x + route[si + 1]!.x) / 2, y: (route[si]!.y + route[si + 1]!.y) / 2 };
+                      return (
+                        <g key={`ins-h-${si}`} style={{ cursor: 'copy', pointerEvents: 'auto' }} onPointerDown={(e) => onInsert(e, p.id, si, route)}>
+                          <circle cx={m.x} cy={m.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
+                          <circle cx={m.x} cy={m.y} r={insR} fill="#fff" stroke="#639922" strokeWidth={hpx(1.5)} style={{ pointerEvents: 'none' }} />
+                          <path
+                            d={`M ${m.x - hpx(2.4)} ${m.y} H ${m.x + hpx(2.4)} M ${m.x} ${m.y - hpx(2.4)} V ${m.y + hpx(2.4)}`}
+                            stroke="#3B6D11"
+                            strokeWidth={hpx(1.4)}
+                            style={{ pointerEvents: 'none' }}
+                          />
+                        </g>
+                      );
+                    })
+                  : null}
                 {selected
                   ? route.map((pt, vi) => {
                       const ep = vi === 0 || vi === route.length - 1;
