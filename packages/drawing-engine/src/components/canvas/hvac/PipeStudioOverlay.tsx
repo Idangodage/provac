@@ -295,6 +295,9 @@ export function PipeStudioOverlay({
   const gRef = useRef<SVGGElement | null>(null);
   const dragRef = useRef<{ id: string; vi: number } | null>(null);
   const editedIdsRef = useRef<Set<string>>(new Set());
+  // Each single line's bundle side, determined once and kept stable so editing a
+  // vertex can't make the inferred side flip and drop the gap offset.
+  const offsetSignCacheRef = useRef<Map<string, number>>(new Map());
   const [ghost, setGhost] = useState<{ id: string; route: Point2D[] } | null>(null);
   const [bendRadiusMm, setBendRadiusMm] = useState(24);
   // Relative spread added to the existing gap (0 = pipes as drawn).
@@ -315,8 +318,16 @@ export function PipeStudioOverlay({
     // For single gas/liquid lines, find the bundle partner and record which
     // perpendicular side this line sits on, so the gap spread pushes the two
     // APART from where they are (never toward / through each other).
+    const cache = offsetSignCacheRef.current;
     const singles = list.filter((p) => !p.isPair);
     for (const p of singles) {
+      // Reuse the side decided the first time we saw this line; do not re-infer
+      // it from positions that an edit may have moved.
+      const cached = cache.get(p.id);
+      if (cached !== undefined && cached !== 0) {
+        p.offsetSign = cached;
+        continue;
+      }
       const pMid = routeMid(p.route);
       let partner: PipeView | null = null;
       let bestD = Infinity;
@@ -350,6 +361,7 @@ export function PipeStudioOverlay({
         p.offsetSign =
           Math.abs(along) > 2 ? (along > 0 ? 1 : -1) : p.lineKind === 'liquid' ? -1 : 1;
       }
+      if (p.offsetSign !== 0) cache.set(p.id, p.offsetSign);
     }
     return list;
   }, [hvacElements]);
