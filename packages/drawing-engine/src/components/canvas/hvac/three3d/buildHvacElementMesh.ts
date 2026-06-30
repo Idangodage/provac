@@ -31,7 +31,17 @@ import type {
 } from "../refrigerantPipeRenderState";
 import { getUnitPipePortSpec } from "../unitPipePortModel";
 
+import {
+  buildCylinderGeometry,
+  buildReducerGeometry,
+  buildSweptTubeGeometry,
+  unionGeometries,
+} from "./pipeJointGeometry";
+
 const EPSILON = 0.001;
+
+/** Default cross-section facets for swept pipe / fitting geometry. */
+const PIPE_RADIAL_SEGMENTS = 24;
 
 const MEP_PROJECTION_PALETTE = {
   ductTop: "#8d99a6",
@@ -127,23 +137,6 @@ function createLocalBoxMesh(
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.copy(position);
   mesh.renderOrder = options?.renderOrder ?? 18;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function createLocalSphereMesh(
-  radius: number,
-  color: string,
-  position: THREE.Vector3,
-  options?: { opacity?: number; renderOrder?: number },
-): THREE.Mesh {
-  const opacity = options?.opacity ?? 1;
-  const geometry = new THREE.SphereGeometry(radius, 18, 14);
-  const material = getSharedBoxMaterial(color, opacity, opacity < 1);
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.copy(position);
-  mesh.renderOrder = options?.renderOrder ?? 19;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
@@ -392,42 +385,6 @@ function createCylinderBetweenPoints(
   return group;
 }
 
-function createTaperedCylinderBetweenPoints(
-  start: THREE.Vector3,
-  end: THREE.Vector3,
-  startRadius: number,
-  endRadius: number,
-  color: string,
-  options?: {
-    opacity?: number;
-    renderOrder?: number;
-    radialSegments?: number;
-  },
-): THREE.Mesh | null {
-  const delta = end.clone().sub(start);
-  const length = delta.length();
-  if (length < EPSILON) {
-    return null;
-  }
-
-  const axis = delta.normalize();
-  const center = start.clone().add(end).multiplyScalar(0.5);
-  const mesh = createLocalCylinderMesh(
-    endRadius,
-    startRadius,
-    length,
-    color,
-    center,
-    {
-      opacity: options?.opacity,
-      renderOrder: options?.renderOrder,
-      radialSegments: options?.radialSegments ?? 18,
-    },
-  );
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
-  return mesh;
-}
-
 function createTubeAlongPoints(
   points: THREE.Vector3[],
   radius: number,
@@ -456,37 +413,8 @@ function createTubeAlongPoints(
     return null;
   }
 
-  const simplified: THREE.Vector3[] = [cleaned[0]!];
-  const angleToleranceCos = Math.cos((2 * Math.PI) / 180);
-  for (let index = 1; index < cleaned.length - 1; index += 1) {
-    const previous = simplified[simplified.length - 1]!;
-    const current = cleaned[index]!;
-    const next = cleaned[index + 1]!;
-    const incoming = current.clone().sub(previous);
-    const outgoing = next.clone().sub(current);
-    const incomingLength = incoming.length();
-    const outgoingLength = outgoing.length();
-    if (incomingLength < 0.01 || outgoingLength < 0.01) {
-      continue;
-    }
-    const directionDot = incoming.normalize().dot(outgoing.normalize());
-    const direct = next.clone().sub(previous);
-    const directLength = direct.length();
-    if (directLength < 0.01) {
-      continue;
-    }
-    const projectedScale =
-      current.clone().sub(previous).dot(direct) / (directLength * directLength);
-    const projectedPoint = previous.clone().add(direct.multiplyScalar(projectedScale));
-    const lateralOffset = projectedPoint.distanceTo(current);
-    if (directionDot >= angleToleranceCos && lateralOffset <= 0.2) {
-      continue;
-    }
-    simplified.push(current);
-  }
-  simplified.push(cleaned[cleaned.length - 1]!);
-
-  const finalPoints = simplified.map((point) => point.clone());
+  // Extend open ends slightly so chained pipe elements overlap without a seam.
+  const finalPoints = cleaned.map((point) => point.clone());
   const continuationOverlapMm = Math.max(1.5, radius * 0.75);
 
   if (options?.openStart && finalPoints.length >= 2) {
@@ -512,48 +440,25 @@ function createTubeAlongPoints(
     }
   }
 
-  if (finalPoints.length === 2) {
-    return createCylinderBetweenPoints(finalPoints[0]!, finalPoints[1]!, radius, color, {
-      opacity: options?.opacity,
-      renderOrder: options?.renderOrder,
-      radialSegments: options?.radialSegments ?? 18,
-      capStart: !options?.openStart,
-      capEnd: !options?.openEnd,
-    });
+  // One continuous swept tube with rounded-elbow corners — no per-segment end
+  // caps and no full-radius ball-joint spheres, so bends stay smooth and the
+  // coincident-face z-fighting of the old cylinder chain disappears.
+  const geometry = buildSweptTubeGeometry(finalPoints, radius, {
+    radialSegments: options?.radialSegments ?? PIPE_RADIAL_SEGMENTS,
+    capStart: !options?.openStart,
+    capEnd: !options?.openEnd,
+  });
+  if (!geometry) {
+    return null;
   }
 
-  const group = new THREE.Group();
-  for (let index = 0; index < finalPoints.length - 1; index += 1) {
-    const segment = createCylinderBetweenPoints(
-      finalPoints[index]!,
-      finalPoints[index + 1]!,
-      radius,
-      color,
-      {
-        opacity: options?.opacity,
-        renderOrder: options?.renderOrder,
-        radialSegments: options?.radialSegments ?? 18,
-        capStart: index === 0 ? !options?.openStart : false,
-        capEnd: index === finalPoints.length - 2 ? !options?.openEnd : false,
-      },
-    );
-    if (segment) {
-      group.add(segment);
-    }
-  }
-
-  if ((options?.cornerStyle ?? "round") === "round") {
-    for (let index = 1; index < finalPoints.length - 1; index += 1) {
-      group.add(
-        createLocalSphereMesh(radius, color, finalPoints[index]!, {
-          opacity: options?.opacity,
-          renderOrder: options?.renderOrder,
-        }),
-      );
-    }
-  }
-
-  return group.children.length > 0 ? group : null;
+  const opacity = options?.opacity ?? 1;
+  const material = getSharedBoxMaterial(color, opacity, opacity < 1);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = options?.renderOrder ?? 18;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
 }
 
 interface ElevationProfileSpan {
@@ -1757,34 +1662,6 @@ export function buildHvacElementMesh(
         }
       };
 
-      const addReducer = (
-        reducer:
-          | {
-              start: Point2D;
-              end: Point2D;
-              startDiameterMm: number;
-              endDiameterMm: number;
-            }
-          | null,
-        z: number,
-        color: string,
-      ): void => {
-        if (!reducer) {
-          return;
-        }
-        const mesh = createTaperedCylinderBetweenPoints(
-          pointToVector(reducer.start, z),
-          pointToVector(reducer.end, z),
-          reducer.startDiameterMm / 2,
-          reducer.endDiameterMm / 2,
-          color,
-          { renderOrder: 20, radialSegments: 18 },
-        );
-        if (mesh) {
-          group.add(mesh);
-        }
-      };
-
       const addBands = (
         bands: Array<{
           center: Point2D;
@@ -1818,56 +1695,96 @@ export function buildHvacElementMesh(
       };
 
       const renderLine = (line: typeof branchKit.gas, copperColor: string): void => {
+        const z = line.centerlineZMm;
+        const toVec = (point: Point2D): THREE.Vector3 => pointToVector(point, z);
+
+        // Insulation sleeve over the inlet (opaque).
         addRouteTube(
           line.inletTube.points,
-          line.centerlineZMm,
+          z,
           line.inletTube.outerDiameterMm / 2 + 9,
           insulationColor,
           18,
         );
-        addReducer(
-          line.inletReducer
-            ? {
-                start: line.inletReducer.start,
-                end: line.inletReducer.end,
-                startDiameterMm: line.inletReducer.startOuterDiameterMm,
-                endDiameterMm: line.inletReducer.endOuterDiameterMm,
-              }
-            : null,
-          line.centerlineZMm,
-          copperColor,
+
+        // Copper body: union inlet + reducer + the bridged run + the branch
+        // takeoff into ONE watertight solid, so the tee/saddle is a clean
+        // boolean intersection instead of interpenetrating cylinders, and the
+        // copper never extends past where it physically meets.
+        const copperParts: Array<THREE.BufferGeometry | null> = [];
+
+        const inletPoints = line.inletTube.points;
+        copperParts.push(
+          buildCylinderGeometry(
+            toVec(inletPoints[0]!),
+            toVec(inletPoints[inletPoints.length - 1]!),
+            line.inletTube.outerDiameterMm / 2,
+            PIPE_RADIAL_SEGMENTS,
+            true,
+          ),
         );
-        addRouteTube(
-          line.inletTube.points,
-          line.centerlineZMm,
-          line.inletTube.outerDiameterMm / 2,
-          copperColor,
-          20,
+
+        if (line.inletReducer) {
+          copperParts.push(
+            buildReducerGeometry(
+              toVec(line.inletReducer.start),
+              toVec(line.inletReducer.end),
+              line.inletReducer.startOuterDiameterMm / 2,
+              line.inletReducer.endOuterDiameterMm / 2,
+              PIPE_RADIAL_SEGMENTS,
+              true,
+            ),
+          );
+        }
+
+        // Bridge the inlet-run, the junction gap and the main run into a single
+        // straight copper cylinder along the trunk centreline.
+        const runStart = line.inletRunTube.points[0]!;
+        const mainPoints = line.mainTube.points;
+        const runEnd = mainPoints[mainPoints.length - 1]!;
+        copperParts.push(
+          buildCylinderGeometry(
+            toVec(runStart),
+            toVec(runEnd),
+            line.mainTube.outerDiameterMm / 2,
+            PIPE_RADIAL_SEGMENTS,
+            true,
+          ),
         );
-        addRouteTube(
-          line.inletRunTube.points,
-          line.centerlineZMm,
-          line.inletRunTube.outerDiameterMm / 2,
-          copperColor,
-          20,
-        );
-        addRouteTube(
-          line.mainTube.points,
-          line.centerlineZMm,
-          line.mainTube.outerDiameterMm / 2,
-          copperColor,
-          20,
-        );
-        addRouteTube(
-          line.branchTube.points,
-          line.centerlineZMm,
-          line.branchTube.outerDiameterMm / 2,
-          copperColor,
-          20,
-          true,
-          true,
-        );
-        addBands(line.bands, line.centerlineZMm);
+
+        // Branch takeoff: prepend a point on the run centreline so the branch
+        // physically intersects the run and the union carves a real saddle.
+        const branchPoints = line.branchTube.points;
+        if (branchPoints.length >= 1) {
+          const branchHead = branchPoints[0]!;
+          const connection: Point2D = { x: branchHead.x, y: runStart.y };
+          copperParts.push(
+            buildSweptTubeGeometry(
+              [connection, ...branchPoints].map(toVec),
+              line.branchTube.outerDiameterMm / 2,
+              {
+                radialSegments: PIPE_RADIAL_SEGMENTS,
+                capStart: true,
+                capEnd: true,
+                weld: true,
+              },
+            ),
+          );
+        }
+
+        const copperGeometry = unionGeometries(copperParts);
+        if (copperGeometry) {
+          const copperMesh = new THREE.Mesh(
+            copperGeometry,
+            getSharedBoxMaterial(copperColor, 1, false),
+          );
+          copperMesh.renderOrder = 20;
+          copperMesh.castShadow = true;
+          copperMesh.receiveShadow = true;
+          group.add(copperMesh);
+        }
+
+        addBands(line.bands, z);
       };
 
       if (renderGasLine) {
@@ -1928,30 +1845,15 @@ export function buildHvacElementMesh(
         }
       };
 
-      const addStub = (
+      // Stitch the connection stub and the core run into one continuous
+      // poly-line so they render as a single swept copper tube (no separate
+      // uncapped stub cylinder poking out past the insulation).
+      const buildCorePolyline = (
         stub: { start: Point2D; end: Point2D } | null,
-        z: number,
-        radius: number,
-        color: string,
-        renderOrder: number,
-      ): void => {
-        if (!stub) {
-          return;
-        }
-        const segment = createCylinderBetweenPoints(
-          new THREE.Vector3(stub.start.x, stub.start.y, z),
-          new THREE.Vector3(stub.end.x, stub.end.y, z),
-          radius,
-          color,
-          {
-            renderOrder,
-            capStart: false,
-            capEnd: false,
-          },
-        );
-        if (segment) {
-          group.add(segment);
-        }
+        points: Point2D[],
+      ): Point2D[] => {
+        const base = buildContinuousCorePoints(stub, points);
+        return stub ? [stub.start, ...base] : base;
       };
 
       addRouteTube(
@@ -1972,30 +1874,24 @@ export function buildHvacElementMesh(
         isFieldPipeStart,
         false,
       );
-      addStub(visual.gasLocalStub, visual.gasLocalZMm, visual.gasCoreRadiusMm, gasColor, 19);
-      addStub(
-        visual.liquidLocalStub,
-        visual.liquidLocalZMm,
-        visual.liquidCoreRadiusMm,
-        liquidColor,
-        19,
-      );
+      // Core copper: one capped swept tube per line, flush at the connection
+      // end instead of an extended bare rod.
       addRouteTube(
-        buildContinuousCorePoints(visual.gasLocalStub, visual.gasLocalOuterPoints),
+        buildCorePolyline(visual.gasLocalStub, visual.gasLocalOuterPoints),
         visual.gasLocalZMm,
         visual.gasCoreRadiusMm,
         gasColor,
         19,
-        isFieldPipeStart || Boolean(visual.gasLocalStub),
+        false,
         false,
       );
       addRouteTube(
-        buildContinuousCorePoints(visual.liquidLocalStub, visual.liquidLocalOuterPoints),
+        buildCorePolyline(visual.liquidLocalStub, visual.liquidLocalOuterPoints),
         visual.liquidLocalZMm,
         visual.liquidCoreRadiusMm,
         liquidColor,
         19,
-        isFieldPipeStart || Boolean(visual.liquidLocalStub),
+        false,
         false,
       );
       break;

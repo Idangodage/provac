@@ -2587,6 +2587,18 @@ function normalizeBundleGuideRoutePoints(
   return isStartSnapPoint ? dedupedRoutePoints.slice(1) : dedupedRoutePoints;
 }
 
+/**
+ * Chords used to approximate a corner arc. Angle-based (~3.75° per chord) so a
+ * bend reads equally smooth at any radius and zoom — the previous mm-based chord
+ * targets collapsed a 90° elbow to ~3 chords (a visible staircase), and even a
+ * coarse 7.5°/chord arc still showed faceting on the thick copper core stroke at
+ * high zoom. ~24 chords across 90° keeps chord sag well under a pixel.
+ */
+const ARC_MAX_STEP_RAD = Math.PI / 48; // 3.75° per chord
+function arcChordCount(sweepAngle: number): number {
+  return Math.max(6, Math.min(96, Math.ceil(Math.abs(sweepAngle) / ARC_MAX_STEP_RAD)));
+}
+
 function roundPolylineCorners(
   points: Point2D[],
   radiusMm: number,
@@ -2657,10 +2669,7 @@ function roundPolylineCorners(
     }
 
     const arcRadius = Math.hypot(tangentStart.x - center.x, tangentStart.y - center.y);
-    const segmentCount = Math.max(
-      3,
-      Math.min(8, Math.ceil((Math.abs(sweepAngle) * arcRadius) / Math.max(10, radiusMm * 0.75))),
-    );
+    const segmentCount = arcChordCount(sweepAngle);
 
     rounded.push(tangentStart);
     for (let segment = 1; segment < segmentCount; segment += 1) {
@@ -2770,10 +2779,7 @@ function roundAndOffsetPolyline(
     const arcRadius = Math.hypot(tangentStart.x - center.x, tangentStart.y - center.y);
     // Concentric offset radius: toward the centre (normalSign side) shrinks it.
     const offsetRadius = Math.max(0.5, arcRadius - normalSign * offsetMm);
-    const segmentCount = Math.max(
-      4,
-      Math.min(14, Math.ceil((Math.abs(sweepAngle) * offsetRadius) / Math.max(8, radiusMm * 0.5))),
-    );
+    const segmentCount = arcChordCount(sweepAngle);
     for (let segment = 0; segment <= segmentCount; segment += 1) {
       const angle = startAngle + sweepAngle * (segment / segmentCount);
       result.push({

@@ -4332,6 +4332,10 @@ export function IsometricViewCanvas({
   const sizeRef = useRef(DEFAULT_EMPTY_SIZE);
   const renderRequestedRef = useRef(true);
   const hasAutoFitRef = useRef(false);
+  // Upper bound for devicePixelRatio. Raised to 2 only when the antialiased
+  // high-performance renderer tier initialises; integrated-GPU fallback tiers
+  // keep the conservative 1.5 cap to avoid fill-rate stalls / context loss.
+  const maxPixelRatioRef = useRef(1.5);
   const isInteractingRef = useRef(false);
   const interactiveRef = useRef(interactive);
   const wallBandRequestIdRef = useRef(0);
@@ -4554,12 +4558,14 @@ export function IsometricViewCanvas({
 
     let renderer: THREE.WebGLRenderer | null = null;
     let rendererInitError: unknown = null;
+    let activeRendererConfig: (typeof rendererConfigs)[number] | null = null;
     for (const config of rendererConfigs) {
       try {
         renderer = new THREE.WebGLRenderer({
           canvas,
           ...config,
         });
+        activeRendererConfig = config;
         break;
       } catch (error) {
         rendererInitError = error;
@@ -4606,12 +4612,15 @@ export function IsometricViewCanvas({
       false,
     );
 
-    // Cap pixel ratio at 1.5 to reduce GPU fill-rate pressure.
-    // Full retina (2x) causes 4x pixel count which is the top contributor to
-    // GPU stalls and context-loss on integrated graphics.
+    // Cap pixel ratio to reduce GPU fill-rate pressure. Full retina (2x) means
+    // 4x the pixel count, the top contributor to GPU stalls / context loss on
+    // integrated graphics — so only the antialiased high-performance tier earns
+    // the 2x cap; every fallback tier stays at the conservative 1.5.
+    const maxPixelRatio = activeRendererConfig?.antialias ? 2 : 1.5;
+    maxPixelRatioRef.current = maxPixelRatio;
     const effectivePixelRatio =
       typeof window !== "undefined"
-        ? Math.min(window.devicePixelRatio || 1, 1.5)
+        ? Math.min(window.devicePixelRatio || 1, maxPixelRatio)
         : 1;
     renderer.setPixelRatio(effectivePixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -4782,7 +4791,7 @@ export function IsometricViewCanvas({
     const height = Math.max(1, containerSize.height);
     renderer.setPixelRatio(
       typeof window !== "undefined"
-        ? Math.min(window.devicePixelRatio || 1, 1.5)
+        ? Math.min(window.devicePixelRatio || 1, maxPixelRatioRef.current)
         : 1,
     );
     renderer.setSize(width, height, false);
