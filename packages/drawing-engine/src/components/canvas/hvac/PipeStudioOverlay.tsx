@@ -379,8 +379,8 @@ export function PipeStudioOverlay({
             Bend radius
             <input
               type="range"
-              min={8}
-              max={120}
+              min={4}
+              max={1000}
               step={1}
               value={bendRadiusMm}
               onChange={(e) => setBendRadiusMm(Number(e.target.value))}
@@ -392,8 +392,8 @@ export function PipeStudioOverlay({
             Pipe gap
             <input
               type="range"
-              min={8}
-              max={80}
+              min={2}
+              max={600}
               step={1}
               value={gapMm}
               onChange={(e) => setGapMm(Number(e.target.value))}
