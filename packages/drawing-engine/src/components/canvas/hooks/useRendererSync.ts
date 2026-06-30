@@ -45,6 +45,7 @@ import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
 import type { RoomRenderer } from '../room/RoomRenderer';
 import { MM_TO_PX } from '../scale';
 import { getToolCursor } from '../toolUtils';
+import { buildViewportTransform } from '../viewTransform';
 import type { WallRenderer } from '../wall/WallRenderer';
 
 const DRAG_AUTO_DIMENSION_MIN_INTERVAL_MS = 120;
@@ -318,14 +319,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
                 return;
             }
         }
-        const viewportTransform: fabric.TMat2D = [
-            viewportZoom,
-            0,
-            0,
-            viewportZoom,
-            -panOffset.x * viewportZoom,
-            -panOffset.y * viewportZoom,
-        ];
+        const viewportTransform = buildViewportTransform(viewportZoom, panOffset);
         canvas.setViewportTransform(viewportTransform);
         hideActiveSelectionChrome(canvas);
         roomRendererRef.current?.setViewportZoom(viewportZoom, {

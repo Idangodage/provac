@@ -71,3 +71,23 @@ export function screenLengthToWorld(lengthPx: number, zoom: number): number {
 export function worldTo3D(worldMm: Point2D, elevationZMm: number): Vec3 {
   return { x: worldMm.x, y: worldMm.y, z: elevationZMm };
 }
+
+const MIN_SAFE_VIEWPORT_ZOOM = 1e-4;
+
+/**
+ * The single canonical {@link ViewTransform2D} for a frame, derived from the
+ * engine's viewport state. `viewportZoom` already folds in the paper/real ratio
+ * (DrawingCanvas) and `panOffset` is the scene-space pan. BOTH the Fabric
+ * viewport matrix and the Konva interaction layer derive their transform from
+ * the result (see `viewTransform.ts`), so the two 2D engines can never drift.
+ *
+ * Convention: a scene point (world-mm * MM_TO_PX) maps to screen via
+ * `[zoom,0,0,zoom,panPx.x,panPx.y]`, identical to `worldToScreen` taking the
+ * world-mm point directly — so pointer/handle/render geometry all agree.
+ */
+export function viewportToViewTransform(viewportZoom: number, panOffset: Point2D): ViewTransform2D {
+  const zoom = Number.isFinite(viewportZoom)
+    ? Math.max(viewportZoom, MIN_SAFE_VIEWPORT_ZOOM)
+    : MIN_SAFE_VIEWPORT_ZOOM;
+  return { zoom, panPx: { x: -panOffset.x * zoom, y: -panOffset.y * zoom } };
+}

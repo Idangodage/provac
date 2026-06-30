@@ -1,10 +1,13 @@
+import type Konva from 'konva';
 import { useMemo, useRef } from 'react';
 import { Circle, Group, Layer, Stage } from 'react-konva/lib/ReactKonvaCore';
-import type Konva from 'konva';
 import 'konva/lib/shapes/Circle';
 
 import type { HvacElement, Point2D, WallSettings } from '../../../types';
+import { viewportToViewTransform } from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
+import { viewTransformToKonvaLayer } from '../viewTransform';
+
 import {
   buildRefrigerantPipeVisual,
   resolveRefrigerantPipeSpec,
@@ -572,8 +575,9 @@ export function PipeKonvaInteractionLayer({
     return null;
   }
 
-  const stageOffsetX = -panOffset.x * viewportZoom;
-  const stageOffsetY = -panOffset.y * viewportZoom;
+  // Single canonical transform — shared with the Fabric viewport matrix so the
+  // Konva handles can never drift from the rendered pipe body.
+  const layerTransform = viewTransformToKonvaLayer(viewportToViewTransform(viewportZoom, panOffset));
   const safeZoom = Math.max(viewportZoom, 0.01);
   const segmentOuterRadius = Math.max(7, 11 / safeZoom);
   const segmentInnerRadius = Math.max(2.6, 4.4 / safeZoom);
@@ -593,7 +597,12 @@ export function PipeKonvaInteractionLayer({
           }
         }}
       >
-        <Layer x={stageOffsetX} y={stageOffsetY} scaleX={viewportZoom} scaleY={viewportZoom}>
+        <Layer
+          x={layerTransform.x}
+          y={layerTransform.y}
+          scaleX={layerTransform.scaleX}
+          scaleY={layerTransform.scaleY}
+        >
           {handles.segmentHandles.map((handle) => (
             <Group key={`${handle.pipeId}-s-${handle.startIndex}-${handle.endIndex}`}>
               <Circle
