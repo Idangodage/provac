@@ -238,6 +238,8 @@ export function PipeStudioOverlay({
   const dragRef = useRef<{ id: string; vi: number } | null>(null);
   const editedIdsRef = useRef<Set<string>>(new Set());
   const [ghost, setGhost] = useState<{ id: string; route: Point2D[] } | null>(null);
+  const [bendRadiusMm, setBendRadiusMm] = useState(24);
+  const [gapMm, setGapMm] = useState(24);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   const view = viewportToViewTransform(viewportZoom, panOffset);
@@ -346,6 +348,60 @@ export function PipeStudioOverlay({
 
   return (
     <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
+      {pipes.length > 0 ? (
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            pointerEvents: 'auto',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 18,
+            background: '#ffffff',
+            border: '1px solid #e6e1d6',
+            borderRadius: 10,
+            padding: '8px 16px',
+            boxShadow: '0 2px 10px rgba(0,0,0,0.10)',
+            fontSize: 13,
+            color: '#46433c',
+            whiteSpace: 'nowrap',
+            zIndex: 20,
+          }}
+        >
+          <span style={{ fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: '#B5742F', display: 'inline-block' }} />
+            Pipe
+          </span>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            Bend radius
+            <input
+              type="range"
+              min={8}
+              max={120}
+              step={1}
+              value={bendRadiusMm}
+              onChange={(e) => setBendRadiusMm(Number(e.target.value))}
+              style={{ width: 120 }}
+            />
+            <span style={{ fontWeight: 500, minWidth: 46 }}>{Math.round(bendRadiusMm)} mm</span>
+          </label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            Pipe gap
+            <input
+              type="range"
+              min={8}
+              max={80}
+              step={1}
+              value={gapMm}
+              onChange={(e) => setGapMm(Number(e.target.value))}
+              style={{ width: 120 }}
+            />
+            <span style={{ fontWeight: 500, minWidth: 46 }}>{Math.round(gapMm)} mm</span>
+          </label>
+        </div>
+      ) : null}
       <svg
         width={width}
         height={height}
@@ -357,7 +413,11 @@ export function PipeStudioOverlay({
         <g ref={gRef} transform={matrix}>
           {pipes.map((p) => {
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
-            const pair = buildPipePair(route, { bendRadiusMm: p.bendMm, gapMm: p.isPair ? p.gapMm : 0 });
+            const lineGap = p.isPair ? gapMm : 0;
+            const pair = buildPipePair(route, {
+              bendRadiusMm: Math.max(bendRadiusMm, lineGap / 2 + 4),
+              gapMm: lineGap,
+            });
             const insW = p.outerMm; // insulation outer diameter
             const coreW = Math.max(p.outerMm * 0.55, 3); // copper tube
             const sheenW = Math.max(coreW * 0.3, 1);
