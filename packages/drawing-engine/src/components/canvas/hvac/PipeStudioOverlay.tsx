@@ -700,12 +700,20 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
 
   // Selected copper branch kits → their 3 bundle ports (world gas/liquid points,
   // outward direction, terminalRole) for the port grips + draw-from-port.
+  // Port snap-points for EVERY placed kit (not just the selected one), so its 3
+  // ports are always available to draw a pipe from — standalone or already piped.
+  // The selected kit gets the verbose grips (arrow + role label); the rest show a
+  // quieter clickable snap dot.
   const branchKitPorts = useMemo(() => {
-    const out: { id: string; ports: ReturnType<typeof getBranchKitPortConnections> }[] = [];
+    const out: {
+      id: string;
+      selected: boolean;
+      ports: ReturnType<typeof getBranchKitPortConnections>;
+    }[] = [];
     for (const el of hvacElements) {
-      if (el.type !== 'refrigerant-branch-kit' || !selectedSet.has(el.id)) continue;
+      if (el.type !== 'refrigerant-branch-kit') continue;
       const ports = getBranchKitPortConnections(el);
-      if (ports.length > 0) out.push({ id: el.id, ports });
+      if (ports.length > 0) out.push({ id: el.id, selected: selectedSet.has(el.id), ports });
     }
     return out;
   }, [hvacElements, selectedSet]);
@@ -1779,62 +1787,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 );
               })()
             : null}
-          {/* Branch-kit port grips: the 3 bundle ports (inlet / run-outlet /
-              branch-outlet) of a selected copper kit. Open = teal ring + outward
-              arrow with gas (blue) + liquid (amber) points, and a draw origin. */}
-          {branchKitPorts.map((kit) =>
-            kit.ports.map((port) => {
-              const c = port.point;
-              const dl = Math.hypot(port.direction.x, port.direction.y) || 1;
-              const dx = port.direction.x / dl;
-              const dy = port.direction.y / dl;
-              const tip = { x: c.x + dx * hpx(20), y: c.y + dy * hpx(20) };
-              const label =
-                port.terminalRole === 'inlet'
-                  ? 'inlet'
-                  : port.terminalRole === 'run-outlet'
-                    ? 'run'
-                    : 'branch';
-              return (
-                <g key={`bkp-${kit.id}-${port.terminalRole}`} style={{ pointerEvents: 'none' }}>
-                  <line x1={port.gasPoint.x} y1={port.gasPoint.y} x2={port.liquidPoint.x} y2={port.liquidPoint.y} stroke="#0F766E" strokeWidth={hpx(1)} strokeOpacity={0.55} strokeDasharray={`${hpx(2)} ${hpx(2)}`} />
-                  <circle cx={port.gasPoint.x} cy={port.gasPoint.y} r={hpx(3.2)} fill="#1F6FB2" />
-                  <circle cx={port.liquidPoint.x} cy={port.liquidPoint.y} r={hpx(3.2)} fill="#B5742F" />
-                  <line x1={c.x} y1={c.y} x2={tip.x} y2={tip.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeLinecap="round" />
-                  <circle cx={tip.x} cy={tip.y} r={hpx(2)} fill="#0F766E" />
-                  <circle cx={c.x} cy={c.y} r={hpx(8)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(2)} />
-                  <path
-                    d={`M ${c.x - hpx(3)} ${c.y} H ${c.x + hpx(3)} M ${c.x} ${c.y - hpx(3)} V ${c.y + hpx(3)}`}
-                    stroke="#0F766E"
-                    strokeWidth={hpx(1.6)}
-                  />
-                  <text
-                    x={c.x - dx * hpx(15)}
-                    y={c.y - dy * hpx(15) + hpx(3)}
-                    fontSize={hpx(11)}
-                    textAnchor="middle"
-                    fill="#0F766E"
-                    style={{ fontWeight: 500 }}
-                  >
-                    {label}
-                  </text>
-                  {/* Clickable draw origin: press the port to pull a pipe out. */}
-                  <circle
-                    cx={c.x}
-                    cy={c.y}
-                    r={hpx(12)}
-                    fill="rgba(0,0,0,0.001)"
-                    style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
-                    onPointerDown={(e) => startPortDraw(e, port)}
-                  />
-                </g>
-              );
-            }),
-          )}
-          {/* Every PLACED branch kit, drawn in the overlay (real-geometry sprite)
-              like the pipes — a similarity transform lands the image's inlet/run
-              anchors on the element's world ports, so it scales + rotates with the
-              kit. Replaces the flat Fabric symbol (hidden while the overlay owns it). */}
+          {/* Every PLACED branch kit (real-geometry sprite), drawn BEFORE the port
+              grips so the grips sit on top (visible + clickable). A 'both' kit is
+              two fittings, one per line. The sprite is the kit's select + drag target. */}
           {placedKits.flatMap((kit) =>
             kit.sprites.map((sp) => {
               const img = kitImg[sp.line];
@@ -1857,9 +1812,6 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                   key={`pk-${kit.id}-${sp.line}`}
                   transform={`translate(${sp.inlet.x} ${sp.inlet.y}) rotate(${theta}) scale(${s}) translate(${-a0x} ${-a0y})`}
                 >
-                  {/* The sprite is the kit's click + drag target now that it has no
-                      Fabric body: press to select (shows the port grips) and drag to
-                      move the whole kit (connected pipes follow via the healer). */}
                   <image
                     href={KIT_IMG[sp.line]}
                     x={0}
@@ -1869,6 +1821,68 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                     preserveAspectRatio="none"
                     style={{ pointerEvents: 'auto', cursor: 'move' }}
                     onPointerDown={(e) => onKitPointerDown(e, kit.id)}
+                  />
+                </g>
+              );
+            }),
+          )}
+          {/* Branch-kit port grips: the 3 ports (inlet / run-outlet / branch-outlet)
+              of EVERY placed kit — always-visible, clickable draw-from snap points
+              (gas blue + liquid amber). The selected kit adds the outward arrow +
+              role label. Rendered AFTER the sprites so they're on top. */}
+          {branchKitPorts.map((kit) =>
+            kit.ports.map((port) => {
+              const c = port.point;
+              const dl = Math.hypot(port.direction.x, port.direction.y) || 1;
+              const dx = port.direction.x / dl;
+              const dy = port.direction.y / dl;
+              const tip = { x: c.x + dx * hpx(20), y: c.y + dy * hpx(20) };
+              const label =
+                port.terminalRole === 'inlet'
+                  ? 'inlet'
+                  : port.terminalRole === 'run-outlet'
+                    ? 'run'
+                    : 'branch';
+              const sel = kit.selected;
+              return (
+                <g key={`bkp-${kit.id}-${port.terminalRole}`} style={{ pointerEvents: 'none' }}>
+                  {/* gas + liquid points + the port snap ring — always shown so
+                      every kit's ports read as draw-from snap points. */}
+                  <line x1={port.gasPoint.x} y1={port.gasPoint.y} x2={port.liquidPoint.x} y2={port.liquidPoint.y} stroke="#0F766E" strokeWidth={hpx(1)} strokeOpacity={0.55} strokeDasharray={`${hpx(2)} ${hpx(2)}`} />
+                  <circle cx={port.gasPoint.x} cy={port.gasPoint.y} r={hpx(3.2)} fill="#1F6FB2" />
+                  <circle cx={port.liquidPoint.x} cy={port.liquidPoint.y} r={hpx(3.2)} fill="#B5742F" />
+                  <circle cx={c.x} cy={c.y} r={hpx(sel ? 8 : 5.5)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(sel ? 2 : 1.6)} strokeOpacity={sel ? 1 : 0.8} />
+                  <path
+                    d={`M ${c.x - hpx(sel ? 3 : 2.2)} ${c.y} H ${c.x + hpx(sel ? 3 : 2.2)} M ${c.x} ${c.y - hpx(sel ? 3 : 2.2)} V ${c.y + hpx(sel ? 3 : 2.2)}`}
+                    stroke="#0F766E"
+                    strokeWidth={hpx(sel ? 1.6 : 1.3)}
+                    strokeOpacity={sel ? 1 : 0.8}
+                  />
+                  {/* Verbose grips only for the selected kit: outward arrow + role. */}
+                  {sel ? (
+                    <>
+                      <line x1={c.x} y1={c.y} x2={tip.x} y2={tip.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeLinecap="round" />
+                      <circle cx={tip.x} cy={tip.y} r={hpx(2)} fill="#0F766E" />
+                      <text
+                        x={c.x - dx * hpx(15)}
+                        y={c.y - dy * hpx(15) + hpx(3)}
+                        fontSize={hpx(11)}
+                        textAnchor="middle"
+                        fill="#0F766E"
+                        style={{ fontWeight: 500 }}
+                      >
+                        {label}
+                      </text>
+                    </>
+                  ) : null}
+                  {/* Clickable draw origin: press the port to pull a pipe out. */}
+                  <circle
+                    cx={c.x}
+                    cy={c.y}
+                    r={hpx(12)}
+                    fill="rgba(0,0,0,0.001)"
+                    style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
+                    onPointerDown={(e) => startPortDraw(e, port)}
                   />
                 </g>
               );
