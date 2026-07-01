@@ -138,15 +138,21 @@ export interface KitBodyGeometry {
   branch: PairedGeometry;
 }
 
-/** The kit's copper body (trunk + branch paired tubes) in WORLD units. Compute once
- *  per (transform, gap) and share it across the gas + liquid render passes. */
-export function buildKitBodyGeometry(kit: BranchKit): KitBodyGeometry {
+/**
+ * The kit's copper body (trunk + branch paired tubes) in the kit's LOCAL frame.
+ * Because it is local it depends ONLY on the gap, so it is identical for every kit
+ * of the same size and can be cached + rendered inside a transformed Konva Group —
+ * moving/rotating the kit then just re-blits the cache (no geometry rebuild).
+ */
+export function buildKitBodyGeometry(gapMm: number): KitBodyGeometry {
   const ch = kitChannels();
-  const g = kitGapMm(kit);
-  const trunkW = ch.trunk.map((p) => kitToWorld(kit.transform, p));
-  const branchW = ch.branch.map((p) => kitToWorld(kit.transform, p));
   return {
-    trunk: buildPairedGeometry(trunkW, g, KIT_FITTING_RADIUS_MM),
-    branch: buildPairedGeometry(branchW, g, KIT_FITTING_RADIUS_MM),
+    trunk: buildPairedGeometry(ch.trunk, gapMm, KIT_FITTING_RADIUS_MM),
+    branch: buildPairedGeometry(ch.branch, gapMm, KIT_FITTING_RADIUS_MM),
   };
+}
+
+/** Kit rotation in DEGREES (Konva Group.rotation), from the radians transform. */
+export function kitRotationDeg(kit: BranchKit): number {
+  return (kit.transform.rotation * 180) / Math.PI;
 }

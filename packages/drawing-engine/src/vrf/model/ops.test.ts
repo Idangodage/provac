@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { produce } from 'immer';
 
-import { connectRunEnd, moveKit } from './ops';
+import { connectRunEnd, moveKit, syncKitConnections } from './ops';
 import { emptyDoc, PIPE_SIZES, type BoardDoc } from './types';
 import { canConnect, createRefnetKit, portPairCenterWorld } from '../geometry/kit';
 
@@ -68,5 +68,24 @@ describe('invariant F — kit move drags every connected endpoint, drops none', 
     expect(canConnect('liquid', 'liquid')).toBe(true);
     expect(canConnect('gas', 'liquid')).toBe(false);
     expect(canConnect('liquid', 'gas')).toBe(false);
+  });
+
+  it('nudge-heal: translating a connected run then syncing re-pins its endpoint to the port', () => {
+    // Reproduces the keyboard-nudge fix: a run moved WITHOUT its kit must be healed.
+    const doc = produce(seed(), (d) => {
+      // translate the whole 'main' run (both spine points) as a nudge would
+      for (const p of d.runs['main']!.spine) { p.x += 37; p.y -= 21; }
+      // endpoint is now OFF the port centre (stale)
+      const kit = d.kits['k']!;
+      const off = d.runs['main']!.spine[d.runs['main']!.spine.length - 1]!;
+      const center = portPairCenterWorld(kit, 'in')!;
+      expect(Math.hypot(off.x - center.x, off.y - center.y)).toBeGreaterThan(1);
+      // heal: the kit did not move, so re-pin
+      syncKitConnections(d, 'k');
+    });
+    const end = doc.runs['main']!.spine[doc.runs['main']!.spine.length - 1]!;
+    const center = portPairCenterWorld(doc.kits['k']!, 'in')!;
+    expect(Math.hypot(end.x - center.x, end.y - center.y)).toBeLessThan(1e-9);
+    expect(doc.connections.length).toBe(4); // nothing dropped
   });
 });

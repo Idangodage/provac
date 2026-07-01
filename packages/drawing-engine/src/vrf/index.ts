@@ -32,6 +32,7 @@ export {
   kitGapMm,
   kitChannels,
   buildKitBodyGeometry,
+  kitRotationDeg,
   KIT_FITTING_RADIUS_MM,
   type KitBodyGeometry,
 } from './geometry/kit';
@@ -60,5 +61,6 @@ export {
   type SnapIndexOptions,
 } from './snap';
 export { VrfBoard } from './render/VrfBoard';
-export { KitShape, type PortState } from './render/KitShape';
+export { KitBody, KitPorts, cachePixelRatio, type PortState } from './render/KitShape';
+export { makeRunGeometryCache, makeKitBodyCache, type RunGeometryCache, type KitBodyCache } from './render/geometryCache';
 export { Toolbar } from './ui/Toolbar';

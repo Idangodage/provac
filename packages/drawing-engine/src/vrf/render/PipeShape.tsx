@@ -8,7 +8,7 @@
  * Rendered inside a world-scaled layer, so widths are world-true (scale with zoom).
  */
 
-import { Fragment, useMemo } from 'react';
+import { Fragment, memo, useMemo } from 'react';
 import { Line } from 'react-konva';
 
 import { samplePath, type Path } from '../geometry/path';
@@ -29,8 +29,10 @@ function toPoints(path: Path): number[] {
   return samplePath(path, 1.2).flatMap((p) => [p.x, p.y]);
 }
 
-export function CopperTube({ path, widthMm }: { path: Path; widthMm: number }): JSX.Element | null {
-  const pts = toPoints(path);
+/** Memoized: a run/kit whose path is unchanged skips both re-sampling and reconcile
+ *  (identity-stable path from the geometry cache), which keeps drags under budget. */
+export const CopperTube = memo(function CopperTube({ path, widthMm }: { path: Path; widthMm: number }): JSX.Element | null {
+  const pts = useMemo(() => toPoints(path), [path]);
   if (pts.length < 4) return null;
   return (
     <Fragment>
@@ -48,7 +50,7 @@ export function CopperTube({ path, widthMm }: { path: Path; widthMm: number }): 
       ))}
     </Fragment>
   );
-}
+});
 
 export function PairedRunShape({
   geometry,
