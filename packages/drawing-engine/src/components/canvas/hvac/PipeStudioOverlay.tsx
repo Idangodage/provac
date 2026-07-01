@@ -47,6 +47,7 @@ import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
 import {
   buildRefrigerantPipeElements,
   getBranchKitPortConnections,
+  resolveRefrigerantPipeBranchKitReconnectionUpdates,
 } from './refrigerantPipePairModel';
 import {
   BRANCH_KIT_SPRITE_ASPECT,
@@ -170,6 +171,7 @@ interface PipeStudioOverlayProps {
   panOffset: Point2D;
   hvacElements: HvacElement[];
   selectedIds: string[];
+  setSelectedIds: (ids: string[]) => void;
   updateHvacElement: (
     id: string,
     updates: Partial<HvacElement>,
@@ -460,6 +462,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       panOffset,
       hvacElements,
       selectedIds,
+      setSelectedIds,
       updateHvacElement,
       addHvacElement,
       saveToHistory,
@@ -468,6 +471,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   ): JSX.Element | null {
   const gRef = useRef<SVGGElement | null>(null);
   const dragRef = useRef<{ id: string; vi: number; startWorld: Point2D; startRoute: Point2D[] } | null>(null);
+  // Whole-branch-kit drag (the overlay owns it now that the kit has no Fabric body):
+  // absolute move from the press point, healing connected pipes each frame.
+  const kitDragRef = useRef<{ id: string; startWorld: Point2D; startPos: Point2D; moved: boolean } | null>(null);
   const editedIdsRef = useRef<Set<string>>(new Set());
   // Each single line's bundle side, determined once and kept stable so editing a
   // vertex can't make the inferred side flip and drop the gap offset.
@@ -813,8 +819,45 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [toWorld],
   );
 
+  const onKitPointerDown = useCallback(
+    (e: ReactPointerEvent, kitId: string) => {
+      e.stopPropagation();
+      setSelectedIds([kitId]);
+      const el = hvacElements.find((x) => x.id === kitId);
+      const w = toWorld(e.clientX, e.clientY);
+      if (!el || !w) return;
+      kitDragRef.current = {
+        id: kitId,
+        startWorld: w,
+        startPos: { x: el.position.x, y: el.position.y },
+        moved: false,
+      };
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+    },
+    [hvacElements, toWorld, setSelectedIds],
+  );
+
   const onPointerMove = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
+      // Branch-kit whole-move: absolute position from the press, then heal every
+      // pipe bound to a kit port so it follows (same engine the Fabric drag used).
+      const kd = kitDragRef.current;
+      if (kd) {
+        const w = toWorld(e.clientX, e.clientY);
+        if (!w) return;
+        const dx = w.x - kd.startWorld.x;
+        const dy = w.y - kd.startWorld.y;
+        if (Math.hypot(dx, dy) > 0.5) kd.moved = true;
+        const el = hvacElements.find((x) => x.id === kd.id);
+        if (!el) return;
+        const nextPos = { x: kd.startPos.x + dx, y: kd.startPos.y + dy };
+        updateHvacElement(kd.id, { position: nextPos }, { skipHistory: true });
+        const movedKit = { ...el, position: nextPos } as HvacElement;
+        for (const u of resolveRefrigerantPipeBranchKitReconnectionUpdates(hvacElements, movedKit)) {
+          updateHvacElement(u.id, u.updates, { skipHistory: true });
+        }
+        return;
+      }
       const drag = dragRef.current;
       if (!drag) return;
       const w = toWorld(e.clientX, e.clientY);
@@ -830,17 +873,23 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         ),
       });
     },
-    [toWorld],
+    [toWorld, hvacElements, updateHvacElement],
   );
 
   const endDrag = useCallback(() => {
+    const kd = kitDragRef.current;
+    if (kd) {
+      kitDragRef.current = null;
+      if (kd.moved) saveToHistory('Move branch kit');
+      return;
+    }
     const drag = dragRef.current;
     dragRef.current = null;
     if (drag && ghost && ghost.id === drag.id) {
       commitRoute(drag.id, ghost.route, 'Edit refrigerant pipe vertex');
     }
     setGhost(null);
-  }, [ghost, commitRoute]);
+  }, [ghost, commitRoute, saveToHistory]);
 
   const onInsert = useCallback(
     (e: ReactPointerEvent, id: string, si: number, route: Point2D[]) => {
@@ -1803,10 +1852,21 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             return (
               <g
                 key={`pk-${kit.id}`}
-                style={{ pointerEvents: 'none' }}
                 transform={`translate(${kit.inlet.x} ${kit.inlet.y}) rotate(${theta}) scale(${s}) translate(${-a0x} ${-a0y})`}
               >
-                <image href={KIT_IMG[kit.kind]} x={0} y={0} width={Wimg} height={Himg} preserveAspectRatio="none" />
+                {/* The sprite is the kit's click + drag target now that it has no
+                    Fabric body: press to select (shows the port grips) and drag to
+                    move the whole kit (connected pipes follow via the healer). */}
+                <image
+                  href={KIT_IMG[kit.kind]}
+                  x={0}
+                  y={0}
+                  width={Wimg}
+                  height={Himg}
+                  preserveAspectRatio="none"
+                  style={{ pointerEvents: 'auto', cursor: 'move' }}
+                  onPointerDown={(e) => onKitPointerDown(e, kit.id)}
+                />
               </g>
             );
           })}

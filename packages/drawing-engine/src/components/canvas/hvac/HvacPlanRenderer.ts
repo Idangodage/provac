@@ -4048,15 +4048,16 @@ export class HvacPlanRenderer {
     this.invalidatePipeSegmentTargets();
     this.hvacData.set(element.id, element);
 
-    // The studio overlay is the SOLE renderer of refrigerant pipes. Build NO
-    // Fabric body for them — not even an invisible one — so nothing old can show
-    // through. The element DATA stays in `hvacData`, and pipe selection is fully
-    // geometric (pickRefrigerantPipeAtPoint no longer needs a Fabric group), so
-    // clicking still works; whole-pipe drag was already frozen. Branch kits keep
-    // their (invisible) group as the select + drag hit-proxy for now.
+    // The studio overlay is the SOLE renderer of refrigerant pipes AND branch
+    // kits. Build NO Fabric body for them — not even an invisible one — so nothing
+    // old can show through. The element DATA stays in `hvacData` (3D + hit-test
+    // read it). Pipe selection is geometric (pickRefrigerantPipeAtPoint); kit
+    // select + drag are owned by the overlay (the sprite is the click/drag target,
+    // and the overlay runs the connected-pipe healer on kit move).
     if (
       element.type === "refrigerant-pipe" ||
-      element.type === "refrigerant-pipe-pair"
+      element.type === "refrigerant-pipe-pair" ||
+      element.type === "refrigerant-branch-kit"
     ) {
       return;
     }

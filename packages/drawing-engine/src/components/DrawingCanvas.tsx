@@ -2579,6 +2579,7 @@ export function DrawingCanvas({
             panOffset={panOffset}
             hvacElements={hvacElements}
             selectedIds={selectedIds}
+            setSelectedIds={setSelectedIds}
             updateHvacElement={updateHvacElement}
             addHvacElement={addHvacElement}
             saveToHistory={saveToHistory}
