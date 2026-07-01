@@ -1529,13 +1529,14 @@ export function PipeStudioOverlay({
                   const jn = lerp(inlet, run, 0.4);
                   const rb = r * 0.92;
                   if (branch) {
-                    // Branch peels off the wedge bottom, drops to the branch
-                    // level, then runs HORIZONTAL to its socket (not a diagonal).
-                    const bs = { x: jn.x + r * 0.3, y: jn.y + r };
-                    const knee = { x: jn.x + r * 2.6, y: branch.y };
+                    // Branch peels off the wedge bottom in a smooth S: drops,
+                    // sweeps out over a long run, then flattens HORIZONTAL to the
+                    // socket (matches the drawing's gentle curve).
+                    const bs = { x: jn.x + r * 0.2, y: jn.y + r * 0.9 };
+                    const knee = { x: jn.x + (branch.x - jn.x) * 0.32, y: branch.y };
                     const d =
                       `M ${bs.x} ${bs.y}` +
-                      ` C ${bs.x} ${(bs.y + branch.y) / 2} ${bs.x - r * 0.4} ${branch.y} ${knee.x} ${knee.y}` +
+                      ` C ${bs.x + r * 0.2} ${lerp(bs, branch, 0.42).y} ${knee.x - (knee.x - bs.x) * 0.5} ${branch.y} ${knee.x} ${knee.y}` +
                       ` L ${branch.x} ${branch.y}`;
                     parts.push(kitGlossPath('gb', d, rb));
                     parts.push(kitWedge('gwedge', jn, r, bs));
