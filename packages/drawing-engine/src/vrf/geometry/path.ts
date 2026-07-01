@@ -96,6 +96,49 @@ export function pathLength(path: Path): number {
   return path.reduce((sum, s) => sum + segLength(s), 0);
 }
 
+/** Perpendicular distance from p to the infinite line through a→b (or |p−a| if a≈b). */
+function perpLineDistance(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  if (l2 < 1e-12) return dist(p, a);
+  return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / Math.sqrt(l2);
+}
+
+/**
+ * Ramer–Douglas–Peucker simplification: drop points that lie within `epsilon` of the
+ * line between kept neighbours. Turns a noisy freehand trail into the minimal set of
+ * vertices that preserves its shape (the fillet then rounds the surviving corners).
+ * Iterative (explicit stack) so a long stroke can't overflow the call stack.
+ */
+export function simplifyRDP(points: Point[], epsilon: number): Point[] {
+  const n = points.length;
+  if (n <= 2 || epsilon <= 0) return points.slice();
+  const keep = new Array<boolean>(n).fill(false);
+  keep[0] = true;
+  keep[n - 1] = true;
+  const stack: [number, number][] = [[0, n - 1]];
+  while (stack.length) {
+    const [lo, hi] = stack.pop()!;
+    let idx = -1;
+    let maxD = epsilon;
+    for (let i = lo + 1; i < hi; i += 1) {
+      const d = perpLineDistance(points[i]!, points[lo]!, points[hi]!);
+      if (d > maxD) {
+        maxD = d;
+        idx = i;
+      }
+    }
+    if (idx !== -1) {
+      keep[idx] = true;
+      stack.push([lo, idx], [idx, hi]);
+    }
+  }
+  const out: Point[] = [];
+  for (let i = 0; i < n; i += 1) if (keep[i]) out.push(points[i]!);
+  return out;
+}
+
 /** Closest point on a spine polyline to p, with its segment index + parameter t. */
 export function nearestPointOnSpine(
   spine: Point[],
