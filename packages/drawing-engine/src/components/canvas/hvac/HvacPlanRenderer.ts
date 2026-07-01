@@ -4206,7 +4206,8 @@ export class HvacPlanRenderer {
       }
       if (
         element.type === "refrigerant-pipe" ||
-        element.type === "refrigerant-pipe-pair"
+        element.type === "refrigerant-pipe-pair" ||
+        element.type === "refrigerant-branch-kit"
       ) {
         if (group.opacity !== targetOpacity) {
           group.set("opacity", targetOpacity);

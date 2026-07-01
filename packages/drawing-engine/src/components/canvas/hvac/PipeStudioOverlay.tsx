@@ -661,6 +661,23 @@ export function PipeStudioOverlay({
     return out;
   }, [hvacElements, selectedSet]);
 
+  // Every PLACED branch kit, positioned by its inlet + run-outlet world ports, so
+  // the overlay draws them (as the real-geometry sprite) like it draws pipes.
+  const placedKits = useMemo(() => {
+    const out: { id: string; inlet: Point2D; run: Point2D; kind: 'gas' | 'liquid' | 'both' }[] = [];
+    for (const el of hvacElements) {
+      if (el.type !== 'refrigerant-branch-kit') continue;
+      const ports = getBranchKitPortConnections(el);
+      const inlet = ports.find((p) => p.terminalRole === 'inlet')?.point;
+      const run = ports.find((p) => p.terminalRole === 'run-outlet')?.point;
+      if (!inlet || !run) continue;
+      const raw = (el.properties as Record<string, unknown>)?.branchKitLineKind;
+      const kind = raw === 'gas' ? 'gas' : raw === 'liquid' ? 'liquid' : 'both';
+      out.push({ id: el.id, inlet: { x: inlet.x, y: inlet.y }, run: { x: run.x, y: run.y }, kind });
+    }
+    return out;
+  }, [hvacElements]);
+
   const toWorld = useCallback((clientX: number, clientY: number): Point2D | null => {
     const g = gRef.current;
     if (!g) return null;
@@ -1497,6 +1514,35 @@ export function PipeStudioOverlay({
               );
             }),
           )}
+          {/* Every PLACED branch kit, drawn in the overlay (real-geometry sprite)
+              like the pipes — a similarity transform lands the image's inlet/run
+              anchors on the element's world ports, so it scales + rotates with the
+              kit. Replaces the flat Fabric symbol (hidden while the overlay owns it). */}
+          {placedKits.map((kit) => {
+            const img = kitImg[kit.kind];
+            if (!img?.ok) return null;
+            const Wimg = 1000;
+            const Himg = Wimg * (img.aspect || 0.3);
+            const a0x = KIT_IMG_ANCHOR.inlet.x * Wimg;
+            const a0y = KIT_IMG_ANCHOR.inlet.y * Himg;
+            const a1x = KIT_IMG_ANCHOR.run.x * Wimg;
+            const a1y = KIT_IMG_ANCHOR.run.y * Himg;
+            const avx = a1x - a0x;
+            const avy = a1y - a0y;
+            const bvx = kit.run.x - kit.inlet.x;
+            const bvy = kit.run.y - kit.inlet.y;
+            const s = Math.hypot(bvx, bvy) / (Math.hypot(avx, avy) || 1);
+            const theta = ((Math.atan2(bvy, bvx) - Math.atan2(avy, avx)) * 180) / Math.PI;
+            return (
+              <g
+                key={`pk-${kit.id}`}
+                style={{ pointerEvents: 'none' }}
+                transform={`translate(${kit.inlet.x} ${kit.inlet.y}) rotate(${theta}) scale(${s}) translate(${-a0x} ${-a0y})`}
+              >
+                <image href={KIT_IMG[kit.kind]} x={0} y={0} width={Wimg} height={Himg} preserveAspectRatio="none" />
+              </g>
+            );
+          })}
           {/* Copper branch-kit placement ghost, attached to the cursor, snapping
               a port onto an open pipe end (auto-rotated to meet it). */}
           {placingKit && kitGhost
