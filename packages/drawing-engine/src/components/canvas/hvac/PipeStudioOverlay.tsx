@@ -50,14 +50,15 @@ const KIT_ELEVATION_MM = 2600;
 // drawn inlet-left / run-right / branch dropping down, on transparent bg) at
 // these paths under apps/web/public and they replace the vector ghost. Falls
 // back to the vector drawing until the file loads.
+// Real DIS-371-1G geometry, projected + copper-shaded from the manufacturer IFC
+// mesh (apps/web/public/hvac/*.svg). The exact fitting, not a hand drawing.
 const KIT_IMG: Record<'gas' | 'liquid' | 'both', string> = {
-  both: '/hvac/branch-kit-dis-22-1g.png',
-  gas: '/hvac/branch-kit-dis-22-1g-gas.png',
-  liquid: '/hvac/branch-kit-dis-22-1g-liquid.png',
+  both: '/hvac/branch-kit-dis-371-1g.svg',
+  gas: '/hvac/branch-kit-dis-371-1g-gas.svg',
+  liquid: '/hvac/branch-kit-dis-371-1g-liquid.svg',
 };
-// Where the inlet and run-outlet ports sit within the image, as fractions of
-// its box (tune to your photo so the ports line up with the pipe connections).
-const KIT_IMG_ANCHOR = { inlet: { x: 0.06, y: 0.4 }, run: { x: 0.94, y: 0.4 } };
+// The inlet + run-outlet sit at the far ends on the top line of the projection.
+const KIT_IMG_ANCHOR = { inlet: { x: 0.01, y: 0.21 }, run: { x: 0.99, y: 0.21 } };
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
