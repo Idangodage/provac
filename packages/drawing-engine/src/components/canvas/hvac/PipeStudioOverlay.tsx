@@ -1836,7 +1836,6 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
               const dl = Math.hypot(port.direction.x, port.direction.y) || 1;
               const dx = port.direction.x / dl;
               const dy = port.direction.y / dl;
-              const tip = { x: c.x + dx * hpx(20), y: c.y + dy * hpx(20) };
               const label =
                 port.terminalRole === 'inlet'
                   ? 'inlet'
@@ -1860,41 +1859,40 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                   style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
                   onPointerDown={(e) => startPortDraw(e, port)}
                 >
-                  {/* gas + liquid points + the port snap ring — always shown so
-                      every kit's ports read as draw-from snap points. */}
-                  <line x1={port.gasPoint.x} y1={port.gasPoint.y} x2={port.liquidPoint.x} y2={port.liquidPoint.y} stroke="#0F766E" strokeWidth={hpx(1)} strokeOpacity={0.55} strokeDasharray={`${hpx(2)} ${hpx(2)}`} />
-                  <circle cx={port.gasPoint.x} cy={port.gasPoint.y} r={hpx(3.2)} fill="#1F6FB2" />
-                  <circle cx={port.liquidPoint.x} cy={port.liquidPoint.y} r={hpx(3.2)} fill="#B5742F" />
-                  <circle cx={c.x} cy={c.y} r={hpx(sel ? 8 : 5.5)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(sel ? 2 : 1.6)} strokeOpacity={sel ? 1 : 0.8} />
-                  <path
-                    d={`M ${c.x - hpx(sel ? 3 : 2.2)} ${c.y} H ${c.x + hpx(sel ? 3 : 2.2)} M ${c.x} ${c.y - hpx(sel ? 3 : 2.2)} V ${c.y + hpx(sel ? 3 : 2.2)}`}
-                    stroke="#0F766E"
-                    strokeWidth={hpx(sel ? 1.6 : 1.3)}
-                    strokeOpacity={sel ? 1 : 0.8}
-                  />
-                  {/* Verbose grips only for the selected kit: outward arrow + role. */}
-                  {sel ? (
+                  {/* Transparent hit disc so the whole port area is pressable. */}
+                  <circle cx={c.x} cy={c.y} r={hitR} fill="rgba(0,0,0,0.001)" />
+                  {/* For a 'both' kit only, faint gas/liquid points so both lines read. */}
+                  {halfSpan > hpx(2.5) ? (
                     <>
-                      <line x1={c.x} y1={c.y} x2={tip.x} y2={tip.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeLinecap="round" />
-                      <circle cx={tip.x} cy={tip.y} r={hpx(2)} fill="#0F766E" />
-                      <text
-                        x={c.x - dx * hpx(15)}
-                        y={c.y - dy * hpx(15) + hpx(3)}
-                        fontSize={hpx(11)}
-                        textAnchor="middle"
-                        fill="#0F766E"
-                        style={{ fontWeight: 500 }}
-                      >
-                        {label}
-                      </text>
+                      <circle cx={port.gasPoint.x} cy={port.gasPoint.y} r={hpx(2.6)} fill="#1F6FB2" fillOpacity={0.85} />
+                      <circle cx={port.liquidPoint.x} cy={port.liquidPoint.y} r={hpx(2.6)} fill="#B5742F" fillOpacity={0.85} />
                     </>
                   ) : null}
-                  {/* Clickable draw origin covering both tube ends: press the port
-                      to pull a pipe out. Also placed directly on the gas + liquid
-                      tube ends so hovering either visible stub starts the draw. */}
-                  <circle cx={c.x} cy={c.y} r={hitR} fill="rgba(0,0,0,0.001)" style={{ pointerEvents: 'auto', cursor: 'crosshair' }} onPointerDown={(e) => startPortDraw(e, port)} />
-                  <circle cx={port.gasPoint.x} cy={port.gasPoint.y} r={hpx(11)} fill="rgba(0,0,0,0.001)" style={{ pointerEvents: 'auto', cursor: 'crosshair' }} onPointerDown={(e) => startPortDraw(e, port)} />
-                  <circle cx={port.liquidPoint.x} cy={port.liquidPoint.y} r={hpx(11)} fill="rgba(0,0,0,0.001)" style={{ pointerEvents: 'auto', cursor: 'crosshair' }} onPointerDown={(e) => startPortDraw(e, port)} />
+                  {/* Green dashed snap ring centred exactly on the port (= the pipe
+                      connection point) — the SAME indicator shown when a kit snaps to
+                      a pipe. Press it to pull a pipe out. */}
+                  <circle
+                    cx={c.x}
+                    cy={c.y}
+                    r={hpx(sel ? 13 : 11)}
+                    fill="none"
+                    stroke="#2F9E68"
+                    strokeWidth={hpx(sel ? 2.6 : 2.1)}
+                    strokeDasharray={`${hpx(4)} ${hpx(4)}`}
+                  />
+                  <circle cx={c.x} cy={c.y} r={hpx(2)} fill="#2F9E68" />
+                  {sel ? (
+                    <text
+                      x={c.x - dx * hpx(19)}
+                      y={c.y - dy * hpx(19) + hpx(3)}
+                      fontSize={hpx(11)}
+                      textAnchor="middle"
+                      fill="#2F9E68"
+                      style={{ fontWeight: 500 }}
+                    >
+                      {label}
+                    </text>
+                  ) : null}
                 </g>
               );
             }),
