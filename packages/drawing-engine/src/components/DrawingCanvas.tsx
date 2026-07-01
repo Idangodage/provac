@@ -2567,6 +2567,7 @@ export function DrawingCanvas({
             hvacElements={hvacElements}
             selectedIds={selectedIds}
             updateHvacElement={updateHvacElement}
+            addHvacElement={addHvacElement}
             saveToHistory={saveToHistory}
           />
           <PipeClashOverlay

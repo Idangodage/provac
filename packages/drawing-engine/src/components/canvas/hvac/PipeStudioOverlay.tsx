@@ -29,9 +29,22 @@ import type { HvacElement, Point2D } from '../../../types';
 import { viewportToViewTransform } from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
 
+import {
+  solveBranchKitSnap,
+  type BranchKitSnap,
+  type PlaceablePort,
+  type PlacementTransform,
+  type SnapTargetEnd,
+} from './branchKitPlacementSnap';
 import { buildPipeCenterline, toPolyline, toSvgPathData } from './pipeCenterline';
+import {
+  buildRefrigerantBranchKitViewModel,
+  resolveRefrigerantBranchKitConnectionIdentity,
+} from './refrigerantBranchKitModel';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
 import { getBranchKitPortConnections } from './refrigerantPipePairModel';
+
+const KIT_ELEVATION_MM = 2600;
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
@@ -50,6 +63,13 @@ interface PipeStudioOverlayProps {
     updates: Partial<HvacElement>,
     options?: { skipHistory?: boolean },
   ) => void;
+  addHvacElement: (
+    element: Omit<Partial<HvacElement>, 'id'> &
+      Pick<
+        HvacElement,
+        'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'
+      >,
+  ) => string;
   saveToHistory: (action: string) => void;
 }
 
@@ -318,6 +338,7 @@ export function PipeStudioOverlay({
   hvacElements,
   selectedIds,
   updateHvacElement,
+  addHvacElement,
   saveToHistory,
 }: PipeStudioOverlayProps): JSX.Element | null {
   const gRef = useRef<SVGGElement | null>(null);
@@ -352,6 +373,11 @@ export function PipeStudioOverlay({
     outY: number;
     cursor: Point2D | null;
   } | null>(null);
+  // Copper branch-kit placement: which line(s) to place, whether we're placing,
+  // and the live cursor-attached ghost (transform + snap-to-pipe-end).
+  const [kitKind, setKitKind] = useState<'gas' | 'liquid' | 'both'>('both');
+  const [placingKit, setPlacingKit] = useState(false);
+  const [kitGhost, setKitGhost] = useState<{ transform: PlacementTransform; snap: BranchKitSnap | null } | null>(null);
   const orthoRef = useRef(false);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
@@ -365,6 +391,8 @@ export function PipeStudioOverlay({
       if (e.key === 'Escape' || e.key === 'Enter') {
         setExtend(null);
         setBundleDraw(null);
+        setPlacingKit(false);
+        setKitGhost(null);
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -828,6 +856,110 @@ export function PipeStudioOverlay({
     [bundleDraw, pipes, toWorld, bundleAnchor, extendConstrain, commitPair],
   );
 
+  // --- Copper branch-kit placement ------------------------------------------
+  // The chosen kit's footprint + its 3 ports in LOCAL (centre-origin) coords,
+  // driving the snap solver and the ghost. Rebuilt only when the line kind flips.
+  const kitPlacement = useMemo(() => {
+    const source = {
+      type: 'refrigerant-branch-kit' as const,
+      subtype: 'dis-22-1g',
+      modelLabel: null,
+      properties: { branchKitType: 'dis-22-1g', branchKitLineKind: kitKind },
+    };
+    const model = buildRefrigerantBranchKitViewModel(source as unknown as HvacElement);
+    const roles = ['inlet', 'run-outlet', 'branch-outlet'] as const;
+    const ports: PlaceablePort[] = [];
+    for (const role of roles) {
+      const id = resolveRefrigerantBranchKitConnectionIdentity({
+        model,
+        role,
+        lineSelection: kitKind,
+        worldCenter: { x: 0, y: 0 },
+        rotationDeg: 0,
+      });
+      if (!id) continue;
+      const point =
+        kitKind === 'gas'
+          ? id.gasPoint
+          : kitKind === 'liquid'
+            ? id.liquidPoint
+            : { x: (id.gasPoint.x + id.liquidPoint.x) / 2, y: (id.gasPoint.y + id.liquidPoint.y) / 2 };
+      ports.push({ role, point, direction: id.direction });
+    }
+    return { width: model.widthMm, depth: model.depthMm, height: model.heightMm, ports };
+  }, [kitKind]);
+
+  // Open pipe ends (world) the kit can snap onto.
+  const openEnds = useMemo<SnapTargetEnd[]>(() => {
+    const out: SnapTargetEnd[] = [];
+    for (const p of pipes) {
+      if (p.route.length < 2) continue;
+      const a0 = p.route[0]!;
+      const a1 = p.route[1]!;
+      const b0 = p.route[p.route.length - 1]!;
+      const b1 = p.route[p.route.length - 2]!;
+      const da = unit(a0.x - a1.x, a0.y - a1.y);
+      const db = unit(b0.x - b1.x, b0.y - b1.y);
+      out.push({ id: `${p.id}:start`, point: { x: a0.x, y: a0.y }, direction: { x: da.x, y: da.y } });
+      out.push({ id: `${p.id}:end`, point: { x: b0.x, y: b0.y }, direction: { x: db.x, y: db.y } });
+    }
+    return out;
+  }, [pipes]);
+
+  const startPlaceKit = useCallback(() => {
+    setExtend(null);
+    setBundleDraw(null);
+    setKitGhost(null);
+    setPlacingKit(true);
+  }, []);
+
+  const onKitMove = useCallback(
+    (e: ReactPointerEvent) => {
+      const w = toWorld(e.clientX, e.clientY);
+      if (!w) return;
+      const tol = 16 / Math.max(k, 1e-6);
+      const solved = solveBranchKitSnap(kitPlacement.ports, openEnds, w, tol);
+      setKitGhost(solved);
+    },
+    [toWorld, k, kitPlacement, openEnds],
+  );
+
+  const onKitClick = useCallback(
+    (e: ReactMouseEvent) => {
+      const w = toWorld(e.clientX, e.clientY);
+      if (!w) return;
+      const tol = 16 / Math.max(k, 1e-6);
+      const { transform } = solveBranchKitSnap(kitPlacement.ports, openEnds, w, tol);
+      const { width: kw, depth: kd, height: kh } = kitPlacement;
+      addHvacElement({
+        type: 'refrigerant-branch-kit',
+        position: { x: transform.tx - kw / 2, y: transform.ty - kd / 2 },
+        rotation: transform.rotDeg,
+        width: kw,
+        depth: kd,
+        height: kh,
+        elevation: KIT_ELEVATION_MM,
+        mountType: 'ceiling',
+        label: 'Copper branch kit',
+        properties: {
+          branchKitType: 'dis-22-1g',
+          branchKitLineKind: kitKind,
+          branchKitWallAllowanceMm: 0.9,
+        },
+      });
+      saveToHistory('Place copper branch kit');
+      setPlacingKit(false);
+      setKitGhost(null);
+    },
+    [toWorld, k, kitPlacement, openEnds, kitKind, addHvacElement, saveToHistory],
+  );
+
+  const finishPlaceKit = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    setPlacingKit(false);
+    setKitGhost(null);
+  }, []);
+
   if (!enabled || width <= 0 || height <= 0) return null;
 
   const handleR = hpx(6.5);
@@ -888,6 +1020,75 @@ export function PipeStudioOverlay({
             />
             <span style={{ fontWeight: 500, minWidth: 46 }}>+{Math.round(gapSpreadMm)} mm</span>
           </label>
+          <span style={{ width: 1, height: 22, background: '#e6e1d6', display: 'inline-block' }} />
+          <button
+            type="button"
+            onClick={placingKit ? () => { setPlacingKit(false); setKitGhost(null); } : startPlaceKit}
+            title="Place a copper branch kit — click, then drop a port onto an open pipe end"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              border: 'none',
+              borderRadius: 7,
+              padding: '5px 11px',
+              fontSize: 13,
+              cursor: 'pointer',
+              background: placingKit ? '#0F766E' : '#f3ede3',
+              color: placingKit ? '#fff' : '#46433c',
+              fontWeight: 500,
+            }}
+          >
+            <span style={{ width: 12, height: 8, borderRadius: 2, background: 'linear-gradient(#c9824c,#f4d0a6,#75401d)', display: 'inline-block' }} />
+            Branch kit
+          </button>
+          <span style={{ display: 'inline-flex', border: '1px solid #d8d2c4', borderRadius: 7, overflow: 'hidden' }}>
+            {(['gas', 'liquid', 'both'] as const).map((m) => {
+              const on = kitKind === m;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setKitKind(m)}
+                  style={{
+                    border: 'none',
+                    padding: '5px 10px',
+                    fontSize: 12.5,
+                    cursor: 'pointer',
+                    background: on ? '#B5742F' : '#fff',
+                    color: on ? '#fff' : '#46433c',
+                    fontWeight: on ? 600 : 400,
+                  }}
+                >
+                  {m === 'gas' ? 'Gas' : m === 'liquid' ? 'Liquid' : 'Both'}
+                </button>
+              );
+            })}
+          </span>
+        </div>
+      ) : null}
+      {placingKit ? (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 16,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            pointerEvents: 'none',
+            background: '#0F766E',
+            color: '#fff',
+            borderRadius: 8,
+            padding: '7px 14px',
+            fontSize: 12.5,
+            fontWeight: 500,
+            boxShadow: '0 2px 10px rgba(0,0,0,0.18)',
+            whiteSpace: 'nowrap',
+            zIndex: 20,
+          }}
+        >
+          {kitGhost?.snap
+            ? 'Release to place — port snapped to ' + kitGhost.snap.portRole
+            : 'Move a port near an open pipe end to snap · click to place · right-click / Esc to cancel'}
         </div>
       ) : null}
       {extend || bundleDraw ? (
@@ -1176,11 +1377,48 @@ export function PipeStudioOverlay({
               );
             }),
           )}
+          {/* Copper branch-kit placement ghost, attached to the cursor, snapping
+              a port onto an open pipe end (auto-rotated to meet it). */}
+          {placingKit && kitGhost
+            ? (() => {
+                const tf = kitGhost.transform;
+                const op = kitGhost.snap ? 0.96 : 0.55;
+                const byRole = new Map(kitPlacement.ports.map((p) => [p.role, p.point]));
+                const inlet = byRole.get('inlet');
+                const run = byRole.get('run-outlet');
+                const branch = byRole.get('branch-outlet');
+                const cw = kitKind === 'both' ? 34 : kitKind === 'liquid' ? 22 : 30;
+                const end = kitGhost.snap ? openEnds.find((e) => e.id === kitGhost.snap!.targetId) : null;
+                return (
+                  <g style={{ pointerEvents: 'none' }}>
+                    <g transform={`translate(${tf.tx} ${tf.ty}) rotate(${tf.rotDeg})`} opacity={op}>
+                      {inlet && run ? (
+                        <line x1={inlet.x} y1={inlet.y} x2={run.x} y2={run.y} stroke="#C0855A" strokeWidth={cw} strokeLinecap="round" />
+                      ) : null}
+                      {branch ? (
+                        <line x1={0} y1={0} x2={branch.x} y2={branch.y} stroke="#C0855A" strokeWidth={cw * 0.82} strokeLinecap="round" />
+                      ) : null}
+                      {inlet && run ? (
+                        <line x1={inlet.x} y1={inlet.y} x2={run.x} y2={run.y} stroke="#F4D1A7" strokeWidth={cw * 0.28} strokeLinecap="round" strokeOpacity={0.6} />
+                      ) : null}
+                      {[inlet, run, branch].map((pt, i) =>
+                        pt ? (
+                          <circle key={i} cx={pt.x} cy={pt.y} r={cw * 0.6} fill="none" stroke="#8A5A34" strokeWidth={hpx(1.6)} />
+                        ) : null,
+                      )}
+                    </g>
+                    {end ? (
+                      <circle cx={end.point.x} cy={end.point.y} r={hpx(13)} fill="none" stroke="#2F9E68" strokeWidth={hpx(2.6)} strokeDasharray={`${hpx(4)} ${hpx(4)}`} />
+                    ) : null}
+                  </g>
+                );
+              })()
+            : null}
         </g>
         {/* While extending, a transparent capture layer turns canvas clicks into
             new pipe points (move = preview, click = place, right-click = finish).
             Dispatches to single-line or bundle-centerline draw. */}
-        {extend || bundleDraw ? (
+        {extend || bundleDraw || placingKit ? (
           <rect
             x={0}
             y={0}
@@ -1188,9 +1426,9 @@ export function PipeStudioOverlay({
             height={height}
             fill="rgba(0,0,0,0)"
             style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
-            onPointerMove={extend ? onExtendMove : onBundleMove}
-            onClick={extend ? onExtendClick : onBundleClick}
-            onContextMenu={finishExtend}
+            onPointerMove={placingKit ? onKitMove : extend ? onExtendMove : onBundleMove}
+            onClick={placingKit ? onKitClick : extend ? onExtendClick : onBundleClick}
+            onContextMenu={placingKit ? finishPlaceKit : finishExtend}
           />
         ) : null}
       </svg>
