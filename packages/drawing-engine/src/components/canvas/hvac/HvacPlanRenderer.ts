@@ -98,7 +98,12 @@ function toCanvas(point: Point2D): Point2D {
 // under the opaque overlay. Deterministic pipe selection no longer depends on
 // this (see pickRefrigerantPipeAtPoint), so the value only needs to keep the
 // non-overlay/fallback path working.
-const HIDDEN_PIPE_HIT_OPACITY = 0.04;
+// Fully transparent: the studio overlay is the SOLE visible renderer of pipes +
+// branch kits. The Fabric body stays only as an invisible hit/drag proxy — it is
+// visible=true + evented=true so the geometric pick (pickRefrigerantPipeAtPoint,
+// which keys off those flags, not pixels) and kit bbox pick still work — but it
+// contributes ZERO pixels, so the old Fabric rendering is gone from view.
+const HIDDEN_PIPE_HIT_OPACITY = 0;
 
 // The three element types the studio overlay renders + edits.
 const REFRIGERANT_OVERLAY_TYPES = new Set([
