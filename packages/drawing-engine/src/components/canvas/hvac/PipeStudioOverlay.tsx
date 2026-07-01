@@ -71,16 +71,16 @@ const KIT_IMG: Record<'gas' | 'liquid' | 'both', string> = {
   liquid: BRANCH_KIT_SPRITE_LIQUID,
 };
 const KIT_IMG_ASPECT = BRANCH_KIT_SPRITE_ASPECT;
-// Where each sprite's inlet + run-outlet tube CENTERLINES sit within its box,
-// measured from the mesh. The run tube sits higher than the inlet in the real
-// DIS-371 geometry, so we use the TRUE run.y (not flattened): the 2-point
-// similarity then lands BOTH tube ends exactly on their world ports, so the snap
-// ring (on the port) coincides with the visible tube centre. The fitting rides a
-// ~1.5-deg tilt as a result, which keeps the connections accurate.
+// Anchors used to place the sprite: only the INLET is pinned to the pipe (that's
+// the connection that must be collinear with the existing pipe). run.y is set
+// equal to inlet.y so the sprite stays UPRIGHT — we do NOT drag the outlet onto
+// the pipe axis (that would tilt the fitting). The run/branch then render at their
+// natural heights from the real geometry. run.x still sets the sprite length +
+// trunk direction.
 const KIT_IMG_ANCHOR: Record<'gas' | 'liquid' | 'both', { inlet: Point2D; run: Point2D }> = {
-  gas: { inlet: { x: 0.0102, y: 0.2302 }, run: { x: 0.9898, y: 0.1453 } },
-  liquid: { inlet: { x: 0.013, y: 0.1762 }, run: { x: 0.987, y: 0.1173 } },
-  both: { inlet: { x: 0.0102, y: 0.2302 }, run: { x: 0.9898, y: 0.1453 } },
+  gas: { inlet: { x: 0.0102, y: 0.2302 }, run: { x: 0.9898, y: 0.2302 } },
+  liquid: { inlet: { x: 0.013, y: 0.1762 }, run: { x: 0.987, y: 0.1762 } },
+  both: { inlet: { x: 0.0102, y: 0.2302 }, run: { x: 0.9898, y: 0.2302 } },
 };
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
