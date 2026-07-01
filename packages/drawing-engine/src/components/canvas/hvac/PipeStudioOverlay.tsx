@@ -49,36 +49,60 @@ const KIT_ELEVATION_MM = 2600;
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
 const LIQUID_COLORS = { ins: '#F1E4CD', core: '#B5742F', sheen: '#E3A968' };
-const KIT_COPPER_EDGE = '#5b3013';
-
-// Copper Refnet body pieces (local mm coords) — a cross-tube sheen capsule, a
-// bulged socket with rim + bore, and a neck band — matching the real DIS-22-1G.
-function kitTube(key: string, a: Point2D, b: Point2D, r: number): JSX.Element {
-  const len = Math.hypot(b.x - a.x, b.y - a.y);
-  const ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+// Copper Refnet body pieces (local mm coords), matching the real DIS-22-1G:
+// slim glossy tubes (layered strokes so bends read as cylinders), bamboo swage
+// bulges with ring seams, a bulb junction, and flared end sockets.
+function kitPathD(pts: Point2D[]): string {
+  return 'M' + pts.map((p) => `${p.x} ${p.y}`).join(' L');
+}
+function kitGloss(key: string, pts: Point2D[], r: number): JSX.Element {
+  const d = kitPathD(pts);
+  const s = { fill: 'none', strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
   return (
-    <g key={key} transform={`translate(${a.x} ${a.y}) rotate(${ang})`}>
-      <rect x={-r * 0.15} y={-r} width={len + r * 0.3} height={2 * r} rx={r} fill="url(#bkCu)" stroke={KIT_COPPER_EDGE} strokeWidth={Math.max(r * 0.06, 0.4)} />
-      <rect x={2} y={-r * 0.62} width={Math.max(0, len - 4)} height={r * 0.34} rx={r * 0.17} fill="#fce4c6" opacity={0.5} />
-      <rect x={2} y={r * 0.34} width={Math.max(0, len - 4)} height={r * 0.3} rx={r * 0.15} fill="#5b3013" opacity={0.24} />
+    <g key={key}>
+      <path d={d} stroke="#7d3f1c" strokeWidth={2 * r + r * 0.35} {...s} />
+      <path d={d} stroke="#d4884f" strokeWidth={2 * r} {...s} />
+      <path d={d} stroke="#eaa876" strokeWidth={r * 1.1} strokeOpacity={0.55} {...s} />
+      <path d={d} stroke="#ffe0c1" strokeWidth={r * 0.7} strokeOpacity={0.5} {...s} />
+      <path d={d} stroke="#fff4e8" strokeWidth={r * 0.3} strokeOpacity={0.8} {...s} />
+    </g>
+  );
+}
+function kitSwage(key: string, c: Point2D, dir: Point2D, r: number): JSX.Element {
+  const L = r * 1.5;
+  const a = { x: c.x - dir.x * L, y: c.y - dir.y * L };
+  const b = { x: c.x + dir.x * L, y: c.y + dir.y * L };
+  const n = { x: -dir.y, y: dir.x };
+  const seam = (p: Point2D) =>
+    `M${p.x - n.x * r * 1.5} ${p.y - n.y * r * 1.5} L${p.x + n.x * r * 1.5} ${p.y + n.y * r * 1.5}`;
+  return (
+    <g key={key}>
+      {kitGloss(`${key}-t`, [a, b], r * 1.5)}
+      <path d={seam(a)} stroke="#7a3d19" strokeWidth={r * 0.16} strokeOpacity={0.5} />
+      <path d={seam(b)} stroke="#7a3d19" strokeWidth={r * 0.16} strokeOpacity={0.5} />
+    </g>
+  );
+}
+function kitBulb(key: string, c: Point2D, r: number): JSX.Element {
+  const rx = r * 3;
+  const ry = r * 2.05;
+  return (
+    <g key={key}>
+      <ellipse cx={c.x} cy={c.y} rx={rx + r * 0.15} ry={ry + r * 0.15} fill="#7d3f1c" />
+      <ellipse cx={c.x} cy={c.y} rx={rx} ry={ry} fill="url(#bkCub)" />
+      <ellipse cx={c.x - r * 0.5} cy={c.y - r * 0.7} rx={rx * 0.42} ry={ry * 0.4} fill="#fff4e8" opacity={0.5} />
     </g>
   );
 }
 function kitSocket(key: string, c: Point2D, dir: Point2D, r: number): JSX.Element {
-  const inb = { x: c.x - dir.x * r * 2, y: c.y - dir.y * r * 2 };
-  const ang = (Math.atan2(dir.y, dir.x) * 180) / Math.PI;
+  const rx = Math.abs(dir.x) * r * 0.55 + Math.abs(dir.y) * r;
+  const ry = Math.abs(dir.x) * r + Math.abs(dir.y) * r * 0.55;
   return (
     <g key={key}>
-      {kitTube(`${key}-b`, inb, c, r * 1.32)}
-      <g transform={`translate(${c.x} ${c.y}) rotate(${ang})`}>
-        <ellipse cx={-2} cy={0} rx={r * 0.55} ry={r * 1.34} fill="#8a4e26" stroke={KIT_COPPER_EDGE} strokeWidth={Math.max(r * 0.06, 0.4)} />
-        <ellipse cx={-3} cy={0} rx={r * 0.4} ry={r * 1.1} fill="#3d220e" />
-      </g>
+      <ellipse cx={c.x} cy={c.y} rx={rx} ry={ry} fill="#8a4a24" stroke="#7d3f1c" strokeWidth={r * 0.1} />
+      <ellipse cx={c.x - dir.x * r * 0.2} cy={c.y - dir.y * r * 0.2} rx={rx * 0.6} ry={ry * 0.6} fill="#3e2410" />
     </g>
   );
-}
-function kitBand(key: string, at: Point2D, r: number): JSX.Element {
-  return <ellipse key={key} cx={at.x} cy={at.y} rx={r * 0.22} ry={r * 1.02} fill="#7c4420" opacity={0.6} />;
 }
 
 interface PipeStudioOverlayProps {
@@ -1428,27 +1452,43 @@ export function PipeStudioOverlay({
           {placingKit && kitGhost
             ? (() => {
                 const tf = kitGhost.transform;
-                const op = kitGhost.snap ? 0.96 : 0.55;
+                const op = kitGhost.snap ? 0.98 : 0.6;
                 const byRole = new Map(kitPlacement.ports.map((p) => [p.role, p.point]));
                 const inlet = byRole.get('inlet');
                 const run = byRole.get('run-outlet');
                 const branch = byRole.get('branch-outlet');
-                const cw = kitKind === 'both' ? 34 : kitKind === 'liquid' ? 22 : 30;
+                // Slim tube radius (mm) — real DIS-22-1G stubs are thin vs the body.
+                const r = kitKind === 'both' ? 11 : kitKind === 'liquid' ? 8 : 10;
                 const end = kitGhost.snap ? openEnds.find((e) => e.id === kitGhost.snap!.targetId) : null;
-                const r = cw / 2;
-                const jn = { x: branch ? branch.x : 0, y: inlet ? inlet.y : run ? run.y : 0 };
+                const lerp = (a: Point2D, b: Point2D, t: number) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+                const parts: JSX.Element[] = [];
+                if (inlet && run) {
+                  // Junction on the trunk above/over the branch tap.
+                  const jn = { x: branch ? branch.x : (inlet.x + run.x) / 2, y: (inlet.y + run.y) / 2 };
+                  const dIn = unit(jn.x - inlet.x, jn.y - inlet.y);
+                  const dRun = unit(run.x - jn.x, run.y - jn.y);
+                  parts.push(kitGloss('gt', [inlet, jn, run], r));
+                  if (branch) {
+                    // Branch dog-leg: drop off the trunk, then out to the outlet.
+                    const knee = { x: jn.x, y: lerp(jn, branch, 0.55).y };
+                    const dBr = unit(branch.x - knee.x, branch.y - knee.y);
+                    parts.push(kitGloss('gb', [jn, knee, branch], r * 0.9));
+                    parts.push(kitSwage('gbw1', lerp(knee, branch, 0.45), dBr, r * 0.9));
+                    parts.push(kitSwage('gbw2', lerp(knee, branch, 0.78), dBr, r * 0.9));
+                    parts.push(kitBulb('gbulb', jn, r));
+                    parts.push(kitSocket('gsb', branch, dBr, r * 0.9));
+                  }
+                  parts.push(kitSwage('gw1', lerp(inlet, jn, 0.34), dIn, r));
+                  parts.push(kitSwage('gw2', lerp(inlet, jn, 0.68), dIn, r));
+                  parts.push(kitSwage('gw3', lerp(jn, run, 0.42), dRun, r));
+                  parts.push(kitSwage('gw4', lerp(jn, run, 0.76), dRun, r));
+                  parts.push(kitSocket('gsi', inlet, { x: -1, y: 0 }, r));
+                  parts.push(kitSocket('gsr', run, { x: 1, y: 0 }, r));
+                }
                 return (
                   <g style={{ pointerEvents: 'none' }}>
                     <g transform={`translate(${tf.tx} ${tf.ty}) rotate(${tf.rotDeg})`} opacity={op}>
-                      {inlet && run ? kitTube('gt', inlet, run, r) : null}
-                      {branch ? kitTube('gb', jn, branch, r * 0.84) : null}
-                      {branch ? (
-                        <circle cx={jn.x} cy={jn.y} r={r * 1.3} fill="url(#bkCub)" stroke={KIT_COPPER_EDGE} strokeWidth={Math.max(r * 0.06, 0.4)} />
-                      ) : null}
-                      {inlet && run ? kitBand('gd1', { x: inlet.x + (run.x - inlet.x) * 0.32, y: inlet.y }, r) : null}
-                      {inlet ? kitSocket('gsi', inlet, { x: -1, y: 0 }, r) : null}
-                      {run ? kitSocket('gsr', run, { x: 1, y: 0 }, r) : null}
-                      {branch ? kitSocket('gsb', branch, { x: 0, y: 1 }, r * 0.86) : null}
+                      {parts}
                     </g>
                     {end ? (
                       <circle cx={end.point.x} cy={end.point.y} r={hpx(13)} fill="none" stroke="#2F9E68" strokeWidth={hpx(2.6)} strokeDasharray={`${hpx(4)} ${hpx(4)}`} />
