@@ -717,7 +717,14 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   // committed kit is pixel-identical to the preview and sits where it was dropped —
   // for gas, liquid AND both kits.
   const placedKits = useMemo(() => {
-    const out: { id: string; inlet: Point2D; run: Point2D; kind: 'gas' | 'liquid' | 'both' }[] = [];
+    // A 'both' kit is a REAL pair of fittings — a gas branch on the gas line and a
+    // liquid branch on the liquid line — so it draws two sprites, each aligned to
+    // its own line's inlet/run ports (not one sprite floating on the centreline
+    // between the pipe's two tubes). Single-kind kits draw one sprite on their line.
+    const out: {
+      id: string;
+      sprites: { line: 'gas' | 'liquid'; inlet: Point2D; run: Point2D }[];
+    }[] = [];
     for (const el of hvacElements) {
       if (el.type !== 'refrigerant-branch-kit') continue;
       const raw = (el.properties as Record<string, unknown>)?.branchKitLineKind;
@@ -725,25 +732,16 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       const model = buildRefrigerantBranchKitViewModel(el);
       const center = { x: el.position.x + el.width / 2, y: el.position.y + el.depth / 2 };
       const rot = el.rotation ?? 0;
-      const portPoint = (role: 'inlet' | 'run-outlet'): Point2D | null => {
-        const id = resolveRefrigerantBranchKitConnectionIdentity({
-          model,
-          role,
-          lineSelection: kind,
-          worldCenter: center,
-          rotationDeg: rot,
-        });
-        if (!id) return null;
-        return kind === 'gas'
-          ? id.gasPoint
-          : kind === 'liquid'
-            ? id.liquidPoint
-            : { x: (id.gasPoint.x + id.liquidPoint.x) / 2, y: (id.gasPoint.y + id.liquidPoint.y) / 2 };
-      };
-      const inlet = portPoint('inlet');
-      const run = portPoint('run-outlet');
-      if (!inlet || !run) continue;
-      out.push({ id: el.id, inlet: { x: inlet.x, y: inlet.y }, run: { x: run.x, y: run.y }, kind });
+      const inletId = resolveRefrigerantBranchKitConnectionIdentity({ model, role: 'inlet', lineSelection: kind, worldCenter: center, rotationDeg: rot });
+      const runId = resolveRefrigerantBranchKitConnectionIdentity({ model, role: 'run-outlet', lineSelection: kind, worldCenter: center, rotationDeg: rot });
+      if (!inletId || !runId) continue;
+      const lines: ('gas' | 'liquid')[] = kind === 'both' ? ['gas', 'liquid'] : [kind];
+      const sprites = lines.map((line) => ({
+        line,
+        inlet: line === 'gas' ? { x: inletId.gasPoint.x, y: inletId.gasPoint.y } : { x: inletId.liquidPoint.x, y: inletId.liquidPoint.y },
+        run: line === 'gas' ? { x: runId.gasPoint.x, y: runId.gasPoint.y } : { x: runId.liquidPoint.x, y: runId.liquidPoint.y },
+      }));
+      out.push({ id: el.id, sprites });
     }
     return out;
   }, [hvacElements]);
@@ -1157,6 +1155,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     const model = buildRefrigerantBranchKitViewModel(source as unknown as HvacElement);
     const roles = ['inlet', 'run-outlet', 'branch-outlet'] as const;
     const ports: PlaceablePort[] = [];
+    // Per-role gas/liquid LOCAL points, so the ghost can preview a 'both' kit as
+    // two fittings on their own lines (matching the committed render).
+    const localById: Record<string, { gas: Point2D; liquid: Point2D }> = {};
     for (const role of roles) {
       const id = resolveRefrigerantBranchKitConnectionIdentity({
         model,
@@ -1166,6 +1167,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         rotationDeg: 0,
       });
       if (!id) continue;
+      localById[role] = { gas: id.gasPoint, liquid: id.liquidPoint };
       const point =
         kitKind === 'gas'
           ? id.gasPoint
@@ -1174,7 +1176,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             : { x: (id.gasPoint.x + id.liquidPoint.x) / 2, y: (id.gasPoint.y + id.liquidPoint.y) / 2 };
       ports.push({ role, point, direction: id.direction });
     }
-    return { width: model.widthMm, depth: model.depthMm, height: model.heightMm, ports };
+    return { width: model.widthMm, depth: model.depthMm, height: model.heightMm, ports, localById };
   }, [kitKind]);
 
   // Open pipe ends (world) the kit can snap onto.
@@ -1833,43 +1835,45 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
               like the pipes — a similarity transform lands the image's inlet/run
               anchors on the element's world ports, so it scales + rotates with the
               kit. Replaces the flat Fabric symbol (hidden while the overlay owns it). */}
-          {placedKits.map((kit) => {
-            const img = kitImg[kit.kind];
-            if (!img?.ok) return null;
-            const anch = KIT_IMG_ANCHOR[kit.kind];
-            const Wimg = 1000;
-            const Himg = Wimg * (img.aspect || 0.3);
-            const a0x = anch.inlet.x * Wimg;
-            const a0y = anch.inlet.y * Himg;
-            const a1x = anch.run.x * Wimg;
-            const a1y = anch.run.y * Himg;
-            const avx = a1x - a0x;
-            const avy = a1y - a0y;
-            const bvx = kit.run.x - kit.inlet.x;
-            const bvy = kit.run.y - kit.inlet.y;
-            const s = Math.hypot(bvx, bvy) / (Math.hypot(avx, avy) || 1);
-            const theta = ((Math.atan2(bvy, bvx) - Math.atan2(avy, avx)) * 180) / Math.PI;
-            return (
-              <g
-                key={`pk-${kit.id}`}
-                transform={`translate(${kit.inlet.x} ${kit.inlet.y}) rotate(${theta}) scale(${s}) translate(${-a0x} ${-a0y})`}
-              >
-                {/* The sprite is the kit's click + drag target now that it has no
-                    Fabric body: press to select (shows the port grips) and drag to
-                    move the whole kit (connected pipes follow via the healer). */}
-                <image
-                  href={KIT_IMG[kit.kind]}
-                  x={0}
-                  y={0}
-                  width={Wimg}
-                  height={Himg}
-                  preserveAspectRatio="none"
-                  style={{ pointerEvents: 'auto', cursor: 'move' }}
-                  onPointerDown={(e) => onKitPointerDown(e, kit.id)}
-                />
-              </g>
-            );
-          })}
+          {placedKits.flatMap((kit) =>
+            kit.sprites.map((sp) => {
+              const img = kitImg[sp.line];
+              if (!img?.ok) return null;
+              const anch = KIT_IMG_ANCHOR[sp.line];
+              const Wimg = 1000;
+              const Himg = Wimg * (img.aspect || 0.3);
+              const a0x = anch.inlet.x * Wimg;
+              const a0y = anch.inlet.y * Himg;
+              const a1x = anch.run.x * Wimg;
+              const a1y = anch.run.y * Himg;
+              const avx = a1x - a0x;
+              const avy = a1y - a0y;
+              const bvx = sp.run.x - sp.inlet.x;
+              const bvy = sp.run.y - sp.inlet.y;
+              const s = Math.hypot(bvx, bvy) / (Math.hypot(avx, avy) || 1);
+              const theta = ((Math.atan2(bvy, bvx) - Math.atan2(avy, avx)) * 180) / Math.PI;
+              return (
+                <g
+                  key={`pk-${kit.id}-${sp.line}`}
+                  transform={`translate(${sp.inlet.x} ${sp.inlet.y}) rotate(${theta}) scale(${s}) translate(${-a0x} ${-a0y})`}
+                >
+                  {/* The sprite is the kit's click + drag target now that it has no
+                      Fabric body: press to select (shows the port grips) and drag to
+                      move the whole kit (connected pipes follow via the healer). */}
+                  <image
+                    href={KIT_IMG[sp.line]}
+                    x={0}
+                    y={0}
+                    width={Wimg}
+                    height={Himg}
+                    preserveAspectRatio="none"
+                    style={{ pointerEvents: 'auto', cursor: 'move' }}
+                    onPointerDown={(e) => onKitPointerDown(e, kit.id)}
+                  />
+                </g>
+              );
+            }),
+          )}
           {/* Copper branch-kit placement ghost, attached to the cursor, snapping
               a port onto an open pipe end (auto-rotated to meet it). */}
           {placingKit && kitGhost
@@ -1886,18 +1890,29 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 const lerp = (a: Point2D, b: Point2D, t: number) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
                 const parts: JSX.Element[] = [];
                 const img = kitImg[kitKind];
-                if (inlet && run && img?.ok) {
-                  // Photo-real sprite: place the image so its inlet/run anchors
-                  // land on the model ports (the kit frame handles rotation).
-                  const anch = KIT_IMG_ANCHOR[kitKind];
-                  const span = anch.run.x - anch.inlet.x || 1;
-                  const W = (run.x - inlet.x) / span;
-                  const H = W * (img.aspect || 0.5);
-                  const x0 = inlet.x - anch.inlet.x * W;
-                  const y0 = inlet.y - anch.inlet.y * H;
-                  parts.push(
-                    <image key="kimg" href={KIT_IMG[kitKind]} x={x0} y={y0} width={W} height={H} preserveAspectRatio="none" />,
-                  );
+                const li = kitPlacement.localById['inlet'];
+                const lr = kitPlacement.localById['run-outlet'];
+                if (img?.ok && li && lr) {
+                  // Photo-real sprite(s): a 'both' kit previews as two fittings, gas
+                  // on the gas line + liquid on the liquid line, each image placed so
+                  // its inlet/run anchors land on that line's local ports (the outer
+                  // kit frame handles rotation). Matches the committed render.
+                  const lines: ('gas' | 'liquid')[] = kitKind === 'both' ? ['gas', 'liquid'] : [kitKind];
+                  for (const line of lines) {
+                    const lineImg = kitImg[line];
+                    if (!lineImg?.ok) continue;
+                    const inP = line === 'gas' ? li.gas : li.liquid;
+                    const runP = line === 'gas' ? lr.gas : lr.liquid;
+                    const anch = KIT_IMG_ANCHOR[line];
+                    const span = anch.run.x - anch.inlet.x || 1;
+                    const W = (runP.x - inP.x) / span;
+                    const H = W * (lineImg.aspect || 0.5);
+                    const x0 = inP.x - anch.inlet.x * W;
+                    const y0 = inP.y - anch.inlet.y * H;
+                    parts.push(
+                      <image key={`kimg-${line}`} href={KIT_IMG[line]} x={x0} y={y0} width={W} height={H} preserveAspectRatio="none" />,
+                    );
+                  }
                 } else if (inlet && run) {
                   const dTrunk = unit(run.x - inlet.x, run.y - inlet.y);
                   // Straight trunk, inlet -> run (smoothest); junction sits ~58%
