@@ -117,6 +117,7 @@ export function Toolbar(): JSX.Element {
       <div style={{ display: 'flex', gap: 6 }}>
         {toolBtn('select', 'Select')}
         {toolBtn('pipe', 'Pipe')}
+        {toolBtn('branch-kit', 'Branch kit')}
       </div>
 
       <DebouncedSlider label="Bend radius" value={bendRadiusMm} min={activeSize.minBendRadiusMm} max={1000} step={1} onCommit={setBendRadiusMm} />
