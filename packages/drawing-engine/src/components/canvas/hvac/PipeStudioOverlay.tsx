@@ -98,22 +98,23 @@ function kitSwage(key: string, c: Point2D, dir: Point2D, r: number): JSX.Element
     </g>
   );
 }
-// Wedge manifold at the tap: flat top (run passes straight through) widening
-// down to feed the branch — the real DIS-22-1G body, not a round bulb.
+// The Y body of the DIS-22-1G: the straight main tube FLARES downward at the tap
+// and the branch peels off through a smooth CONCAVE crotch on the run side —
+// like the manufacturer drawing, not a box wedge or round bulb.
 function kitWedge(key: string, jn: Point2D, r: number, bs: Point2D): JSX.Element {
-  const Lb = r * 2.7;
+  const Lw = r * 2.6; // half-width of the flare along the main tube
+  const top = jn.y - r * 1.02; // flat top = the straight run-through line
   const d =
-    `M ${jn.x - Lb} ${jn.y - r * 1.05}` +
-    ` L ${jn.x + Lb} ${jn.y - r * 1.05}` +
-    ` L ${jn.x + Lb} ${jn.y + r * 0.85}` +
-    ` C ${jn.x + r * 0.5} ${jn.y + r * 1.9} ${bs.x + r * 1.3} ${bs.y - r} ${bs.x + r * 0.95} ${bs.y}` +
-    ` L ${bs.x - r * 0.95} ${bs.y}` +
-    ` C ${bs.x - r * 1.3} ${jn.y + r * 1.9} ${jn.x - Lb + r * 0.8} ${jn.y + r * 1.5} ${jn.x - Lb} ${jn.y + r * 0.85} Z`;
+    `M ${jn.x - Lw} ${top}` +
+    ` L ${jn.x + Lw} ${top}` + // straight top (run passes through)
+    ` C ${jn.x + Lw * 0.9} ${jn.y + r * 1.1} ${jn.x + Lw * 0.55} ${jn.y + r * 2.9} ${bs.x + r * 1.05} ${bs.y}` + // concave crotch (run side) down into branch-right
+    ` L ${bs.x - r * 1.05} ${bs.y}` + // across the branch neck
+    ` C ${bs.x - r * 1.9} ${bs.y - r * 0.7} ${jn.x - Lw * 0.55} ${jn.y + r * 1.9} ${jn.x - Lw} ${top} Z`; // flared inlet side back up
   return (
     <g key={key}>
       <path d={d} fill="#7d3f1c" strokeLinejoin="round" />
       <path d={d} fill="url(#bkCub)" transform="translate(0 -0.5)" strokeLinejoin="round" />
-      <ellipse cx={jn.x - Lb * 0.28} cy={jn.y - r * 0.45} rx={Lb * 0.5} ry={r * 0.9} fill="#fff4e8" opacity={0.42} />
+      <ellipse cx={jn.x - Lw * 0.2} cy={jn.y - r * 0.5} rx={Lw * 0.55} ry={r * 0.85} fill="#fff4e8" opacity={0.4} />
     </g>
   );
 }
