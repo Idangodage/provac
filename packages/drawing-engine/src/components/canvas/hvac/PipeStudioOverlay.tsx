@@ -83,18 +83,25 @@ function kitGlossPath(key: string, d: string, r: number): JSX.Element {
 function kitGloss(key: string, pts: Point2D[], r: number): JSX.Element {
   return kitGlossPath(key, kitPathD(pts), r);
 }
+// A stepped reducer (the "different pipe size" bamboo section): a wider cylinder
+// joined to the base tube by short ANGLED tapers — not a round balloon bulge.
 function kitSwage(key: string, c: Point2D, dir: Point2D, r: number): JSX.Element {
-  const L = r * 1.5;
-  const a = { x: c.x - dir.x * L, y: c.y - dir.y * L };
-  const b = { x: c.x + dir.x * L, y: c.y + dir.y * L };
-  const n = { x: -dir.y, y: dir.x };
-  const seam = (p: Point2D) =>
-    `M${p.x - n.x * r * 1.5} ${p.y - n.y * r * 1.5} L${p.x + n.x * r * 1.5} ${p.y + n.y * r * 1.5}`;
+  const dl = Math.hypot(dir.x, dir.y) || 1;
+  const dx = dir.x / dl;
+  const dy = dir.y / dl;
+  const nx = -dy;
+  const ny = dx;
+  const R = r * 1.4; // wider section
+  const L = r * 1.25; // half-length of the wide flat
+  const T = r * 0.7; // taper length
+  const P = (t: number, w: number) => `${c.x + dx * t + nx * w} ${c.y + dy * t + ny * w}`;
+  const d =
+    `M ${P(-L - T, r)} L ${P(-L, R)} L ${P(L, R)} L ${P(L + T, r)}` +
+    ` L ${P(L + T, -r)} L ${P(L, -R)} L ${P(-L, -R)} L ${P(-L - T, -r)} Z`;
   return (
     <g key={key}>
-      {kitGloss(`${key}-t`, [a, b], r * 1.5)}
-      <path d={seam(a)} stroke="#7a3d19" strokeWidth={r * 0.16} strokeOpacity={0.5} />
-      <path d={seam(b)} stroke="#7a3d19" strokeWidth={r * 0.16} strokeOpacity={0.5} />
+      <path d={d} fill="url(#bkCu)" stroke="#7d3f1c" strokeWidth={Math.max(r * 0.08, 0.35)} strokeLinejoin="round" />
+      <path d={`M ${P(-L, R * 0.5)} L ${P(L, R * 0.5)}`} fill="none" stroke="#fff1df" strokeWidth={r * 0.5} strokeLinecap="round" strokeOpacity={0.55} />
     </g>
   );
 }
