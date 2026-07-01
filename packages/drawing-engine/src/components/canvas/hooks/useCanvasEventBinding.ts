@@ -51,6 +51,7 @@ import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
 import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
 import {
   isRefrigerantPipeElementType,
+  resolveRefrigerantPipeBranchKitReconnectionUpdates,
   resolveRefrigerantPipeUnitPortReconnectionUpdates,
 } from "../hvac/refrigerantPipePairModel";
 import type { ObjectRenderer } from "../object/ObjectRenderer";
@@ -458,11 +459,19 @@ export function useCanvasEventBinding(
       movedElement: HvacElement,
       updateHvacElement: UseCanvasEventBindingOptions["updateHvacElement"],
     ) => {
-      const connectedPipeUpdates =
-        resolveRefrigerantPipeUnitPortReconnectionUpdates(
+      // A moved element can be a unit (cassette / outdoor unit) OR a copper
+      // branch kit; each resolver no-ops for the other type, so run both and
+      // apply the union — pipes bound to whichever moved element follow it.
+      const connectedPipeUpdates = [
+        ...resolveRefrigerantPipeUnitPortReconnectionUpdates(
           elements,
           movedElement,
-        );
+        ),
+        ...resolveRefrigerantPipeBranchKitReconnectionUpdates(
+          elements,
+          movedElement,
+        ),
+      ];
       connectedPipeUpdates.forEach((pipeUpdate) => {
         if (pipeUpdate.id === movedElement.id) {
           return;

@@ -4896,3 +4896,260 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
 
   return updates;
 }
+
+/**
+ * A single-pipe end bound to a copper branch-kit port: a `field-pipe` connection
+ * that names both the kit ({@link sourceElementId}) and which port
+ * ({@link terminalRole}). The terminalRole requirement is what separates a kit
+ * binding from an ordinary pipe-to-pipe field joint (also `field-pipe`).
+ */
+function isBranchKitConnectionFromSource(
+  connection: RefrigerantPipeConnection | null,
+  sourceElementId: string,
+): boolean {
+  return Boolean(
+    connection &&
+      connection.connectionKind === 'field-pipe' &&
+      connection.sourceElementId === sourceElementId &&
+      Boolean(connection.terminalRole),
+  );
+}
+
+function isBranchKitBundleConnectionFromSource(
+  connection: RefrigerantPipeBundleConnection | null,
+  sourceElementId: string,
+): boolean {
+  return Boolean(
+    connection &&
+      connection.connectionKind === 'field-pipe' &&
+      connection.sourceElementId === sourceElementId &&
+      Boolean(connection.terminalRole),
+  );
+}
+
+/**
+ * When a copper branch kit is moved, re-pin every pipe end bound to one of its
+ * ports so the pipe follows the kit — the branch-kit analogue of
+ * {@link resolveRefrigerantPipeUnitPortReconnectionUpdates}. Each bound end is
+ * re-resolved from the kit's LIVE world ports by its stored `terminalRole` (so
+ * inlet stays on inlet, etc.), the route endpoint is remapped, and pipe bounds
+ * are rebuilt. Returns one update per affected pipe.
+ */
+export function resolveRefrigerantPipeBranchKitReconnectionUpdates(
+  elements: HvacElement[],
+  movedKitElement: HvacElement,
+): Array<{ id: string; updates: Partial<HvacElement> }> {
+  if (movedKitElement.type !== 'refrigerant-branch-kit') {
+    return [];
+  }
+  const sceneWithMovedKit = elements.map((element) =>
+    element.id === movedKitElement.id ? movedKitElement : element,
+  );
+  const livePorts = new Map<
+    RefrigerantBranchTerminalRole,
+    RefrigerantPipeBundleConnection
+  >();
+  for (const port of getBranchKitPortConnections(movedKitElement)) {
+    if (port.terminalRole) {
+      livePorts.set(port.terminalRole, port);
+    }
+  }
+  if (livePorts.size === 0) {
+    return [];
+  }
+
+  const updates: Array<{ id: string; updates: Partial<HvacElement> }> = [];
+  elements.forEach((element) => {
+    if (element.type === 'refrigerant-pipe') {
+      const spec = resolveRefrigerantPipeSpec(element.properties);
+      const syncStart = isBranchKitConnectionFromSource(
+        spec.startConnection,
+        movedKitElement.id,
+      );
+      const syncEnd = isBranchKitConnectionFromSource(
+        spec.endConnection,
+        movedKitElement.id,
+      );
+      if (!syncStart && !syncEnd) {
+        return;
+      }
+      const rebindSingle = (
+        prev: RefrigerantPipeConnection | null,
+      ): RefrigerantPipeConnection | null => {
+        if (!prev || !prev.terminalRole) {
+          return prev;
+        }
+        const livePort = livePorts.get(prev.terminalRole);
+        if (!livePort) {
+          return prev;
+        }
+        const isLiquid = spec.lineKind === 'liquid';
+        const portPoint = isLiquid ? livePort.liquidPoint : livePort.gasPoint;
+        const direction = normalizeDirection(
+          (isLiquid ? livePort.liquidDirection : livePort.gasDirection) ??
+            livePort.direction,
+        );
+        return {
+          portPoint: { ...portPoint },
+          direction: { ...direction },
+          elevationMm: isLiquid
+            ? livePort.liquidElevationMm
+            : livePort.gasElevationMm,
+          connectionKind: 'field-pipe',
+          sourceElementId: movedKitElement.id,
+          terminalRole: prev.terminalRole,
+        };
+      };
+      const nextStartConnection = syncStart
+        ? rebindSingle(spec.startConnection)
+        : spec.startConnection;
+      const nextEndConnection = syncEnd
+        ? rebindSingle(spec.endConnection)
+        : spec.endConnection;
+      if (
+        connectionEquals(spec.startConnection, nextStartConnection) &&
+        connectionEquals(spec.endConnection, nextEndConnection)
+      ) {
+        return;
+      }
+      const nextRoutePoints = remapRouteEndpointsForMovedConnection(
+        spec.routePoints,
+        {
+          previousStart: syncStart ? spec.startConnection?.portPoint ?? null : null,
+          nextStart: syncStart ? nextStartConnection?.portPoint ?? null : null,
+          previousEnd: syncEnd ? spec.endConnection?.portPoint ?? null : null,
+          nextEnd: syncEnd ? nextEndConnection?.portPoint ?? null : null,
+          anchorSnapRadiusMm: 160,
+        },
+      );
+      const nextProperties: Record<string, unknown> = {
+        ...element.properties,
+        routePoints: nextRoutePoints,
+        startConnection: nextStartConnection,
+        endConnection: nextEndConnection,
+      };
+      const nextVisual = buildRefrigerantPipeVisual({
+        position: element.position,
+        width: element.width,
+        depth: element.depth,
+        elevation: element.elevation,
+        properties: nextProperties,
+      });
+      updates.push({
+        id: element.id,
+        updates: {
+          position: { x: nextVisual.bounds.minX, y: nextVisual.bounds.minY },
+          width: nextVisual.bounds.width,
+          depth: nextVisual.bounds.height,
+          height: Math.max(1, nextVisual.outerRadiusMm * 2),
+          properties: nextProperties,
+        },
+      });
+      return;
+    }
+
+    if (element.type !== 'refrigerant-pipe-pair') {
+      return;
+    }
+    const startBundleConnection = normalizeBundleConnection(
+      element.properties.startBundleConnection,
+    );
+    const endBundleConnection = normalizeBundleConnection(
+      element.properties.endBundleConnection,
+    );
+    const syncStart = isBranchKitBundleConnectionFromSource(
+      startBundleConnection,
+      movedKitElement.id,
+    );
+    const syncEnd = isBranchKitBundleConnectionFromSource(
+      endBundleConnection,
+      movedKitElement.id,
+    );
+    if (!syncStart && !syncEnd) {
+      return;
+    }
+    const rebindBundle = (
+      prev: RefrigerantPipeBundleConnection | null,
+    ): RefrigerantPipeBundleConnection | null => {
+      if (!prev || !prev.terminalRole) {
+        return prev;
+      }
+      const livePort = livePorts.get(prev.terminalRole);
+      if (!livePort) {
+        return prev;
+      }
+      return {
+        ...livePort,
+        point: { ...livePort.point },
+        gasPoint: { ...livePort.gasPoint },
+        liquidPoint: { ...livePort.liquidPoint },
+        gasFieldPoint: { ...livePort.gasFieldPoint },
+        liquidFieldPoint: { ...livePort.liquidFieldPoint },
+        direction: { ...livePort.direction },
+        gasDirection: livePort.gasDirection
+          ? { ...livePort.gasDirection }
+          : undefined,
+        liquidDirection: livePort.liquidDirection
+          ? { ...livePort.liquidDirection }
+          : undefined,
+        sourceElementId: movedKitElement.id,
+        terminalRole: prev.terminalRole,
+        guideReference: prev.guideReference ?? livePort.guideReference,
+      };
+    };
+    const nextStartBundleConnection = syncStart
+      ? rebindBundle(startBundleConnection)
+      : startBundleConnection;
+    const nextEndBundleConnection = syncEnd
+      ? rebindBundle(endBundleConnection)
+      : endBundleConnection;
+    if (
+      bundleConnectionEquals(startBundleConnection, nextStartBundleConnection) &&
+      bundleConnectionEquals(endBundleConnection, nextEndBundleConnection)
+    ) {
+      return;
+    }
+    const nextRoutePoints = remapRouteEndpointsForMovedConnection(
+      normalizePointArray(element.properties.routePoints),
+      {
+        previousStart: syncStart ? startBundleConnection?.point ?? null : null,
+        nextStart: syncStart ? nextStartBundleConnection?.point ?? null : null,
+        previousEnd: syncEnd ? endBundleConnection?.point ?? null : null,
+        nextEnd: syncEnd ? nextEndBundleConnection?.point ?? null : null,
+        anchorSnapRadiusMm: 220,
+      },
+    );
+    const nextProperties: Record<string, unknown> = {
+      ...element.properties,
+      routePoints: nextRoutePoints,
+      startBundleConnection: nextStartBundleConnection,
+      endBundleConnection: nextEndBundleConnection,
+    };
+    const nextVisual = buildRefrigerantPipePairVisual(
+      {
+        position: element.position,
+        width: element.width,
+        depth: element.depth,
+        elevation: element.elevation,
+        properties: nextProperties,
+      },
+      sceneWithMovedKit,
+    );
+    updates.push({
+      id: element.id,
+      updates: {
+        position: { x: nextVisual.bounds.minX, y: nextVisual.bounds.minY },
+        width: nextVisual.bounds.width,
+        depth: nextVisual.bounds.height,
+        height: Math.max(
+          1,
+          nextVisual.gasLocalZMm + nextVisual.gasOuterRadiusMm,
+          nextVisual.liquidLocalZMm + nextVisual.liquidOuterRadiusMm,
+        ),
+        properties: nextProperties,
+      },
+    });
+  });
+
+  return updates;
+}
