@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { useBoardStore } from '../model/store';
+import { minSpineBendRadiusMm } from '../geometry/bend';
 import type { LineFilter, Tool } from '../model/types';
 
 const BTN: React.CSSProperties = {
@@ -74,6 +75,7 @@ export function Toolbar(): JSX.Element {
   const lineFilter = useBoardStore((s) => s.lineFilter);
   const setLineFilter = useBoardStore((s) => s.setLineFilter);
   const activeSize = useBoardStore((s) => s.activeSize);
+  const bendWarning = useBoardStore((s) => s.bendWarning);
   const undo = useBoardStore((s) => s.undo);
   const redo = useBoardStore((s) => s.redo);
   const canUndo = useBoardStore((s) => s.past.length > 0);
@@ -120,7 +122,19 @@ export function Toolbar(): JSX.Element {
         {toolBtn('branch-kit', 'Branch kit')}
       </div>
 
-      <DebouncedSlider label="Bend radius" value={bendRadiusMm} min={activeSize.minBendRadiusMm} max={1000} step={1} onCommit={setBendRadiusMm} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <DebouncedSlider
+          label="Bend radius"
+          value={bendRadiusMm}
+          min={minSpineBendRadiusMm(activeSize, pipeGapMm)}
+          max={1000}
+          step={1}
+          onCommit={setBendRadiusMm}
+        />
+        {bendWarning ? (
+          <span style={{ fontSize: 10.5, color: '#b45309', maxWidth: 240, lineHeight: 1.25 }}>⚠ {bendWarning}</span>
+        ) : null}
+      </div>
       <DebouncedSlider label="Pipe gap" value={pipeGapMm} min={0} max={200} step={1} onCommit={setPipeGapMm} />
 
       <span style={{ display: 'inline-flex', border: '1px solid #d8d7d2', borderRadius: 7, overflow: 'hidden' }}>

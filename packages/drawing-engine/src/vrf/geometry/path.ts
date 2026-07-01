@@ -95,3 +95,23 @@ export function samplePath(path: Path, maxChordMm: number): Point[] {
 export function pathLength(path: Path): number {
   return path.reduce((sum, s) => sum + segLength(s), 0);
 }
+
+/** Closest point on a spine polyline to p, with its segment index + parameter t. */
+export function nearestPointOnSpine(
+  spine: Point[],
+  p: Point,
+): { segIndex: number; t: number; point: Point; distMm: number } | null {
+  if (spine.length < 2) return null;
+  let best: { segIndex: number; t: number; point: Point; distMm: number } | null = null;
+  for (let i = 0; i < spine.length - 1; i += 1) {
+    const a = spine[i]!;
+    const ab = sub(spine[i + 1]!, a);
+    const l2 = dot(ab, ab);
+    const tRaw = l2 > 1e-12 ? dot(sub(p, a), ab) / l2 : 0;
+    const t = Math.min(1, Math.max(0, tRaw));
+    const foot = { x: a.x + ab.x * t, y: a.y + ab.y * t };
+    const d = dist(foot, p);
+    if (!best || d < best.distMm) best = { segIndex: i, t, point: foot, distMm: d };
+  }
+  return best;
+}

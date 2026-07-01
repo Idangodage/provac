@@ -124,4 +124,4 @@ export function Grid({ view, width, height }: GridProps): JSX.Element {
   );
 }
 
-export { RULER_PX };
+export { RULER_PX, niceStepMm };

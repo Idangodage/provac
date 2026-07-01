@@ -26,6 +26,7 @@ import {
 } from './types';
 import type { ViewTransform } from '../geometry/transform';
 import { identityView } from '../geometry/transform';
+import { clampBendRadius } from '../geometry/bend';
 
 enablePatches();
 
@@ -42,10 +43,13 @@ export interface BoardState {
   /** View + tool + tool settings — NOT undoable. */
   view: ViewTransform;
   tool: Tool;
+  /** Requested spine bend radius — always kept legal (clamped, invariants C+D). */
   bendRadiusMm: number;
   pipeGapMm: number;
   lineFilter: LineFilter;
   activeSize: PipeSize;
+  /** Set when the last bend-radius/gap/size change forced a clamp; else null. */
+  bendWarning: string | null;
 
   past: HistoryEntry[];
   future: HistoryEntry[];
@@ -78,6 +82,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   pipeGapMm: 30,
   lineFilter: 'both',
   activeSize: PIPE_SIZES[1]!,
+  bendWarning: null,
 
   past: [],
   future: [],
@@ -120,10 +125,24 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
   setView: (view) => set({ view }),
   setTool: (tool) => set({ tool }),
-  setBendRadiusMm: (bendRadiusMm) => set({ bendRadiusMm }),
-  setPipeGapMm: (pipeGapMm) => set({ pipeGapMm }),
+  // Bend radius, gap and size all feed the C+D clamp: keep bendRadiusMm legal
+  // against the CURRENT size + gap, and surface the warning when it had to move.
+  setBendRadiusMm: (requested) =>
+    set((s) => {
+      const c = clampBendRadius(requested, s.activeSize, s.pipeGapMm);
+      return { bendRadiusMm: c.value, bendWarning: c.warning ?? null };
+    }),
+  setPipeGapMm: (pipeGapMm) =>
+    set((s) => {
+      const c = clampBendRadius(s.bendRadiusMm, s.activeSize, pipeGapMm);
+      return { pipeGapMm, bendRadiusMm: c.value, bendWarning: c.warning ?? null };
+    }),
   setLineFilter: (lineFilter) => set({ lineFilter }),
-  setActiveSize: (activeSize) => set({ activeSize }),
+  setActiveSize: (activeSize) =>
+    set((s) => {
+      const c = clampBendRadius(s.bendRadiusMm, activeSize, s.pipeGapMm);
+      return { activeSize, bendRadiusMm: c.value, bendWarning: c.warning ?? null };
+    }),
 
   setSelection: (ids) =>
     set((state) => ({ doc: { ...state.doc, selection: ids } })),

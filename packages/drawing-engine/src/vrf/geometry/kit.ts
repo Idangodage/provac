@@ -6,8 +6,11 @@
  */
 
 import type { BranchKit, KitTransform, Point, Port, PortRole } from '../model/types';
+import { buildPairedGeometry, type PairedGeometry } from './offset';
 
 export const KIT_TRUNK_HALF_MM = 100;
+/** Tight arc for the kit fitting body. */
+export const KIT_FITTING_RADIUS_MM = 10;
 export const KIT_BRANCH_DROP_MM = 95;
 /** Where the branch taps off the trunk (local x). */
 export const KIT_BRANCH_TAP_X = 20;
@@ -127,5 +130,23 @@ export function kitChannels(): { trunk: Point[]; branch: Point[] } {
   return {
     trunk: [{ x: -KIT_TRUNK_HALF_MM, y: 0 }, { x: KIT_TRUNK_HALF_MM, y: 0 }],
     branch: [{ x: KIT_BRANCH_TAP_X, y: 0 }, { x: KIT_BRANCH_TAP_X, y: KIT_BRANCH_DROP_MM }],
+  };
+}
+
+export interface KitBodyGeometry {
+  trunk: PairedGeometry;
+  branch: PairedGeometry;
+}
+
+/** The kit's copper body (trunk + branch paired tubes) in WORLD units. Compute once
+ *  per (transform, gap) and share it across the gas + liquid render passes. */
+export function buildKitBodyGeometry(kit: BranchKit): KitBodyGeometry {
+  const ch = kitChannels();
+  const g = kitGapMm(kit);
+  const trunkW = ch.trunk.map((p) => kitToWorld(kit.transform, p));
+  const branchW = ch.branch.map((p) => kitToWorld(kit.transform, p));
+  return {
+    trunk: buildPairedGeometry(trunkW, g, KIT_FITTING_RADIUS_MM),
+    branch: buildPairedGeometry(branchW, g, KIT_FITTING_RADIUS_MM),
   };
 }

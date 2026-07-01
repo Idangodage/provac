@@ -11,40 +11,38 @@ import { Fragment } from 'react';
 import { Circle } from 'react-konva';
 
 import { CopperTube } from './PipeShape';
-import { buildPairedGeometry } from '../geometry/offset';
-import { kitChannels, kitToWorld, portWorld } from '../geometry/kit';
+import { buildKitBodyGeometry, portWorld, type KitBodyGeometry } from '../geometry/kit';
 import type { BranchKit, LineFilter } from '../model/types';
 
 export type PortState = 'valid' | 'invalid' | 'idle';
 
-const KIT_FITTING_RADIUS = 10; // tight arc for the fitting body
-
 export function KitShape({
   kit,
-  gapMm,
+  body,
   gasWidthMm,
   liquidWidthMm,
-  filter,
+  filter = 'both',
+  only,
   zoom,
   ghost = false,
   portState,
 }: {
   kit: BranchKit;
-  gapMm: number;
+  /** Precomputed copper body (shared across the gas + liquid passes). Falls back to
+   *  a per-instance compute when omitted (e.g. the single ghost render). */
+  body?: KitBodyGeometry;
   gasWidthMm: number;
   liquidWidthMm: number;
-  filter: LineFilter;
+  filter?: LineFilter;
+  /** Render only ONE line (for per-line visibility groups). Overrides `filter`. */
+  only?: 'gas' | 'liquid';
   zoom: number;
   ghost?: boolean;
   portState?: (portId: string) => PortState;
 }): JSX.Element {
-  const ch = kitChannels();
-  const trunkW = ch.trunk.map((p) => kitToWorld(kit.transform, p));
-  const branchW = ch.branch.map((p) => kitToWorld(kit.transform, p));
-  const trunk = buildPairedGeometry(trunkW, gapMm, KIT_FITTING_RADIUS);
-  const branch = buildPairedGeometry(branchW, gapMm, KIT_FITTING_RADIUS);
-  const showGas = filter !== 'liquid';
-  const showLiquid = filter !== 'gas';
+  const { trunk, branch } = body ?? buildKitBodyGeometry(kit);
+  const showGas = only ? only === 'gas' : filter !== 'liquid';
+  const showLiquid = only ? only === 'liquid' : filter !== 'gas';
 
   return (
     <Fragment>

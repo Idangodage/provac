@@ -11,6 +11,13 @@ export * from './geometry/transform';
 export { filletSpine, type FilletResult, type FilletWarning } from './geometry/fillet';
 export { buildPairedGeometry, buildRunGeometry, offsetPath, type PairedGeometry } from './geometry/offset';
 export {
+  clampBendRadius,
+  minSpineBendRadiusMm,
+  innerLineRadiusMm,
+  outerLineRadiusMm,
+  type BendClamp,
+} from './geometry/bend';
+export {
   createRefnetKit,
   refnetPorts,
   kitToWorld,
@@ -24,8 +31,34 @@ export {
   snapKitToRunEnd,
   kitGapMm,
   kitChannels,
+  buildKitBodyGeometry,
+  KIT_FITTING_RADIUS_MM,
+  type KitBodyGeometry,
 } from './geometry/kit';
-export { connectRunEnd, syncKitConnections, moveKit, openRunEnds, type OpenEnd } from './model/ops';
+export {
+  connectRunEnd,
+  syncKitConnections,
+  moveKit,
+  openRunEnds,
+  insertBranchAt,
+  type OpenEnd,
+  type SpineAt,
+} from './model/ops';
+export {
+  SnapIndex,
+  snap,
+  buildSnapEntries,
+  worldTolerance,
+  nearestGrid,
+  projectOntoGuide,
+  snapMemoKey,
+  SNAP_TIER,
+  type SnapKind,
+  type SnapRef,
+  type SnapCandidate,
+  type SnapResult,
+  type SnapIndexOptions,
+} from './snap';
 export { VrfBoard } from './render/VrfBoard';
 export { KitShape, type PortState } from './render/KitShape';
 export { Toolbar } from './ui/Toolbar';
