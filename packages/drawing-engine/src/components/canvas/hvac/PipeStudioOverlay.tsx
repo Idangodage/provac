@@ -43,20 +43,24 @@ import {
 } from './refrigerantBranchKitModel';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
 import { getBranchKitPortConnections } from './refrigerantPipePairModel';
+import {
+  BRANCH_KIT_SPRITE_ASPECT,
+  BRANCH_KIT_SPRITE_GAS,
+  BRANCH_KIT_SPRITE_LIQUID,
+} from './branchKitSprite';
 
 const KIT_ELEVATION_MM = 2600;
 
-// Photo-real 2D symbol for the copper branch kit. Drop transparent PNGs (kit
-// drawn inlet-left / run-right / branch dropping down, on transparent bg) at
-// these paths under apps/web/public and they replace the vector ghost. Falls
-// back to the vector drawing until the file loads.
-// Real DIS-371-1G geometry, projected + copper-shaded from the manufacturer IFC
-// mesh (apps/web/public/hvac/*.svg). The exact fitting, not a hand drawing.
+// 2D symbol for the copper branch kit: the REAL DIS-371-1G geometry projected +
+// copper-shaded from the manufacturer IFC mesh, embedded as data URIs so the
+// package is self-contained (no /public asset, no fetch, no dev-server coupling).
+// The exact fitting — inlet-left, run-right, branch dropping down — not a drawing.
 const KIT_IMG: Record<'gas' | 'liquid' | 'both', string> = {
-  both: '/hvac/branch-kit-dis-371-1g.svg',
-  gas: '/hvac/branch-kit-dis-371-1g-gas.svg',
-  liquid: '/hvac/branch-kit-dis-371-1g-liquid.svg',
+  both: BRANCH_KIT_SPRITE_GAS,
+  gas: BRANCH_KIT_SPRITE_GAS,
+  liquid: BRANCH_KIT_SPRITE_LIQUID,
 };
+const KIT_IMG_ASPECT = BRANCH_KIT_SPRITE_ASPECT;
 // The inlet + run-outlet sit at the far ends on the top line of the projection.
 const KIT_IMG_ANCHOR = { inlet: { x: 0.01, y: 0.21 }, run: { x: 0.99, y: 0.21 } };
 
@@ -470,18 +474,14 @@ export function PipeStudioOverlay({
   const [kitKind, setKitKind] = useState<'gas' | 'liquid' | 'both'>('both');
   const [placingKit, setPlacingKit] = useState(false);
   const [kitGhost, setKitGhost] = useState<{ transform: PlacementTransform; snap: BranchKitSnap | null } | null>(null);
-  // Which branch-kit photos loaded (+ their aspect), for the 2D sprite symbol.
-  const [kitImg, setKitImg] = useState<Record<string, { ok: boolean; aspect: number }>>({});
-
-  useEffect(() => {
-    (Object.keys(KIT_IMG) as (keyof typeof KIT_IMG)[]).forEach((k) => {
-      const img = new Image();
-      img.onload = () =>
-        setKitImg((s) => ({ ...s, [k]: { ok: true, aspect: img.naturalHeight / (img.naturalWidth || 1) } }));
-      img.onerror = () => setKitImg((s) => ({ ...s, [k]: { ok: false, aspect: 0.5 } }));
-      img.src = KIT_IMG[k];
-    });
-  }, []);
+  // The branch-kit sprites are embedded data URIs with known aspect ratios, so
+  // they're available synchronously — no async load, no "not yet ready" gap that
+  // would drop the kit to the crude vector fallback (or nothing).
+  const kitImg: Record<string, { ok: boolean; aspect: number }> = {
+    gas: { ok: true, aspect: KIT_IMG_ASPECT.gas },
+    liquid: { ok: true, aspect: KIT_IMG_ASPECT.liquid },
+    both: { ok: true, aspect: KIT_IMG_ASPECT.both },
+  };
   const orthoRef = useRef(false);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
