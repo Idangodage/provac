@@ -3997,11 +3997,10 @@ function collectBranchKitLineTerminalTargets(
 function buildSelfContainedBranchKitBundleTargets(
   element: HvacPipeSnapSource,
 ): RefrigerantPipeBundleConnection[] {
+  // Exposes the kit's 3 ports for ALL line kinds — gas, liquid, and both — so a
+  // single-line kit's ports are drawable snap points too (the identity always
+  // resolves both gas + liquid terminals from the model regardless of selection).
   const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
-  if (lineSelection !== 'both') {
-    return [];
-  }
-
   const model = buildRefrigerantBranchKitViewModel(element);
   const inlinePlacement = resolveInlineBranchKitCenter(
     element,
