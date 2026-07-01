@@ -92,6 +92,12 @@ function toCanvas(point: Point2D): Point2D {
   return { x: point.x * MM_TO_PX, y: point.y * MM_TO_PX };
 }
 
+// Opacity used for Fabric refrigerant-pipe bodies when the SVG overlay draws the
+// visible pipe. Non-zero so perPixelTargetFind still gets pipe-shaped pixels to
+// hit (opacity 0 makes the pipe unclickable), yet low enough to stay invisible
+// under the opaque overlay.
+const HIDDEN_PIPE_HIT_OPACITY = 0.04;
+
 function elementCenter(
   element: Pick<HvacElement, "position" | "width" | "depth">,
 ): Point2D {
@@ -4160,7 +4166,13 @@ export class HvacPlanRenderer {
   }
 
   private applyRefrigerantBodyVisibility(): void {
-    const targetOpacity = this.hideRefrigerantBodies ? 0 : 1;
+    // When the SVG pipe overlay draws the visible bodies we hide the Fabric
+    // bodies — but NOT to opacity 0. Pipe groups use perPixelTargetFind, which
+    // hit-tests against rendered pixels; at opacity 0 there are no pixels to hit
+    // and the pipe becomes almost impossible to click. A tiny non-zero opacity
+    // keeps precise, pipe-shaped hit-testing alive while staying invisible under
+    // the opaque overlay drawn on top.
+    const targetOpacity = this.hideRefrigerantBodies ? HIDDEN_PIPE_HIT_OPACITY : 1;
     this.groups.forEach((group, id) => {
       const element = this.hvacData.get(id);
       if (!element) {
