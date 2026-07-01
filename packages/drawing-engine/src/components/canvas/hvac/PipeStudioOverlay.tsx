@@ -44,7 +44,10 @@ import {
   resolveRefrigerantBranchKitConnectionIdentity,
 } from './refrigerantBranchKitModel';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
-import { getBranchKitPortConnections } from './refrigerantPipePairModel';
+import {
+  buildRefrigerantPipeElements,
+  getBranchKitPortConnections,
+} from './refrigerantPipePairModel';
 import {
   BRANCH_KIT_SPRITE_ASPECT,
   BRANCH_KIT_SPRITE_GAS,
@@ -52,6 +55,10 @@ import {
 } from './branchKitSprite';
 
 const KIT_ELEVATION_MM = 2600;
+
+// One branch-kit port (gas+liquid bundle) in world coords, carrying its identity
+// (sourceElementId + terminalRole) — the origin for drawing a pipe out of the kit.
+type KitPortConn = ReturnType<typeof getBranchKitPortConnections>[number];
 
 // 2D symbol for the copper branch kit: the REAL DIS-371-1G geometry projected +
 // copper-shaded from the manufacturer IFC mesh, embedded as data URIs so the
@@ -495,6 +502,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     outY: number;
     cursor: Point2D | null;
   } | null>(null);
+  // Active draw from a branch-kit port: the origin port (with its identity) + the
+  // live cursor. Commits a new pipe pair whose start is bound to that port.
+  const [portDraw, setPortDraw] = useState<{ conn: KitPortConn; cursor: Point2D | null } | null>(null);
   // Copper branch-kit placement: which line(s) to place, whether we're placing,
   // and the live cursor-attached ghost (transform + snap-to-pipe-end).
   const [kitKind, setKitKind] = useState<'gas' | 'liquid' | 'both'>('both');
@@ -523,6 +533,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         setBundleDraw(null);
         setPlacingKit(false);
         setKitGhost(null);
+        setPortDraw(null);
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -613,7 +624,13 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     ) {
       setBundleDraw(null);
     }
-  }, [pipes, extend, bundleDraw]);
+    if (
+      portDraw &&
+      !hvacElements.some((el) => el.id === portDraw.conn.sourceElementId)
+    ) {
+      setPortDraw(null);
+    }
+  }, [pipes, extend, bundleDraw, portDraw, hvacElements]);
 
   // When exactly the two lines of one bundle are selected, expose a single
   // shared-center "extend" grip per bundle end (the common + the user asked for).
@@ -1024,6 +1041,60 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [bundleDraw, pipes, toWorld, bundleAnchor, extendConstrain, commitPair],
   );
 
+  // --- Draw a pipe FROM a branch-kit port -----------------------------------
+  // The 3 kit ports are draw origins: grab one, drag out a gas+liquid bundle, and
+  // commit a new pipe pair whose START is bound to that port (sourceElementId +
+  // terminalRole), so it stays attached and follows the kit. (State declared above,
+  // near the other draw modes, so the fail-safe effect can read it.)
+  const startPortDraw = useCallback((e: ReactPointerEvent, conn: KitPortConn) => {
+    e.stopPropagation();
+    setExtend(null);
+    setBundleDraw(null);
+    setPlacingKit(false);
+    setPortDraw({ conn, cursor: null });
+  }, []);
+
+  const onPortDrawMove = useCallback(
+    (e: ReactPointerEvent) => {
+      const cx = e.clientX;
+      const cy = e.clientY;
+      setPortDraw((pd) => {
+        if (!pd) return pd;
+        const w = toWorld(cx, cy);
+        if (!w) return pd;
+        return { ...pd, cursor: extendConstrain(w, pd.conn.point, new Set<string>(), true) };
+      });
+    },
+    [toWorld, extendConstrain],
+  );
+
+  const onPortDrawClick = useCallback(
+    (e: ReactMouseEvent) => {
+      if (!portDraw) return;
+      const w = toWorld(e.clientX, e.clientY);
+      if (!w) return;
+      const start = portDraw.conn.point;
+      const end = extendConstrain(w, start, new Set<string>(), true);
+      if (Math.hypot(end.x - start.x, end.y - start.y) < 0.5) return;
+      const elements = buildRefrigerantPipeElements(
+        [
+          { x: start.x, y: start.y },
+          { x: end.x, y: end.y },
+        ],
+        { startBundleConnection: portDraw.conn },
+      );
+      elements.forEach((el) => addHvacElement(el));
+      saveToHistory('Draw pipe from branch kit');
+      setPortDraw(null);
+    },
+    [portDraw, toWorld, extendConstrain, addHvacElement, saveToHistory],
+  );
+
+  const finishPortDraw = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    setPortDraw(null);
+  }, []);
+
   // --- Copper branch-kit placement ------------------------------------------
   // The chosen kit's footprint + its 3 ports in LOCAL (centre-origin) coords,
   // driving the snap solver and the ghost. Rebuilt only when the line kind flips.
@@ -1333,7 +1404,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             : 'Move a port near an open pipe end to snap · click to place · right-click / Esc to cancel'}
         </div>
       ) : null}
-      {extend || bundleDraw ? (
+      {extend || bundleDraw || portDraw ? (
         <div
           style={{
             position: 'absolute',
@@ -1341,7 +1412,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             left: '50%',
             transform: 'translateX(-50%)',
             pointerEvents: 'none',
-            background: bundleDraw ? '#7C3AED' : '#0F766E',
+            background: portDraw ? '#B5742F' : bundleDraw ? '#7C3AED' : '#0F766E',
             color: '#fff',
             borderRadius: 8,
             padding: '7px 14px',
@@ -1352,10 +1423,11 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             zIndex: 20,
           }}
         >
-          {bundleDraw
-            ? 'Extending bundle on the centerline — both lines stay centered, holding the gap'
-            : 'Extending one line'}
-          {' · click to add a point · Shift = straight · right-click / Enter / Esc to finish'}
+          {portDraw
+            ? 'Drawing a pipe from the branch-kit port · click to place the end · Shift = straight · right-click / Esc to cancel'
+            : bundleDraw
+              ? 'Extending bundle on the centerline — both lines stay centered, holding the gap · click to add a point · Shift = straight · right-click / Enter / Esc to finish'
+              : 'Extending one line · click to add a point · Shift = straight · right-click / Enter / Esc to finish'}
         </div>
       ) : null}
       <svg
@@ -1625,9 +1697,40 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 );
               })()
             : null}
+          {/* Live preview of a pipe being pulled out of a kit port — the studio
+              pair from the port to the (constrained) cursor. */}
+          {portDraw && portDraw.cursor
+            ? (() => {
+                const start = portDraw.conn.point;
+                const pRoute = [{ x: start.x, y: start.y }, portDraw.cursor];
+                const pPairGap = Math.max(0, DEFAULT_REFRIGERANT_PIPE_GAP_MM + gapSpreadMm);
+                const pInsW = DEFAULT_OUTER_DIAMETER_MM;
+                const pCoreW = Math.max(pInsW * 0.55, 3);
+                const pSheenW = Math.max(pCoreW * 0.3, 1);
+                const pPathFor = (offMm: number) =>
+                  toSvgPathData(buildPipeCenterline(offsetPolyline(pRoute, offMm), bendRadiusMm));
+                const pTubes = [
+                  { d: pPathFor(pPairGap / 2), ...GAS_COLORS },
+                  { d: pPathFor(-pPairGap / 2), ...LIQUID_COLORS },
+                ];
+                return (
+                  <g style={{ pointerEvents: 'none' }} opacity={0.8}>
+                    {pTubes.map((t, i) => (
+                      <path key={`pdi-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={pInsW} strokeLinecap="butt" strokeLinejoin="round" />
+                    ))}
+                    {pTubes.map((t, i) => (
+                      <path key={`pdc-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={pCoreW} strokeLinecap="butt" strokeLinejoin="round" />
+                    ))}
+                    {pTubes.map((t, i) => (
+                      <path key={`pds-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={pSheenW} strokeLinecap="butt" strokeLinejoin="round" strokeOpacity={0.7} />
+                    ))}
+                  </g>
+                );
+              })()
+            : null}
           {/* Branch-kit port grips: the 3 bundle ports (inlet / run-outlet /
               branch-outlet) of a selected copper kit. Open = teal ring + outward
-              arrow with gas (blue) + liquid (amber) points. Draw-from-port next. */}
+              arrow with gas (blue) + liquid (amber) points, and a draw origin. */}
           {branchKitPorts.map((kit) =>
             kit.ports.map((port) => {
               const c = port.point;
@@ -1664,6 +1767,15 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                   >
                     {label}
                   </text>
+                  {/* Clickable draw origin: press the port to pull a pipe out. */}
+                  <circle
+                    cx={c.x}
+                    cy={c.y}
+                    r={hpx(12)}
+                    fill="rgba(0,0,0,0.001)"
+                    style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
+                    onPointerDown={(e) => startPortDraw(e, port)}
+                  />
                 </g>
               );
             }),
@@ -1774,7 +1886,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         {/* While extending, a transparent capture layer turns canvas clicks into
             new pipe points (move = preview, click = place, right-click = finish).
             Dispatches to single-line or bundle-centerline draw. */}
-        {extend || bundleDraw || placingKit ? (
+        {extend || bundleDraw || placingKit || portDraw ? (
           <rect
             x={0}
             y={0}
@@ -1782,9 +1894,15 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             height={height}
             fill="rgba(0,0,0,0)"
             style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
-            onPointerMove={placingKit ? onKitMove : extend ? onExtendMove : onBundleMove}
-            onClick={placingKit ? onKitClick : extend ? onExtendClick : onBundleClick}
-            onContextMenu={placingKit ? finishPlaceKit : finishExtend}
+            onPointerMove={
+              placingKit ? onKitMove : portDraw ? onPortDrawMove : extend ? onExtendMove : onBundleMove
+            }
+            onClick={
+              placingKit ? onKitClick : portDraw ? onPortDrawClick : extend ? onExtendClick : onBundleClick
+            }
+            onContextMenu={
+              placingKit ? finishPlaceKit : portDraw ? finishPortDraw : finishExtend
+            }
           />
         ) : null}
       </svg>
