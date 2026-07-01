@@ -17,6 +17,10 @@
  * Pointer input is coalesced through requestAnimationFrame (one update per frame), and
  * geometry is rebuilt only for the objects a command actually changed (identity-keyed
  * caches), which keeps a drag within the frame budget.
+ *
+ * Pipe tool: press-drag to draw. By DEFAULT the pipe is FREEHAND — it follows the
+ * cursor path (simplified on release, the fillet rounds the corners). Hold SHIFT to
+ * draw a straight segment instead. Release commits; Esc cancels the stroke.
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -128,10 +132,10 @@ export function VrfBoard(): JSX.Element {
   const showGas = lineFilter !== 'liquid';
   const showLiquid = lineFilter !== 'gas';
 
-  const [draftSpine, setDraftSpine] = useState<Point[]>([]);
-  const [draftCursor, setDraftCursor] = useState<Point | null>(null);
   const [freehand, setFreehand] = useState<Point[] | null>(null);
   const strokeRef = useRef<Stroke | null>(null);
+  const [shiftHeld, setShiftHeld] = useState(false); // Shift = straight-line pipe
+  const shiftRef = useRef(false);
   const [snapRes, setSnapRes] = useState<SnapResult | null>(null);
   const [kitGhost, setKitGhost] = useState<KitPlacement | null>(null);
   const [plusAff, setPlusAff] = useState<PlusAff | null>(null);
@@ -178,6 +182,20 @@ export function VrfBoard(): JSX.Element {
 
   useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
 
+  // Track Shift globally (drives straight vs freehand for the live pipe preview).
+  useEffect(() => {
+    const set = (e: KeyboardEvent) => {
+      shiftRef.current = e.shiftKey;
+      setShiftHeld(e.shiftKey);
+    };
+    window.addEventListener('keydown', set);
+    window.addEventListener('keyup', set);
+    return () => {
+      window.removeEventListener('keydown', set);
+      window.removeEventListener('keyup', set);
+    };
+  }, []);
+
   const ensureSnap = (): SnapIndex => {
     const st = useBoardStore.getState();
     const opts = { gapMm: st.pipeGapMm, gridMm: niceStepMm(st.view.zoom), tolerancePx: 9 };
@@ -201,15 +219,6 @@ export function VrfBoard(): JSX.Element {
       doc.selection = [id];
     });
   }, []);
-
-  const finishDraft = useCallback(() => {
-    setDraftSpine((spine) => {
-      commitRun(spine);
-      return [];
-    });
-    setDraftCursor(null);
-    setSnapRes(null);
-  }, [commitRun]);
 
   const nudge = useCallback((dx: number, dy: number) => {
     const st = useBoardStore.getState();
@@ -247,11 +256,7 @@ export function VrfBoard(): JSX.Element {
       } else if (meta && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         redo();
-      } else if (e.key === 'Enter') {
-        finishDraft();
       } else if (e.key === 'Escape') {
-        setDraftSpine([]);
-        setDraftCursor(null);
         setKitGhost(null);
         setSnapRes(null);
         strokeRef.current = null;
@@ -266,7 +271,7 @@ export function VrfBoard(): JSX.Element {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, finishDraft, nudge]);
+  }, [undo, redo, nudge]);
 
   const onWheel = useCallback(
     (e: Konva.KonvaEventObject<WheelEvent>) => {
@@ -338,9 +343,7 @@ export function VrfBoard(): JSX.Element {
         }
         setSnapRes(null);
       } else {
-        const res = ensureSnap().query(w, st.view);
-        setSnapRes(res);
-        setDraftCursor(res ? res.point : w);
+        setSnapRes(ensureSnap().query(w, st.view));
       }
     } else if (st.tool === 'branch-kit') {
       setKitGhost(resolveKitPlacement(st.doc.runs, st.doc.connections, w, st.view.zoom));
@@ -383,20 +386,16 @@ export function VrfBoard(): JSX.Element {
       strokeRef.current = null;
       setFreehand(null);
       const st = useBoardStore.getState();
-      if (st.tool === 'pipe') {
-        if (stroke.moved) {
-          // Freehand run: snap the end, simplify the trail, commit (the fillet rounds it).
-          const raw = stroke.points;
-          const endSnap = ensureSnap().query(raw[raw.length - 1]!, st.view)?.point;
-          const pts = endSnap ? [...raw.slice(0, -1), endSnap] : raw.slice();
-          const simplified = simplifyRDP(pts, pxToWorld(st.view, 3.5));
-          if (simplified.length >= 2 && polylineLength(simplified) > pxToWorld(st.view, 6)) {
-            commitRun(simplified);
-          }
-        } else {
-          // A plain click: add a straight polyline vertex (dbl-click / Enter commits).
-          setDraftSpine((s) => [...s, stroke.start]);
-        }
+      if (st.tool === 'pipe' && stroke.moved) {
+        const raw = stroke.points;
+        const endSnap = ensureSnap().query(raw[raw.length - 1]!, st.view)?.point;
+        const end = endSnap ?? raw[raw.length - 1]!;
+        // Shift held at release = a straight segment start→end; otherwise the freehand
+        // trail, simplified (the tangent-arc fillet then rounds the surviving corners).
+        const spine = shiftRef.current
+          ? [stroke.start, end]
+          : simplifyRDP([...raw.slice(0, -1), end], pxToWorld(st.view, 3.5));
+        if (spine.length >= 2 && polylineLength(spine) > pxToWorld(st.view, 6)) commitRun(spine);
       }
       return;
     }
@@ -436,7 +435,7 @@ export function VrfBoard(): JSX.Element {
     const p = e.target.getStage()?.getPointerPosition();
     const w = p ? screenToWorld(st.view, p) : null;
     if (!w) return;
-    // Pipe vertices are added on mouse-up (press = vertex, press-drag = freehand), so
+    // The pipe tool draws on press-drag + release (freehand, or straight with Shift), so
     // the click event only drives branch-kit placement here.
     if (st.tool === 'branch-kit') {
       const { transform, snap } = resolveKitPlacement(st.doc.runs, st.doc.connections, w, st.view.zoom);
@@ -449,23 +448,15 @@ export function VrfBoard(): JSX.Element {
     }
   }, [plusAff]);
 
-  const onDblClick = useCallback(
-    (e: Konva.KonvaEventObject<MouseEvent>) => {
-      if (useBoardStore.getState().tool !== 'pipe') return;
-      e.evt.preventDefault();
-      finishDraft();
-    },
-    [finishDraft],
-  );
-
-  // Freehand stroke follows the pointer trail; otherwise the click-polyline rubber band.
-  const previewSpine = freehand
-    ? freehand.length >= 2
-      ? simplifyRDP(freehand, pxToWorld(view, 2))
-      : freehand
-    : draftCursor
-      ? [...draftSpine, draftCursor]
-      : draftSpine;
+  // Live pipe preview: Shift = a straight segment start→cursor; otherwise the freehand
+  // trail, simplified so the preview matches what commits.
+  const previewSpine: Point[] = freehand
+    ? shiftHeld && freehand.length >= 2
+      ? [freehand[0]!, freehand[freehand.length - 1]!]
+      : freehand.length >= 2
+        ? simplifyRDP(freehand, pxToWorld(view, 2))
+        : freehand
+    : [];
   const previewGeom = previewSpine.length >= 2 ? buildPairedGeometry(previewSpine, pipeGapMm, bendRadiusMm) : null;
 
   // Transient kit-drag doc (endpoints follow) without committing.
@@ -549,7 +540,6 @@ export function VrfBoard(): JSX.Element {
           onMouseUp={endInteraction}
           onMouseLeave={onMouseLeave}
           onClick={onClick}
-          onDblClick={onDblClick}
         >
           <Grid view={view} width={size.width} height={size.height} />
 
@@ -583,9 +573,6 @@ export function VrfBoard(): JSX.Element {
             {previewGeom ? (
               <PairedRunShape geometry={previewGeom} gasWidthMm={activeSize.gasOuterMm} liquidWidthMm={activeSize.liquidOuterMm} filter={lineFilter} preview />
             ) : null}
-            {draftSpine.map((p, i) => (
-              <Circle key={i} x={p.x} y={p.y} radius={3.5 / view.zoom} fill={ACCENT} stroke="#fff" strokeWidth={1.2 / view.zoom} listening={false} />
-            ))}
             {ghostKit ? (
               <>
                 <KitBody kit={ghostKit} body={kitBodyCache.get(pipeGapMm)} gasWidthMm={activeSize.gasOuterMm} liquidWidthMm={activeSize.liquidOuterMm} zoom={view.zoom} cache={false} opacity={0.85} />
