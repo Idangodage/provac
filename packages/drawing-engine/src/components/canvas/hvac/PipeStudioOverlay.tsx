@@ -31,6 +31,7 @@ import { MM_TO_PX } from '../scale';
 
 import { buildPipeCenterline, toPolyline, toSvgPathData } from './pipeCenterline';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
+import { getBranchKitPortConnections } from './refrigerantPipePairModel';
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
@@ -515,6 +516,18 @@ export function PipeStudioOverlay({
     });
     return { aId: a.id, bId: b.id, aKind: a.lineKind, ends };
   }, [selectedIds, pipes]);
+
+  // Selected copper branch kits → their 3 bundle ports (world gas/liquid points,
+  // outward direction, terminalRole) for the port grips + draw-from-port.
+  const branchKitPorts = useMemo(() => {
+    const out: { id: string; ports: ReturnType<typeof getBranchKitPortConnections> }[] = [];
+    for (const el of hvacElements) {
+      if (el.type !== 'refrigerant-branch-kit' || !selectedSet.has(el.id)) continue;
+      const ports = getBranchKitPortConnections(el);
+      if (ports.length > 0) out.push({ id: el.id, ports });
+    }
+    return out;
+  }, [hvacElements, selectedSet]);
 
   const toWorld = useCallback((clientX: number, clientY: number): Point2D | null => {
     const g = gRef.current;
@@ -1120,6 +1133,49 @@ export function PipeStudioOverlay({
                 );
               })()
             : null}
+          {/* Branch-kit port grips: the 3 bundle ports (inlet / run-outlet /
+              branch-outlet) of a selected copper kit. Open = teal ring + outward
+              arrow with gas (blue) + liquid (amber) points. Draw-from-port next. */}
+          {branchKitPorts.map((kit) =>
+            kit.ports.map((port) => {
+              const c = port.point;
+              const dl = Math.hypot(port.direction.x, port.direction.y) || 1;
+              const dx = port.direction.x / dl;
+              const dy = port.direction.y / dl;
+              const tip = { x: c.x + dx * hpx(20), y: c.y + dy * hpx(20) };
+              const label =
+                port.terminalRole === 'inlet'
+                  ? 'inlet'
+                  : port.terminalRole === 'run-outlet'
+                    ? 'run'
+                    : 'branch';
+              return (
+                <g key={`bkp-${kit.id}-${port.terminalRole}`} style={{ pointerEvents: 'none' }}>
+                  <line x1={port.gasPoint.x} y1={port.gasPoint.y} x2={port.liquidPoint.x} y2={port.liquidPoint.y} stroke="#0F766E" strokeWidth={hpx(1)} strokeOpacity={0.55} strokeDasharray={`${hpx(2)} ${hpx(2)}`} />
+                  <circle cx={port.gasPoint.x} cy={port.gasPoint.y} r={hpx(3.2)} fill="#1F6FB2" />
+                  <circle cx={port.liquidPoint.x} cy={port.liquidPoint.y} r={hpx(3.2)} fill="#B5742F" />
+                  <line x1={c.x} y1={c.y} x2={tip.x} y2={tip.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeLinecap="round" />
+                  <circle cx={tip.x} cy={tip.y} r={hpx(2)} fill="#0F766E" />
+                  <circle cx={c.x} cy={c.y} r={hpx(8)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(2)} />
+                  <path
+                    d={`M ${c.x - hpx(3)} ${c.y} H ${c.x + hpx(3)} M ${c.x} ${c.y - hpx(3)} V ${c.y + hpx(3)}`}
+                    stroke="#0F766E"
+                    strokeWidth={hpx(1.6)}
+                  />
+                  <text
+                    x={c.x - dx * hpx(15)}
+                    y={c.y - dy * hpx(15) + hpx(3)}
+                    fontSize={hpx(11)}
+                    textAnchor="middle"
+                    fill="#0F766E"
+                    style={{ fontWeight: 500 }}
+                  >
+                    {label}
+                  </text>
+                </g>
+              );
+            }),
+          )}
         </g>
         {/* While extending, a transparent capture layer turns canvas clicks into
             new pipe points (move = preview, click = place, right-click = finish).

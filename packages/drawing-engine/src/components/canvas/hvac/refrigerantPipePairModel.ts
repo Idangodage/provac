@@ -4044,6 +4044,18 @@ function buildSelfContainedBranchKitBundleTargets(
   });
 }
 
+/**
+ * The 3 bundle ports (inlet / run-outlet / branch-outlet) of a self-contained
+ * ('both' lines) copper branch kit, in WORLD coordinates: gas/liquid points,
+ * outward direction, diameters, and terminalRole. Same data the pipe draw tool
+ * snaps to; exposed so UI (port grips) can render + draw from each port.
+ */
+export function getBranchKitPortConnections(
+  element: HvacPipeSnapSource,
+): RefrigerantPipeBundleConnection[] {
+  return buildSelfContainedBranchKitBundleTargets(element);
+}
+
 function buildPairedBranchKitBundleTargets(
   elements: HvacPipeSnapSource[],
 ): RefrigerantPipeBundleConnection[] {
