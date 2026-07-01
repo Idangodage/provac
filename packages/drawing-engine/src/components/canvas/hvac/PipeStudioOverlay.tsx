@@ -116,21 +116,6 @@ function firstDir(route: Point2D[]): Point2D {
 }
 
 /**
- * Places the partner line's new point a fixed perpendicular `gap` to one `side`
- * (+/-1) of the grabbed line's NEW segment (anchor -> np), using that segment's
- * own left normal. Because `gap` and `side` are frozen once when extension
- * begins (see captureBundleFrame), the spacing stays constant along the leg and
- * through corners, and the partner can never cross through the grabbed line as
- * the cursor swings around the anchor.
- */
-function bundleOffsetPoint(anchor: Point2D, np: Point2D, side: number, gap: number): Point2D {
-  const dir = unit(np.x - anchor.x, np.y - anchor.y);
-  const nx = -dir.y;
-  const ny = dir.x;
-  return { x: np.x + nx * side * gap, y: np.y + ny * side * gap };
-}
-
-/**
  * Offsets a SHARP route polyline perpendicular by `off` (left normal), mitred at
  * corners. The caller fillets the result, so the bend radius stays independent
  * of the offset (offsetting the centerline shifts position only, not the bend).
@@ -344,16 +329,13 @@ export function PipeStudioOverlay({
   const [bendRadiusMm, setBendRadiusMm] = useState(24);
   // Relative spread added to the existing gap (0 = pipes as drawn).
   const [gapSpreadMm, setGapSpreadMm] = useState(0);
-  // Active pipe extension: which pipe end is being continued + the live cursor,
-  // plus the bundle frame (partner + perpendicular gap + side) frozen at start.
+  // Active SINGLE-line extension: which pipe end is being continued + the live
+  // cursor. One line only — extending a whole bundle uses the shared-center grip
+  // (select both lines). Selection decides the behaviour; no mode toggle.
   const [extend, setExtend] = useState<{
     id: string;
     end: 'start' | 'end';
     cursor: Point2D | null;
-    partnerId: string | null;
-    partnerEnd: 'start' | 'end';
-    gap: number;
-    side: number;
   } | null>(null);
   // Active BUNDLE extension from the shared-center grip: draw on the centerline,
   // both lines fall out as symmetric +/- gap/2 offsets. aSide fixes which side
@@ -369,10 +351,6 @@ export function PipeStudioOverlay({
     outY: number;
     cursor: Point2D | null;
   } | null>(null);
-  // Default behaviour when extending a bundled line: 'pair' grows both gas+liquid
-  // together; 'single' grows only the grabbed line. Alt momentarily forces single.
-  const [extendMode, setExtendMode] = useState<'pair' | 'single'>('pair');
-  const [altDown, setAltDown] = useState(false);
   const orthoRef = useRef(false);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
@@ -383,7 +361,6 @@ export function PipeStudioOverlay({
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.key === 'Shift') orthoRef.current = true;
-      if (e.key === 'Alt') setAltDown(true);
       if (e.key === 'Escape' || e.key === 'Enter') {
         setExtend(null);
         setBundleDraw(null);
@@ -391,11 +368,9 @@ export function PipeStudioOverlay({
     };
     const up = (e: KeyboardEvent) => {
       if (e.key === 'Shift') orthoRef.current = false;
-      if (e.key === 'Alt') setAltDown(false);
     };
     const blur = () => {
       orthoRef.current = false;
-      setAltDown(false);
     };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
@@ -523,7 +498,7 @@ export function PipeStudioOverlay({
       const out = unit(ae.pt.x - aPrev.x, ae.pt.y - aPrev.y);
       // Bundle gap = the perpendicular spacing across the run heading, NOT the
       // raw end-to-end distance (which inflates when the two ends are staggered
-      // along the run). Mirrors captureBundleFrame for the single-line path.
+      // along the run).
       const gv = { x: be.pt.x - ae.pt.x, y: be.pt.y - ae.pt.y };
       const perp = gv.x * -out.y + gv.y * out.x;
       const gap = Math.abs(perp) > 1 ? Math.abs(perp) : Math.hypot(gv.x, gv.y);
@@ -697,91 +672,11 @@ export function PipeStudioOverlay({
     [pipes, k],
   );
 
-  // Resolve a single line's bundle partner: prefer the explicit bundleId link
-  // (authoritative), else the nearest opposite-kind line by midpoint. Returns
-  // the partner plus which of its ends is the matching open end near `anchor`.
-  const resolveBundlePartner = useCallback(
-    (pipe: PipeView, anchor: Point2D): { partner: PipeView; end: 'start' | 'end' } | null => {
-      if (pipe.isPair) return null;
-      let partner: PipeView | null = null;
-      if (pipe.bundleId) {
-        partner =
-          pipes.find(
-            (q) => q.id !== pipe.id && q.bundleId === pipe.bundleId && q.lineKind !== pipe.lineKind,
-          ) ??
-          pipes.find((q) => q.id !== pipe.id && q.bundleId === pipe.bundleId) ??
-          null;
-      }
-      if (!partner) {
-        const pMid = routeMid(pipe.route);
-        let bestD = 600;
-        for (const q of pipes) {
-          if (q.id === pipe.id || q.isPair) continue;
-          if (pipe.lineKind && q.lineKind && pipe.lineKind === q.lineKind) continue;
-          const qMid = routeMid(q.route);
-          const d = Math.hypot(qMid.x - pMid.x, qMid.y - pMid.y);
-          if (d < bestD) {
-            bestD = d;
-            partner = q;
-          }
-        }
-      }
-      if (!partner || partner.route.length < 1) return null;
-      const first = partner.route[0]!;
-      const last = partner.route[partner.route.length - 1]!;
-      const dFirst = Math.hypot(first.x - anchor.x, first.y - anchor.y);
-      const dLast = Math.hypot(last.x - anchor.x, last.y - anchor.y);
-      return { partner, end: dFirst <= dLast ? 'start' : 'end' };
-    },
-    [pipes],
-  );
-
-  // Freeze the bundle spacing + side at the moment extension begins, so the
-  // partner is offset by a CONSTANT perpendicular gap on a STABLE side for the
-  // whole session — measured against the run's heading at the open end (not the
-  // raw end-to-end distance, which inflates when the two ends are staggered).
-  const captureBundleFrame = useCallback(
-    (
-      pipe: PipeView,
-      end: 'start' | 'end',
-    ): { partnerId: string; partnerEnd: 'start' | 'end'; gap: number; side: number } | null => {
-      const route = pipe.route;
-      const anchor = end === 'end' ? route[route.length - 1]! : route[0]!;
-      const prev = end === 'end' ? route[route.length - 2] : route[1];
-      const travel = prev ? unit(anchor.x - prev.x, anchor.y - prev.y) : { x: 1, y: 0, n: 1 };
-      const bundle = resolveBundlePartner(pipe, anchor);
-      if (!bundle) return null;
-      const pr = bundle.partner.route;
-      const b = bundle.end === 'end' ? pr[pr.length - 1]! : pr[0]!;
-      const gapVec = { x: b.x - anchor.x, y: b.y - anchor.y };
-      // Signed perpendicular distance of the partner end across the run heading.
-      const perp = gapVec.x * -travel.y + gapVec.y * travel.x;
-      let gap = Math.abs(perp);
-      if (gap < 1) gap = Math.hypot(gapVec.x, gapVec.y) || Math.max(pipe.gapMm + pipe.outerMm, 12);
-      const side = perp > 0.01 ? 1 : perp < -0.01 ? -1 : pipe.lineKind === 'liquid' ? -1 : 1;
-      return { partnerId: bundle.partner.id, partnerEnd: bundle.end, gap, side };
-    },
-    [resolveBundlePartner],
-  );
-
-  const startExtend = useCallback(
-    (e: ReactPointerEvent, id: string, end: 'start' | 'end') => {
-      e.stopPropagation();
-      setBundleDraw(null);
-      const pipe = pipes.find((p) => p.id === id);
-      const frame = pipe ? captureBundleFrame(pipe, end) : null;
-      setExtend({
-        id,
-        end,
-        cursor: null,
-        partnerId: frame?.partnerId ?? null,
-        partnerEnd: frame?.partnerEnd ?? 'end',
-        gap: frame?.gap ?? 0,
-        side: frame?.side ?? 1,
-      });
-    },
-    [pipes, captureBundleFrame],
-  );
+  const startExtend = useCallback((e: ReactPointerEvent, id: string, end: 'start' | 'end') => {
+    e.stopPropagation();
+    setBundleDraw(null);
+    setExtend({ id, end, cursor: null });
+  }, []);
 
   const onExtendMove = useCallback(
     (e: ReactPointerEvent) => {
@@ -811,25 +706,12 @@ export function PipeStudioOverlay({
       const np = extendConstrain(w, anchor, extend.id);
       // Skip a zero-length click on the anchor itself.
       if (Math.hypot(np.x - anchor.x, np.y - anchor.y) < 0.5) return;
-      const appendAt = (route: Point2D[], end: 'start' | 'end', pt: Point2D) =>
-        end === 'end' ? [...route, pt] : [pt, ...route];
-      const grabbedNext = appendAt(pipe.route, extend.end, np);
-      // 'Both' mode (default) advances the bundle partner in lockstep, holding
-      // the frozen gap; 'Single' mode (or Alt held) grows just the grabbed line.
-      const forceSingle = extendMode === 'single' || e.altKey;
-      const partner =
-        !forceSingle && extend.partnerId
-          ? pipes.find((p) => p.id === extend.partnerId) ?? null
-          : null;
-      if (partner) {
-        const nq = bundleOffsetPoint(anchor, np, extend.side, extend.gap);
-        const partnerNext = appendAt(partner.route, extend.partnerEnd, nq);
-        commitPair(pipe.id, grabbedNext, partner.id, partnerNext, 'Extend refrigerant pipe pair');
-      } else {
-        commitRoute(extend.id, grabbedNext, 'Extend refrigerant pipe');
-      }
+      // Single line only: the grabbed line grows on its own. To grow the whole
+      // bundle, select both lines and use the shared-center grip.
+      const next = extend.end === 'end' ? [...pipe.route, np] : [np, ...pipe.route];
+      commitRoute(extend.id, next, 'Extend refrigerant pipe');
     },
-    [extend, pipes, toWorld, extendConstrain, extendMode, commitPair, commitRoute],
+    [extend, pipes, toWorld, extendConstrain, commitRoute],
   );
 
   const finishExtend = useCallback((e: ReactMouseEvent) => {
@@ -993,40 +875,6 @@ export function PipeStudioOverlay({
             />
             <span style={{ fontWeight: 500, minWidth: 46 }}>+{Math.round(gapSpreadMm)} mm</span>
           </label>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            Extend
-            <span
-              style={{
-                display: 'inline-flex',
-                border: '1px solid #d8d2c4',
-                borderRadius: 7,
-                overflow: 'hidden',
-              }}
-            >
-              {(['pair', 'single'] as const).map((m) => {
-                const active = (altDown ? 'single' : extendMode) === m;
-                return (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setExtendMode(m)}
-                    title={m === 'pair' ? 'Extend both bundle lines together' : 'Extend only this line (or hold Alt)'}
-                    style={{
-                      border: 'none',
-                      padding: '4px 11px',
-                      fontSize: 12.5,
-                      cursor: 'pointer',
-                      background: active ? '#0F766E' : '#fff',
-                      color: active ? '#fff' : '#46433c',
-                      fontWeight: active ? 600 : 400,
-                    }}
-                  >
-                    {m === 'pair' ? 'Both' : 'Single'}
-                  </button>
-                );
-              })}
-            </span>
-          </span>
         </div>
       ) : null}
       {extend || bundleDraw ? (
@@ -1050,9 +898,7 @@ export function PipeStudioOverlay({
         >
           {bundleDraw
             ? 'Extending bundle on the centerline — both lines stay centered, holding the gap'
-            : extendMode === 'single' || altDown || !extend?.partnerId
-              ? 'Extending one line'
-              : 'Extending pipe — both bundle lines follow, holding the gap'}
+            : 'Extending one line'}
           {' · click to add a point · Shift = straight · right-click / Enter / Esc to finish'}
         </div>
       ) : null}
@@ -1181,36 +1027,15 @@ export function PipeStudioOverlay({
                       );
                     })
                   : null}
-                {/* Live preview of the segment(s) being added — both bundle
-                    lines when the pipe is paired. */}
+                {/* Live preview of the single line's next segment. */}
                 {extend?.id === p.id && extend.cursor
                   ? (() => {
                       const aBody = extend.end === 'end' ? hRoute[hRoute.length - 1]! : hRoute[0]!;
-                      const aRoute = extend.end === 'end' ? p.route[p.route.length - 1]! : p.route[0]!;
                       const c = extend.cursor;
-                      const singleMode = extendMode === 'single' || altDown;
-                      let partnerSeg: { b: Point2D; q: Point2D } | null = null;
-                      if (!singleMode && extend.partnerId && Math.hypot(c.x - aRoute.x, c.y - aRoute.y) > 0.5) {
-                        const partner = pipes.find((q) => q.id === extend.partnerId);
-                        if (partner && partner.route.length >= 1) {
-                          const b =
-                            extend.partnerEnd === 'end'
-                              ? partner.route[partner.route.length - 1]!
-                              : partner.route[0]!;
-                          partnerSeg = { b, q: bundleOffsetPoint(aRoute, c, extend.side, extend.gap) };
-                        }
-                      }
                       return (
                         <g style={{ pointerEvents: 'none' }}>
                           <line x1={aBody.x} y1={aBody.y} x2={c.x} y2={c.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeDasharray={`${hpx(7)} ${hpx(4)}`} strokeLinecap="round" />
                           <circle cx={c.x} cy={c.y} r={hpx(4)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.8)} />
-                          {partnerSeg ? (
-                            <>
-                              <line x1={partnerSeg.b.x} y1={partnerSeg.b.y} x2={partnerSeg.q.x} y2={partnerSeg.q.y} stroke="#0F766E" strokeWidth={hpx(1.6)} strokeDasharray={`${hpx(5)} ${hpx(4)}`} strokeLinecap="round" strokeOpacity={0.75} />
-                              <circle cx={partnerSeg.q.x} cy={partnerSeg.q.y} r={hpx(3.2)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.5)} strokeOpacity={0.85} />
-                              <line x1={c.x} y1={c.y} x2={partnerSeg.q.x} y2={partnerSeg.q.y} stroke="#0F766E" strokeWidth={hpx(1)} strokeDasharray={`${hpx(2)} ${hpx(2)}`} strokeOpacity={0.5} />
-                            </>
-                          ) : null}
                         </g>
                       );
                     })()
