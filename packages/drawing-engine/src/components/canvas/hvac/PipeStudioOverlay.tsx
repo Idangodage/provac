@@ -70,13 +70,16 @@ function kitPathD(pts: Point2D[]): string {
 }
 function kitGlossPath(key: string, d: string, r: number): JSX.Element {
   const s = { fill: 'none', strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
+  // Layered strokes wide->narrow build a cylindrical copper cross-section: deep
+  // shadowed edges, a warm body, and a crisp central specular = polished metal.
   return (
     <g key={key}>
-      <path d={d} stroke="#7d3f1c" strokeWidth={2 * r + r * 0.35} {...s} />
-      <path d={d} stroke="#d4884f" strokeWidth={2 * r} {...s} />
-      <path d={d} stroke="#eaa876" strokeWidth={r * 1.1} strokeOpacity={0.55} {...s} />
-      <path d={d} stroke="#ffe0c1" strokeWidth={r * 0.7} strokeOpacity={0.5} {...s} />
-      <path d={d} stroke="#fff4e8" strokeWidth={r * 0.3} strokeOpacity={0.8} {...s} />
+      <path d={d} stroke="#4a2610" strokeWidth={2 * r + r * 0.5} {...s} />
+      <path d={d} stroke="#7d3f1c" strokeWidth={2 * r + r * 0.1} {...s} />
+      <path d={d} stroke="#b56f37" strokeWidth={2 * r * 0.86} {...s} />
+      <path d={d} stroke="#e19c60" strokeWidth={r * 1.15} strokeOpacity={0.8} {...s} />
+      <path d={d} stroke="#ffe3c4" strokeWidth={r * 0.55} strokeOpacity={0.75} {...s} />
+      <path d={d} stroke="#fffdf8" strokeWidth={r * 0.2} strokeOpacity={0.92} {...s} />
     </g>
   );
 }
@@ -1226,12 +1229,13 @@ export function PipeStudioOverlay({
       >
         <defs>
           <linearGradient id="bkCu" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#7a4620" />
-            <stop offset="0.14" stopColor="#c07d44" />
-            <stop offset="0.4" stopColor="#f6d3ab" />
-            <stop offset="0.5" stopColor="#ecc196" />
-            <stop offset="0.64" stopColor="#c47f45" />
-            <stop offset="1" stopColor="#6f3c1b" />
+            <stop offset="0" stopColor="#4a2610" />
+            <stop offset="0.12" stopColor="#8a5228" />
+            <stop offset="0.3" stopColor="#d99a5f" />
+            <stop offset="0.4" stopColor="#fff0dc" />
+            <stop offset="0.5" stopColor="#e8b57e" />
+            <stop offset="0.72" stopColor="#a5632f" />
+            <stop offset="1" stopColor="#59300f" />
           </linearGradient>
           <radialGradient id="bkCub" cx="0.38" cy="0.32" r="0.75">
             <stop offset="0" stopColor="#f8d9af" />
