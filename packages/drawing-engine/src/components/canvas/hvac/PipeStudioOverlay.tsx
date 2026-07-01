@@ -1844,6 +1844,12 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                     ? 'run'
                     : 'branch';
               const sel = kit.selected;
+              // The clickable draw-origin must span BOTH tube ends (gas + liquid),
+              // since a 'both' kit's visible ports sit at those points, not at the
+              // bundle centre between them — otherwise hovering a tube end misses.
+              const halfSpan =
+                Math.hypot(port.gasPoint.x - port.liquidPoint.x, port.gasPoint.y - port.liquidPoint.y) / 2;
+              const hitR = Math.max(hpx(13), halfSpan + hpx(10));
               return (
                 <g key={`bkp-${kit.id}-${port.terminalRole}`} style={{ pointerEvents: 'none' }}>
                   {/* gas + liquid points + the port snap ring — always shown so
@@ -1875,15 +1881,12 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                       </text>
                     </>
                   ) : null}
-                  {/* Clickable draw origin: press the port to pull a pipe out. */}
-                  <circle
-                    cx={c.x}
-                    cy={c.y}
-                    r={hpx(12)}
-                    fill="rgba(0,0,0,0.001)"
-                    style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
-                    onPointerDown={(e) => startPortDraw(e, port)}
-                  />
+                  {/* Clickable draw origin covering both tube ends: press the port
+                      to pull a pipe out. Also placed directly on the gas + liquid
+                      tube ends so hovering either visible stub starts the draw. */}
+                  <circle cx={c.x} cy={c.y} r={hitR} fill="rgba(0,0,0,0.001)" style={{ pointerEvents: 'auto', cursor: 'crosshair' }} onPointerDown={(e) => startPortDraw(e, port)} />
+                  <circle cx={port.gasPoint.x} cy={port.gasPoint.y} r={hpx(11)} fill="rgba(0,0,0,0.001)" style={{ pointerEvents: 'auto', cursor: 'crosshair' }} onPointerDown={(e) => startPortDraw(e, port)} />
+                  <circle cx={port.liquidPoint.x} cy={port.liquidPoint.y} r={hpx(11)} fill="rgba(0,0,0,0.001)" style={{ pointerEvents: 'auto', cursor: 'crosshair' }} onPointerDown={(e) => startPortDraw(e, port)} />
                 </g>
               );
             }),
