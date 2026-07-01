@@ -746,18 +746,9 @@ export function useCanvasEventBinding(
         nativeEvent?.ctrlKey ||
         nativeEvent?.metaKey
       ) {
-        // Additive (shift/ctrl/meta) selection: Fabric owns the ActiveSelection
-        // and we normally don't sync it. But when the whole active selection is
-        // HVAC pipes, mirror it to the store so bundle-aware tooling (the shared-
-        // center pipe grip) can see a two-pipe selection.
-        const activePipeTargets = canvas.getActiveObjects?.() ?? [];
-        const activePipeIds = activePipeTargets
-          .map((target) => resolveHvacIdFromTarget(target))
-          .filter((id): id is string => Boolean(id));
-        if (activePipeTargets.length > 0 && activePipeIds.length === activePipeTargets.length) {
-          setPersistentRoomControlId(null);
-          setSelectedIds(Array.from(new Set(activePipeIds)));
-        }
+        // Additive (shift/ctrl/meta) selection is owned by the mouse:down handler
+        // (toggleSelectedId), which now resolves the pipe deterministically via
+        // geometric hit-testing. Let Fabric manage the visual ActiveSelection.
         return;
       }
       if (suppressFabricSelectionSyncRef.current > 0) {
@@ -826,18 +817,9 @@ export function useCanvasEventBinding(
         nativeEvent?.ctrlKey ||
         nativeEvent?.metaKey
       ) {
-        // Additive (shift/ctrl/meta) selection: Fabric owns the ActiveSelection
-        // and we normally don't sync it. But when the whole active selection is
-        // HVAC pipes, mirror it to the store so bundle-aware tooling (the shared-
-        // center pipe grip) can see a two-pipe selection.
-        const activePipeTargets = canvas.getActiveObjects?.() ?? [];
-        const activePipeIds = activePipeTargets
-          .map((target) => resolveHvacIdFromTarget(target))
-          .filter((id): id is string => Boolean(id));
-        if (activePipeTargets.length > 0 && activePipeIds.length === activePipeTargets.length) {
-          setPersistentRoomControlId(null);
-          setSelectedIds(Array.from(new Set(activePipeIds)));
-        }
+        // Additive (shift/ctrl/meta) selection is owned by the mouse:down handler
+        // (toggleSelectedId), which now resolves the pipe deterministically via
+        // geometric hit-testing. Let Fabric manage the visual ActiveSelection.
         return;
       }
       if (suppressFabricSelectionSyncRef.current > 0) {

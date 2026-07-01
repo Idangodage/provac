@@ -95,8 +95,27 @@ function toCanvas(point: Point2D): Point2D {
 // Opacity used for Fabric refrigerant-pipe bodies when the SVG overlay draws the
 // visible pipe. Non-zero so perPixelTargetFind still gets pipe-shaped pixels to
 // hit (opacity 0 makes the pipe unclickable), yet low enough to stay invisible
-// under the opaque overlay.
+// under the opaque overlay. Deterministic pipe selection no longer depends on
+// this (see pickRefrigerantPipeAtPoint), so the value only needs to keep the
+// non-overlay/fallback path working.
 const HIDDEN_PIPE_HIT_OPACITY = 0.04;
+
+// Extra forgiveness (screen px) added to each pipe's insulation half-width when
+// geometrically hit-testing a click/hover against its centerline segments.
+const PIPE_PICK_PADDING_PX = 6;
+
+/** Shortest distance (mm) from point p to segment a-b, all in mm space. */
+function pointToSegmentDistanceMm(p: Point2D, a: Point2D, b: Point2D): number {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const apx = p.x - a.x;
+  const apy = p.y - a.y;
+  const lenSq = abx * abx + aby * aby;
+  const t = lenSq > 0 ? Math.max(0, Math.min(1, (apx * abx + apy * aby) / lenSq)) : 0;
+  const cx = a.x + abx * t;
+  const cy = a.y + aby * t;
+  return Math.hypot(p.x - cx, p.y - cy);
+}
 
 function elementCenter(
   element: Pick<HvacElement, "position" | "width" | "depth">,
@@ -297,6 +316,9 @@ export class HvacPlanRenderer {
   private selectedIds = new Set<string>();
   private hoveredId: string | null = null;
   private placementPreview: HvacGroup[] = [];
+  // Cached straight-segment geometry for deterministic pipe hit-testing; rebuilt
+  // lazily on the next pick after any element render/override change.
+  private pipeSegmentTargetsCache: VisibleRefrigerantPipeSegmentTarget[] | null = null;
   // When the SVG pipe-studio overlay owns the visible pipes, the Fabric pipe
   // bodies are kept (selectable / snappable) but rendered invisible to avoid a
   // double image that ignores the overlay's bend/gap controls.
@@ -329,10 +351,12 @@ export class HvacPlanRenderer {
     this.sceneElementOverrides = new Map(
       (elements ?? []).map((element) => [element.id, element]),
     );
+    this.invalidatePipeSegmentTargets();
   }
 
   clearSceneElementOverrides(): void {
     this.sceneElementOverrides.clear();
+    this.invalidatePipeSegmentTargets();
   }
 
   private annotate(
@@ -406,6 +430,7 @@ export class HvacPlanRenderer {
   }
 
   private removeElement(id: string): void {
+    this.invalidatePipeSegmentTargets();
     const group = this.groups.get(id);
     if (group) {
       this.canvas.remove(group);
@@ -4014,6 +4039,7 @@ export class HvacPlanRenderer {
 
   renderElement(element: HvacElement): void {
     this.removeElement(element.id);
+    this.invalidatePipeSegmentTargets();
     this.hvacData.set(element.id, element);
 
     const group = this.buildGroup(element, {
@@ -4195,7 +4221,62 @@ export class HvacPlanRenderer {
     this.canvas.requestRenderAll();
   }
 
+  private getPipeSegmentTargets(): VisibleRefrigerantPipeSegmentTarget[] {
+    if (!this.pipeSegmentTargetsCache) {
+      this.pipeSegmentTargetsCache = getVisibleRefrigerantPipeStraightSegmentTargets(
+        this.getRenderSceneElements(),
+      );
+    }
+    return this.pipeSegmentTargetsCache;
+  }
+
+  private invalidatePipeSegmentTargets(): void {
+    this.pipeSegmentTargetsCache = null;
+  }
+
+  /**
+   * Deterministic geometric pick for refrigerant pipes: the pipe whose centerline
+   * segment is nearest the point AND within (insulation half-width + padding).
+   * Pure vector math — no rendered pixels — so it is precise, matches the visible
+   * pipe, and is independent of the hidden-body opacity. Overlapping bundle lines
+   * tie-break by nearest, then topmost (elevation).
+   */
+  private pickRefrigerantPipeAtPoint(canvasPointPx: Point2D): string | null {
+    const pMm = { x: canvasPointPx.x / MM_TO_PX, y: canvasPointPx.y / MM_TO_PX };
+    const paddingMm = PIPE_PICK_PADDING_PX / MM_TO_PX;
+    let bestId: string | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    let bestElevation = Number.NEGATIVE_INFINITY;
+    for (const seg of this.getPipeSegmentTargets()) {
+      const group = this.groups.get(seg.elementId);
+      if (!group || !group.visible || !group.evented) {
+        continue;
+      }
+      const tol = seg.outerDiameterMm / 2 + paddingMm;
+      const dist = pointToSegmentDistanceMm(pMm, seg.start, seg.end);
+      if (dist > tol) {
+        continue;
+      }
+      if (
+        dist < bestDist - 0.01 ||
+        (Math.abs(dist - bestDist) <= 0.01 && seg.elevationMm > bestElevation)
+      ) {
+        bestDist = dist;
+        bestElevation = seg.elevationMm;
+        bestId = seg.elementId;
+      }
+    }
+    return bestId;
+  }
+
   findElementAtCanvasPoint(canvasPointPx: Point2D): string | null {
+    // Pipes: precise geometric pick (deterministic, matches the visible pipe).
+    const pipeId = this.pickRefrigerantPipeAtPoint(canvasPointPx);
+    if (pipeId) {
+      return pipeId;
+    }
+    // Everything else: bounding-box containsPoint in reverse Z-order. Pipes are
+    // skipped here so their loose bbox can never over-select over empty space.
     const point = new fabric.Point(canvasPointPx.x, canvasPointPx.y);
     const objects = this.canvas.getObjects();
     for (let index = objects.length - 1; index >= 0; index -= 1) {
@@ -4205,6 +4286,14 @@ export class HvacPlanRenderer {
         continue;
       }
       if (this.groups.get(hvacElementId) !== object) {
+        continue;
+      }
+      const element = this.hvacData.get(hvacElementId);
+      if (
+        element &&
+        (element.type === "refrigerant-pipe" ||
+          element.type === "refrigerant-pipe-pair")
+      ) {
         continue;
       }
       if (object.containsPoint(point)) {
