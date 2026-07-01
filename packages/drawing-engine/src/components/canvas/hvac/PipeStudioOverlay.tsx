@@ -83,6 +83,42 @@ const KIT_IMG_ANCHOR: Record<'gas' | 'liquid' | 'both', { inlet: Point2D; run: P
   both: { inlet: { x: 0.0102, y: 0.2302 }, run: { x: 0.9898, y: 0.2302 } },
 };
 
+// The TRUE centre of each tube end within the sprite box (measured from the mesh),
+// so the port snap rings can be placed on the VISIBLE tube ends — the run sits
+// higher and the branch drops low, unlike the flattened placement anchors above.
+const KIT_TUBE_ANCHOR: Record<'gas' | 'liquid', { inlet: Point2D; run: Point2D; branch: Point2D }> = {
+  gas: { inlet: { x: 0.0102, y: 0.2302 }, run: { x: 0.9898, y: 0.1453 }, branch: { x: 0.9791, y: 0.8932 } },
+  liquid: { inlet: { x: 0.013, y: 0.1762 }, run: { x: 0.987, y: 0.1173 }, branch: { x: 0.9736, y: 0.8827 } },
+};
+
+// Map a sprite tube anchor (box fractions) to world through the SAME upright
+// placement transform used to draw the sprite (inlet pinned to spInlet, sprite
+// axis along spInlet->spRun, scaled to that length). So a ring placed here lands
+// exactly on the rendered tube end.
+function spriteTubeWorld(
+  line: 'gas' | 'liquid',
+  tube: Point2D,
+  spInlet: Point2D,
+  spRun: Point2D,
+): Point2D {
+  const anch = KIT_IMG_ANCHOR[line];
+  const Wimg = 1000;
+  const Himg = Wimg * (KIT_IMG_ASPECT[line] || 0.3);
+  const a0x = anch.inlet.x * Wimg;
+  const a0y = anch.inlet.y * Himg;
+  const avx = (anch.run.x - anch.inlet.x) * Wimg;
+  const avy = (anch.run.y - anch.inlet.y) * Himg;
+  const bvx = spRun.x - spInlet.x;
+  const bvy = spRun.y - spInlet.y;
+  const s = Math.hypot(bvx, bvy) / (Math.hypot(avx, avy) || 1);
+  const theta = Math.atan2(bvy, bvx) - Math.atan2(avy, avx);
+  const lx = s * (tube.x * Wimg - a0x);
+  const ly = s * (tube.y * Himg - a0y);
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  return { x: spInlet.x + lx * cos - ly * sin, y: spInlet.y + lx * sin + ly * cos };
+}
+
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
 const LIQUID_COLORS = { ins: '#F1E4CD', core: '#B5742F', sheen: '#E3A968' };
@@ -710,12 +746,49 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     const out: {
       id: string;
       selected: boolean;
-      ports: ReturnType<typeof getBranchKitPortConnections>;
+      ports: {
+        conn: KitPortConn;
+        center: Point2D;
+        gasPos: Point2D;
+        liquidPos: Point2D;
+      }[];
     }[] = [];
     for (const el of hvacElements) {
       if (el.type !== 'refrigerant-branch-kit') continue;
-      const ports = getBranchKitPortConnections(el);
-      if (ports.length > 0) out.push({ id: el.id, selected: selectedSet.has(el.id), ports });
+      const conns = getBranchKitPortConnections(el);
+      if (conns.length === 0) continue;
+      const raw = (el.properties as Record<string, unknown>)?.branchKitLineKind;
+      const kind = raw === 'gas' ? 'gas' : raw === 'liquid' ? 'liquid' : 'both';
+      const model = buildRefrigerantBranchKitViewModel(el);
+      const center = { x: el.position.x + el.width / 2, y: el.position.y + el.depth / 2 };
+      const rot = el.rotation ?? 0;
+      const inletId = resolveRefrigerantBranchKitConnectionIdentity({ model, role: 'inlet', lineSelection: kind, worldCenter: center, rotationDeg: rot });
+      const runId = resolveRefrigerantBranchKitConnectionIdentity({ model, role: 'run-outlet', lineSelection: kind, worldCenter: center, rotationDeg: rot });
+      if (!inletId || !runId) continue;
+      const lines: ('gas' | 'liquid')[] = kind === 'both' ? ['gas', 'liquid'] : [kind];
+      const frames = new Map<'gas' | 'liquid', { inlet: Point2D; run: Point2D }>();
+      for (const line of lines) {
+        frames.set(line, {
+          inlet: line === 'gas' ? inletId.gasPoint : inletId.liquidPoint,
+          run: line === 'gas' ? runId.gasPoint : runId.liquidPoint,
+        });
+      }
+      const roleKey = (r?: string): 'inlet' | 'run' | 'branch' =>
+        r === 'inlet' ? 'inlet' : r === 'run-outlet' ? 'run' : 'branch';
+      const ports = conns.map((conn) => {
+        const rk = roleKey(conn.terminalRole);
+        const posFor = (line: 'gas' | 'liquid'): Point2D => {
+          const fr = frames.get(line) ?? frames.get(lines[0]!)!;
+          return spriteTubeWorld(line, KIT_TUBE_ANCHOR[line][rk], fr.inlet, fr.run);
+        };
+        const gasPos = lines.includes('gas') ? posFor('gas') : posFor(lines[0]!);
+        const liquidPos = lines.includes('liquid') ? posFor('liquid') : gasPos;
+        const c = { x: (gasPos.x + liquidPos.x) / 2, y: (gasPos.y + liquidPos.y) / 2 };
+        // Rebind the connection onto the sprite tube ends so drawing starts there.
+        const boundConn = { ...conn, point: c, gasPoint: gasPos, liquidPoint: liquidPos, gasFieldPoint: gasPos, liquidFieldPoint: liquidPos };
+        return { conn: boundConn, center: c, gasPos, liquidPos };
+      });
+      out.push({ id: el.id, selected: selectedSet.has(el.id), ports });
     }
     return out;
   }, [hvacElements, selectedSet]);
@@ -1834,14 +1907,15 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
               role label. Rendered AFTER the sprites so they're on top. */}
           {branchKitPorts.map((kit) =>
             kit.ports.map((port) => {
-              const c = port.point;
-              const dl = Math.hypot(port.direction.x, port.direction.y) || 1;
-              const dx = port.direction.x / dl;
-              const dy = port.direction.y / dl;
+              const c = port.center;
+              const dir = port.conn.direction;
+              const dl = Math.hypot(dir.x, dir.y) || 1;
+              const dx = dir.x / dl;
+              const dy = dir.y / dl;
               const label =
-                port.terminalRole === 'inlet'
+                port.conn.terminalRole === 'inlet'
                   ? 'inlet'
-                  : port.terminalRole === 'run-outlet'
+                  : port.conn.terminalRole === 'run-outlet'
                     ? 'run'
                     : 'branch';
               const sel = kit.selected;
@@ -1849,7 +1923,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
               // since a 'both' kit's visible ports sit at those points, not at the
               // bundle centre between them — otherwise hovering a tube end misses.
               const halfSpan =
-                Math.hypot(port.gasPoint.x - port.liquidPoint.x, port.gasPoint.y - port.liquidPoint.y) / 2;
+                Math.hypot(port.gasPos.x - port.liquidPos.x, port.gasPos.y - port.liquidPos.y) / 2;
               const hitR = Math.max(hpx(13), halfSpan + hpx(10));
               return (
                 // The WHOLE grip is the interactive draw origin (pointerEvents auto
@@ -1857,17 +1931,17 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 // anywhere on the port — ring, tube-end dots, or the wide hit disc —
                 // pulls a pipe out. Rendered above the sprite so it wins the press.
                 <g
-                  key={`bkp-${kit.id}-${port.terminalRole}`}
+                  key={`bkp-${kit.id}-${port.conn.terminalRole}`}
                   style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
-                  onPointerDown={(e) => startPortDraw(e, port)}
+                  onPointerDown={(e) => startPortDraw(e, port.conn)}
                 >
                   {/* Transparent hit disc so the whole port area is pressable. */}
                   <circle cx={c.x} cy={c.y} r={hitR} fill="rgba(0,0,0,0.001)" />
                   {/* For a 'both' kit only, faint gas/liquid points so both lines read. */}
                   {halfSpan > hpx(2.5) ? (
                     <>
-                      <circle cx={port.gasPoint.x} cy={port.gasPoint.y} r={hpx(2.6)} fill="#1F6FB2" fillOpacity={0.85} />
-                      <circle cx={port.liquidPoint.x} cy={port.liquidPoint.y} r={hpx(2.6)} fill="#B5742F" fillOpacity={0.85} />
+                      <circle cx={port.gasPos.x} cy={port.gasPos.y} r={hpx(2.6)} fill="#1F6FB2" fillOpacity={0.85} />
+                      <circle cx={port.liquidPos.x} cy={port.liquidPos.y} r={hpx(2.6)} fill="#B5742F" fillOpacity={0.85} />
                     </>
                   ) : null}
                   {/* Green dashed snap ring centred exactly on the port (= the pipe
