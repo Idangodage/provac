@@ -98,14 +98,22 @@ function kitSwage(key: string, c: Point2D, dir: Point2D, r: number): JSX.Element
     </g>
   );
 }
-function kitBulb(key: string, c: Point2D, r: number): JSX.Element {
-  const rx = r * 3;
-  const ry = r * 2.05;
+// Wedge manifold at the tap: flat top (run passes straight through) widening
+// down to feed the branch — the real DIS-22-1G body, not a round bulb.
+function kitWedge(key: string, jn: Point2D, r: number, bs: Point2D): JSX.Element {
+  const Lb = r * 2.7;
+  const d =
+    `M ${jn.x - Lb} ${jn.y - r * 1.05}` +
+    ` L ${jn.x + Lb} ${jn.y - r * 1.05}` +
+    ` L ${jn.x + Lb} ${jn.y + r * 0.85}` +
+    ` C ${jn.x + r * 0.5} ${jn.y + r * 1.9} ${bs.x + r * 1.3} ${bs.y - r} ${bs.x + r * 0.95} ${bs.y}` +
+    ` L ${bs.x - r * 0.95} ${bs.y}` +
+    ` C ${bs.x - r * 1.3} ${jn.y + r * 1.9} ${jn.x - Lb + r * 0.8} ${jn.y + r * 1.5} ${jn.x - Lb} ${jn.y + r * 0.85} Z`;
   return (
     <g key={key}>
-      <ellipse cx={c.x} cy={c.y} rx={rx + r * 0.15} ry={ry + r * 0.15} fill="#7d3f1c" />
-      <ellipse cx={c.x} cy={c.y} rx={rx} ry={ry} fill="url(#bkCub)" />
-      <ellipse cx={c.x - r * 0.5} cy={c.y - r * 0.7} rx={rx * 0.42} ry={ry * 0.4} fill="#fff4e8" opacity={0.5} />
+      <path d={d} fill="#7d3f1c" strokeLinejoin="round" />
+      <path d={d} fill="url(#bkCub)" transform="translate(0 -0.5)" strokeLinejoin="round" />
+      <ellipse cx={jn.x - Lb * 0.28} cy={jn.y - r * 0.45} rx={Lb * 0.5} ry={r * 0.9} fill="#fff4e8" opacity={0.42} />
     </g>
   );
 }
@@ -1488,18 +1496,6 @@ export function PipeStudioOverlay({
                 const r = kitKind === 'both' ? 11 : kitKind === 'liquid' ? 8 : 10;
                 const end = kitGhost.snap ? openEnds.find((e) => e.id === kitGhost.snap!.targetId) : null;
                 const lerp = (a: Point2D, b: Point2D, t: number) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-                // Cubic-bezier point (for placing swages along the smooth branch).
-                const bez = (p0: Point2D, c1: Point2D, c2: Point2D, p3: Point2D, t: number): Point2D => {
-                  const m = 1 - t;
-                  const w0 = m * m * m;
-                  const w1 = 3 * m * m * t;
-                  const w2 = 3 * m * t * t;
-                  const w3 = t * t * t;
-                  return {
-                    x: w0 * p0.x + w1 * c1.x + w2 * c2.x + w3 * p3.x,
-                    y: w0 * p0.y + w1 * c1.y + w2 * c2.y + w3 * p3.y,
-                  };
-                };
                 const parts: JSX.Element[] = [];
                 const img = kitImg[kitKind];
                 if (inlet && run && img?.ok) {
@@ -1518,28 +1514,29 @@ export function PipeStudioOverlay({
                   // Straight trunk, inlet -> run (smoothest); junction sits ~58%
                   // along it, over the branch tap.
                   parts.push(kitGloss('gt', [inlet, run], r));
-                  const jn = lerp(inlet, run, 0.58);
+                  // Branch taps ~40% along the straight run-through (per the
+                  // DIS-22-1G drawing).
+                  const jn = lerp(inlet, run, 0.4);
+                  const rb = r * 0.92;
                   if (branch) {
-                    // Smooth ogee branch: leave the bulb downward, then sweep out
-                    // to the outlet — no kinked dog-leg.
-                    const bs = { x: jn.x, y: jn.y + r * 1.4 };
-                    const c1 = { x: bs.x + (branch.x - bs.x) * 0.12, y: lerp(bs, branch, 0.62).y };
-                    const c2 = { x: branch.x - (branch.x - bs.x) * 0.42, y: branch.y };
-                    const d = `M ${bs.x} ${bs.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${branch.x} ${branch.y}`;
-                    parts.push(kitGlossPath('gb', d, r * 0.92));
-                    parts.push(kitBulb('gbulb', jn, r));
-                    const t1 = bez(bs, c1, c2, branch, 0.55);
-                    const t2 = bez(bs, c1, c2, branch, 0.86);
-                    const dt1 = unit(bez(bs, c1, c2, branch, 0.62).x - t1.x, bez(bs, c1, c2, branch, 0.62).y - t1.y);
-                    const dt2 = unit(branch.x - t2.x, branch.y - t2.y);
-                    parts.push(kitSwage('gbw1', t1, dt1, r * 0.92));
-                    parts.push(kitSwage('gbw2', t2, dt2, r * 0.92));
-                    parts.push(kitSocket('gsb', branch, dt2, r * 0.92));
+                    // Branch peels off the wedge bottom, drops to the branch
+                    // level, then runs HORIZONTAL to its socket (not a diagonal).
+                    const bs = { x: jn.x + r * 0.3, y: jn.y + r };
+                    const knee = { x: jn.x + r * 2.6, y: branch.y };
+                    const d =
+                      `M ${bs.x} ${bs.y}` +
+                      ` C ${bs.x} ${(bs.y + branch.y) / 2} ${bs.x - r * 0.4} ${branch.y} ${knee.x} ${knee.y}` +
+                      ` L ${branch.x} ${branch.y}`;
+                    parts.push(kitGlossPath('gb', d, rb));
+                    parts.push(kitWedge('gwedge', jn, r, bs));
+                    parts.push(kitSwage('gbw1', lerp(knee, branch, 0.5), { x: 1, y: 0 }, rb));
+                    parts.push(kitSwage('gbw2', lerp(knee, branch, 0.82), { x: 1, y: 0 }, rb));
+                    parts.push(kitSocket('gsb', branch, { x: 1, y: 0 }, rb));
                   }
-                  parts.push(kitSwage('gw1', lerp(inlet, jn, 0.3), dTrunk, r));
-                  parts.push(kitSwage('gw2', lerp(inlet, jn, 0.62), dTrunk, r));
-                  parts.push(kitSwage('gw3', lerp(jn, run, 0.5), dTrunk, r));
-                  parts.push(kitSwage('gw4', lerp(jn, run, 0.82), dTrunk, r));
+                  parts.push(kitSwage('gw1', lerp(inlet, jn, 0.36), dTrunk, r));
+                  parts.push(kitSwage('gw2', lerp(inlet, jn, 0.72), dTrunk, r));
+                  parts.push(kitSwage('gw3', lerp(jn, run, 0.55), dTrunk, r));
+                  parts.push(kitSwage('gw4', lerp(jn, run, 0.85), dTrunk, r));
                   parts.push(kitSocket('gsi', inlet, { x: -1, y: 0 }, r));
                   parts.push(kitSocket('gsr', run, { x: 1, y: 0 }, r));
                 }
