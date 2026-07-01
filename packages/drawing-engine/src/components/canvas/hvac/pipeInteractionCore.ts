@@ -140,6 +140,49 @@ export function lockToHardAngle(anchor: Point2D, cursor: Point2D): { point: Poin
   return { point: add(anchor, scale(unit, projected)), direction: best };
 }
 
+/** Perpendicular distance from p to the infinite line a→b (|p−a| if a≈b). */
+function perpendicularDistance(p: Point2D, a: Point2D, b: Point2D): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  if (l2 < 1e-12) return Math.hypot(p.x - a.x, p.y - a.y);
+  return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / Math.sqrt(l2);
+}
+
+/**
+ * Ramer–Douglas–Peucker simplification. Reduces a raw freehand trail to the
+ * minimal vertex set that stays within `epsilon` of the original shape, so the
+ * arc-elbow builder rounds a handful of real corners instead of hundreds of
+ * jitter points. Iterative (explicit stack) — safe for very long strokes.
+ */
+export function simplifyPath(points: Point2D[], epsilon: number): Point2D[] {
+  const n = points.length;
+  if (n <= 2 || epsilon <= 0) return points.slice();
+  const keep = new Array<boolean>(n).fill(false);
+  keep[0] = true;
+  keep[n - 1] = true;
+  const stack: Array<[number, number]> = [[0, n - 1]];
+  while (stack.length > 0) {
+    const [lo, hi] = stack.pop()!;
+    let idx = -1;
+    let maxDist = epsilon;
+    for (let i = lo + 1; i < hi; i += 1) {
+      const d = perpendicularDistance(points[i]!, points[lo]!, points[hi]!);
+      if (d > maxDist) {
+        maxDist = d;
+        idx = i;
+      }
+    }
+    if (idx !== -1) {
+      keep[idx] = true;
+      stack.push([lo, idx], [idx, hi]);
+    }
+  }
+  const out: Point2D[] = [];
+  for (let i = 0; i < n; i += 1) if (keep[i]) out.push(points[i]!);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Snapping
 // ---------------------------------------------------------------------------

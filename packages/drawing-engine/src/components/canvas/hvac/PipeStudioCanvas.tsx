@@ -27,10 +27,25 @@ import {
 
 import type { Point2D } from '../../../types';
 
-import { moveVertex } from './pipeInteractionCore';
+import { lockToHardAngle, moveVertex, simplifyPath, snapToGrid } from './pipeInteractionCore';
 import { buildPipePair } from './pipePairGeometry';
 
 type Mode = 'draw' | 'edit';
+
+/** In-progress freehand pen stroke (draw mode press-drag). */
+interface Stroke {
+  points: Point2D[];
+  start: Point2D;
+  moved: boolean;
+}
+
+function routeLength(route: Point2D[]): number {
+  let total = 0;
+  for (let i = 1; i < route.length; i += 1) {
+    total += Math.hypot(route[i]!.x - route[i - 1]!.x, route[i]!.y - route[i - 1]!.y);
+  }
+  return total;
+}
 
 const SAMPLE_ROUTE: Point2D[] = [
   { x: 80, y: 330 },
@@ -42,6 +57,8 @@ const SAMPLE_ROUTE: Point2D[] = [
 ];
 
 const GRID = 20;
+/** RDP tolerance for the freehand trail — shared by preview + commit so release is WYSIWYG. */
+const FREEHAND_SIMPLIFY_EPS = 3;
 
 export interface PipeStudioCanvasProps {
   width?: number;
@@ -58,13 +75,14 @@ export function PipeStudioCanvas({
   onRoutesChange,
 }: PipeStudioCanvasProps): JSX.Element {
   const [pipes, setPipes] = useState<Point2D[][]>(initialRoutes ?? []);
-  const [current, setCurrent] = useState<Point2D[]>([]);
-  const [cursor, setCursor] = useState<Point2D | null>(null);
+  const [freehand, setFreehand] = useState<Point2D[] | null>(null);
   const [mode, setMode] = useState<Mode>('draw');
   const [bendRadius, setBendRadius] = useState(54);
   const [gap, setGap] = useState(24);
+  const [orthoHeld, setOrthoHeld] = useState(false); // Shift = straight / 45° lock
 
   const orthoRef = useRef(false);
+  const strokeRef = useRef<Stroke | null>(null);
   const dragRef = useRef<{ pi: number; vi: number } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
@@ -108,59 +126,81 @@ export function PipeStudioCanvas({
     [width, height],
   );
 
+  // Freehand points follow the pointer exactly — only clamp to the canvas, no
+  // grid/angle snap (that would quantise the flexible trail into blocky steps).
+  const clamp = useCallback(
+    (p: Point2D): Point2D => ({
+      x: Math.max(8, Math.min(width - 8, p.x)),
+      y: Math.max(8, Math.min(height - 8, p.y)),
+    }),
+    [width, height],
+  );
+
+  // Straight-mode (Shift) route: grid-snap the start, lock the end to the nearest
+  // 45° ray from it, then grid-snap the end too. ONE builder for preview AND commit
+  // so the drawn pipe never jumps on release. Falls back to the un-snapped locked
+  // point when a sub-grid-cell drag would otherwise collapse the end onto the start.
+  const buildStraightRoute = useCallback(
+    (rawStart: Point2D, rawEnd: Point2D): Point2D[] => {
+      const start = clamp(snapToGrid(rawStart, GRID));
+      const locked = lockToHardAngle(start, rawEnd).point;
+      let end = clamp(snapToGrid(locked, GRID));
+      if (Math.hypot(end.x - start.x, end.y - start.y) < 1e-6) end = clamp(locked);
+      return [start, end];
+    },
+    [clamp],
+  );
+
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (e.key === 'Shift') orthoRef.current = true;
-      if (e.key === 'Escape') {
-        setCurrent([]);
-        setCursor(null);
+      if (e.key === 'Shift') {
+        orthoRef.current = true;
+        setOrthoHeld(true);
       }
-      if (e.key === 'Enter') {
-        setCurrent((cur) => {
-          if (cur.length >= 2) commitPipes([...pipes, cur]);
-          return [];
-        });
-        setCursor(null);
+      if (e.key === 'Escape') {
+        strokeRef.current = null;
+        setFreehand(null);
       }
     };
     const up = (e: KeyboardEvent) => {
-      if (e.key === 'Shift') orthoRef.current = false;
+      if (e.key === 'Shift') {
+        orthoRef.current = false;
+        setOrthoHeld(false);
+      }
+    };
+    // Shift can be released while the window is unfocused (alt-tab) — its keyup
+    // never arrives, leaving straight-mode stuck on. Reset the lock on blur.
+    const blur = () => {
+      orthoRef.current = false;
+      setOrthoHeld(false);
     };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
     return () => {
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
     };
-  }, [pipes, commitPipes]);
+  }, []);
 
-  const finishDraw = useCallback(() => {
-    if (current.length >= 2) {
-      commitPipes([...pipes, current]);
-      setCurrent([]);
-      setCursor(null);
-    }
-  }, [current, pipes, commitPipes]);
+  const switchMode = useCallback((next: Mode) => {
+    strokeRef.current = null;
+    setFreehand(null);
+    setMode(next);
+  }, []);
 
-  const switchMode = useCallback(
-    (next: Mode) => {
-      if (next === 'edit' && current.length >= 2) {
-        commitPipes([...pipes, current]);
-        setCurrent([]);
-      }
-      setCursor(null);
-      setMode(next);
-    },
-    [current, pipes, commitPipes],
-  );
-
+  // Draw mode = freehand pen. Press to start, drag to trace the pointer path,
+  // release commits. Hold Shift for a straight (45°-locked) segment instead.
   const onSvgPointerDown = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
       if (mode !== 'draw') return;
-      const anchor = current.length ? current[current.length - 1]! : null;
-      setCurrent([...current, constrain(toSvg(e.clientX, e.clientY), anchor)]);
+      const raw = clamp(toSvg(e.clientX, e.clientY));
+      strokeRef.current = { points: [raw], start: raw, moved: false };
+      setFreehand([raw]);
+      e.currentTarget.setPointerCapture?.(e.pointerId);
     },
-    [mode, current, constrain, toSvg],
+    [mode, clamp, toSvg],
   );
 
   const onSvgPointerMove = useCallback(
@@ -173,16 +213,43 @@ export function PipeStudioCanvas({
         commitPipes(next);
         return;
       }
-      if (mode === 'draw' && current.length) {
-        setCursor(constrain(toSvg(e.clientX, e.clientY), current[current.length - 1]!));
+      const stroke = strokeRef.current;
+      if (mode === 'draw' && stroke) {
+        const raw = clamp(toSvg(e.clientX, e.clientY));
+        const last = stroke.points[stroke.points.length - 1]!;
+        if (Math.hypot(raw.x - last.x, raw.y - last.y) >= 3) {
+          stroke.points.push(raw);
+          if (!stroke.moved && Math.hypot(raw.x - stroke.start.x, raw.y - stroke.start.y) > 4) {
+            stroke.moved = true;
+          }
+          setFreehand(stroke.points.slice());
+        }
       }
     },
-    [pipes, mode, current, constrain, toSvg, commitPipes],
+    [pipes, mode, constrain, clamp, toSvg, commitPipes],
   );
 
-  const endDrag = useCallback(() => {
-    dragRef.current = null;
-  }, []);
+  const onSvgPointerUp = useCallback(
+    (e: ReactPointerEvent<SVGSVGElement>) => {
+      const stroke = strokeRef.current;
+      if (stroke) {
+        strokeRef.current = null;
+        setFreehand(null);
+        e.currentTarget.releasePointerCapture?.(e.pointerId);
+        if (stroke.moved) {
+          const pts = stroke.points;
+          const route = orthoRef.current
+            ? buildStraightRoute(stroke.start, pts[pts.length - 1]!)
+            : simplifyPath(pts, FREEHAND_SIMPLIFY_EPS);
+          if (route.length >= 2 && routeLength(route) > 6) {
+            commitPipes([...pipes, route]);
+          }
+        }
+      }
+      dragRef.current = null;
+    },
+    [pipes, commitPipes, buildStraightRoute],
+  );
 
   const startVertexDrag = useCallback((e: ReactPointerEvent, pi: number, vi: number) => {
     e.stopPropagation();
@@ -235,7 +302,14 @@ export function PipeStudioCanvas({
     );
   };
 
-  const previewRoute = mode === 'draw' && cursor ? [...current, cursor] : current;
+  // Live preview: the freehand trail (default) or a straight/45° segment (Shift).
+  // Built identically to the commit path so what you see is what commits.
+  let previewRoute: Point2D[] = [];
+  if (mode === 'draw' && freehand && freehand.length >= 2) {
+    previewRoute = orthoHeld
+      ? buildStraightRoute(freehand[0]!, freehand[freehand.length - 1]!)
+      : simplifyPath(freehand, FREEHAND_SIMPLIFY_EPS);
+  }
 
   const segButton = (m: Mode, label: string) => (
     <button
@@ -265,7 +339,7 @@ export function PipeStudioCanvas({
         <button type="button" onClick={() => switchMode('edit')} onPointerUp={() => commitPipes([SAMPLE_ROUTE.map((p) => ({ ...p }))])} style={btn}>
           Sample route
         </button>
-        <button type="button" onClick={() => { commitPipes([]); setCurrent([]); setCursor(null); }} style={btn}>
+        <button type="button" onClick={() => { commitPipes([]); strokeRef.current = null; setFreehand(null); }} style={btn}>
           Clear
         </button>
         <label style={lab}>Bend radius</label>
@@ -284,8 +358,8 @@ export function PipeStudioCanvas({
           style={{ display: 'block', touchAction: 'none', borderRadius: 8, background: 'var(--surface-1, #f7f6f2)' }}
           onPointerDown={onSvgPointerDown}
           onPointerMove={onSvgPointerMove}
-          onPointerUp={endDrag}
-          onDoubleClick={finishDraw}
+          onPointerUp={onSvgPointerUp}
+          onPointerLeave={onSvgPointerUp}
         >
           <defs>
             <pattern id="ps-grid" width={GRID} height={GRID} patternUnits="userSpaceOnUse">
@@ -296,10 +370,9 @@ export function PipeStudioCanvas({
 
           {pipes.map((route, i) => renderPair(route, `pipe-${i}`))}
           {previewRoute.length >= 2 ? renderPair(previewRoute, 'preview') : null}
-          {mode === 'draw'
-            ? current.map((p, i) => <circle key={`c-${i}`} cx={p.x} cy={p.y} r={4} fill="#185FA5" stroke="#fff" strokeWidth={1.5} />)
+          {mode === 'draw' && freehand && freehand[0]
+            ? <circle cx={freehand[0].x} cy={freehand[0].y} r={4} fill="#185FA5" stroke="#fff" strokeWidth={1.5} />
             : null}
-          {mode === 'draw' && cursor ? <circle cx={cursor.x} cy={cursor.y} r={5} fill="rgba(24,95,165,0.18)" stroke="#185FA5" strokeWidth={1.5} /> : null}
 
           {mode === 'edit'
             ? pipes.map((route, pi) => (
@@ -339,7 +412,7 @@ export function PipeStudioCanvas({
         <span><span style={{ display: 'inline-block', width: 14, height: 6, borderRadius: 3, background: '#185FA5' }} /> gas line</span>
         <span><span style={{ display: 'inline-block', width: 14, height: 6, borderRadius: 3, background: '#BA7517' }} /> liquid line</span>
         <span style={{ marginLeft: 'auto', color: 'var(--text-muted, #888780)' }}>
-          {mode === 'draw' ? 'click to add points · double-click to finish · hold Shift for 45°' : 'drag a vertex · click + to insert · right-click to delete'}
+          {mode === 'draw' ? 'drag to draw freehand · release to finish · hold Shift for straight / 45°' : 'drag a vertex · click + to insert · right-click to delete'}
         </span>
       </div>
     </div>
