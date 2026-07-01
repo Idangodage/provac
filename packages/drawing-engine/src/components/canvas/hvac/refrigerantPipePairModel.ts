@@ -156,6 +156,13 @@ export interface RefrigerantPipeConnection {
   elevationMm: number;
   connectionKind: RefrigerantPipeConnectionKind;
   sourceElementId?: string;
+  /**
+   * For a `field-pipe` connection bound to a copper branch-kit port, which of
+   * the kit's three ports (inlet / run-outlet / branch-outlet) this end holds —
+   * so the pipe re-pins to the SAME port (not the nearest) when the kit moves or
+   * the scene reloads. Mirrors {@link RefrigerantPipeBundleConnection.terminalRole}.
+   */
+  terminalRole?: RefrigerantBranchTerminalRole;
 }
 
 export interface RefrigerantPipeSpec {

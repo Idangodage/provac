@@ -1050,11 +1050,17 @@ export function PipeStudioOverlay({
       const w = toWorld(e.clientX, e.clientY);
       if (!w) return;
       const tol = 16 / Math.max(k, 1e-6);
-      const { transform } = solveBranchKitSnap(kitPlacement.ports, openEnds, w, tol);
+      const { transform, snap } = solveBranchKitSnap(kitPlacement.ports, openEnds, w, tol);
       const { width: kw, depth: kd, height: kh } = kitPlacement;
-      addHvacElement({
+      const kitPosition = { x: transform.tx - kw / 2, y: transform.ty - kd / 2 };
+      const kitProperties = {
+        branchKitType: 'dis-22-1g',
+        branchKitLineKind: kitKind,
+        branchKitWallAllowanceMm: 0.9,
+      };
+      const kitId = addHvacElement({
         type: 'refrigerant-branch-kit',
-        position: { x: transform.tx - kw / 2, y: transform.ty - kd / 2 },
+        position: kitPosition,
         rotation: transform.rotDeg,
         width: kw,
         depth: kd,
@@ -1062,17 +1068,84 @@ export function PipeStudioOverlay({
         elevation: KIT_ELEVATION_MM,
         mountType: 'ceiling',
         label: 'Copper branch kit',
-        properties: {
-          branchKitType: 'dis-22-1g',
-          branchKitLineKind: kitKind,
-          branchKitWallAllowanceMm: 0.9,
-        },
+        properties: kitProperties,
       });
+
+      // If a port snapped onto an open pipe end, BIND that pipe end to the kit
+      // port: record the connection (sourceElementId + terminalRole) so the kit
+      // and pipe are a joined network, and pin the pipe's route endpoint exactly
+      // onto the port so they meet with no gap. The move engine + healer then keep
+      // them together (see resolveRefrigerantPipeBranchKitReconnectionUpdates).
+      if (snap) {
+        const sep = snap.targetId.lastIndexOf(':');
+        const pipeId = snap.targetId.slice(0, sep);
+        const whichEnd = snap.targetId.slice(sep + 1) as 'start' | 'end';
+        const pipeEl = hvacElements.find((x) => x.id === pipeId);
+        if (pipeEl) {
+          const kitEl = {
+            id: kitId,
+            type: 'refrigerant-branch-kit' as const,
+            position: kitPosition,
+            rotation: transform.rotDeg,
+            width: kw,
+            depth: kd,
+            height: kh,
+            elevation: KIT_ELEVATION_MM,
+            mountType: 'ceiling' as const,
+            label: 'Copper branch kit',
+            properties: kitProperties,
+          } as unknown as HvacElement;
+          const port = getBranchKitPortConnections(kitEl).find(
+            (p) => p.terminalRole === snap.portRole,
+          );
+          if (port) {
+            const props = (pipeEl.properties ?? {}) as Record<string, unknown>;
+            const route = readRoute(props.routePoints).map((p) => ({ x: p.x, y: p.y }));
+            const isPair = pipeEl.type === 'refrigerant-pipe-pair';
+            const lineKind = props.lineKind === 'liquid' ? 'liquid' : 'gas';
+            const endPoint = isPair
+              ? port.point
+              : lineKind === 'liquid'
+                ? port.liquidPoint
+                : port.gasPoint;
+            if (route.length >= 1) {
+              const at = whichEnd === 'start' ? 0 : route.length - 1;
+              route[at] = { x: endPoint.x, y: endPoint.y };
+            }
+            const connKey = isPair
+              ? whichEnd === 'start'
+                ? 'startBundleConnection'
+                : 'endBundleConnection'
+              : whichEnd === 'start'
+                ? 'startConnection'
+                : 'endConnection';
+            const connVal = isPair
+              ? port
+              : {
+                  portPoint: { x: endPoint.x, y: endPoint.y },
+                  direction:
+                    lineKind === 'liquid'
+                      ? (port.liquidDirection ?? port.direction)
+                      : (port.gasDirection ?? port.direction),
+                  elevationMm: lineKind === 'liquid' ? port.liquidElevationMm : port.gasElevationMm,
+                  connectionKind: 'field-pipe' as const,
+                  sourceElementId: kitId,
+                  terminalRole: snap.portRole,
+                };
+            updateHvacElement(
+              pipeId,
+              { properties: { ...props, routePoints: route, [connKey]: connVal } },
+              { skipHistory: true },
+            );
+          }
+        }
+      }
+
       saveToHistory('Place copper branch kit');
       setPlacingKit(false);
       setKitGhost(null);
     },
-    [toWorld, k, kitPlacement, openEnds, kitKind, addHvacElement, saveToHistory],
+    [toWorld, k, kitPlacement, openEnds, kitKind, addHvacElement, updateHvacElement, hvacElements, saveToHistory],
   );
 
   const finishPlaceKit = useCallback((e: ReactMouseEvent) => {
