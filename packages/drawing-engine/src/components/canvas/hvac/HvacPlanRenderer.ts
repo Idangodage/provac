@@ -100,6 +100,33 @@ function toCanvas(point: Point2D): Point2D {
 // non-overlay/fallback path working.
 const HIDDEN_PIPE_HIT_OPACITY = 0.04;
 
+// The three element types the studio overlay renders + edits.
+const REFRIGERANT_OVERLAY_TYPES = new Set([
+  "refrigerant-pipe",
+  "refrigerant-pipe-pair",
+  "refrigerant-branch-kit",
+]);
+
+// Phase 0 kill switch for the overlay-canonical migration: when
+// localStorage 'hvac.pipe.fabricBodies' is 'off' (or 'false'), HvacPlanRenderer
+// stops creating Fabric bodies for refrigerant pipes + branch kits — the studio
+// overlay owns their render AND interaction. Default ON (reversible: unset the
+// key to restore). The element data still lives in `hvacData`, so the geometric
+// hit-test (pickRefrigerantPipeAtPoint) and the 3D view keep reading it; only the
+// Fabric object is removed. Flipping this OFF empirically reveals what still
+// depends on the Fabric object (drag) vs what is already data-driven (select/3D).
+function fabricRefrigerantBodiesEnabled(): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  try {
+    const v = window.localStorage.getItem("hvac.pipe.fabricBodies");
+    return v !== "off" && v !== "false";
+  } catch {
+    return true;
+  }
+}
+
 // Extra forgiveness (screen px) added to each pipe's insulation half-width when
 // geometrically hit-testing a click/hover against its centerline segments.
 const PIPE_PICK_PADDING_PX = 6;
@@ -4041,6 +4068,15 @@ export class HvacPlanRenderer {
     this.removeElement(element.id);
     this.invalidatePipeSegmentTargets();
     this.hvacData.set(element.id, element);
+
+    // Overlay-canonical kill switch: keep the element DATA (hit-test + 3D read it)
+    // but skip the Fabric body for pipes/kits when disabled — the overlay draws them.
+    if (
+      !fabricRefrigerantBodiesEnabled() &&
+      REFRIGERANT_OVERLAY_TYPES.has(element.type)
+    ) {
+      return;
+    }
 
     const group = this.buildGroup(element, {
       valid: true,
