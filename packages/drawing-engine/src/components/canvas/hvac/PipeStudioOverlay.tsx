@@ -661,18 +661,39 @@ export function PipeStudioOverlay({
     return out;
   }, [hvacElements, selectedSet]);
 
-  // Every PLACED branch kit, positioned by its inlet + run-outlet world ports, so
-  // the overlay draws them (as the real-geometry sprite) like it draws pipes.
+  // Every PLACED branch kit, drawn with the SAME real-geometry sprite the toggle
+  // ghost previews. Its inlet + run-outlet world ports are resolved exactly as the
+  // ghost does (buildRefrigerantBranchKitViewModel + resolveRefrigerantBranchKit-
+  // ConnectionIdentity at the element's own world centre + rotation + kind), so the
+  // committed kit is pixel-identical to the preview and sits where it was dropped —
+  // for gas, liquid AND both kits.
   const placedKits = useMemo(() => {
     const out: { id: string; inlet: Point2D; run: Point2D; kind: 'gas' | 'liquid' | 'both' }[] = [];
     for (const el of hvacElements) {
       if (el.type !== 'refrigerant-branch-kit') continue;
-      const ports = getBranchKitPortConnections(el);
-      const inlet = ports.find((p) => p.terminalRole === 'inlet')?.point;
-      const run = ports.find((p) => p.terminalRole === 'run-outlet')?.point;
-      if (!inlet || !run) continue;
       const raw = (el.properties as Record<string, unknown>)?.branchKitLineKind;
       const kind = raw === 'gas' ? 'gas' : raw === 'liquid' ? 'liquid' : 'both';
+      const model = buildRefrigerantBranchKitViewModel(el);
+      const center = { x: el.position.x + el.width / 2, y: el.position.y + el.depth / 2 };
+      const rot = el.rotation ?? 0;
+      const portPoint = (role: 'inlet' | 'run-outlet'): Point2D | null => {
+        const id = resolveRefrigerantBranchKitConnectionIdentity({
+          model,
+          role,
+          lineSelection: kind,
+          worldCenter: center,
+          rotationDeg: rot,
+        });
+        if (!id) return null;
+        return kind === 'gas'
+          ? id.gasPoint
+          : kind === 'liquid'
+            ? id.liquidPoint
+            : { x: (id.gasPoint.x + id.liquidPoint.x) / 2, y: (id.gasPoint.y + id.liquidPoint.y) / 2 };
+      };
+      const inlet = portPoint('inlet');
+      const run = portPoint('run-outlet');
+      if (!inlet || !run) continue;
       out.push({ id: el.id, inlet: { x: inlet.x, y: inlet.y }, run: { x: run.x, y: run.y }, kind });
     }
     return out;
