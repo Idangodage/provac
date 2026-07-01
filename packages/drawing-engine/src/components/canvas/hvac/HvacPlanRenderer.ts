@@ -105,32 +105,6 @@ function toCanvas(point: Point2D): Point2D {
 // contributes ZERO pixels, so the old Fabric rendering is gone from view.
 const HIDDEN_PIPE_HIT_OPACITY = 0;
 
-// The three element types the studio overlay renders + edits.
-const REFRIGERANT_OVERLAY_TYPES = new Set([
-  "refrigerant-pipe",
-  "refrigerant-pipe-pair",
-  "refrigerant-branch-kit",
-]);
-
-// Phase 0 kill switch for the overlay-canonical migration: when
-// localStorage 'hvac.pipe.fabricBodies' is 'off' (or 'false'), HvacPlanRenderer
-// stops creating Fabric bodies for refrigerant pipes + branch kits — the studio
-// overlay owns their render AND interaction. Default ON (reversible: unset the
-// key to restore). The element data still lives in `hvacData`, so the geometric
-// hit-test (pickRefrigerantPipeAtPoint) and the 3D view keep reading it; only the
-// Fabric object is removed. Flipping this OFF empirically reveals what still
-// depends on the Fabric object (drag) vs what is already data-driven (select/3D).
-function fabricRefrigerantBodiesEnabled(): boolean {
-  if (typeof window === "undefined") {
-    return true;
-  }
-  try {
-    const v = window.localStorage.getItem("hvac.pipe.fabricBodies");
-    return v !== "off" && v !== "false";
-  } catch {
-    return true;
-  }
-}
 
 // Extra forgiveness (screen px) added to each pipe's insulation half-width when
 // geometrically hit-testing a click/hover against its centerline segments.
@@ -4074,11 +4048,15 @@ export class HvacPlanRenderer {
     this.invalidatePipeSegmentTargets();
     this.hvacData.set(element.id, element);
 
-    // Overlay-canonical kill switch: keep the element DATA (hit-test + 3D read it)
-    // but skip the Fabric body for pipes/kits when disabled — the overlay draws them.
+    // The studio overlay is the SOLE renderer of refrigerant pipes. Build NO
+    // Fabric body for them — not even an invisible one — so nothing old can show
+    // through. The element DATA stays in `hvacData`, and pipe selection is fully
+    // geometric (pickRefrigerantPipeAtPoint no longer needs a Fabric group), so
+    // clicking still works; whole-pipe drag was already frozen. Branch kits keep
+    // their (invisible) group as the select + drag hit-proxy for now.
     if (
-      !fabricRefrigerantBodiesEnabled() &&
-      REFRIGERANT_OVERLAY_TYPES.has(element.type)
+      element.type === "refrigerant-pipe" ||
+      element.type === "refrigerant-pipe-pair"
     ) {
       return;
     }
@@ -4290,8 +4268,10 @@ export class HvacPlanRenderer {
     let bestDist = Number.POSITIVE_INFINITY;
     let bestElevation = Number.NEGATIVE_INFINITY;
     for (const seg of this.getPipeSegmentTargets()) {
-      const group = this.groups.get(seg.elementId);
-      if (!group || !group.visible || !group.evented) {
+      // Pipes have no Fabric group anymore (the overlay renders them); pick
+      // straight off the geometric segment targets, guarding only that the
+      // element still exists in the scene data.
+      if (!this.hvacData.has(seg.elementId)) {
         continue;
       }
       const tol = seg.outerDiameterMm / 2 + paddingMm;
