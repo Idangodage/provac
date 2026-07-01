@@ -61,8 +61,15 @@ const KIT_IMG: Record<'gas' | 'liquid' | 'both', string> = {
   liquid: BRANCH_KIT_SPRITE_LIQUID,
 };
 const KIT_IMG_ASPECT = BRANCH_KIT_SPRITE_ASPECT;
-// The inlet + run-outlet sit at the far ends on the top line of the projection.
-const KIT_IMG_ANCHOR = { inlet: { x: 0.01, y: 0.21 }, run: { x: 0.99, y: 0.21 } };
+// Where each sprite's inlet + run-outlet tube CENTERLINES sit within its box,
+// measured from the mesh. inlet.y === run.y on purpose: the app kit model has a
+// horizontal run-through (trunkCenterY === runCenterY), so the placed sprite must
+// stay upright, with the inlet pinned exactly to the pipe centre (no tilt).
+const KIT_IMG_ANCHOR: Record<'gas' | 'liquid' | 'both', { inlet: Point2D; run: Point2D }> = {
+  gas: { inlet: { x: 0.0102, y: 0.2302 }, run: { x: 0.9898, y: 0.2302 } },
+  liquid: { inlet: { x: 0.013, y: 0.1762 }, run: { x: 0.987, y: 0.1762 } },
+  both: { inlet: { x: 0.0102, y: 0.2302 }, run: { x: 0.9898, y: 0.2302 } },
+};
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
@@ -1615,12 +1622,13 @@ export function PipeStudioOverlay({
           {placedKits.map((kit) => {
             const img = kitImg[kit.kind];
             if (!img?.ok) return null;
+            const anch = KIT_IMG_ANCHOR[kit.kind];
             const Wimg = 1000;
             const Himg = Wimg * (img.aspect || 0.3);
-            const a0x = KIT_IMG_ANCHOR.inlet.x * Wimg;
-            const a0y = KIT_IMG_ANCHOR.inlet.y * Himg;
-            const a1x = KIT_IMG_ANCHOR.run.x * Wimg;
-            const a1y = KIT_IMG_ANCHOR.run.y * Himg;
+            const a0x = anch.inlet.x * Wimg;
+            const a0y = anch.inlet.y * Himg;
+            const a1x = anch.run.x * Wimg;
+            const a1y = anch.run.y * Himg;
             const avx = a1x - a0x;
             const avy = a1y - a0y;
             const bvx = kit.run.x - kit.inlet.x;
@@ -1656,11 +1664,12 @@ export function PipeStudioOverlay({
                 if (inlet && run && img?.ok) {
                   // Photo-real sprite: place the image so its inlet/run anchors
                   // land on the model ports (the kit frame handles rotation).
-                  const span = KIT_IMG_ANCHOR.run.x - KIT_IMG_ANCHOR.inlet.x || 1;
+                  const anch = KIT_IMG_ANCHOR[kitKind];
+                  const span = anch.run.x - anch.inlet.x || 1;
                   const W = (run.x - inlet.x) / span;
                   const H = W * (img.aspect || 0.5);
-                  const x0 = inlet.x - KIT_IMG_ANCHOR.inlet.x * W;
-                  const y0 = inlet.y - KIT_IMG_ANCHOR.inlet.y * H;
+                  const x0 = inlet.x - anch.inlet.x * W;
+                  const y0 = inlet.y - anch.inlet.y * H;
                   parts.push(
                     <image key="kimg" href={KIT_IMG[kitKind]} x={x0} y={y0} width={W} height={H} preserveAspectRatio="none" />,
                   );
