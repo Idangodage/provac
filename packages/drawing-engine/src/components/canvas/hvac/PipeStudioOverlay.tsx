@@ -1533,19 +1533,19 @@ export function PipeStudioOverlay({
                   const jn = lerp(inlet, run, 0.4);
                   const rb = r * 0.92;
                   if (branch) {
-                    // Branch peels off the wedge bottom in a smooth S: drops,
-                    // sweeps out over a long run, then flattens HORIZONTAL to the
-                    // socket (matches the drawing's gentle curve).
-                    const bs = { x: jn.x + r * 0.2, y: jn.y + r * 0.9 };
-                    const knee = { x: jn.x + (branch.x - jn.x) * 0.32, y: branch.y };
-                    const d =
-                      `M ${bs.x} ${bs.y}` +
-                      ` C ${bs.x + r * 0.2} ${lerp(bs, branch, 0.42).y} ${knee.x - (knee.x - bs.x) * 0.5} ${branch.y} ${knee.x} ${knee.y}` +
-                      ` L ${branch.x} ${branch.y}`;
+                    // Branch peels off the wedge bottom and turns with a 45-deg
+                    // bend (mitered): a 45-deg diagonal drop, then HORIZONTAL to
+                    // the socket — not a smooth curve (per the drawing).
+                    const bs = { x: jn.x + r * 0.4, y: jn.y + r };
+                    // 45-deg diagonal (dx = dy) down to the branch level, clamped
+                    // to leave room for the horizontal run to the socket.
+                    const drop = Math.min(Math.max(branch.y - bs.y, 1), (branch.x - bs.x) * 0.7);
+                    const diagEnd = { x: bs.x + drop, y: branch.y };
+                    const d = `M ${bs.x} ${bs.y} L ${diagEnd.x} ${diagEnd.y} L ${branch.x} ${branch.y}`;
                     parts.push(kitGlossPath('gb', d, rb));
                     parts.push(kitWedge('gwedge', jn, r, bs));
-                    parts.push(kitSwage('gbw1', lerp(knee, branch, 0.5), { x: 1, y: 0 }, rb));
-                    parts.push(kitSwage('gbw2', lerp(knee, branch, 0.82), { x: 1, y: 0 }, rb));
+                    parts.push(kitSwage('gbw1', lerp(diagEnd, branch, 0.42), { x: 1, y: 0 }, rb));
+                    parts.push(kitSwage('gbw2', lerp(diagEnd, branch, 0.78), { x: 1, y: 0 }, rb));
                     parts.push(kitSocket('gsb', branch, { x: 1, y: 0 }, rb));
                   }
                   parts.push(kitSwage('gw1', lerp(inlet, jn, 0.36), dTrunk, r));
