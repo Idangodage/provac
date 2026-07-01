@@ -16,8 +16,10 @@
  */
 
 import {
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -432,18 +434,31 @@ function bbox(route: Point2D[]): { minX: number; minY: number; maxX: number; max
   return { minX, minY, maxX, maxY };
 }
 
-export function PipeStudioOverlay({
-  enabled,
-  width,
-  height,
-  viewportZoom,
-  panOffset,
-  hvacElements,
-  selectedIds,
-  updateHvacElement,
-  addHvacElement,
-  saveToHistory,
-}: PipeStudioOverlayProps): JSX.Element | null {
+export interface PipeStudioOverlayHandle {
+  /**
+   * Feed the live pipe-draw route (world mm centreline) so the overlay renders
+   * the studio pair AS the draw preview — identical to how a committed pipe looks.
+   * Pass null to clear it. Called imperatively so only the overlay re-renders.
+   */
+  setDraftRoute: (route: Point2D[] | null) => void;
+}
+
+export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioOverlayProps>(
+  function PipeStudioOverlay(
+    {
+      enabled,
+      width,
+      height,
+      viewportZoom,
+      panOffset,
+      hvacElements,
+      selectedIds,
+      updateHvacElement,
+      addHvacElement,
+      saveToHistory,
+    },
+    ref,
+  ): JSX.Element | null {
   const gRef = useRef<SVGGElement | null>(null);
   const dragRef = useRef<{ id: string; vi: number; startWorld: Point2D; startRoute: Point2D[] } | null>(null);
   const editedIdsRef = useRef<Set<string>>(new Set());
@@ -451,6 +466,10 @@ export function PipeStudioOverlay({
   // vertex can't make the inferred side flip and drop the gap offset.
   const offsetSignCacheRef = useRef<Map<string, number>>(new Map());
   const [ghost, setGhost] = useState<{ id: string; route: Point2D[] } | null>(null);
+  // Live pipe-draw preview route (world mm), pushed in imperatively by the draw
+  // tool so the preview renders as the overlay studio pair, not the Fabric line.
+  const [draftRoute, setDraftRoute] = useState<Point2D[] | null>(null);
+  useImperativeHandle(ref, () => ({ setDraftRoute }), []);
   const [bendRadiusMm, setBendRadiusMm] = useState(24);
   // Relative spread added to the existing gap (0 = pipes as drawn).
   const [gapSpreadMm, setGapSpreadMm] = useState(0);
@@ -1188,9 +1207,10 @@ export function PipeStudioOverlay({
   const handleHit = hpx(11);
   const insR = hpx(5);
 
+  const hasDraft = !!draftRoute && draftRoute.length >= 2;
   return (
     <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
-      {pipes.length > 0 ? (
+      {pipes.length > 0 || hasDraft ? (
         <div
           style={{
             position: 'absolute',
@@ -1363,6 +1383,37 @@ export function PipeStudioOverlay({
           </radialGradient>
         </defs>
         <g ref={gRef} transform={matrix}>
+          {/* Live draw preview: render the in-progress route as the studio pair
+              (same insulation / core / sheen as a committed pipe) so drawing looks
+              exactly like the result — not the old flat Fabric line. */}
+          {draftRoute && draftRoute.length >= 2
+            ? (() => {
+                const dRoute = draftRoute;
+                const dPairGap = Math.max(0, DEFAULT_REFRIGERANT_PIPE_GAP_MM + gapSpreadMm);
+                const dInsW = DEFAULT_OUTER_DIAMETER_MM;
+                const dCoreW = Math.max(dInsW * 0.55, 3);
+                const dSheenW = Math.max(dCoreW * 0.3, 1);
+                const dPathFor = (offMm: number) =>
+                  toSvgPathData(buildPipeCenterline(offsetPolyline(dRoute, offMm), bendRadiusMm));
+                const dTubes = [
+                  { d: dPathFor(dPairGap / 2), ...GAS_COLORS },
+                  { d: dPathFor(-dPairGap / 2), ...LIQUID_COLORS },
+                ];
+                return (
+                  <g style={{ pointerEvents: 'none' }} opacity={0.75}>
+                    {dTubes.map((t, i) => (
+                      <path key={`dins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={dInsW} strokeLinecap="round" strokeLinejoin="round" />
+                    ))}
+                    {dTubes.map((t, i) => (
+                      <path key={`dcore-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={dCoreW} strokeLinecap="round" strokeLinejoin="round" />
+                    ))}
+                    {dTubes.map((t, i) => (
+                      <path key={`dsheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={dSheenW} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.7} />
+                    ))}
+                  </g>
+                );
+              })()
+            : null}
           {pipes.map((p) => {
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
             const pairGap = Math.max(0, p.gapMm + gapSpreadMm);
@@ -1737,4 +1788,4 @@ export function PipeStudioOverlay({
       </svg>
     </div>
   );
-}
+});

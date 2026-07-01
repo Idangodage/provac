@@ -62,7 +62,10 @@ import {
 import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
 import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
-import { PipeStudioOverlay } from "./canvas/hvac/PipeStudioOverlay";
+import {
+  PipeStudioOverlay,
+  type PipeStudioOverlayHandle,
+} from "./canvas/hvac/PipeStudioOverlay";
 import {
   isRefrigerantPipeElementType,
   resolveRefrigerantPipeUnitPortReconnectionUpdates,
@@ -1427,6 +1430,13 @@ export function DrawingCanvas({
     setProcessingStatus,
   });
 
+  // The studio overlay renders the live draw preview as its own pair, so the
+  // draw tool feeds it the route here (imperatively — only the overlay re-renders).
+  const pipeStudioOverlayRef = useRef<PipeStudioOverlayHandle | null>(null);
+  const handleDraftPipeRoute = useCallback((route: Point2D[] | null) => {
+    pipeStudioOverlayRef.current?.setDraftRoute(route);
+  }, []);
+
   const {
     handleMouseDown: handleRefrigerantPipeMouseDown,
     handleMouseMove: handleRefrigerantPipeMouseMove,
@@ -1452,6 +1462,8 @@ export function DrawingCanvas({
     deleteHvacElement,
     setSelectedIds,
     setProcessingStatus,
+    onDraftRouteChange: handleDraftPipeRoute,
+    overlayOwnsPipePreview: !projectionViewOnly,
   });
 
   const nudgeSelectedEntities = useCallback(
@@ -2559,6 +2571,7 @@ export function DrawingCanvas({
             setSelectedIds={setSelectedIds}
           />
           <PipeStudioOverlay
+            ref={pipeStudioOverlayRef}
             enabled={!projectionViewOnly}
             width={hostWidth}
             height={hostHeight}

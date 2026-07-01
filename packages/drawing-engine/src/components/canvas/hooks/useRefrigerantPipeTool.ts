@@ -44,6 +44,14 @@ export interface UseRefrigerantPipeToolOptions {
   deleteHvacElement: (id: string, options?: { skipHistory?: boolean }) => void;
   setSelectedIds: (ids: string[]) => void;
   setProcessingStatus: (status: string, isProcessing: boolean) => void;
+  /**
+   * When the SVG studio overlay owns the pipe preview, the tool pushes the live
+   * draw route (world mm centreline) here so the overlay renders it as the studio
+   * pair, and skips drawing its own Fabric pipe preview (branch-kit ghosts still
+   * render on Fabric). null clears the overlay preview.
+   */
+  onDraftRouteChange?: (route: Point2D[] | null) => void;
+  overlayOwnsPipePreview?: boolean;
 }
 
 /** Summary of the live branch-kit proposal, surfaced so the canvas can render
@@ -195,6 +203,8 @@ export function useRefrigerantPipeTool(
     deleteHvacElement,
     setSelectedIds,
     setProcessingStatus,
+    onDraftRouteChange,
+    overlayOwnsPipePreview,
   } = options;
 
   const routePointsRef = useRef<Point2D[]>([]);
@@ -460,7 +470,8 @@ export function useRefrigerantPipeTool(
 
   const clearPreview = useCallback(() => {
     hvacRendererRef.current?.clearPlacementPreview();
-  }, [hvacRendererRef]);
+    onDraftRouteChange?.(null);
+  }, [hvacRendererRef, onDraftRouteChange]);
 
   const clearBranchKitProposal = useCallback(() => {
     branchKitProposalRef.current = null;
@@ -641,13 +652,18 @@ export function useRefrigerantPipeTool(
       ...ghost,
       id: `__branch-kit-preview__-${index}`,
     }));
-    const previewElements = [...pipePreviewElements, ...ghostPreviewElements];
+    // Hand the live route to the overlay so it draws the studio pair preview.
+    onDraftRouteChange?.(routePoints.length >= 2 ? routePoints : null);
+    // When the overlay owns the pipe preview, keep only the branch-kit ghosts on
+    // Fabric — the studio pair (not the old flat line) becomes the pipe preview.
+    const fabricPipeElements = overlayOwnsPipePreview ? [] : pipePreviewElements;
+    const previewElements = [...fabricPipeElements, ...ghostPreviewElements];
     if (previewElements.length === 0) {
-      clearPreview();
+      hvacRendererRef.current?.clearPlacementPreview();
       return;
     }
     hvacRendererRef.current?.renderElementPreviews(previewElements, true);
-  }, [clearPreview, hvacRendererRef, pipeMaterialMode]);
+  }, [hvacRendererRef, onDraftRouteChange, overlayOwnsPipePreview, pipeMaterialMode]);
 
   const refreshBranchKitProposal = useCallback((
     cursorPoint: Point2D,
