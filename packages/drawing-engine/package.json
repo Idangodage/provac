@@ -28,6 +28,10 @@
     "./components": {
       "types": "./src/components/index.ts",
       "default": "./src/components/index.ts"
+    },
+    "./vrf": {
+      "types": "./src/vrf/index.ts",
+      "default": "./src/vrf/index.ts"
     }
   },
   "scripts": {
@@ -38,11 +42,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@flatten-js/core": "^1.6.12",
     "@provacx/shared": "workspace:*",
     "@turf/turf": "^7.3.4",
     "fabric": "^6.0.0",
+    "immer": "^10.0.4",
     "konva": "^9.3.22",
     "lucide-react": "^0.378.0",
+    "rbush": "^4.0.1",
     "react-konva": "^18.2.10",
     "three": "^0.183.1",
     "three-bvh-csg": "^0.0.18",
