@@ -46,6 +46,19 @@ import { getBranchKitPortConnections } from './refrigerantPipePairModel';
 
 const KIT_ELEVATION_MM = 2600;
 
+// Photo-real 2D symbol for the copper branch kit. Drop transparent PNGs (kit
+// drawn inlet-left / run-right / branch dropping down, on transparent bg) at
+// these paths under apps/web/public and they replace the vector ghost. Falls
+// back to the vector drawing until the file loads.
+const KIT_IMG: Record<'gas' | 'liquid' | 'both', string> = {
+  both: '/hvac/branch-kit-dis-22-1g.png',
+  gas: '/hvac/branch-kit-dis-22-1g-gas.png',
+  liquid: '/hvac/branch-kit-dis-22-1g-liquid.png',
+};
+// Where the inlet and run-outlet ports sit within the image, as fractions of
+// its box (tune to your photo so the ports line up with the pipe connections).
+const KIT_IMG_ANCHOR = { inlet: { x: 0.06, y: 0.4 }, run: { x: 0.94, y: 0.4 } };
+
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
 const LIQUID_COLORS = { ins: '#F1E4CD', core: '#B5742F', sheen: '#E3A968' };
@@ -435,6 +448,18 @@ export function PipeStudioOverlay({
   const [kitKind, setKitKind] = useState<'gas' | 'liquid' | 'both'>('both');
   const [placingKit, setPlacingKit] = useState(false);
   const [kitGhost, setKitGhost] = useState<{ transform: PlacementTransform; snap: BranchKitSnap | null } | null>(null);
+  // Which branch-kit photos loaded (+ their aspect), for the 2D sprite symbol.
+  const [kitImg, setKitImg] = useState<Record<string, { ok: boolean; aspect: number }>>({});
+
+  useEffect(() => {
+    (Object.keys(KIT_IMG) as (keyof typeof KIT_IMG)[]).forEach((k) => {
+      const img = new Image();
+      img.onload = () =>
+        setKitImg((s) => ({ ...s, [k]: { ok: true, aspect: img.naturalHeight / (img.naturalWidth || 1) } }));
+      img.onerror = () => setKitImg((s) => ({ ...s, [k]: { ok: false, aspect: 0.5 } }));
+      img.src = KIT_IMG[k];
+    });
+  }, []);
   const orthoRef = useRef(false);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
@@ -1476,7 +1501,19 @@ export function PipeStudioOverlay({
                   };
                 };
                 const parts: JSX.Element[] = [];
-                if (inlet && run) {
+                const img = kitImg[kitKind];
+                if (inlet && run && img?.ok) {
+                  // Photo-real sprite: place the image so its inlet/run anchors
+                  // land on the model ports (the kit frame handles rotation).
+                  const span = KIT_IMG_ANCHOR.run.x - KIT_IMG_ANCHOR.inlet.x || 1;
+                  const W = (run.x - inlet.x) / span;
+                  const H = W * (img.aspect || 0.5);
+                  const x0 = inlet.x - KIT_IMG_ANCHOR.inlet.x * W;
+                  const y0 = inlet.y - KIT_IMG_ANCHOR.inlet.y * H;
+                  parts.push(
+                    <image key="kimg" href={KIT_IMG[kitKind]} x={x0} y={y0} width={W} height={H} preserveAspectRatio="none" />,
+                  );
+                } else if (inlet && run) {
                   const dTrunk = unit(run.x - inlet.x, run.y - inlet.y);
                   // Straight trunk, inlet -> run (smoothest); junction sits ~58%
                   // along it, over the branch tap.
