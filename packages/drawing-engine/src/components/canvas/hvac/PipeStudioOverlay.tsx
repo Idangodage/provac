@@ -49,6 +49,37 @@ const KIT_ELEVATION_MM = 2600;
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
 const LIQUID_COLORS = { ins: '#F1E4CD', core: '#B5742F', sheen: '#E3A968' };
+const KIT_COPPER_EDGE = '#5b3013';
+
+// Copper Refnet body pieces (local mm coords) — a cross-tube sheen capsule, a
+// bulged socket with rim + bore, and a neck band — matching the real DIS-22-1G.
+function kitTube(key: string, a: Point2D, b: Point2D, r: number): JSX.Element {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+  return (
+    <g key={key} transform={`translate(${a.x} ${a.y}) rotate(${ang})`}>
+      <rect x={-r * 0.15} y={-r} width={len + r * 0.3} height={2 * r} rx={r} fill="url(#bkCu)" stroke={KIT_COPPER_EDGE} strokeWidth={Math.max(r * 0.06, 0.4)} />
+      <rect x={2} y={-r * 0.62} width={Math.max(0, len - 4)} height={r * 0.34} rx={r * 0.17} fill="#fce4c6" opacity={0.5} />
+      <rect x={2} y={r * 0.34} width={Math.max(0, len - 4)} height={r * 0.3} rx={r * 0.15} fill="#5b3013" opacity={0.24} />
+    </g>
+  );
+}
+function kitSocket(key: string, c: Point2D, dir: Point2D, r: number): JSX.Element {
+  const inb = { x: c.x - dir.x * r * 2, y: c.y - dir.y * r * 2 };
+  const ang = (Math.atan2(dir.y, dir.x) * 180) / Math.PI;
+  return (
+    <g key={key}>
+      {kitTube(`${key}-b`, inb, c, r * 1.32)}
+      <g transform={`translate(${c.x} ${c.y}) rotate(${ang})`}>
+        <ellipse cx={-2} cy={0} rx={r * 0.55} ry={r * 1.34} fill="#8a4e26" stroke={KIT_COPPER_EDGE} strokeWidth={Math.max(r * 0.06, 0.4)} />
+        <ellipse cx={-3} cy={0} rx={r * 0.4} ry={r * 1.1} fill="#3d220e" />
+      </g>
+    </g>
+  );
+}
+function kitBand(key: string, at: Point2D, r: number): JSX.Element {
+  return <ellipse key={key} cx={at.x} cy={at.y} rx={r * 0.22} ry={r * 1.02} fill="#7c4420" opacity={0.6} />;
+}
 
 interface PipeStudioOverlayProps {
   enabled: boolean;
@@ -1124,6 +1155,21 @@ export function PipeStudioOverlay({
         onPointerUp={endDrag}
         onPointerLeave={endDrag}
       >
+        <defs>
+          <linearGradient id="bkCu" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#7a4620" />
+            <stop offset="0.14" stopColor="#c07d44" />
+            <stop offset="0.4" stopColor="#f6d3ab" />
+            <stop offset="0.5" stopColor="#ecc196" />
+            <stop offset="0.64" stopColor="#c47f45" />
+            <stop offset="1" stopColor="#6f3c1b" />
+          </linearGradient>
+          <radialGradient id="bkCub" cx="0.38" cy="0.32" r="0.75">
+            <stop offset="0" stopColor="#f8d9af" />
+            <stop offset="0.5" stopColor="#c9824c" />
+            <stop offset="1" stopColor="#6b3818" />
+          </radialGradient>
+        </defs>
         <g ref={gRef} transform={matrix}>
           {pipes.map((p) => {
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
@@ -1389,23 +1435,20 @@ export function PipeStudioOverlay({
                 const branch = byRole.get('branch-outlet');
                 const cw = kitKind === 'both' ? 34 : kitKind === 'liquid' ? 22 : 30;
                 const end = kitGhost.snap ? openEnds.find((e) => e.id === kitGhost.snap!.targetId) : null;
+                const r = cw / 2;
+                const jn = { x: branch ? branch.x : 0, y: inlet ? inlet.y : run ? run.y : 0 };
                 return (
                   <g style={{ pointerEvents: 'none' }}>
                     <g transform={`translate(${tf.tx} ${tf.ty}) rotate(${tf.rotDeg})`} opacity={op}>
-                      {inlet && run ? (
-                        <line x1={inlet.x} y1={inlet.y} x2={run.x} y2={run.y} stroke="#C0855A" strokeWidth={cw} strokeLinecap="round" />
-                      ) : null}
+                      {inlet && run ? kitTube('gt', inlet, run, r) : null}
+                      {branch ? kitTube('gb', jn, branch, r * 0.84) : null}
                       {branch ? (
-                        <line x1={0} y1={0} x2={branch.x} y2={branch.y} stroke="#C0855A" strokeWidth={cw * 0.82} strokeLinecap="round" />
+                        <circle cx={jn.x} cy={jn.y} r={r * 1.3} fill="url(#bkCub)" stroke={KIT_COPPER_EDGE} strokeWidth={Math.max(r * 0.06, 0.4)} />
                       ) : null}
-                      {inlet && run ? (
-                        <line x1={inlet.x} y1={inlet.y} x2={run.x} y2={run.y} stroke="#F4D1A7" strokeWidth={cw * 0.28} strokeLinecap="round" strokeOpacity={0.6} />
-                      ) : null}
-                      {[inlet, run, branch].map((pt, i) =>
-                        pt ? (
-                          <circle key={i} cx={pt.x} cy={pt.y} r={cw * 0.6} fill="none" stroke="#8A5A34" strokeWidth={hpx(1.6)} />
-                        ) : null,
-                      )}
+                      {inlet && run ? kitBand('gd1', { x: inlet.x + (run.x - inlet.x) * 0.32, y: inlet.y }, r) : null}
+                      {inlet ? kitSocket('gsi', inlet, { x: -1, y: 0 }, r) : null}
+                      {run ? kitSocket('gsr', run, { x: 1, y: 0 }, r) : null}
+                      {branch ? kitSocket('gsb', branch, { x: 0, y: 1 }, r * 0.86) : null}
                     </g>
                     {end ? (
                       <circle cx={end.point.x} cy={end.point.y} r={hpx(13)} fill="none" stroke="#2F9E68" strokeWidth={hpx(2.6)} strokeDasharray={`${hpx(4)} ${hpx(4)}`} />
