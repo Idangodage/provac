@@ -4027,22 +4027,30 @@ function buildSelfContainedBranchKitBundleTargets(
       return [];
     }
 
+    // A single-line kit collapses BOTH slots onto its own line's point, so the
+    // port is one snap point at the visible tube end — not spread across to the
+    // model's hidden other line. 'both' keeps the real gas/liquid pair.
+    const gasP = lineSelection === 'liquid' ? identity.liquidPoint : identity.gasPoint;
+    const liqP = lineSelection === 'gas' ? identity.gasPoint : identity.liquidPoint;
+    const gasDir = lineSelection === 'liquid' ? identity.liquidDirection : identity.gasDirection;
+    const liqDir = lineSelection === 'gas' ? identity.gasDirection : identity.liquidDirection;
+    const gasZ = lineSelection === 'liquid' ? model.liquid.centerlineZMm : model.gas.centerlineZMm;
+    const liqZ = lineSelection === 'gas' ? model.gas.centerlineZMm : model.liquid.centerlineZMm;
+
     return [{
-      point: computeBundleCenter(identity.gasPoint, identity.liquidPoint),
-      gasPoint: identity.gasPoint,
-      liquidPoint: identity.liquidPoint,
-      gasFieldPoint: identity.gasPoint,
-      liquidFieldPoint: identity.liquidPoint,
+      point: computeBundleCenter(gasP, liqP),
+      gasPoint: gasP,
+      liquidPoint: liqP,
+      gasFieldPoint: gasP,
+      liquidFieldPoint: liqP,
       gasOuterDiameterMm: identity.gasTerminal.outerDiameterMm,
       liquidOuterDiameterMm: identity.liquidTerminal.outerDiameterMm,
-      gasDirection: identity.gasDirection,
-      liquidDirection: identity.liquidDirection,
+      gasDirection: gasDir,
+      liquidDirection: liqDir,
       direction: identity.direction,
-      elevationMm:
-        element.elevation +
-        (model.gas.centerlineZMm + model.liquid.centerlineZMm) / 2,
-      gasElevationMm: element.elevation + model.gas.centerlineZMm,
-      liquidElevationMm: element.elevation + model.liquid.centerlineZMm,
+      elevationMm: element.elevation + (gasZ + liqZ) / 2,
+      gasElevationMm: element.elevation + gasZ,
+      liquidElevationMm: element.elevation + liqZ,
       connectionKind: 'field-pipe',
       sourceElementId: element.id,
       terminalRole: role,
