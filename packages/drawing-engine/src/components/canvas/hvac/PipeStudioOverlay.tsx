@@ -1851,7 +1851,15 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 Math.hypot(port.gasPoint.x - port.liquidPoint.x, port.gasPoint.y - port.liquidPoint.y) / 2;
               const hitR = Math.max(hpx(13), halfSpan + hpx(10));
               return (
-                <g key={`bkp-${kit.id}-${port.terminalRole}`} style={{ pointerEvents: 'none' }}>
+                // The WHOLE grip is the interactive draw origin (pointerEvents auto
+                // + handler on the group, like the vertex handles), so pressing
+                // anywhere on the port — ring, tube-end dots, or the wide hit disc —
+                // pulls a pipe out. Rendered above the sprite so it wins the press.
+                <g
+                  key={`bkp-${kit.id}-${port.terminalRole}`}
+                  style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
+                  onPointerDown={(e) => startPortDraw(e, port)}
+                >
                   {/* gas + liquid points + the port snap ring — always shown so
                       every kit's ports read as draw-from snap points. */}
                   <line x1={port.gasPoint.x} y1={port.gasPoint.y} x2={port.liquidPoint.x} y2={port.liquidPoint.y} stroke="#0F766E" strokeWidth={hpx(1)} strokeOpacity={0.55} strokeDasharray={`${hpx(2)} ${hpx(2)}`} />
