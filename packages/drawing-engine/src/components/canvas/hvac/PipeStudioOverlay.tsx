@@ -1402,13 +1402,13 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 return (
                   <g style={{ pointerEvents: 'none' }} opacity={0.75}>
                     {dTubes.map((t, i) => (
-                      <path key={`dins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={dInsW} strokeLinecap="round" strokeLinejoin="round" />
+                      <path key={`dins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={dInsW} strokeLinecap="butt" strokeLinejoin="round" />
                     ))}
                     {dTubes.map((t, i) => (
-                      <path key={`dcore-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={dCoreW} strokeLinecap="round" strokeLinejoin="round" />
+                      <path key={`dcore-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={dCoreW} strokeLinecap="butt" strokeLinejoin="round" />
                     ))}
                     {dTubes.map((t, i) => (
-                      <path key={`dsheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={dSheenW} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.7} />
+                      <path key={`dsheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={dSheenW} strokeLinecap="butt" strokeLinejoin="round" strokeOpacity={0.7} />
                     ))}
                   </g>
                 );
@@ -1450,17 +1450,19 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             const bodyPoly = toPolyline(buildPipeCenterline(hRoute, bendRadiusMm), 1);
             return (
               <g key={p.id}>
-                {/* insulation sleeves */}
+                {/* insulation sleeves. Butt caps: a real cut refrigerant pipe ends
+                    in a flat, sharp perpendicular face (ready to flare/braze), not
+                    a rounded dome. Bends stay smooth via round line joins. */}
                 {tubes.map((t, i) => (
-                  <path key={`ins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={insW} strokeLinecap="round" strokeLinejoin="round" />
+                  <path key={`ins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={insW} strokeLinecap="butt" strokeLinejoin="round" />
                 ))}
                 {/* tube cores */}
                 {tubes.map((t, i) => (
-                  <path key={`core-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={coreW} strokeLinecap="round" strokeLinejoin="round" />
+                  <path key={`core-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={coreW} strokeLinecap="butt" strokeLinejoin="round" />
                 ))}
                 {/* sheen */}
                 {tubes.map((t, i) => (
-                  <path key={`sheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={sheenW} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={0.7} />
+                  <path key={`sheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={sheenW} strokeLinecap="butt" strokeLinejoin="round" strokeOpacity={0.7} />
                 ))}
                 {selected
                   ? hRoute.slice(0, -1).map((_, si) => {
