@@ -39,6 +39,17 @@ interface Stroke {
   moved: boolean;
 }
 
+/** Pointer capture that never throws — release after a lost pointer (or a
+ * synthetic event) raises NotFoundError, which must not abort the commit. */
+function capturePointer(el: Element, pointerId: number, take: boolean): void {
+  try {
+    if (take) el.setPointerCapture?.(pointerId);
+    else el.releasePointerCapture?.(pointerId);
+  } catch {
+    /* no active pointer — nothing to (re)capture */
+  }
+}
+
 function routeLength(route: Point2D[]): number {
   let total = 0;
   for (let i = 1; i < route.length; i += 1) {
@@ -198,7 +209,7 @@ export function PipeStudioCanvas({
       const raw = clamp(toSvg(e.clientX, e.clientY));
       strokeRef.current = { points: [raw], start: raw, moved: false };
       setFreehand([raw]);
-      e.currentTarget.setPointerCapture?.(e.pointerId);
+      capturePointer(e.currentTarget, e.pointerId, true);
     },
     [mode, clamp, toSvg],
   );
@@ -235,7 +246,7 @@ export function PipeStudioCanvas({
       if (stroke) {
         strokeRef.current = null;
         setFreehand(null);
-        e.currentTarget.releasePointerCapture?.(e.pointerId);
+        capturePointer(e.currentTarget, e.pointerId, false);
         if (stroke.moved) {
           const pts = stroke.points;
           const route = orthoRef.current
