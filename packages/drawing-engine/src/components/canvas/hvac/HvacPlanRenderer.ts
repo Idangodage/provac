@@ -26,7 +26,9 @@ import {
   getDuctedIndoorUnitPlanBounds,
 } from "./ductedIndoorUnitModel";
 import { buildGiDuctVisual, isGiDuctElementType } from "./giDuctModel";
+import { hitTestModelBackedHvacElement } from "./hvacElementHitTesting";
 import { buildPipeCenterline, toPolyline } from "./pipeCenterline";
+import { getActivePipeRoutingSettings } from "./pipeRoutingSettings";
 import {
   buildRefrigerantBranchKitViewModel,
   DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
@@ -40,11 +42,11 @@ import {
   REFRIGERANT_BRANCH_KIT_COLOR_PALETTE,
   type RefrigerantBranchTerminalRole,
 } from "./refrigerantBranchKitModel";
-import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from "./refrigerantPipeDimensions";
 import {
   buildRefrigerantPipeVisual,
   buildRefrigerantPipePairVisual,
   findNearestRefrigerantPipeBundleTarget as findNearestRefrigerantPipeBundleTargetFromModel,
+  isPlausibleBundleSpacingMm,
   isRefrigerantPipeElementType,
   resolveInlineBranchKitCenter,
   resolveRefrigerantPipeSpec,
@@ -108,7 +110,7 @@ const HIDDEN_PIPE_HIT_OPACITY = 0;
 
 // Extra forgiveness (screen px) added to each pipe's insulation half-width when
 // geometrically hit-testing a click/hover against its centerline segments.
-const PIPE_PICK_PADDING_PX = 6;
+const PIPE_PICK_PADDING_PX = 12;
 
 /** Shortest distance (mm) from point p to segment a-b, all in mm space. */
 function pointToSegmentDistanceMm(p: Point2D, a: Point2D, b: Point2D): number {
@@ -690,22 +692,6 @@ export class HvacPlanRenderer {
     this.bringPipeElementsToFront();
   }
 
-  setProjectionPlanOpacity(opacity: number): void {
-    const nextOpacity = Math.min(
-      1,
-      Math.max(0, Number.isFinite(opacity) ? opacity : 1),
-    );
-    if (Math.abs(this.projectionPlanOpacity - nextOpacity) <= 0.001) {
-      return;
-    }
-
-    this.projectionPlanOpacity = nextOpacity;
-    this.lastVisibilityBounds = null;
-    this.refreshViewportVisibility(true);
-    this.syncHvacVisualState();
-    this.canvas.requestRenderAll();
-  }
-
   private bringPipeElementsToFront(): void {
     this.groups.forEach((group, id) => {
       const element = this.hvacData.get(id);
@@ -1058,15 +1044,21 @@ export class HvacPlanRenderer {
         const expectedSpacingMm =
           gasEndpoint.outerDiameterMm / 2 +
           liquidEndpoint.outerDiameterMm / 2 +
-          DEFAULT_REFRIGERANT_PIPE_GAP_MM;
-        const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
+          getActivePipeRoutingSettings().defaultPipeGapMm;
         const spacingErrorMm = Math.abs(distanceMm - expectedSpacingMm);
         const sharesBundleId = Boolean(
           gasEndpoint.bundleId &&
             liquidEndpoint.bundleId &&
             gasEndpoint.bundleId === liquidEndpoint.bundleId,
         );
-        if (!sharesBundleId && spacingErrorMm > spacingToleranceMm) {
+        if (
+          !sharesBundleId &&
+          !isPlausibleBundleSpacingMm(
+            distanceMm,
+            gasEndpoint.outerDiameterMm,
+            liquidEndpoint.outerDiameterMm,
+          )
+        ) {
           return;
         }
 
@@ -4262,9 +4254,9 @@ export class HvacPlanRenderer {
    * pipe, and is independent of the hidden-body opacity. Overlapping bundle lines
    * tie-break by nearest, then topmost (elevation).
    */
-  private pickRefrigerantPipeAtPoint(canvasPointPx: Point2D): string | null {
-    const pMm = { x: canvasPointPx.x / MM_TO_PX, y: canvasPointPx.y / MM_TO_PX };
-    const paddingMm = PIPE_PICK_PADDING_PX / MM_TO_PX;
+  private pickRefrigerantPipeAtWorldPoint(pMm: Point2D): string | null {
+    const viewportZoom = Math.max(this.canvas.getZoom(), 0.01);
+    const paddingMm = PIPE_PICK_PADDING_PX / (MM_TO_PX * viewportZoom);
     let bestId: string | null = null;
     let bestDist = Number.POSITIVE_INFINITY;
     let bestElevation = Number.NEGATIVE_INFINITY;
@@ -4292,14 +4284,23 @@ export class HvacPlanRenderer {
     return bestId;
   }
 
-  findElementAtCanvasPoint(canvasPointPx: Point2D): string | null {
+  findElementAtWorldPoint(worldPointMm: Point2D): string | null {
     // Pipes: precise geometric pick (deterministic, matches the visible pipe).
-    const pipeId = this.pickRefrigerantPipeAtPoint(canvasPointPx);
+    const pipeId = this.pickRefrigerantPipeAtWorldPoint(worldPointMm);
     if (pipeId) {
       return pipeId;
     }
+    const modelBackedId = hitTestModelBackedHvacElement(
+      worldPointMm,
+      this.getRenderSceneElements(),
+      { paddingMm: 3 },
+    );
+    if (modelBackedId) {
+      return modelBackedId;
+    }
     // Everything else: bounding-box containsPoint in reverse Z-order. Pipes are
     // skipped here so their loose bbox can never over-select over empty space.
+    const canvasPointPx = toCanvas(worldPointMm);
     const point = new fabric.Point(canvasPointPx.x, canvasPointPx.y);
     const objects = this.canvas.getObjects();
     for (let index = objects.length - 1; index >= 0; index -= 1) {
@@ -4324,6 +4325,13 @@ export class HvacPlanRenderer {
       }
     }
     return null;
+  }
+
+  findElementAtCanvasPoint(canvasPointPx: Point2D): string | null {
+    return this.findElementAtWorldPoint({
+      x: canvasPointPx.x / MM_TO_PX,
+      y: canvasPointPx.y / MM_TO_PX,
+    });
   }
 
   setHoveredElement(id: string | null): void {

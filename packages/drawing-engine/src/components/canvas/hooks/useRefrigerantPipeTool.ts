@@ -14,10 +14,12 @@ import { planBundleBypasses } from '../hvac/pipeClashRouting';
 import { getActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
 import {
   buildRefrigerantPipeElements,
+  buildRefrigerantPipeExtensionMerge,
   findNearestRefrigerantPipeBundleTarget,
+  findNearestRefrigerantPipeExtensionTarget,
   type RefrigerantPipeAngleMode,
-  type RefrigerantPipeConnectionKind,
   type RefrigerantPipeBundleConnection,
+  type RefrigerantPipeLineMode,
   type RefrigerantPipeMaterial,
 } from '../hvac/refrigerantPipePairModel';
 import { findNearestVisibleRefrigerantPipeBundleTarget } from '../hvac/refrigerantPipeRenderState';
@@ -30,6 +32,8 @@ export interface UseRefrigerantPipeToolOptions {
   activeTool: string;
   pipeMaterialMode: RefrigerantPipeMaterial;
   pipeAngleMode: RefrigerantPipeAngleMode;
+  /** Which line(s) to lay: coordinated `pair` (default), or a single `gas`/`liquid` line. */
+  pipeLineMode: RefrigerantPipeLineMode;
   hvacElements: HvacElement[];
   zoom: number;
   snapToGrid: boolean;
@@ -42,6 +46,18 @@ export interface UseRefrigerantPipeToolOptions {
   ) => string[];
   /** Remove an element by id — used to replace a tapped run with its split halves. */
   deleteHvacElement: (id: string, options?: { skipHistory?: boolean }) => void;
+  /**
+   * Update an element in place — used to merge an extension INTO the host pipe
+   * (one continuous polyline, smooth junction bend) instead of committing a
+   * second butted element. When absent, extensions fall back to new elements.
+   */
+  updateHvacElement?: (
+    id: string,
+    updates: Partial<HvacElement>,
+    options?: { skipHistory?: boolean },
+  ) => void;
+  /** Batch the per-line merge writes into one undo step. */
+  saveToHistory?: (label: string) => void;
   setSelectedIds: (ids: string[]) => void;
   setProcessingStatus: (status: string, isProcessing: boolean) => void;
   /**
@@ -51,6 +67,19 @@ export interface UseRefrigerantPipeToolOptions {
    * render on Fabric). null clears the overlay preview.
    */
   onDraftRouteChange?: (route: Point2D[] | null) => void;
+  /**
+   * Push the live pipe-draw preview elements (real gas/liquid diameters + baked
+   * gap — the exact elements the commit will build) so the overlay renders the
+   * preview through the same path as a committed pipe, and it never changes size
+   * when the route is committed. null clears the preview.
+   */
+  onDraftPipesChange?: (elements: HvacElement[] | null) => void;
+  /**
+   * Show/hide the snap-hover indicator at a detected open end / port (world mm).
+   * The overlay renders it with the SAME endpoint-handle bullseye a committed
+   * pipe shows — the tool draws no marker of its own. null hides it.
+   */
+  onSnapIndicatorChange?: (point: Point2D | null) => void;
   overlayOwnsPipePreview?: boolean;
 }
 
@@ -65,6 +94,15 @@ export interface RefrigerantPipeBranchKitProposalState {
 
 export interface UseRefrigerantPipeToolResult {
   isDrawing: boolean;
+  /**
+   * Start a routing session seeded from an existing bundle connection (an open
+   * pipe end or a branch-kit port) — used to extend a run through the full draw
+   * flow. `opts.lineMode` pins pair vs single gas/liquid for this session.
+   */
+  beginRouteFromBundle: (
+    bundle: RefrigerantPipeBundleConnection,
+    opts?: { lineMode?: RefrigerantPipeLineMode },
+  ) => void;
   handleMouseDown: (point: Point2D) => void;
   handleMouseMove: (point: Point2D) => void;
   handleDoubleClick: () => void;
@@ -79,8 +117,6 @@ export interface UseRefrigerantPipeToolResult {
 }
 
 const PIPE_ROUTE_ANGLE_SNAP_DEG = 45;
-const PIPE_SNAP_MARKER_RADIUS_PX = 14;
-const PIPE_SNAP_MARKER_RADIUS_SELECTED_PX = 17;
 const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
 type RefrigerantPipeHoverSelection = 'gas' | 'liquid' | null;
 type RefrigerantPipeSnapSource = 'model' | 'rendered' | 'visible' | null;
@@ -91,6 +127,20 @@ function createRefrigerantBundleId(): string {
 
 function distance(a: Point2D, b: Point2D): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/**
+ * Resolves the effective angle constraint. `auto` keeps the legacy,
+ * material-driven behaviour (hard ⇒ 45°, flexible ⇒ free); the explicit modes
+ * give the user direct control over clean L / 45° / free-angle routing.
+ */
+function resolveEffectiveAngleMode(
+  pipeAngleMode: RefrigerantPipeAngleMode,
+  pipeMaterialMode: RefrigerantPipeMaterial,
+): Exclude<RefrigerantPipeAngleMode, 'auto'> {
+  return pipeAngleMode === 'auto'
+    ? (pipeMaterialMode === 'hard' ? 'diagonal' : 'free')
+    : pipeAngleMode;
 }
 
 /**
@@ -143,15 +193,6 @@ function resolveBundleHoverSelection(
   return gasDistance <= liquidDistance ? 'gas' : 'liquid';
 }
 
-function resolveBundleMarkerSelection(
-  bundle: RefrigerantPipeBundleConnection,
-): RefrigerantPipeHoverSelection {
-  if (bundle.guideReference === 'gas' || bundle.guideReference === 'liquid') {
-    return bundle.guideReference;
-  }
-  return resolveBundleHoverSelection(bundle, bundle.point);
-}
-
 function isPipeRoutingDebugEnabled(): boolean {
   const root = globalThis as Record<string, unknown>;
   if (root.__HVAC_PIPE_ROUTING_DEBUG__ === true) {
@@ -169,6 +210,17 @@ function isPipeRoutingDebugEnabled(): boolean {
 
 function toDebugPointString(point: Point2D): string {
   return `${point.x.toFixed(2)}, ${point.y.toFixed(2)}`;
+}
+
+/** Idle-hover affordance for the "click to continue this run" cue. */
+function describeExtensionContinuation(lineMode: RefrigerantPipeLineMode): string {
+  if (lineMode === 'gas') {
+    return 'Continue gas line';
+  }
+  if (lineMode === 'liquid') {
+    return 'Continue liquid line';
+  }
+  return 'Continue pair';
 }
 
 function formatPortTooltip(
@@ -195,15 +247,20 @@ export function useRefrigerantPipeTool(
     activeTool,
     pipeMaterialMode,
     pipeAngleMode,
+    pipeLineMode,
     hvacElements,
     zoom,
     snapToGrid,
     gridSize,
     addHvacElements,
     deleteHvacElement,
+    updateHvacElement,
+    saveToHistory,
     setSelectedIds,
     setProcessingStatus,
     onDraftRouteChange,
+    onDraftPipesChange,
+    onSnapIndicatorChange,
     overlayOwnsPipePreview,
   } = options;
 
@@ -211,8 +268,13 @@ export function useRefrigerantPipeTool(
   const startBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
   const endBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
   const previewPointRef = useRef<Point2D | null>(null);
+  // Per-session line-mode override. When an extension session is seeded from an
+  // existing end (continue that gas/liquid line, or the pair), it wins over the
+  // global `pipeLineMode` selector; cleared on reset so plain drawing falls back
+  // to the selector.
+  const sessionLineModeRef = useRef<RefrigerantPipeLineMode | null>(null);
   const shiftPressedRef = useRef(false);
-  // Alt = momentary freehand override (bypasses angle + grid snapping).
+  // Alt = momentary free-angle override (bypasses angle + grid snapping).
   const altPressedRef = useRef(false);
   // --- Branch-kit proposal state (real-time) ---
   const branchKitProposalRef = useRef<BranchKitProposal | null>(null);
@@ -224,22 +286,12 @@ export function useRefrigerantPipeTool(
   const lastProposalCursorRef = useRef<Point2D | null>(null);
   const [branchKitProposalState, setBranchKitProposalState] =
     useState<RefrigerantPipeBranchKitProposalState | null>(null);
-  const snapMarkersRef = useRef<fabric.FabricObject[]>([]);
   const debugOverlaysRef = useRef<fabric.FabricObject[]>([]);
-  const snapMarkerKindRef = useRef<RefrigerantPipeConnectionKind | null>(null);
   const debugEnabledRef = useRef(isPipeRoutingDebugEnabled());
 
   const clearSnapMarkers = useCallback(() => {
-    const canvas = fabricRef.current;
-    if (!canvas || snapMarkersRef.current.length === 0) {
-      snapMarkerKindRef.current = null;
-      return;
-    }
-    snapMarkersRef.current.forEach((marker) => canvas.remove(marker));
-    snapMarkersRef.current = [];
-    snapMarkerKindRef.current = null;
-    canvas.requestRenderAll();
-  }, [fabricRef]);
+    onSnapIndicatorChange?.(null);
+  }, [onSnapIndicatorChange]);
 
   const clearDebugOverlays = useCallback(() => {
     const canvas = fabricRef.current;
@@ -349,129 +401,18 @@ export function useRefrigerantPipeTool(
     console.debug(`[pipe-routing] ${message}`, payload);
   }, []);
 
+  // The tool draws NO snap marker of its own: it forwards the snap point (world
+  // mm) to the overlay, which renders the same endpoint-handle bullseye a
+  // committed pipe shows — one component for every snap affordance.
   const renderSnapMarkers = useCallback((bundle: RefrigerantPipeBundleConnection | null) => {
-    const canvas = fabricRef.current;
-    if (!canvas) {
-      return;
-    }
-    if (!bundle) {
-      clearSnapMarkers();
-      return;
-    }
-
-    const markerConfigs = [
-      {
-        pipeKind: 'gas' as const,
-        point: bundle.gasPoint,
-        diameterMm: bundle.gasOuterDiameterMm ?? 60,
-      },
-      {
-        pipeKind: 'liquid' as const,
-        point: bundle.liquidPoint,
-        diameterMm: bundle.liquidOuterDiameterMm ?? 56,
-      },
-    ];
-    const markerTheme = {
-      gas: {
-        fill: 'rgba(234,88,12,0.22)',
-        stroke: 'rgba(234,88,12,0.98)',
-        selectedFill: 'rgba(234,88,12,0.36)',
-        selectedStroke: 'rgba(194,65,12,1)',
-      },
-      liquid: {
-        fill: 'rgba(37,99,235,0.22)',
-        stroke: 'rgba(37,99,235,0.98)',
-        selectedFill: 'rgba(37,99,235,0.36)',
-        selectedStroke: 'rgba(29,78,216,1)',
-      },
-    } as const;
-    const markerStrokeWidth = 4;
-    const selectedMarkerStrokeWidth = 5;
-    const hoveredPipe = resolveBundleMarkerSelection(bundle);
-    const createPipeCenterMarker = (
-      point: Point2D,
-      diameterMm: number,
-      pipeKind: 'gas' | 'liquid',
-      isSelected: boolean,
-    ): fabric.Circle => {
-      const theme = markerTheme[pipeKind];
-      const markerRadius = Math.max(
-        isSelected ? PIPE_SNAP_MARKER_RADIUS_SELECTED_PX : PIPE_SNAP_MARKER_RADIUS_PX,
-        Math.min(
-          isSelected ? PIPE_SNAP_MARKER_RADIUS_SELECTED_PX + 1 : PIPE_SNAP_MARKER_RADIUS_PX + 1,
-          diameterMm * MM_TO_PX * (isSelected ? 0.26 : 0.22),
-        ),
-      );
-      return new fabric.Circle({
-        left: point.x * MM_TO_PX,
-        top: point.y * MM_TO_PX,
-        radius: markerRadius,
-        originX: 'center',
-        originY: 'center',
-        fill: isSelected ? theme.selectedFill : theme.fill,
-        stroke: isSelected ? theme.selectedStroke : theme.stroke,
-        strokeWidth: isSelected ? selectedMarkerStrokeWidth : markerStrokeWidth,
-        selectable: false,
-        evented: false,
-        excludeFromExport: true,
-      });
-    };
-
-    const shouldRecreateMarkers =
-      snapMarkersRef.current.length !== markerConfigs.length
-      || snapMarkerKindRef.current !== bundle.connectionKind;
-
-    if (shouldRecreateMarkers) {
-      clearSnapMarkers();
-      snapMarkersRef.current = markerConfigs.map(({ point, diameterMm, pipeKind }) => {
-        const marker = createPipeCenterMarker(
-          point,
-          diameterMm,
-          pipeKind,
-          hoveredPipe === pipeKind,
-        );
-        canvas.add(marker);
-        canvas.bringObjectToFront(marker);
-        return marker;
-      });
-      snapMarkerKindRef.current = bundle.connectionKind;
-      canvas.requestRenderAll();
-      return;
-    }
-
-    snapMarkersRef.current.forEach((marker, index) => {
-      const config = markerConfigs[index]!;
-      const pipeKind = config.pipeKind;
-      const theme = markerTheme[pipeKind];
-      const isSelected = hoveredPipe === pipeKind;
-      const markerRadius = Math.max(
-        isSelected ? PIPE_SNAP_MARKER_RADIUS_SELECTED_PX : PIPE_SNAP_MARKER_RADIUS_PX,
-        Math.min(
-          isSelected ? PIPE_SNAP_MARKER_RADIUS_SELECTED_PX + 1 : PIPE_SNAP_MARKER_RADIUS_PX + 1,
-          config.diameterMm * MM_TO_PX * (isSelected ? 0.26 : 0.22),
-        ),
-      );
-      marker.set({
-        left: config.point.x * MM_TO_PX,
-        top: config.point.y * MM_TO_PX,
-      });
-      if (marker instanceof fabric.Circle) {
-        marker.set({
-          radius: markerRadius,
-          fill: isSelected ? theme.selectedFill : theme.fill,
-          stroke: isSelected ? theme.selectedStroke : theme.stroke,
-          strokeWidth: isSelected ? selectedMarkerStrokeWidth : markerStrokeWidth,
-        });
-      }
-      canvas.bringObjectToFront(marker);
-    });
-    canvas.requestRenderAll();
-  }, [clearSnapMarkers, fabricRef]);
+    onSnapIndicatorChange?.(bundle ? { x: bundle.point.x, y: bundle.point.y } : null);
+  }, [onSnapIndicatorChange]);
 
   const clearPreview = useCallback(() => {
     hvacRendererRef.current?.clearPlacementPreview();
     onDraftRouteChange?.(null);
-  }, [hvacRendererRef, onDraftRouteChange]);
+    onDraftPipesChange?.(null);
+  }, [hvacRendererRef, onDraftRouteChange, onDraftPipesChange]);
 
   const clearBranchKitProposal = useCallback(() => {
     branchKitProposalRef.current = null;
@@ -483,6 +424,7 @@ export function useRefrigerantPipeTool(
     startBundleRef.current = null;
     endBundleRef.current = null;
     previewPointRef.current = null;
+    sessionLineModeRef.current = null;
     proposalFlipRef.current = false;
     proposalSuppressRef.current = { active: false, at: null };
     lastProposalCursorRef.current = null;
@@ -492,13 +434,20 @@ export function useRefrigerantPipeTool(
     clearDebugOverlays();
   }, [clearBranchKitProposal, clearDebugOverlays, clearPreview, clearSnapMarkers]);
 
+  // Cursor→world snap radius (mm), zoom-compensated from the configured pixel
+  // radius. Shared by the generic snap resolver and the extension-detection engine
+  // so hovering, clicking, and welding all use one magnet size.
+  const resolveExtensionThresholdMm = useCallback(
+    () => getActivePipeRoutingSettings().snapRadiusPx / Math.max(zoom * MM_TO_PX, 0.01),
+    [zoom],
+  );
+
   const snapPoint = useCallback((point: Point2D, allowBundleSnap: boolean): {
     point: Point2D;
     bundle: RefrigerantPipeBundleConnection | null;
     source: RefrigerantPipeSnapSource;
   } => {
-    const thresholdMm =
-      getActivePipeRoutingSettings().snapRadiusPx / Math.max(zoom * MM_TO_PX, 0.01);
+    const thresholdMm = resolveExtensionThresholdMm();
     let bundle: RefrigerantPipeBundleConnection | null = null;
     let source: RefrigerantPipeSnapSource = null;
     if (allowBundleSnap) {
@@ -582,25 +531,24 @@ export function useRefrigerantPipeTool(
       : null;
 
     let nextPoint = snappedBundle?.point ?? point;
-    // Alt = momentary freehand override: skip angle + grid snapping so a vertex
+    // Alt = momentary free-angle override: skip angle + grid snapping so a vertex
     // can be placed exactly under the cursor.
-    const freehand = altPressedRef.current;
-    // Grid snap applies whenever the document setting is on and we are not bound
-    // to a port/bundle (its position is authoritative) — for BOTH hard and
-    // flexible routes (previously, incorrectly, restricted to hard mode).
-    const gridActive = snapToGrid && !snappedBundle && !freehand;
+    const freeAngleOverride = altPressedRef.current;
+    const effectiveAngleMode = resolveEffectiveAngleMode(pipeAngleMode, pipeMaterialMode);
+    // Free/flexible routing should track the cursor continuously. Grid snapping
+    // is reserved for constrained hard-angle runs; otherwise the preview jumps
+    // from grid point to grid point instead of feeling like laid copper.
+    const gridActive =
+      snapToGrid &&
+      !snappedBundle &&
+      !freeAngleOverride &&
+      effectiveAngleMode !== 'free';
     const previousPoint =
       !snappedBundle && routePointsRef.current.length > 0
         ? routePointsRef.current[routePointsRef.current.length - 1]!
         : null;
 
-    if (previousPoint && !freehand) {
-      // Resolve the effective angle constraint. `auto` keeps the legacy,
-      // material-driven behaviour (hard ⇒ 45°, flexible ⇒ free); the explicit
-      // modes give the user direct control over clean L / 45° / free routing.
-      const effectiveAngleMode = pipeAngleMode === 'auto'
-        ? (pipeMaterialMode === 'hard' ? 'diagonal' : 'free')
-        : pipeAngleMode;
+    if (previousPoint && !freeAngleOverride) {
       const ortho = shiftPressedRef.current || effectiveAngleMode === 'ortho';
       const angleConstrained = ortho || effectiveAngleMode === 'diagonal';
       if (ortho) {
@@ -623,7 +571,7 @@ export function useRefrigerantPipeTool(
     }
 
     return { point: nextPoint, bundle: snappedBundle, source };
-  }, [gridSize, hvacElements, hvacRendererRef, pipeAngleMode, pipeMaterialMode, snapToGrid, zoom]);
+  }, [gridSize, hvacElements, hvacRendererRef, pipeAngleMode, pipeMaterialMode, resolveExtensionThresholdMm, snapToGrid]);
 
   const renderRoutePreview = useCallback((
     routePoints: Point2D[],
@@ -631,13 +579,43 @@ export function useRefrigerantPipeTool(
     startBundleConnectionOverride: RefrigerantPipeBundleConnection | null = null,
     ghostElements: Array<Omit<HvacElement, 'id'>> = [],
   ) => {
-    const pipePreviewElements = routePoints.length >= 2
+    const builtElements = routePoints.length >= 2
       ? buildRefrigerantPipeElements(routePoints, {
           segmentMaterialMode: pipeMaterialMode,
+          lineMode: sessionLineModeRef.current ?? pipeLineMode,
           startBundleConnection:
             startBundleConnectionOverride ?? startBundleRef.current,
           endBundleConnection,
-        }).map((previewElement, index) => ({
+        })
+      : [];
+    // Extension preview goes through the SAME merge the commit will run: the
+    // draft becomes the host element(s) with the in-progress tail appended (real
+    // host ids — the overlay hides its store copy while a draft overrides it), so
+    // the junction bends in preview exactly as it will after commit — no crack.
+    const startBundleForMerge =
+      startBundleConnectionOverride ?? startBundleRef.current;
+    const mergeUpdates =
+      overlayOwnsPipePreview && builtElements.length > 0 && startBundleForMerge
+        ? buildRefrigerantPipeExtensionMerge(
+            hvacElements,
+            startBundleForMerge,
+            builtElements,
+          )
+        : null;
+    const pipePreviewElements = mergeUpdates
+      ? mergeUpdates.flatMap((update) => {
+          const host = hvacElements.find((element) => element.id === update.id);
+          return host
+            ? [{
+                ...host,
+                position: update.position,
+                width: update.width,
+                depth: update.depth,
+                properties: update.properties,
+              }]
+            : [];
+        })
+      : builtElements.map((previewElement, index) => ({
           ...previewElement,
           id: `__refrigerant-pipe-preview__-${index}`,
           rotation: previewElement.rotation ?? 0,
@@ -646,14 +624,22 @@ export function useRefrigerantPipeTool(
           modelLabel: previewElement.modelLabel ?? 'Refrigerant Pipe',
           supplyZoneRatio: previewElement.supplyZoneRatio ?? 0,
           properties: previewElement.properties ?? {},
-        }))
-      : [];
+        }));
     const ghostPreviewElements = ghostElements.map((ghost, index) => ({
       ...ghost,
       id: `__branch-kit-preview__-${index}`,
     }));
     // Hand the live route to the overlay so it draws the studio pair preview.
     onDraftRouteChange?.(routePoints.length >= 2 ? routePoints : null);
+    // When the overlay owns the pipe preview, hand it the SAME real-diameter
+    // elements the commit will build (via buildRefrigerantPipeElements above), so
+    // the preview and the finished pipe are pixel-identical — no width/gap jump on
+    // Enter. Otherwise Fabric keeps drawing the pipe preview itself.
+    onDraftPipesChange?.(
+      overlayOwnsPipePreview && pipePreviewElements.length > 0
+        ? (pipePreviewElements as unknown as HvacElement[])
+        : null,
+    );
     // When the overlay owns the pipe preview, keep only the branch-kit ghosts on
     // Fabric — the studio pair (not the old flat line) becomes the pipe preview.
     const fabricPipeElements = overlayOwnsPipePreview ? [] : pipePreviewElements;
@@ -663,7 +649,7 @@ export function useRefrigerantPipeTool(
       return;
     }
     hvacRendererRef.current?.renderElementPreviews(previewElements, true);
-  }, [hvacRendererRef, onDraftRouteChange, overlayOwnsPipePreview, pipeMaterialMode]);
+  }, [hvacElements, hvacRendererRef, onDraftRouteChange, onDraftPipesChange, overlayOwnsPipePreview, pipeLineMode, pipeMaterialMode]);
 
   const refreshBranchKitProposal = useCallback((
     cursorPoint: Point2D,
@@ -720,6 +706,7 @@ export function useRefrigerantPipeTool(
     const nextElements = buildRefrigerantPipeElements(dedupedPoints, {
       bundleId: createRefrigerantBundleId(),
       segmentMaterialMode: pipeMaterialMode,
+      lineMode: sessionLineModeRef.current ?? pipeLineMode,
       startBundleConnection: startBundleRef.current,
       endBundleConnection: endBundleRef.current,
     });
@@ -785,6 +772,38 @@ export function useRefrigerantPipeTool(
         }
       });
     }
+    // Extension from a plain open pipe end: MERGE the new segments into the host
+    // pipe element(s) so the whole run stays one polyline per line — the junction
+    // then bends exactly like a mid-draw vertex instead of two butted bodies
+    // meeting with a crack. Falls through to add-new when merging doesn't apply
+    // (fresh draw, unit-port / branch-kit starts, or no open matching host end).
+    if (startBundleRef.current && updateHvacElement && saveToHistory) {
+      const mergeUpdates = buildRefrigerantPipeExtensionMerge(
+        hvacElements,
+        startBundleRef.current,
+        nextElements,
+      );
+      if (mergeUpdates) {
+        mergeUpdates.forEach((update) => {
+          updateHvacElement(
+            update.id,
+            {
+              position: update.position,
+              width: update.width,
+              depth: update.depth,
+              properties: update.properties,
+            },
+            { skipHistory: true },
+          );
+        });
+        saveToHistory('Extend refrigerant pipe');
+        setSelectedIds(mergeUpdates.map((update) => update.id));
+        setProcessingStatus('Pipe extended — continuous run', false);
+        resetDrawing();
+        return true;
+      }
+    }
+
     // Detect clashes with existing routed pipes and auto-create Z-offset
     // bypasses. Off by default — routes commit exactly as drawn and the user
     // applies a bypass deliberately from the clash overlay card. Opt in via the
@@ -841,10 +860,13 @@ export function useRefrigerantPipeTool(
     addHvacElements,
     hvacElements,
     logDebug,
+    pipeLineMode,
     pipeMaterialMode,
     resetDrawing,
+    saveToHistory,
     setProcessingStatus,
     setSelectedIds,
+    updateHvacElement,
   ]);
 
   const acceptBranchKitProposal = useCallback((): boolean => {
@@ -920,7 +942,53 @@ export function useRefrigerantPipeTool(
     }
   }, [clearBranchKitProposal, renderRoutePreview]);
 
+  /**
+   * Seed a fresh routing session from an existing bundle connection — an open
+   * pipe end or a branch-kit port — so *extending* a run reuses the whole draw
+   * flow (angle modes, grid, HUD, multi-vertex, weld-on-snap, branch-kit
+   * proposals). `opts.lineMode` pins whether the continuation is a coordinated
+   * pair or a single gas/liquid line, winning over the global selector for this
+   * session. Mirrors the first-click branch of handleMouseDown.
+   */
+  const beginRouteFromBundle = useCallback((
+    bundle: RefrigerantPipeBundleConnection,
+    opts?: { lineMode?: RefrigerantPipeLineMode },
+  ) => {
+    resetDrawing();
+    sessionLineModeRef.current = opts?.lineMode ?? null;
+    const startPoint = bundle.point;
+    routePointsRef.current = [startPoint];
+    startBundleRef.current = bundle;
+    previewPointRef.current = null;
+    renderSnapMarkers(bundle);
+    renderDebugOverlays(bundle, startPoint, 'model');
+    clearPreview();
+    onDraftRouteChange?.([startPoint]);
+  }, [
+    clearPreview,
+    onDraftRouteChange,
+    renderDebugOverlays,
+    renderSnapMarkers,
+    resetDrawing,
+  ]);
+
   const handleMouseDown = useCallback((point: Point2D) => {
+    // First click always runs the detection engine: starting near ANY open end
+    // (single or pair, gas or liquid) seamlessly continues that run with its real
+    // identity — regardless of the toolbar Lines selector or how the tool was
+    // re-entered. Only when nothing is near do we fall through to a fresh route.
+    if (routePointsRef.current.length === 0) {
+      const extension = findNearestRefrigerantPipeExtensionTarget(
+        hvacElements,
+        point,
+        resolveExtensionThresholdMm(),
+      );
+      if (extension) {
+        beginRouteFromBundle(extension.bundle, { lineMode: extension.lineMode });
+        return;
+      }
+    }
+
     const { point: snappedPoint, bundle, source } = snapPoint(point, true);
 
     if (routePointsRef.current.length === 0) {
@@ -941,6 +1009,7 @@ export function useRefrigerantPipeTool(
         });
       }
       clearPreview();
+      onDraftRouteChange?.([snappedPoint]);
       return;
     }
 
@@ -962,9 +1031,35 @@ export function useRefrigerantPipeTool(
       return;
     }
 
+    // A single-line continuation can also FINISH by welding onto another lone open
+    // end of the same kind — the case the generic pair/unit snapPoint above misses.
+    const sessionMode = sessionLineModeRef.current;
+    if (sessionMode === 'gas' || sessionMode === 'liquid') {
+      const weld = findNearestRefrigerantPipeExtensionTarget(
+        hvacElements,
+        point,
+        resolveExtensionThresholdMm(),
+        {
+          lineKind: sessionMode,
+          excludeElementId: startBundleRef.current?.sourceElementId ?? undefined,
+        },
+      );
+      if (weld) {
+        endBundleRef.current = weld.bundle;
+        commitRoute(weld.bundle.point);
+        return;
+      }
+    }
+
     // A live, valid branch-kit proposal: clicking accepts it (inserts the
-    // coordinated gas/liquid kits + inline-splits the tapped run).
-    const proposal = branchKitProposalRef.current;
+    // coordinated gas/liquid kits + inline-splits the tapped run). Only for a
+    // fresh pair draw — never on a single line, and never mid-extension (a
+    // session line-mode override), so a placement click during an extension can
+    // never silently drop a branch kit before the user commits with Enter.
+    const proposal =
+      sessionLineModeRef.current === null && pipeLineMode === 'pair'
+        ? branchKitProposalRef.current
+        : null;
     if (proposal && proposal.validity !== 'invalid') {
       if (acceptBranchKitProposal()) {
         return;
@@ -977,13 +1072,18 @@ export function useRefrigerantPipeTool(
     renderRoutePreview(routePointsRef.current);
   }, [
     acceptBranchKitProposal,
+    beginRouteFromBundle,
     clearBranchKitProposal,
     clearPreview,
     commitRoute,
+    hvacElements,
     logDebug,
+    onDraftRouteChange,
+    pipeLineMode,
     renderDebugOverlays,
     renderRoutePreview,
     renderSnapMarkers,
+    resolveExtensionThresholdMm,
     snapPoint,
   ]);
 
@@ -1000,8 +1100,20 @@ export function useRefrigerantPipeTool(
 
     if (routePointsRef.current.length === 0) {
       clearBranchKitProposal();
-      renderSnapMarkers(bundle);
-      if (bundle) {
+      // Idle hover: run the same engine the first click will, so an open end lights
+      // up with a "click to continue this run" cue that matches what the click does.
+      const extension = findNearestRefrigerantPipeExtensionTarget(
+        hvacElements,
+        point,
+        resolveExtensionThresholdMm(),
+      );
+      renderSnapMarkers(extension?.bundle ?? bundle);
+      if (extension) {
+        setProcessingStatus(
+          `${describeExtensionContinuation(extension.lineMode)} — click to extend`,
+          false,
+        );
+      } else if (bundle) {
         setProcessingStatus(
           formatPortTooltip(bundle, resolveBundleHoverSelection(bundle, point)),
           false,
@@ -1016,9 +1128,49 @@ export function useRefrigerantPipeTool(
     previewPointRef.current = snappedPoint;
     renderSnapMarkers(bundle);
 
+    // A single-line continuation previews welding onto a compatible lone open end
+    // (same kind, not its own start) so the connection is visible before the click —
+    // the case the generic pair/unit snapPoint above does not surface.
+    const singleWeldMode = sessionLineModeRef.current;
+    if (
+      !bundle
+      && (singleWeldMode === 'gas' || singleWeldMode === 'liquid')
+    ) {
+      const weld = findNearestRefrigerantPipeExtensionTarget(
+        hvacElements,
+        point,
+        resolveExtensionThresholdMm(),
+        {
+          lineKind: singleWeldMode,
+          excludeElementId: startBundleRef.current?.sourceElementId ?? undefined,
+        },
+      );
+      if (weld) {
+        const weldPoint = weld.bundle.point;
+        previewPointRef.current = weldPoint;
+        renderSnapMarkers(weld.bundle);
+        clearBranchKitProposal();
+        renderRoutePreview([...routePointsRef.current, weldPoint], weld.bundle);
+        const previousVertex =
+          routePointsRef.current[routePointsRef.current.length - 1]!;
+        setProcessingStatus(
+          `${formatSegmentReadout(previousVertex, weldPoint)} · Weld to ${singleWeldMode} line — click to connect`,
+          false,
+        );
+        return;
+      }
+    }
+
     // When not snapping to an explicit endpoint, look for a branch-kit tee on a
     // nearby run and show the dashed ghost kits + route. Otherwise plain route.
-    const proposal = bundle ? null : refreshBranchKitProposal(snappedPoint);
+    // A branch kit is inherently a coordinated gas+liquid insertion, so it is
+    // only offered while laying a fresh pair — never on a single line, and never
+    // while EXTENDING an existing run (a session line-mode override marks an
+    // extension: it continues that run, it does not tap another).
+    const proposal =
+      bundle || sessionLineModeRef.current !== null || pipeLineMode !== 'pair'
+        ? null
+        : refreshBranchKitProposal(snappedPoint);
     if (proposal) {
       renderRoutePreview(
         [...routePointsRef.current, proposal.teePoint],
@@ -1053,11 +1205,14 @@ export function useRefrigerantPipeTool(
   }, [
     clearBranchKitProposal,
     clearPreview,
+    hvacElements,
     logDebug,
+    pipeLineMode,
     refreshBranchKitProposal,
     renderDebugOverlays,
     renderRoutePreview,
     renderSnapMarkers,
+    resolveExtensionThresholdMm,
     setProcessingStatus,
     snapPoint,
   ]);
@@ -1119,6 +1274,7 @@ export function useRefrigerantPipeTool(
 
   return {
     isDrawing: routePointsRef.current.length > 0,
+    beginRouteFromBundle,
     handleMouseDown,
     handleMouseMove,
     handleDoubleClick,

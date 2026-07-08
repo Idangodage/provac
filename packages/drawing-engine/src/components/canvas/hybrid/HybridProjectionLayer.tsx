@@ -80,6 +80,18 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/**
+ * Eased reveal so the solid model fades in *after* the plan has begun tilting,
+ * keeping the crossover from showing a flat plan and a tilted model at once.
+ */
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  if (edge0 === edge1) {
+    return value >= edge1 ? 1 : 0;
+  }
+  const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
 function polygonSignedArea(points: Point2D[]): number {
   if (points.length < 3) return 0;
   let area = 0;
@@ -503,6 +515,10 @@ export function HybridProjectionLayer({
     return null;
   }
 
+  // Reveal the solid model once the plan has tilted into a clear 3D angle, so the
+  // crossover reads as "the plan lifting into a model" rather than a flat swap.
+  const revealOpacity = smoothstep(0.15, 0.6, view.blend);
+
   return (
     <canvas
       ref={canvasRef}
@@ -510,7 +526,7 @@ export function HybridProjectionLayer({
       style={{
         width: "100%",
         height: "100%",
-        opacity: view.blend,
+        opacity: revealOpacity,
         transition: view.isInteracting ? "none" : "opacity 120ms ease-out",
       }}
     />

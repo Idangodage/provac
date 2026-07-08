@@ -14,7 +14,7 @@ import { shallow } from "zustand/shallow";
 import type { ArchitecturalObjectDefinition } from "../data";
 import { useSmartDrawingStore } from "../store";
 import { useDrawingInteractionStore } from "../store/interactionStore";
-import type { Point2D, SymbolInstance2D, Wall } from "../types";
+import type { HvacElement, Point2D, SymbolInstance2D, Wall } from "../types";
 import { generateId } from "../utils/geometry";
 
 import {
@@ -29,8 +29,12 @@ import {
   PageLayout,
   Rulers,
   snapWallPoint,
+  snapPointToGrid,
   MM_TO_PX,
+  PX_TO_MM,
   toMillimeters,
+  formatDistance,
+  BoardCursorHud,
   // Hooks
   useCanvasKeyboard,
   useSelectMode,
@@ -70,18 +74,18 @@ import {
   isRefrigerantPipeElementType,
   resolveRefrigerantPipeUnitPortReconnectionUpdates,
   translateRefrigerantPipeElementProperties,
+  type RefrigerantPipeBundleConnection,
+  type RefrigerantPipeLineMode,
 } from "./canvas/hvac/refrigerantPipePairModel";
-import {
-  getPlanProjectionVisualState,
-  hasProjectableHvac3D,
-  HvacProjectionLayer,
-  ProjectionAxisGizmo,
-  type ProjectionAxisGizmoVector,
-} from "./canvas/hvac/three3d";
+import { getPlanProjectionVisualState } from "./canvas/hvac/three3d";
 import {
   HybridProjectionLayer,
   type Hybrid3DViewState,
 } from "./canvas/hybrid/HybridProjectionLayer";
+import {
+  View3DBlendSlider,
+  type BlendChangePhase,
+} from "./canvas/hybrid/View3DBlendSlider";
 import {
   installCanvasRenderScheduler,
   restoreCanvasRenderScheduler,
@@ -92,16 +96,6 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function resolveProjectionVectorBlend(
-  vector: ProjectionAxisGizmoVector,
-): number {
-  return clampNumber(
-    Math.max(Math.abs(vector.x), Math.abs(vector.y), Math.abs(vector.z)),
-    0,
-    1,
-  );
-}
-
 const DEFAULT_HYBRID_VIEW: Hybrid3DViewState = {
   blend: 0,
   yawDeg: -42,
@@ -110,12 +104,6 @@ const DEFAULT_HYBRID_VIEW: Hybrid3DViewState = {
   distanceMm: 8000,
   perspectiveStrength: 0.72,
   isInteracting: false,
-};
-
-const DEFAULT_HVAC_PROJECTION_VECTOR: ProjectionAxisGizmoVector = {
-  x: 0,
-  y: 0,
-  z: 0,
 };
 
 type HybridAnchorScreen = {
@@ -363,8 +351,6 @@ export function DrawingCanvas({
   });
   const [hybridView, setHybridView] =
     useState<Hybrid3DViewState>(DEFAULT_HYBRID_VIEW);
-  const [hvacProjectionVector, setHvacProjectionVector] =
-    useState<ProjectionAxisGizmoVector>(DEFAULT_HVAC_PROJECTION_VECTOR);
   const hybridViewRef = useRef<Hybrid3DViewState>(DEFAULT_HYBRID_VIEW);
   const hybridViewOnly = hybridView.blend > 0.05;
 
@@ -387,12 +373,13 @@ export function DrawingCanvas({
     activeTool: tool,
     refrigerantPipeDrawMode,
     refrigerantPipeAngleMode,
+    refrigerantPipeLineMode,
     zoom: documentZoom,
     panOffset: documentPanOffset,
     displayUnit,
     selectedElementIds: selectedIds,
     dimensions,
-    dimensionSettings,
+    dimensionSettings: storeDimensionSettings,
     symbols,
     pageConfig,
     gridSize: storeGridSize,
@@ -426,7 +413,7 @@ export function DrawingCanvas({
     walls,
     rooms,
     wallDrawingState,
-    wallSettings,
+    wallSettings: storeWallSettings,
     sectionLines,
     sectionLineDrawingState,
     startWallDrawing,
@@ -461,6 +448,7 @@ export function DrawingCanvas({
       activeTool: state.activeTool,
       refrigerantPipeDrawMode: state.refrigerantPipeDrawMode,
       refrigerantPipeAngleMode: state.refrigerantPipeAngleMode,
+      refrigerantPipeLineMode: state.refrigerantPipeLineMode,
       zoom: state.zoom,
       panOffset: state.panOffset,
       displayUnit: state.displayUnit,
@@ -579,29 +567,7 @@ export function DrawingCanvas({
     }),
     [panOffset.x, panOffset.y, safePaperPerRealRatio],
   );
-  const hvacProjectionAvailable = useMemo(
-    () => hasProjectableHvac3D(hvacElements),
-    [hvacElements],
-  );
-  const hvacProjectionBlend = resolveProjectionVectorBlend(hvacProjectionVector);
-  const effectiveHvacProjectionBlend = hvacProjectionAvailable
-    ? hvacProjectionBlend
-    : 0;
-  const visibleHvacProjectionBlend =
-    hybridView.blend > 0.001 ? 0 : effectiveHvacProjectionBlend;
-  const hvacProjectionVisualState = useMemo(
-    () => getPlanProjectionVisualState(visibleHvacProjectionBlend),
-    [visibleHvacProjectionBlend],
-  );
-  const projectionViewOnly =
-    hybridViewOnly || effectiveHvacProjectionBlend > 0.05;
-  const rulerMousePosition = useMemo(
-    () => ({
-      x: mousePosition.x * safePaperPerRealRatio,
-      y: mousePosition.y * safePaperPerRealRatio,
-    }),
-    [mousePosition.x, mousePosition.y, safePaperPerRealRatio],
-  );
+  const projectionViewOnly = hybridViewOnly;
   const safeGridSubdivisions =
     Number.isFinite(gridSubdivisions) && gridSubdivisions >= 1
       ? Math.max(1, Math.floor(gridSubdivisions))
@@ -614,6 +580,66 @@ export function DrawingCanvas({
   const effectiveSnapGridSize = Math.max(
     configuredGridMajorPaperPx / safeGridSubdivisions / safePaperPerRealRatio,
     0.5,
+  );
+  // The same step expressed in real millimetres — the space wall/room/dimension
+  // tools snap in.
+  const snapStepMm = effectiveSnapGridSize * PX_TO_MM;
+  // Bind every tool's grid step to the board's visible sub-grid (and the
+  // ribbon snap toggle) so previews and commits land where the grid says they
+  // will, at any unit, scale or grid density. `wallSettings.gridSize` remains
+  // in documents for backward compatibility but no longer drives snapping.
+  const wallSettings = useMemo(
+    () => ({
+      ...storeWallSettings,
+      gridSize: snapStepMm,
+      snapToGrid: resolvedSnapToGrid,
+    }),
+    [storeWallSettings, snapStepMm, resolvedSnapToGrid],
+  );
+  // Dimension labels follow the assigned display unit when the format is
+  // 'auto' (mm/cm → mm, m → m, ft-in → ft-in) so measurements read the same
+  // on rulers, dimensions and the coordinate readout.
+  const dimensionSettings = useMemo(
+    () => ({
+      ...storeDimensionSettings,
+      preferredUnit:
+        displayUnit === "m"
+          ? ("m" as const)
+          : displayUnit === "ft-in"
+            ? ("ft-in" as const)
+            : ("mm" as const),
+    }),
+    [storeDimensionSettings, displayUnit],
+  );
+  // While a drawing tool is active with snapping on, the ruler cursor lines
+  // and the HUD track the grid-snapped point — where the vertex will actually
+  // land — instead of the raw mouse position.
+  const drawingToolActive =
+    tool === "wall" ||
+    tool === "partition-wall" ||
+    tool === "room" ||
+    tool === "dimension" ||
+    tool === "refrigerant-pipe" ||
+    tool === "duct";
+  const cursorSnapActive =
+    resolvedSnapToGrid && drawingToolActive && !projectionViewOnly;
+  const displayMousePosition = useMemo(
+    () =>
+      cursorSnapActive
+        ? snapPointToGrid(mousePosition, effectiveSnapGridSize)
+        : mousePosition,
+    [cursorSnapActive, mousePosition, effectiveSnapGridSize],
+  );
+  const rulerMousePosition = useMemo(
+    () => ({
+      x: displayMousePosition.x * safePaperPerRealRatio,
+      y: displayMousePosition.y * safePaperPerRealRatio,
+    }),
+    [displayMousePosition, safePaperPerRealRatio],
+  );
+  const boardFormatLength = useCallback(
+    (mm: number) => formatDistance(mm, displayUnit),
+    [displayUnit],
   );
   const rulerSize = 24;
   const leftRulerWidth = Math.round(rulerSize * 1.2);
@@ -676,73 +702,56 @@ export function DrawingCanvas({
     };
   }, [hvacElements, pageConfig.height, pageConfig.width, rooms, symbols, walls]);
   const planLayerOpacity = clampNumber(1 - hybridView.blend, 0, 1);
-  const projectionContextActive = visibleHvacProjectionBlend > 0.001;
-  const pageContextOpacity = projectionContextActive
-    ? Math.max(0.5, hvacProjectionVisualState.planOpacity)
-    : 1;
-  const gridContextOpacity = projectionContextActive
-    ? hvacProjectionVisualState.gridOpacity
-    : 1;
-  const drawingContextOpacity = projectionContextActive
-    ? Math.max(0.26, hvacProjectionVisualState.planOpacity)
-    : 1;
+  // Reuses the same eased 2D→3D curve as the HVAC oblique path to hinge the flat
+  // plan back into the model's plane while the solid model fades in over it.
+  const hybridPlaneVisualState = useMemo(
+    () => getPlanProjectionVisualState(hybridView.blend),
+    [hybridView.blend],
+  );
   const projectionPlaneStyle = useMemo(
     () => {
-      const projectionActive = visibleHvacProjectionBlend > 0.001;
-      const axisX = projectionActive ? hvacProjectionVector.x : 0;
-      const axisY = projectionActive ? hvacProjectionVector.y : 0;
-      const axisZ = projectionActive ? hvacProjectionVector.z : 0;
-      const shiftX =
-        hvacProjectionVisualState.pageShiftX + axisX * 68 - axisY * 18;
-      const shiftY =
-        hvacProjectionVisualState.pageShiftY - axisY * 46 - axisZ * 24;
-      const tiltX =
-        hvacProjectionVisualState.pageTiltXDeg + axisY * 24 + axisZ * 5;
-      const tiltY = -axisX * 18;
-      const tiltZ =
-        hvacProjectionVisualState.pageTiltZDeg + axisX * 24 - axisY * 8;
+      // Hybrid (slider) morph hinges the whole flat plan back toward the 3D
+      // camera plane so the model fades in over a matching pose.
+      if (hybridView.blend > 0.001) {
+        return {
+          opacity: planLayerOpacity,
+          transform: [
+            "perspective(2400px)",
+            `translate3d(${hybridPlaneVisualState.pageShiftX}px, ${hybridPlaneVisualState.pageShiftY}px, 0)`,
+            `rotateX(${hybridPlaneVisualState.pageTiltXDeg}deg)`,
+            `rotateZ(${hybridPlaneVisualState.pageTiltZDeg}deg)`,
+            `scale(${hybridPlaneVisualState.pageScale})`,
+          ].join(" "),
+          transformOrigin: "50% 50%",
+          transformStyle: "preserve-3d" as const,
+          transition: hybridView.isInteracting
+            ? "none"
+            : "transform 120ms ease-out, opacity 120ms linear",
+          willChange: "transform, opacity",
+        };
+      }
 
       return {
         opacity: planLayerOpacity,
-        transform: projectionActive
-          ? [
-              `translate3d(${shiftX}px, ${shiftY}px, 0)`,
-              "perspective(2600px)",
-              `rotateX(${tiltX}deg)`,
-              `rotateY(${tiltY}deg)`,
-              `rotateZ(${tiltZ}deg)`,
-              `scale(${hvacProjectionVisualState.pageScale})`,
-            ].join(" ")
-          : "none",
+        transform: "none",
         transformOrigin: "50% 50%",
         transformStyle: "preserve-3d" as const,
-        transition:
-          hybridView.blend > 0
-            ? "opacity 120ms linear"
-            : "transform 140ms ease-out, opacity 120ms linear",
+        transition: "transform 140ms ease-out, opacity 120ms linear",
         willChange: "transform, opacity",
       };
     },
     [
-      hvacProjectionVisualState.pageScale,
-      hvacProjectionVisualState.pageShiftX,
-      hvacProjectionVisualState.pageShiftY,
-      hvacProjectionVisualState.pageTiltXDeg,
-      hvacProjectionVisualState.pageTiltZDeg,
-      hvacProjectionVector.x,
-      hvacProjectionVector.y,
-      hvacProjectionVector.z,
       hybridView.blend,
+      hybridView.isInteracting,
+      hybridPlaneVisualState.pageScale,
+      hybridPlaneVisualState.pageShiftX,
+      hybridPlaneVisualState.pageShiftY,
+      hybridPlaneVisualState.pageTiltXDeg,
+      hybridPlaneVisualState.pageTiltZDeg,
       planLayerOpacity,
-      visibleHvacProjectionBlend,
     ],
   );
 
-  useEffect(() => {
-    hvacRendererRef.current?.setProjectionPlanOpacity(
-      hvacProjectionVisualState.hvacPlanOpacity,
-    );
-  }, [fabricCanvas, hvacProjectionVisualState.hvacPlanOpacity]);
   const objectDefinitionsById = useMemo(
     () =>
       new Map(
@@ -924,6 +933,68 @@ export function DrawingCanvas({
     animateHybridBlend(0);
   }, [animateHybridBlend, commitHybridView]);
 
+  // Centre + scale only: frame the 3D camera on the world point currently at the
+  // 2D viewport centre, at a distance whose apparent scale matches the plan, so
+  // the model that fades in sits exactly where the drawing already is. Camera
+  // angle (yaw/pitch) is driven separately by blend so the engage pose starts
+  // near top-down/unrotated and only diverges into 3D as the slider rises.
+  const computeHybridFramingToViewport = useCallback((): Pick<
+    Hybrid3DViewState,
+    "targetMm" | "distanceMm"
+  > => {
+    const worldCenterX =
+      (hostWidth / 2 / viewportZoom + panOffset.x) / MM_TO_PX;
+    const worldCenterY =
+      (hostHeight / 2 / viewportZoom + panOffset.y) / MM_TO_PX;
+    const fovDeg =
+      30 + clampNumber(DEFAULT_HYBRID_VIEW.perspectiveStrength, 0, 1) * 14;
+    const tanHalfFov = Math.tan((fovDeg * Math.PI) / 360);
+    const distanceMm = clampNumber(
+      hostHeight / (2 * tanHalfFov * viewportZoom * MM_TO_PX),
+      800,
+      220000,
+    );
+    return {
+      targetMm: { x: worldCenterX, y: worldCenterY },
+      distanceMm,
+    };
+  }, [hostWidth, hostHeight, viewportZoom, panOffset.x, panOffset.y]);
+
+  // The slider owns `blend` (0 = flat 2D, 1 = full 3D). Blend drops the camera
+  // pitch from near top-down toward a dramatic iso angle (yaw stays at the iso
+  // default), so every notch visibly lifts the view; the solid model is faint
+  // while near top-down and only reads once clearly 3D. Centre/scale re-frame to
+  // the current viewport on leaving flat 2D so the model sits over the drawing.
+  const handleBlendSliderChange = useCallback(
+    (value: number, phase: BlendChangePhase) => {
+      if (
+        hybridBlendFrameRef.current !== null &&
+        typeof window !== "undefined"
+      ) {
+        window.cancelAnimationFrame(hybridBlendFrameRef.current);
+        hybridBlendFrameRef.current = null;
+      }
+      hybridDragRef.current = null;
+      const target = clampNumber(value, 0, 1);
+      commitHybridView((previous) => {
+        const engaging = previous.blend <= 0.02 && target > 0.02;
+        const framing = engaging ? computeHybridFramingToViewport() : null;
+        const settleToFlat = phase === "end" && target <= 0.02;
+        const resolvedBlend = settleToFlat ? 0 : target;
+        return {
+          ...previous,
+          ...(framing ?? {}),
+          blend: resolvedBlend,
+          yawDeg: DEFAULT_HYBRID_VIEW.yawDeg,
+          pitchDeg: clampNumber(82 - resolvedBlend * 40, 42, 82),
+          perspectiveStrength: DEFAULT_HYBRID_VIEW.perspectiveStrength,
+          isInteracting: phase !== "end",
+        };
+      });
+    },
+    [commitHybridView, computeHybridFramingToViewport],
+  );
+
   useEffect(() => {
     if (resetViewRequestId > 0) {
       resetHybridView();
@@ -982,7 +1053,6 @@ export function DrawingCanvas({
       hybridDragRef.current = null;
       commitHybridView((previous) => ({
         ...previous,
-        blend: Math.max(previous.blend, 1),
         isInteracting: false,
       }));
     };
@@ -1028,7 +1098,11 @@ export function DrawingCanvas({
         anchorScreen,
       };
       commitHybridView(nextView);
-      animateHybridBlend(1);
+      // Right-drag from flat 2D is a quick shortcut into full 3D; once already
+      // morphed (e.g. via the slider) it just orbits at the current blend.
+      if (current.blend <= 0.05) {
+        animateHybridBlend(1);
+      }
     };
 
     const handleRightMouseMove = (event: MouseEvent) => {
@@ -1433,8 +1507,33 @@ export function DrawingCanvas({
   // The studio overlay renders the live draw preview as its own pair, so the
   // draw tool feeds it the route here (imperatively — only the overlay re-renders).
   const pipeStudioOverlayRef = useRef<PipeStudioOverlayHandle | null>(null);
+  // Last committed vertex of the pipe draft (real mm) — the HUD measures the
+  // active run from here. Guarded set: the route updates on every mouse move.
+  const [draftPipeAnchorMm, setDraftPipeAnchorMm] = useState<Point2D | null>(
+    null,
+  );
   const handleDraftPipeRoute = useCallback((route: Point2D[] | null) => {
     pipeStudioOverlayRef.current?.setDraftRoute(route);
+    const anchor =
+      route && route.length >= 2 ? route[route.length - 2] ?? null : null;
+    setDraftPipeAnchorMm((current) => {
+      if (!anchor) return current === null ? current : null;
+      if (current && current.x === anchor.x && current.y === anchor.y) {
+        return current;
+      }
+      return { x: anchor.x, y: anchor.y };
+    });
+  }, []);
+  // Real-diameter preview elements for the in-progress pipe — rendered by the
+  // overlay exactly like a committed pipe so the preview never changes size on
+  // Enter (imperative: only the overlay re-renders).
+  const handleDraftPipes = useCallback((elements: HvacElement[] | null) => {
+    pipeStudioOverlayRef.current?.setDraftPipes(elements);
+  }, []);
+  // Snap-hover indicator: the tool forwards the detected snap point; the overlay
+  // renders it with the same endpoint-handle bullseye a committed pipe shows.
+  const handleSnapIndicator = useCallback((point: Point2D | null) => {
+    pipeStudioOverlayRef.current?.setSnapIndicator(point);
   }, []);
 
   const {
@@ -1444,6 +1543,7 @@ export function DrawingCanvas({
     handleKeyDown: handleRefrigerantPipeKeyDown,
     handleKeyUp: handleRefrigerantPipeKeyUp,
     cancelDrawing: _cancelRefrigerantPipeDrawing,
+    beginRouteFromBundle: beginRefrigerantRouteFromBundle,
     branchKitProposal: refrigerantBranchKitProposal,
     acceptBranchKitProposal: acceptRefrigerantBranchKit,
     flipBranchKitProposal: flipRefrigerantBranchKit,
@@ -1454,17 +1554,33 @@ export function DrawingCanvas({
     activeTool: tool,
     pipeMaterialMode: refrigerantPipeDrawMode,
     pipeAngleMode: refrigerantPipeAngleMode,
+    pipeLineMode: refrigerantPipeLineMode,
     hvacElements,
     zoom: viewportZoom,
     snapToGrid: resolvedSnapToGrid,
     gridSize: effectiveSnapGridSize,
     addHvacElements,
     deleteHvacElement,
+    updateHvacElement,
+    saveToHistory,
     setSelectedIds,
     setProcessingStatus,
     onDraftRouteChange: handleDraftPipeRoute,
+    onDraftPipesChange: handleDraftPipes,
+    onSnapIndicatorChange: handleSnapIndicator,
     overlayOwnsPipePreview: !projectionViewOnly,
   });
+
+  // Extension: a pipe-end / bundle / branch-kit-port grip hands us the bundle to
+  // continue from. Switch to the pipe tool (so its mouse/keys are live) and seed
+  // a routing session there, so extension reuses the full draw flow.
+  const handleBeginExtendRoute = useCallback(
+    (bundle: RefrigerantPipeBundleConnection, lineMode: RefrigerantPipeLineMode) => {
+      setTool("refrigerant-pipe");
+      beginRefrigerantRouteFromBundle(bundle, { lineMode });
+    },
+    [setTool, beginRefrigerantRouteFromBundle],
+  );
 
   const nudgeSelectedEntities = useCallback(
     (dxMm: number, dyMm: number) => {
@@ -2509,27 +2625,16 @@ export function DrawingCanvas({
             className="absolute inset-0"
             style={projectionPlaneStyle}
           >
-          <div
-            className="absolute inset-0"
-            style={{
-              opacity: pageContextOpacity,
-              transition: "opacity 140ms ease-out",
-            }}
-          >
+          <div className="absolute inset-0">
             <PageLayout
               pageWidth={pageConfig.width}
               pageHeight={pageConfig.height}
               zoom={zoom}
               panOffset={overlayPanOffset}
+              dimOutside
             />
           </div>
-          <div
-            className="absolute inset-0"
-            style={{
-              opacity: gridContextOpacity,
-              transition: "opacity 140ms ease-out",
-            }}
-          >
+          <div className="absolute inset-0">
             <Grid
               pageWidth={pageConfig.width}
               pageHeight={pageConfig.height}
@@ -2548,14 +2653,7 @@ export function DrawingCanvas({
               gridSubdivisions={safeGridSubdivisions}
             />
           </div>
-          <canvas
-            ref={canvasRef}
-            className="relative z-[2] block"
-            style={{
-              opacity: drawingContextOpacity,
-              transition: "opacity 140ms ease-out",
-            }}
-          />
+          <canvas ref={canvasRef} className="relative z-[2] block" />
           <PipeKonvaInteractionLayer
             enabled={konvaPipeOverlayActive && !projectionViewOnly}
             width={hostWidth}
@@ -2577,12 +2675,16 @@ export function DrawingCanvas({
             height={hostHeight}
             viewportZoom={viewportZoom}
             panOffset={panOffset}
+            selectionHitTesting={tool === "select"}
+            pipeToolActive={tool === "refrigerant-pipe"}
+            pipeLineMode={refrigerantPipeLineMode}
             hvacElements={hvacElements}
             selectedIds={selectedIds}
             setSelectedIds={setSelectedIds}
             updateHvacElement={updateHvacElement}
             addHvacElement={addHvacElement}
             saveToHistory={saveToHistory}
+            onBeginExtendRoute={handleBeginExtendRoute}
           />
           <PipeClashOverlay
             enabled={!projectionViewOnly}
@@ -2620,15 +2722,28 @@ export function DrawingCanvas({
             className="absolute left-0 top-0 z-[10] block"
             style={{ pointerEvents: "none" }}
           />
-          <HvacProjectionLayer
-            className="z-[7]"
-            width={hostWidth}
-            height={hostHeight}
-            zoom={zoom}
-            drawingScale={safePaperPerRealRatio}
+          <BoardCursorHud
+            cursorScenePx={displayMousePosition}
+            anchorMm={
+              tool === "wall" || tool === "partition-wall"
+                ? wallDrawingState.isDrawing
+                  ? wallDrawingState.startPoint
+                  : null
+                : tool === "room"
+                  ? isRoomDrawing
+                    ? roomStartCorner
+                    : null
+                  : tool === "refrigerant-pipe"
+                    ? draftPipeAnchorMm
+                    : null
+            }
+            formatLength={boardFormatLength}
+            viewportZoom={viewportZoom}
             panOffset={panOffset}
-            blend={visibleHvacProjectionBlend}
-            hvacElements={hvacElements}
+            viewportWidth={hostWidth}
+            viewportHeight={hostHeight}
+            visible={!projectionViewOnly && drawingToolActive}
+            snapped={cursorSnapActive}
           />
         </div>
         <HybridProjectionLayer
@@ -2795,14 +2910,6 @@ export function DrawingCanvas({
           </div>
         )}
 
-      <ProjectionAxisGizmo
-        className="absolute bottom-4 right-4 z-[26]"
-        disabled={!hvacProjectionAvailable || hybridViewOnly}
-        value={hvacProjectionVector}
-        onChange={setHvacProjectionVector}
-        onReset={() => setHvacProjectionVector(DEFAULT_HVAC_PROJECTION_VECTOR)}
-      />
-
       <div
         style={{
           opacity: planLayerOpacity,
@@ -2832,6 +2939,11 @@ export function DrawingCanvas({
           showRulerLabels={showRulerLabels}
         />
       </div>
+
+      <View3DBlendSlider
+        value={hybridView.blend}
+        onChange={handleBlendSliderChange}
+      />
     </div>
   );
 }

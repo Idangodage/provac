@@ -36,9 +36,15 @@ import {
 import {
   isRefrigerantPipeElementType,
   type RefrigerantPipeAngleMode,
+  type RefrigerantPipeLineMode,
   type RefrigerantPipeMaterial,
   translateRefrigerantPipeElementProperties,
 } from '../components/canvas/hvac/refrigerantPipePairModel';
+import {
+  DEFAULT_BOARD_SETTINGS,
+  resolveBoardSettings,
+  type BoardSettings,
+} from '../components/canvas/measurement';
 import { DEFAULT_ARCHITECTURAL_OBJECT_LIBRARY } from '../data';
 import type {
   Point2D,
@@ -1763,6 +1769,7 @@ export interface DrawingState {
   activeTool: DrawingTool;
   refrigerantPipeDrawMode: RefrigerantPipeMaterial;
   refrigerantPipeAngleMode: RefrigerantPipeAngleMode;
+  refrigerantPipeLineMode: RefrigerantPipeLineMode;
   activeLayerId: string | null;
   selectedElementIds: string[];
   hoveredElementId: string | null;
@@ -1782,6 +1789,7 @@ export interface DrawingState {
   showGrid: boolean;
   showRulers: boolean;
   pageConfig: PageConfig;
+  boardSettings: BoardSettings;
 
   // Preview State
   previewHeight: number;
@@ -1964,6 +1972,7 @@ export interface DrawingState {
   // Actions - Tools
   setRefrigerantPipeDrawMode: (mode: RefrigerantPipeMaterial) => void;
   setRefrigerantPipeAngleMode: (mode: RefrigerantPipeAngleMode) => void;
+  setRefrigerantPipeLineMode: (mode: RefrigerantPipeLineMode) => void;
   setActiveTool: (tool: DrawingTool) => void;
 
   // Alias for backward compatibility
@@ -1984,6 +1993,7 @@ export interface DrawingState {
   setShowRulers: (show: boolean) => void;
   toggleRulers: () => void;
   setPageConfig: (config: Partial<PageConfig>) => void;
+  setBoardSettings: (settings: Partial<BoardSettings>) => void;
   resetView: () => void;
   zoomToFit: () => void;
 
@@ -2076,8 +2086,9 @@ export const useDrawingStore = create<DrawingState>()(
       processingStatus: '',
       detectedElements: [],
       activeTool: 'select',
-      refrigerantPipeDrawMode: 'hard',
+      refrigerantPipeDrawMode: 'flexible',
       refrigerantPipeAngleMode: 'auto',
+      refrigerantPipeLineMode: 'pair',
       activeLayerId: 'default',
       selectedElementIds: [],
       hoveredElementId: null,
@@ -2098,6 +2109,7 @@ export const useDrawingStore = create<DrawingState>()(
       showGrid: true,
       showRulers: true,
       pageConfig: { ...DEFAULT_PAGE_CONFIG },
+      boardSettings: { ...DEFAULT_BOARD_SETTINGS },
       previewHeight: 3.0,
       show3DPreview: true,
       autoSync3D: true,
@@ -4379,6 +4391,12 @@ export const useDrawingStore = create<DrawingState>()(
             ? state
             : { refrigerantPipeAngleMode: mode }
         ),
+      setRefrigerantPipeLineMode: (mode) =>
+        set((state) =>
+          state.refrigerantPipeLineMode === mode
+            ? state
+            : { refrigerantPipeLineMode: mode }
+        ),
       setActiveTool: (tool) => set((state) => {
         const partitionToolActive = isPartitionWallTool(tool);
         return {
@@ -4422,6 +4440,9 @@ export const useDrawingStore = create<DrawingState>()(
       toggleRulers: () => set((state) => ({ showRulers: !state.showRulers })),
       setPageConfig: (config) => set((state) => ({
         pageConfig: { ...state.pageConfig, ...config }
+      })),
+      setBoardSettings: (settings) => set((state) => ({
+        boardSettings: resolveBoardSettings({ ...state.boardSettings, ...settings }),
       })),
       resetView: () => set({ zoom: 1, panOffset: { x: 0, y: 0 }, resetViewRequestId: Date.now() }),
       zoomToFit: () => set({ zoomToFitRequestId: Date.now() }),
@@ -4633,6 +4654,12 @@ export const useDrawingStore = create<DrawingState>()(
           hvacDesignConditions,
           pipeRoutingSettings,
           materialLibrary,
+          boardSettings,
+          pageConfig,
+          displayUnit,
+          showGrid,
+          showRulers,
+          snapToGrid,
         } = get();
 
         const attributeEnvelope = createAttributeEnvelope(walls, rooms);
@@ -4658,6 +4685,12 @@ export const useDrawingStore = create<DrawingState>()(
           pipeRoutingSettings,
           materialLibrary,
           attributeEnvelope,
+          boardSettings,
+          pageConfig,
+          displayUnit,
+          showGrid,
+          showRulers,
+          snapToGrid,
           scale: importedDrawing?.scale || 100,
           exportedAt: new Date().toISOString(),
         }, null, 2);
@@ -4813,6 +4846,28 @@ export const useDrawingStore = create<DrawingState>()(
           // Sync the geometry/clash engines with the loaded document's settings.
           setActivePipeRoutingSettings(nextPipeRoutingSettings);
 
+          // Board/sheet context travels with the document so a drawing reopens
+          // at the unit, page and scale it was authored with.
+          const nextBoardSettings = resolveBoardSettings(data.boardSettings);
+          const importedPageConfig = (typeof data.pageConfig === 'object' && data.pageConfig ? data.pageConfig : null) as Partial<PageConfig> | null;
+          const nextPageConfig: PageConfig = {
+            ...DEFAULT_PAGE_CONFIG,
+            ...(importedPageConfig &&
+              Number.isFinite(importedPageConfig.width) &&
+              Number.isFinite(importedPageConfig.height) &&
+              (importedPageConfig.width as number) > 0 &&
+              (importedPageConfig.height as number) > 0
+              ? importedPageConfig
+              : {}),
+          };
+          const nextDisplayUnit: DisplayUnit =
+            data.displayUnit === 'mm' || data.displayUnit === 'cm' || data.displayUnit === 'm' || data.displayUnit === 'ft-in'
+              ? data.displayUnit
+              : 'mm';
+          const nextShowGrid = typeof data.showGrid === 'boolean' ? data.showGrid : true;
+          const nextShowRulers = typeof data.showRulers === 'boolean' ? data.showRulers : true;
+          const nextSnapToGrid = typeof data.snapToGrid === 'boolean' ? data.snapToGrid : true;
+
           const nextElevationSettings = {
             ...DEFAULT_ELEVATION_SETTINGS,
             ...(typeof data.elevationSettings === 'object' && data.elevationSettings ? data.elevationSettings : {}),
@@ -4866,6 +4921,12 @@ export const useDrawingStore = create<DrawingState>()(
             hvacDesignConditions: nextHvacDesignConditions,
             pipeRoutingSettings: nextPipeRoutingSettings,
             materialLibrary: nextMaterialLibrary,
+            boardSettings: nextBoardSettings,
+            pageConfig: nextPageConfig,
+            displayUnit: nextDisplayUnit,
+            showGrid: nextShowGrid,
+            showRulers: nextShowRulers,
+            snapToGrid: nextSnapToGrid,
           });
           lastRoomTopologyHash = '';
           get().detectRooms();

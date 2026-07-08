@@ -1514,7 +1514,6 @@ export function useCanvasEventBinding(
         computePlacement,
         computeHvacPlacement,
         hvacRendererRef,
-        updateHvacElement,
         handleSelectObjectMoving,
       } = latestOptionsRef.current;
       if (!event.target || tool !== "select") return;
@@ -1537,8 +1536,12 @@ export function useCanvasEventBinding(
         const isFurnitureLike =
           definition?.category === "furniture" ||
           definition?.category === "fixtures";
+        const nativeEvent = event.e as MouseEvent | undefined;
+        const snapDuringDrag =
+          resolvedSnapToGrid &&
+          (nativeEvent?.shiftKey || nativeEvent?.ctrlKey || nativeEvent?.metaKey);
 
-        if (resolvedSnapToGrid && !isFurnitureLike) {
+        if (snapDuringDrag && !isFurnitureLike) {
           const center = target.getCenterPoint();
           const snappedPx = snapPointToGrid(
             { x: center.x, y: center.y },
@@ -1663,11 +1666,6 @@ export function useCanvasEventBinding(
               properties: nextProperties,
             };
             hvacRendererRef.current?.setSceneElementOverrides([movedElement]);
-            syncConnectedRefrigerantPipes(
-              hvacElements,
-              movedElement,
-              updateHvacElement,
-            );
           } else {
             hvacRendererRef.current?.clearSceneElementOverrides();
           }

@@ -30,10 +30,9 @@ import {
   SplitSquareVertical,
   ArrowUpFromLine,
   ArrowRightFromLine,
-  Box,
   Fan,
 } from 'lucide-react';
-import React, { Suspense, useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import {
@@ -49,6 +48,14 @@ import {
 } from './components';
 import { ElevationViewCanvas } from './components/canvas/elevation';
 import {
+  boardSettingsToCanvasProps,
+  boardValueFromMm,
+  boardValueToMm,
+  type BoardMeasurementMode,
+  type BoardSettings,
+} from './components/canvas/measurement';
+import { PX_TO_MM, fromMillimeters, getUnitLabel } from './components/canvas/scale';
+import {
   DEFAULT_AC_EQUIPMENT_LIBRARY,
   DEFAULT_ARCHITECTURAL_OBJECT_LIBRARY,
   type AcEquipmentDefinition,
@@ -57,12 +64,7 @@ import {
 import type { SymbolDefinition } from './data/symbol-library';
 import { useSmartDrawingStore } from './store';
 import { useDrawingInteractionStore } from './store/interactionStore';
-import type { DrawingTool, PageLayout } from './types';
-
-const LazyIsometricViewCanvas = React.lazy(async () => {
-  const mod = await import('./components/canvas/isometric');
-  return { default: mod.IsometricViewCanvas };
-});
+import type { DisplayUnit, DrawingTool, PageLayout } from './types';
 
 
 // =============================================================================
@@ -91,8 +93,6 @@ export interface SmartDrawingEditorProps {
 type RibbonTone = 'default' | 'accent' | 'ghost';
 const PX_PER_INCH = 96;
 const MM_PER_INCH = 25.4;
-type PaperUnit = 'mm' | 'cm' | 'in' | 'm';
-type MeasurementMode = 'paper' | 'real';
 const mmToPx = (mm: number) => (mm / MM_PER_INCH) * PX_PER_INCH;
 
 const SCALE_PRESETS = [
@@ -246,6 +246,137 @@ function QuickActionButton({
   );
 }
 
+/**
+ * Compact "Grid" popover: mode (paper/real), major step in the active unit,
+ * sub-divisions, and ruler mode. Writes straight to the persisted board
+ * settings so the visible grid AND the snap step change together.
+ */
+function BoardGridSettings({
+  boardSettings,
+  displayUnit,
+  onChange,
+  disabled,
+}: {
+  boardSettings: BoardSettings;
+  displayUnit: DisplayUnit;
+  onChange: (settings: Partial<BoardSettings>) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  const gridUnit = boardSettings.gridMode === 'real' ? displayUnit : boardSettings.paperUnit;
+  const majorMm = boardSettings.gridMode === 'real'
+    ? boardSettings.majorGridRealMm
+    : boardSettings.majorGridPaperMm;
+  const majorValue = boardValueFromMm(majorMm, gridUnit);
+  const minorValue = majorValue / boardSettings.gridSubdivisions;
+
+  const applyMajorValue = (raw: string) => {
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    const mm = boardValueToMm(parsed, gridUnit);
+    onChange(
+      boardSettings.gridMode === 'real'
+        ? { majorGridRealMm: mm }
+        : { majorGridPaperMm: mm },
+    );
+  };
+
+  const selectClass =
+    'h-6 rounded border border-amber-200/80 bg-white px-1 text-[10px] text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300';
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        disabled={disabled}
+        className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[10px] font-medium transition-colors ${
+          open
+            ? 'border-amber-300 bg-amber-100 text-amber-900'
+            : 'border-amber-200/80 bg-white text-slate-600 hover:bg-amber-50'
+        }`}
+        title="Grid & ruler settings"
+      >
+        <Grid3X3 size={12} />
+        Grid
+      </button>
+      {open && (
+        <div className="absolute left-0 top-8 z-50 w-60 rounded-lg border border-amber-200/80 bg-white p-3 shadow-lg">
+          <div className="space-y-2 text-[11px] text-slate-600">
+            <div className="flex items-center justify-between gap-2">
+              <span>Grid mode</span>
+              <select
+                value={boardSettings.gridMode}
+                onChange={(e) => onChange({ gridMode: e.target.value as BoardMeasurementMode })}
+                className={selectClass}
+              >
+                <option value="paper">Paper sheet</option>
+                <option value="real">Real world</option>
+              </select>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span>Major step ({getUnitLabel(gridUnit)})</span>
+              <input
+                type="number"
+                min={0.1}
+                step={boardSettings.gridMode === 'real' ? 100 : 1}
+                value={Number.isFinite(majorValue) ? Number(majorValue.toFixed(3)) : 0}
+                onChange={(e) => applyMajorValue(e.target.value)}
+                className="h-6 w-20 rounded border border-amber-200/80 bg-white px-1 text-right text-[10px] text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span>Sub-divisions</span>
+              <select
+                value={boardSettings.gridSubdivisions}
+                onChange={(e) => onChange({ gridSubdivisions: Number.parseInt(e.target.value, 10) })}
+                className={selectClass}
+              >
+                {[1, 2, 4, 5, 8, 10].map((count) => (
+                  <option key={count} value={count}>{count}</option>
+                ))}
+              </select>
+            </div>
+            <div className="rounded bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+              Snap step: {Number(minorValue.toFixed(3))} {getUnitLabel(gridUnit)}
+              {boardSettings.gridMode === 'paper' &&
+                ` (paper) = ${Number(
+                  boardValueFromMm(
+                    (majorMm / boardSettings.gridSubdivisions) *
+                      (boardSettings.scaleReal / boardSettings.scaleDrawing),
+                    displayUnit,
+                  ).toFixed(3),
+                )} ${getUnitLabel(displayUnit)} real`}
+            </div>
+            <div className="flex items-center justify-between gap-2 border-t border-amber-100 pt-2">
+              <span>Rulers read</span>
+              <select
+                value={boardSettings.rulerMode}
+                onChange={(e) => onChange({ rulerMode: e.target.value as BoardMeasurementMode })}
+                className={selectClass}
+              >
+                <option value="real">Real world ({getUnitLabel(displayUnit)})</option>
+                <option value="paper">Paper sheet ({getUnitLabel(boardSettings.paperUnit)})</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EditorRibbon({
   projectId,
   onExportJSON,
@@ -274,6 +405,10 @@ function EditorRibbon({
   onPageChange,
   scalePreset,
   onScaleChange,
+  boardSettings,
+  displayUnit,
+  onBoardSettingsChange,
+  onDisplayUnitChange,
   readOnly,
 }: {
   projectId?: string;
@@ -303,6 +438,10 @@ function EditorRibbon({
   onPageChange: (layoutId: string) => void;
   scalePreset: string;
   onScaleChange: (value: string) => void;
+  boardSettings: BoardSettings;
+  displayUnit: DisplayUnit;
+  onBoardSettingsChange: (settings: Partial<BoardSettings>) => void;
+  onDisplayUnitChange: (unit: DisplayUnit) => void;
   readOnly: boolean;
 }) {
   const currentLayoutId =
@@ -379,6 +518,27 @@ function EditorRibbon({
             ))}
           </select>
         </div>
+        <div className="ml-2 flex items-center gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Unit</span>
+          <select
+            value={displayUnit}
+            onChange={(e) => onDisplayUnitChange(e.target.value as DisplayUnit)}
+            className="h-7 rounded-md border border-amber-200/80 bg-white px-2 text-[10px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300"
+          >
+            <option value="mm">mm</option>
+            <option value="cm">cm</option>
+            <option value="m">m</option>
+            <option value="ft-in">ft-in</option>
+          </select>
+        </div>
+        <div className="ml-2">
+          <BoardGridSettings
+            boardSettings={boardSettings}
+            displayUnit={displayUnit}
+            onChange={onBoardSettingsChange}
+            disabled={readOnly}
+          />
+        </div>
       </div>
 
       <div className="flex-1" />
@@ -417,6 +577,11 @@ function EditorFooter({
 }) {
   const mousePosition = useDrawingInteractionStore((state) => state.mousePosition);
   const statusMessage = useSmartDrawingStore((state) => state.processingStatus);
+  const displayUnit = useSmartDrawingStore((state) => state.displayUnit);
+  // mousePosition is in fabric scene pixels (real mm × MM_TO_PX): convert to
+  // the assigned display unit so the readout tracks the board settings.
+  const cursorX = fromMillimeters(mousePosition.x * PX_TO_MM, displayUnit);
+  const cursorY = fromMillimeters(mousePosition.y * PX_TO_MM, displayUnit);
 
   return (
     <div className="flex h-7 items-center justify-between border-t border-amber-200/70 bg-[#fffaf0] px-3 text-[11px] text-slate-600">
@@ -428,9 +593,9 @@ function EditorFooter({
         </span>
         <span className="hidden xl:inline">|</span>
         <CoordinatesDisplay
-          x={mousePosition.x}
-          y={mousePosition.y}
-          unit="mm"
+          x={cursorX}
+          y={cursorY}
+          unit={getUnitLabel(displayUnit)}
           className="!px-0 !py-0 !border-0 !shadow-none !bg-transparent text-xs"
         />
         {statusMessage && (
@@ -472,16 +637,6 @@ export function SmartDrawingEditor({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [fabricCanvas, setFabricCanvas] = useState<fabric.Canvas | null>(null);
-  const [scaleDrawing, setScaleDrawing] = useState(1);
-  const [scaleReal, setScaleReal] = useState(50);
-  const paperUnit: PaperUnit = 'mm';
-  const rulerMode: MeasurementMode = 'paper';
-  const gridMode: MeasurementMode = 'paper';
-  const majorTickInterval = 10;
-  const tickSubdivisions = 10;
-  const majorGridSize = 10;
-  const gridSubdivisions = 10;
-  const showRulerLabels = true;
   const leftPanelRef = useRef<HTMLDivElement>(null);
   const minLeftWidth = 84;
   const [maxLeftWidth, setMaxLeftWidth] = useState(320);
@@ -500,7 +655,6 @@ export function SmartDrawingEditor({
     sketches,
     annotations,
     dimensions,
-    dimensionSettings,
     symbols,
     walls,
     rooms,
@@ -512,6 +666,7 @@ export function SmartDrawingEditor({
     snapToGrid,
     pageConfig,
     displayUnit,
+    boardSettings,
     editorViewMode,
     elevationViews,
     elevationSettings,
@@ -532,6 +687,7 @@ export function SmartDrawingEditor({
     snapToGrid: state.snapToGrid,
     pageConfig: state.pageConfig,
     displayUnit: state.displayUnit,
+    boardSettings: state.boardSettings,
     editorViewMode: state.editorViewMode,
     elevationViews: state.elevationViews,
     elevationSettings: state.elevationSettings,
@@ -548,6 +704,8 @@ export function SmartDrawingEditor({
     setShowRulers,
     setSnapToGrid,
     setPageConfig,
+    setBoardSettings,
+    setDisplayUnit,
     setZoom,
     setPanOffset,
     setEditorViewMode,
@@ -562,6 +720,8 @@ export function SmartDrawingEditor({
     setShowRulers: state.setShowRulers,
     setSnapToGrid: state.setSnapToGrid,
     setPageConfig: state.setPageConfig,
+    setBoardSettings: state.setBoardSettings,
+    setDisplayUnit: state.setDisplayUnit,
     setZoom: state.setZoom,
     setPanOffset: state.setPanOffset,
     setEditorViewMode: state.setEditorViewMode,
@@ -583,16 +743,21 @@ export function SmartDrawingEditor({
     { id: 'dimension', label: 'Dimension', icon: <Ruler size={14} /> },
     { id: 'text', label: 'Text', icon: <Type size={14} /> },
   ];
-  const currentScaleRatio = `${scaleDrawing}:${scaleReal}`;
+  // All board/sheet context (scale, units, grid, rulers) is store state so it
+  // persists with the document and every consumer derives from one source.
+  const boardCanvasProps = useMemo(
+    () => boardSettingsToCanvasProps(boardSettings, displayUnit),
+    [boardSettings, displayUnit],
+  );
+  const currentScaleRatio = `${boardSettings.scaleDrawing}:${boardSettings.scaleReal}`;
   const currentScalePreset = SCALE_PRESETS.includes(currentScaleRatio as (typeof SCALE_PRESETS)[number])
     ? currentScaleRatio
     : '1:50';
   const applyScaleRatio = useCallback((ratio: string) => {
     const parsed = parseScaleRatio(ratio);
     if (!parsed) return;
-    setScaleDrawing(parsed.drawing);
-    setScaleReal(parsed.real);
-  }, []);
+    setBoardSettings({ scaleDrawing: parsed.drawing, scaleReal: parsed.real });
+  }, [setBoardSettings]);
   const architecturalObjects = useMemo(
     () => [...DEFAULT_ARCHITECTURAL_OBJECT_LIBRARY, ...customLibraryObjects],
     [customLibraryObjects]
@@ -1047,6 +1212,10 @@ export function SmartDrawingEditor({
         }}
         scalePreset={currentScalePreset}
         onScaleChange={applyScaleRatio}
+        boardSettings={boardSettings}
+        displayUnit={displayUnit}
+        onBoardSettingsChange={setBoardSettings}
+        onDisplayUnitChange={setDisplayUnit}
         readOnly={readOnly}
       />
 
@@ -1358,19 +1527,6 @@ export function SmartDrawingEditor({
                 <ArrowRightFromLine size={12} />
                 End
               </button>
-              <button
-                type="button"
-                onClick={() => setEditorViewMode('isometric')}
-                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-                  editorViewMode === 'isometric'
-                    ? 'bg-amber-200 text-amber-900 border border-amber-300'
-                    : 'text-slate-500 hover:bg-amber-50 border border-transparent'
-                }`}
-                title="Isometric view"
-              >
-                <Box size={12} />
-                Iso
-              </button>
             </div>
             <div className="min-w-0 flex-1 self-stretch">
               <AttributeQuickToolbar className="h-full w-full !px-0" keepSpaceWhenHidden />
@@ -1384,17 +1540,17 @@ export function SmartDrawingEditor({
               showGrid={showGrid}
               showRulers={showRulers}
               snapToGrid={snapToGrid}
-              paperUnit={paperUnit}
+              paperUnit={boardCanvasProps.paperUnit}
               realWorldUnit={displayUnit}
-              scaleDrawing={scaleDrawing}
-              scaleReal={scaleReal}
-              rulerMode={rulerMode}
-              majorTickInterval={majorTickInterval}
-              tickSubdivisions={tickSubdivisions}
-              showRulerLabels={showRulerLabels}
-              gridMode={gridMode}
-              majorGridSize={majorGridSize}
-              gridSubdivisions={gridSubdivisions}
+              scaleDrawing={boardCanvasProps.scaleDrawing}
+              scaleReal={boardCanvasProps.scaleReal}
+              rulerMode={boardCanvasProps.rulerMode}
+              majorTickInterval={boardCanvasProps.majorTickInterval}
+              tickSubdivisions={boardCanvasProps.tickSubdivisions}
+              showRulerLabels={boardCanvasProps.showRulerLabels}
+              gridMode={boardCanvasProps.gridMode}
+              majorGridSize={boardCanvasProps.majorGridSize}
+              gridSubdivisions={boardCanvasProps.gridSubdivisions}
               objectDefinitions={architecturalObjects}
               equipmentDefinitions={DEFAULT_AC_EQUIPMENT_LIBRARY}
               pendingPlacementObjectId={pendingPlacementObjectId}
@@ -1413,17 +1569,17 @@ export function SmartDrawingEditor({
                 showGrid={showGrid}
                 showRulers={showRulers}
                 snapToGrid={snapToGrid}
-                paperUnit={paperUnit}
+                paperUnit={boardCanvasProps.paperUnit}
                 realWorldUnit={displayUnit}
-                scaleDrawing={scaleDrawing}
-                scaleReal={scaleReal}
-                rulerMode={rulerMode}
-                majorTickInterval={majorTickInterval}
-                tickSubdivisions={tickSubdivisions}
-                showRulerLabels={showRulerLabels}
-                gridMode={gridMode}
-                majorGridSize={majorGridSize}
-                gridSubdivisions={gridSubdivisions}
+                scaleDrawing={boardCanvasProps.scaleDrawing}
+                scaleReal={boardCanvasProps.scaleReal}
+                rulerMode={boardCanvasProps.rulerMode}
+                majorTickInterval={boardCanvasProps.majorTickInterval}
+                tickSubdivisions={boardCanvasProps.tickSubdivisions}
+                showRulerLabels={boardCanvasProps.showRulerLabels}
+                gridMode={boardCanvasProps.gridMode}
+                majorGridSize={boardCanvasProps.majorGridSize}
+                gridSubdivisions={boardCanvasProps.gridSubdivisions}
                 objectDefinitions={architecturalObjects}
                 equipmentDefinitions={DEFAULT_AC_EQUIPMENT_LIBRARY}
                 pendingPlacementObjectId={pendingPlacementObjectId}
@@ -1471,27 +1627,6 @@ export function SmartDrawingEditor({
             />
           )}
 
-          {editorViewMode === 'isometric' && (
-            <Suspense
-              fallback={
-                <div className="flex flex-1 items-center justify-center bg-white text-sm text-slate-500">
-                  Loading isometric view...
-                </div>
-              }
-            >
-              <LazyIsometricViewCanvas
-                className="flex-1"
-                walls={walls}
-                rooms={rooms}
-                symbols={symbols}
-                hvacElements={hvacElements}
-                objectDefinitions={architecturalObjects}
-                dimensions={dimensions}
-                dimensionSettings={dimensionSettings}
-                viewLabel="ISOMETRIC VIEW"
-              />
-            </Suspense>
-          )}
         </div>
 
         <button

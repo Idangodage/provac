@@ -53,6 +53,34 @@ function resolvedPipeElevationMm(): number {
 }
 const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
 
+/**
+ * Upper bound on the clear gap between the two insulated lines of one bundle
+ * (mm). The gap slider caps `defaultPipeGapMm` at 300; allow a margin so a bundle
+ * stays snappable across the whole configurable range.
+ */
+export const MAX_BUNDLE_CLEAR_GAP_MM = 320;
+
+/**
+ * Whether a gas↔liquid centre-to-centre distance reads as one bundle: from
+ * touching (gap ≈ 0) up to {@link MAX_BUNDLE_CLEAR_GAP_MM}. Deliberately decoupled
+ * from the *current* configured gap so changing `defaultPipeGapMm` never hides a
+ * bundle's snap point — the pair a user drew at one gap must still be detected
+ * after the gap is edited. Candidate ranking still favours the spacing closest to
+ * the active gap; this is only the accept/reject gate for lines that do not share
+ * a bundleId (a shared bundleId is always accepted).
+ */
+export function isPlausibleBundleSpacingMm(
+  centerDistanceMm: number,
+  gasOuterDiameterMm: number,
+  liquidOuterDiameterMm: number,
+): boolean {
+  const touchingMm = gasOuterDiameterMm / 2 + liquidOuterDiameterMm / 2;
+  return (
+    centerDistanceMm >= Math.max(0, touchingMm - 2) &&
+    centerDistanceMm <= touchingMm + MAX_BUNDLE_CLEAR_GAP_MM
+  );
+}
+
 export type RefrigerantPipeConnectionKind = 'unit-port' | 'field-pipe';
 
 export interface RefrigerantPipeBundleConnection {
@@ -131,6 +159,13 @@ export interface RefrigerantPipePairVisualSpec extends RefrigerantPipePairSpec {
 }
 
 export type RefrigerantPipeLineKind = 'gas' | 'liquid';
+/**
+ * Which line(s) the pipe tool lays on a single draw.
+ * - `pair`   — coordinated gas + liquid pair offset from a shared centerline (default).
+ * - `gas`    — a lone gas line whose centerline is the drawn route.
+ * - `liquid` — a lone liquid line whose centerline is the drawn route.
+ */
+export type RefrigerantPipeLineMode = 'pair' | 'gas' | 'liquid';
 export type RefrigerantPipeMaterial = 'hard' | 'flexible';
 /**
  * Angle constraint applied to each drawn route vertex.
@@ -3392,6 +3427,12 @@ export function buildRefrigerantPipeElements(
     bundleId?: string;
     startBundleConnection?: RefrigerantPipeBundleConnection | null;
     endBundleConnection?: RefrigerantPipeBundleConnection | null;
+    /**
+     * Which line(s) to build. `pair` (default) keeps the coordinated gas+liquid
+     * pair; `gas`/`liquid` return a single line whose centerline IS the drawn
+     * route (no lateral offset — the one line follows the cursor exactly).
+     */
+    lineMode?: RefrigerantPipeLineMode;
   },
 ): Array<
   Omit<Partial<HvacElement>, 'id'> &
@@ -3409,6 +3450,42 @@ export function buildRefrigerantPipeElements(
     liquidPipeDiameterMm,
     insulationThicknessMm,
   );
+
+  // Single-line mode: the drawn route is that line's centerline, so the lone
+  // gas/liquid pipe tracks the cursor exactly (no pair offsetting). Bind either
+  // end to the matching side of a snapped bundle port.
+  const lineMode = options?.lineMode ?? 'pair';
+  if (lineMode !== 'pair') {
+    const isGas = lineMode === 'gas';
+    const buildSideConnection = (
+      bundle: RefrigerantPipeBundleConnection | null | undefined,
+    ): RefrigerantPipeConnection | null =>
+      bundle
+        ? {
+            portPoint: isGas ? bundle.gasPoint : bundle.liquidPoint,
+            direction:
+              (isGas ? bundle.gasDirection : bundle.liquidDirection) ??
+              bundle.direction,
+            elevationMm: isGas ? bundle.gasElevationMm : bundle.liquidElevationMm,
+            connectionKind: bundle.connectionKind,
+            sourceElementId: bundle.sourceElementId,
+          }
+        : null;
+    return [
+      buildRefrigerantPipeElement(routePoints, {
+        lineKind: isGas ? 'gas' : 'liquid',
+        label: isGas ? 'Gas Pipe' : 'Liquid Pipe',
+        segmentMaterialMode: options?.segmentMaterialMode,
+        pipeDiameterMm: isGas ? gasPipeDiameterMm : liquidPipeDiameterMm,
+        outerDiameterMm: isGas ? gasOuterDiameterMm : liquidOuterDiameterMm,
+        insulationThicknessMm,
+        bundleId: options?.bundleId,
+        startConnection: buildSideConnection(options?.startBundleConnection),
+        endConnection: buildSideConnection(options?.endBundleConnection),
+      }),
+    ];
+  }
+
   const gasOuterRadiusMm = gasOuterDiameterMm / 2;
   const liquidOuterRadiusMm = liquidOuterDiameterMm / 2;
   const pipeGapMm = resolvedPipeGapMm();
@@ -3855,14 +3932,20 @@ function buildFieldPipeBundleSnapTargets(
         gasEndpoint.outerDiameterMm / 2
         + liquidEndpoint.outerDiameterMm / 2
         + resolvedPipeGapMm();
-      const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
       const spacingErrorMm = Math.abs(distanceMm - expectedSpacingMm);
       const sharesBundleId = Boolean(
         gasEndpoint.bundleId
         && liquidEndpoint.bundleId
         && gasEndpoint.bundleId === liquidEndpoint.bundleId,
       );
-      if (!sharesBundleId && spacingErrorMm > spacingToleranceMm) {
+      if (
+        !sharesBundleId
+        && !isPlausibleBundleSpacingMm(
+          distanceMm,
+          gasEndpoint.outerDiameterMm,
+          liquidEndpoint.outerDiameterMm,
+        )
+      ) {
         return;
       }
 
@@ -4264,14 +4347,20 @@ function computeStraightBundleSegmentTargets(
         gasSegment.outerDiameterMm / 2 +
         liquidSegment.outerDiameterMm / 2 +
         resolvedPipeGapMm();
-      const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
       const spacingErrorMm = Math.abs(spacingMm - expectedSpacingMm);
       const sharesBundleId = Boolean(
         gasSegment.bundleId &&
         liquidSegment.bundleId &&
         gasSegment.bundleId === liquidSegment.bundleId,
       );
-      if (!sharesBundleId && spacingErrorMm > spacingToleranceMm) {
+      if (
+        !sharesBundleId &&
+        !isPlausibleBundleSpacingMm(
+          spacingMm,
+          gasSegment.outerDiameterMm,
+          liquidSegment.outerDiameterMm,
+        )
+      ) {
         return;
       }
 
@@ -4403,6 +4492,288 @@ export function findNearestRefrigerantPipeBundleTarget(
   });
 
   return bestTarget;
+}
+
+export interface RefrigerantPipeExtensionTarget {
+  bundle: RefrigerantPipeBundleConnection;
+  /** Whether continuing this end lays a coordinated pair or a single gas/liquid line. */
+  lineMode: RefrigerantPipeLineMode;
+  distanceMm: number;
+}
+
+/**
+ * Resolves the open pipe end nearest `point` and how to continue it — the single
+ * "detection engine" both the draw tool's first click and the overlay's "+" grip
+ * run so extending a run always inherits its real identity (coordinated pair vs a
+ * lone gas/liquid line) regardless of the toolbar Lines selector.
+ *
+ * A matched gas+liquid pair (or a unit port / branch-kit bundle) resolves to a
+ * `pair` continuation; a lone single line resolves to its own `gas`/`liquid`
+ * continuation, synthesized from the open endpoint's geometry. When a pair and a
+ * lone end are equidistant (their endpoints coincide on a real pair) the pair wins.
+ *
+ * `options.excludeElementId` drops ends owned by that element (so a run can't weld
+ * back onto its own start); `options.lineKind` restricts the result to lone ends
+ * that expose that line (used when terminating a single-line continuation, which
+ * also skips pair bundles).
+ */
+export function findNearestRefrigerantPipeExtensionTarget(
+  elements: HvacPipeSnapSource[],
+  point: Point2D,
+  thresholdMm: number,
+  options?: { excludeElementId?: string; lineKind?: RefrigerantPipeLineKind },
+): RefrigerantPipeExtensionTarget | null {
+  const excludeElementId = options?.excludeElementId;
+  const lineKindFilter = options?.lineKind;
+
+  // Pair / unit-port / branch-kit bundle. Skipped when a single line kind is
+  // required (a single-line continuation only welds onto a lone line of its kind).
+  let pairTarget: RefrigerantPipeExtensionTarget | null = null;
+  if (!lineKindFilter) {
+    const pairBundle = findNearestRefrigerantPipeBundleTarget(
+      elements,
+      point,
+      thresholdMm,
+    );
+    if (pairBundle && pairBundle.sourceElementId !== excludeElementId) {
+      const gasDistance = Math.hypot(
+        pairBundle.gasPoint.x - point.x,
+        pairBundle.gasPoint.y - point.y,
+      );
+      const liquidDistance = Math.hypot(
+        pairBundle.liquidPoint.x - point.x,
+        pairBundle.liquidPoint.y - point.y,
+      );
+      pairTarget = {
+        bundle: pairBundle,
+        lineMode: 'pair',
+        distanceMm: Math.min(gasDistance, liquidDistance),
+      };
+    }
+  }
+
+  // Nearest lone open single-line end, synthesized into a field-pipe bundle so the
+  // continuation welds to its own line only.
+  let singleTarget: RefrigerantPipeExtensionTarget | null = null;
+  let bestSingleDistance = thresholdMm;
+  // A same-scope for-of (not forEach) so control-flow analysis tracks the
+  // `singleTarget` assignment and narrows it after the loop.
+  for (const endpoint of getRefrigerantPipeEndpointTargets(elements)) {
+    if (
+      excludeElementId
+      && (endpoint.elementId === excludeElementId
+        || endpoint.bundleId === excludeElementId)
+    ) {
+      continue;
+    }
+    if (lineKindFilter && endpoint.lineKind !== lineKindFilter) {
+      continue;
+    }
+    const distanceMm = Math.hypot(
+      endpoint.point.x - point.x,
+      endpoint.point.y - point.y,
+    );
+    if (distanceMm > bestSingleDistance) {
+      continue;
+    }
+    bestSingleDistance = distanceMm;
+    const elevationMm = endpoint.elevationMm;
+    singleTarget = {
+      bundle: {
+        point: endpoint.point,
+        gasPoint: endpoint.point,
+        liquidPoint: endpoint.point,
+        gasFieldPoint: endpoint.point,
+        liquidFieldPoint: endpoint.point,
+        gasOuterDiameterMm: endpoint.outerDiameterMm,
+        liquidOuterDiameterMm: endpoint.outerDiameterMm,
+        gasDirection: endpoint.direction,
+        liquidDirection: endpoint.direction,
+        direction: endpoint.direction,
+        elevationMm,
+        gasElevationMm: elevationMm,
+        liquidElevationMm: elevationMm,
+        connectionKind: 'field-pipe',
+        guideReference: endpoint.lineKind,
+        sourceElementId: endpoint.bundleId ?? endpoint.elementId,
+      },
+      lineMode: endpoint.lineKind,
+      distanceMm,
+    };
+  }
+
+  if (pairTarget && singleTarget) {
+    return pairTarget.distanceMm <= singleTarget.distanceMm
+      ? pairTarget
+      : singleTarget;
+  }
+  return pairTarget ?? singleTarget;
+}
+
+/** How far a built extension line's first vertex may sit from the host pipe's
+ * open end and still be treated as the SAME point (weld guarantee + rounding). */
+const EXTENSION_MERGE_WELD_TOLERANCE_MM = 1;
+
+export interface RefrigerantPipeExtensionMergeUpdate {
+  /** Existing pipe element the extension merges into. */
+  id: string;
+  position: Point2D;
+  width: number;
+  depth: number;
+  properties: Record<string, unknown>;
+}
+
+/**
+ * Merges a committed extension INTO the host pipe element(s) it continues, so
+ * the whole run stays ONE polyline per line — the junction bend then renders
+ * exactly like any mid-draw vertex (no crack between two butted bodies). This is
+ * the same "one element, many segments" model a fresh segment-by-segment draw
+ * commits, applied to extensions.
+ *
+ * `extensionElements` are the elements `buildRefrigerantPipeElements` built for
+ * the extension route (their per-line routes are already welded to the host line
+ * ends). For each, the host is found by line kind + an OPEN route end within
+ * tolerance of the extension's first vertex; the extension's tail is appended
+ * (or prepended reversed, when continuing the host's start), segment materials
+ * follow, and the far-end connection (if the extension welded onto another
+ * port/pipe) transfers to the merged element.
+ *
+ * Returns null when merging does not apply — not a plain field-pipe open end
+ * (unit ports and branch-kit terminals keep their connection semantics), or any
+ * extension line has no open matching host end — in which case the caller
+ * commits the extension as new elements exactly as before.
+ */
+export function buildRefrigerantPipeExtensionMerge(
+  elements: HvacPipeSnapSource[],
+  startBundleConnection: RefrigerantPipeBundleConnection,
+  extensionElements: ReadonlyArray<{ properties?: Record<string, unknown> }>,
+): RefrigerantPipeExtensionMergeUpdate[] | null {
+  if (
+    startBundleConnection.connectionKind !== 'field-pipe'
+    || startBundleConnection.terminalRole
+    || extensionElements.length === 0
+  ) {
+    return null;
+  }
+
+  const normalizeMaterials = (
+    materials: RefrigerantPipeMaterial[] | undefined,
+    segmentCount: number,
+  ): RefrigerantPipeMaterial[] =>
+    Array.from({ length: Math.max(0, segmentCount) }, (_, index) =>
+      materials?.[index] === 'hard' ? 'hard' : 'flexible',
+    );
+
+  const updates: RefrigerantPipeExtensionMergeUpdate[] = [];
+  const usedHostIds = new Set<string>();
+
+  for (const extension of extensionElements) {
+    const extensionProperties = extension.properties;
+    if (!extensionProperties) {
+      return null;
+    }
+    const extensionSpec = resolveRefrigerantPipeSpec(extensionProperties);
+    const extensionRoute = extensionSpec.routePoints;
+    if (extensionRoute.length < 2) {
+      return null;
+    }
+    const weldPoint = extensionRoute[0]!;
+
+    // Host = pipe of the same line kind whose OPEN start/end coincides with the
+    // extension's welded first vertex. Nearest wins inside the tolerance.
+    let host: HvacPipeSnapSource | null = null;
+    let hostSpec: RefrigerantPipeSpec | null = null;
+    let hostEnd: 'start' | 'end' = 'end';
+    let bestDistanceMm = EXTENSION_MERGE_WELD_TOLERANCE_MM;
+    for (const element of elements) {
+      if (element.type !== 'refrigerant-pipe' || usedHostIds.has(element.id)) {
+        continue;
+      }
+      const spec = resolveRefrigerantPipeSpec(element.properties);
+      if (spec.lineKind !== extensionSpec.lineKind || spec.routePoints.length < 2) {
+        continue;
+      }
+      const route = spec.routePoints;
+      const endDistanceMm = spec.endConnection
+        ? Number.POSITIVE_INFINITY
+        : Math.hypot(
+            route[route.length - 1]!.x - weldPoint.x,
+            route[route.length - 1]!.y - weldPoint.y,
+          );
+      const startDistanceMm = spec.startConnection
+        ? Number.POSITIVE_INFINITY
+        : Math.hypot(route[0]!.x - weldPoint.x, route[0]!.y - weldPoint.y);
+      if (endDistanceMm <= bestDistanceMm && endDistanceMm <= startDistanceMm) {
+        bestDistanceMm = endDistanceMm;
+        host = element;
+        hostSpec = spec;
+        hostEnd = 'end';
+      } else if (startDistanceMm <= bestDistanceMm) {
+        bestDistanceMm = startDistanceMm;
+        host = element;
+        hostSpec = spec;
+        hostEnd = 'start';
+      }
+    }
+    if (!host || !hostSpec) {
+      return null;
+    }
+    usedHostIds.add(host.id);
+
+    const hostRoute = hostSpec.routePoints;
+    const hostMaterials = normalizeMaterials(
+      hostSpec.segmentMaterials,
+      hostRoute.length - 1,
+    );
+    const extensionMaterials = normalizeMaterials(
+      extensionSpec.segmentMaterials,
+      extensionRoute.length - 1,
+    );
+    // The extension's first vertex IS the host end (welded) — drop it on join.
+    const extensionTail = extensionRoute.slice(1);
+    const mergedRoute = hostEnd === 'end'
+      ? [...hostRoute, ...extensionTail]
+      : [...[...extensionTail].reverse(), ...hostRoute];
+    const mergedMaterials = hostEnd === 'end'
+      ? [...hostMaterials, ...extensionMaterials]
+      : [...[...extensionMaterials].reverse(), ...hostMaterials];
+
+    const mergedProperties: Record<string, unknown> = {
+      ...(host.properties ?? {}),
+      routePoints: mergedRoute,
+      segmentMaterials: mergedMaterials,
+    };
+    // The extended side stops being an open end; whatever the extension's far
+    // end welded onto (another pipe end / port) becomes the merged terminal.
+    if (hostEnd === 'end') {
+      mergedProperties.endConnection = extensionSpec.endConnection ?? null;
+    } else {
+      mergedProperties.startConnection = extensionSpec.endConnection ?? null;
+    }
+
+    // Bounds recompute mirrors the overlay's route-edit path (withPipeRoute):
+    // route bbox padded by the insulated outer diameter.
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const point of mergedRoute) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+    const marginMm = Math.max(hostSpec.outerDiameterMm, 1);
+    updates.push({
+      id: host.id,
+      position: { x: minX - marginMm, y: minY - marginMm },
+      width: maxX - minX + marginMm * 2,
+      depth: maxY - minY + marginMm * 2,
+      properties: mergedProperties,
+    });
+  }
+
+  return updates.length > 0 ? updates : null;
 }
 
 export function findNearestRefrigerantPipeBundleSegmentTarget(

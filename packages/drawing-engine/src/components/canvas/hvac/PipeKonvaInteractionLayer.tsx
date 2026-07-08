@@ -1,17 +1,20 @@
 import type Konva from 'konva';
-import { useMemo, useRef } from 'react';
-import { Circle, Group, Layer, Stage } from 'react-konva/lib/ReactKonvaCore';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Circle, Group, Layer, Line, Stage } from 'react-konva/lib/ReactKonvaCore';
 import 'konva/lib/shapes/Circle';
+import 'konva/lib/shapes/Line';
 
 import type { HvacElement, Point2D, WallSettings } from '../../../types';
 import { viewportToViewTransform } from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
 import { viewTransformToKonvaLayer } from '../viewTransform';
 
+import { beginPipeDrag, type PipeDragSession } from './pipeDragSession';
 import {
   buildRefrigerantPipeVisual,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeMaterial,
+  type RefrigerantPipeVisualSpec,
 } from './refrigerantPipePairModel';
 
 type HardDirection8 = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
@@ -61,8 +64,7 @@ interface SegmentDragState {
   baselineRoutePoints: Point2D[];
   segmentMaterials: RefrigerantPipeMaterial[];
   baselineProperties: Record<string, unknown>;
-  lastAppliedAtMs: number;
-  updated: boolean;
+  session: PipeDragSession;
 }
 
 interface VertexDragState {
@@ -73,17 +75,22 @@ interface VertexDragState {
   baselineRoutePoints: Point2D[];
   segmentMaterials: RefrigerantPipeMaterial[];
   baselineProperties: Record<string, unknown>;
-  lastAppliedAtMs: number;
-  updated: boolean;
+  session: PipeDragSession;
 }
 
 type DragState = SegmentDragState | VertexDragState;
+
+interface PipeDragPreview {
+  pipeId: string;
+  routePoints: Point2D[];
+  segmentMaterials: RefrigerantPipeMaterial[];
+  visual: RefrigerantPipeVisualSpec;
+}
 
 const HARD_ZERO_LENGTH_TOLERANCE_MM = 0.5;
 const HARD_DIAGONAL_TOLERANCE_MM = 1.5;
 const HARD_AXIS_TOLERANCE_MM = 0.5;
 const MIN_MOVABLE_HARD_SEGMENT_MM = 24;
-const DRAG_APPLY_INTERVAL_MS = 10;
 
 const SQRT_HALF = Math.SQRT1_2;
 const DIRECTION_UNIT: Record<HardDirection8, Point2D> = {
@@ -96,13 +103,6 @@ const DIRECTION_UNIT: Record<HardDirection8, Point2D> = {
   S: { x: 0, y: 1 },
   SE: { x: SQRT_HALF, y: SQRT_HALF },
 };
-
-function shouldApplyDragUpdate(lastAppliedAtMs: number, forceApply: boolean): boolean {
-  if (forceApply) {
-    return true;
-  }
-  return performance.now() - lastAppliedAtMs >= DRAG_APPLY_INTERVAL_MS;
-}
 
 function add(a: Point2D, b: Point2D): Point2D {
   return { x: a.x + b.x, y: a.y + b.y };
@@ -176,6 +176,20 @@ function snapToGrid(point: Point2D, gridSize: number): Point2D {
   };
 }
 
+function normalizeDragMaterials(
+  segmentMaterials: RefrigerantPipeMaterial[],
+  segmentCount: number,
+): RefrigerantPipeMaterial[] {
+  return Array.from(
+    { length: Math.max(0, segmentCount) },
+    (_, index) => (segmentMaterials[index] === 'hard' ? 'hard' : 'flexible'),
+  );
+}
+
+function toKonvaPolylinePoints(points: Point2D[]): number[] {
+  return points.flatMap((point) => [point.x * MM_TO_PX, point.y * MM_TO_PX]);
+}
+
 export function PipeKonvaInteractionLayer({
   enabled,
   width,
@@ -197,6 +211,40 @@ export function PipeKonvaInteractionLayer({
           selectedIds.includes(element.id) && element.type === 'refrigerant-pipe',
       ),
     [hvacElements, selectedIds],
+  );
+
+  const [dragPreview, setDragPreview] = useState<PipeDragPreview | null>(null);
+  const previewFrameRef = useRef<number | null>(null);
+  const queuedPreviewRef = useRef<PipeDragPreview | null>(null);
+  const dragStateRef = useRef<DragState | null>(null);
+
+  const scheduleDragPreview = useCallback((preview: PipeDragPreview): void => {
+    queuedPreviewRef.current = preview;
+    if (previewFrameRef.current !== null) {
+      return;
+    }
+    previewFrameRef.current = requestAnimationFrame(() => {
+      previewFrameRef.current = null;
+      setDragPreview(queuedPreviewRef.current);
+    });
+  }, []);
+
+  const clearDragPreview = useCallback((): void => {
+    if (previewFrameRef.current !== null) {
+      cancelAnimationFrame(previewFrameRef.current);
+      previewFrameRef.current = null;
+    }
+    queuedPreviewRef.current = null;
+    setDragPreview(null);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (previewFrameRef.current !== null) {
+        cancelAnimationFrame(previewFrameRef.current);
+      }
+    },
+    [],
   );
 
   const handles = useMemo(() => {
@@ -267,14 +315,78 @@ export function PipeKonvaInteractionLayer({
     return { segmentHandles, vertexHandles };
   }, [selectedPipeElements]);
 
-  const dragStateRef = useRef<DragState | null>(null);
-
   const resolvePipeElement = (pipeId: string): HvacElement | null => {
     const element = hvacElements.find((entry) => entry.id === pipeId);
     if (!element || element.type !== 'refrigerant-pipe') {
       return null;
     }
     return element;
+  };
+
+  const buildPipeUpdates = (
+    pipeElement: HvacElement,
+    baselineProperties: Record<string, unknown>,
+    routePoints: Point2D[],
+    segmentMaterials: RefrigerantPipeMaterial[],
+  ): Partial<HvacElement> | null => {
+    const nextProperties = {
+      ...baselineProperties,
+      routePoints,
+      segmentMaterials,
+    };
+    const nextVisual = buildRefrigerantPipeVisual(
+      {
+        ...pipeElement,
+        properties: nextProperties,
+      },
+      hvacElements,
+    );
+    if (nextVisual.invalidHardSegmentCount > 0) {
+      return null;
+    }
+    return {
+      position: {
+        x: nextVisual.bounds.minX,
+        y: nextVisual.bounds.minY,
+      },
+      width: nextVisual.bounds.width,
+      depth: nextVisual.bounds.height,
+      height: Math.max(1, nextVisual.outerRadiusMm * 2),
+      properties: nextProperties,
+    };
+  };
+
+  const commitPipeDrag = (
+    state: DragState,
+    historyLabel: string,
+    statusLabel: string,
+  ): boolean => {
+    const pipeElement = resolvePipeElement(state.pipeId);
+    if (!pipeElement) {
+      state.session.abort();
+      clearDragPreview();
+      return false;
+    }
+    const committed = state.session.commit(
+      {
+        updateHvacElement: (id, updates, options) =>
+          updateHvacElement(id, updates as Partial<HvacElement>, options),
+        saveToHistory,
+      },
+      (ghost) =>
+        buildPipeUpdates(
+          pipeElement,
+          state.baselineProperties,
+          ghost.route,
+          ghost.materials as RefrigerantPipeMaterial[],
+        ) as Record<string, unknown> | null,
+      historyLabel,
+    );
+    if (committed) {
+      setProcessingStatus(statusLabel, false);
+    }
+    clearDragPreview();
+    return committed;
   };
 
   const handleSegmentDragMove = (
@@ -447,14 +559,9 @@ export function PipeKonvaInteractionLayer({
       y: nextMidpoint.y * MM_TO_PX,
     });
 
-    if (!shouldApplyDragUpdate(state.lastAppliedAtMs, forceApply)) {
-      return;
-    }
-
-    const segmentCount = Math.max(0, nextRoutePoints.length - 1);
-    const normalizedMaterials = Array.from(
-      { length: segmentCount },
-      (_, index) => (state.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible'),
+    const normalizedMaterials = normalizeDragMaterials(
+      state.segmentMaterials,
+      nextRoutePoints.length - 1,
     );
     const nextProperties = {
       ...state.baselineProperties,
@@ -476,23 +583,17 @@ export function PipeKonvaInteractionLayer({
       return;
     }
 
-    updateHvacElement(
-      pipeElement.id,
-      {
-        position: {
-          x: nextVisual.bounds.minX,
-          y: nextVisual.bounds.minY,
-        },
-        width: nextVisual.bounds.width,
-        depth: nextVisual.bounds.height,
-        height: Math.max(1, nextVisual.outerRadiusMm * 2),
-        properties: nextProperties,
-      },
-      { skipHistory: true },
-    );
-    state.lastAppliedAtMs = performance.now();
+    state.session.update({
+      route: nextRoutePoints,
+      materials: normalizedMaterials,
+    });
     state.lastValidHandlePoint = nextMidpoint;
-    state.updated = true;
+    scheduleDragPreview({
+      pipeId: state.pipeId,
+      routePoints: nextRoutePoints,
+      segmentMaterials: normalizedMaterials,
+      visual: nextVisual,
+    });
   };
 
   const handleVertexDragMove = (
@@ -520,17 +621,12 @@ export function PipeKonvaInteractionLayer({
       y: nextPoint.y * MM_TO_PX,
     });
 
-    if (!shouldApplyDragUpdate(state.lastAppliedAtMs, forceApply)) {
-      return;
-    }
-
     const nextRoutePoints = state.baselineRoutePoints.map((routePoint, index) =>
       index === state.vertexIndex ? nextPoint : { ...routePoint },
     );
-    const segmentCount = Math.max(0, nextRoutePoints.length - 1);
-    const normalizedMaterials = Array.from(
-      { length: segmentCount },
-      (_, index) => (state.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible'),
+    const normalizedMaterials = normalizeDragMaterials(
+      state.segmentMaterials,
+      nextRoutePoints.length - 1,
     );
     const nextProperties = {
       ...state.baselineProperties,
@@ -552,23 +648,17 @@ export function PipeKonvaInteractionLayer({
       return;
     }
 
-    updateHvacElement(
-      pipeElement.id,
-      {
-        position: {
-          x: nextVisual.bounds.minX,
-          y: nextVisual.bounds.minY,
-        },
-        width: nextVisual.bounds.width,
-        depth: nextVisual.bounds.height,
-        height: Math.max(1, nextVisual.outerRadiusMm * 2),
-        properties: nextProperties,
-      },
-      { skipHistory: true },
-    );
-    state.lastAppliedAtMs = performance.now();
+    state.session.update({
+      route: nextRoutePoints,
+      materials: normalizedMaterials,
+    });
     state.lastValidPoint = nextPoint;
-    state.updated = true;
+    scheduleDragPreview({
+      pipeId: state.pipeId,
+      routePoints: nextRoutePoints,
+      segmentMaterials: normalizedMaterials,
+      visual: nextVisual,
+    });
   };
 
   if (!enabled || width <= 0 || height <= 0 || selectedPipeElements.length === 0) {
@@ -603,6 +693,52 @@ export function PipeKonvaInteractionLayer({
           scaleX={layerTransform.scaleX}
           scaleY={layerTransform.scaleY}
         >
+          {dragPreview && (
+            <Group listening={false}>
+              {dragPreview.visual.segmentVisuals.map((segment) => {
+                const points = toKonvaPolylinePoints(segment.points);
+                const lineColor =
+                  dragPreview.visual.lineKind === 'liquid' ? '#b45309' : '#2563eb';
+                const outerStrokeWidth = Math.max(
+                  dragPreview.visual.outerRadiusMm * 2 * MM_TO_PX,
+                  5 / safeZoom,
+                );
+                const coreStrokeWidth = Math.max(
+                  dragPreview.visual.coreRadiusMm * 2 * MM_TO_PX,
+                  1.6 / safeZoom,
+                );
+                return (
+                  <Group key={`${dragPreview.pipeId}-preview-${segment.index}`}>
+                    <Line
+                      points={points}
+                      stroke="rgba(255,255,255,0.92)"
+                      strokeWidth={outerStrokeWidth + 2.5 / safeZoom}
+                      lineCap="round"
+                      lineJoin="round"
+                      perfectDrawEnabled={false}
+                    />
+                    <Line
+                      points={points}
+                      stroke={lineColor}
+                      strokeWidth={outerStrokeWidth}
+                      opacity={0.82}
+                      lineCap="round"
+                      lineJoin="round"
+                      perfectDrawEnabled={false}
+                    />
+                    <Line
+                      points={points}
+                      stroke="rgba(255,255,255,0.65)"
+                      strokeWidth={coreStrokeWidth}
+                      lineCap="round"
+                      lineJoin="round"
+                      perfectDrawEnabled={false}
+                    />
+                  </Group>
+                );
+              })}
+            </Group>
+          )}
           {handles.segmentHandles.map((handle) => (
             <Group key={`${handle.pipeId}-s-${handle.startIndex}-${handle.endIndex}`}>
               <Circle
@@ -637,6 +773,12 @@ export function PipeKonvaInteractionLayer({
                   }
                   setSelectedIds([handle.pipeId]);
                   const pipeSpec = resolveRefrigerantPipeSpec(pipeElement.properties);
+                  const baselineRoutePoints = pipeSpec.routePoints.map((point) => ({ ...point }));
+                  const segmentMaterials = normalizeDragMaterials(
+                    pipeSpec.segmentMaterials,
+                    baselineRoutePoints.length - 1,
+                  );
+                  const baselineProperties = { ...pipeElement.properties };
                   dragStateRef.current = {
                     kind: 'segment',
                     pipeId: handle.pipeId,
@@ -646,11 +788,13 @@ export function PipeKonvaInteractionLayer({
                     lockEnd: Boolean(pipeSpec.endConnection),
                     startHandlePoint: { ...handle.point },
                     lastValidHandlePoint: { ...handle.point },
-                    baselineRoutePoints: pipeSpec.routePoints.map((point) => ({ ...point })),
-                    segmentMaterials: [...pipeSpec.segmentMaterials],
-                    baselineProperties: { ...pipeElement.properties },
-                    lastAppliedAtMs: Number.NEGATIVE_INFINITY,
-                    updated: false,
+                    baselineRoutePoints,
+                    segmentMaterials,
+                    baselineProperties,
+                    session: beginPipeDrag(handle.pipeId, {
+                      route: baselineRoutePoints,
+                      materials: segmentMaterials,
+                    }),
                   };
                 }}
                 onDragMove={(event) => {
@@ -660,15 +804,14 @@ export function PipeKonvaInteractionLayer({
                   handleSegmentDragMove(event, dragStateRef.current);
                 }}
                 onDragEnd={(event) => {
-                  if (dragStateRef.current?.kind === 'segment') {
-                    handleSegmentDragMove(event, dragStateRef.current, true);
-                  }
-                  if (dragStateRef.current?.kind === 'segment' && dragStateRef.current.updated) {
-                    setProcessingStatus(
-                      `Hard segment S${dragStateRef.current.startIndex + 1}-${dragStateRef.current.endIndex + 1}`,
-                      false,
+                  const dragState = dragStateRef.current;
+                  if (dragState?.kind === 'segment') {
+                    handleSegmentDragMove(event, dragState, true);
+                    commitPipeDrag(
+                      dragState,
+                      'Move refrigerant pipe hard segment',
+                      `Hard segment S${dragState.startIndex + 1}-${dragState.endIndex + 1}`,
                     );
-                    saveToHistory('Move refrigerant pipe hard segment');
                   }
                   dragStateRef.current = null;
                 }}
@@ -723,16 +866,24 @@ export function PipeKonvaInteractionLayer({
                   }
                   setSelectedIds([handle.pipeId]);
                   const pipeSpec = resolveRefrigerantPipeSpec(pipeElement.properties);
+                  const baselineRoutePoints = pipeSpec.routePoints.map((point) => ({ ...point }));
+                  const segmentMaterials = normalizeDragMaterials(
+                    pipeSpec.segmentMaterials,
+                    baselineRoutePoints.length - 1,
+                  );
+                  const baselineProperties = { ...pipeElement.properties };
                   dragStateRef.current = {
                     kind: 'vertex',
                     pipeId: handle.pipeId,
                     vertexIndex: handle.vertexIndex,
                     lastValidPoint: { ...handle.point },
-                    baselineRoutePoints: pipeSpec.routePoints.map((point) => ({ ...point })),
-                    segmentMaterials: [...pipeSpec.segmentMaterials],
-                    baselineProperties: { ...pipeElement.properties },
-                    lastAppliedAtMs: Number.NEGATIVE_INFINITY,
-                    updated: false,
+                    baselineRoutePoints,
+                    segmentMaterials,
+                    baselineProperties,
+                    session: beginPipeDrag(handle.pipeId, {
+                      route: baselineRoutePoints,
+                      materials: segmentMaterials,
+                    }),
                   };
                 }}
                 onDragMove={(event) => {
@@ -742,15 +893,14 @@ export function PipeKonvaInteractionLayer({
                   handleVertexDragMove(event, dragStateRef.current);
                 }}
                 onDragEnd={(event) => {
-                  if (dragStateRef.current?.kind === 'vertex') {
-                    handleVertexDragMove(event, dragStateRef.current, true);
-                  }
-                  if (dragStateRef.current?.kind === 'vertex' && dragStateRef.current.updated) {
-                    setProcessingStatus(
-                      `Pipe vertex V${dragStateRef.current.vertexIndex + 1}`,
-                      false,
+                  const dragState = dragStateRef.current;
+                  if (dragState?.kind === 'vertex') {
+                    handleVertexDragMove(event, dragState, true);
+                    commitPipeDrag(
+                      dragState,
+                      'Edit refrigerant pipe vertex',
+                      `Pipe vertex V${dragState.vertexIndex + 1}`,
                     );
-                    saveToHistory('Edit refrigerant pipe vertex');
                   }
                   dragStateRef.current = null;
                 }}

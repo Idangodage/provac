@@ -45,6 +45,7 @@ import {
 import {
   buildRefrigerantPipeVisual,
   resolveRefrigerantPipeSpec,
+  type RefrigerantPipeLineMode,
   type RefrigerantPipeMaterial,
 } from "./canvas/hvac/refrigerantPipePairModel";
 import {
@@ -187,6 +188,87 @@ function TabButton({
     >
       {label}
     </button>
+  );
+}
+
+// On-canvas pipe colors, mirrored here so the selector reads like the drawing:
+// gas = orange, liquid = blue (see the snap-marker theme in useRefrigerantPipeTool).
+const REFRIGERANT_GAS_DOT_COLOR = "#ea580c";
+const REFRIGERANT_LIQUID_DOT_COLOR = "#2563eb";
+
+function LineDot({ color }: { color: string }) {
+  return (
+    <span
+      className="inline-block h-2 w-2 rounded-full ring-1 ring-white"
+      style={{ backgroundColor: color }}
+    />
+  );
+}
+
+/**
+ * Segmented pill selector for which line(s) the pipe tool lays: the coordinated
+ * gas+liquid pair, or a single gas / liquid line. Each segment shows the
+ * on-canvas color dot(s) so the choice reads like the drawing it produces.
+ */
+function LineModeSegmented({
+  value,
+  onChange,
+}: {
+  value: RefrigerantPipeLineMode;
+  onChange: (mode: RefrigerantPipeLineMode) => void;
+}) {
+  const segments: Array<{
+    mode: RefrigerantPipeLineMode;
+    label: string;
+    dots: string[];
+    title: string;
+  }> = [
+    {
+      mode: "pair",
+      label: "Gas + Liquid",
+      dots: [REFRIGERANT_GAS_DOT_COLOR, REFRIGERANT_LIQUID_DOT_COLOR],
+      title: "Draw the coordinated gas + liquid pair",
+    },
+    {
+      mode: "gas",
+      label: "Gas",
+      dots: [REFRIGERANT_GAS_DOT_COLOR],
+      title: "Draw a single gas line",
+    },
+    {
+      mode: "liquid",
+      label: "Liquid",
+      dots: [REFRIGERANT_LIQUID_DOT_COLOR],
+      title: "Draw a single liquid line",
+    },
+  ];
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-full border border-amber-200/80 bg-amber-50/60 p-0.5">
+      {segments.map((segment) => {
+        const active = value === segment.mode;
+        return (
+          <button
+            key={segment.mode}
+            type="button"
+            title={segment.title}
+            aria-pressed={active}
+            onClick={() => onChange(segment.mode)}
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+              active
+                ? "bg-amber-200 text-amber-900 shadow-sm"
+                : "text-slate-600 hover:bg-amber-100/70"
+            }`}
+          >
+            <span className="flex items-center -space-x-1">
+              {segment.dots.map((color, index) => (
+                <LineDot key={index} color={color} />
+              ))}
+            </span>
+            {segment.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -2635,6 +2717,10 @@ function WallToolSection() {
     setWallSettings,
     setWallPreviewMaterial,
     setWallPreviewThickness,
+    snapToGrid,
+    setSnapToGrid,
+    boardSettings,
+    setBoardSettings,
   } = useSmartDrawingStore(
     (state) => ({
       activeTool: state.activeTool,
@@ -2642,6 +2728,10 @@ function WallToolSection() {
       setWallSettings: state.setWallSettings,
       setWallPreviewMaterial: state.setWallPreviewMaterial,
       setWallPreviewThickness: state.setWallPreviewThickness,
+      snapToGrid: state.snapToGrid,
+      setSnapToGrid: state.setSnapToGrid,
+      boardSettings: state.boardSettings,
+      setBoardSettings: state.setBoardSettings,
     }),
     shallow,
   );
@@ -2651,52 +2741,46 @@ function WallToolSection() {
     ? wallSettings.defaultPartitionThickness
     : wallSettings.defaultThickness;
 
-  const gridPreset =
-    wallSettings.gridSize === 50
-      ? "50"
-      : wallSettings.gridSize === 100
-        ? "100"
-        : "custom";
+  // Snapping follows the board's sub-grid (one source of truth). The step
+  // shown here is the real-world snap step derived from the grid settings.
+  const snapStepRealMm =
+    (boardSettings.gridMode === "real"
+      ? boardSettings.majorGridRealMm
+      : boardSettings.majorGridPaperMm *
+        (boardSettings.scaleReal / boardSettings.scaleDrawing)) /
+    boardSettings.gridSubdivisions;
 
   return (
     <div className="space-y-1">
       <PropertyRow label="Snap to Grid">
         <input
           type="checkbox"
-          checked={wallSettings.snapToGrid}
-          onChange={(e) => setWallSettings({ snapToGrid: e.target.checked })}
+          checked={snapToGrid}
+          onChange={(e) => setSnapToGrid(e.target.checked)}
         />
       </PropertyRow>
-      <PropertyRow label="Grid Size">
-        <select
-          value={gridPreset}
-          onChange={(e) => {
-            const value = e.target.value;
-            if (value === "50") setWallSettings({ gridSize: 50 });
-            if (value === "100") setWallSettings({ gridSize: 100 });
-            if (value === "custom")
-              setWallSettings({ gridSize: Math.max(1, wallSettings.gridSize) });
-          }}
-          className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
-        >
-          <option value="50">50 mm</option>
-          <option value="100">100 mm</option>
-          <option value="custom">Custom</option>
-        </select>
-        {gridPreset === "custom" && (
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={Math.round(wallSettings.gridSize)}
-            onChange={(e) => {
-              const parsed = Number.parseFloat(e.target.value);
-              if (!Number.isFinite(parsed)) return;
-              setWallSettings({ gridSize: Math.max(1, parsed) });
-            }}
-            className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
-          />
-        )}
+      <PropertyRow label="Snap Step">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-600">
+            {Math.round(snapStepRealMm * 10) / 10} mm
+          </span>
+          <select
+            value={boardSettings.gridSubdivisions}
+            onChange={(e) =>
+              setBoardSettings({
+                gridSubdivisions: Number.parseInt(e.target.value, 10),
+              })
+            }
+            title="Sub-grid divisions per major grid cell (from board grid settings)"
+            className="w-20 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
+          >
+            {[1, 2, 4, 5, 8, 10].map((count) => (
+              <option key={count} value={count}>
+                1/{count}
+              </option>
+            ))}
+          </select>
+        </div>
       </PropertyRow>
       {partitionToolActive && (
         <PropertyRow label="Partition Mode">
@@ -2881,6 +2965,8 @@ function RoutingSettingRow({
 
 function RefrigerantPipeToolSection() {
   const {
+    refrigerantPipeLineMode,
+    setRefrigerantPipeLineMode,
     refrigerantPipeDrawMode,
     setRefrigerantPipeDrawMode,
     refrigerantPipeAngleMode,
@@ -2889,6 +2975,8 @@ function RefrigerantPipeToolSection() {
     setPipeRoutingSettings,
   } = useSmartDrawingStore(
     (state) => ({
+      refrigerantPipeLineMode: state.refrigerantPipeLineMode,
+      setRefrigerantPipeLineMode: state.setRefrigerantPipeLineMode,
       refrigerantPipeDrawMode: state.refrigerantPipeDrawMode,
       setRefrigerantPipeDrawMode: state.setRefrigerantPipeDrawMode,
       refrigerantPipeAngleMode: state.refrigerantPipeAngleMode,
@@ -2951,6 +3039,20 @@ function RefrigerantPipeToolSection() {
 
   return (
     <div className="space-y-2">
+      <PropertyRow label="Lines">
+        <LineModeSegmented
+          value={refrigerantPipeLineMode}
+          onChange={setRefrigerantPipeLineMode}
+        />
+      </PropertyRow>
+      <p className="text-[11px] leading-5 text-slate-500">
+        {refrigerantPipeLineMode === "pair"
+          ? "Draws the coordinated gas + liquid pair together with the correct spacing baked in."
+          : refrigerantPipeLineMode === "gas"
+            ? "Draws a single gas line on its own — the route you draw is its centerline."
+            : "Draws a single liquid line on its own — the route you draw is its centerline."}
+      </p>
+
       <PropertyRow label="Pipe Type">
         <div className="flex items-center gap-1">
           <TabButton
@@ -2968,7 +3070,7 @@ function RefrigerantPipeToolSection() {
       <p className="text-[11px] leading-5 text-slate-500">
         {refrigerantPipeDrawMode === "hard"
           ? "Hard mode constrains routing to straight, 45°, and 90° style runs with rigid fitting geometry."
-          : "Flexible mode keeps free-angle routing so you can place multiple vertices for real on-site laying paths."}
+          : "Flexible mode keeps click-to-place routing with a smooth cursor-following preview and rounded bends as you change direction."}
       </p>
 
       <PropertyRow label="Angle">

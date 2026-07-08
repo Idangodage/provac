@@ -31,6 +31,7 @@ import type {
 } from "../refrigerantPipeRenderState";
 import { getUnitPipePortSpec } from "../unitPipePortModel";
 
+import { instantiateGlbModel } from "./glbModelCache";
 import {
   buildCylinderGeometry,
   buildReducerGeometry,
@@ -1350,6 +1351,32 @@ export function buildHvacElementMesh(
     element.type === "accessory" && isRefrigerantBranchKitElement(element)
       ? "refrigerant-branch-kit"
       : element.type;
+
+  // Real catalog model (GLB, converted from the manufacturer IFC) takes
+  // precedence over the procedural geometry when its model has finished loading.
+  // Until then we fall through to the procedural placeholder; the projection
+  // layer rebuilds the scene once the load settles.
+  const modelUrl =
+    typeof element.properties?.modelUrl === "string" && element.properties.modelUrl
+      ? element.properties.modelUrl
+      : null;
+  if (modelUrl) {
+    const model = instantiateGlbModel(modelUrl);
+    if (model) {
+      const width = Math.max(60, element.width);
+      const depth = Math.max(60, element.depth);
+      const group = new THREE.Group();
+      group.name = `hvac-${element.id}`;
+      group.position.set(
+        element.position.x + width / 2,
+        element.position.y + depth / 2,
+        element.elevation,
+      );
+      group.rotation.z = THREE.MathUtils.degToRad(element.rotation);
+      group.add(model);
+      return group;
+    }
+  }
 
   if (!isProjectionCoreHvacType(normalizedType)) {
     return null;

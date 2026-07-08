@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyCanvasTransform,
+  canvasTransformToSvgMatrix,
+  clientPointToLocalScreen,
+  clientPointToWorld,
+  getCanvasTransform,
+  inverseCanvasTransform,
   screenLengthToWorld,
   screenToWorld,
+  viewportToViewTransform,
   worldLengthToScreen,
   worldTo3D,
   worldToScreen,
@@ -46,6 +53,38 @@ describe('worldToScreen / screenToWorld', () => {
 
   it('does not divide by zero at zoom 0', () => {
     expect(() => screenToWorld({ x: 10, y: 10 }, { zoom: 0, panPx: { x: 0, y: 0 } })).not.toThrow();
+  });
+});
+
+describe('canonical canvas transform helpers', () => {
+  it('returns the same transform as viewportToViewTransform', () => {
+    const pan = { x: 120, y: -80 };
+    expect(getCanvasTransform(2.5, pan)).toEqual(viewportToViewTransform(2.5, pan));
+  });
+
+  it('applyCanvasTransform and inverseCanvasTransform round-trip', () => {
+    const view = getCanvasTransform(1.75, { x: 250, y: 90 });
+    const world = { x: 310, y: 420 };
+    const back = inverseCanvasTransform(applyCanvasTransform(world, view), view);
+    expect(back.x).toBeCloseTo(world.x, 6);
+    expect(back.y).toBeCloseTo(world.y, 6);
+  });
+
+  it('converts client points through local screen space to world space', () => {
+    const view = getCanvasTransform(2, { x: 100, y: 50 });
+    const world = { x: 800, y: 450 };
+    const local = applyCanvasTransform(world, view);
+    const rect = { left: 30, top: 45 };
+    expect(clientPointToLocalScreen(local.x + rect.left, local.y + rect.top, rect)).toEqual(local);
+    const back = clientPointToWorld(local.x + rect.left, local.y + rect.top, rect, view);
+    expect(back.x).toBeCloseTo(world.x, 6);
+    expect(back.y).toBeCloseTo(world.y, 6);
+  });
+
+  it('builds an SVG matrix for world-mm child geometry', () => {
+    const view = getCanvasTransform(2, { x: 100, y: 50 });
+    const k = MM_TO_PX * view.zoom;
+    expect(canvasTransformToSvgMatrix(view)).toBe(`matrix(${k} 0 0 ${k} ${view.panPx.x} ${view.panPx.y})`);
   });
 });
 

@@ -5,6 +5,7 @@
  * Extracted for cleaner imports and better separation of concerns.
  */
 
+import type { BoardSettings } from '../components/canvas/measurement';
 import type {
     Point2D,
     DisplayUnit,
@@ -71,6 +72,7 @@ export interface DrawingState {
     showGrid: boolean;
     showRulers: boolean;
     pageConfig: PageConfig;
+    boardSettings: BoardSettings;
 
     // Preview State
     previewHeight: number;
@@ -167,6 +169,7 @@ export interface ViewActions {
     setShowRulers: (show: boolean) => void;
     toggleRulers: () => void;
     setPageConfig: (config: Partial<PageConfig>) => void;
+    setBoardSettings: (settings: Partial<BoardSettings>) => void;
     resetView: () => void;
     zoomToFit: () => void;
 }

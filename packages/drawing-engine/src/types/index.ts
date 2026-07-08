@@ -148,6 +148,12 @@ export interface DimensionSettings {
   style: DimensionStyle;
   unitSystem: DimensionUnitSystem;
   displayFormat: DimensionDisplayFormat;
+  /**
+   * Transient render preference derived from the board's assigned display
+   * unit; consulted only when displayFormat is 'auto'. Not persisted intent —
+   * the canvas injects it so dimension labels follow the assigned unit.
+   */
+  preferredUnit?: Extract<DimensionDisplayFormat, 'mm' | 'm' | 'ft-in'>;
   precision: 0 | 1 | 2;
   defaultOffset: number; // mm
   extensionGap: number; // mm

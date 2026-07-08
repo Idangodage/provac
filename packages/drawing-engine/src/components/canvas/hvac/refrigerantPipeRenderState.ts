@@ -1,7 +1,11 @@
 import type { HvacElement, Point2D } from "../../../types";
 
 import { getActivePipeRoutingSettings } from "./pipeRoutingSettings";
-import { buildRefrigerantPipeVisual, buildRefrigerantPipePairVisual } from "./refrigerantPipePairModel";
+import {
+  buildRefrigerantPipeVisual,
+  buildRefrigerantPipePairVisual,
+  isPlausibleBundleSpacingMm,
+} from "./refrigerantPipePairModel";
 
 export type RefrigerantPipeEndpointRenderState = {
   openStart: boolean;
@@ -623,14 +627,20 @@ export function findNearestVisibleRefrigerantPipeBundleTarget(
         gasEndpoint.outerDiameterMm / 2 +
         liquidEndpoint.outerDiameterMm / 2 +
         getActivePipeRoutingSettings().defaultPipeGapMm;
-      const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
       const spacingErrorMm = Math.abs(distanceMm - expectedSpacingMm);
       const sharesBundleId = Boolean(
         gasEndpoint.bundleId &&
         liquidEndpoint.bundleId &&
         gasEndpoint.bundleId === liquidEndpoint.bundleId,
       );
-      if (!sharesBundleId && spacingErrorMm > spacingToleranceMm) {
+      if (
+        !sharesBundleId &&
+        !isPlausibleBundleSpacingMm(
+          distanceMm,
+          gasEndpoint.outerDiameterMm,
+          liquidEndpoint.outerDiameterMm,
+        )
+      ) {
         return;
       }
 
@@ -831,14 +841,20 @@ export function findNearestVisibleRefrigerantPipeBundleSegmentTarget(
         gasSegment.outerDiameterMm / 2 +
         liquidSegment.outerDiameterMm / 2 +
         getActivePipeRoutingSettings().defaultPipeGapMm;
-      const spacingToleranceMm = Math.max(18, expectedSpacingMm * 0.4);
       const spacingErrorMm = Math.abs(spacingMm - expectedSpacingMm);
       const sharesBundleId = Boolean(
         gasSegment.bundleId &&
           liquidSegment.bundleId &&
           gasSegment.bundleId === liquidSegment.bundleId,
       );
-      if (!sharesBundleId && spacingErrorMm > spacingToleranceMm) {
+      if (
+        !sharesBundleId &&
+        !isPlausibleBundleSpacingMm(
+          spacingMm,
+          gasSegment.outerDiameterMm,
+          liquidSegment.outerDiameterMm,
+        )
+      ) {
         return;
       }
 

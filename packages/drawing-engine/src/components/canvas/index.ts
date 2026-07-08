@@ -19,6 +19,9 @@ export * from './spatial-hash';
 // Tool utilities
 export * from './toolUtils';
 
+// Board measurement service (single source of truth for unit/scale/grid)
+export * from './measurement';
+
 // Scale and unit utilities
 export {
   MM_TO_PX,

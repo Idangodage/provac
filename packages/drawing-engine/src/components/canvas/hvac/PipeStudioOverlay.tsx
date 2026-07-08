@@ -28,7 +28,11 @@ import {
 } from 'react';
 
 import type { HvacElement, Point2D } from '../../../types';
-import { viewportToViewTransform } from '../coordinateTransform';
+import {
+  canvasTransformToSvgMatrix,
+  clientPointToWorld,
+  getCanvasTransform,
+} from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
 
 import {
@@ -38,6 +42,11 @@ import {
   type PlacementTransform,
   type SnapTargetEnd,
 } from './branchKitPlacementSnap';
+import {
+  BRANCH_KIT_SPRITE_ASPECT,
+  BRANCH_KIT_SPRITE_GAS,
+  BRANCH_KIT_SPRITE_LIQUID,
+} from './branchKitSprite';
 import { buildPipeCenterline, toPolyline, toSvgPathData } from './pipeCenterline';
 import {
   buildRefrigerantBranchKitViewModel,
@@ -45,21 +54,27 @@ import {
 } from './refrigerantBranchKitModel';
 import { DEFAULT_REFRIGERANT_PIPE_GAP_MM } from './refrigerantPipeDimensions';
 import {
-  buildRefrigerantPipeElements,
+  findNearestRefrigerantPipeBundleTarget,
+  findNearestRefrigerantPipeExtensionTarget,
   getBranchKitPortConnections,
   resolveRefrigerantPipeBranchKitReconnectionUpdates,
+  type RefrigerantPipeBundleConnection,
+  type RefrigerantPipeLineMode,
 } from './refrigerantPipePairModel';
-import {
-  BRANCH_KIT_SPRITE_ASPECT,
-  BRANCH_KIT_SPRITE_GAS,
-  BRANCH_KIT_SPRITE_LIQUID,
-} from './branchKitSprite';
 
 const KIT_ELEVATION_MM = 2600;
+const PIPE_SELECTION_HIT_PADDING_PX = 12;
+const PIPE_SELECTION_MIN_HIT_WIDTH_PX = 28;
+const BRANCH_KIT_PORT_REVEAL_RADIUS_PX = 30;
+const BRANCH_KIT_PORT_HIT_PADDING_PX = 10;
 
 // One branch-kit port (gas+liquid bundle) in world coords, carrying its identity
 // (sourceElementId + terminalRole) — the origin for drawing a pipe out of the kit.
 type KitPortConn = ReturnType<typeof getBranchKitPortConnections>[number];
+
+function branchKitPortKey(kitId?: string | null, terminalRole?: string | null): string {
+  return `${kitId ?? 'kit'}:${terminalRole ?? 'port'}`;
+}
 
 // 2D symbol for the copper branch kit: the REAL DIS-371-1G geometry projected +
 // copper-shaded from the manufacturer IFC mesh, embedded as data URIs so the
@@ -94,12 +109,15 @@ const KIT_TUBE_ANCHOR: Record<'gas' | 'liquid', { inlet: Point2D; run: Point2D; 
 // Map a sprite tube anchor (box fractions) to world through the SAME upright
 // placement transform used to draw the sprite (inlet pinned to spInlet, sprite
 // axis along spInlet->spRun, scaled to that length). So a ring placed here lands
-// exactly on the rendered tube end.
+// exactly on the rendered tube end. `flip` (+1 / -1) mirrors the local
+// perpendicular exactly like the sprite's `scale(s, flip*s)`, so a flipped kit's
+// rings track its flipped tubes (inlet/run stay put; the branch swaps sides).
 function spriteTubeWorld(
   line: 'gas' | 'liquid',
   tube: Point2D,
   spInlet: Point2D,
   spRun: Point2D,
+  flip = 1,
 ): Point2D {
   const anch = KIT_IMG_ANCHOR[line];
   const Wimg = 1000;
@@ -113,10 +131,15 @@ function spriteTubeWorld(
   const s = Math.hypot(bvx, bvy) / (Math.hypot(avx, avy) || 1);
   const theta = Math.atan2(bvy, bvx) - Math.atan2(avy, avx);
   const lx = s * (tube.x * Wimg - a0x);
-  const ly = s * (tube.y * Himg - a0y);
+  const ly = flip * s * (tube.y * Himg - a0y);
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
   return { x: spInlet.x + lx * cos - ly * sin, y: spInlet.y + lx * sin + ly * cos };
+}
+
+/** Reads the persisted branch flip as a perpendicular sign (+1 normal, -1 flipped). */
+function readBranchKitFlip(el: HvacElement): number {
+  return (el.properties as Record<string, unknown>)?.branchKitFlipped === true ? -1 : 1;
 }
 
 const DEFAULT_OUTER_DIAMETER_MM = 28;
@@ -207,6 +230,10 @@ interface PipeStudioOverlayProps {
   height: number;
   viewportZoom: number;
   panOffset: Point2D;
+  selectionHitTesting: boolean;
+  pipeToolActive: boolean;
+  /** Global Lines selector — decides pair vs single gas/liquid when pulling from a kit port. */
+  pipeLineMode: RefrigerantPipeLineMode;
   hvacElements: HvacElement[];
   selectedIds: string[];
   setSelectedIds: (ids: string[]) => void;
@@ -223,6 +250,15 @@ interface PipeStudioOverlayProps {
       >,
   ) => string;
   saveToHistory: (action: string) => void;
+  /**
+   * Continue a run from an existing end: a pipe-end / bundle / branch-kit-port
+   * grip hands up the bundle connection to route from + which line(s) to lay.
+   * The parent switches to the pipe tool and seeds a full routing session.
+   */
+  onBeginExtendRoute: (
+    bundle: RefrigerantPipeBundleConnection,
+    lineMode: RefrigerantPipeLineMode,
+  ) => void;
 }
 
 interface PipeView {
@@ -481,6 +517,21 @@ function bbox(route: Point2D[]): { minX: number; minY: number; maxX: number; max
   return { minX, minY, maxX, maxY };
 }
 
+function withPipeRoute(element: HvacElement, route: Point2D[]): HvacElement {
+  const box = bbox(route);
+  const margin = readNumber(
+    (element.properties as Record<string, unknown>)?.outerDiameterMm,
+    DEFAULT_OUTER_DIAMETER_MM,
+  );
+  return {
+    ...element,
+    position: { x: box.minX - margin, y: box.minY - margin },
+    width: box.maxX - box.minX + margin * 2,
+    depth: box.maxY - box.minY + margin * 2,
+    properties: { ...(element.properties ?? {}), routePoints: route },
+  };
+}
+
 export interface PipeStudioOverlayHandle {
   /**
    * Feed the live pipe-draw route (world mm centreline) so the overlay renders
@@ -488,6 +539,19 @@ export interface PipeStudioOverlayHandle {
    * Pass null to clear it. Called imperatively so only the overlay re-renders.
    */
   setDraftRoute: (route: Point2D[] | null) => void;
+  /**
+   * Feed the live pipe-draw preview ELEMENTS (the exact gas/liquid elements the
+   * commit will build — real insulated diameters + baked gap). The overlay renders
+   * them through the same path as a committed pipe, so the preview never changes
+   * size on Enter. Pass null to clear.
+   */
+  setDraftPipes: (elements: HvacElement[] | null) => void;
+  /**
+   * Show the snap-hover indicator (world mm) at an open end / port the draw tool
+   * detected — rendered as the SAME endpoint-handle bullseye a committed pipe
+   * shows, so every snap affordance is one component. Pass null to hide.
+   */
+  setSnapIndicator: (point: Point2D | null) => void;
 }
 
 export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioOverlayProps>(
@@ -498,20 +562,40 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       height,
       viewportZoom,
       panOffset,
+      selectionHitTesting,
+      pipeToolActive,
+      pipeLineMode,
       hvacElements,
       selectedIds,
       setSelectedIds,
       updateHvacElement,
       addHvacElement,
       saveToHistory,
+      onBeginExtendRoute,
     },
     ref,
   ): JSX.Element | null {
+  const svgRef = useRef<SVGSVGElement | null>(null);
   const gRef = useRef<SVGGElement | null>(null);
   const dragRef = useRef<{ id: string; vi: number; startWorld: Point2D; startRoute: Point2D[] } | null>(null);
-  // Whole-branch-kit drag (the overlay owns it now that the kit has no Fabric body):
-  // absolute move from the press point, healing connected pipes each frame.
-  const kitDragRef = useRef<{ id: string; startWorld: Point2D; startPos: Point2D; moved: boolean } | null>(null);
+  // Whole-element move (the overlay owns pipes AND kits now that neither has a
+  // Fabric body). One press-drag translates the pressed item — or, if it was
+  // already part of the selection, the WHOLE selection — rigidly by the cursor
+  // delta from the press point. Each snapshot is captured once so the applied
+  // translation is absolute (never compounds as the store re-renders each frame).
+  // Kits additionally heal every pipe bound to one of their ports so it follows.
+  const moveDragRef = useRef<{
+    startWorld: Point2D;
+    moved: boolean;
+    items: (
+      | { kind: 'pipe'; id: string; route: Point2D[] }
+      | { kind: 'kit'; id: string; position: Point2D }
+    )[];
+  } | null>(null);
+  const [movePreviewElements, setMovePreviewElements] = useState<HvacElement[] | null>(null);
+  const movePreviewFrameRef = useRef<number | null>(null);
+  const queuedMovePreviewRef = useRef<HvacElement[] | null>(null);
+  const lastMovePreviewRef = useRef<HvacElement[] | null>(null);
   const editedIdsRef = useRef<Set<string>>(new Set());
   // Each single line's bundle side, determined once and kept stable so editing a
   // vertex can't make the inferred side flip and drop the gap offset.
@@ -520,40 +604,42 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   // Live pipe-draw preview route (world mm), pushed in imperatively by the draw
   // tool so the preview renders as the overlay studio pair, not the Fabric line.
   const [draftRoute, setDraftRoute] = useState<Point2D[] | null>(null);
-  useImperativeHandle(ref, () => ({ setDraftRoute }), []);
+  // Live pipe-draw preview ELEMENTS (real gas/liquid diameters + baked gap),
+  // pushed by the draw tool so the preview renders through the same tube helper
+  // as a committed pipe — no width/gap change when the route commits on Enter.
+  const [draftPipes, setDraftPipes] = useState<HvacElement[] | null>(null);
+  // Snap-hover indicator (world mm) pushed by the draw tool — rendered with the
+  // same endpoint-handle bullseye a committed pipe shows.
+  const [snapIndicator, setSnapIndicator] = useState<Point2D | null>(null);
+  useImperativeHandle(ref, () => ({ setDraftRoute, setDraftPipes, setSnapIndicator }), []);
   const [bendRadiusMm, setBendRadiusMm] = useState(24);
   // Relative spread added to the existing gap (0 = pipes as drawn).
   const [gapSpreadMm, setGapSpreadMm] = useState(0);
-  // Active SINGLE-line extension: which pipe end is being continued + the live
-  // cursor. One line only — extending a whole bundle uses the shared-center grip
-  // (select both lines). Selection decides the behaviour; no mode toggle.
-  const [extend, setExtend] = useState<{
-    id: string;
-    end: 'start' | 'end';
-    cursor: Point2D | null;
-  } | null>(null);
-  // Active BUNDLE extension from the shared-center grip: draw on the centerline,
-  // both lines fall out as symmetric +/- gap/2 offsets. aSide fixes which side
-  // line A sits on; the centerline anchor is recomputed live from the two ends.
-  const [bundleDraw, setBundleDraw] = useState<{
-    aId: string;
-    aEnd: 'start' | 'end';
-    bId: string;
-    bEnd: 'start' | 'end';
-    aSide: number;
-    gap: number;
-    outX: number;
-    outY: number;
-    cursor: Point2D | null;
-  } | null>(null);
-  // Active draw from a branch-kit port: the origin port (with its identity) + the
-  // live cursor. Commits a new pipe pair whose start is bound to that port.
-  const [portDraw, setPortDraw] = useState<{ conn: KitPortConn; cursor: Point2D | null } | null>(null);
+  // Extension is unified with the draw tool: grabbing a pipe-end / bundle /
+  // branch-kit-port grip seeds a full routing session in useRefrigerantPipeTool
+  // (via onBeginExtendRoute), so it inherits angle modes, grid, HUD, multi-vertex,
+  // weld-on-snap, and Lines mode — no bespoke one-shot extend state here.
+  const [nearBranchKitPortKey, setNearBranchKitPortKey] = useState<string | null>(null);
   // Copper branch-kit placement: which line(s) to place, whether we're placing,
   // and the live cursor-attached ghost (transform + snap-to-pipe-end).
   const [kitKind, setKitKind] = useState<'gas' | 'liquid' | 'both'>('both');
   const [placingKit, setPlacingKit] = useState(false);
   const [kitGhost, setKitGhost] = useState<{ transform: PlacementTransform; snap: BranchKitSnap | null } | null>(null);
+  // Flip-branch affordance: a small round handle sits on the branch arm of the
+  // SELECTED kit (placement auto-selects the fresh kit). Hovering it previews the
+  // flip on the REAL kit — the sprite animates (folds across the trunk axis) to
+  // the flipped orientation; leaving snaps it back; clicking commits. No ghost
+  // overlay, no floating chip, no reaction to the cursor merely drifting over.
+  const [flipHandleHover, setFlipHandleHover] = useState(false);
+  // Animated flip factor for the selected kit's sprite. A small rAF tween drives
+  // it between +1 and -1 (through 0 = a clean vertical fold), so hover-preview and
+  // commit both animate. `-1`/`+1` mirror the branch across the trunk.
+  const [flipAnimValue, setFlipAnimValue] = useState(1);
+  const flipAnimRef = useRef<{ value: number; target: number; raf: number | null }>({
+    value: 1,
+    target: 1,
+    raf: null,
+  });
   // The branch-kit sprites are embedded data URIs with known aspect ratios, so
   // they're available synchronously — no async load, no "not yet ready" gap that
   // would drop the kit to the crude vector fallback (or nothing).
@@ -565,6 +651,45 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const orthoRef = useRef(false);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
+  const scheduleMovePreview = useCallback((elements: HvacElement[]): void => {
+    lastMovePreviewRef.current = elements;
+    queuedMovePreviewRef.current = elements;
+    if (movePreviewFrameRef.current !== null) {
+      return;
+    }
+    movePreviewFrameRef.current = window.requestAnimationFrame(() => {
+      movePreviewFrameRef.current = null;
+      setMovePreviewElements(queuedMovePreviewRef.current);
+    });
+  }, []);
+
+  const clearMovePreview = useCallback((): void => {
+    if (movePreviewFrameRef.current !== null) {
+      window.cancelAnimationFrame(movePreviewFrameRef.current);
+      movePreviewFrameRef.current = null;
+    }
+    queuedMovePreviewRef.current = null;
+    lastMovePreviewRef.current = null;
+    setMovePreviewElements(null);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (movePreviewFrameRef.current !== null) {
+        window.cancelAnimationFrame(movePreviewFrameRef.current);
+      }
+    },
+    [],
+  );
+
+  const previewElements = useMemo(() => {
+    if (!movePreviewElements || movePreviewElements.length === 0) {
+      return hvacElements;
+    }
+    const overrides = new Map(movePreviewElements.map((element) => [element.id, element]));
+    return hvacElements.map((element) => overrides.get(element.id) ?? element);
+  }, [hvacElements, movePreviewElements]);
+
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       // Ignore keys routed to a focused form control (e.g. the toolbar sliders),
@@ -573,11 +698,12 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.key === 'Shift') orthoRef.current = true;
       if (e.key === 'Escape' || e.key === 'Enter') {
-        setExtend(null);
-        setBundleDraw(null);
+        // Extension now runs on the draw tool, which owns its own Enter/Escape;
+        // here we only clear the overlay-owned kit placement hints. The flip
+        // suggestion is tied to selection, so it clears when the kit deselects.
         setPlacingKit(false);
         setKitGhost(null);
-        setPortDraw(null);
+        setNearBranchKitPortKey(null);
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -596,14 +722,84 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     };
   }, []);
 
-  const view = viewportToViewTransform(viewportZoom, panOffset);
+  const view = getCanvasTransform(viewportZoom, panOffset);
   const k = MM_TO_PX * view.zoom;
-  const matrix = `matrix(${k} 0 0 ${k} ${view.panPx.x} ${view.panPx.y})`;
+  const matrix = canvasTransformToSvgMatrix(view);
   const hpx = (n: number) => n / Math.max(k, 1e-6); // screen px -> g-space (mm) units
 
+  // Real-geometry gas/liquid tubes for a pipe view. Shared by committed pipes AND
+  // the live draw preview so the two can NEVER differ in width / gap / bend — the
+  // preview is the exact pipe the commit will produce, minus opacity.
+  const pipeTubes = (p: PipeView, route: Point2D[]) => {
+    const pairGap = Math.max(0, p.gapMm + gapSpreadMm);
+    const insW = p.outerMm; // insulation outer diameter
+    const coreW = Math.max(p.outerMm * 0.55, 3); // copper tube
+    const sheenW = Math.max(coreW * 0.3, 1);
+    // Offset each line perpendicular, THEN fillet with the bend-radius so the gap
+    // only shifts position and never changes the bend. Gas reads blue, liquid amber.
+    const pathFor = (offMm: number) =>
+      toSvgPathData(buildPipeCenterline(offsetPolyline(route, offMm), bendRadiusMm));
+    const tubes: { d: string; ins: string; core: string; sheen: string }[] = p.isPair
+      ? [
+          { d: pathFor(pairGap / 2), ...GAS_COLORS },
+          { d: pathFor(-pairGap / 2), ...LIQUID_COLORS },
+        ]
+      : [
+          {
+            d: pathFor((p.offsetSign * gapSpreadMm) / 2),
+            ...(p.lineKind === 'liquid' ? LIQUID_COLORS : GAS_COLORS),
+          },
+        ];
+    return { tubes, insW, coreW, sheenW };
+  };
+  // Insulation sleeve + copper core + sheen strokes for a set of tubes. Butt caps:
+  // a real cut refrigerant pipe ends in a flat perpendicular face, not a dome;
+  // bends stay smooth via round line joins.
+  const renderTubeBody = (
+    tubes: { d: string; ins: string; core: string; sheen: string }[],
+    insW: number,
+    coreW: number,
+    sheenW: number,
+    keyPrefix: string,
+  ): JSX.Element => (
+    <>
+      {tubes.map((t, i) => (
+        <path key={`${keyPrefix}-ins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={insW} strokeLinecap="butt" strokeLinejoin="round" />
+      ))}
+      {tubes.map((t, i) => (
+        <path key={`${keyPrefix}-core-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={coreW} strokeLinecap="butt" strokeLinejoin="round" />
+      ))}
+      {tubes.map((t, i) => (
+        <path key={`${keyPrefix}-sheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={sheenW} strokeLinecap="butt" strokeLinejoin="round" strokeOpacity={0.7} />
+      ))}
+    </>
+  );
+
+  // In-progress draw preview, as pipe views. Un-edited (edited=false) so its bends
+  // collapse to clean corners exactly like a freshly committed pipe.
+  const draftPipeViews = useMemo(() => {
+    if (!draftPipes || draftPipes.length === 0) return [] as PipeView[];
+    const out: PipeView[] = [];
+    for (const el of draftPipes) {
+      const v = toPipeView(el, false);
+      if (v) out.push(v);
+    }
+    return out;
+  }, [draftPipes]);
+
   const pipes = useMemo(() => {
+    // A draft pipe carrying a REAL element id is an extension-merge preview: it
+    // renders the host's whole run (with the in-progress tail appended), so hide
+    // the store copy while the draft overrides it — otherwise the two bodies
+    // stack and the junction reads as a crack.
+    const draftOverrideIds = new Set(
+      (draftPipes ?? [])
+        .map((el) => el.id)
+        .filter((id) => !id.startsWith('__')),
+    );
     const list: PipeView[] = [];
-    for (const el of hvacElements) {
+    for (const el of previewElements) {
+      if (draftOverrideIds.has(el.id)) continue;
       const v = toPipeView(el, editedIdsRef.current.has(el.id));
       if (v) list.push(v);
     }
@@ -656,25 +852,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       if (p.offsetSign !== 0) cache.set(p.id, p.offsetSign);
     }
     return list;
-  }, [hvacElements]);
-
-  // Fail-safe: if a pipe being extended/drawn is deleted (or otherwise leaves the
-  // store) mid-draw, drop the draw so the capture overlay can't trap all input.
-  useEffect(() => {
-    if (extend && !pipes.some((p) => p.id === extend.id)) setExtend(null);
-    if (
-      bundleDraw &&
-      !(pipes.some((p) => p.id === bundleDraw.aId) && pipes.some((p) => p.id === bundleDraw.bId))
-    ) {
-      setBundleDraw(null);
-    }
-    if (
-      portDraw &&
-      !hvacElements.some((el) => el.id === portDraw.conn.sourceElementId)
-    ) {
-      setPortDraw(null);
-    }
-  }, [pipes, extend, bundleDraw, portDraw, hvacElements]);
+  }, [draftPipes, previewElements]);
 
   // When exactly the two lines of one bundle are selected, expose a single
   // shared-center "extend" grip per bundle end (the common + the user asked for).
@@ -753,12 +931,13 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         liquidPos: Point2D;
       }[];
     }[] = [];
-    for (const el of hvacElements) {
+    for (const el of previewElements) {
       if (el.type !== 'refrigerant-branch-kit') continue;
       const conns = getBranchKitPortConnections(el);
       if (conns.length === 0) continue;
       const raw = (el.properties as Record<string, unknown>)?.branchKitLineKind;
       const kind = raw === 'gas' ? 'gas' : raw === 'liquid' ? 'liquid' : 'both';
+      const flip = readBranchKitFlip(el);
       const model = buildRefrigerantBranchKitViewModel(el);
       const center = { x: el.position.x + el.width / 2, y: el.position.y + el.depth / 2 };
       const rot = el.rotation ?? 0;
@@ -779,7 +958,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         const rk = roleKey(conn.terminalRole);
         const posFor = (line: 'gas' | 'liquid'): Point2D => {
           const fr = frames.get(line) ?? frames.get(lines[0]!)!;
-          return spriteTubeWorld(line, KIT_TUBE_ANCHOR[line][rk], fr.inlet, fr.run);
+          return spriteTubeWorld(line, KIT_TUBE_ANCHOR[line][rk], fr.inlet, fr.run, flip);
         };
         const gasPos = lines.includes('gas') ? posFor('gas') : posFor(lines[0]!);
         const liquidPos = lines.includes('liquid') ? posFor('liquid') : gasPos;
@@ -791,7 +970,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       out.push({ id: el.id, selected: selectedSet.has(el.id), ports });
     }
     return out;
-  }, [hvacElements, selectedSet]);
+  }, [previewElements, selectedSet]);
 
   // Every PLACED branch kit, drawn with the SAME real-geometry sprite the toggle
   // ghost previews. Its inlet + run-outlet world ports are resolved exactly as the
@@ -806,12 +985,14 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     // between the pipe's two tubes). Single-kind kits draw one sprite on their line.
     const out: {
       id: string;
+      flip: number;
       sprites: { line: 'gas' | 'liquid'; inlet: Point2D; run: Point2D }[];
     }[] = [];
-    for (const el of hvacElements) {
+    for (const el of previewElements) {
       if (el.type !== 'refrigerant-branch-kit') continue;
       const raw = (el.properties as Record<string, unknown>)?.branchKitLineKind;
       const kind = raw === 'gas' ? 'gas' : raw === 'liquid' ? 'liquid' : 'both';
+      const flip = readBranchKitFlip(el);
       const model = buildRefrigerantBranchKitViewModel(el);
       const center = { x: el.position.x + el.width / 2, y: el.position.y + el.depth / 2 };
       const rot = el.rotation ?? 0;
@@ -824,19 +1005,141 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         inlet: line === 'gas' ? { x: inletId.gasPoint.x, y: inletId.gasPoint.y } : { x: inletId.liquidPoint.x, y: inletId.liquidPoint.y },
         run: line === 'gas' ? { x: runId.gasPoint.x, y: runId.gasPoint.y } : { x: runId.liquidPoint.x, y: runId.liquidPoint.y },
       }));
-      out.push({ id: el.id, sprites });
+      out.push({ id: el.id, flip, sprites });
     }
     return out;
-  }, [hvacElements]);
+  }, [previewElements]);
+
+  // The single selected committed branch kit, resolved to the geometry the
+  // flip handle needs: the reference line + its world inlet/run points (the trunk
+  // frame). The handle position + the animated preview both derive the branch
+  // tube-end from these via spriteTubeWorld at the live (animated) flip factor.
+  // Non-null ONLY for exactly one selected kit — quiet for multi-selection.
+  const selectedFlipKit = useMemo(() => {
+    if (selectedIds.length !== 1) return null;
+    const id = selectedIds[0]!;
+    const el = previewElements.find((e) => e.id === id);
+    if (!el || el.type !== 'refrigerant-branch-kit') return null;
+    const kit = placedKits.find((p) => p.id === id);
+    if (!kit) return null;
+    const ref = kit.sprites.find((s) => s.line === 'gas') ?? kit.sprites[0];
+    if (!ref) return null;
+    return {
+      id,
+      flip: kit.flip,
+      line: ref.line,
+      inlet: ref.inlet,
+      run: ref.run,
+    };
+  }, [selectedIds, previewElements, placedKits]);
+
+  // --- Flip preview/commit animation ----------------------------------------
+  // One ease-out rAF tween drives `flipAnimValue` toward a target flip factor.
+  // Passing through 0 folds the sprite flat on the trunk axis, then unfolds
+  // mirrored — a clean, reliable "flip" motion (no CSS-on-SVG-transform quirks).
+  const stepFlipAnim = useCallback(() => {
+    const a = flipAnimRef.current;
+    const diff = a.target - a.value;
+    if (Math.abs(diff) < 0.004) {
+      a.value = a.target;
+      a.raf = null;
+      setFlipAnimValue(a.value);
+      return;
+    }
+    a.value += diff * 0.3;
+    setFlipAnimValue(a.value);
+    a.raf = window.requestAnimationFrame(stepFlipAnim);
+  }, []);
+
+  const setFlipTarget = useCallback(
+    (target: number) => {
+      const a = flipAnimRef.current;
+      if (a.target === target && a.raf === null && a.value === target) return;
+      a.target = target;
+      if (a.raf === null) a.raf = window.requestAnimationFrame(stepFlipAnim);
+    },
+    [stepFlipAnim],
+  );
+
+  // When the selected kit changes (or clears), snap the tween to that kit's
+  // resting flip and drop any hover preview — never animate across kits.
+  useEffect(() => {
+    const rest = selectedFlipKit?.flip ?? 1;
+    const a = flipAnimRef.current;
+    if (a.raf !== null) {
+      window.cancelAnimationFrame(a.raf);
+      a.raf = null;
+    }
+    a.value = rest;
+    a.target = rest;
+    setFlipAnimValue(rest);
+    setFlipHandleHover(false);
+  }, [selectedFlipKit?.id]);
+
+  useEffect(
+    () => () => {
+      if (flipAnimRef.current.raf !== null) window.cancelAnimationFrame(flipAnimRef.current.raf);
+    },
+    [],
+  );
 
   const toWorld = useCallback((clientX: number, clientY: number): Point2D | null => {
-    const g = gRef.current;
-    if (!g) return null;
-    const ctm = g.getScreenCTM();
-    if (!ctm) return null;
-    const pt = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
-    return { x: pt.x, y: pt.y };
-  }, []);
+    const svg = svgRef.current;
+    if (!svg) return null;
+    return clientPointToWorld(clientX, clientY, svg.getBoundingClientRect(), view);
+  }, [view]);
+
+  const updateNearbyBranchKitPort = useCallback(
+    (clientX: number, clientY: number): string | null => {
+      const world = toWorld(clientX, clientY);
+      if (!world) {
+        setNearBranchKitPortKey((previous) => (previous ? null : previous));
+        return null;
+      }
+
+      const pxToMm = (px: number) => px / Math.max(k, 1e-6);
+      let bestKey: string | null = null;
+      let bestDistance = Infinity;
+
+      for (const kit of branchKitPorts) {
+        for (const port of kit.ports) {
+          const halfSpan =
+            Math.hypot(port.gasPos.x - port.liquidPos.x, port.gasPos.y - port.liquidPos.y) / 2;
+          const revealRadius = Math.max(
+            pxToMm(BRANCH_KIT_PORT_REVEAL_RADIUS_PX),
+            halfSpan + pxToMm(BRANCH_KIT_PORT_HIT_PADDING_PX),
+          );
+          const distanceToPort = Math.hypot(world.x - port.center.x, world.y - port.center.y);
+          if (distanceToPort <= revealRadius && distanceToPort < bestDistance) {
+            bestDistance = distanceToPort;
+            bestKey = branchKitPortKey(kit.id, port.conn.terminalRole);
+          }
+        }
+      }
+
+      setNearBranchKitPortKey((previous) => (previous === bestKey ? previous : bestKey));
+      return bestKey;
+    },
+    [branchKitPorts, k, toWorld],
+  );
+
+  // Commit the flip: toggle the persisted flag as one undo step. Inlet/run stay
+  // pinned, so inline-connected pipes are undisturbed; the sprite + port rings
+  // re-render mirrored from the flag. Fired only by a click on the "Flip" chip.
+  const commitFlip = useCallback(
+    (id: string) => {
+      const el = hvacElements.find((e) => e.id === id);
+      if (!el || el.type !== 'refrigerant-branch-kit') return;
+      const props = (el.properties ?? {}) as Record<string, unknown>;
+      updateHvacElement(
+        id,
+        { properties: { ...props, branchKitFlipped: props.branchKitFlipped !== true } },
+        { skipHistory: true },
+      );
+      saveToHistory('Flip branch kit');
+    },
+    [hvacElements, updateHvacElement, saveToHistory],
+  );
 
   const elementById = useCallback(
     (id: string) => hvacElements.find((e) => e.id === id) ?? null,
@@ -852,15 +1155,14 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       // From now on this pipe's route is authoritative — stop re-collapsing it,
       // so inserted/edited vertices persist.
       editedIdsRef.current.add(id);
-      const box = bbox(route);
-      const margin = readNumber((el.properties as Record<string, unknown>)?.outerDiameterMm, DEFAULT_OUTER_DIAMETER_MM);
+      const nextElement = withPipeRoute(el, route);
       updateHvacElement(
         id,
         {
-          position: { x: box.minX - margin, y: box.minY - margin },
-          width: box.maxX - box.minX + margin * 2,
-          depth: box.maxY - box.minY + margin * 2,
-          properties: { ...(el.properties ?? {}), routePoints: route },
+          position: nextElement.position,
+          width: nextElement.width,
+          depth: nextElement.depth,
+          properties: nextElement.properties,
         },
         { skipHistory: true },
       );
@@ -876,16 +1178,56 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [writeRoute, saveToHistory],
   );
 
-  // Commit BOTH lines of a bundle in ONE history entry: two skip-history writes
-  // followed by a single saveToHistory (the store snapshots the whole element
-  // list, so this lands as one undo step).
-  const commitPair = useCallback(
-    (id1: string, route1: Point2D[], id2: string, route2: Point2D[], label: string) => {
-      writeRoute(id1, route1);
-      writeRoute(id2, route2);
-      saveToHistory(label);
+  const buildMovePreview = useCallback(
+    (drag: NonNullable<typeof moveDragRef.current>, dx: number, dy: number): HvacElement[] => {
+      const overrides = new Map<string, HvacElement>();
+      const baseById = new Map(hvacElements.map((element) => [element.id, element]));
+
+      for (const item of drag.items) {
+        if (item.kind !== 'kit') continue;
+        const element = baseById.get(item.id);
+        if (!element || element.type !== 'refrigerant-branch-kit') continue;
+        overrides.set(item.id, {
+          ...element,
+          position: { x: item.position.x + dx, y: item.position.y + dy },
+        });
+      }
+
+      const sceneWithMovedKits = hvacElements.map((element) => overrides.get(element.id) ?? element);
+      for (const item of drag.items) {
+        if (item.kind !== 'kit') continue;
+        const movedKit = overrides.get(item.id);
+        if (!movedKit) continue;
+
+        for (const update of resolveRefrigerantPipeBranchKitReconnectionUpdates(sceneWithMovedKits, movedKit)) {
+          const base = overrides.get(update.id) ?? baseById.get(update.id);
+          if (!base) continue;
+          overrides.set(update.id, {
+            ...base,
+            ...update.updates,
+            properties: update.updates.properties
+              ? { ...base.properties, ...update.updates.properties }
+              : base.properties,
+          });
+        }
+      }
+
+      for (const item of drag.items) {
+        if (item.kind !== 'pipe') continue;
+        const base = overrides.get(item.id) ?? baseById.get(item.id);
+        if (!base) continue;
+        overrides.set(
+          item.id,
+          withPipeRoute(
+            base,
+            item.route.map((point) => ({ x: point.x + dx, y: point.y + dy })),
+          ),
+        );
+      }
+
+      return Array.from(overrides.values());
     },
-    [writeRoute, saveToHistory],
+    [hvacElements],
   );
 
   const onVertexDown = useCallback(
@@ -900,43 +1242,74 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [toWorld],
   );
 
-  const onKitPointerDown = useCallback(
-    (e: ReactPointerEvent, kitId: string) => {
+  // Press on a pipe body or a branch-kit sprite to begin a whole-element move.
+  // Selection-aware, like a modern design tool: Shift/Ctrl toggles selection only
+  // (no move); a plain press on an already-selected item drags the WHOLE current
+  // selection; a plain press on anything else selects just it and drags it alone.
+  // A small screen-space threshold (applied in onPointerMove) keeps a click from
+  // nudging the item, so click-to-select still works.
+  const beginMove = useCallback(
+    (e: ReactPointerEvent, pressedId: string) => {
       e.stopPropagation();
-      setSelectedIds([kitId]);
-      const el = hvacElements.find((x) => x.id === kitId);
+      const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+      if (additive) {
+        const current = new Set(selectedIds);
+        if (current.has(pressedId)) {
+          current.delete(pressedId);
+        } else {
+          current.add(pressedId);
+        }
+        setSelectedIds(Array.from(current));
+        return;
+      }
+
       const w = toWorld(e.clientX, e.clientY);
-      if (!el || !w) return;
-      kitDragRef.current = {
-        id: kitId,
-        startWorld: w,
-        startPos: { x: el.position.x, y: el.position.y },
-        moved: false,
-      };
+      if (!w) return;
+
+      const dragWholeSelection = selectedSet.has(pressedId) && selectedIds.length > 0;
+      const dragIds = dragWholeSelection ? selectedIds.slice() : [pressedId];
+      if (!dragWholeSelection) {
+        setSelectedIds([pressedId]);
+      }
+
+      const items: NonNullable<typeof moveDragRef.current>['items'] = [];
+      for (const id of dragIds) {
+        const pipeView = pipes.find((p) => p.id === id);
+        if (pipeView) {
+          items.push({ kind: 'pipe', id, route: pipeView.route.map((p) => ({ ...p })) });
+          continue;
+        }
+        const el = hvacElements.find((x) => x.id === id);
+        if (el && el.type === 'refrigerant-branch-kit') {
+          items.push({ kind: 'kit', id, position: { x: el.position.x, y: el.position.y } });
+        }
+      }
+      if (items.length === 0) return;
+
+      clearMovePreview();
+      moveDragRef.current = { startWorld: w, moved: false, items };
       (e.target as Element).setPointerCapture?.(e.pointerId);
     },
-    [hvacElements, toWorld, setSelectedIds],
+    [selectedIds, selectedSet, setSelectedIds, toWorld, pipes, hvacElements, clearMovePreview],
   );
 
   const onPointerMove = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
-      // Branch-kit whole-move: absolute position from the press, then heal every
-      // pipe bound to a kit port so it follows (same engine the Fabric drag used).
-      const kd = kitDragRef.current;
-      if (kd) {
+      updateNearbyBranchKitPort(e.clientX, e.clientY);
+
+      // Whole-element move: rigidly translate every snapshot item by the absolute
+      // cursor delta from the press point. Ignore the first few screen-pixels of
+      // travel so a click still selects without nudging the item. Pipes rewrite
+      // their route; kits reposition + heal every pipe bound to one of their ports.
+      const md = moveDragRef.current;
+      if (md) {
         const w = toWorld(e.clientX, e.clientY);
         if (!w) return;
-        const dx = w.x - kd.startWorld.x;
-        const dy = w.y - kd.startWorld.y;
-        if (Math.hypot(dx, dy) > 0.5) kd.moved = true;
-        const el = hvacElements.find((x) => x.id === kd.id);
-        if (!el) return;
-        const nextPos = { x: kd.startPos.x + dx, y: kd.startPos.y + dy };
-        updateHvacElement(kd.id, { position: nextPos }, { skipHistory: true });
-        const movedKit = { ...el, position: nextPos } as HvacElement;
-        for (const u of resolveRefrigerantPipeBranchKitReconnectionUpdates(hvacElements, movedKit)) {
-          updateHvacElement(u.id, u.updates, { skipHistory: true });
-        }
+        const dx = w.x - md.startWorld.x;
+        const dy = w.y - md.startWorld.y;
+        if (!md.moved && Math.hypot(dx, dy) * k > 3) md.moved = true;
+        if (!md.moved) return;
+        scheduleMovePreview(buildMovePreview(md, dx, dy));
         return;
       }
       const drag = dragRef.current;
@@ -954,14 +1327,54 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         ),
       });
     },
-    [toWorld, hvacElements, updateHvacElement],
+    [toWorld, k, buildMovePreview, scheduleMovePreview, updateNearbyBranchKitPort],
   );
 
   const endDrag = useCallback(() => {
-    const kd = kitDragRef.current;
-    if (kd) {
-      kitDragRef.current = null;
-      if (kd.moved) saveToHistory('Move branch kit');
+    const md = moveDragRef.current;
+    if (md) {
+      moveDragRef.current = null;
+      setNearBranchKitPortKey(null);
+      if (md.moved) {
+        const finalElements = lastMovePreviewRef.current ?? [];
+        const movedPipeIds = new Set(
+          md.items.filter((item) => item.kind === 'pipe')
+            .map((item) => item.id),
+        );
+        finalElements.forEach((element) => {
+          if (movedPipeIds.has(element.id)) {
+            editedIdsRef.current.add(element.id);
+          }
+          updateHvacElement(
+            element.id,
+            {
+              position: element.position,
+              rotation: element.rotation,
+              width: element.width,
+              depth: element.depth,
+              height: element.height,
+              roomId: element.roomId,
+              wallId: element.wallId,
+              properties: element.properties,
+            },
+            { skipHistory: true },
+          );
+        });
+        const hasPipe = md.items.some((i) => i.kind === 'pipe');
+        const hasKit = md.items.some((i) => i.kind === 'kit');
+        const label =
+          hasPipe && hasKit
+            ? 'Move items'
+            : md.items.length > 1
+              ? hasKit
+                ? 'Move branch kits'
+                : 'Move refrigerant pipes'
+              : hasKit
+                ? 'Move branch kit'
+                : 'Move refrigerant pipe';
+        saveToHistory(label);
+      }
+      clearMovePreview();
       return;
     }
     const drag = dragRef.current;
@@ -970,7 +1383,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       commitRoute(drag.id, ghost.route, 'Edit refrigerant pipe vertex');
     }
     setGhost(null);
-  }, [ghost, commitRoute, saveToHistory]);
+    setNearBranchKitPortKey(null);
+  }, [ghost, commitRoute, updateHvacElement, saveToHistory, clearMovePreview]);
 
   const onInsert = useCallback(
     (e: ReactPointerEvent, id: string, si: number, route: Point2D[]) => {
@@ -991,239 +1405,62 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [commitRoute],
   );
 
-  // --- Pipe extension: continue a pipe from one of its open ends ------------
-  // Snap the live cursor to a nearby open pipe end (so an extension can connect
-  // to another pipe), else lock to 45deg increments off the anchor when Shift is
-  // held, else free.
-  const extendConstrain = useCallback(
-    (w: Point2D, anchor: Point2D, exclude: string | Set<string>, enableSnap = true): Point2D => {
-      const skip = typeof exclude === 'string' ? new Set([exclude]) : exclude;
-      if (enableSnap) {
-        const tol = 14 / Math.max(k, 1e-6);
-        let best: Point2D | null = null;
-        let bd = tol;
-        for (const q of pipes) {
-          if (skip.has(q.id)) continue;
-          for (const ep of [q.route[0], q.route[q.route.length - 1]]) {
-            if (!ep) continue;
-            const d = Math.hypot(ep.x - w.x, ep.y - w.y);
-            if (d < bd) {
-              bd = d;
-              best = ep;
-            }
-          }
-        }
-        if (best) return { x: best.x, y: best.y };
-      }
-      if (orthoRef.current) {
-        const dx = w.x - anchor.x;
-        const dy = w.y - anchor.y;
-        const dist = Math.hypot(dx, dy);
-        const step = Math.PI / 4;
-        const ang = Math.round(Math.atan2(dy, dx) / step) * step;
-        return { x: anchor.x + Math.cos(ang) * dist, y: anchor.y + Math.sin(ang) * dist };
-      }
-      return { x: w.x, y: w.y };
-    },
-    [pipes, k],
-  );
+  // --- Extension: continue a run from an open end / bundle / kit port --------
+  // Grips no longer run a bespoke one-shot draw; each resolves a bundle
+  // connection and hands it to the parent (onBeginExtendRoute), which switches to
+  // the pipe tool and seeds a full routing session there.
 
-  const startExtend = useCallback((e: ReactPointerEvent, id: string, end: 'start' | 'end') => {
-    e.stopPropagation();
-    setBundleDraw(null);
-    setExtend({ id, end, cursor: null });
-  }, []);
-
-  const onExtendMove = useCallback(
-    (e: ReactPointerEvent) => {
-      const cx = e.clientX;
-      const cy = e.clientY;
-      setExtend((ex) => {
-        if (!ex) return ex;
-        const w = toWorld(cx, cy);
-        if (!w) return ex;
-        const pipe = pipes.find((p) => p.id === ex.id);
-        if (!pipe) return ex;
-        const anchor = ex.end === 'end' ? pipe.route[pipe.route.length - 1]! : pipe.route[0]!;
-        return { ...ex, cursor: extendConstrain(w, anchor, ex.id) };
-      });
-    },
-    [pipes, toWorld, extendConstrain],
-  );
-
-  const onExtendClick = useCallback(
-    (e: ReactMouseEvent) => {
-      if (!extend) return;
-      const w = toWorld(e.clientX, e.clientY);
-      if (!w) return;
-      const pipe = pipes.find((p) => p.id === extend.id);
-      if (!pipe) return;
-      const anchor = extend.end === 'end' ? pipe.route[pipe.route.length - 1]! : pipe.route[0]!;
-      const np = extendConstrain(w, anchor, extend.id);
-      // Skip a zero-length click on the anchor itself.
-      if (Math.hypot(np.x - anchor.x, np.y - anchor.y) < 0.5) return;
-      // Single line only: the grabbed line grows on its own. To grow the whole
-      // bundle, select both lines and use the shared-center grip.
-      const next = extend.end === 'end' ? [...pipe.route, np] : [np, ...pipe.route];
-      commitRoute(extend.id, next, 'Extend refrigerant pipe');
-    },
-    [extend, pipes, toWorld, extendConstrain, commitRoute],
-  );
-
-  const finishExtend = useCallback((e: ReactMouseEvent) => {
-    e.preventDefault();
-    setExtend(null);
-    setBundleDraw(null);
-  }, []);
-
-  // --- Bundle extension from the shared-center grip -------------------------
-  // Live centerline anchor + frozen gap/side for the active bundle draw.
-  const bundleAnchor = useCallback(
-    (bd: NonNullable<typeof bundleDraw>): Point2D | null => {
-      const a = pipes.find((p) => p.id === bd.aId);
-      const b = pipes.find((p) => p.id === bd.bId);
-      if (!a || !b) return null;
-      const aPt = bd.aEnd === 'end' ? a.route[a.route.length - 1]! : a.route[0]!;
-      const bPt = bd.bEnd === 'end' ? b.route[b.route.length - 1]! : b.route[0]!;
-      return { x: (aPt.x + bPt.x) / 2, y: (aPt.y + bPt.y) / 2 };
-    },
-    [pipes],
-  );
-
-  const startBundleDraw = useCallback(
-    (
-      e: ReactPointerEvent,
-      info: { aEnd: 'start' | 'end'; bEnd: 'start' | 'end'; aPt: Point2D; bPt: Point2D; center: Point2D; out: Point2D; gap: number },
-    ) => {
-      e.stopPropagation();
-      if (!bundleSelection) return;
-      setExtend(null);
-      // Side of line A across the run heading, so both lines stay on their side.
-      // Near-zero projection (ends staggered along the run) -> stable lineKind
-      // tiebreak instead of trusting numerical noise.
-      const perpX = -info.out.y;
-      const perpY = info.out.x;
-      const dot = (info.aPt.x - info.center.x) * perpX + (info.aPt.y - info.center.y) * perpY;
-      const aSide = Math.abs(dot) < 0.01 ? (bundleSelection.aKind === 'liquid' ? -1 : 1) : dot > 0 ? 1 : -1;
-      setBundleDraw({
-        aId: bundleSelection.aId,
-        aEnd: info.aEnd,
-        bId: bundleSelection.bId,
-        bEnd: info.bEnd,
-        aSide,
-        gap: info.gap,
-        outX: info.out.x,
-        outY: info.out.y,
-        cursor: null,
-      });
-    },
-    [bundleSelection],
-  );
-
-  const onBundleMove = useCallback(
-    (e: ReactPointerEvent) => {
-      const cx = e.clientX;
-      const cy = e.clientY;
-      setBundleDraw((bd) => {
-        if (!bd) return bd;
-        const w = toWorld(cx, cy);
-        if (!w) return bd;
-        const anchor = bundleAnchor(bd);
-        if (!anchor) return bd;
-        // No endpoint snap on the centerline: a bundle has no body there, so a
-        // snap would promise a connection the committed legs never make.
-        return { ...bd, cursor: extendConstrain(w, anchor, new Set([bd.aId, bd.bId]), false) };
-      });
-    },
-    [toWorld, bundleAnchor, extendConstrain],
-  );
-
-  const onBundleClick = useCallback(
-    (e: ReactMouseEvent) => {
-      if (!bundleDraw) return;
-      const w = toWorld(e.clientX, e.clientY);
-      if (!w) return;
-      const a = pipes.find((p) => p.id === bundleDraw.aId);
-      const b = pipes.find((p) => p.id === bundleDraw.bId);
-      const anchor = bundleAnchor(bundleDraw);
-      if (!a || !b || !anchor) return;
-      const cnp = extendConstrain(w, anchor, new Set([bundleDraw.aId, bundleDraw.bId]), false);
-      if (Math.hypot(cnp.x - anchor.x, cnp.y - anchor.y) < 0.5) return;
-      const dir = unit(cnp.x - anchor.x, cnp.y - anchor.y);
-      const nx = -dir.y;
-      const ny = dir.x;
-      // Keep line A on its frozen geometric side even when the user folds the new
-      // segment back over the run (the new normal flips, so re-align by dir.out).
-      const effSide = bundleDraw.aSide * (dir.x * bundleDraw.outX + dir.y * bundleDraw.outY >= 0 ? 1 : -1);
-      const half = bundleDraw.gap / 2;
-      const aNew = { x: cnp.x + nx * effSide * half, y: cnp.y + ny * effSide * half };
-      const bNew = { x: cnp.x - nx * effSide * half, y: cnp.y - ny * effSide * half };
-      const appendAt = (route: Point2D[], end: 'start' | 'end', pt: Point2D) =>
-        end === 'end' ? [...route, pt] : [pt, ...route];
-      commitPair(
-        a.id,
-        appendAt(a.route, bundleDraw.aEnd, aNew),
-        b.id,
-        appendAt(b.route, bundleDraw.bEnd, bNew),
-        'Extend refrigerant pipe pair',
+  // "+" grip on one open line end. A paired line resolves to its real field-pipe
+  // bundle (single Lines mode then reads the matching gas/liquid side); a lone
+  // single line — which is not a paired snap target — is synthesized from its own
+  // end geometry so it can still be continued.
+  const beginExtendFromLineEnd = useCallback(
+    (p: PipeView, end: 'start' | 'end') => {
+      const route = p.route;
+      if (route.length < 2) return;
+      const endIdx = end === 'end' ? route.length - 1 : 0;
+      const endPt = route[endIdx]!;
+      const lineMode: RefrigerantPipeLineMode = p.isPair ? 'pair' : p.lineKind ?? 'gas';
+      const found = findNearestRefrigerantPipeBundleTarget(
+        hvacElements,
+        endPt,
+        Math.max(60, p.outerMm),
       );
-    },
-    [bundleDraw, pipes, toWorld, bundleAnchor, extendConstrain, commitPair],
-  );
-
-  // --- Draw a pipe FROM a branch-kit port -----------------------------------
-  // The 3 kit ports are draw origins: grab one, drag out a gas+liquid bundle, and
-  // commit a new pipe pair whose START is bound to that port (sourceElementId +
-  // terminalRole), so it stays attached and follows the kit. (State declared above,
-  // near the other draw modes, so the fail-safe effect can read it.)
-  const startPortDraw = useCallback((e: ReactPointerEvent, conn: KitPortConn) => {
-    e.stopPropagation();
-    setExtend(null);
-    setBundleDraw(null);
-    setPlacingKit(false);
-    setPortDraw({ conn, cursor: null });
-  }, []);
-
-  const onPortDrawMove = useCallback(
-    (e: ReactPointerEvent) => {
-      const cx = e.clientX;
-      const cy = e.clientY;
-      setPortDraw((pd) => {
-        if (!pd) return pd;
-        const w = toWorld(cx, cy);
-        if (!w) return pd;
-        return { ...pd, cursor: extendConstrain(w, pd.conn.point, new Set<string>(), true) };
-      });
-    },
-    [toWorld, extendConstrain],
-  );
-
-  const onPortDrawClick = useCallback(
-    (e: ReactMouseEvent) => {
-      if (!portDraw) return;
-      const w = toWorld(e.clientX, e.clientY);
-      if (!w) return;
-      const start = portDraw.conn.point;
-      const end = extendConstrain(w, start, new Set<string>(), true);
-      if (Math.hypot(end.x - start.x, end.y - start.y) < 0.5) return;
-      const elements = buildRefrigerantPipeElements(
-        [
-          { x: start.x, y: start.y },
-          { x: end.x, y: end.y },
-        ],
-        { startBundleConnection: portDraw.conn },
+      if (found) {
+        onBeginExtendRoute(found, lineMode);
+        return;
+      }
+      // Lone single line: reuse the shared engine's endpoint synthesis (identical
+      // geometry) instead of hand-building the bundle, so the "+" grip and the plain
+      // pipe-tool click resolve extensions through one code path.
+      const singleTarget = findNearestRefrigerantPipeExtensionTarget(
+        hvacElements,
+        endPt,
+        Math.max(60, p.outerMm),
+        { lineKind: p.lineKind ?? 'gas' },
       );
-      elements.forEach((el) => addHvacElement(el));
-      saveToHistory('Draw pipe from branch kit');
-      setPortDraw(null);
+      if (singleTarget) {
+        onBeginExtendRoute(singleTarget.bundle, lineMode);
+      }
     },
-    [portDraw, toWorld, extendConstrain, addHvacElement, saveToHistory],
+    [hvacElements, onBeginExtendRoute],
   );
 
-  const finishPortDraw = useCallback((e: ReactMouseEvent) => {
-    e.preventDefault();
-    setPortDraw(null);
-  }, []);
+  // Shared-center grip when both lines of a bundle are selected: resolve the
+  // paired field bundle at the two ends' midpoint and continue it as a pair.
+  const beginExtendFromBundleEnd = useCallback(
+    (aPt: Point2D, bPt: Point2D) => {
+      const mid = { x: (aPt.x + bPt.x) / 2, y: (aPt.y + bPt.y) / 2 };
+      const halfMm = Math.hypot(aPt.x - bPt.x, aPt.y - bPt.y) / 2;
+      const found = findNearestRefrigerantPipeBundleTarget(
+        hvacElements,
+        mid,
+        halfMm + 80,
+      );
+      if (found) onBeginExtendRoute(found, 'pair');
+    },
+    [hvacElements, onBeginExtendRoute],
+  );
 
   // --- Copper branch-kit placement ------------------------------------------
   // The chosen kit's footprint + its 3 ports in LOCAL (centre-origin) coords,
@@ -1280,8 +1517,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   }, [pipes]);
 
   const startPlaceKit = useCallback(() => {
-    setExtend(null);
-    setBundleDraw(null);
+    setNearBranchKitPortKey(null);
     setKitGhost(null);
     setPlacingKit(true);
   }, []);
@@ -1396,15 +1632,66 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       saveToHistory('Place copper branch kit');
       setPlacingKit(false);
       setKitGhost(null);
+      setNearBranchKitPortKey(null);
+      // Auto-select the fresh kit so the flip suggestion (ghost + "Flip" chip)
+      // appears immediately after this first click — no extra gesture needed.
+      setSelectedIds([kitId]);
     },
-    [toWorld, k, kitPlacement, openEnds, kitKind, addHvacElement, updateHvacElement, hvacElements, saveToHistory],
+    [toWorld, k, kitPlacement, openEnds, kitKind, addHvacElement, updateHvacElement, hvacElements, saveToHistory, setSelectedIds],
   );
 
   const finishPlaceKit = useCallback((e: ReactMouseEvent) => {
     e.preventDefault();
     setPlacingKit(false);
     setKitGhost(null);
+    setNearBranchKitPortKey(null);
   }, []);
+
+  const pipeRouteStarted = !!draftRoute && draftRoute.length > 0;
+  const hasDraft = !!draftRoute && draftRoute.length >= 2;
+  const visibleBranchKitPortKeys = useMemo(() => {
+    const keys = new Set<string>();
+    const pxToMm = (px: number) => px / Math.max(k, 1e-6);
+
+    const revealPortsNearPoint = (point: Point2D | null | undefined): void => {
+      if (!point) return;
+      for (const kit of branchKitPorts) {
+        for (const port of kit.ports) {
+          const halfSpan =
+            Math.hypot(port.gasPos.x - port.liquidPos.x, port.gasPos.y - port.liquidPos.y) / 2;
+          const revealRadius = Math.max(
+            pxToMm(BRANCH_KIT_PORT_REVEAL_RADIUS_PX),
+            halfSpan + pxToMm(BRANCH_KIT_PORT_HIT_PADDING_PX),
+          );
+          if (Math.hypot(point.x - port.center.x, point.y - port.center.y) <= revealRadius) {
+            keys.add(branchKitPortKey(kit.id, port.conn.terminalRole));
+          }
+        }
+      }
+    };
+
+    if (nearBranchKitPortKey) {
+      keys.add(nearBranchKitPortKey);
+    }
+    // A live extension/draw pushes its route through draftRoute (the draw tool
+    // owns the session now), so reveal ports near the growing route's head.
+    if (draftRoute && draftRoute.length > 0) {
+      revealPortsNearPoint(draftRoute[draftRoute.length - 1]);
+    }
+    if (ghost?.route) {
+      for (const point of ghost.route) {
+        revealPortsNearPoint(point);
+      }
+    }
+
+    return keys;
+  }, [
+    branchKitPorts,
+    draftRoute,
+    ghost,
+    k,
+    nearBranchKitPortKey,
+  ]);
 
   if (!enabled || width <= 0 || height <= 0) return null;
 
@@ -1412,7 +1699,6 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const handleHit = hpx(11);
   const insR = hpx(5);
 
-  const hasDraft = !!draftRoute && draftRoute.length >= 2;
   return (
     <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
       {pipes.length > 0 || hasDraft ? (
@@ -1538,39 +1824,17 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             : 'Move a port near an open pipe end to snap · click to place · right-click / Esc to cancel'}
         </div>
       ) : null}
-      {extend || bundleDraw || portDraw ? (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 16,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            pointerEvents: 'none',
-            background: portDraw ? '#B5742F' : bundleDraw ? '#7C3AED' : '#0F766E',
-            color: '#fff',
-            borderRadius: 8,
-            padding: '7px 14px',
-            fontSize: 12.5,
-            fontWeight: 500,
-            boxShadow: '0 2px 10px rgba(0,0,0,0.18)',
-            whiteSpace: 'nowrap',
-            zIndex: 20,
-          }}
-        >
-          {portDraw
-            ? 'Drawing a pipe from the branch-kit port · click to place the end · Shift = straight · right-click / Esc to cancel'
-            : bundleDraw
-              ? 'Extending bundle on the centerline — both lines stay centered, holding the gap · click to add a point · Shift = straight · right-click / Enter / Esc to finish'
-              : 'Extending one line · click to add a point · Shift = straight · right-click / Enter / Esc to finish'}
-        </div>
-      ) : null}
       <svg
+        ref={svgRef}
         width={width}
         height={height}
         style={{ display: 'block', touchAction: 'none', pointerEvents: 'none' }}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
-        onPointerLeave={endDrag}
+        onPointerLeave={() => {
+          setNearBranchKitPortKey(null);
+          endDrag();
+        }}
       >
         <defs>
           <linearGradient id="bkCu" x1="0" y1="0" x2="0" y2="1">
@@ -1589,63 +1853,24 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
           </radialGradient>
         </defs>
         <g ref={gRef} transform={matrix}>
-          {/* Live draw preview: render the in-progress route as the studio pair
-              (same insulation / core / sheen as a committed pipe) so drawing looks
-              exactly like the result — not the old flat Fabric line. */}
-          {draftRoute && draftRoute.length >= 2
-            ? (() => {
-                const dRoute = draftRoute;
-                const dPairGap = Math.max(0, DEFAULT_REFRIGERANT_PIPE_GAP_MM + gapSpreadMm);
-                const dInsW = DEFAULT_OUTER_DIAMETER_MM;
-                const dCoreW = Math.max(dInsW * 0.55, 3);
-                const dSheenW = Math.max(dCoreW * 0.3, 1);
-                const dPathFor = (offMm: number) =>
-                  toSvgPathData(buildPipeCenterline(offsetPolyline(dRoute, offMm), bendRadiusMm));
-                const dTubes = [
-                  { d: dPathFor(dPairGap / 2), ...GAS_COLORS },
-                  { d: dPathFor(-dPairGap / 2), ...LIQUID_COLORS },
-                ];
-                return (
-                  <g style={{ pointerEvents: 'none' }} opacity={0.75}>
-                    {dTubes.map((t, i) => (
-                      <path key={`dins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={dInsW} strokeLinecap="butt" strokeLinejoin="round" />
-                    ))}
-                    {dTubes.map((t, i) => (
-                      <path key={`dcore-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={dCoreW} strokeLinecap="butt" strokeLinejoin="round" />
-                    ))}
-                    {dTubes.map((t, i) => (
-                      <path key={`dsheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={dSheenW} strokeLinecap="butt" strokeLinejoin="round" strokeOpacity={0.7} />
-                    ))}
-                  </g>
-                );
-              })()
-            : null}
+          {/* Live draw preview: render the in-progress route through the SAME
+              gas/liquid elements the commit will build (real insulated diameters +
+              baked gap), via the shared tube helper — so the preview is pixel-
+              identical to the finished pipe and never changes size on Enter. */}
+          {draftPipeViews.map((p) => {
+            const { tubes, insW, coreW, sheenW } = pipeTubes(p, p.route);
+            return (
+              <g key={`draft-${p.id}`} style={{ pointerEvents: 'none' }} opacity={0.75}>
+                {renderTubeBody(tubes, insW, coreW, sheenW, `draft-${p.id}`)}
+              </g>
+            );
+          })}
           {pipes.map((p) => {
             const route = ghost && ghost.id === p.id ? ghost.route : p.route;
-            const pairGap = Math.max(0, p.gapMm + gapSpreadMm);
-            const insW = p.outerMm; // insulation outer diameter
-            const coreW = Math.max(p.outerMm * 0.55, 3); // copper tube
-            const sheenW = Math.max(coreW * 0.3, 1);
+            // Real gas/liquid tubes via the shared helper — the SAME code the live
+            // draw preview uses, so a committed pipe and its preview can't differ.
+            const { tubes, insW, coreW, sheenW } = pipeTubes(p, route);
             const selected = selectedSet.has(p.id);
-            // Offset each line perpendicular, THEN fillet with the bend-radius
-            // slider value - so the gap only shifts position and never changes
-            // the bend radius of either line. Gas reads blue, liquid copper/amber.
-            const pathFor = (offMm: number) =>
-              toSvgPathData(buildPipeCenterline(offsetPolyline(route, offMm), bendRadiusMm));
-            let tubes: { d: string; ins: string; core: string; sheen: string }[];
-            if (p.isPair) {
-              tubes = [
-                { d: pathFor(pairGap / 2), ...GAS_COLORS },
-                { d: pathFor(-pairGap / 2), ...LIQUID_COLORS },
-              ];
-            } else {
-              tubes = [
-                {
-                  d: pathFor((p.offsetSign * gapSpreadMm) / 2),
-                  ...(p.lineKind === 'liquid' ? LIQUID_COLORS : GAS_COLORS),
-                },
-              ];
-            }
             // Place the handles on the SAME offset as the visible body, so the
             // dots / + sit on the pipe even when the gap shifts it. Edits still
             // operate on the un-offset centerline (route).
@@ -1656,20 +1881,25 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             const bodyPoly = toPolyline(buildPipeCenterline(hRoute, bendRadiusMm), 1);
             return (
               <g key={p.id}>
-                {/* insulation sleeves. Butt caps: a real cut refrigerant pipe ends
-                    in a flat, sharp perpendicular face (ready to flare/braze), not
-                    a rounded dome. Bends stay smooth via round line joins. */}
-                {tubes.map((t, i) => (
-                  <path key={`ins-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={insW} strokeLinecap="butt" strokeLinejoin="round" />
-                ))}
-                {/* tube cores */}
-                {tubes.map((t, i) => (
-                  <path key={`core-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={coreW} strokeLinecap="butt" strokeLinejoin="round" />
-                ))}
-                {/* sheen */}
-                {tubes.map((t, i) => (
-                  <path key={`sheen-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={sheenW} strokeLinecap="butt" strokeLinejoin="round" strokeOpacity={0.7} />
-                ))}
+                {selectionHitTesting
+                  ? tubes.map((t, i) => (
+                      <path
+                        key={`hit-${i}`}
+                        d={t.d}
+                        fill="none"
+                        stroke="rgba(0,0,0,0.001)"
+                        strokeWidth={Math.max(insW + hpx(PIPE_SELECTION_HIT_PADDING_PX * 2), hpx(PIPE_SELECTION_MIN_HIT_WIDTH_PX))}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{ cursor: selected ? 'move' : 'pointer', pointerEvents: 'stroke' }}
+                        onPointerDown={(e) => beginMove(e, p.id)}
+                      />
+                    ))
+                  : null}
+                {/* insulation sleeve + copper core + sheen — shared with the live
+                    preview so widths always match. Butt caps: a real cut pipe ends
+                    in a flat perpendicular face; bends stay smooth via round joins. */}
+                {renderTubeBody(tubes, insW, coreW, sheenW, `c-${p.id}`)}
                 {selected
                   ? hRoute.slice(0, -1).map((_, si) => {
                       const mid = { x: (hRoute[si]!.x + hRoute[si + 1]!.x) / 2, y: (hRoute[si]!.y + hRoute[si + 1]!.y) / 2 };
@@ -1718,19 +1948,21 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                       const o = unit(e0.x - e1.x, e0.y - e1.y);
                       const hx = e0.x + o.x * hpx(20);
                       const hy = e0.y + o.y * hpx(20);
-                      const active = extend?.id === p.id && extend.end === end;
                       return (
                         <g
                           key={`ext-${end}`}
                           style={{ cursor: 'crosshair', pointerEvents: 'auto' }}
-                          onPointerDown={(e) => startExtend(e, p.id, end)}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            beginExtendFromLineEnd(p, end);
+                          }}
                         >
                           <line x1={e0.x} y1={e0.y} x2={hx} y2={hy} stroke="#0F766E" strokeWidth={hpx(1.4)} strokeDasharray={`${hpx(3)} ${hpx(2)}`} style={{ pointerEvents: 'none' }} />
                           <circle cx={hx} cy={hy} r={handleHit} fill="rgba(0,0,0,0.001)" />
-                          <circle cx={hx} cy={hy} r={hpx(7)} fill={active ? '#0F766E' : '#fff'} stroke="#0F766E" strokeWidth={hpx(1.8)} style={{ pointerEvents: 'none' }} />
+                          <circle cx={hx} cy={hy} r={hpx(7)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.8)} style={{ pointerEvents: 'none' }} />
                           <path
                             d={`M ${hx - hpx(3)} ${hy} H ${hx + hpx(3)} M ${hx} ${hy - hpx(3)} V ${hy + hpx(3)}`}
-                            stroke={active ? '#fff' : '#0F766E'}
+                            stroke="#0F766E"
                             strokeWidth={hpx(1.6)}
                             style={{ pointerEvents: 'none' }}
                           />
@@ -1738,26 +1970,13 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                       );
                     })
                   : null}
-                {/* Live preview of the single line's next segment. */}
-                {extend?.id === p.id && extend.cursor
-                  ? (() => {
-                      const aBody = extend.end === 'end' ? hRoute[hRoute.length - 1]! : hRoute[0]!;
-                      const c = extend.cursor;
-                      return (
-                        <g style={{ pointerEvents: 'none' }}>
-                          <line x1={aBody.x} y1={aBody.y} x2={c.x} y2={c.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeDasharray={`${hpx(7)} ${hpx(4)}`} strokeLinecap="round" />
-                          <circle cx={c.x} cy={c.y} r={hpx(4)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.8)} />
-                        </g>
-                      );
-                    })()
-                  : null}
               </g>
             );
           })}
           {/* Common shared-center extend grip(s): shown when both lines of one
               bundle are selected and no draw is active. Positions track the
               VISIBLE bodies, so the grip stays centered when gapSpread > 0. */}
-          {bundleSelection && !bundleDraw
+          {bundleSelection
             ? (() => {
                 const la = pipes.find((p) => p.id === bundleSelection.aId);
                 const lb = pipes.find((p) => p.id === bundleSelection.bId);
@@ -1780,7 +1999,10 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                         <g
                           key={`bgrip-${en.key}`}
                           style={{ cursor: 'crosshair', pointerEvents: 'auto' }}
-                          onPointerDown={(e) => startBundleDraw(e, en)}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            beginExtendFromBundleEnd(en.aPt, en.bPt);
+                          }}
                         >
                           <line x1={cx} y1={cy} x2={gx} y2={gy} stroke="#7C3AED" strokeWidth={hpx(1.4)} strokeDasharray={`${hpx(3)} ${hpx(2)}`} style={{ pointerEvents: 'none' }} />
                           <circle cx={gx} cy={gy} r={handleHit + hpx(2)} fill="rgba(0,0,0,0.001)" />
@@ -1800,73 +2022,19 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 );
               })()
             : null}
-          {/* Live bundle preview — gated on the active draw only, so it never
-              blanks if the selection changes mid-draw. */}
-          {bundleDraw && bundleDraw.cursor
-            ? (() => {
-                const a = pipes.find((p) => p.id === bundleDraw.aId);
-                const b = pipes.find((p) => p.id === bundleDraw.bId);
-                const anchor = bundleAnchor(bundleDraw);
-                const c = bundleDraw.cursor;
-                if (!a || !b || !anchor || Math.hypot(c.x - anchor.x, c.y - anchor.y) < 0.5) return null;
-                const dir = unit(c.x - anchor.x, c.y - anchor.y);
-                const nx = -dir.y;
-                const ny = dir.x;
-                const effSide = bundleDraw.aSide * (dir.x * bundleDraw.outX + dir.y * bundleDraw.outY >= 0 ? 1 : -1);
-                const half = bundleDraw.gap / 2;
-                const aPt = bundleDraw.aEnd === 'end' ? a.route[a.route.length - 1]! : a.route[0]!;
-                const bPt = bundleDraw.bEnd === 'end' ? b.route[b.route.length - 1]! : b.route[0]!;
-                const aNew = { x: c.x + nx * effSide * half, y: c.y + ny * effSide * half };
-                const bNew = { x: c.x - nx * effSide * half, y: c.y - ny * effSide * half };
-                return (
-                  <g style={{ pointerEvents: 'none' }}>
-                    <line x1={anchor.x} y1={anchor.y} x2={c.x} y2={c.y} stroke="#7C3AED" strokeWidth={hpx(1.4)} strokeDasharray={`${hpx(4)} ${hpx(3)}`} strokeOpacity={0.7} />
-                    <line x1={aPt.x} y1={aPt.y} x2={aNew.x} y2={aNew.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeDasharray={`${hpx(7)} ${hpx(4)}`} strokeLinecap="round" />
-                    <line x1={bPt.x} y1={bPt.y} x2={bNew.x} y2={bNew.y} stroke="#0F766E" strokeWidth={hpx(2)} strokeDasharray={`${hpx(7)} ${hpx(4)}`} strokeLinecap="round" />
-                    <line x1={aNew.x} y1={aNew.y} x2={bNew.x} y2={bNew.y} stroke="#7C3AED" strokeWidth={hpx(1)} strokeDasharray={`${hpx(2)} ${hpx(2)}`} strokeOpacity={0.6} />
-                    <circle cx={aNew.x} cy={aNew.y} r={hpx(3.6)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.7)} />
-                    <circle cx={bNew.x} cy={bNew.y} r={hpx(3.6)} fill="#fff" stroke="#0F766E" strokeWidth={hpx(1.7)} />
-                    <circle cx={c.x} cy={c.y} r={hpx(2.6)} fill="#7C3AED" />
-                  </g>
-                );
-              })()
-            : null}
-          {/* Live preview of a pipe being pulled out of a kit port — the studio
-              pair from the port to the (constrained) cursor. */}
-          {portDraw && portDraw.cursor
-            ? (() => {
-                const start = portDraw.conn.point;
-                const pRoute = [{ x: start.x, y: start.y }, portDraw.cursor];
-                const pPairGap = Math.max(0, DEFAULT_REFRIGERANT_PIPE_GAP_MM + gapSpreadMm);
-                const pInsW = DEFAULT_OUTER_DIAMETER_MM;
-                const pCoreW = Math.max(pInsW * 0.55, 3);
-                const pSheenW = Math.max(pCoreW * 0.3, 1);
-                const pPathFor = (offMm: number) =>
-                  toSvgPathData(buildPipeCenterline(offsetPolyline(pRoute, offMm), bendRadiusMm));
-                const pTubes = [
-                  { d: pPathFor(pPairGap / 2), ...GAS_COLORS },
-                  { d: pPathFor(-pPairGap / 2), ...LIQUID_COLORS },
-                ];
-                return (
-                  <g style={{ pointerEvents: 'none' }} opacity={0.8}>
-                    {pTubes.map((t, i) => (
-                      <path key={`pdi-${i}`} d={t.d} fill="none" stroke={t.ins} strokeWidth={pInsW} strokeLinecap="butt" strokeLinejoin="round" />
-                    ))}
-                    {pTubes.map((t, i) => (
-                      <path key={`pdc-${i}`} d={t.d} fill="none" stroke={t.core} strokeWidth={pCoreW} strokeLinecap="butt" strokeLinejoin="round" />
-                    ))}
-                    {pTubes.map((t, i) => (
-                      <path key={`pds-${i}`} d={t.d} fill="none" stroke={t.sheen} strokeWidth={pSheenW} strokeLinecap="butt" strokeLinejoin="round" strokeOpacity={0.7} />
-                    ))}
-                  </g>
-                );
-              })()
-            : null}
+          {/* Extension previews are rendered by the draw tool via draftPipes —
+              no bespoke bundle/port preview lives here anymore. */}
           {/* Every PLACED branch kit (real-geometry sprite), drawn BEFORE the port
               grips so the grips sit on top (visible + clickable). A 'both' kit is
               two fittings, one per line. The sprite is the kit's select + drag target. */}
-          {placedKits.flatMap((kit) =>
-            kit.sprites.map((sp) => {
+          {placedKits.flatMap((kit) => {
+            // The selected kit renders with the ANIMATED flip factor so hover-
+            // preview + commit fold smoothly; a hover dips opacity to read as a
+            // not-yet-applied preview. Every other kit uses its persisted flip.
+            const isSel = selectedFlipKit?.id === kit.id;
+            const flipThis = isSel ? flipAnimValue : kit.flip;
+            const spriteOpacity = isSel && flipHandleHover ? 0.82 : 1;
+            return kit.sprites.map((sp) => {
               const img = kitImg[sp.line];
               if (!img?.ok) return null;
               const anch = KIT_IMG_ANCHOR[sp.line];
@@ -1882,10 +2050,14 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
               const bvy = sp.run.y - sp.inlet.y;
               const s = Math.hypot(bvx, bvy) / (Math.hypot(avx, avy) || 1);
               const theta = ((Math.atan2(bvy, bvx) - Math.atan2(avy, avx)) * 180) / Math.PI;
+              // `scale(s, flip*s)` mirrors the sprite across its trunk axis
+              // (inlet.y == run.y, so both stay pinned). flip animates for the
+              // selected kit, giving the fold-through-zero flip motion.
               return (
                 <g
                   key={`pk-${kit.id}-${sp.line}`}
-                  transform={`translate(${sp.inlet.x} ${sp.inlet.y}) rotate(${theta}) scale(${s}) translate(${-a0x} ${-a0y})`}
+                  opacity={spriteOpacity}
+                  transform={`translate(${sp.inlet.x} ${sp.inlet.y}) rotate(${theta}) scale(${s} ${flipThis * s}) translate(${-a0x} ${-a0y})`}
                 >
                   <image
                     href={KIT_IMG[sp.line]}
@@ -1895,16 +2067,70 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                     height={Himg}
                     preserveAspectRatio="none"
                     style={{ pointerEvents: 'auto', cursor: 'move' }}
-                    onPointerDown={(e) => onKitPointerDown(e, kit.id)}
+                    onPointerDown={(e) => beginMove(e, kit.id)}
                   />
                 </g>
               );
-            }),
-          )}
-          {/* Branch-kit port grips: the 3 ports (inlet / run-outlet / branch-outlet)
-              of EVERY placed kit — always-visible, clickable draw-from snap points
-              (gas blue + liquid amber). The selected kit adds the outward arrow +
-              role label. Rendered AFTER the sprites so they're on top. */}
+            });
+          })}
+          {/* Flip-branch handle — a small round control on the branch arm of the
+              single selected kit. Hovering it previews the flip on the REAL kit
+              (the sprite folds to the flipped orientation via flipAnimValue at a
+              dipped opacity); leaving snaps it back; a click commits with the same
+              fold settling into place. No ghost overlay, no floating chip, and it
+              never reacts to the cursor merely drifting over the kit body. */}
+          {selectedFlipKit && !placingKit
+            ? (() => {
+                const fk = selectedFlipKit;
+                const scl = hpx(1) * (flipHandleHover ? 1.12 : 1); // constant screen px, grows on hover
+                // Anchor from the RESTING (persisted) branch so the handle holds
+                // still while the preview folds under the cursor — no jitter. Sit
+                // on the arm, in from the tip, clear of the branch-outlet port ring.
+                const pivot = { x: (fk.inlet.x + fk.run.x) / 2, y: (fk.inlet.y + fk.run.y) / 2 };
+                const branchRest = spriteTubeWorld(fk.line, KIT_TUBE_ANCHOR[fk.line].branch, fk.inlet, fk.run, fk.flip);
+                const hx = branchRest.x + (pivot.x - branchRest.x) * 0.28;
+                const hy = branchRest.y + (pivot.y - branchRest.y) * 0.28;
+                const glyph = flipHandleHover ? '#ffffff' : '#0F766E';
+                return (
+                  <g
+                    transform={`translate(${hx} ${hy}) scale(${scl})`}
+                    style={{ pointerEvents: 'auto', cursor: 'pointer' }}
+                    onPointerEnter={() => {
+                      setFlipHandleHover(true);
+                      setFlipTarget(-fk.flip);
+                    }}
+                    onPointerLeave={() => {
+                      setFlipHandleHover(false);
+                      setFlipTarget(fk.flip);
+                    }}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      commitFlip(fk.id);
+                      setFlipHandleHover(false);
+                      setFlipTarget(-fk.flip);
+                    }}
+                  >
+                    <title>Flip branch (up / down)</title>
+                    {/* soft shadow + body */}
+                    <circle cx={0} cy={1.4} r={12.5} fill="#0b3b37" opacity={0.22} />
+                    <circle
+                      cx={0}
+                      cy={0}
+                      r={12.5}
+                      fill={flipHandleHover ? '#0F766E' : '#ffffff'}
+                      stroke={flipHandleHover ? '#0b5f58' : '#d4cdbf'}
+                      strokeWidth={1}
+                      style={{ transition: 'fill 120ms ease' }}
+                    />
+                    {/* vertical-mirror glyph: dashed axis + two mirrored triangles */}
+                    <line x1={-6} y1={0} x2={6} y2={0} stroke={flipHandleHover ? '#bfeee7' : '#0F766E'} strokeWidth={1} strokeDasharray="2 1.6" />
+                    <path d="M 0 -6.6 L -4 -1.5 L 4 -1.5 Z" fill={glyph} />
+                    <path d="M 0 6.6 L -4 1.5 L 4 1.5 Z" fill={glyph} opacity={0.72} />
+                  </g>
+                );
+              })()
+            : null}
+          {/* Branch-kit port grips: hidden at rest, revealed near active pipe work. */}
           {branchKitPorts.map((kit) =>
             kit.ports.map((port) => {
               const c = port.center;
@@ -1925,18 +2151,36 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
               const halfSpan =
                 Math.hypot(port.gasPos.x - port.liquidPos.x, port.gasPos.y - port.liquidPos.y) / 2;
               const hitR = Math.max(hpx(13), halfSpan + hpx(10));
+              const portKey = branchKitPortKey(kit.id, port.conn.terminalRole);
+              const showPortGrip = visibleBranchKitPortKeys.has(portKey);
+              const canStartPipeFromPort =
+                pipeToolActive && !pipeRouteStarted && !placingKit;
               return (
-                // The WHOLE grip is the interactive draw origin (pointerEvents auto
-                // + handler on the group, like the vertex handles), so pressing
-                // anywhere on the port — ring, tube-end dots, or the wide hit disc —
-                // pulls a pipe out. Rendered above the sprite so it wins the press.
+                // In pipe-start mode this hidden disc can start a route from the
+                // port; otherwise the group is visual-only and cannot steal picks.
                 <g
                   key={`bkp-${kit.id}-${port.conn.terminalRole}`}
-                  style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
-                  onPointerDown={(e) => startPortDraw(e, port.conn)}
+                  style={{
+                    pointerEvents: canStartPipeFromPort ? 'auto' : 'none',
+                    cursor: canStartPipeFromPort ? 'crosshair' : 'default',
+                  }}
+                  onPointerMove={(e) => {
+                    if (canStartPipeFromPort) updateNearbyBranchKitPort(e.clientX, e.clientY);
+                  }}
+                  onPointerLeave={() => {
+                    if (canStartPipeFromPort) setNearBranchKitPortKey(null);
+                  }}
+                  onPointerDown={(e) => {
+                    if (!canStartPipeFromPort) return;
+                    e.stopPropagation();
+                    // Pull a run from the kit port, honoring the global Lines
+                    // selector: pair, or a single gas/liquid line from its outlet.
+                    onBeginExtendRoute(port.conn, pipeLineMode);
+                  }}
                 >
                   {/* Transparent hit disc so the whole port area is pressable. */}
                   <circle cx={c.x} cy={c.y} r={hitR} fill="rgba(0,0,0,0.001)" />
+                  <g opacity={showPortGrip ? 1 : 0} style={{ pointerEvents: 'none' }}>
                   {/* For a 'both' kit only, faint gas/liquid points so both lines read. */}
                   {halfSpan > hpx(2.5) ? (
                     <>
@@ -1944,9 +2188,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                       <circle cx={port.liquidPos.x} cy={port.liquidPos.y} r={hpx(2.6)} fill="#B5742F" fillOpacity={0.85} />
                     </>
                   ) : null}
-                  {/* Green dashed snap ring centred exactly on the port (= the pipe
-                      connection point) — the SAME indicator shown when a kit snaps to
-                      a pipe. Press it to pull a pipe out. */}
+                  {/* Green dashed snap ring centred exactly on the port. */}
                   <circle
                     cx={c.x}
                     cy={c.y}
@@ -1969,6 +2211,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                       {label}
                     </text>
                   ) : null}
+                  </g>
                 </g>
               );
             }),
@@ -2056,11 +2299,20 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 );
               })()
             : null}
+          {/* Snap-hover indicator (pushed by the draw tool): the SAME
+              endpoint-handle bullseye a committed pipe shows — white disc, teal
+              ring, solid teal dot — so every snap affordance is one component. */}
+          {snapIndicator ? (
+            <g style={{ pointerEvents: 'none' }}>
+              <circle cx={snapIndicator.x} cy={snapIndicator.y} r={handleR} fill="#fff" stroke="#0F6E56" strokeWidth={hpx(2)} />
+              <circle cx={snapIndicator.x} cy={snapIndicator.y} r={hpx(2.6)} fill="#0F6E56" />
+            </g>
+          ) : null}
         </g>
-        {/* While extending, a transparent capture layer turns canvas clicks into
-            new pipe points (move = preview, click = place, right-click = finish).
-            Dispatches to single-line or bundle-centerline draw. */}
-        {extend || bundleDraw || placingKit || portDraw ? (
+        {/* Kit placement uses a transparent capture layer (move = ghost, click =
+            place, right-click = cancel). Extension no longer needs one — the draw
+            tool owns the canvas gestures once a session is seeded. */}
+        {placingKit ? (
           <rect
             x={0}
             y={0}
@@ -2068,15 +2320,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             height={height}
             fill="rgba(0,0,0,0)"
             style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
-            onPointerMove={
-              placingKit ? onKitMove : portDraw ? onPortDrawMove : extend ? onExtendMove : onBundleMove
-            }
-            onClick={
-              placingKit ? onKitClick : portDraw ? onPortDrawClick : extend ? onExtendClick : onBundleClick
-            }
-            onContextMenu={
-              placingKit ? finishPlaceKit : portDraw ? finishPortDraw : finishExtend
-            }
+            onPointerMove={onKitMove}
+            onClick={onKitClick}
+            onContextMenu={finishPlaceKit}
           />
         ) : null}
       </svg>
