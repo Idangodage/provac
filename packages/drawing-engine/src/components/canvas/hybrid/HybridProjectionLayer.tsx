@@ -5,6 +5,8 @@ import * as THREE from "three";
 
 import type { ArchitecturalObjectDefinition } from "../../../data";
 import type { HvacElement, Point2D, Room, SymbolInstance2D, Wall } from "../../../types";
+import { computeBoardGridSteps } from "../board/boardGridMath";
+import { MM_TO_PX } from "../scale";
 import {
   buildRefrigerantPipeEndpointRenderStateMap,
   buildRefrigerantPipeRenderChainStateMap,
@@ -33,6 +35,8 @@ export interface HybridProjectionLayerProps {
   height: number;
   pageWidth: number;
   pageHeight: number;
+  /** Real-world zoom (== DrawingCanvas viewportZoom) — drives ground-grid density. */
+  viewportZoom: number;
   view: Hybrid3DViewState;
   walls: Wall[];
   rooms: Room[];
@@ -45,10 +49,11 @@ export interface HybridProjectionLayerProps {
 type SceneState = {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
+  camera: THREE.OrthographicCamera;
   root: THREE.Group;
   keyLight: THREE.DirectionalLight;
   fillLight: THREE.DirectionalLight;
+  groundGridMaterial: THREE.ShaderMaterial;
 };
 
 const EPSILON = 0.001;
@@ -293,60 +298,90 @@ function clearGroup(group: THREE.Group): void {
   });
 }
 
-const GROUND_GRID_MINOR_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0x9aa7b8,
-  transparent: true,
-  opacity: 0.26,
-});
-const GROUND_GRID_MAJOR_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0x5b6b7f,
-  transparent: true,
-  opacity: 0.5,
-});
-const GROUND_AXIS_X_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0xdc4444,
-  transparent: true,
-  opacity: 0.85,
-});
-const GROUND_AXIS_Y_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0x22a05a,
-  transparent: true,
-  opacity: 0.85,
-});
-
 /**
- * A fixed ground grid on z=0 (world mm) so the grid stays visible as the camera
- * tilts from plan into 3D — the SketchUp/reference-app floor plane. Minor 1 m,
- * major 5 m, emphasised red X / green Y world axes, over a generous extent.
+ * Adaptive GPU grid shader for the ground plane (z=0, world mm). Draws minor +
+ * major lines and red-X / green-Y world axes with fwidth anti-aliasing at the
+ * step handed in each frame (same 1-2-5 ladder as the 2D board), so the floor
+ * grid stays crisp and correctly dense at *any* zoom — the reference-app floor.
+ * The plane is huge; the shader only lights fragments that land on a line.
  */
-function createGroundGrid(): THREE.Object3D {
-  const extent = 80000; // ±80 m
-  const minor = 1000; // 1 m
-  const major = 5000; // 5 m
-  const minorPts: number[] = [];
-  const majorPts: number[] = [];
-  for (let v = -extent; v <= extent + 1e-6; v += minor) {
-    if (Math.abs(v) < 1e-6) continue; // origin lines drawn as coloured axes
-    const isMajor = Math.abs(v % major) < 1e-6;
-    const target = isMajor ? majorPts : minorPts;
-    target.push(-extent, v, 0, extent, v, 0); // line parallel to X
-    target.push(v, -extent, 0, v, extent, 0); // line parallel to Y
+const GROUND_GRID_VERTEX = `
+  varying vec2 vWorld;
+  void main() {
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vWorld = world.xy;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
-  const group = new THREE.Group();
-  group.name = "hybrid-ground-grid";
-  group.position.z = -0.5;
+`;
+const GROUND_GRID_FRAGMENT = `
+  precision highp float;
+  varying vec2 vWorld;
+  uniform float uMinor;
+  uniform float uMajor;
+  uniform float uOpacity;
+  uniform vec3 uMinorColor;
+  uniform vec3 uMajorColor;
+  uniform vec3 uAxisX;
+  uniform vec3 uAxisY;
 
-  const addSegments = (pts: number[], material: THREE.LineBasicMaterial) => {
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-    group.add(new THREE.LineSegments(geometry, material));
-  };
-  addSegments(minorPts, GROUND_GRID_MINOR_MATERIAL);
-  addSegments(majorPts, GROUND_GRID_MAJOR_MATERIAL);
-  // World axes through the origin (X = red / east, Y = green / north).
-  addSegments([-extent, 0, 0, extent, 0, 0], GROUND_AXIS_X_MATERIAL);
-  addSegments([0, -extent, 0, 0, extent, 0], GROUND_AXIS_Y_MATERIAL);
-  return group;
+  float lineMask(float coord, float step) {
+    float d = coord / step;
+    float w = fwidth(d);
+    float dist = abs(fract(d - 0.5) - 0.5);
+    return 1.0 - smoothstep(0.0, max(w, 1e-5), dist);
+  }
+  float axisMask(float coord) {
+    float w = fwidth(coord);
+    return 1.0 - smoothstep(0.0, max(w * 1.5, 1e-5), abs(coord));
+  }
+
+  void main() {
+    float minor = max(lineMask(vWorld.x, uMinor), lineMask(vWorld.y, uMinor));
+    float major = max(lineMask(vWorld.x, uMajor), lineMask(vWorld.y, uMajor));
+    float ax = axisMask(vWorld.y); // line along +X (y = 0)
+    float ay = axisMask(vWorld.x); // line along +Y (x = 0)
+
+    vec3 color = uMinorColor;
+    float alpha = minor * 0.45;
+    color = mix(color, uMajorColor, major);
+    alpha = max(alpha, major * 0.78);
+    color = mix(color, uAxisX, ax);
+    alpha = max(alpha, ax);
+    color = mix(color, uAxisY, ay);
+    alpha = max(alpha, ay);
+
+    alpha *= uOpacity;
+    if (alpha < 0.01) discard;
+    gl_FragColor = vec4(color, alpha);
+  }
+`;
+
+function createGroundGridMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uMinor: { value: 1000 },
+      uMajor: { value: 5000 },
+      uOpacity: { value: 1 },
+      uMinorColor: { value: new THREE.Color(0x9aa7b8) },
+      uMajorColor: { value: new THREE.Color(0x5b6b7f) },
+      uAxisX: { value: new THREE.Color(0xdc4444) },
+      uAxisY: { value: new THREE.Color(0x22a05a) },
+    },
+    vertexShader: GROUND_GRID_VERTEX,
+    fragmentShader: GROUND_GRID_FRAGMENT,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+
+function createGroundGridPlane(material: THREE.ShaderMaterial): THREE.Mesh {
+  const size = 4_000_000; // 4 km — the shader only draws lines that hit the screen
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), material);
+  mesh.name = "hybrid-ground-grid";
+  mesh.position.z = -0.5;
+  mesh.renderOrder = -1;
+  return mesh;
 }
 
 function createPagePlane(pageWidth: number, pageHeight: number): THREE.Object3D {
@@ -376,11 +411,18 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   renderer.setClearColor(0xf8fafc, 0);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(38, 1, 1, MAX_CAMERA_DISTANCE_MM * 2);
+  // Orthographic / parallel projection: top-down == the 2D plan at scale, tilt ==
+  // isometric (reference-app behaviour). Frustum is set per frame from the zoom.
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, MAX_CAMERA_DISTANCE_MM * 4);
   camera.up.set(0, 0, 1);
 
   const root = new THREE.Group();
   scene.add(root);
+
+  // Persistent adaptive ground grid (survives content clears — never in `root`).
+  const groundGridMaterial = createGroundGridMaterial();
+  scene.add(createGroundGridPlane(groundGridMaterial));
+
   scene.add(new THREE.AmbientLight(0xffffff, 1.3));
 
   const keyLight = new THREE.DirectionalLight(0xfff7ed, 2.0);
@@ -391,7 +433,7 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   const fillLight = new THREE.DirectionalLight(0xdbeafe, 0.72);
   scene.add(fillLight);
 
-  return { renderer, scene, camera, root, keyLight, fillLight };
+  return { renderer, scene, camera, root, keyLight, fillLight, groundGridMaterial };
 }
 
 function updateCamera(
@@ -399,10 +441,15 @@ function updateCamera(
   view: Hybrid3DViewState,
   width: number,
   height: number,
+  viewportZoom: number,
 ): void {
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
-  const distance = clamp(view.distanceMm, MIN_CAMERA_DISTANCE_MM, MAX_CAMERA_DISTANCE_MM);
+  const pxPerMm = MM_TO_PX * Math.max(viewportZoom, 1e-6);
+  // Ortho frustum = exactly the world area the 2D board shows at this zoom, so
+  // top-down reads 1:1 with the plan and scale is preserved as it tilts.
+  const halfWidth = safeWidth / pxPerMm / 2;
+  const halfHeight = safeHeight / pxPerMm / 2;
   const yaw = THREE.MathUtils.degToRad(view.yawDeg);
   const pitch = THREE.MathUtils.degToRad(clamp(view.pitchDeg, MIN_PITCH_DEG, MAX_PITCH_DEG));
   const horizontal = Math.cos(pitch);
@@ -411,18 +458,22 @@ function updateCamera(
     Math.sin(yaw) * horizontal,
     Math.sin(pitch),
   ).normalize();
-  const target = new THREE.Vector3(view.targetMm.x, view.targetMm.y, 220);
+  const target = new THREE.Vector3(view.targetMm.x, view.targetMm.y, 0);
   const camera = sceneState.camera;
-  camera.aspect = safeWidth / safeHeight;
-  camera.fov = THREE.MathUtils.lerp(30, 44, clamp(view.perspectiveStrength, 0, 1));
+  camera.left = -halfWidth;
+  camera.right = halfWidth;
+  camera.top = halfHeight;
+  camera.bottom = -halfHeight;
+  // Parallel projection: distance affects only clipping, never apparent size.
+  const distance = MAX_CAMERA_DISTANCE_MM;
   camera.position.copy(target).addScaledVector(direction, distance);
-  camera.near = Math.max(1, distance * 0.02);
-  camera.far = distance + MAX_CAMERA_DISTANCE_MM;
+  camera.near = 1;
+  camera.far = distance * 2 + MAX_CAMERA_DISTANCE_MM;
   camera.lookAt(target);
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld(true);
 
-  const lightDistance = Math.max(distance * 0.9, 2500);
+  const lightDistance = Math.max(halfHeight * 2, 4000);
   sceneState.keyLight.position.copy(target).add(new THREE.Vector3(-lightDistance, -lightDistance, lightDistance * 1.4));
   sceneState.fillLight.position.copy(target).add(new THREE.Vector3(lightDistance, lightDistance * 0.7, lightDistance * 0.5));
 }
@@ -432,6 +483,7 @@ export function HybridProjectionLayer({
   height,
   pageWidth,
   pageHeight,
+  viewportZoom,
   view,
   walls,
   rooms,
@@ -499,7 +551,6 @@ export function HybridProjectionLayer({
 
     clearGroup(sceneState.root);
     sceneState.root.add(createPagePlane(pageWidth, pageHeight));
-    sceneState.root.add(createGroundGrid());
 
     rooms.forEach((room) => {
       const floor = createRoomFloor(room);
@@ -564,9 +615,14 @@ export function HybridProjectionLayer({
     const safeHeight = Math.max(1, Math.floor(height));
     sceneState.renderer.setPixelRatio(pixelRatio);
     sceneState.renderer.setSize(safeWidth, safeHeight, false);
-    updateCamera(sceneState, view, safeWidth, safeHeight);
+    // Match the ground-grid density to the 2D board's 1-2-5 ladder at this zoom.
+    const steps = computeBoardGridSteps(Math.max(viewportZoom, 1e-6));
+    const uniforms = sceneState.groundGridMaterial.uniforms;
+    uniforms.uMinor.value = steps.minorMm;
+    uniforms.uMajor.value = steps.majorMm;
+    updateCamera(sceneState, view, safeWidth, safeHeight, viewportZoom);
     sceneState.renderer.render(sceneState.scene, sceneState.camera);
-  }, [height, view, width, wallBands, rooms, walls, symbols, hvacElements]);
+  }, [height, view, viewportZoom, width, wallBands, rooms, walls, symbols, hvacElements]);
 
   if (view.blend <= 0.001 || width <= 0 || height <= 0) {
     return null;

@@ -963,13 +963,26 @@ export function DrawingCanvas({
       }));
     };
 
-    const engageFraming = (current: Hybrid3DViewState) =>
-      current.blend > 0.05
-        ? { targetMm: current.targetMm, distanceMm: current.distanceMm }
-        : {
-            targetMm: hybridDrawingBounds.center,
-            distanceMm: Math.max(2500, hybridDrawingBounds.radius * 2.6),
-          };
+    const engageFraming = (current: Hybrid3DViewState) => {
+      if (current.blend > 0.05) {
+        return { targetMm: current.targetMm, distanceMm: current.distanceMm };
+      }
+      // Pivot the tilt around whatever is at the viewport centre, at a distance
+      // whose apparent scale matches the 2D board — so the 3D view starts exactly
+      // where the flat plan is (no jump to origin, no blank at high zoom).
+      const pivotMm = {
+        x: (hostWidth / 2 / viewportZoom + panOffset.x) / MM_TO_PX,
+        y: (hostHeight / 2 / viewportZoom + panOffset.y) / MM_TO_PX,
+      };
+      const fovDeg = 30 + 0.32 * 14; // start pose perspectiveStrength ≈ 0.32
+      const tanHalfFov = Math.tan((fovDeg * Math.PI) / 360);
+      const distanceMm = clampNumber(
+        hostHeight / (2 * tanHalfFov * viewportZoom * MM_TO_PX),
+        800,
+        220000,
+      );
+      return { targetMm: pivotMm, distanceMm };
+    };
 
     // Right-drag grabs the *same* plane and tilts it into 3D — the sole 2D→3D
     // affordance (no slider). Down only arms + re-frames (invisibly while flat);
@@ -1086,8 +1099,9 @@ export function DrawingCanvas({
     fabricCanvas,
     hostHeight,
     hostWidth,
-    hybridDrawingBounds.center,
-    hybridDrawingBounds.radius,
+    viewportZoom,
+    panOffset.x,
+    panOffset.y,
     resetHybridView,
   ]);
 
@@ -2622,6 +2636,7 @@ export function DrawingCanvas({
           height={hostHeight}
           pageWidth={pageConfig.width}
           pageHeight={pageConfig.height}
+          viewportZoom={viewportZoom}
           view={hybridView}
           walls={walls}
           rooms={rooms}
