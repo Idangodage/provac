@@ -624,12 +624,17 @@ export function HybridProjectionLayer({
       return animating;
     };
 
+    // Continuous loop: the 3D grid must track the DOM objects frame-for-frame during
+    // 2D pan/zoom (and 3D orbit) so they move as ONE — an on-demand render lags a few
+    // frames behind the immediate DOM update and reads as "independent movement".
+    // Rendering a single grid plane (+ content when tilted) every frame is cheap.
+    // (Idle-throttle / demand rendering → perf pass in M7.)
     const frame = (ts: number): void => {
       raf = null;
       const delta = Math.min(0.05, (ts - lastTs) / 1000);
       lastTs = ts;
-      const animating = renderScene(delta);
-      if (animating || boardRef.current.blend > 0.001) request();
+      renderScene(delta);
+      request();
     };
     const request = (): void => {
       if (raf == null && typeof window !== "undefined") raf = window.requestAnimationFrame(frame);
