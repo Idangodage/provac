@@ -84,6 +84,12 @@ import {
   type BlendChangePhase,
 } from "./canvas/hybrid/View3DBlendSlider";
 import {
+  BoardGrid,
+  BoardRulers,
+  cycleBoardUnit,
+  type BoardUnit,
+} from "./canvas/board";
+import {
   installCanvasRenderScheduler,
   restoreCanvasRenderScheduler,
 } from "./canvas/renderScheduler";
@@ -333,6 +339,8 @@ export function DrawingCanvas({
   const [fabricCanvas, setFabricCanvas] = useState<fabric.Canvas | null>(null);
   const [placementRotationDeg, setPlacementRotationDeg] = useState(0);
   const [placementValid, setPlacementValid] = useState(true);
+  // Board rulers' active display unit (cycles mm → cm → m via the corner box).
+  const [boardUnit, setBoardUnit] = useState<BoardUnit>("mm");
   const [openingInteractionActive, setOpeningInteractionActive] =
     useState(false);
   const [isHandleDragging, setIsHandleDragging] = useState(false);
@@ -2622,7 +2630,13 @@ export function DrawingCanvas({
             className="absolute inset-0"
             style={projectionPlaneStyle}
           >
-          {/* M0: old Grid/PageLayout removed — new canvas board lands in M1. */}
+          <BoardGrid
+            width={hostWidth}
+            height={hostHeight}
+            viewportZoom={viewportZoom}
+            panOffset={panOffset}
+            show={resolvedShowGrid && !projectionViewOnly}
+          />
           <canvas ref={canvasRef} className="relative z-[2] block" />
           <PipeKonvaInteractionLayer
             enabled={konvaPipeOverlayActive && !projectionViewOnly}
@@ -2880,7 +2894,19 @@ export function DrawingCanvas({
           </div>
         )}
 
-      {/* M0: old Rulers removed — new tick/sub-tick rulers land in M1. */}
+      <BoardRulers
+        width={viewportSize.width}
+        height={viewportSize.height}
+        viewportZoom={viewportZoom}
+        panOffset={panOffset}
+        offset={originOffset}
+        unit={boardUnit}
+        onCycleUnit={() => setBoardUnit((prev) => cycleBoardUnit(prev))}
+        cursorScreen={null}
+        topSize={rulerSize}
+        leftSize={leftRulerWidth}
+        show={resolvedShowRulers && !projectionViewOnly}
+      />
 
       <View3DBlendSlider
         value={hybridView.blend}
