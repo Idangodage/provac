@@ -2563,7 +2563,7 @@ export function DrawingCanvas({
             height={hostHeight}
             viewportZoom={viewportZoom}
             panOffset={panOffset}
-            show={resolvedShowGrid && !projectionViewOnly}
+            show={resolvedShowGrid}
           />
           <canvas ref={canvasRef} className="relative z-[2] block" />
           <PipeKonvaInteractionLayer
@@ -2822,19 +2822,27 @@ export function DrawingCanvas({
           </div>
         )}
 
-      <BoardRulers
-        width={viewportSize.width}
-        height={viewportSize.height}
-        viewportZoom={viewportZoom}
-        panOffset={panOffset}
-        offset={originOffset}
-        unit={boardUnit}
-        onCycleUnit={() => setBoardUnit((prev) => cycleBoardUnit(prev))}
-        cursorScreen={null}
-        topSize={rulerSize}
-        leftSize={leftRulerWidth}
-        show={resolvedShowRulers && !projectionViewOnly}
-      />
+      <div
+        style={{
+          opacity: planLayerOpacity,
+          transition: hybridView.blend > 0 ? "opacity 120ms linear" : undefined,
+          pointerEvents: projectionViewOnly ? "none" : undefined,
+        }}
+      >
+        <BoardRulers
+          width={viewportSize.width}
+          height={viewportSize.height}
+          viewportZoom={viewportZoom}
+          panOffset={panOffset}
+          offset={originOffset}
+          unit={boardUnit}
+          onCycleUnit={() => setBoardUnit((prev) => cycleBoardUnit(prev))}
+          cursorScreen={null}
+          topSize={rulerSize}
+          leftSize={leftRulerWidth}
+          show={resolvedShowRulers}
+        />
+      </div>
     </div>
   );
 }
