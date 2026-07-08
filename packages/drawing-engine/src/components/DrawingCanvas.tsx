@@ -25,9 +25,6 @@ import {
   type OpeningPointerInteraction,
 } from "./DrawingCanvas.types";
 import {
-  Grid,
-  PageLayout,
-  Rulers,
   snapWallPoint,
   snapPointToGrid,
   MM_TO_PX,
@@ -2625,34 +2622,7 @@ export function DrawingCanvas({
             className="absolute inset-0"
             style={projectionPlaneStyle}
           >
-          <div className="absolute inset-0">
-            <PageLayout
-              pageWidth={pageConfig.width}
-              pageHeight={pageConfig.height}
-              zoom={zoom}
-              panOffset={overlayPanOffset}
-              dimOutside
-            />
-          </div>
-          <div className="absolute inset-0">
-            <Grid
-              pageWidth={pageConfig.width}
-              pageHeight={pageConfig.height}
-              zoom={zoom}
-              panOffset={overlayPanOffset}
-              gridSize={resolvedGridSize}
-              showGrid={resolvedShowGrid}
-              viewportWidth={hostWidth}
-              viewportHeight={hostHeight}
-              gridMode={gridMode}
-              paperUnit={paperUnit}
-              realWorldUnit={resolvedRealWorldUnit}
-              scaleDrawing={safeScaleDrawing}
-              scaleReal={safeScaleReal}
-              majorGridSize={majorGridSize}
-              gridSubdivisions={safeGridSubdivisions}
-            />
-          </div>
+          {/* M0: old Grid/PageLayout removed — new canvas board lands in M1. */}
           <canvas ref={canvasRef} className="relative z-[2] block" />
           <PipeKonvaInteractionLayer
             enabled={konvaPipeOverlayActive && !projectionViewOnly}
@@ -2910,35 +2880,7 @@ export function DrawingCanvas({
           </div>
         )}
 
-      <div
-        style={{
-          opacity: planLayerOpacity,
-          transition: hybridView.blend > 0 ? "opacity 120ms linear" : undefined,
-        }}
-      >
-        <Rulers
-          pageWidth={pageConfig.width}
-          pageHeight={pageConfig.height}
-          zoom={zoom}
-          panOffset={overlayPanOffset}
-          viewportWidth={hostWidth}
-          viewportHeight={hostHeight}
-          showRulers={resolvedShowRulers}
-          rulerSize={rulerSize}
-          originOffset={originOffset}
-          gridSize={resolvedGridSize}
-          displayUnit={resolvedRealWorldUnit}
-          mousePosition={rulerMousePosition}
-          rulerMode={rulerMode}
-          paperUnit={paperUnit}
-          realWorldUnit={resolvedRealWorldUnit}
-          scaleDrawing={safeScaleDrawing}
-          scaleReal={safeScaleReal}
-          majorTickInterval={majorTickInterval}
-          tickSubdivisions={tickSubdivisions}
-          showRulerLabels={showRulerLabels}
-        />
-      </div>
+      {/* M0: old Rulers removed — new tick/sub-tick rulers land in M1. */}
 
       <View3DBlendSlider
         value={hybridView.blend}
