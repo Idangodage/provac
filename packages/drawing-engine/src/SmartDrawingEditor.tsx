@@ -46,7 +46,6 @@ import {
   CoordinatesDisplay,
   AcEquipmentPanel,
 } from './components';
-import { ElevationViewCanvas } from './components/canvas/elevation';
 import {
   boardSettingsToCanvasProps,
   boardValueFromMm,
@@ -667,9 +666,6 @@ export function SmartDrawingEditor({
     pageConfig,
     displayUnit,
     boardSettings,
-    editorViewMode,
-    elevationViews,
-    elevationSettings,
     hvacElements,
   } = useSmartDrawingStore((state) => ({
     sketches: state.sketches,
@@ -688,9 +684,6 @@ export function SmartDrawingEditor({
     pageConfig: state.pageConfig,
     displayUnit: state.displayUnit,
     boardSettings: state.boardSettings,
-    editorViewMode: state.editorViewMode,
-    elevationViews: state.elevationViews,
-    elevationSettings: state.elevationSettings,
     hvacElements: state.hvacElements,
   }), shallow);
   const {
@@ -708,7 +701,6 @@ export function SmartDrawingEditor({
     setDisplayUnit,
     setZoom,
     setPanOffset,
-    setEditorViewMode,
   } = useSmartDrawingStore((state) => ({
     loadData: state.loadData,
     exportData: state.exportData,
@@ -724,7 +716,6 @@ export function SmartDrawingEditor({
     setDisplayUnit: state.setDisplayUnit,
     setZoom: state.setZoom,
     setPanOffset: state.setPanOffset,
-    setEditorViewMode: state.setEditorViewMode,
   }), shallow);
   const {
     zoom,
@@ -1474,158 +1465,36 @@ export function SmartDrawingEditor({
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex h-10 items-center gap-2 border-b border-amber-200/70 bg-[#fef9ec] px-2">
-            <div className="flex shrink-0 items-center gap-0.5">
-              <button
-                type="button"
-                onClick={() => setEditorViewMode('plan')}
-                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-                  editorViewMode === 'plan'
-                    ? 'bg-amber-200 text-amber-900 border border-amber-300'
-                    : 'text-slate-500 hover:bg-amber-50 border border-transparent'
-                }`}
-                title="Plan view"
-              >
-                <Layers size={12} />
-                Plan
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditorViewMode('split')}
-                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-                  editorViewMode === 'split'
-                    ? 'bg-amber-200 text-amber-900 border border-amber-300'
-                    : 'text-slate-500 hover:bg-amber-50 border border-transparent'
-                }`}
-                title="Split view (Plan + Elevation)"
-              >
-                <SplitSquareVertical size={12} />
-                Split
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditorViewMode('front-elevation')}
-                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-                  editorViewMode === 'front-elevation'
-                    ? 'bg-amber-200 text-amber-900 border border-amber-300'
-                    : 'text-slate-500 hover:bg-amber-50 border border-transparent'
-                }`}
-                title="Front elevation"
-              >
-                <ArrowUpFromLine size={12} />
-                Front
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditorViewMode('end-elevation')}
-                className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-                  editorViewMode === 'end-elevation'
-                    ? 'bg-amber-200 text-amber-900 border border-amber-300'
-                    : 'text-slate-500 hover:bg-amber-50 border border-transparent'
-                }`}
-                title="End elevation"
-              >
-                <ArrowRightFromLine size={12} />
-                End
-              </button>
-            </div>
             <div className="min-w-0 flex-1 self-stretch">
               <AttributeQuickToolbar className="h-full w-full !px-0" keepSpaceWhenHidden />
             </div>
           </div>
 
-          {editorViewMode === 'plan' && (
-            <DrawingCanvas
-              className="flex-1 bg-white"
-              onCanvasReady={handleCanvasReady}
-              showGrid={showGrid}
-              showRulers={showRulers}
-              snapToGrid={snapToGrid}
-              paperUnit={boardCanvasProps.paperUnit}
-              realWorldUnit={displayUnit}
-              scaleDrawing={boardCanvasProps.scaleDrawing}
-              scaleReal={boardCanvasProps.scaleReal}
-              rulerMode={boardCanvasProps.rulerMode}
-              majorTickInterval={boardCanvasProps.majorTickInterval}
-              tickSubdivisions={boardCanvasProps.tickSubdivisions}
-              showRulerLabels={boardCanvasProps.showRulerLabels}
-              gridMode={boardCanvasProps.gridMode}
-              majorGridSize={boardCanvasProps.majorGridSize}
-              gridSubdivisions={boardCanvasProps.gridSubdivisions}
-              objectDefinitions={architecturalObjects}
-              equipmentDefinitions={DEFAULT_AC_EQUIPMENT_LIBRARY}
-              pendingPlacementObjectId={pendingPlacementObjectId}
-              pendingPlacementEquipmentId={pendingPlacementEquipmentId}
-              onObjectPlaced={handleObjectPlaced}
-              onCancelObjectPlacement={handleCancelObjectPlacement}
-              onCancelEquipmentPlacement={handleCancelEquipmentPlacement}
-            />
-          )}
-
-          {editorViewMode === 'split' && (
-            <div className="flex flex-1 overflow-hidden">
-              <DrawingCanvas
-                className="flex-1 bg-white border-r border-amber-200/70"
-                onCanvasReady={handleCanvasReady}
-                showGrid={showGrid}
-                showRulers={showRulers}
-                snapToGrid={snapToGrid}
-                paperUnit={boardCanvasProps.paperUnit}
-                realWorldUnit={displayUnit}
-                scaleDrawing={boardCanvasProps.scaleDrawing}
-                scaleReal={boardCanvasProps.scaleReal}
-                rulerMode={boardCanvasProps.rulerMode}
-                majorTickInterval={boardCanvasProps.majorTickInterval}
-                tickSubdivisions={boardCanvasProps.tickSubdivisions}
-                showRulerLabels={boardCanvasProps.showRulerLabels}
-                gridMode={boardCanvasProps.gridMode}
-                majorGridSize={boardCanvasProps.majorGridSize}
-                gridSubdivisions={boardCanvasProps.gridSubdivisions}
-                objectDefinitions={architecturalObjects}
-                equipmentDefinitions={DEFAULT_AC_EQUIPMENT_LIBRARY}
-                pendingPlacementObjectId={pendingPlacementObjectId}
-                pendingPlacementEquipmentId={pendingPlacementEquipmentId}
-                onObjectPlaced={handleObjectPlaced}
-                onCancelObjectPlacement={handleCancelObjectPlacement}
-                onCancelEquipmentPlacement={handleCancelEquipmentPlacement}
-              />
-              <div className="flex flex-1 flex-col overflow-hidden">
-                <ElevationViewCanvas
-                  className="flex-1 border-b border-amber-200/40"
-                  elevationView={elevationViews.find((v) => v.kind === 'north') ?? null}
-                  elevationSettings={elevationSettings}
-                  viewLabel="FRONT ELEVATION"
-                  roomHeightMm={rooms[0]?.properties3D?.ceilingHeight ?? 2700}
-                />
-                <ElevationViewCanvas
-                  className="flex-1"
-                  elevationView={elevationViews.find((v) => v.kind === 'east') ?? null}
-                  elevationSettings={elevationSettings}
-                  viewLabel="END ELEVATION"
-                  roomHeightMm={rooms[0]?.properties3D?.ceilingHeight ?? 2700}
-                />
-              </div>
-            </div>
-          )}
-
-          {editorViewMode === 'front-elevation' && (
-            <ElevationViewCanvas
-              className="flex-1"
-              elevationView={elevationViews.find((v) => v.kind === 'north') ?? elevationViews.find((v) => v.kind === 'custom') ?? null}
-              elevationSettings={elevationSettings}
-              viewLabel="FRONT ELEVATION"
-              roomHeightMm={rooms[0]?.properties3D?.ceilingHeight ?? 2700}
-            />
-          )}
-
-          {editorViewMode === 'end-elevation' && (
-            <ElevationViewCanvas
-              className="flex-1"
-              elevationView={elevationViews.find((v) => v.kind === 'east') ?? elevationViews.find((v) => v.kind === 'custom') ?? null}
-              elevationSettings={elevationSettings}
-              viewLabel="END ELEVATION"
-              roomHeightMm={rooms[0]?.properties3D?.ceilingHeight ?? 2700}
-            />
-          )}
+          <DrawingCanvas
+            className="flex-1 bg-white"
+            onCanvasReady={handleCanvasReady}
+            showGrid={showGrid}
+            showRulers={showRulers}
+            snapToGrid={snapToGrid}
+            paperUnit={boardCanvasProps.paperUnit}
+            realWorldUnit={displayUnit}
+            scaleDrawing={boardCanvasProps.scaleDrawing}
+            scaleReal={boardCanvasProps.scaleReal}
+            rulerMode={boardCanvasProps.rulerMode}
+            majorTickInterval={boardCanvasProps.majorTickInterval}
+            tickSubdivisions={boardCanvasProps.tickSubdivisions}
+            showRulerLabels={boardCanvasProps.showRulerLabels}
+            gridMode={boardCanvasProps.gridMode}
+            majorGridSize={boardCanvasProps.majorGridSize}
+            gridSubdivisions={boardCanvasProps.gridSubdivisions}
+            objectDefinitions={architecturalObjects}
+            equipmentDefinitions={DEFAULT_AC_EQUIPMENT_LIBRARY}
+            pendingPlacementObjectId={pendingPlacementObjectId}
+            pendingPlacementEquipmentId={pendingPlacementEquipmentId}
+            onObjectPlaced={handleObjectPlaced}
+            onCancelObjectPlacement={handleCancelObjectPlacement}
+            onCancelEquipmentPlacement={handleCancelEquipmentPlacement}
+          />
 
         </div>
 
