@@ -722,16 +722,18 @@ export function DrawingCanvas({
   const planLayerOpacity = clampNumber(1 - hybridView.blend, 0, 1);
   const projectionPlaneStyle = useMemo(
     () => ({
+      // No CSS tilt: the flat DOM is ONLY the crisp editing surface. The moment the
+      // plane tilts it fades out and the single 3D scene (grid + object meshes, which
+      // orbit together via camera-controls) becomes the view — so objects always
+      // rotate WITH the plane, never independently.
       opacity: planLayerOpacity,
-      transform: `rotateX(${hybridView.pitchDeg}deg)`,
-      transformOrigin: "center center",
-      transition: hybridView.isInteracting ? "none" : "transform 120ms ease-out, opacity 120ms linear",
-      willChange: "transform, opacity" as const,
-      // Sit above the 3D canvas (z-0) so the crisp DOM content overlays the 3D
-      // scene; as it fades on tilt, the 3D grid + content (below) take over.
+      transition: hybridView.isInteracting ? "none" : "opacity 90ms linear",
+      willChange: "opacity" as const,
+      // Sit above the 3D canvas (z-0) so the crisp DOM overlays the 3D scene while
+      // flat; as it fades on tilt, the 3D grid + content (below) take over.
       zIndex: 1 as const,
     }),
-    [planLayerOpacity, hybridView.isInteracting, hybridView.pitchDeg],
+    [planLayerOpacity, hybridView.isInteracting],
   );
 
   const objectDefinitionsById = useMemo(
@@ -941,17 +943,13 @@ export function DrawingCanvas({
   // 2D board fades out over the first few degrees of tilt as the 3D scene fades in.
   const handleHybridPolarChange = useCallback(
     (polar: number) => {
-      const polarDeg = polar * (180 / Math.PI);
-      // Cross-dissolve over the first ~14° of tilt (DOM tilts with it the whole way).
-      const blend = clampNumber(polar / (14 * (Math.PI / 180)), 0, 1);
+      // Hand the flat DOM off to the 3D scene within the first few degrees of tilt,
+      // near top-down where the two match — beyond that everything is the one 3D
+      // scene (grid + objects) orbiting together.
+      const blend = clampNumber(polar / (4 * (Math.PI / 180)), 0, 1);
       commitHybridView((previous) => {
-        if (
-          Math.abs(previous.blend - blend) < 0.0005 &&
-          Math.abs(previous.pitchDeg - polarDeg) < 0.05
-        ) {
-          return previous;
-        }
-        return { ...previous, blend, pitchDeg: polarDeg, isInteracting: blend > 0.001 };
+        if (Math.abs(previous.blend - blend) < 0.0005) return previous;
+        return { ...previous, blend, isInteracting: blend > 0.001 };
       });
     },
     [commitHybridView],
