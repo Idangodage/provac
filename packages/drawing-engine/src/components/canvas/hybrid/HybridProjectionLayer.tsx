@@ -7,6 +7,7 @@ import type { ArchitecturalObjectDefinition } from "../../../data";
 import type { HvacElement, Point2D, Room, SymbolInstance2D, Wall } from "../../../types";
 import { computeBoardGridSteps } from "../board/boardGridMath";
 import { MM_TO_PX } from "../scale";
+import { HybridViewportController } from "./hybridViewportController";
 import {
   buildRefrigerantPipeEndpointRenderStateMap,
   buildRefrigerantPipeRenderChainStateMap,
@@ -35,9 +36,15 @@ export interface HybridProjectionLayerProps {
   height: number;
   pageWidth: number;
   pageHeight: number;
-  /** Real-world zoom (== DrawingCanvas viewportZoom) — drives ground-grid density. */
+  /** Real-world zoom (== DrawingCanvas viewportZoom) — drives ground-grid density + ortho scale. */
   viewportZoom: number;
+  /** Scene-pixel pan (== DrawingCanvas panOffset) — drives the ortho camera centre. */
+  panOffset: Point2D;
   view: Hybrid3DViewState;
+  /** DOM element camera-controls attaches to for the RMB tilt (the interactive host). */
+  interactionElement: HTMLElement | null;
+  /** Live polar (tilt) angle in radians from camera-controls, for the host to derive blend. */
+  onPolarChange?: (polar: number) => void;
   walls: Wall[];
   rooms: Room[];
   symbols: SymbolInstance2D[];
@@ -484,7 +491,10 @@ export function HybridProjectionLayer({
   pageWidth,
   pageHeight,
   viewportZoom,
+  panOffset,
   view,
+  interactionElement,
+  onPolarChange,
   walls,
   rooms,
   symbols,
@@ -494,6 +504,13 @@ export function HybridProjectionLayer({
 }: HybridProjectionLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sceneStateRef = useRef<SceneState | null>(null);
+  const controllerRef = useRef<HybridViewportController | null>(null);
+  const requestFrameRef = useRef<(() => void) | null>(null);
+  // Live prop mirrors so the render pump reads current values without re-subscribing.
+  const boardRef = useRef({ width, height, viewportZoom, panOffset, blend: view.blend });
+  boardRef.current = { width, height, viewportZoom, panOffset, blend: view.blend };
+  const onPolarChangeRef = useRef(onPolarChange);
+  onPolarChangeRef.current = onPolarChange;
   const [wallBands, setWallBands] = useState<IsometricWallBand[]>([]);
   const wallBandSignature = useMemo(() => buildIsometricWallBandsSignature(walls), [walls]);
   const objectDefinitionsById = useMemo(
@@ -522,28 +539,85 @@ export function HybridProjectionLayer({
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || sceneStateRef.current) return;
+    if (!canvas || !interactionElement) return;
 
+    let sceneState: SceneState;
     try {
-      const sceneState = createSceneState(canvas);
-      sceneStateRef.current = sceneState;
-      const handleContextLost = (event: Event) => {
-        event.preventDefault();
-        onWebglUnavailable?.();
-      };
-      canvas.addEventListener("webglcontextlost", handleContextLost, false);
-
-      return () => {
-        canvas.removeEventListener("webglcontextlost", handleContextLost, false);
-        clearGroup(sceneState.root);
-        sceneState.renderer.dispose();
-        sceneStateRef.current = null;
-      };
+      sceneState = createSceneState(canvas);
     } catch {
       onWebglUnavailable?.();
       return undefined;
     }
-  }, [onWebglUnavailable]);
+    sceneStateRef.current = sceneState;
+
+    const controller = new HybridViewportController();
+    controllerRef.current = controller;
+    controller.attach(
+      interactionElement,
+      Math.max(1, boardRef.current.width),
+      Math.max(1, boardRef.current.height),
+    );
+
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      onWebglUnavailable?.();
+    };
+    canvas.addEventListener("webglcontextlost", handleContextLost, false);
+
+    let raf: number | null = null;
+    let lastTs = typeof performance !== "undefined" ? performance.now() : 0;
+
+    // One frame: board zoom/centre → ortho camera, camera-controls adds the tilt,
+    // grid density follows the zoom, render. Returns true while still animating.
+    const renderScene = (delta: number): boolean => {
+      const s = sceneStateRef.current;
+      if (!s) return false;
+      const { width: w0, height: h0, viewportZoom: z0, panOffset: pan } = boardRef.current;
+      const w = Math.max(1, Math.floor(w0));
+      const h = Math.max(1, Math.floor(h0));
+      const z = Math.max(z0, 1e-6);
+      const pixelRatio =
+        typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
+      s.renderer.setPixelRatio(pixelRatio);
+      s.renderer.setSize(w, h, false);
+      controller.setSize(w, h);
+      const pxPerMm = MM_TO_PX * z;
+      const centerX = (w / 2 / z + pan.x) / MM_TO_PX;
+      const centerY = (h / 2 / z + pan.y) / MM_TO_PX;
+      controller.syncBoard(pxPerMm, centerX, centerY, 0);
+      const animating = controller.update(delta);
+      s.groundGridMaterial.uniforms.uMinor.value = computeBoardGridSteps(z).minorMm;
+      s.groundGridMaterial.uniforms.uMajor.value = computeBoardGridSteps(z).majorMm;
+      s.renderer.render(s.scene, controller.camera);
+      onPolarChangeRef.current?.(controller.polar);
+      return animating;
+    };
+
+    const frame = (ts: number): void => {
+      raf = null;
+      const delta = Math.min(0.05, (ts - lastTs) / 1000);
+      lastTs = ts;
+      const animating = renderScene(delta);
+      if (animating || boardRef.current.blend > 0.001) request();
+    };
+    const request = (): void => {
+      if (raf == null && typeof window !== "undefined") raf = window.requestAnimationFrame(frame);
+    };
+    controller.onChange = request;
+    requestFrameRef.current = request;
+    request();
+
+    return () => {
+      canvas.removeEventListener("webglcontextlost", handleContextLost, false);
+      if (raf != null && typeof window !== "undefined") window.cancelAnimationFrame(raf);
+      requestFrameRef.current = null;
+      controller.dispose();
+      controllerRef.current = null;
+      clearGroup(sceneState.root);
+      sceneState.renderer.dispose();
+      sceneStateRef.current = null;
+    };
+  }, [interactionElement, onWebglUnavailable]);
 
   useEffect(() => {
     const sceneState = sceneStateRef.current;
@@ -594,6 +668,7 @@ export function HybridProjectionLayer({
       tuneHvacMesh(mesh);
       sceneState.root.add(mesh);
     });
+    requestFrameRef.current?.();
   }, [
     hvacElements,
     objectDefinitionsById,
@@ -605,33 +680,29 @@ export function HybridProjectionLayer({
     walls,
   ]);
 
+  // Any prop change (size / zoom / pan / blend / content) requests a fresh frame
+  // from the camera-controls render pump.
   useEffect(() => {
-    const sceneState = sceneStateRef.current;
-    if (!sceneState) return;
+    requestFrameRef.current?.();
+  }, [
+    width,
+    height,
+    viewportZoom,
+    panOffset.x,
+    panOffset.y,
+    view.blend,
+    wallBands,
+    rooms,
+    walls,
+    symbols,
+    hvacElements,
+  ]);
 
-    const pixelRatio =
-      typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
-    const safeWidth = Math.max(1, Math.floor(width));
-    const safeHeight = Math.max(1, Math.floor(height));
-    sceneState.renderer.setPixelRatio(pixelRatio);
-    sceneState.renderer.setSize(safeWidth, safeHeight, false);
-    // Match the ground-grid density to the 2D board's 1-2-5 ladder at this zoom.
-    const steps = computeBoardGridSteps(Math.max(viewportZoom, 1e-6));
-    const uniforms = sceneState.groundGridMaterial.uniforms;
-    uniforms.uMinor.value = steps.minorMm;
-    uniforms.uMajor.value = steps.majorMm;
-    updateCamera(sceneState, view, safeWidth, safeHeight, viewportZoom);
-    sceneState.renderer.render(sceneState.scene, sceneState.camera);
-  }, [height, view, viewportZoom, width, wallBands, rooms, walls, symbols, hvacElements]);
-
-  if (view.blend <= 0.001 || width <= 0 || height <= 0) {
-    return null;
-  }
-
-  // Cross-dissolve the 3D scene in *as the flat DOM plane fades out* (which
-  // happens by blend 0.18) so the grid never visibly disappears — the in-scene
-  // ground grid simply takes over from the 2D board grid.
-  const revealOpacity = smoothstep(0.03, 0.18, view.blend);
+  // The canvas ALWAYS renders (even flat) so camera-controls stays attached and can
+  // catch the RMB-down that starts a tilt; it's just invisible until the plane tilts.
+  // Cross-dissolve the 3D scene in as the flat DOM plane fades out (by blend 0.18).
+  const revealOpacity =
+    width <= 0 || height <= 0 ? 0 : smoothstep(0.03, 0.18, view.blend);
 
   return (
     <canvas

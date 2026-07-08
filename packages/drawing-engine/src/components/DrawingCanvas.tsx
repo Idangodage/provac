@@ -271,7 +271,7 @@ export function DrawingCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const snapOverlayRef = useRef<HTMLCanvasElement>(null); // [SNAP WIRE] overlay for snap indicators
   const outerRef = useRef<HTMLDivElement>(null);
-  const hostRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const fabricRef = useRef<fabric.Canvas | null>(null);
   const roomRendererRef = useRef<RoomRenderer | null>(null);
   const dimensionRendererRef = useRef<DimensionRenderer | null>(null);
@@ -336,6 +336,8 @@ export function DrawingCanvas({
   const [placementValid, setPlacementValid] = useState(true);
   // Board rulers' active display unit (cycles mm → cm → m via the corner box).
   const [boardUnit, setBoardUnit] = useState<BoardUnit>("mm");
+  // The host element camera-controls attaches to for the RMB 2D→3D tilt.
+  const [interactionEl, setInteractionEl] = useState<HTMLElement | null>(null);
   const [openingInteractionActive, setOpeningInteractionActive] =
     useState(false);
   const [isHandleDragging, setIsHandleDragging] = useState(false);
@@ -917,193 +919,19 @@ export function DrawingCanvas({
     resetHybridView();
   }, [resetHybridView]);
 
-  useEffect(() => {
-    const canvas = fabricRef.current;
-    const upperCanvasEl = canvas?.upperCanvasEl;
-    if (!canvas || !upperCanvasEl) {
-      return;
-    }
-
-    const closeAllContextMenus = () => {
-      closeWallContextMenu();
-      closeDimensionContextMenu();
-      closeSectionLineContextMenu();
-      closeObjectContextMenu();
-    };
-
-    const scenePointFromEvent = (event: MouseEvent): Point2D => {
-      const scenePoint = canvas.getScenePoint(
-        event as unknown as fabric.TPointerEvent,
-      );
-      return {
-        x: scenePoint.x / MM_TO_PX,
-        y: scenePoint.y / MM_TO_PX,
-      };
-    };
-
-    const stopPlainRmbEvent = (event: MouseEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-    };
-
-    // Plan⇄tilt magnetics (SPEC §10): releasing near flat settles the plane back
-    // to exact 2D; otherwise it stays at the tilt the drag left it.
-    const finishHybridDrag = () => {
-      if (!hybridDragRef.current?.active) {
-        return;
-      }
-      hybridDragRef.current = null;
-      if (hybridViewRef.current.blend < 0.06) {
-        animateHybridBlend(0);
-      }
-      commitHybridView((previous) => ({
-        ...previous,
-        isInteracting: false,
-      }));
-    };
-
-    const engageFraming = (current: Hybrid3DViewState) => {
-      if (current.blend > 0.05) {
-        return { targetMm: current.targetMm, distanceMm: current.distanceMm };
-      }
-      // Pivot the tilt around whatever is at the viewport centre, at a distance
-      // whose apparent scale matches the 2D board — so the 3D view starts exactly
-      // where the flat plan is (no jump to origin, no blank at high zoom).
-      const pivotMm = {
-        x: (hostWidth / 2 / viewportZoom + panOffset.x) / MM_TO_PX,
-        y: (hostHeight / 2 / viewportZoom + panOffset.y) / MM_TO_PX,
-      };
-      const fovDeg = 30 + 0.32 * 14; // start pose perspectiveStrength ≈ 0.32
-      const tanHalfFov = Math.tan((fovDeg * Math.PI) / 360);
-      const distanceMm = clampNumber(
-        hostHeight / (2 * tanHalfFov * viewportZoom * MM_TO_PX),
-        800,
-        220000,
-      );
-      return { targetMm: pivotMm, distanceMm };
-    };
-
-    // Right-drag grabs the *same* plane and tilts it into 3D — the sole 2D→3D
-    // affordance (no slider). Down only arms + re-frames (invisibly while flat);
-    // the tilt follows the drag continuously.
-    const handleRightMouseDown = (event: MouseEvent) => {
-      if (event.button !== 2 || event.shiftKey) {
-        return;
-      }
-      stopPlainRmbEvent(event);
-      closeAllContextMenus();
-      const anchorPointMm = scenePointFromEvent(event);
-      const canvasBounds = upperCanvasEl.getBoundingClientRect();
-      const anchorScreen: HybridAnchorScreen = {
-        x: event.clientX - canvasBounds.left,
-        y: event.clientY - canvasBounds.top,
-        width: Math.max(1, canvasBounds.width || hostWidth),
-        height: Math.max(1, canvasBounds.height || hostHeight),
-      };
-      const current = hybridViewRef.current;
-      const framing = engageFraming(current);
-      hybridDragRef.current = {
-        active: true,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        startView: { ...current, ...framing },
-        anchorPointMm,
-        anchorScreen,
-      };
-      commitHybridView((previous) => ({
-        ...previous,
-        ...framing,
-        isInteracting: true,
-      }));
-    };
-
-    const handleRightMouseMove = (event: MouseEvent) => {
-      const drag = hybridDragRef.current;
-      if (!drag?.active) {
-        return;
-      }
-      if ((event.buttons & 2) !== 2) {
-        finishHybridDrag();
-        return;
-      }
-      stopPlainRmbEvent(event);
-      const dx = event.clientX - drag.startClientX;
-      const dy = event.clientY - drag.startClientY;
-      // Vertical drag = blend (drag down lifts the flat plan into full 3D);
-      // horizontal drag = yaw. Pitch derives from blend so every notch reads.
-      const nextBlend = clampNumber(drag.startView.blend + dy / 240, 0, 1);
-      // Fixed-pivot orbit around the model centre (target + distance stay put —
-      // no sliding): pitch eases 82° (≈ top-down / plan) → 38° (isometric) as
-      // the plane tilts; horizontal drag orbits (yaw).
-      const nextPitch = clampNumber(82 - nextBlend * 44, 38, 82);
-      commitHybridView((previous) => ({
-        ...previous,
-        blend: nextBlend,
-        yawDeg: drag.startView.yawDeg + dx * 0.22,
-        pitchDeg: nextPitch,
-        perspectiveStrength: clampNumber(0.32 + nextBlend * 0.32, 0.3, 0.72),
-        targetMm: drag.startView.targetMm,
-        distanceMm: drag.startView.distanceMm,
-        isInteracting: true,
-      }));
-    };
-
-    const handleRightMouseUp = (event: MouseEvent) => {
-      if (event.button !== 2 && !hybridDragRef.current?.active) {
-        return;
-      }
-      if (hybridDragRef.current?.active) {
-        stopPlainRmbEvent(event);
-      }
-      finishHybridDrag();
-    };
-
-    const handleContextMenu = (event: MouseEvent) => {
-      if (event.shiftKey) {
-        return;
-      }
-      stopPlainRmbEvent(event);
-    };
-
-    const handleDoubleClick = (event: MouseEvent) => {
-      if (hybridViewRef.current.blend <= 0.05) {
-        return;
-      }
-      stopPlainRmbEvent(event);
-      resetHybridView();
-    };
-
-    upperCanvasEl.addEventListener("mousedown", handleRightMouseDown, true);
-    upperCanvasEl.addEventListener("contextmenu", handleContextMenu, true);
-    upperCanvasEl.addEventListener("dblclick", handleDoubleClick, true);
-    window.addEventListener("mousemove", handleRightMouseMove, true);
-    window.addEventListener("mouseup", handleRightMouseUp, true);
-    window.addEventListener("blur", finishHybridDrag);
-
-    return () => {
-      upperCanvasEl.removeEventListener("mousedown", handleRightMouseDown, true);
-      upperCanvasEl.removeEventListener("contextmenu", handleContextMenu, true);
-      upperCanvasEl.removeEventListener("dblclick", handleDoubleClick, true);
-      window.removeEventListener("mousemove", handleRightMouseMove, true);
-      window.removeEventListener("mouseup", handleRightMouseUp, true);
-      window.removeEventListener("blur", finishHybridDrag);
-    };
-  }, [
-    animateHybridBlend,
-    closeDimensionContextMenu,
-    closeObjectContextMenu,
-    closeSectionLineContextMenu,
-    closeWallContextMenu,
-    commitHybridView,
-    fabricCanvas,
-    hostHeight,
-    hostWidth,
-    viewportZoom,
-    panOffset.x,
-    panOffset.y,
-    resetHybridView,
-  ]);
+  // camera-controls (in HybridProjectionLayer) owns the RMB tilt now. The DOM↔3D
+  // cross-dissolve `blend` derives from the live polar angle it reports: the flat
+  // 2D board fades out over the first few degrees of tilt as the 3D scene fades in.
+  const handleHybridPolarChange = useCallback(
+    (polar: number) => {
+      const blend = clampNumber(polar / (10 * (Math.PI / 180)), 0, 1); // 0 → full by ~10°
+      commitHybridView((previous) => {
+        if (Math.abs(previous.blend - blend) < 0.0005) return previous;
+        return { ...previous, blend, isInteracting: blend > 0.001 };
+      });
+    },
+    [commitHybridView],
+  );
 
   const pendingPlacementDefinition = pendingPlacementObjectId
     ? (objectDefinitionsById.get(pendingPlacementObjectId) ?? null)
@@ -2517,7 +2345,10 @@ export function DrawingCanvas({
       className={`relative w-full h-full overflow-hidden ${className}`}
     >
       <div
-        ref={hostRef}
+        ref={(el) => {
+          hostRef.current = el;
+          setInteractionEl(el);
+        }}
         className="absolute"
         style={{
           top: originOffset.y,
@@ -2637,7 +2468,10 @@ export function DrawingCanvas({
           pageWidth={pageConfig.width}
           pageHeight={pageConfig.height}
           viewportZoom={viewportZoom}
+          panOffset={panOffset}
           view={hybridView}
+          interactionElement={interactionEl}
+          onPolarChange={handleHybridPolarChange}
           walls={walls}
           rooms={rooms}
           symbols={symbols}
