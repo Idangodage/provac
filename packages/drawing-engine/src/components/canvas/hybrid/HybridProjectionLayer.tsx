@@ -294,20 +294,30 @@ function clearGroup(group: THREE.Group): void {
 }
 
 const GROUND_GRID_MINOR_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0x94a3b8,
+  color: 0x9aa7b8,
   transparent: true,
-  opacity: 0.22,
+  opacity: 0.26,
 });
 const GROUND_GRID_MAJOR_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0x475569,
+  color: 0x5b6b7f,
   transparent: true,
-  opacity: 0.42,
+  opacity: 0.5,
+});
+const GROUND_AXIS_X_MATERIAL = new THREE.LineBasicMaterial({
+  color: 0xdc4444,
+  transparent: true,
+  opacity: 0.85,
+});
+const GROUND_AXIS_Y_MATERIAL = new THREE.LineBasicMaterial({
+  color: 0x22a05a,
+  transparent: true,
+  opacity: 0.85,
 });
 
 /**
  * A fixed ground grid on z=0 (world mm) so the grid stays visible as the camera
- * tilts from plan into 3D — the SketchUp-style reference plane. Minor 1 m, major
- * 5 m, over a generous extent centred on the origin.
+ * tilts from plan into 3D — the SketchUp/reference-app floor plane. Minor 1 m,
+ * major 5 m, emphasised red X / green Y world axes, over a generous extent.
  */
 function createGroundGrid(): THREE.Object3D {
   const extent = 80000; // ±80 m
@@ -316,6 +326,7 @@ function createGroundGrid(): THREE.Object3D {
   const minorPts: number[] = [];
   const majorPts: number[] = [];
   for (let v = -extent; v <= extent + 1e-6; v += minor) {
+    if (Math.abs(v) < 1e-6) continue; // origin lines drawn as coloured axes
     const isMajor = Math.abs(v % major) < 1e-6;
     const target = isMajor ? majorPts : minorPts;
     target.push(-extent, v, 0, extent, v, 0); // line parallel to X
@@ -324,18 +335,17 @@ function createGroundGrid(): THREE.Object3D {
   const group = new THREE.Group();
   group.name = "hybrid-ground-grid";
   group.position.z = -0.5;
-  const minorGeometry = new THREE.BufferGeometry();
-  minorGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(minorPts, 3),
-  );
-  group.add(new THREE.LineSegments(minorGeometry, GROUND_GRID_MINOR_MATERIAL));
-  const majorGeometry = new THREE.BufferGeometry();
-  majorGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(majorPts, 3),
-  );
-  group.add(new THREE.LineSegments(majorGeometry, GROUND_GRID_MAJOR_MATERIAL));
+
+  const addSegments = (pts: number[], material: THREE.LineBasicMaterial) => {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+    group.add(new THREE.LineSegments(geometry, material));
+  };
+  addSegments(minorPts, GROUND_GRID_MINOR_MATERIAL);
+  addSegments(majorPts, GROUND_GRID_MAJOR_MATERIAL);
+  // World axes through the origin (X = red / east, Y = green / north).
+  addSegments([-extent, 0, 0, extent, 0, 0], GROUND_AXIS_X_MATERIAL);
+  addSegments([0, -extent, 0, 0, extent, 0], GROUND_AXIS_Y_MATERIAL);
   return group;
 }
 
