@@ -80,10 +80,6 @@ import {
   type Hybrid3DViewState,
 } from "./canvas/hybrid/HybridProjectionLayer";
 import {
-  View3DBlendSlider,
-  type BlendChangePhase,
-} from "./canvas/hybrid/View3DBlendSlider";
-import {
   BoardGrid,
   BoardRulers,
   cycleBoardUnit,
@@ -938,68 +934,6 @@ export function DrawingCanvas({
     animateHybridBlend(0);
   }, [animateHybridBlend, commitHybridView]);
 
-  // Centre + scale only: frame the 3D camera on the world point currently at the
-  // 2D viewport centre, at a distance whose apparent scale matches the plan, so
-  // the model that fades in sits exactly where the drawing already is. Camera
-  // angle (yaw/pitch) is driven separately by blend so the engage pose starts
-  // near top-down/unrotated and only diverges into 3D as the slider rises.
-  const computeHybridFramingToViewport = useCallback((): Pick<
-    Hybrid3DViewState,
-    "targetMm" | "distanceMm"
-  > => {
-    const worldCenterX =
-      (hostWidth / 2 / viewportZoom + panOffset.x) / MM_TO_PX;
-    const worldCenterY =
-      (hostHeight / 2 / viewportZoom + panOffset.y) / MM_TO_PX;
-    const fovDeg =
-      30 + clampNumber(DEFAULT_HYBRID_VIEW.perspectiveStrength, 0, 1) * 14;
-    const tanHalfFov = Math.tan((fovDeg * Math.PI) / 360);
-    const distanceMm = clampNumber(
-      hostHeight / (2 * tanHalfFov * viewportZoom * MM_TO_PX),
-      800,
-      220000,
-    );
-    return {
-      targetMm: { x: worldCenterX, y: worldCenterY },
-      distanceMm,
-    };
-  }, [hostWidth, hostHeight, viewportZoom, panOffset.x, panOffset.y]);
-
-  // The slider owns `blend` (0 = flat 2D, 1 = full 3D). Blend drops the camera
-  // pitch from near top-down toward a dramatic iso angle (yaw stays at the iso
-  // default), so every notch visibly lifts the view; the solid model is faint
-  // while near top-down and only reads once clearly 3D. Centre/scale re-frame to
-  // the current viewport on leaving flat 2D so the model sits over the drawing.
-  const handleBlendSliderChange = useCallback(
-    (value: number, phase: BlendChangePhase) => {
-      if (
-        hybridBlendFrameRef.current !== null &&
-        typeof window !== "undefined"
-      ) {
-        window.cancelAnimationFrame(hybridBlendFrameRef.current);
-        hybridBlendFrameRef.current = null;
-      }
-      hybridDragRef.current = null;
-      const target = clampNumber(value, 0, 1);
-      commitHybridView((previous) => {
-        const engaging = previous.blend <= 0.02 && target > 0.02;
-        const framing = engaging ? computeHybridFramingToViewport() : null;
-        const settleToFlat = phase === "end" && target <= 0.02;
-        const resolvedBlend = settleToFlat ? 0 : target;
-        return {
-          ...previous,
-          ...(framing ?? {}),
-          blend: resolvedBlend,
-          yawDeg: DEFAULT_HYBRID_VIEW.yawDeg,
-          pitchDeg: clampNumber(82 - resolvedBlend * 40, 42, 82),
-          perspectiveStrength: DEFAULT_HYBRID_VIEW.perspectiveStrength,
-          isInteracting: phase !== "end",
-        };
-      });
-    },
-    [commitHybridView, computeHybridFramingToViewport],
-  );
-
   useEffect(() => {
     if (resetViewRequestId > 0) {
       resetHybridView();
@@ -1051,17 +985,33 @@ export function DrawingCanvas({
       event.stopImmediatePropagation();
     };
 
+    // Plan⇄tilt magnetics (SPEC §10): releasing near flat settles the plane back
+    // to exact 2D; otherwise it stays at the tilt the drag left it.
     const finishHybridDrag = () => {
       if (!hybridDragRef.current?.active) {
         return;
       }
       hybridDragRef.current = null;
+      if (hybridViewRef.current.blend < 0.06) {
+        animateHybridBlend(0);
+      }
       commitHybridView((previous) => ({
         ...previous,
         isInteracting: false,
       }));
     };
 
+    const engageFraming = (current: Hybrid3DViewState) =>
+      current.blend > 0.05
+        ? { targetMm: current.targetMm, distanceMm: current.distanceMm }
+        : {
+            targetMm: hybridDrawingBounds.center,
+            distanceMm: Math.max(2500, hybridDrawingBounds.radius * 2.6),
+          };
+
+    // Right-drag grabs the *same* plane and tilts it into 3D — the sole 2D→3D
+    // affordance (no slider). Down only arms + re-frames (invisibly while flat);
+    // the tilt follows the drag continuously.
     const handleRightMouseDown = (event: MouseEvent) => {
       if (event.button !== 2 || event.shiftKey) {
         return;
@@ -1077,37 +1027,20 @@ export function DrawingCanvas({
         height: Math.max(1, canvasBounds.height || hostHeight),
       };
       const current = hybridViewRef.current;
-      const nextView = stabilizeHybridAnchor(
-        {
-          ...current,
-          blend: Math.max(current.blend, 0.08),
-          targetMm:
-            current.blend > 0.05
-              ? current.targetMm
-              : hybridDrawingBounds.center,
-          distanceMm:
-            current.blend > 0.05
-              ? current.distanceMm
-              : Math.max(2500, hybridDrawingBounds.radius * 2.6),
-          isInteracting: true,
-        },
-        anchorPointMm,
-        anchorScreen,
-      );
+      const framing = engageFraming(current);
       hybridDragRef.current = {
         active: true,
         startClientX: event.clientX,
         startClientY: event.clientY,
-        startView: nextView,
+        startView: { ...current, ...framing },
         anchorPointMm,
         anchorScreen,
       };
-      commitHybridView(nextView);
-      // Right-drag from flat 2D is a quick shortcut into full 3D; once already
-      // morphed (e.g. via the slider) it just orbits at the current blend.
-      if (current.blend <= 0.05) {
-        animateHybridBlend(1);
-      }
+      commitHybridView((previous) => ({
+        ...previous,
+        ...framing,
+        isInteracting: true,
+      }));
     };
 
     const handleRightMouseMove = (event: MouseEvent) => {
@@ -1122,23 +1055,18 @@ export function DrawingCanvas({
       stopPlainRmbEvent(event);
       const dx = event.clientX - drag.startClientX;
       const dy = event.clientY - drag.startClientY;
-      const nextPitch = clampNumber(
-        drag.startView.pitchDeg - dy * 0.16,
-        24,
-        78,
-      );
+      // Vertical drag = blend (drag down lifts the flat plan into full 3D);
+      // horizontal drag = yaw. Pitch derives from blend so every notch reads.
+      const nextBlend = clampNumber(drag.startView.blend + dy / 240, 0, 1);
+      const nextPitch = clampNumber(82 - nextBlend * 44, 38, 82);
       commitHybridView((previous) =>
         stabilizeHybridAnchor(
           {
             ...previous,
-            blend: Math.max(previous.blend, 0.08),
+            blend: nextBlend,
             yawDeg: drag.startView.yawDeg + dx * 0.22,
             pitchDeg: nextPitch,
-            perspectiveStrength: clampNumber(
-              0.52 + (78 - nextPitch) / 70,
-              0.45,
-              1,
-            ),
+            perspectiveStrength: clampNumber(0.5 + nextBlend * 0.4, 0.45, 1),
             targetMm: drag.startView.targetMm,
             distanceMm: drag.startView.distanceMm,
             isInteracting: true,
@@ -2906,11 +2834,6 @@ export function DrawingCanvas({
         topSize={rulerSize}
         leftSize={leftRulerWidth}
         show={resolvedShowRulers && !projectionViewOnly}
-      />
-
-      <View3DBlendSlider
-        value={hybridView.blend}
-        onChange={handleBlendSliderChange}
       />
     </div>
   );
