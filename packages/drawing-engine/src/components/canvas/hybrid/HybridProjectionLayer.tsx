@@ -45,6 +45,15 @@ export interface HybridProjectionLayerProps {
   interactionElement: HTMLElement | null;
   /** Live polar (tilt) angle in radians from camera-controls, for the host to derive blend. */
   onPolarChange?: (polar: number) => void;
+  /** TEMP diagnostic: live camera/scale values for the on-screen debug readout. */
+  onDebug?: (info: {
+    vz: number;
+    pxPerMm: number;
+    camZoom: number;
+    polarDeg: number;
+    cx: number;
+    cy: number;
+  }) => void;
   walls: Wall[];
   rooms: Room[];
   symbols: SymbolInstance2D[];
@@ -349,9 +358,9 @@ const GROUND_GRID_FRAGMENT = `
     float ay = axisMask(vWorld.x); // line along +Y (x = 0)
 
     vec3 color = uMinorColor;
-    float alpha = minor * 0.45;
+    float alpha = minor * 0.3;
     color = mix(color, uMajorColor, major);
-    alpha = max(alpha, major * 0.78);
+    alpha = max(alpha, major * 0.5);
     color = mix(color, uAxisX, ax);
     alpha = max(alpha, ax);
     color = mix(color, uAxisY, ay);
@@ -369,8 +378,8 @@ function createGroundGridMaterial(): THREE.ShaderMaterial {
       uMinor: { value: 1000 },
       uMajor: { value: 5000 },
       uOpacity: { value: 1 },
-      uMinorColor: { value: new THREE.Color(0x9aa7b8) },
-      uMajorColor: { value: new THREE.Color(0x5b6b7f) },
+      uMinorColor: { value: new THREE.Color(0x64748b) },
+      uMajorColor: { value: new THREE.Color(0x334155) },
       uAxisX: { value: new THREE.Color(0xdc4444) },
       uAxisY: { value: new THREE.Color(0x22a05a) },
     },
@@ -495,6 +504,7 @@ export function HybridProjectionLayer({
   view,
   interactionElement,
   onPolarChange,
+  onDebug,
   walls,
   rooms,
   symbols,
@@ -511,6 +521,8 @@ export function HybridProjectionLayer({
   boardRef.current = { width, height, viewportZoom, panOffset, blend: view.blend };
   const onPolarChangeRef = useRef(onPolarChange);
   onPolarChangeRef.current = onPolarChange;
+  const onDebugRef = useRef(onDebug);
+  onDebugRef.current = onDebug;
   const [wallBands, setWallBands] = useState<IsometricWallBand[]>([]);
   const wallBandSignature = useMemo(() => buildIsometricWallBandsSignature(walls), [walls]);
   const objectDefinitionsById = useMemo(
@@ -566,6 +578,8 @@ export function HybridProjectionLayer({
 
     let raf: number | null = null;
     let lastTs = typeof performance !== "undefined" ? performance.now() : 0;
+    let lastW = -1;
+    let lastH = -1;
 
     // One frame: board zoom/centre → ortho camera, camera-controls adds the tilt,
     // grid density follows the zoom, render. Returns true while still animating.
@@ -580,16 +594,33 @@ export function HybridProjectionLayer({
         typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
       s.renderer.setPixelRatio(pixelRatio);
       s.renderer.setSize(w, h, false);
-      controller.setSize(w, h);
+      // Frustum (in pixels) only on actual resize — matches the reference; resetting
+      // it every frame can fight camera-controls' ortho zoom.
+      if (w !== lastW || h !== lastH) {
+        controller.setSize(w, h);
+        lastW = w;
+        lastH = h;
+      }
       const pxPerMm = MM_TO_PX * z;
       const centerX = (w / 2 / z + pan.x) / MM_TO_PX;
       const centerY = (h / 2 / z + pan.y) / MM_TO_PX;
       controller.syncBoard(pxPerMm, centerX, centerY, 0);
       const animating = controller.update(delta);
+      // Only the grid shows while flat; the 3D content (root) appears as it tilts,
+      // occluded by the crisp DOM plane above until that plane fades.
+      s.root.visible = boardRef.current.blend > 0.005;
       s.groundGridMaterial.uniforms.uMinor.value = computeBoardGridSteps(z).minorMm;
       s.groundGridMaterial.uniforms.uMajor.value = computeBoardGridSteps(z).majorMm;
       s.renderer.render(s.scene, controller.camera);
       onPolarChangeRef.current?.(controller.polar);
+      onDebugRef.current?.({
+        vz: z,
+        pxPerMm,
+        camZoom: controller.camera.zoom,
+        polarDeg: (controller.polar * 180) / Math.PI,
+        cx: centerX,
+        cy: centerY,
+      });
       return animating;
     };
 
@@ -698,22 +729,18 @@ export function HybridProjectionLayer({
     hvacElements,
   ]);
 
-  // The canvas ALWAYS renders (even flat) so camera-controls stays attached and can
-  // catch the RMB-down that starts a tilt; it's just invisible until the plane tilts.
-  // Cross-dissolve in over the SAME range the DOM plane (which tilts in sync) fades
-  // out — both share the tilt/pivot/grid, so the handoff has no jump.
-  const revealOpacity =
-    width <= 0 || height <= 0 ? 0 : smoothstep(0.02, 0.7, view.blend);
-
+  // Always visible, at the BOTTOM (z-0): this canvas is the single grid — the 3D
+  // shader ground grid that rotates with the plane. The DOM content plane sits
+  // above it (z-1) and fades on tilt to reveal the 3D content (root.visible toggles
+  // the content in the pump so only the grid shows while flat).
   return (
     <canvas
       ref={canvasRef}
-      className="absolute inset-0 z-[8] block pointer-events-none"
+      className="absolute inset-0 z-0 block pointer-events-none"
       style={{
         width: "100%",
         height: "100%",
-        opacity: revealOpacity,
-        transition: view.isInteracting ? "none" : "opacity 120ms ease-out",
+        opacity: width <= 0 || height <= 0 ? 0 : 1,
       }}
     />
   );

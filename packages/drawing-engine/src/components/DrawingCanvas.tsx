@@ -79,7 +79,6 @@ import {
   type Hybrid3DViewState,
 } from "./canvas/hybrid/HybridProjectionLayer";
 import {
-  BoardGrid,
   BoardRulers,
   cycleBoardUnit,
   type BoardUnit,
@@ -340,6 +339,15 @@ export function DrawingCanvas({
   const [boardUnit, setBoardUnit] = useState<BoardUnit>("mm");
   // The host element camera-controls attaches to for the RMB 2D→3D tilt.
   const [interactionEl, setInteractionEl] = useState<HTMLElement | null>(null);
+  // TEMP diagnostic overlay for the 2D↔3D scale (remove once the tilt is confirmed).
+  const [tiltDebug, setTiltDebug] = useState<{
+    vz: number;
+    pxPerMm: number;
+    camZoom: number;
+    polarDeg: number;
+    cx: number;
+    cy: number;
+  } | null>(null);
   const [openingInteractionActive, setOpeningInteractionActive] =
     useState(false);
   const [isHandleDragging, setIsHandleDragging] = useState(false);
@@ -719,6 +727,9 @@ export function DrawingCanvas({
       transformOrigin: "center center",
       transition: hybridView.isInteracting ? "none" : "transform 120ms ease-out, opacity 120ms linear",
       willChange: "transform, opacity" as const,
+      // Sit above the 3D canvas (z-0) so the crisp DOM content overlays the 3D
+      // scene; as it fades on tilt, the 3D grid + content (below) take over.
+      zIndex: 1 as const,
     }),
     [planLayerOpacity, hybridView.isInteracting, hybridView.pitchDeg],
   );
@@ -2375,13 +2386,8 @@ export function DrawingCanvas({
             className="absolute inset-0"
             style={projectionPlaneStyle}
           >
-          <BoardGrid
-            width={hostWidth}
-            height={hostHeight}
-            viewportZoom={viewportZoom}
-            panOffset={panOffset}
-            show={resolvedShowGrid}
-          />
+          {/* Single grid: the 3D shader ground grid (in HybridProjectionLayer,
+              below this plane) is the only grid — it rotates with the plane. */}
           <canvas ref={canvasRef} className="relative z-[2] block" />
           <PipeKonvaInteractionLayer
             enabled={konvaPipeOverlayActive && !projectionViewOnly}
@@ -2485,6 +2491,7 @@ export function DrawingCanvas({
           view={hybridView}
           interactionElement={interactionEl}
           onPolarChange={handleHybridPolarChange}
+          onDebug={setTiltDebug}
           walls={walls}
           rooms={rooms}
           symbols={symbols}
@@ -2664,6 +2671,22 @@ export function DrawingCanvas({
           show={resolvedShowRulers}
         />
       </div>
+
+      {tiltDebug && (
+        <div
+          className="pointer-events-none absolute right-2 bottom-2 z-[40] rounded bg-black/75 px-2 py-1 font-mono text-[11px] leading-tight text-lime-300"
+          style={{ whiteSpace: "pre" }}
+        >
+          {`tilt debug
+zoom(store)   ${zoom.toFixed(4)}
+viewportZoom  ${viewportZoom.toFixed(5)}
+paperPerReal  ${safePaperPerRealRatio.toFixed(5)}
+pxPerMm(pump) ${tiltDebug.pxPerMm.toFixed(5)}
+camera.zoom   ${tiltDebug.camZoom.toFixed(5)}
+polar°        ${tiltDebug.polarDeg.toFixed(1)}
+center mm     ${tiltDebug.cx.toFixed(0)}, ${tiltDebug.cy.toFixed(0)}`}
+        </div>
+      )}
     </div>
   );
 }
