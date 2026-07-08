@@ -74,7 +74,6 @@ import {
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeLineMode,
 } from "./canvas/hvac/refrigerantPipePairModel";
-import { getPlanProjectionVisualState } from "./canvas/hvac/three3d";
 import {
   HybridProjectionLayer,
   type Hybrid3DViewState,
@@ -702,55 +701,18 @@ export function DrawingCanvas({
       radius: Math.max(width, height, Math.hypot(width, height) / 2),
     };
   }, [hvacElements, pageConfig.height, pageConfig.width, rooms, symbols, walls]);
-  const planLayerOpacity = clampNumber(1 - hybridView.blend, 0, 1);
-  // Reuses the same eased 2D→3D curve as the HVAC oblique path to hinge the flat
-  // plan back into the model's plane while the solid model fades in over it.
-  const hybridPlaneVisualState = useMemo(
-    () => getPlanProjectionVisualState(hybridView.blend),
-    [hybridView.blend],
-  );
+  // The flat plan cross-dissolves *in place* into the tilting 3D scene, which
+  // owns the tilt entirely (fixed-pivot camera orbit + its own ground grid, see
+  // HybridProjectionLayer). No DOM translate/scale/rotate — those used to slide
+  // and shrink the whole plane. Fades out by blend 0.18 so the 3D view reads.
+  const planLayerOpacity = clampNumber(1 - hybridView.blend / 0.18, 0, 1);
   const projectionPlaneStyle = useMemo(
-    () => {
-      // Hybrid (slider) morph hinges the whole flat plan back toward the 3D
-      // camera plane so the model fades in over a matching pose.
-      if (hybridView.blend > 0.001) {
-        return {
-          opacity: planLayerOpacity,
-          transform: [
-            "perspective(2400px)",
-            `translate3d(${hybridPlaneVisualState.pageShiftX}px, ${hybridPlaneVisualState.pageShiftY}px, 0)`,
-            `rotateX(${hybridPlaneVisualState.pageTiltXDeg}deg)`,
-            `rotateZ(${hybridPlaneVisualState.pageTiltZDeg}deg)`,
-            `scale(${hybridPlaneVisualState.pageScale})`,
-          ].join(" "),
-          transformOrigin: "50% 50%",
-          transformStyle: "preserve-3d" as const,
-          transition: hybridView.isInteracting
-            ? "none"
-            : "transform 120ms ease-out, opacity 120ms linear",
-          willChange: "transform, opacity",
-        };
-      }
-
-      return {
-        opacity: planLayerOpacity,
-        transform: "none",
-        transformOrigin: "50% 50%",
-        transformStyle: "preserve-3d" as const,
-        transition: "transform 140ms ease-out, opacity 120ms linear",
-        willChange: "transform, opacity",
-      };
-    },
-    [
-      hybridView.blend,
-      hybridView.isInteracting,
-      hybridPlaneVisualState.pageScale,
-      hybridPlaneVisualState.pageShiftX,
-      hybridPlaneVisualState.pageShiftY,
-      hybridPlaneVisualState.pageTiltXDeg,
-      hybridPlaneVisualState.pageTiltZDeg,
-      planLayerOpacity,
-    ],
+    () => ({
+      opacity: planLayerOpacity,
+      transition: hybridView.isInteracting ? "none" : "opacity 120ms linear",
+      willChange: "opacity" as const,
+    }),
+    [planLayerOpacity, hybridView.isInteracting],
   );
 
   const objectDefinitionsById = useMemo(
@@ -1058,23 +1020,20 @@ export function DrawingCanvas({
       // Vertical drag = blend (drag down lifts the flat plan into full 3D);
       // horizontal drag = yaw. Pitch derives from blend so every notch reads.
       const nextBlend = clampNumber(drag.startView.blend + dy / 240, 0, 1);
+      // Fixed-pivot orbit around the model centre (target + distance stay put —
+      // no sliding): pitch eases 82° (≈ top-down / plan) → 38° (isometric) as
+      // the plane tilts; horizontal drag orbits (yaw).
       const nextPitch = clampNumber(82 - nextBlend * 44, 38, 82);
-      commitHybridView((previous) =>
-        stabilizeHybridAnchor(
-          {
-            ...previous,
-            blend: nextBlend,
-            yawDeg: drag.startView.yawDeg + dx * 0.22,
-            pitchDeg: nextPitch,
-            perspectiveStrength: clampNumber(0.5 + nextBlend * 0.4, 0.45, 1),
-            targetMm: drag.startView.targetMm,
-            distanceMm: drag.startView.distanceMm,
-            isInteracting: true,
-          },
-          drag.anchorPointMm,
-          drag.anchorScreen,
-        ),
-      );
+      commitHybridView((previous) => ({
+        ...previous,
+        blend: nextBlend,
+        yawDeg: drag.startView.yawDeg + dx * 0.22,
+        pitchDeg: nextPitch,
+        perspectiveStrength: clampNumber(0.32 + nextBlend * 0.32, 0.3, 0.72),
+        targetMm: drag.startView.targetMm,
+        distanceMm: drag.startView.distanceMm,
+        isInteracting: true,
+      }));
     };
 
     const handleRightMouseUp = (event: MouseEvent) => {

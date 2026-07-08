@@ -293,6 +293,52 @@ function clearGroup(group: THREE.Group): void {
   });
 }
 
+const GROUND_GRID_MINOR_MATERIAL = new THREE.LineBasicMaterial({
+  color: 0x94a3b8,
+  transparent: true,
+  opacity: 0.22,
+});
+const GROUND_GRID_MAJOR_MATERIAL = new THREE.LineBasicMaterial({
+  color: 0x475569,
+  transparent: true,
+  opacity: 0.42,
+});
+
+/**
+ * A fixed ground grid on z=0 (world mm) so the grid stays visible as the camera
+ * tilts from plan into 3D — the SketchUp-style reference plane. Minor 1 m, major
+ * 5 m, over a generous extent centred on the origin.
+ */
+function createGroundGrid(): THREE.Object3D {
+  const extent = 80000; // ±80 m
+  const minor = 1000; // 1 m
+  const major = 5000; // 5 m
+  const minorPts: number[] = [];
+  const majorPts: number[] = [];
+  for (let v = -extent; v <= extent + 1e-6; v += minor) {
+    const isMajor = Math.abs(v % major) < 1e-6;
+    const target = isMajor ? majorPts : minorPts;
+    target.push(-extent, v, 0, extent, v, 0); // line parallel to X
+    target.push(v, -extent, 0, v, extent, 0); // line parallel to Y
+  }
+  const group = new THREE.Group();
+  group.name = "hybrid-ground-grid";
+  group.position.z = -0.5;
+  const minorGeometry = new THREE.BufferGeometry();
+  minorGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(minorPts, 3),
+  );
+  group.add(new THREE.LineSegments(minorGeometry, GROUND_GRID_MINOR_MATERIAL));
+  const majorGeometry = new THREE.BufferGeometry();
+  majorGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(majorPts, 3),
+  );
+  group.add(new THREE.LineSegments(majorGeometry, GROUND_GRID_MAJOR_MATERIAL));
+  return group;
+}
+
 function createPagePlane(pageWidth: number, pageHeight: number): THREE.Object3D {
   const shape = new THREE.Shape();
   shape.moveTo(0, 0);
@@ -443,6 +489,7 @@ export function HybridProjectionLayer({
 
     clearGroup(sceneState.root);
     sceneState.root.add(createPagePlane(pageWidth, pageHeight));
+    sceneState.root.add(createGroundGrid());
 
     rooms.forEach((room) => {
       const floor = createRoomFloor(room);
@@ -515,9 +562,10 @@ export function HybridProjectionLayer({
     return null;
   }
 
-  // Reveal the solid model once the plan has tilted into a clear 3D angle, so the
-  // crossover reads as "the plan lifting into a model" rather than a flat swap.
-  const revealOpacity = smoothstep(0.15, 0.6, view.blend);
+  // Cross-dissolve the 3D scene in *as the flat DOM plane fades out* (which
+  // happens by blend 0.18) so the grid never visibly disappears — the in-scene
+  // ground grid simply takes over from the 2D board grid.
+  const revealOpacity = smoothstep(0.03, 0.18, view.blend);
 
   return (
     <canvas
