@@ -700,9 +700,10 @@ export function HybridProjectionLayer({
 
   // The canvas ALWAYS renders (even flat) so camera-controls stays attached and can
   // catch the RMB-down that starts a tilt; it's just invisible until the plane tilts.
-  // Cross-dissolve the 3D scene in as the flat DOM plane fades out (by blend 0.18).
+  // Cross-dissolve in over the SAME range the DOM plane (which tilts in sync) fades
+  // out — both share the tilt/pivot/grid, so the handoff has no jump.
   const revealOpacity =
-    width <= 0 || height <= 0 ? 0 : smoothstep(0.03, 0.18, view.blend);
+    width <= 0 || height <= 0 ? 0 : smoothstep(0.02, 0.7, view.blend);
 
   return (
     <canvas

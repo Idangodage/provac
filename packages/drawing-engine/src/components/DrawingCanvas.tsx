@@ -97,7 +97,9 @@ function clampNumber(value: number, min: number, max: number): number {
 const DEFAULT_HYBRID_VIEW: Hybrid3DViewState = {
   blend: 0,
   yawDeg: -42,
-  pitchDeg: 58,
+  // Repurposed: mirrors the live camera-controls polar (deg) to drive the DOM
+  // plane's rotateX so the flat plan tilts in sync with the 3D through the handoff.
+  pitchDeg: 0,
   targetMm: { x: 0, y: 0 },
   distanceMm: 8000,
   perspectiveStrength: 0.72,
@@ -703,18 +705,22 @@ export function DrawingCanvas({
       radius: Math.max(width, height, Math.hypot(width, height) / 2),
     };
   }, [hvacElements, pageConfig.height, pageConfig.width, rooms, symbols, walls]);
-  // The flat plan cross-dissolves *in place* into the tilting 3D scene, which
-  // owns the tilt entirely (fixed-pivot camera orbit + its own ground grid, see
-  // HybridProjectionLayer). No DOM translate/scale/rotate — those used to slide
-  // and shrink the whole plane. Fades out by blend 0.18 so the 3D view reads.
-  const planLayerOpacity = clampNumber(1 - hybridView.blend / 0.18, 0, 1);
+  // Seamless 2D↔3D handoff: the flat plan tilts IN SYNC with the camera-controls
+  // polar via a pure `rotateX` (orthographic foreshortening — no translate/scale/
+  // perspective — so it foreshortens exactly like the ortho 3D scene) and fades
+  // out over the same range the 3D fades in. Because both views share the tilt,
+  // pivot and grid density, there is no jump at the boundary. `pitchDeg` mirrors
+  // the live polar angle in degrees (set by handleHybridPolarChange).
+  const planLayerOpacity = clampNumber(1 - hybridView.blend, 0, 1);
   const projectionPlaneStyle = useMemo(
     () => ({
       opacity: planLayerOpacity,
-      transition: hybridView.isInteracting ? "none" : "opacity 120ms linear",
-      willChange: "opacity" as const,
+      transform: `rotateX(${hybridView.pitchDeg}deg)`,
+      transformOrigin: "center center",
+      transition: hybridView.isInteracting ? "none" : "transform 120ms ease-out, opacity 120ms linear",
+      willChange: "transform, opacity" as const,
     }),
-    [planLayerOpacity, hybridView.isInteracting],
+    [planLayerOpacity, hybridView.isInteracting, hybridView.pitchDeg],
   );
 
   const objectDefinitionsById = useMemo(
@@ -924,10 +930,17 @@ export function DrawingCanvas({
   // 2D board fades out over the first few degrees of tilt as the 3D scene fades in.
   const handleHybridPolarChange = useCallback(
     (polar: number) => {
-      const blend = clampNumber(polar / (10 * (Math.PI / 180)), 0, 1); // 0 → full by ~10°
+      const polarDeg = polar * (180 / Math.PI);
+      // Cross-dissolve over the first ~14° of tilt (DOM tilts with it the whole way).
+      const blend = clampNumber(polar / (14 * (Math.PI / 180)), 0, 1);
       commitHybridView((previous) => {
-        if (Math.abs(previous.blend - blend) < 0.0005) return previous;
-        return { ...previous, blend, isInteracting: blend > 0.001 };
+        if (
+          Math.abs(previous.blend - blend) < 0.0005 &&
+          Math.abs(previous.pitchDeg - polarDeg) < 0.05
+        ) {
+          return previous;
+        }
+        return { ...previous, blend, pitchDeg: polarDeg, isInteracting: blend > 0.001 };
       });
     },
     [commitHybridView],
