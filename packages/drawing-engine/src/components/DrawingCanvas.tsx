@@ -2490,6 +2490,7 @@ export function DrawingCanvas({
           interactionElement={interactionEl}
           onPolarChange={handleHybridPolarChange}
           onDebug={setTiltDebug}
+          getViewportMatrix={() => fabricRef.current?.viewportTransform ?? null}
           walls={walls}
           rooms={rooms}
           symbols={symbols}

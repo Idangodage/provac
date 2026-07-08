@@ -45,6 +45,13 @@ export interface HybridProjectionLayerProps {
   interactionElement: HTMLElement | null;
   /** Live polar (tilt) angle in radians from camera-controls, for the host to derive blend. */
   onPolarChange?: (polar: number) => void;
+  /**
+   * Returns the fabric canvas's live viewport matrix `[z,0,0,z,panPx.x,panPx.y]` (the
+   * IMPERATIVE source of truth that pan/zoom updates first). The grid camera derives
+   * from this each frame so it stays pixel-locked to the DOM objects — the store lags
+   * pan by a frame or two. Falls back to viewportZoom/panOffset props when null.
+   */
+  getViewportMatrix?: () => readonly number[] | null;
   /** TEMP diagnostic: live camera/scale values for the on-screen debug readout. */
   onDebug?: (info: {
     vz: number;
@@ -505,6 +512,7 @@ export function HybridProjectionLayer({
   interactionElement,
   onPolarChange,
   onDebug,
+  getViewportMatrix,
   walls,
   rooms,
   symbols,
@@ -523,6 +531,8 @@ export function HybridProjectionLayer({
   onPolarChangeRef.current = onPolarChange;
   const onDebugRef = useRef(onDebug);
   onDebugRef.current = onDebug;
+  const getViewportMatrixRef = useRef(getViewportMatrix);
+  getViewportMatrixRef.current = getViewportMatrix;
   const [wallBands, setWallBands] = useState<IsometricWallBand[]>([]);
   const wallBandSignature = useMemo(() => buildIsometricWallBandsSignature(walls), [walls]);
   const objectDefinitionsById = useMemo(
@@ -589,7 +599,6 @@ export function HybridProjectionLayer({
       const { width: w0, height: h0, viewportZoom: z0, panOffset: pan } = boardRef.current;
       const w = Math.max(1, Math.floor(w0));
       const h = Math.max(1, Math.floor(h0));
-      const z = Math.max(z0, 1e-6);
       const pixelRatio =
         typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
       s.renderer.setPixelRatio(pixelRatio);
@@ -601,9 +610,15 @@ export function HybridProjectionLayer({
         lastW = w;
         lastH = h;
       }
+      // Prefer the fabric canvas's LIVE viewport matrix (imperative, updated first on
+      // pan/zoom) so the grid is pixel-locked to the objects; fall back to props.
+      const m = getViewportMatrixRef.current?.();
+      const z = Math.max(m && m.length >= 6 ? (m[0] as number) : z0, 1e-6);
+      const panPxX = m && m.length >= 6 ? (m[4] as number) : -pan.x * z;
+      const panPxY = m && m.length >= 6 ? (m[5] as number) : -pan.y * z;
       const pxPerMm = MM_TO_PX * z;
-      const centerX = (w / 2 / z + pan.x) / MM_TO_PX;
-      const centerY = (h / 2 / z + pan.y) / MM_TO_PX;
+      const centerX = (w / 2 - panPxX) / (MM_TO_PX * z);
+      const centerY = (h / 2 - panPxY) / (MM_TO_PX * z);
       controller.syncBoard(pxPerMm, centerX, centerY, 0);
       const animating = controller.update(delta);
       // Only the grid shows while flat; the 3D content (root) appears as it tilts,
