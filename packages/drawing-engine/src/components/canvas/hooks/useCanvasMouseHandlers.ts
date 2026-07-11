@@ -23,9 +23,6 @@ import type {
   WallSettings,
 } from "../../../types";
 import {
-  MAX_ZOOM,
-  MIN_ZOOM,
-  WHEEL_ZOOM_SENSITIVITY,
   type CanvasState,
   type MarqueeSelectionState,
 } from "../../DrawingCanvas.types";
@@ -38,7 +35,6 @@ import { snapPointToGrid } from "../snapping";
 import { isDrawingTool, renderDrawingPreview } from "../toolUtils";
 import {
   buildViewportTransform,
-  panForZoomAtViewportPoint,
   panFromViewportDelta,
 } from "../viewTransform";
 import type { WallRenderer } from "../wall/WallRenderer";
@@ -237,7 +233,6 @@ export function useCanvasMouseHandlers(
     wheelPendingPan,
     wheelRafId,
     roomRendererRef,
-    dimensionRendererRef,
     objectRendererRef,
     hvacRendererRef,
 
@@ -1104,54 +1099,14 @@ export function useCanvasMouseHandlers(
     finishOpeningPointerInteraction,
   ]);
 
-  // ── handleWheel (zoom) ──────────────────────────────────────────────
+  // ── handleWheel ─────────────────────────────────────────────────────
+  // CAMERA OWNS NAVIGATION (reference-app practice — hybridViewportController):
+  // wheel zoom-to-cursor is handled by camera-controls on the interaction host
+  // and the Fabric viewport is DERIVED from the camera each frame. This
+  // handler intentionally does nothing so the event bubbles to the camera.
   const handleWheel = useCallback(
-    (e: fabric.TPointerEventInfo<WheelEvent>) => {
-      e.e.preventDefault();
-      const canvas = fabricRef.current;
-      if (!canvas) return;
-
-      // Read zoom from ref so rapid wheel ticks compound correctly
-      // without waiting for React re-renders.
-      const currentVpZoom = zoomRef.current;
-      const currentZoom = currentVpZoom / safePaperPerRealRatio;
-
-      // Exponential zoom factor from wheel delta.
-      const zoomFactor = Math.exp(-e.e.deltaY * WHEEL_ZOOM_SENSITIVITY);
-      const newZoom = Math.min(
-        Math.max(currentZoom * zoomFactor, MIN_ZOOM),
-        MAX_ZOOM,
-      );
-      if (Math.abs(newZoom - currentZoom) < 0.0001) return;
-      const newVpZoom = newZoom * safePaperPerRealRatio;
-
-      // Use Fabric pointer conversion so zoom anchor is correct on
-      // retina scaling and any canvas offset/layout shifts.
-      const viewportPoint = canvas.getViewportPoint(e.e);
-      const vpX = viewportPoint.x;
-      const vpY = viewportPoint.y;
-
-      // Scene-space point under cursor (from refs, not canvas — avoids lag).
-      const nextPan = panForZoomAtViewportPoint(
-        panOffsetRef.current,
-        currentVpZoom,
-        newVpZoom,
-        { x: vpX, y: vpY },
-      );
-
-      // Apply immediately for low-latency feedback.
-      applyViewportTransformImmediate(newVpZoom, nextPan);
-      dimensionRendererRef.current?.setViewportZoom(newVpZoom);
-      scheduleViewTransformSync(newVpZoom, nextPan);
-    },
-    [
-      safePaperPerRealRatio,
-      panOffsetRef,
-      zoomRef,
-      dimensionRendererRef,
-      applyViewportTransformImmediate,
-      scheduleViewTransformSync,
-    ],
+    (_e: fabric.TPointerEventInfo<WheelEvent>) => {},
+    [],
   );
 
   return {

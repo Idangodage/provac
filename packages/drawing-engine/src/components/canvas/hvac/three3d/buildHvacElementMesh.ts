@@ -1363,13 +1363,15 @@ export function buildHvacElementMesh(
   if (modelUrl) {
     const model = instantiateGlbModel(modelUrl);
     if (model) {
-      const width = Math.max(60, element.width);
-      const depth = Math.max(60, element.depth);
       const group = new THREE.Group();
       group.name = `hvac-${element.id}`;
+      // Anchor at the UNCLAMPED element centre — the exact point every 2D
+      // consumer (plan renderer, hit testing, overlays) uses. Size clamps are
+      // for geometry only; putting them in the anchor shifts sub-60 mm
+      // elements the moment the 3D view fades in.
       group.position.set(
-        element.position.x + width / 2,
-        element.position.y + depth / 2,
+        element.position.x + element.width / 2,
+        element.position.y + element.depth / 2,
         element.elevation,
       );
       group.rotation.z = THREE.MathUtils.degToRad(element.rotation);
@@ -1400,8 +1402,10 @@ export function buildHvacElementMesh(
   );
   const renderCenter =
     inlinePlacement?.center ?? {
-      x: effectiveElement.position.x + width / 2,
-      y: effectiveElement.position.y + depth / 2,
+      // Unclamped centre — must match the 2D consumers exactly, or elements
+      // narrower/shallower than the 60 mm geometry clamp render offset in 3D.
+      x: effectiveElement.position.x + effectiveElement.width / 2,
+      y: effectiveElement.position.y + effectiveElement.depth / 2,
     };
   const renderBaseElevationMm = inlinePlacement?.elevationMm ?? effectiveElement.elevation;
 
@@ -1824,6 +1828,11 @@ export function buildHvacElementMesh(
     }
     case "refrigerant-pipe-pair": {
       const visual = buildRefrigerantPipePairVisual(effectiveElement, context.allElements);
+      // The pair's local tube points are relative to visual.bounds.center —
+      // anchor the group there so the local frame and group origin coincide
+      // (the element bbox centre can differ from the padded route-bounds one).
+      group.position.x = visual.bounds.center.x;
+      group.position.y = visual.bounds.center.y;
       const insulationColor = "#dce6ed";
       const gasColor = "#c5894d";
       const liquidColor = "#dca25d";
@@ -2041,6 +2050,12 @@ export function buildHvacElementMesh(
         );
       } else {
         const localOffset = visual.bounds.center;
+        // Standalone tube points are local to visual.bounds.center — anchor
+        // the group at that exact model point so the local frame and the
+        // group origin coincide by construction (the element bbox centre can
+        // differ from the padded route-bounds centre).
+        group.position.x = localOffset.x;
+        group.position.y = localOffset.y;
         addRouteTube(
           visual.localContinuousOuterPoints,
           visual.localZMm,

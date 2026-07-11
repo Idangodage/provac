@@ -552,6 +552,13 @@ export interface PipeStudioOverlayHandle {
    * shows, so every snap affordance is one component. Pass null to hide.
    */
   setSnapIndicator: (point: Point2D | null) => void;
+  /**
+   * Same-frame viewport bond: the host calls this from Fabric's `after:render`
+   * with the live viewportTransform `[z,0,0,z,tx,ty]`, and the overlay writes
+   * it straight onto the root `<g>` — pipes pan/zoom in the SAME paint as the
+   * walls instead of trailing the rAF-deferred store by a frame or two.
+   */
+  syncViewTransform: (viewportTransform: readonly number[]) => void;
 }
 
 export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioOverlayProps>(
@@ -611,7 +618,22 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   // Snap-hover indicator (world mm) pushed by the draw tool — rendered with the
   // same endpoint-handle bullseye a committed pipe shows.
   const [snapIndicator, setSnapIndicator] = useState<Point2D | null>(null);
-  useImperativeHandle(ref, () => ({ setDraftRoute, setDraftPipes, setSnapIndicator }), []);
+  // Same-frame viewport bond (see PipeStudioOverlayHandle.syncViewTransform).
+  // Writes land AFTER any React commit in the frame (host calls from Fabric's
+  // rAF `after:render`), so the live matrix always wins over a stale render.
+  const syncViewTransform = useCallback((vpt: readonly number[]) => {
+    const g = gRef.current;
+    if (!g || vpt.length < 6) return;
+    const value = `matrix(${vpt[0]} ${vpt[1]} ${vpt[2]} ${vpt[3]} ${vpt[4]} ${vpt[5]})`;
+    if (g.getAttribute('transform') !== value) {
+      g.setAttribute('transform', value);
+    }
+  }, []);
+  useImperativeHandle(
+    ref,
+    () => ({ setDraftRoute, setDraftPipes, setSnapIndicator, syncViewTransform }),
+    [syncViewTransform],
+  );
   const [bendRadiusMm, setBendRadiusMm] = useState(24);
   // Relative spread added to the existing gap (0 = pipes as drawn).
   const [gapSpreadMm, setGapSpreadMm] = useState(0);

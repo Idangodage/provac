@@ -78,6 +78,11 @@ import {
   HybridProjectionLayer,
   type Hybrid3DViewState,
 } from "./canvas/hybrid/HybridProjectionLayer";
+import type {
+  DerivedBoardView,
+  HybridViewportController,
+} from "./canvas/hybrid/hybridViewportController";
+import { modelPointToWorld } from "./canvas/modelSpace";
 import {
   BoardRulers,
   cycleBoardUnit,
@@ -87,6 +92,7 @@ import {
   installCanvasRenderScheduler,
   restoreCanvasRenderScheduler,
 } from "./canvas/renderScheduler";
+import { buildViewportTransform } from "./canvas/viewTransform";
 export type { DrawingCanvasProps } from "./DrawingCanvas.types";
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -660,6 +666,11 @@ export function DrawingCanvas({
     : { x: 0, y: 0 };
   const hostWidth = Math.max(1, viewportSize.width - originOffset.x);
   const hostHeight = Math.max(1, viewportSize.height - originOffset.y);
+  // `pageConfig` is stored in page pixels (96 dpi); the hybrid 3D world is in
+  // millimetres. Convert once so the 3D page plane shares the exact same space
+  // as walls/rooms/objects before the tilt begins.
+  const pageWidthMm = pageConfig.width * PX_TO_MM;
+  const pageHeightMm = pageConfig.height * PX_TO_MM;
   const hybridDrawingBounds = useMemo(() => {
     const points: Point2D[] = [];
     rooms.forEach((room) => {
@@ -684,8 +695,8 @@ export function DrawingCanvas({
 
     if (points.length === 0) {
       return {
-        center: { x: pageConfig.width / 2, y: pageConfig.height / 2 },
-        radius: Math.max(pageConfig.width, pageConfig.height) / 2,
+        center: { x: pageWidthMm / 2, y: pageHeightMm / 2 },
+        radius: Math.max(pageWidthMm, pageHeightMm) / 2,
       };
     }
 
@@ -712,7 +723,7 @@ export function DrawingCanvas({
       },
       radius: Math.max(width, height, Math.hypot(width, height) / 2),
     };
-  }, [hvacElements, pageConfig.height, pageConfig.width, rooms, symbols, walls]);
+  }, [hvacElements, pageHeightMm, pageWidthMm, rooms, symbols, walls]);
   // Seamless 2D↔3D handoff: the flat plan tilts IN SYNC with the camera-controls
   // polar via a pure `rotateX` (orthographic foreshortening — no translate/scale/
   // perspective — so it foreshortens exactly like the ortho 3D scene) and fades
@@ -722,18 +733,19 @@ export function DrawingCanvas({
   const planLayerOpacity = clampNumber(1 - hybridView.blend, 0, 1);
   const projectionPlaneStyle = useMemo(
     () => ({
-      // No CSS tilt: the flat DOM is ONLY the crisp editing surface. The moment the
-      // plane tilts it fades out and the single 3D scene (grid + object meshes, which
-      // orbit together via camera-controls) becomes the view — so objects always
-      // rotate WITH the plane, never independently.
-      opacity: planLayerOpacity,
-      transition: hybridView.isInteracting ? "none" : "opacity 90ms linear",
-      willChange: "opacity" as const,
+      // The whole 2D stack (Fabric canvas + pipe overlays + HUD) is ONE sheet
+      // of paper. The hybrid render pump tilts it per frame with the EXACT
+      // affine camera projection of the model plane (planSheetTransform) and
+      // fades it through the tuned polar band — transform/opacity are written
+      // imperatively there, never through React, so the sheet moves in the
+      // same frame as the 3D scene and the drawing stays glued to the paper.
+      transformOrigin: "0 0" as const,
+      willChange: "transform, opacity" as const,
       // Sit above the 3D canvas (z-0) so the crisp DOM overlays the 3D scene while
       // flat; as it fades on tilt, the 3D grid + content (below) take over.
       zIndex: 1 as const,
     }),
-    [planLayerOpacity, hybridView.isInteracting],
+    [],
   );
 
   const objectDefinitionsById = useMemo(
@@ -1263,6 +1275,77 @@ export function DrawingCanvas({
   // The studio overlay renders the live draw preview as its own pair, so the
   // draw tool feeds it the route here (imperatively — only the overlay re-renders).
   const pipeStudioOverlayRef = useRef<PipeStudioOverlayHandle | null>(null);
+  // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the
+  // live camera-controls tilt controller (for the explicit 2D/3D toggle).
+  const planSheetRef = useRef<HTMLDivElement | null>(null);
+  const hybridControllerRef = useRef<HybridViewportController | null>(null);
+  const handleHybridControllerReady = useCallback(
+    (controller: HybridViewportController | null) => {
+      hybridControllerRef.current = controller;
+    },
+    [],
+  );
+  // Last view the CAMERA wrote to the board — the store→camera bridge uses it
+  // to tell camera echoes apart from external (toolbar/fit) view changes.
+  const lastCameraViewRef = useRef<{ zoom: number; pan: Point2D } | null>(null);
+  // CAMERA → BOARD (reference-app practice): the hybrid camera owns all
+  // navigation (wheel-zoom-to-cursor, MMB pan, RMB tilt); each frame it hands
+  // us the flat-equivalent Fabric viewport. Apply to Fabric + refs in the SAME
+  // frame; commit to the store once per rAF (same contract the old fabric
+  // wheel/pan path used, so every downstream consumer keeps working).
+  const applyDerivedHybridView = useCallback(
+    (derived: DerivedBoardView) => {
+      const canvas = fabricRef.current;
+      if (!canvas) return;
+      const nextZoom = Math.max(derived.zoom, 1e-6);
+      const nextPan = {
+        x: -derived.panPxX / nextZoom,
+        y: -derived.panPxY / nextZoom,
+      };
+      const zoomDelta = Math.abs(zoomRef.current - nextZoom);
+      const panDeltaPx = Math.max(
+        Math.abs(panOffsetRef.current.x - nextPan.x) * nextZoom,
+        Math.abs(panOffsetRef.current.y - nextPan.y) * nextZoom,
+      );
+      // No-op guard: sub-hundredth-pixel deltas are float noise.
+      if (zoomDelta < 1e-7 && panDeltaPx < 0.01) return;
+      canvas.setViewportTransform(buildViewportTransform(nextZoom, nextPan));
+      canvas.requestRenderAll();
+      zoomRef.current = nextZoom;
+      panOffsetRef.current = nextPan;
+      lastCameraViewRef.current = { zoom: nextZoom, pan: nextPan };
+      wheelPendingZoom.current = nextZoom / safePaperPerRealRatio;
+      wheelPendingPan.current = nextPan;
+      setInteractionViewTransform(wheelPendingZoom.current, nextPan);
+      if (!wheelRafId.current) {
+        wheelRafId.current = requestAnimationFrame(() => {
+          wheelRafId.current = null;
+          setViewTransform(wheelPendingZoom.current, wheelPendingPan.current);
+        });
+      }
+    },
+    [safePaperPerRealRatio, setInteractionViewTransform, setViewTransform],
+  );
+  // BOARD → CAMERA bridge: when the store view changes and it is NOT an echo
+  // of what the camera just wrote (toolbar zoom buttons, fit-to-page,
+  // programmatic pans), push it into the camera — the one navigation owner.
+  useEffect(() => {
+    const controller = hybridControllerRef.current;
+    if (!controller) return;
+    const last = lastCameraViewRef.current;
+    const isCameraEcho =
+      last !== null &&
+      Math.abs(last.zoom - viewportZoom) / Math.max(viewportZoom, 1e-9) < 1e-4 &&
+      Math.abs(last.pan.x - panOffset.x) * viewportZoom < 0.5 &&
+      Math.abs(last.pan.y - panOffset.y) * viewportZoom < 0.5;
+    if (isCameraEcho) return;
+    const pxPerMm = MM_TO_PX * Math.max(viewportZoom, 1e-9);
+    const centerWorld = modelPointToWorld({
+      x: (hostWidth / 2 + panOffset.x * viewportZoom) / pxPerMm,
+      y: (hostHeight / 2 + panOffset.y * viewportZoom) / pxPerMm,
+    });
+    controller.setBoardView(pxPerMm, centerWorld.x, centerWorld.y, 0);
+  }, [viewportZoom, panOffset.x, panOffset.y, hostWidth, hostHeight]);
   // Last committed vertex of the pipe draft (real mm) — the HUD measures the
   // active run from here. Guarded set: the route updates on every mouse move.
   const [draftPipeAnchorMm, setDraftPipeAnchorMm] = useState<Point2D | null>(
@@ -1906,6 +1989,16 @@ export function DrawingCanvas({
     onCanvasReady?.(canvas);
     setViewportSizeIfChanged(outer.clientWidth, outer.clientHeight);
 
+    // Same-frame viewport bond: every time Fabric paints (its own rAF), push
+    // the live viewportTransform into the SVG pipe overlay so pipes/kits move
+    // in the SAME frame as walls — never trailing the rAF-deferred store.
+    const syncOverlayViewTransform = () => {
+      const vpt = canvas.viewportTransform;
+      if (vpt) pipeStudioOverlayRef.current?.syncViewTransform(vpt);
+    };
+    canvas.on("after:render", syncOverlayViewTransform);
+    syncOverlayViewTransform();
+
     // [SNAP WIRE] Size overlay canvas to match fabric canvas
     if (snapOverlayRef.current) {
       snapOverlayRef.current.width = host.clientWidth;
@@ -1949,6 +2042,7 @@ export function DrawingCanvas({
       hvacRendererRef.current?.dispose();
       hvacRendererRef.current = null;
       resizeObserver.disconnect();
+      canvas.off("after:render", syncOverlayViewTransform);
       restoreCanvasRenderScheduler(canvas);
       canvas.dispose();
       fabricRef.current = null;
@@ -2381,6 +2475,7 @@ export function DrawingCanvas({
         }}
       >
           <div
+            ref={planSheetRef}
             className="absolute inset-0"
             style={projectionPlaneStyle}
           >
@@ -2482,12 +2577,15 @@ export function DrawingCanvas({
         <HybridProjectionLayer
           width={hostWidth}
           height={hostHeight}
-          pageWidth={pageConfig.width}
-          pageHeight={pageConfig.height}
+          pageWidthMm={pageWidthMm}
+          pageHeightMm={pageHeightMm}
           viewportZoom={viewportZoom}
           panOffset={panOffset}
           view={hybridView}
           interactionElement={interactionEl}
+          planSheetRef={planSheetRef}
+          onControllerReady={handleHybridControllerReady}
+          applyDerivedView={applyDerivedHybridView}
           onPolarChange={handleHybridPolarChange}
           onDebug={setTiltDebug}
           getViewportMatrix={() => fabricRef.current?.viewportTransform ?? null}
@@ -2669,6 +2767,31 @@ export function DrawingCanvas({
           leftSize={leftRulerWidth}
           show={resolvedShowRulers}
         />
+      </div>
+
+      {/* SketchUp-style explicit view toggle: camera-only SmoothDamp tween via
+          camera-controls — the model never moves. RMB tilt remains available. */}
+      <div className="absolute right-3 top-8 z-[30] flex overflow-hidden rounded-md border border-slate-300 bg-white/95 text-[11px] font-semibold text-slate-600 shadow-sm">
+        <button
+          type="button"
+          title="Plan view (top-down)"
+          onClick={() => hybridControllerRef.current?.resetToPlan(true)}
+          className={`px-2.5 py-1 transition-colors ${
+            hybridViewOnly ? "hover:bg-slate-100" : "bg-slate-800 text-white"
+          }`}
+        >
+          2D
+        </button>
+        <button
+          type="button"
+          title="3D view (tilt the board)"
+          onClick={() => hybridControllerRef.current?.tiltTo((45 * Math.PI) / 180, true)}
+          className={`px-2.5 py-1 transition-colors ${
+            hybridViewOnly ? "bg-slate-800 text-white" : "hover:bg-slate-100"
+          }`}
+        >
+          3D
+        </button>
       </div>
 
       {tiltDebug && (

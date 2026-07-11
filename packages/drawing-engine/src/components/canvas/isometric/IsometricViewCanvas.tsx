@@ -50,6 +50,14 @@ import {
   type VisibleRefrigerantPipeSegmentTarget,
 } from "../hvac/refrigerantPipeRenderState";
 import { buildHvacElementMesh } from "../hvac/three3d";
+import {
+  MODEL_SPACE_DEV_ASSERTIONS,
+  assertCanonicalModelRoot,
+  captureModelObjectMatrices,
+  getModelMatrixChanges,
+  modelPoint,
+  resetCanonicalModelRoot,
+} from "../modelSpace";
 import { hasRenderer } from "../object/FurnitureSymbolRenderer";
 import { createOptimizedFurnitureModel3D } from "../object/three3d/Furniture3DRenderer";
 
@@ -877,7 +885,7 @@ function projectLabels(
 }
 
 function worldPoint(point: Point2D, elevation: number): THREE.Vector3 {
-  return new THREE.Vector3(point.x, point.y, elevation);
+  return modelPoint(point, elevation);
 }
 
 function createOverlayLineMaterial(
@@ -4245,30 +4253,6 @@ function createPlanGrid(
   return grid;
 }
 
-function mirrorXValue(x: number, pivotX: number): number {
-  return pivotX * 2 - x;
-}
-
-function mirrorLabelAnchors(
-  anchors: LabelAnchor[],
-  pivotX: number,
-): LabelAnchor[] {
-  return anchors.map((anchor) => ({
-    ...anchor,
-    position: new THREE.Vector3(
-      mirrorXValue(anchor.position.x, pivotX),
-      anchor.position.y,
-      anchor.position.z,
-    ),
-  }));
-}
-
-function applyMirroredPlanTransform(root: THREE.Group, pivotX: number): void {
-  root.position.set(pivotX * 2, 0, 0);
-  root.scale.set(-1, 1, 1);
-  root.updateMatrixWorld(true);
-}
-
 function ensureDoubleSidedMaterials(root: THREE.Object3D): void {
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) {
@@ -4807,10 +4791,10 @@ export function IsometricViewCanvas({
     }
 
     const { camera, controls, contentRoot, geometryRoot } = sceneState;
-    contentRoot.position.set(0, 0, 0);
-    contentRoot.scale.set(1, 1, 1);
-    contentRoot.rotation.set(0, 0, 0);
-    contentRoot.updateMatrixWorld(true);
+    resetCanonicalModelRoot(contentRoot);
+    resetCanonicalModelRoot(geometryRoot);
+    assertCanonicalModelRoot(contentRoot, "Isometric content root");
+    assertCanonicalModelRoot(geometryRoot, "Isometric geometry root");
     clearGroup(geometryRoot);
     [...contentRoot.children].forEach((child) => {
       if (child === geometryRoot) {
@@ -5174,12 +5158,14 @@ export function IsometricViewCanvas({
     const grid = createPlanGrid(planPoints, lowestElevation - 1);
     contentRoot.add(grid);
 
-    const unmirroredBox = new THREE.Box3().setFromObject(geometryRoot);
-    const mirrorPivotX = (unmirroredBox.min.x + unmirroredBox.max.x) / 2;
-
-    applyMirroredPlanTransform(contentRoot, mirrorPivotX);
     ensureDoubleSidedMaterials(geometryRoot);
-    labelAnchorsRef.current = mirrorLabelAnchors(labelAnchors, mirrorPivotX);
+    labelAnchorsRef.current = labelAnchors;
+    assertCanonicalModelRoot(contentRoot, "Isometric content root");
+    assertCanonicalModelRoot(geometryRoot, "Isometric geometry root");
+    // Full matrix snapshot/compare is O(scene) — dev builds only.
+    const beforeCameraFitMatrices = MODEL_SPACE_DEV_ASSERTIONS
+      ? captureModelObjectMatrices(contentRoot)
+      : null;
 
     const box = new THREE.Box3().setFromObject(geometryRoot);
     boundsRef.current = box.clone();
@@ -5193,6 +5179,16 @@ export function IsometricViewCanvas({
       updateCameraClipping(camera, box);
     }
     controls.update();
+    if (beforeCameraFitMatrices) {
+      const modelMatrixChanges = getModelMatrixChanges(
+        beforeCameraFitMatrices,
+        contentRoot,
+      );
+      console.assert(
+        modelMatrixChanges.length === 0,
+        `Isometric camera/view update changed model object matrices: ${modelMatrixChanges.join("; ")}`,
+      );
+    }
     renderRequestedRef.current = true;
   }, [
     activeWallBands,

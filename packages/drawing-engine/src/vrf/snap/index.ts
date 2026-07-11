@@ -15,13 +15,15 @@
  *    view/tool/slider state is deliberately excluded.
  */
 
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference
+/// <reference path="./rbush.d.ts" />
 import RBush from 'rbush';
 
-import type { BoardDoc, Point, PortRole } from '../model/types';
 import { portPairCenterWorld } from '../geometry/kit';
-import { openRunEnds } from '../model/ops';
 import { cross, dist, dot } from '../geometry/path';
 import { pxToWorld, type ViewTransform } from '../geometry/transform';
+import { openRunEnds } from '../model/ops';
+import type { BoardDoc, Point, PortRole } from '../model/types';
 
 export type SnapKind = 'port' | 'endpoint' | 'parallel' | 'grid';
 
@@ -109,7 +111,7 @@ export function projectOntoGuide(c: SnapCandidate, cursor: Point): { point: Poin
 }
 
 /** All PORT + ENDPOINT + PARALLEL candidates for a document (grid is never a candidate). */
-export function buildSnapEntries(doc: BoardDoc, opts: SnapIndexOptions): RBushEntry[] {
+export function buildSnapEntries(doc: BoardDoc, _opts: SnapIndexOptions): RBushEntry[] {
   const point = (p: Point, candidate: SnapCandidate): RBushEntry => ({
     minX: p.x, minY: p.y, maxX: p.x, maxY: p.y, candidate,
   });

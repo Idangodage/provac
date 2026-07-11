@@ -1,13 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import * as THREE from "three";
 
 import type { ArchitecturalObjectDefinition } from "../../../data";
 import type { HvacElement, Point2D, Room, SymbolInstance2D, Wall } from "../../../types";
 import { computeBoardGridSteps } from "../board/boardGridMath";
-import { MM_TO_PX } from "../scale";
-import { HybridViewportController } from "./hybridViewportController";
 import {
   buildRefrigerantPipeEndpointRenderStateMap,
   buildRefrigerantPipeRenderChainStateMap,
@@ -20,6 +18,24 @@ import {
   buildIsometricWallBandsSignature,
   type IsometricWallBand,
 } from "../isometric/wallBands";
+import {
+  MODEL_SPACE_DEV_ASSERTIONS,
+  applyModelToWorldBasis,
+  assertCanonicalModelRoot,
+  assertModelToWorldBasis,
+  modelPointToWorld,
+} from "../modelSpace";
+import { MM_TO_PX } from "../scale";
+
+import {
+  HybridViewportController,
+  type DerivedBoardView,
+} from "./hybridViewportController";
+import {
+  computePlanSheetCssMatrix,
+  planSheetCssMatrixToString,
+  planSheetOpacityForPolar,
+} from "./planSheetTransform";
 
 export type Hybrid3DViewState = {
   blend: number;
@@ -34,8 +50,8 @@ export type Hybrid3DViewState = {
 export interface HybridProjectionLayerProps {
   width: number;
   height: number;
-  pageWidth: number;
-  pageHeight: number;
+  pageWidthMm: number;
+  pageHeightMm: number;
   /** Real-world zoom (== DrawingCanvas viewportZoom) — drives ground-grid density + ortho scale. */
   viewportZoom: number;
   /** Scene-pixel pan (== DrawingCanvas panOffset) — drives the ortho camera centre. */
@@ -43,6 +59,22 @@ export interface HybridProjectionLayerProps {
   view: Hybrid3DViewState;
   /** DOM element camera-controls attaches to for the RMB tilt (the interactive host). */
   interactionElement: HTMLElement | null;
+  /**
+   * The 2D plan stack (Fabric canvas + overlays) as ONE sheet of paper. Each
+   * frame the pump tilts it with the exact affine CSS matrix of the camera's
+   * view of the model plane and fades it through the tuned polar band — the
+   * drawing stays glued to the paper through the whole 2D↔3D transition.
+   * Must have `transform-origin: 0 0`.
+   */
+  planSheetRef?: RefObject<HTMLElement | null>;
+  /** Hands the live tilt controller to the host (for the 2D/3D toggle); null on teardown. */
+  onControllerReady?: (controller: HybridViewportController | null) => void;
+  /**
+   * CAMERA → BOARD (reference-app practice): the camera owns navigation; each
+   * frame the pump derives the flat-equivalent Fabric viewport of the camera
+   * pose and hands it here — the host applies it to Fabric, refs, and store.
+   */
+  applyDerivedView?: (view: DerivedBoardView) => void;
   /** Live polar (tilt) angle in radians from camera-controls, for the host to derive blend. */
   onPolarChange?: (polar: number) => void;
   /**
@@ -73,6 +105,8 @@ type SceneState = {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
+  /** Permanent model→world basis (scale(1,−1,1)) — see modelSpace.ts. */
+  viewBasis: THREE.Group;
   root: THREE.Group;
   keyLight: THREE.DirectionalLight;
   fillLight: THREE.DirectionalLight;
@@ -80,10 +114,9 @@ type SceneState = {
 };
 
 const EPSILON = 0.001;
-const MIN_CAMERA_DISTANCE_MM = 800;
 const MAX_CAMERA_DISTANCE_MM = 220000;
-const MIN_PITCH_DEG = 18;
-const MAX_PITCH_DEG = 82;
+/** Below this polar the view is "flat": untransformed crisp sheet, no 3D content. */
+const FLAT_SHEET_POLAR = THREE.MathUtils.degToRad(0.03);
 const FLOOR_MATERIAL = new THREE.MeshStandardMaterial({
   color: "#eef4ec",
   transparent: true,
@@ -103,22 +136,6 @@ const PAGE_MATERIAL = new THREE.MeshStandardMaterial({
 const WALL_SIDE_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
 const WALL_TOP_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
 const SYMBOL_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-/**
- * Eased reveal so the solid model fades in *after* the plan has begun tilting,
- * keeping the crossover from showing a flat plan and a tilted model at once.
- */
-function smoothstep(edge0: number, edge1: number, value: number): number {
-  if (edge0 === edge1) {
-    return value >= edge1 ? 1 : 0;
-  }
-  const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-}
 
 function polygonSignedArea(points: Point2D[]): number {
   if (points.length < 3) return 0;
@@ -407,12 +424,12 @@ function createGroundGridPlane(material: THREE.ShaderMaterial): THREE.Mesh {
   return mesh;
 }
 
-function createPagePlane(pageWidth: number, pageHeight: number): THREE.Object3D {
+function createPagePlane(pageWidthMm: number, pageHeightMm: number): THREE.Object3D {
   const shape = new THREE.Shape();
   shape.moveTo(0, 0);
-  shape.lineTo(pageWidth, 0);
-  shape.lineTo(pageWidth, pageHeight);
-  shape.lineTo(0, pageHeight);
+  shape.lineTo(pageWidthMm, 0);
+  shape.lineTo(pageWidthMm, pageHeightMm);
+  shape.lineTo(0, pageHeightMm);
   shape.closePath();
   const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), PAGE_MATERIAL);
   mesh.name = "hybrid-page-plane";
@@ -439,12 +456,23 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, MAX_CAMERA_DISTANCE_MM * 4);
   camera.up.set(0, 0, 1);
 
+  // ALL model content (objects, page plane, ground grid) renders through ONE
+  // permanent model→world view basis: the board plane is y-down (left-handed),
+  // the render world is right-handed, so the chirality conversion happens here —
+  // once, at the shared parent — never per object and never in camera logic.
+  // Without it the plan fades into 3D vertically mirrored (see modelSpace.ts).
+  const viewBasis = new THREE.Group();
+  viewBasis.name = "hybrid-model-to-world-basis";
+  applyModelToWorldBasis(viewBasis);
+  scene.add(viewBasis);
+
   const root = new THREE.Group();
-  scene.add(root);
+  root.name = "hybrid-model-root";
+  viewBasis.add(root);
 
   // Persistent adaptive ground grid (survives content clears — never in `root`).
   const groundGridMaterial = createGroundGridMaterial();
-  scene.add(createGroundGridPlane(groundGridMaterial));
+  viewBasis.add(createGroundGridPlane(groundGridMaterial));
 
   scene.add(new THREE.AmbientLight(0xffffff, 1.3));
 
@@ -456,60 +484,21 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   const fillLight = new THREE.DirectionalLight(0xdbeafe, 0.72);
   scene.add(fillLight);
 
-  return { renderer, scene, camera, root, keyLight, fillLight, groundGridMaterial };
-}
-
-function updateCamera(
-  sceneState: SceneState,
-  view: Hybrid3DViewState,
-  width: number,
-  height: number,
-  viewportZoom: number,
-): void {
-  const safeWidth = Math.max(1, width);
-  const safeHeight = Math.max(1, height);
-  const pxPerMm = MM_TO_PX * Math.max(viewportZoom, 1e-6);
-  // Ortho frustum = exactly the world area the 2D board shows at this zoom, so
-  // top-down reads 1:1 with the plan and scale is preserved as it tilts.
-  const halfWidth = safeWidth / pxPerMm / 2;
-  const halfHeight = safeHeight / pxPerMm / 2;
-  const yaw = THREE.MathUtils.degToRad(view.yawDeg);
-  const pitch = THREE.MathUtils.degToRad(clamp(view.pitchDeg, MIN_PITCH_DEG, MAX_PITCH_DEG));
-  const horizontal = Math.cos(pitch);
-  const direction = new THREE.Vector3(
-    Math.cos(yaw) * horizontal,
-    Math.sin(yaw) * horizontal,
-    Math.sin(pitch),
-  ).normalize();
-  const target = new THREE.Vector3(view.targetMm.x, view.targetMm.y, 0);
-  const camera = sceneState.camera;
-  camera.left = -halfWidth;
-  camera.right = halfWidth;
-  camera.top = halfHeight;
-  camera.bottom = -halfHeight;
-  // Parallel projection: distance affects only clipping, never apparent size.
-  const distance = MAX_CAMERA_DISTANCE_MM;
-  camera.position.copy(target).addScaledVector(direction, distance);
-  camera.near = 1;
-  camera.far = distance * 2 + MAX_CAMERA_DISTANCE_MM;
-  camera.lookAt(target);
-  camera.updateProjectionMatrix();
-  camera.updateMatrixWorld(true);
-
-  const lightDistance = Math.max(halfHeight * 2, 4000);
-  sceneState.keyLight.position.copy(target).add(new THREE.Vector3(-lightDistance, -lightDistance, lightDistance * 1.4));
-  sceneState.fillLight.position.copy(target).add(new THREE.Vector3(lightDistance, lightDistance * 0.7, lightDistance * 0.5));
+  return { renderer, scene, camera, viewBasis, root, keyLight, fillLight, groundGridMaterial };
 }
 
 export function HybridProjectionLayer({
   width,
   height,
-  pageWidth,
-  pageHeight,
+  pageWidthMm,
+  pageHeightMm,
   viewportZoom,
   panOffset,
   view,
   interactionElement,
+  planSheetRef,
+  onControllerReady,
+  applyDerivedView,
   onPolarChange,
   onDebug,
   getViewportMatrix,
@@ -533,6 +522,12 @@ export function HybridProjectionLayer({
   onDebugRef.current = onDebug;
   const getViewportMatrixRef = useRef(getViewportMatrix);
   getViewportMatrixRef.current = getViewportMatrix;
+  const planSheetRefRef = useRef(planSheetRef);
+  planSheetRefRef.current = planSheetRef;
+  const onControllerReadyRef = useRef(onControllerReady);
+  onControllerReadyRef.current = onControllerReady;
+  const applyDerivedViewRef = useRef(applyDerivedView);
+  applyDerivedViewRef.current = applyDerivedView;
   const [wallBands, setWallBands] = useState<IsometricWallBand[]>([]);
   const wallBandSignature = useMemo(() => buildIsometricWallBandsSignature(walls), [walls]);
   const objectDefinitionsById = useMemo(
@@ -590,6 +585,9 @@ export function HybridProjectionLayer({
     let lastTs = typeof performance !== "undefined" ? performance.now() : 0;
     let lastW = -1;
     let lastH = -1;
+    // The camera adopts the board's CURRENT pan/zoom once on mount, then OWNS
+    // the view (reference-app practice: camera is the one navigation owner).
+    let cameraAdoptedBoard = false;
 
     // One frame: board zoom/centre → ortho camera, camera-controls adds the tilt,
     // grid density follows the zoom, render. Returns true while still animating.
@@ -610,20 +608,72 @@ export function HybridProjectionLayer({
         lastW = w;
         lastH = h;
       }
-      // Prefer the fabric canvas's LIVE viewport matrix (imperative, updated first on
-      // pan/zoom) so the grid is pixel-locked to the objects; fall back to props.
-      const m = getViewportMatrixRef.current?.();
-      const z = Math.max(m && m.length >= 6 ? (m[0] as number) : z0, 1e-6);
-      const panPxX = m && m.length >= 6 ? (m[4] as number) : -pan.x * z;
-      const panPxY = m && m.length >= 6 ? (m[5] as number) : -pan.y * z;
-      const pxPerMm = MM_TO_PX * z;
-      const centerX = (w / 2 - panPxX) / (MM_TO_PX * z);
-      const centerY = (h / 2 - panPxY) / (MM_TO_PX * z);
-      controller.syncBoard(pxPerMm, centerX, centerY, 0);
+      // One-time adoption: seed the camera from wherever the board currently
+      // is (restored project pan/zoom); after this the flow is CAMERA → BOARD.
+      if (!cameraAdoptedBoard) {
+        const m = getViewportMatrixRef.current?.();
+        const z0Live = Math.max(m && m.length >= 6 ? (m[0] as number) : z0, 1e-6);
+        const panPxX0 = m && m.length >= 6 ? (m[4] as number) : -pan.x * z0Live;
+        const panPxY0 = m && m.length >= 6 ? (m[5] as number) : -pan.y * z0Live;
+        const pxPerMm0 = MM_TO_PX * z0Live;
+        // The board centre is a MODEL point (y down); camera-controls works in
+        // WORLD space, one mirror away (see the view basis in createSceneState).
+        const centerWorld0 = modelPointToWorld({
+          x: (w / 2 - panPxX0) / pxPerMm0,
+          y: (h / 2 - panPxY0) / pxPerMm0,
+        });
+        controller.setBoardView(pxPerMm0, centerWorld0.x, centerWorld0.y, 0);
+        cameraAdoptedBoard = true;
+      }
       const animating = controller.update(delta);
-      // Only the grid shows while flat; the 3D content (root) appears as it tilts,
-      // occluded by the crisp DOM plane above until that plane fades.
-      s.root.visible = boardRef.current.blend > 0.005;
+      // CAMERA → BOARD: derive the flat-equivalent Fabric viewport from the
+      // camera pose and hand it to the host (fabric + refs + store) so every
+      // DOM layer shows exactly what the camera sees — one navigation owner.
+      const derived = controller.deriveBoardView();
+      applyDerivedViewRef.current?.(derived);
+      const z = Math.max(derived.zoom, 1e-6);
+      const panPxX = derived.panPxX;
+      const panPxY = derived.panPxY;
+      const pxPerMm = MM_TO_PX * z;
+      const centerX = (w / 2 - panPxX) / pxPerMm;
+      const centerY = (h / 2 - panPxY) / pxPerMm;
+      if (MODEL_SPACE_DEV_ASSERTIONS) {
+        // View/camera code must never touch the model graph: the basis stays
+        // the permanent mirror, the content root stays identity.
+        assertModelToWorldBasis(s.viewBasis, "Hybrid view basis");
+        assertCanonicalModelRoot(s.root, "Hybrid content root");
+      }
+      const polar = controller.polar;
+      // "Flat" means polar AND azimuth are home — an azimuth-only rotation
+      // still needs the sheet matrix (the Fabric board cannot rotate).
+      const isFlat = controller.isFlatView(FLAT_SHEET_POLAR);
+      // The 3D content is live the moment any tilt begins; while flat only the
+      // grid shows (the crisp DOM sheet carries the drawing).
+      s.root.visible = !isFlat;
+      // Paper bond through the transition: tilt the ENTIRE 2D sheet (Fabric +
+      // overlays) with the exact affine projection of the model plane, so the
+      // drawing stays glued to the paper while the sheet cross-fades into the
+      // pixel-identical 3D view. Snap back to no transform when flat so text
+      // renders crisp (no subpixel rasterising).
+      const sheet = planSheetRefRef.current?.current ?? null;
+      if (sheet) {
+        if (isFlat) {
+          if (sheet.style.transform !== "") sheet.style.transform = "";
+          if (sheet.style.opacity !== "1") sheet.style.opacity = "1";
+          if (sheet.style.pointerEvents !== "") sheet.style.pointerEvents = "";
+        } else {
+          controller.camera.updateMatrixWorld();
+          const sheetMatrix = computePlanSheetCssMatrix(
+            controller.camera,
+            [z, 0, 0, z, panPxX, panPxY],
+            w,
+            h,
+          );
+          sheet.style.transform = planSheetCssMatrixToString(sheetMatrix);
+          sheet.style.opacity = String(planSheetOpacityForPolar(polar));
+          sheet.style.pointerEvents = "none";
+        }
+      }
       s.groundGridMaterial.uniforms.uMinor.value = computeBoardGridSteps(z).minorMm;
       s.groundGridMaterial.uniforms.uMajor.value = computeBoardGridSteps(z).majorMm;
       s.renderer.render(s.scene, controller.camera);
@@ -656,14 +706,22 @@ export function HybridProjectionLayer({
     };
     controller.onChange = request;
     requestFrameRef.current = request;
+    onControllerReadyRef.current?.(controller);
     request();
 
     return () => {
       canvas.removeEventListener("webglcontextlost", handleContextLost, false);
       if (raf != null && typeof window !== "undefined") window.cancelAnimationFrame(raf);
       requestFrameRef.current = null;
+      onControllerReadyRef.current?.(null);
       controller.dispose();
       controllerRef.current = null;
+      const sheet = planSheetRefRef.current?.current ?? null;
+      if (sheet) {
+        sheet.style.transform = "";
+        sheet.style.opacity = "";
+        sheet.style.pointerEvents = "";
+      }
       clearGroup(sceneState.root);
       sceneState.renderer.dispose();
       sceneStateRef.current = null;
@@ -675,7 +733,7 @@ export function HybridProjectionLayer({
     if (!sceneState) return;
 
     clearGroup(sceneState.root);
-    sceneState.root.add(createPagePlane(pageWidth, pageHeight));
+    sceneState.root.add(createPagePlane(pageWidthMm, pageHeightMm));
 
     rooms.forEach((room) => {
       const floor = createRoomFloor(room);
@@ -723,8 +781,8 @@ export function HybridProjectionLayer({
   }, [
     hvacElements,
     objectDefinitionsById,
-    pageHeight,
-    pageWidth,
+    pageHeightMm,
+    pageWidthMm,
     rooms,
     symbols,
     wallBands,
