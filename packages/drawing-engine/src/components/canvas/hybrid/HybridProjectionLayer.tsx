@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
 
 import type { ArchitecturalObjectDefinition } from "../../../data";
 import type { HvacElement, Point2D, Room, SymbolInstance2D, Wall } from "../../../types";
+import { generateId } from "../../../utils/geometry";
+import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
+import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
 import {
   buildRefrigerantPipeEndpointRenderStateMap,
@@ -13,29 +16,31 @@ import {
 } from "../hvac/refrigerantPipeRenderState";
 import { buildHvacElementMesh } from "../hvac/three3d";
 import { createWallOpenings3D } from "../isometric/Opening3DRenderer";
-import { buildIsometricWallBandsInBackground } from "../isometric/isometricWallBandsWorkerClient";
-import {
-  buildIsometricWallBandsSignature,
-  type IsometricWallBand,
-} from "../isometric/wallBands";
 import {
   MODEL_SPACE_DEV_ASSERTIONS,
   applyModelToWorldBasis,
   assertCanonicalModelRoot,
   assertModelToWorldBasis,
   modelPointToWorld,
+  worldPointToModel,
 } from "../modelSpace";
 import { MM_TO_PX } from "../scale";
+import { buildWallChunkGeometry } from "../wallview/wallMeshBuilder";
 
+import { HandleLayer3D, type HandleDef3D } from "./handleLayer3D";
 import {
   HybridViewportController,
   type DerivedBoardView,
 } from "./hybridViewportController";
+import { worldToScreen as projectWorldToScreen } from "./hybridViewportMath";
 import {
   computePlanSheetCssMatrix,
   planSheetCssMatrixToString,
   planSheetOpacityForPolar,
+  wallRiseForPolar,
 } from "./planSheetTransform";
+import { HybridPostFX, OUTLINE_PROXY_MATERIAL } from "./postfx";
+import { extractEntityTriangles, resolveWallHitId } from "./wallPicking";
 
 export type Hybrid3DViewState = {
   blend: number;
@@ -78,6 +83,13 @@ export interface HybridProjectionLayerProps {
   /** Live polar (tilt) angle in radians from camera-controls, for the host to derive blend. */
   onPolarChange?: (polar: number) => void;
   /**
+   * Fires when the flat plan becomes azimuth-ROTATED (reference SPEC §10:
+   * "plan may be rotated deliberately") or squares up again. The host locks
+   * editing and hides the axis-aligned rulers while rotated — the sheet
+   * matrix keeps content/grid glued at any orientation.
+   */
+  onViewRotatedChange?: (rotated: boolean) => void;
+  /**
    * Returns the fabric canvas's live viewport matrix `[z,0,0,z,panPx.x,panPx.y]` (the
    * IMPERATIVE source of truth that pan/zoom updates first). The grid camera derives
    * from this each frame so it stays pixel-locked to the DOM objects — the store lags
@@ -99,6 +111,19 @@ export interface HybridProjectionLayerProps {
   objectDefinitions: ArchitecturalObjectDefinition[];
   hvacElements: HvacElement[];
   onWebglUnavailable?: () => void;
+  /** Wall selection (edge ids) + hover for 3D outlines/handles. */
+  selectedIds?: string[];
+  hoveredElementId?: string | null;
+  /** Solid → X-ray → Wire view style (reference cycle). */
+  viewStyle?: HybridViewStyle;
+  onHoverWall?: (id: string | null) => void;
+  onSelectWall?: (ids: string[]) => void;
+  /** Diamond midpoint handle click → split the wall at t=0.5. */
+  onSplitWall?: (edgeId: string) => void;
+  /** Endpoint-handle drop → move the shared corner (weld-on-drop). */
+  onMoveWallNode?: (nodeId: string, to: Point2D, weld: boolean) => void;
+  /** Body-drag drop → translate the whole wall(s) by a delta. */
+  onMoveWallEdges?: (edgeIds: string[], delta: Point2D) => void;
 }
 
 type SceneState = {
@@ -108,15 +133,23 @@ type SceneState = {
   /** Permanent model→world basis (scale(1,−1,1)) — see modelSpace.ts. */
   viewBasis: THREE.Group;
   root: THREE.Group;
-  keyLight: THREE.DirectionalLight;
-  fillLight: THREE.DirectionalLight;
   groundGridMaterial: THREE.ShaderMaterial;
+  /** Outline proxy meshes (survives content clears; rise-synced in the pump). */
+  proxyLayer: THREE.Group;
+  /** Micro-edit handles (screen-space sized, topmost). */
+  handleLayer: HandleLayer3D;
+  /** Current wall chunk (solid+edges+pick); set by the content effect. */
+  wallChunk: WallChunkGroupData | null;
+  /** Outline composer; created once the controller/camera exist. */
+  postfx: HybridPostFX | null;
 };
 
 const EPSILON = 0.001;
 const MAX_CAMERA_DISTANCE_MM = 220000;
 /** Below this polar the view is "flat": untransformed crisp sheet, no 3D content. */
 const FLAT_SHEET_POLAR = THREE.MathUtils.degToRad(0.03);
+/** Coarser threshold for the rotated-plan STATE (avoids flicker in damping tails). */
+const ROTATED_PLAN_EPSILON = THREE.MathUtils.degToRad(0.5);
 const FLOOR_MATERIAL = new THREE.MeshStandardMaterial({
   color: "#eef4ec",
   transparent: true,
@@ -133,8 +166,6 @@ const PAGE_MATERIAL = new THREE.MeshStandardMaterial({
   metalness: 0,
   side: THREE.DoubleSide,
 });
-const WALL_SIDE_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
-const WALL_TOP_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
 const SYMBOL_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
 
 function polygonSignedArea(points: Point2D[]): number {
@@ -203,33 +234,6 @@ function buildShapeFromPolygon(polygon: Point2D[][]): THREE.Shape | null {
   return shape;
 }
 
-function getWallSideMaterial(color: string): THREE.MeshStandardMaterial {
-  let material = WALL_SIDE_MATERIAL_CACHE.get(color);
-  if (!material) {
-    material = new THREE.MeshStandardMaterial({
-      color,
-      roughness: 0.9,
-      metalness: 0.03,
-    });
-    WALL_SIDE_MATERIAL_CACHE.set(color, material);
-  }
-  return material;
-}
-
-function getWallTopMaterial(color: string): THREE.MeshStandardMaterial {
-  let material = WALL_TOP_MATERIAL_CACHE.get(color);
-  if (!material) {
-    material = new THREE.MeshStandardMaterial({
-      color,
-      roughness: 0.96,
-      metalness: 0.01,
-      side: THREE.DoubleSide,
-    });
-    WALL_TOP_MATERIAL_CACHE.set(color, material);
-  }
-  return material;
-}
-
 function getSymbolMaterial(category: ArchitecturalObjectDefinition["category"]): THREE.MeshStandardMaterial {
   const colors: Record<ArchitecturalObjectDefinition["category"], string> = {
     doors: "#c79d74",
@@ -264,35 +268,71 @@ function createRoomFloor(room: Room): THREE.Object3D | null {
   return mesh;
 }
 
-function createWallMesh(band: IsometricWallBand): THREE.Object3D | null {
-  const shape = buildShapeFromPolygon(band.polygon);
-  if (!shape || band.height <= EPSILON) return null;
+// Wall materials (light-adapted reference tokens): Lambert solid so the
+// hemisphere/directional rig shades faces distinctly, always-on boundary edge
+// lines so the wall outline reads in every view style, and a ghost variant
+// for X-ray.
+const WALL_SOLID_MATERIAL = new THREE.MeshLambertMaterial({
+  color: "#b6b0a6",
+  side: THREE.DoubleSide,
+});
+const WALL_GHOST_MATERIAL = new THREE.MeshLambertMaterial({
+  color: "#b6b0a6",
+  transparent: true,
+  opacity: 0.12,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+const WALL_EDGE_MATERIAL = new THREE.LineBasicMaterial({
+  color: 0x565b63,
+  transparent: true,
+  opacity: 0.8,
+});
+
+export type HybridViewStyle = "solid" | "xray" | "wire";
+
+interface WallChunkGroupData {
+  group: THREE.Group;
+  solid: THREE.Mesh;
+  edges: THREE.LineSegments;
+  /** Always-invisible full-geometry raycast target (works in every style). */
+  pick: THREE.Mesh;
+  entityIds: string[];
+}
+
+/**
+ * Walls render from the shared-node wall graph through the reference solver:
+ * ONE merged prism chunk (footprints + junction wedges) per rebuild, so miters,
+ * T/X junction cores and flipped bodies are topology-true in 3D — identical
+ * source of truth as the 2D plan (see src/wallcore).
+ */
+function createWallChunkGroup(walls: Wall[]): WallChunkGroupData | null {
+  if (walls.length === 0) return null;
+  const graph = wallGraphFromLegacyWalls(walls, { newId: generateId });
+  const solve = solveWallGraphDoc(graph);
+  if (solve.footprints.length === 0) return null;
+  const chunk = buildWallChunkGeometry(solve, 0);
 
   const group = new THREE.Group();
-  group.name = `hybrid-${band.name}`;
-  const sideMaterial = getWallSideMaterial(band.palette.side);
-  const topMaterial = getWallTopMaterial(band.palette.top);
-  const geometry = new THREE.ExtrudeGeometry(shape, {
-    depth: band.height,
-    bevelEnabled: false,
-    curveSegments: 1,
-    steps: 1,
-  });
-  geometry.translate(0, 0, band.baseElevation);
-  geometry.computeVertexNormals();
-  const wall = new THREE.Mesh(geometry, [topMaterial, sideMaterial]);
-  wall.castShadow = true;
-  wall.receiveShadow = true;
-  group.add(wall);
+  group.name = "hybrid-wall-chunk";
 
-  if (band.showTopCap ?? true) {
-    const cap = new THREE.Mesh(new THREE.ShapeGeometry(shape), topMaterial);
-    cap.position.z = band.baseElevation + band.height + 0.6 - (band.topCapInsetMm ?? 0);
-    cap.receiveShadow = true;
-    group.add(cap);
-  }
+  const solid = new THREE.Mesh(chunk.geometry, WALL_SOLID_MATERIAL);
+  solid.name = "hybrid-wall-solid";
+  solid.castShadow = true;
+  solid.receiveShadow = true;
 
-  return group;
+  const edges = new THREE.LineSegments(chunk.edgesGeometry, WALL_EDGE_MATERIAL);
+  edges.name = "hybrid-wall-edges";
+
+  // Reference practice: picking uses an ALWAYS-INVISIBLE full mesh so hover/
+  // selection raycasts keep working when the render mesh is ghosted or hidden.
+  const pick = new THREE.Mesh(chunk.geometry, OUTLINE_PROXY_MATERIAL);
+  pick.name = "hybrid-wall-pick";
+  pick.visible = false;
+  pick.userData.entityIds = chunk.entityIds;
+
+  group.add(solid, edges, pick);
+  return { group, solid, edges, pick, entityIds: chunk.entityIds };
 }
 
 function createSymbolMesh(
@@ -474,17 +514,101 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   const groundGridMaterial = createGroundGridMaterial();
   viewBasis.add(createGroundGridPlane(groundGridMaterial));
 
-  scene.add(new THREE.AmbientLight(0xffffff, 1.3));
+  // Outline proxies + micro-edit handles live under the view basis so they
+  // survive content rebuilds; the pump keeps proxies rise-synced with walls.
+  const proxyLayer = new THREE.Group();
+  proxyLayer.name = "hybrid-outline-proxies";
+  viewBasis.add(proxyLayer);
+  const handleLayer = new HandleLayer3D();
+  viewBasis.add(handleLayer.group);
 
-  const keyLight = new THREE.DirectionalLight(0xfff7ed, 2.0);
-  keyLight.castShadow = true;
-  keyLight.shadow.mapSize.set(1024, 1024);
-  scene.add(keyLight);
+  // Reference lighting rig (light-adapted): hemisphere + one angled key so
+  // wall faces shade distinctly (top vs side) without shadow maps.
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8f939b, 1.15));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(0.6, -0.8, 1.4).multiplyScalar(100_000);
+  scene.add(dirLight);
 
-  const fillLight = new THREE.DirectionalLight(0xdbeafe, 0.72);
-  scene.add(fillLight);
+  return {
+    renderer,
+    scene,
+    camera,
+    viewBasis,
+    root,
+    groundGridMaterial,
+    proxyLayer,
+    handleLayer,
+    wallChunk: null,
+    postfx: null,
+  };
+}
 
-  return { renderer, scene, camera, viewBasis, root, keyLight, fillLight, groundGridMaterial };
+/** Outline proxies for hover/selection: the wall's triangles PLUS its two
+ * node wedges, so mitered junction corners outline as part of the wall. */
+function refreshOutlineProxies(
+  sceneState: SceneState,
+  walls: Wall[],
+  selectedIds: readonly string[],
+  hoveredId: string | null,
+): void {
+  const layer = sceneState.proxyLayer;
+  [...layer.children].forEach((child) => {
+    layer.remove(child);
+    if (child instanceof THREE.Mesh) child.geometry.dispose();
+  });
+  const chunk = sceneState.wallChunk;
+  const postfx = sceneState.postfx;
+  if (!postfx) return;
+  if (!chunk) {
+    postfx.setHover([]);
+    postfx.setSelection([]);
+    return;
+  }
+
+  const wallById = new Map(walls.map((wall) => [wall.id, wall]));
+  const buildProxy = (wallId: string): THREE.Mesh | null => {
+    const wall = wallById.get(wallId);
+    if (!wall) return null;
+    const targets = new Set<string>([wallId]);
+    if (wall.graph) {
+      targets.add(wall.graph.a);
+      targets.add(wall.graph.b);
+    }
+    const geometry = extractEntityTriangles(chunk.pick.geometry, chunk.entityIds, targets);
+    if (!geometry) return null;
+    const mesh = new THREE.Mesh(geometry, OUTLINE_PROXY_MATERIAL);
+    layer.add(mesh);
+    return mesh;
+  };
+
+  const selectionMeshes = selectedIds
+    .map(buildProxy)
+    .filter((mesh): mesh is THREE.Mesh => mesh !== null);
+  // Hover suppressed when the hovered wall is already selected (reference).
+  const hoverMeshes =
+    hoveredId && !selectedIds.includes(hoveredId)
+      ? [buildProxy(hoveredId)].filter((mesh): mesh is THREE.Mesh => mesh !== null)
+      : [];
+  postfx.setSelection(selectionMeshes);
+  postfx.setHover(hoverMeshes);
+}
+
+/** Solid → X-ray → Wire (reference applyStyles): render styles only; the
+ * invisible pick mesh keeps raycasting in every mode. */
+function applyViewStyle(sceneState: SceneState, style: HybridViewStyle): void {
+  const chunk = sceneState.wallChunk;
+  if (chunk) {
+    chunk.solid.visible = style !== "wire";
+    chunk.solid.material = style === "xray" ? WALL_GHOST_MATERIAL : WALL_SOLID_MATERIAL;
+    chunk.edges.visible = true;
+  }
+  sceneState.root.traverse((object) => {
+    if (object.name.startsWith("hybrid-room-floor-")) {
+      object.visible = style !== "wire";
+    } else if (object.name === "hybrid-page-plane") {
+      object.visible = style === "solid";
+    }
+  });
 }
 
 export function HybridProjectionLayer({
@@ -500,6 +624,7 @@ export function HybridProjectionLayer({
   onControllerReady,
   applyDerivedView,
   onPolarChange,
+  onViewRotatedChange,
   onDebug,
   getViewportMatrix,
   walls,
@@ -508,6 +633,14 @@ export function HybridProjectionLayer({
   objectDefinitions,
   hvacElements,
   onWebglUnavailable,
+  selectedIds,
+  hoveredElementId,
+  viewStyle,
+  onHoverWall,
+  onSelectWall,
+  onSplitWall,
+  onMoveWallNode,
+  onMoveWallEdges,
 }: HybridProjectionLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sceneStateRef = useRef<SceneState | null>(null);
@@ -518,6 +651,9 @@ export function HybridProjectionLayer({
   boardRef.current = { width, height, viewportZoom, panOffset, blend: view.blend };
   const onPolarChangeRef = useRef(onPolarChange);
   onPolarChangeRef.current = onPolarChange;
+  const onViewRotatedChangeRef = useRef(onViewRotatedChange);
+  onViewRotatedChangeRef.current = onViewRotatedChange;
+  const lastViewRotatedRef = useRef(false);
   const onDebugRef = useRef(onDebug);
   onDebugRef.current = onDebug;
   const getViewportMatrixRef = useRef(getViewportMatrix);
@@ -528,31 +664,28 @@ export function HybridProjectionLayer({
   onControllerReadyRef.current = onControllerReady;
   const applyDerivedViewRef = useRef(applyDerivedView);
   applyDerivedViewRef.current = applyDerivedView;
-  const [wallBands, setWallBands] = useState<IsometricWallBand[]>([]);
-  const wallBandSignature = useMemo(() => buildIsometricWallBandsSignature(walls), [walls]);
+  const wallsRef = useRef(walls);
+  wallsRef.current = walls;
+  const selectedIdsRef = useRef(selectedIds ?? []);
+  selectedIdsRef.current = selectedIds ?? [];
+  const hoveredRef = useRef(hoveredElementId ?? null);
+  hoveredRef.current = hoveredElementId ?? null;
+  const viewStyleRef = useRef<HybridViewStyle>(viewStyle ?? "solid");
+  viewStyleRef.current = viewStyle ?? "solid";
+  const onHoverWallRef = useRef(onHoverWall);
+  onHoverWallRef.current = onHoverWall;
+  const onSelectWallRef = useRef(onSelectWall);
+  onSelectWallRef.current = onSelectWall;
+  const onSplitWallRef = useRef(onSplitWall);
+  onSplitWallRef.current = onSplitWall;
+  const onMoveWallNodeRef = useRef(onMoveWallNode);
+  onMoveWallNodeRef.current = onMoveWallNode;
+  const onMoveWallEdgesRef = useRef(onMoveWallEdges);
+  onMoveWallEdgesRef.current = onMoveWallEdges;
   const objectDefinitionsById = useMemo(
     () => new Map(objectDefinitions.map((definition) => [definition.id, definition])),
     [objectDefinitions],
   );
-
-  useEffect(() => {
-    if (walls.length === 0) {
-      setWallBands([]);
-      return;
-    }
-
-    let cancelled = false;
-    void buildIsometricWallBandsInBackground({
-      signature: wallBandSignature,
-      walls,
-    }).then((nextWallBands) => {
-      if (!cancelled) setWallBands(nextWallBands);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [wallBandSignature, walls]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -574,12 +707,396 @@ export function HybridProjectionLayer({
       Math.max(1, boardRef.current.width),
       Math.max(1, boardRef.current.height),
     );
+    // Outline composer (reference postfx): needs the live camera.
+    try {
+      sceneState.postfx = new HybridPostFX(
+        sceneState.renderer,
+        sceneState.scene,
+        controller.camera,
+      );
+    } catch {
+      sceneState.postfx = null; // plain render fallback
+    }
 
     const handleContextLost = (event: Event) => {
       event.preventDefault();
       onWebglUnavailable?.();
     };
     canvas.addEventListener("webglcontextlost", handleContextLost, false);
+
+    // ── 3D wall picking / selection / micro-edit handles ──────────────────
+    // LMB is unclaimed while the 3D view is engaged (the plan sheet is
+    // pointer-events:none and camera-controls binds only MMB/RMB), so the
+    // reference practice applies: tools own LMB. Handles hit-test FIRST in
+    // screen space, then the invisible pick mesh resolves wall ids from the
+    // per-vertex entityIndex attribute.
+    const raycaster = new THREE.Raycaster();
+    const pickState: {
+      downX: number;
+      downY: number;
+      downHandled: boolean;
+      /** Corner-handle drag (endpoint node move, weld-on-drop). */
+      drag: { nodeId: string; handleId: string; anchors: Array<[number, number]> } | null;
+      /** Wall body drag (translate the whole selected wall(s)). */
+      bodyDrag: {
+        edgeIds: string[];
+        downModel: { x: number; y: number };
+        active: boolean;
+        pressedId: string;
+      } | null;
+      lastModel: { x: number; y: number } | null;
+      ghost: THREE.LineSegments | null;
+      ghostBody: THREE.Object3D | null;
+      /** Original footprint corners of the moved wall(s) (leader-line anchors). */
+      leaderAnchors: Array<[number, number]>;
+      ghostLeaders: THREE.LineSegments | null;
+    } = {
+      downX: 0,
+      downY: 0,
+      downHandled: false,
+      drag: null,
+      bodyDrag: null,
+      lastModel: null,
+      ghost: null,
+      ghostBody: null,
+      leaderAnchors: [],
+      ghostLeaders: null,
+    };
+    const BODY_GHOST_MATERIAL = new THREE.MeshBasicMaterial({
+      color: 0x4f8cff,
+      transparent: true,
+      opacity: 0.3,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    // Dashed leader lines from each original corner to its moved preview corner
+    // (dash sizes are refreshed per drag frame to stay ~screen-consistent).
+    const LEADER_MATERIAL = new THREE.LineDashedMaterial({
+      color: 0x2f6fe0,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+      dashSize: 60,
+      gapSize: 40,
+    });
+
+    const hostPoint = (e: PointerEvent): { x: number; y: number } | null => {
+      const rect = interactionElement.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
+      return { x, y };
+    };
+    const viewportSize = () => ({
+      width: Math.max(1, boardRef.current.width),
+      height: Math.max(1, boardRef.current.height),
+    });
+    const worldToHostScreen = (world: THREE.Vector3): { x: number; y: number } => {
+      controller.camera.updateMatrixWorld();
+      return projectWorldToScreen(world, controller.camera, viewportSize());
+    };
+    const modelToWorldPoint = (p: readonly [number, number, number]): THREE.Vector3 =>
+      modelPointToWorld({ x: p[0], y: p[1] }, p[2]);
+
+    const raycastWallId = (point: { x: number; y: number }): string | null => {
+      const s = sceneStateRef.current;
+      if (!s?.wallChunk) return null;
+      const { width: w, height: h } = viewportSize();
+      raycaster.setFromCamera(
+        new THREE.Vector2((point.x / w) * 2 - 1, 1 - (point.y / h) * 2),
+        controller.camera,
+      );
+      const hits = raycaster.intersectObject(s.wallChunk.pick, false);
+      const wallIds = new Set(wallsRef.current.map((wall) => wall.id));
+      return resolveWallHitId(hits, s.wallChunk.entityIds, wallIds);
+    };
+
+    const GHOST_MATERIAL_3D = new THREE.LineBasicMaterial({
+      color: 0x4f8cff,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,
+    });
+    const removeGhost = (): void => {
+      const s = sceneStateRef.current;
+      if (pickState.ghost && s) {
+        s.viewBasis.remove(pickState.ghost);
+        pickState.ghost.geometry.dispose();
+      }
+      pickState.ghost = null;
+    };
+    const updateGhost = (model: { x: number; y: number }): void => {
+      const s = sceneStateRef.current;
+      if (!s || !pickState.drag) return;
+      const anchors = pickState.drag.anchors;
+      const positions = new Float32Array(anchors.length * 6);
+      anchors.forEach(([ax, ay], i) => {
+        positions.set([ax, ay, 5, model.x, model.y, 5], i * 6);
+      });
+      if (!pickState.ghost) {
+        pickState.ghost = new THREE.LineSegments(new THREE.BufferGeometry(), GHOST_MATERIAL_3D);
+        pickState.ghost.renderOrder = 890;
+        pickState.ghost.frustumCulled = false;
+        s.viewBasis.add(pickState.ghost);
+      }
+      pickState.ghost.geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(positions, 3),
+      );
+    };
+
+    // Body-drag ghost: a translucent copy of the moved wall(s) (triangles +
+    // node wedges) that follows the cursor delta, PLUS dashed leader lines from
+    // every original footprint corner to its moved preview corner. The real
+    // move commits on drop.
+    const buildBodyGhost = (edgeIds: string[]): void => {
+      const s = sceneStateRef.current;
+      if (!s?.wallChunk) return;
+      const targets = new Set<string>();
+      const anchors: Array<[number, number]> = [];
+      for (const id of edgeIds) {
+        targets.add(id);
+        const wall = wallsRef.current.find((candidate) => candidate.id === id);
+        if (!wall) continue;
+        if (wall.graph) {
+          targets.add(wall.graph.a);
+          targets.add(wall.graph.b);
+        }
+        // The four solved footprint corners (stamped into interior/exterior
+        // lines by the mirror) are the natural leader anchors.
+        anchors.push(
+          [wall.interiorLine.start.x, wall.interiorLine.start.y],
+          [wall.interiorLine.end.x, wall.interiorLine.end.y],
+          [wall.exteriorLine.start.x, wall.exteriorLine.start.y],
+          [wall.exteriorLine.end.x, wall.exteriorLine.end.y],
+        );
+      }
+      const geometry = extractEntityTriangles(
+        s.wallChunk.pick.geometry,
+        s.wallChunk.entityIds,
+        targets,
+      );
+      if (!geometry) return;
+      const mesh = new THREE.Mesh(geometry, BODY_GHOST_MATERIAL);
+      mesh.renderOrder = 895;
+      mesh.frustumCulled = false;
+      s.viewBasis.add(mesh);
+      pickState.ghostBody = mesh;
+
+      pickState.leaderAnchors = anchors;
+      const leaders = new THREE.LineSegments(new THREE.BufferGeometry(), LEADER_MATERIAL);
+      leaders.renderOrder = 896;
+      leaders.frustumCulled = false;
+      s.viewBasis.add(leaders);
+      pickState.ghostLeaders = leaders;
+    };
+    const updateBodyGhost = (delta: { x: number; y: number }): void => {
+      if (pickState.ghostBody) pickState.ghostBody.position.set(delta.x, delta.y, 0);
+      const leaders = pickState.ghostLeaders;
+      if (!leaders) return;
+      const anchors = pickState.leaderAnchors;
+      const positions = new Float32Array(anchors.length * 6);
+      anchors.forEach(([ax, ay], i) => {
+        // original corner → moved preview corner (both on the wall base plane)
+        positions.set([ax, ay, 6, ax + delta.x, ay + delta.y, 6], i * 6);
+      });
+      leaders.geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      leaders.computeLineDistances(); // required for LineDashedMaterial
+      // Keep the dash cadence roughly screen-consistent across zoom.
+      const mmPerPx = 1 / Math.max(controller.camera.zoom, 1e-9);
+      LEADER_MATERIAL.dashSize = 8 * mmPerPx;
+      LEADER_MATERIAL.gapSize = 5 * mmPerPx;
+    };
+    const removeBodyGhost = (): void => {
+      const s = sceneStateRef.current;
+      if (pickState.ghostBody && s) {
+        s.viewBasis.remove(pickState.ghostBody);
+        (pickState.ghostBody as THREE.Mesh).geometry?.dispose();
+      }
+      pickState.ghostBody = null;
+      if (pickState.ghostLeaders && s) {
+        s.viewBasis.remove(pickState.ghostLeaders);
+        pickState.ghostLeaders.geometry.dispose();
+      }
+      pickState.ghostLeaders = null;
+      pickState.leaderAnchors = [];
+    };
+
+    const handlePointerMove3D = (ev: Event): void => {
+      const e = ev as PointerEvent;
+      const s = sceneStateRef.current;
+      if (!s) return;
+      if (controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      const point = hostPoint(e);
+      if (!point) return;
+      if (pickState.drag) {
+        const hit = controller.screenToPlane(point.x, point.y);
+        if (hit) {
+          const model = worldPointToModel(hit);
+          pickState.lastModel = { x: model.x, y: model.y };
+          updateGhost(pickState.lastModel);
+          request();
+        }
+        return;
+      }
+      if (pickState.bodyDrag) {
+        const hit = controller.screenToPlane(point.x, point.y);
+        if (!hit) return;
+        const model = worldPointToModel(hit);
+        pickState.lastModel = { x: model.x, y: model.y };
+        const screenMoved = Math.hypot(e.clientX - pickState.downX, e.clientY - pickState.downY);
+        if (!pickState.bodyDrag.active && screenMoved > 4) {
+          pickState.bodyDrag.active = true;
+          buildBodyGhost(pickState.bodyDrag.edgeIds);
+        }
+        if (pickState.bodyDrag.active && pickState.ghostBody) {
+          pickState.ghostBody.position.set(
+            model.x - pickState.bodyDrag.downModel.x,
+            model.y - pickState.bodyDrag.downModel.y,
+            0,
+          );
+          request();
+        }
+        return;
+      }
+      if (e.buttons !== 0) return; // navigating (pan/orbit) — leave hover alone
+      const handle = s.handleLayer.hitTest(point.x, point.y, worldToHostScreen, modelToWorldPoint);
+      if (handle) {
+        if (s.handleLayer.setState(handle.id, "hover")) request();
+        onHoverWallRef.current?.(null);
+        return;
+      }
+      if (s.handleLayer.setState("", "idle")) request();
+      onHoverWallRef.current?.(raycastWallId(point));
+    };
+
+    const handlePointerDown3D = (ev: Event): void => {
+      const e = ev as PointerEvent;
+      if (e.button !== 0) return;
+      const s = sceneStateRef.current;
+      if (!s || controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      const point = hostPoint(e);
+      if (!point) return;
+      pickState.downX = e.clientX;
+      pickState.downY = e.clientY;
+      pickState.downHandled = false;
+      pickState.bodyDrag = null;
+      const handle = s.handleLayer.hitTest(point.x, point.y, worldToHostScreen, modelToWorldPoint);
+      if (handle) {
+        pickState.downHandled = true;
+        e.preventDefault();
+        e.stopPropagation();
+        if (handle.kind === "midpointInsert") {
+          onSplitWallRef.current?.(handle.entityId);
+          return;
+        }
+        // Endpoint corner drag (weld-on-drop on release, reference wall.moveNode).
+        const anchors: Array<[number, number]> = [];
+        for (const wall of wallsRef.current) {
+          if (wall.graph?.a === handle.entityId) anchors.push([wall.endPoint.x, wall.endPoint.y]);
+          else if (wall.graph?.b === handle.entityId) anchors.push([wall.startPoint.x, wall.startPoint.y]);
+        }
+        pickState.drag = { nodeId: handle.entityId, handleId: handle.id, anchors };
+        pickState.lastModel = null;
+        s.handleLayer.setState(handle.id, "active");
+        interactionElement.setPointerCapture?.(e.pointerId);
+        request();
+        return;
+      }
+      // No handle → press on a wall BODY arms a body-drag-to-move (activates
+      // past a 4px threshold; a pure click falls through to select on up).
+      const wallId = raycastWallId(point);
+      if (!wallId) return; // empty space; up() clears selection
+      pickState.downHandled = true;
+      e.preventDefault();
+      e.stopPropagation();
+      const hit = controller.screenToPlane(point.x, point.y);
+      if (!hit) return;
+      const downModel = worldPointToModel(hit);
+      const current = selectedIdsRef.current;
+      // Drag the whole selection when pressing an already-selected wall,
+      // otherwise just the pressed one (reference dragMove semantics).
+      const edgeIds = current.includes(wallId) ? [...current] : [wallId];
+      pickState.bodyDrag = {
+        edgeIds,
+        downModel: { x: downModel.x, y: downModel.y },
+        active: false,
+        pressedId: wallId,
+      };
+      pickState.lastModel = { x: downModel.x, y: downModel.y };
+      interactionElement.setPointerCapture?.(e.pointerId);
+    };
+
+    const selectWall = (id: string | null, shiftKey: boolean): void => {
+      const current = selectedIdsRef.current;
+      if (id) {
+        if (shiftKey) {
+          onSelectWallRef.current?.(
+            current.includes(id) ? current.filter((x) => x !== id) : [...current, id],
+          );
+        } else {
+          onSelectWallRef.current?.([id]);
+        }
+      } else if (!shiftKey && current.length > 0) {
+        onSelectWallRef.current?.([]);
+      }
+    };
+
+    const handlePointerUp3D = (ev: Event): void => {
+      const e = ev as PointerEvent;
+      const s = sceneStateRef.current;
+      const releaseCapture = (): void => {
+        try {
+          interactionElement.releasePointerCapture?.(e.pointerId);
+        } catch {
+          /* pointer already released */
+        }
+      };
+      if (pickState.drag) {
+        const drag = pickState.drag;
+        pickState.drag = null;
+        removeGhost();
+        s?.handleLayer.setState("", "idle");
+        releaseCapture();
+        if (pickState.lastModel) {
+          onMoveWallNodeRef.current?.(drag.nodeId, pickState.lastModel, true);
+        }
+        request();
+        return;
+      }
+      if (pickState.bodyDrag) {
+        const body = pickState.bodyDrag;
+        pickState.bodyDrag = null;
+        removeBodyGhost();
+        releaseCapture();
+        if (body.active && pickState.lastModel) {
+          const delta = {
+            x: pickState.lastModel.x - body.downModel.x,
+            y: pickState.lastModel.y - body.downModel.y,
+          };
+          if (Math.hypot(delta.x, delta.y) > 1e-6) {
+            onMoveWallEdgesRef.current?.(body.edgeIds, delta);
+          }
+        } else {
+          // No drag → a click: select the pressed wall.
+          selectWall(body.pressedId, e.shiftKey);
+        }
+        request();
+        return;
+      }
+      if (e.button !== 0 || pickState.downHandled) return;
+      if (!s || controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      const moved = Math.hypot(e.clientX - pickState.downX, e.clientY - pickState.downY);
+      if (moved > 4) return; // it was a pan on empty space, not a click
+      const point = hostPoint(e);
+      if (!point) return;
+      selectWall(raycastWallId(point), e.shiftKey);
+    };
+
+    interactionElement.addEventListener("pointermove", handlePointerMove3D);
+    interactionElement.addEventListener("pointerdown", handlePointerDown3D);
+    interactionElement.addEventListener("pointerup", handlePointerUp3D);
 
     let raf: number | null = null;
     let lastTs = typeof performance !== "undefined" ? performance.now() : 0;
@@ -605,6 +1122,7 @@ export function HybridProjectionLayer({
       // it every frame can fight camera-controls' ortho zoom.
       if (w !== lastW || h !== lastH) {
         controller.setSize(w, h);
+        s.postfx?.setSize(w, h);
         lastW = w;
         lastH = h;
       }
@@ -650,6 +1168,21 @@ export function HybridProjectionLayer({
       // The 3D content is live the moment any tilt begins; while flat only the
       // grid shows (the crisp DOM sheet carries the drawing).
       s.root.visible = !isFlat;
+      // Walls RISE from the paper: flat during the sheet crossfade (top face
+      // glued to the plan footprint — a full-height solid would parallax its
+      // top by height·tanφ and read as a broken double wall), then grow to
+      // full height once the sheet is gone. Derived-cache reveal only.
+      const rise = Math.max(wallRiseForPolar(polar), 0.002);
+      const wallChunk = s.root.getObjectByName("hybrid-wall-chunk");
+      if (wallChunk) {
+        // Keep a few mm of body so the flattened walls stay above floor fills.
+        wallChunk.scale.z = rise;
+      }
+      // Outline proxies mirror the wall triangles — rise with them.
+      s.proxyLayer.scale.z = rise;
+      // Handles stay ~10px on screen at any zoom (reference practice).
+      s.handleLayer.updateScale(1 / Math.max(controller.camera.zoom, 1e-9));
+      s.handleLayer.group.visible = !isFlat;
       // Paper bond through the transition: tilt the ENTIRE 2D sheet (Fabric +
       // overlays) with the exact affine projection of the model plane, so the
       // drawing stays glued to the paper while the sheet cross-fades into the
@@ -676,8 +1209,19 @@ export function HybridProjectionLayer({
       }
       s.groundGridMaterial.uniforms.uMinor.value = computeBoardGridSteps(z).minorMm;
       s.groundGridMaterial.uniforms.uMajor.value = computeBoardGridSteps(z).majorMm;
-      s.renderer.render(s.scene, controller.camera);
+      if (s.postfx) {
+        s.postfx.render(delta);
+      } else {
+        s.renderer.render(s.scene, controller.camera);
+      }
       onPolarChangeRef.current?.(controller.polar);
+      // Rotated-plan state (transition-edge only, coarse threshold): the host
+      // locks editing + hides the axis-aligned rulers while rotated.
+      const viewRotated = Math.abs(controller.azimuthWrapped) > ROTATED_PLAN_EPSILON;
+      if (viewRotated !== lastViewRotatedRef.current) {
+        lastViewRotatedRef.current = viewRotated;
+        onViewRotatedChangeRef.current?.(viewRotated);
+      }
       onDebugRef.current?.({
         vz: z,
         pxPerMm,
@@ -711,6 +1255,11 @@ export function HybridProjectionLayer({
 
     return () => {
       canvas.removeEventListener("webglcontextlost", handleContextLost, false);
+      interactionElement.removeEventListener("pointermove", handlePointerMove3D);
+      interactionElement.removeEventListener("pointerdown", handlePointerDown3D);
+      interactionElement.removeEventListener("pointerup", handlePointerUp3D);
+      removeGhost();
+      removeBodyGhost();
       if (raf != null && typeof window !== "undefined") window.cancelAnimationFrame(raf);
       requestFrameRef.current = null;
       onControllerReadyRef.current?.(null);
@@ -722,6 +1271,10 @@ export function HybridProjectionLayer({
         sheet.style.opacity = "";
         sheet.style.pointerEvents = "";
       }
+      sceneState.postfx?.dispose();
+      sceneState.postfx = null;
+      sceneState.handleLayer.dispose();
+      sceneState.wallChunk = null;
       clearGroup(sceneState.root);
       sceneState.renderer.dispose();
       sceneStateRef.current = null;
@@ -740,10 +1293,9 @@ export function HybridProjectionLayer({
       if (floor) sceneState.root.add(floor);
     });
 
-    wallBands.forEach((band) => {
-      const wallMesh = createWallMesh(band);
-      if (wallMesh) sceneState.root.add(wallMesh);
-    });
+    const wallChunkData = createWallChunkGroup(walls);
+    sceneState.wallChunk = wallChunkData;
+    if (wallChunkData) sceneState.root.add(wallChunkData.group);
 
     walls.forEach((wall) => {
       const openings = createWallOpenings3D(wall);
@@ -777,6 +1329,10 @@ export function HybridProjectionLayer({
       tuneHvacMesh(mesh);
       sceneState.root.add(mesh);
     });
+    // Content changed → re-apply the view style and rebuild outline proxies
+    // against the fresh chunk (selection may reference rebuilt geometry).
+    applyViewStyle(sceneState, viewStyleRef.current);
+    refreshOutlineProxies(sceneState, walls, selectedIdsRef.current, hoveredRef.current);
     requestFrameRef.current?.();
   }, [
     hvacElements,
@@ -785,9 +1341,66 @@ export function HybridProjectionLayer({
     pageWidthMm,
     rooms,
     symbols,
-    wallBands,
     walls,
   ]);
+
+  // Hover / selection → outline proxies (reference refreshProxies wiring).
+  useEffect(() => {
+    const sceneState = sceneStateRef.current;
+    if (!sceneState) return;
+    refreshOutlineProxies(sceneState, walls, selectedIds ?? [], hoveredElementId ?? null);
+    requestFrameRef.current?.();
+  }, [selectedIds, hoveredElementId, walls]);
+
+  // Selection → micro-edit handle definitions (square corners + diamond mid).
+  useEffect(() => {
+    const sceneState = sceneStateRef.current;
+    if (!sceneState) return;
+    const defs: HandleDef3D[] = [];
+    const seenNodes = new Set<string>();
+    for (const id of selectedIds ?? []) {
+      const wall = walls.find((candidate) => candidate.id === id);
+      if (!wall?.graph) continue;
+      if (!seenNodes.has(wall.graph.a)) {
+        seenNodes.add(wall.graph.a);
+        defs.push({
+          id: `ep:${wall.graph.a}`,
+          kind: "endpoint",
+          p: [wall.startPoint.x, wall.startPoint.y, 5],
+          entityId: wall.graph.a,
+        });
+      }
+      if (!seenNodes.has(wall.graph.b)) {
+        seenNodes.add(wall.graph.b);
+        defs.push({
+          id: `ep:${wall.graph.b}`,
+          kind: "endpoint",
+          p: [wall.endPoint.x, wall.endPoint.y, 5],
+          entityId: wall.graph.b,
+        });
+      }
+      defs.push({
+        id: `mi:${id}`,
+        kind: "midpointInsert",
+        p: [
+          (wall.startPoint.x + wall.endPoint.x) / 2,
+          (wall.startPoint.y + wall.endPoint.y) / 2,
+          5,
+        ],
+        entityId: id,
+      });
+    }
+    sceneState.handleLayer.setDefs(defs);
+    requestFrameRef.current?.();
+  }, [selectedIds, walls]);
+
+  // View style: Solid → X-ray → Wire (reference applyStyles).
+  useEffect(() => {
+    const sceneState = sceneStateRef.current;
+    if (!sceneState) return;
+    applyViewStyle(sceneState, viewStyle ?? "solid");
+    requestFrameRef.current?.();
+  }, [viewStyle]);
 
   // Any prop change (size / zoom / pan / blend / content) requests a fresh frame
   // from the camera-controls render pump.
@@ -800,7 +1413,6 @@ export function HybridProjectionLayer({
     panOffset.x,
     panOffset.y,
     view.blend,
-    wallBands,
     rooms,
     walls,
     symbols,

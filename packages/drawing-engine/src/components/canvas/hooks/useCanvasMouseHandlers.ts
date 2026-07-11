@@ -33,10 +33,6 @@ import type { RoomRenderer } from "../room/RoomRenderer";
 import { MM_TO_PX } from "../scale";
 import { snapPointToGrid } from "../snapping";
 import { isDrawingTool, renderDrawingPreview } from "../toolUtils";
-import {
-  buildViewportTransform,
-  panFromViewportDelta,
-} from "../viewTransform";
 import type { WallRenderer } from "../wall/WallRenderer";
 import { snapWallPoint } from "../wall/WallSnapping";
 
@@ -89,6 +85,12 @@ export interface UseCanvasMouseHandlersOptions {
   sectionLineDrawingState: SectionLineDrawingState;
 
   // ── Callbacks ──
+  /**
+   * Pan by screen pixels through the CAMERA (the one navigation owner —
+   * hybridViewportController.truckPixels); the Fabric viewport derives from
+   * the camera each frame. Used by the pan tool / space-drag / view-only drag.
+   */
+  panViewportByPixels?: (dxPx: number, dyPx: number) => void;
   queueMousePositionUpdate: (position: Point2D) => void;
   closeWallContextMenu: () => void;
   closeDimensionContextMenu: () => void;
@@ -219,8 +221,6 @@ export function useCanvasMouseHandlers(
     // Refs
     fabricRef,
     canvasStateRef,
-    zoomRef,
-    panOffsetRef,
     placementCursorRef,
     middlePanRef,
     marqueeSelectionRef,
@@ -229,9 +229,6 @@ export function useCanvasMouseHandlers(
     isDraggingObjectRef,
     isWallHandleDraggingRef,
     openingPointerInteractionRef,
-    wheelPendingZoom,
-    wheelPendingPan,
-    wheelRafId,
     roomRendererRef,
     objectRendererRef,
     hvacRendererRef,
@@ -248,7 +245,6 @@ export function useCanvasMouseHandlers(
     isRoomDrawing,
     roomStartCorner,
     viewportZoom,
-    safePaperPerRealRatio,
     walls,
     wallSettings,
     sectionLineDrawingState,
@@ -283,8 +279,7 @@ export function useCanvasMouseHandlers(
     buildOpeningPreviewProperties,
     computeHvacPlacement,
     scheduleDimensionLayerRefresh,
-    setViewTransform,
-    setInteractionViewTransform,
+    panViewportByPixels,
     setCanvasState,
     setPlacementValid,
     setHoveredElement,
@@ -305,41 +300,10 @@ export function useCanvasMouseHandlers(
     extendTool,
   } = options;
 
-  const scheduleViewTransformSync = useCallback(
-    (viewportZoomValue: number, panOffsetValue: Point2D) => {
-      const nextZoom = viewportZoomValue / safePaperPerRealRatio;
-      wheelPendingZoom.current = nextZoom;
-      wheelPendingPan.current = panOffsetValue;
-      setInteractionViewTransform(nextZoom, panOffsetValue);
-      if (wheelRafId.current) return;
-      wheelRafId.current = requestAnimationFrame(() => {
-        wheelRafId.current = null;
-        setViewTransform(wheelPendingZoom.current, wheelPendingPan.current);
-      });
-    },
-    [
-      wheelPendingZoom,
-      wheelPendingPan,
-      wheelRafId,
-      safePaperPerRealRatio,
-      setInteractionViewTransform,
-      setViewTransform,
-    ],
-  );
-
-  const applyViewportTransformImmediate = useCallback(
-    (nextViewportZoom: number, nextPanOffset: Point2D) => {
-      const canvas = fabricRef.current;
-      if (!canvas) return;
-      canvas.setViewportTransform(
-        buildViewportTransform(nextViewportZoom, nextPanOffset),
-      );
-      canvas.requestRenderAll();
-      zoomRef.current = nextViewportZoom;
-      panOffsetRef.current = nextPanOffset;
-    },
-    [fabricRef, zoomRef, panOffsetRef],
-  );
+  // CAMERA OWNS NAVIGATION: the legacy scheduleViewTransformSync /
+  // applyViewportTransformImmediate fabric-writers are gone — every pan/zoom
+  // route trucks or dollies the camera, and the Fabric viewport derives from
+  // it in the render pump (see hybridViewportController).
 
   // ── handleMouseDown ─────────────────────────────────────────────────
   const handleMouseDown = useCallback(
@@ -591,14 +555,12 @@ export function useCanvasMouseHandlers(
       if (currentState.isPanning && currentState.lastPanPoint) {
         const dx = viewportPoint.x - currentState.lastPanPoint.x;
         const dy = viewportPoint.y - currentState.lastPanPoint.y;
-        const nextPan = panFromViewportDelta(
-          panOffsetRef.current,
-          dx,
-          dy,
-          zoomRef.current,
-        );
-        applyViewportTransformImmediate(zoomRef.current, nextPan);
-        scheduleViewTransformSync(zoomRef.current, nextPan);
+        // CAMERA OWNS NAVIGATION (reference practice): LMB/space panning
+        // trucks the CAMERA — the one view owner — and the Fabric viewport
+        // derives from it in the same render-pump frame. Writing Fabric
+        // directly here fought the camera→board flow: the 3D layer (grid,
+        // walls, floors) trailed the sheet and rubber-banded after release.
+        panViewportByPixels?.(dx, dy);
         const nextState: CanvasState = {
           ...currentState,
           lastPanPoint: { x: viewportPoint.x, y: viewportPoint.y },
@@ -997,8 +959,7 @@ export function useCanvasMouseHandlers(
       setHoveredElement,
       setMarqueeSelectionMode,
       updateOpeningPointerInteraction,
-      applyViewportTransformImmediate,
-      scheduleViewTransformSync,
+      panViewportByPixels,
     ],
   );
 

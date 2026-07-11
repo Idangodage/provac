@@ -1,6 +1,10 @@
-import { featureCollection, multiPolygon, polygon, union } from '@turf/turf';
+import type { multiPolygon} from '@turf/turf';
+import { featureCollection, polygon, union } from '@turf/turf';
 
 import type { JoinData, Point2D, Wall } from '../../../types';
+import { generateId } from '../../../utils/geometry';
+import { wallGraphFromLegacyWalls } from '../../../wallcore/legacyBridge';
+import { solveWallGraphDoc } from '../../../wallcore/wallSolver';
 
 import { computeWallBodyPolygon } from './WallGeometry';
 import { computeWallJoinMap, computeWallJoinMapWithShadows } from './WallJoinNetwork';
@@ -669,7 +673,8 @@ function buildEndpointNodes(walls: Wall[]): EndpointNode[] {
   return nodes;
 }
 
-function anchorAngleDeg(nodePoint: Point2D, anchor: Point2D): number {
+// Dormant legacy helper (endpoint overlay patches disabled); retires with W5.
+function _anchorAngleDeg(nodePoint: Point2D, anchor: Point2D): number {
   return normalizeAngleDeg(Math.atan2(anchor.y - nodePoint.y, anchor.x - nodePoint.x) * (180 / Math.PI));
 }
 
@@ -829,7 +834,8 @@ function buildEndpointJoinPatchFeature(wall: Wall, join: JoinData): PolygonFeatu
   ]);
 }
 
-function buildEndpointJoinPatchFeatures(
+// Dormant legacy helper (endpoint overlay patches disabled); retires with W5.
+function _buildEndpointJoinPatchFeatures(
   walls: Wall[],
   joinsMap: Map<string, JoinData[]>,
   filter?: (join: JoinData) => boolean
@@ -970,6 +976,80 @@ function unionWallComponent(
   };
 }
 
+/**
+ * Solver-true union path (reference architecture, src/wallcore): when every
+ * wall carries its wall-graph identity, the visible poché comes from the SAME
+ * shared-node solve as the 3D prisms — footprint quads + junction wedge
+ * polygons, unioned per connected component. No endpoint heuristics: miters,
+ * bevels past the miter limit, and T/X junction cores are already exact.
+ */
+function computeSolverUnionComponents(walls: Wall[]): WallUnionComponent[] {
+  const doc = wallGraphFromLegacyWalls(walls, { newId: generateId });
+  const solve = solveWallGraphDoc(doc);
+
+  // Union-find over graph node ids → connected components.
+  const parent = new Map<string, string>();
+  const find = (start: string): string => {
+    let root = start;
+    while ((parent.get(root) ?? root) !== root) root = parent.get(root)!;
+    let cursor = start;
+    while (cursor !== root) {
+      const next = parent.get(cursor)!;
+      parent.set(cursor, root);
+      cursor = next;
+    }
+    return root;
+  };
+  const unite = (a: string, b: string): void => {
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent.set(rootB, rootA);
+  };
+  for (const edge of Object.values(doc.edges)) unite(edge.a, edge.b);
+
+  const toPoints = (corners: ReadonlyArray<readonly [number, number]>): Point2D[] =>
+    corners.map(([x, y]) => ({ x, y }));
+
+  const wallIdsByRoot = new Map<string, string[]>();
+  const featuresByRoot = new Map<string, PolygonFeature[]>();
+  const pushFeature = (root: string, points: Point2D[]): void => {
+    const feature = makePolygonFeature(points);
+    if (!feature) return;
+    const list = featuresByRoot.get(root);
+    if (list) list.push(feature);
+    else featuresByRoot.set(root, [feature]);
+  };
+
+  for (const footprint of solve.footprints) {
+    const edge = doc.edges[footprint.edgeId];
+    if (!edge) continue;
+    const root = find(edge.a);
+    const ids = wallIdsByRoot.get(root);
+    if (ids) ids.push(footprint.edgeId);
+    else wallIdsByRoot.set(root, [footprint.edgeId]);
+    pushFeature(root, toPoints(footprint.corners));
+  }
+  for (const wedge of solve.wedges) {
+    if (!parent.has(wedge.nodeId)) continue;
+    pushFeature(find(wedge.nodeId), toPoints(wedge.polygon));
+  }
+
+  const components: WallUnionComponent[] = [];
+  let index = 0;
+  for (const [root, wallIds] of wallIdsByRoot) {
+    components.push({
+      id: `wall-component-${index}`,
+      wallIds,
+      polygons: featureUnionPolygons(featuresByRoot.get(root) ?? []),
+      junctionOverlays: [],
+    });
+    index += 1;
+  }
+  return components.filter((component) => component.polygons.length > 0);
+}
+
 export function computeWallUnionRenderData(
   walls: Wall[],
   precomputedJoinsMap?: Map<string, JoinData[]>
@@ -981,6 +1061,20 @@ export function computeWallUnionRenderData(
     if (cached) {
       return cached;
     }
+  }
+
+  // Solver-true fast path: every wall stamped with wall-graph identity → the
+  // poché comes from the shared-node solve (same source of truth as 3D).
+  // Legacy documents (unstamped walls) keep the heuristic join machinery.
+  if (walls.length > 0 && !precomputedJoinsMap && walls.every((wall) => wall.graph)) {
+    const renderData: WallUnionRenderData = {
+      joinsMap: new Map<string, JoinData[]>(),
+      components: computeSolverUnionComponents(walls),
+    };
+    if (signature) {
+      setCachedWallUnionRenderData(signature, renderData);
+    }
+    return renderData;
   }
 
   // When no precomputed joins are provided, use the shadow-aware variant

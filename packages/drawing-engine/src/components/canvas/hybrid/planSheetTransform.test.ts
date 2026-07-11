@@ -5,9 +5,12 @@ import { modelPointToWorld } from '../modelSpace';
 import { MM_TO_PX } from '../scale';
 
 import {
+  SHEET_FADE_END_RAD,
+  WALL_RISE_END_RAD,
   computePlanSheetCssMatrix,
   isApproximatelyIdentity,
   planSheetOpacityForPolar,
+  wallRiseForPolar,
   type PlanSheetCssMatrix,
 } from './planSheetTransform';
 
@@ -121,5 +124,27 @@ describe('plan sheet CSS matrix', () => {
     expect(mid).toBeLessThan(1);
     expect(planSheetOpacityForPolar(THREE.MathUtils.degToRad(12))).toBe(0);
     expect(planSheetOpacityForPolar(THREE.MathUtils.degToRad(45))).toBe(0);
+  });
+
+  it('keeps walls FLAT through the whole sheet crossfade, then rises them', () => {
+    // While any part of the sheet is visible the walls must have no height —
+    // a tall solid parallax-shifts its top by height·tanφ and reads as a
+    // broken double wall over the plan (the reported T-junction artifact).
+    expect(wallRiseForPolar(0)).toBe(0);
+    expect(wallRiseForPolar(SHEET_FADE_END_RAD)).toBe(0);
+    for (let f = 0; f <= 1; f += 0.1) {
+      const polar = f * SHEET_FADE_END_RAD;
+      expect(wallRiseForPolar(polar)).toBe(0);
+    }
+    // …then monotonically rises to full height once the sheet is gone.
+    let prev = 0;
+    for (let f = 0.05; f <= 1; f += 0.05) {
+      const polar = SHEET_FADE_END_RAD + f * (WALL_RISE_END_RAD - SHEET_FADE_END_RAD);
+      const rise = wallRiseForPolar(polar);
+      expect(rise).toBeGreaterThanOrEqual(prev);
+      prev = rise;
+    }
+    expect(wallRiseForPolar(WALL_RISE_END_RAD)).toBe(1);
+    expect(wallRiseForPolar(THREE.MathUtils.degToRad(58))).toBe(1);
   });
 });

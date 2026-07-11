@@ -130,13 +130,14 @@ export const VISUAL_CONFIG = {
   centerLineStroke: '#000000',
   centerLineWidth: 1,
 
-  // Selection
-  selectionStroke: '#374151',
-  selectionStrokeWidth: 1.6,
-  selectionFill: 'rgba(55, 65, 81, 0.12)',
-  hoverStroke: '#0F766E',
+  // Selection — the shared accent (#4f8cff) so 2D reads exactly like the 3D
+  // outline effect (reference: hover soft/50%, selection strong).
+  selectionStroke: '#4f8cff',
+  selectionStrokeWidth: 2,
+  selectionFill: 'rgba(79, 140, 255, 0.10)',
+  hoverStroke: 'rgba(79, 140, 255, 0.55)',
   hoverStrokeWidth: 1.2,
-  hoverFill: 'rgba(15, 118, 110, 0.08)',
+  hoverFill: 'rgba(79, 140, 255, 0.06)',
 
   // Control handles — all sizes in screen pixels (zoom-independent)
   endpointRadius: 8,

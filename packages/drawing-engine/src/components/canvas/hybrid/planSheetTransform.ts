@@ -122,3 +122,21 @@ export function planSheetOpacityForPolar(polar: number): number {
   const eased = t * t * (3 - 2 * t);
   return 1 - eased;
 }
+
+/**
+ * Wall height reveal: while the sheet is still visible the 3D walls stay FLAT
+ * (their top face sits on the plan footprint, so the crossfade shows ONE
+ * image — a tall solid would parallax-shift its top by height·tanφ and read
+ * as a broken double wall). Once the sheet is gone the walls rise out of the
+ * paper to full height. Pure view-side reveal of a derived render cache —
+ * model data never changes.
+ */
+export const WALL_RISE_START_RAD = SHEET_FADE_END_RAD;
+export const WALL_RISE_END_RAD = THREE.MathUtils.degToRad(26);
+
+export function wallRiseForPolar(polar: number): number {
+  if (polar <= WALL_RISE_START_RAD) return 0;
+  if (polar >= WALL_RISE_END_RAD) return 1;
+  const t = (polar - WALL_RISE_START_RAD) / (WALL_RISE_END_RAD - WALL_RISE_START_RAD);
+  return t * t * (3 - 2 * t);
+}

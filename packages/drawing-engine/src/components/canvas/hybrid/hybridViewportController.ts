@@ -36,6 +36,8 @@ export type { DerivedBoardView } from './hybridViewportMath';
 
 const TILT_MAX_POLAR = THREE.MathUtils.degToRad(58);
 const PLAN_SNAP_POLAR = THREE.MathUtils.degToRad(5);
+/** Magnetic azimuth squaring: releasing within this of square snaps to 0. */
+const PLAN_SNAP_AZIMUTH = THREE.MathUtils.degToRad(5);
 const FLAT_POLAR_EPSILON = THREE.MathUtils.degToRad(0.02);
 
 export class HybridViewportController {
@@ -43,8 +45,16 @@ export class HybridViewportController {
   private controls: CameraControls | null = null;
   private el: HTMLElement | null = null;
   private capHandlers: Array<[string, EventListener]> = [];
+  private windowHandlers: Array<[string, EventListener]> = [];
   private planeZ = 0;
   private viewport = { width: 2, height: 2 };
+  /**
+   * True while the RMB tilt gesture is physically held. camera-controls fires
+   * `rest` whenever damping settles — INCLUDING mid-drag when the pointer
+   * pauses — and back-snapping then would gradually pull a held gesture back
+   * to 2D. The plan back-snap must only ever run after release.
+   */
+  private rotateGestureActive = false;
   /** Called on any camera change (input or damping tween) so the host can pump a frame. */
   onChange: (() => void) | null = null;
 
@@ -99,12 +109,24 @@ export class HybridViewportController {
         controls.mouseButtons.right = A.TRUCK;
         return;
       }
+      this.rotateGestureActive = true;
       controls.mouseButtons.right = A.ROTATE;
       controls.maxPolarAngle = TILT_MAX_POLAR;
       const rect = el.getBoundingClientRect();
       const hit = this.screenToPlane(e.clientX - rect.left, e.clientY - rect.top);
       if (hit) controls.setOrbitPoint(hit.x, hit.y, hit.z);
     });
+    // Release ends the gesture wherever the pointer is (window, capture phase:
+    // camera-controls may have pointer capture) — only THEN may plan back-snap.
+    const endRotateGesture = (ev: Event): void => {
+      const e = ev as PointerEvent;
+      if (e.type === 'pointerup' && e.button !== 2) return;
+      if (!this.rotateGestureActive) return;
+      this.rotateGestureActive = false;
+      this.planBackSnap();
+    };
+    this.capWindow('pointerup', endRotateGesture);
+    this.capWindow('pointercancel', endRotateGesture);
     this.cap(el, 'wheel', (ev) => {
       const e = ev as WheelEvent;
       controls.dollySpeed = e.shiftKey ? 0.2 : 1.0;
@@ -128,6 +150,11 @@ export class HybridViewportController {
   setBoardView(pxPerMm: number, centerWorldX: number, centerWorldY: number, planeZ = 0): void {
     if (!this.controls) return;
     this.planeZ = planeZ;
+    // Clear any RMB-pivot focal offset first: with an offset, the TARGET does
+    // not project to the screen centre, so a target-based set would disagree
+    // with the pose-based derivation forever (the derive→store→bridge loop
+    // would never converge and the board would drift/rubber-band).
+    this.controls.setFocalOffset(0, 0, 0, false);
     void this.controls.zoomTo(clampOrthoZoom(pxPerMm), false);
     void this.controls.moveTo(centerWorldX, centerWorldY, planeZ, false);
   }
@@ -235,6 +262,10 @@ export class HybridViewportController {
   dispose(): void {
     for (const [name, fn] of this.capHandlers) this.el?.removeEventListener(name, fn, true);
     this.capHandlers = [];
+    if (typeof window !== 'undefined') {
+      for (const [name, fn] of this.windowHandlers) window.removeEventListener(name, fn, true);
+    }
+    this.windowHandlers = [];
     this.controls?.dispose();
     this.controls = null;
     this.el = null;
@@ -242,16 +273,27 @@ export class HybridViewportController {
 
   private planBackSnap(): void {
     if (!this.controls) return;
+    // Never snap while the tilt gesture is still held (see rotateGestureActive).
+    if (this.rotateGestureActive) return;
     if (this.controls.polarAngle < PLAN_SNAP_POLAR && this.controls.maxPolarAngle > 0) {
-      // Snap BOTH angles home: leaving azimuth non-zero would strand the
-      // camera rotated over the unrotatable flat board.
+      // Settle FLAT at the CURRENT orientation (reference SPEC §10: "plan may
+      // be rotated in azimuth deliberately") — never spin the scene back to
+      // square automatically; the rotated plan renders through the sheet
+      // matrix and squaring up is the user's explicit 2D-button action.
+      // Only a small magnetic band snaps azimuth home, mirroring the polar
+      // back-snap feel.
       this.controls.normalizeRotations();
-      void this.controls.rotateTo(0, 0, true);
+      void this.controls.rotatePolarTo(0, true);
+      if (Math.abs(this.azimuthWrapped) < PLAN_SNAP_AZIMUTH) {
+        void this.controls.rotateAzimuthTo(0, true);
+      }
       this.controls.maxPolarAngle = 0;
     }
   }
 
-  private screenToPlane(x: number, y: number): THREE.Vector3 | null {
+  /** Screen px → world point on the board plane (public conversion API,
+   * mirroring the reference ViewportController.screenToWorldOnPlane). */
+  screenToPlane(x: number, y: number): THREE.Vector3 | null {
     this.camera.updateMatrixWorld();
     return screenToWorldOnPlaneZ(x, y, this.camera, this.viewport, this.planeZ);
   }
@@ -259,5 +301,11 @@ export class HybridViewportController {
   private cap(el: HTMLElement, name: string, fn: EventListener): void {
     el.addEventListener(name, fn, true);
     this.capHandlers.push([name, fn]);
+  }
+
+  private capWindow(name: string, fn: EventListener): void {
+    if (typeof window === 'undefined') return;
+    window.addEventListener(name, fn, true);
+    this.windowHandlers.push([name, fn]);
   }
 }

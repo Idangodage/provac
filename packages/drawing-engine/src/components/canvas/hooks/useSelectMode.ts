@@ -25,12 +25,12 @@ import { GeometryEngine } from '../../../utils/geometry-engine';
 import {
   type CornerEnd,
 } from '../../../utils/wallBevel';
-import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
 import {
   buildRefrigerantPipeVisual,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeMaterial,
 } from '../hvac/refrigerantPipePairModel';
+import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
 import { isRoomIsolatedFromAttachments } from '../room/roomIsolation';
 import { MM_TO_PX } from '../scale';
 import { computeWallBodyPolygon } from '../wall/WallGeometry';
@@ -124,6 +124,12 @@ export interface UseSelectModeOptions {
   selectWallSegmentWithinInterval: (wallId: string, startPoint: Point2D, endPoint: Point2D) => string;
   detectRooms: (options?: { debounce?: boolean }) => void;
   regenerateElevations: (options?: { debounce?: boolean }) => void;
+  /**
+   * Weld-on-drop commit for wall endpoint drags (reference wall.moveNode):
+   * moves the shared graph node and welds into a node / splits a wall body at
+   * the drop point. Runs the full post-edit pipeline internally.
+   */
+  wallGraphMoveNode?: (nodeId: string, to: Point2D, weld?: boolean) => void;
   saveToHistory: (action: string) => void;
   setProcessingStatus: (status: string, isProcessing: boolean) => void;
   onDragStateChange?: (isDragging: boolean) => void;
@@ -685,6 +691,7 @@ export function useSelectMode({
   selectWallSegmentWithinInterval,
   detectRooms,
   regenerateElevations,
+  wallGraphMoveNode,
   saveToHistory,
   setProcessingStatus,
   onDragStateChange,
@@ -731,6 +738,7 @@ export function useSelectMode({
     selectWallSegmentWithinInterval,
     detectRooms,
     regenerateElevations,
+    wallGraphMoveNode,
     saveToHistory,
     setProcessingStatus,
     onDragStateChange,
@@ -767,6 +775,7 @@ export function useSelectMode({
       selectWallSegmentWithinInterval,
       detectRooms,
       regenerateElevations,
+      wallGraphMoveNode,
       saveToHistory,
       setProcessingStatus,
       onDragStateChange,
@@ -791,6 +800,7 @@ export function useSelectMode({
     connectWalls,
     detectRooms,
     regenerateElevations,
+    wallGraphMoveNode,
     saveToHistory,
     setProcessingStatus,
     onDragStateChange,
@@ -2297,7 +2307,6 @@ export function useSelectMode({
         appliedDistance = Math.round(appliedDistance / gridSize) * gridSize;
       }
       const appliedDelta = scale(segmentNormal, appliedDistance);
-      const movedLinePoint = add(startPoint, appliedDelta);
 
       const intersectLines = (
         lineAPoint: Point2D,
@@ -3485,6 +3494,38 @@ export function useSelectMode({
 
     const mode = dragStateRef.current.mode;
     if (mode !== 'idle' && dragChangedRef.current) {
+      // WELD-ON-DROP (reference wall.moveNode): a wall-graph endpoint drag
+      // commits through the shared-node graph, so dropping onto another corner
+      // MERGES the nodes and dropping onto a wall body SPLITS it into a T.
+      // The graph op runs the full post-edit pipeline (rooms, elevations,
+      // history) itself — skip the generic tail when it handled the commit.
+      let committedThroughGraph = false;
+      if (mode === 'endpoint' && optionsRef.current.wallGraphMoveNode) {
+        const endpointState = dragStateRef.current as unknown as {
+          wallId?: string;
+          endpoint?: 'start' | 'end';
+        };
+        const wall = endpointState.wallId ? findWallById(endpointState.wallId) : null;
+        if (wall?.graph && endpointState.endpoint) {
+          const nodeId = endpointState.endpoint === 'start' ? wall.graph.a : wall.graph.b;
+          const dropPoint = endpointState.endpoint === 'start' ? wall.startPoint : wall.endPoint;
+          optionsRef.current.wallGraphMoveNode(nodeId, { x: dropPoint.x, y: dropPoint.y }, true);
+          committedThroughGraph = true;
+        }
+      }
+      if (committedThroughGraph) {
+        dragStateRef.current = { mode: 'idle' };
+        isWallHandleDraggingRef.current = false;
+        dragChangedRef.current = false;
+        smoothedPointerRef.current = null;
+        endpointSnapMemoryRef.current = null;
+        wallUpdateCacheRef.current.clear();
+        connectedPairCacheRef.current.clear();
+        optionsRef.current.onDragStateChange?.(false);
+        optionsRef.current.onRoomDragStateChange?.(null);
+        clearEditVisuals();
+        return;
+      }
       const action =
         mode === 'pipe-segment'
           ? 'Move refrigerant pipe hard segment'

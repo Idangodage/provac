@@ -115,6 +115,24 @@ import {
   withUpdatedBevel,
   type CornerEnd,
 } from '../utils/wallBevel';
+import {
+  legacyWallsFromGraph,
+  wallGraphFromLegacyWalls,
+  type MirrorCallbacks,
+} from '../wallcore/legacyBridge';
+import type { Vec2 as WallVec2 } from '../wallcore/vec2';
+import type { WallEdge2, WallGraphDoc } from '../wallcore/wallModel';
+import {
+  addWallChain as coreAddWallChain,
+  deleteWalls as coreDeleteWalls,
+  flipWallJustification as coreFlipWallJustification,
+  mergeAtNode as coreMergeAtNode,
+  moveWallEdges as coreMoveWallEdges,
+  moveWallNode as coreMoveWallNode,
+  setWallLength as coreSetWallLength,
+  setWallParams as coreSetWallParams,
+  splitWall as coreSplitWall,
+} from '../wallcore/wallOps';
 
 // Import from extracted modules
 import { buildAutoDetectedRooms, createRoomModel } from './autoDetectedRooms';
@@ -124,7 +142,6 @@ import {
   buildAutoWallDimensions,
   buildRoomAreaDimensions,
   buildMergedAutoManagedDimensions,
-  isAutoManagedDimension,
   mergeAutoManagedDimensions,
   normalizeDimensionPayload,
 } from './autoManagedDimensions';
@@ -1852,6 +1869,32 @@ export interface DrawingState {
   updateSymbol: (id: string, data: Partial<SymbolInstance2D>, options?: { skipHistory?: boolean }) => void;
   deleteSymbol: (id: string) => void;
 
+  // Actions - Wall graph (NEW shared-node wall system — src/wallcore, the
+  // reference-app architecture; see docs/plan-wall-rebuild-reference-port.md).
+  // The graph is a pure function of `walls` (each mirrored wall carries its
+  // node ids in `wall.graph`), so history/persistence need no extra state.
+  getWallGraph: () => WallGraphDoc;
+  wallGraphAddChain: (
+    points: Point2D[],
+    params?: Partial<{
+      thickness: number;
+      height: number;
+      justification: 'center' | 'left' | 'right';
+      material: string;
+    }>,
+  ) => string[];
+  wallGraphMoveNode: (nodeId: string, to: Point2D, weld?: boolean) => void;
+  wallGraphMoveEdges: (edgeIds: string[], delta: Point2D) => void;
+  wallGraphSetParams: (
+    edgeIds: string[],
+    patch: Partial<Pick<WallEdge2, 'thickness' | 'height' | 'baseOffset' | 'justification' | 'material'>>,
+  ) => void;
+  wallGraphFlip: (edgeIds: string[]) => void;
+  wallGraphSetLength: (edgeId: string, length: number, anchor: 'a' | 'b') => void;
+  wallGraphSplit: (edgeId: string, t: number) => void;
+  wallGraphMerge: (nodeId: string) => void;
+  wallGraphDelete: (edgeIds: string[]) => void;
+
   // Actions - Walls
   addWall: (params: CreateWallParams) => string;
   updateWall: (
@@ -2041,6 +2084,83 @@ export interface DrawingState {
   removeSplineControlPoint: (sketchId: string, pointIndex: number) => void;
   toggleSplineClosed: (sketchId: string) => void;
   convertSplineMethod: (sketchId: string, method: SplineMethod) => void;
+}
+
+// =============================================================================
+// Wall graph (NEW shared-node wall system — src/wallcore) helpers
+// =============================================================================
+
+const WALL_GRAPH_IDS = { newId: generateId };
+
+/** Mirror callbacks: how a graph edge materialises as a legacy Wall. */
+function buildWallMirrorCallbacks(get: () => DrawingState): MirrorCallbacks<Wall> {
+  return {
+    createWall: (edge, start, end) => {
+      const thickness = clampThickness(edge.thickness);
+      const material = (edge.material as Wall['material']) ?? 'brick';
+      const base: Wall = {
+        id: edge.id,
+        startPoint: { x: start[0], y: start[1] },
+        endPoint: { x: end[0], y: end[1] },
+        thickness,
+        centerlineOffset: 0,
+        material,
+        layer: 'partition',
+        interiorLine: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
+        exteriorLine: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
+        startBevel: { ...DEFAULT_BEVEL_CONTROL },
+        endBevel: { ...DEFAULT_BEVEL_CONTROL },
+        connectedWalls: [],
+        openings: [],
+        properties3D: { ...DEFAULT_WALL_3D },
+      };
+      const materialId = getDefaultMaterialIdForWallMaterial(material);
+      return bindWallAttributes(rebuildWallGeometry(base), {
+        materialId,
+        height: edge.height,
+        layerCount: get().wallSettings.defaultLayerCount ?? DEFAULT_WALL_LAYER_COUNT,
+        thermalResistance:
+          getArchitecturalMaterial(materialId)?.thermalResistance ??
+          DEFAULT_WALL_3D.thermalResistance,
+      });
+    },
+    rebuildGeometry: (wall) => rebuildWallGeometry(wall),
+    // Solver footprint [aL, bL, bR, aR] → mitred interior (aL→bL) and
+    // exterior (aR→bR) lines, so every 2D consumer (fill quad, boundary
+    // strokes, hit polygon) draws the exact solved body — same geometry as
+    // the 3D prisms.
+    applyFootprint: (wall, corners) => ({
+      ...wall,
+      interiorLine: {
+        start: { x: corners[0][0], y: corners[0][1] },
+        end: { x: corners[1][0], y: corners[1][1] },
+      },
+      exteriorLine: {
+        start: { x: corners[3][0], y: corners[3][1] },
+        end: { x: corners[2][0], y: corners[2][1] },
+      },
+    }),
+  };
+}
+
+/**
+ * Run one wall-graph command: derive the graph from the mirrored walls,
+ * mutate topology via wallcore, mirror back, then the standard post-wall-edit
+ * pipeline (rooms, elevations, history) — same tail as the legacy addWall.
+ */
+function applyWallGraphOperation(
+  get: () => DrawingState,
+  set: (partial: Partial<DrawingState>) => void,
+  label: string,
+  mutate: (draft: WallGraphDoc) => void,
+): void {
+  const graph = wallGraphFromLegacyWalls(get().walls, WALL_GRAPH_IDS);
+  mutate(graph);
+  const walls = legacyWallsFromGraph(graph, get().walls, buildWallMirrorCallbacks(get));
+  set({ walls });
+  get().detectRooms();
+  get().regenerateElevations();
+  get().saveToHistory(label);
 }
 
 // =============================================================================
@@ -3059,6 +3179,68 @@ export const useDrawingStore = create<DrawingState>()(
         get().saveToHistory('Add wall');
         return effectiveWallId;
       },
+
+      // ── Wall graph (NEW shared-node wall system — see src/wallcore) ──────
+      getWallGraph: () => wallGraphFromLegacyWalls(get().walls, WALL_GRAPH_IDS),
+
+      wallGraphAddChain: (points, params) => {
+        let created: string[] = [];
+        applyWallGraphOperation(get, set, 'Draw wall', (draft) => {
+          created = coreAddWallChain(
+            draft,
+            points.map((p): WallVec2 => [p.x, p.y]),
+            {
+              thickness: clampThickness(params?.thickness ?? 150),
+              height: params?.height ?? get().wallSettings.defaultHeight ?? DEFAULT_WALL_HEIGHT,
+              baseOffset: 0,
+              justification: params?.justification ?? 'center',
+              material: params?.material ?? 'brick',
+            },
+            WALL_GRAPH_IDS,
+          );
+        });
+        return created;
+      },
+
+      wallGraphMoveNode: (nodeId, to, weld) =>
+        applyWallGraphOperation(get, set, 'Move wall corner', (draft) =>
+          coreMoveWallNode(draft, nodeId, [to.x, to.y], { weld }, WALL_GRAPH_IDS),
+        ),
+
+      wallGraphMoveEdges: (edgeIds, delta) =>
+        applyWallGraphOperation(get, set, 'Move walls', (draft) =>
+          coreMoveWallEdges(draft, edgeIds, [delta.x, delta.y]),
+        ),
+
+      wallGraphSetParams: (edgeIds, patch) =>
+        applyWallGraphOperation(get, set, 'Edit wall', (draft) =>
+          coreSetWallParams(draft, edgeIds, patch),
+        ),
+
+      wallGraphFlip: (edgeIds) =>
+        applyWallGraphOperation(get, set, 'Flip wall side', (draft) =>
+          coreFlipWallJustification(draft, edgeIds),
+        ),
+
+      wallGraphSetLength: (edgeId, length, anchor) =>
+        applyWallGraphOperation(get, set, 'Wall length', (draft) =>
+          coreSetWallLength(draft, edgeId, length, anchor),
+        ),
+
+      wallGraphSplit: (edgeId, t) =>
+        applyWallGraphOperation(get, set, 'Split wall', (draft) => {
+          coreSplitWall(draft, edgeId, t, WALL_GRAPH_IDS);
+        }),
+
+      wallGraphMerge: (nodeId) =>
+        applyWallGraphOperation(get, set, 'Merge walls', (draft) => {
+          coreMergeAtNode(draft, nodeId);
+        }),
+
+      wallGraphDelete: (edgeIds) =>
+        applyWallGraphOperation(get, set, 'Delete wall', (draft) =>
+          coreDeleteWalls(draft, edgeIds),
+        ),
 
       updateWall: (id, updates, options) => {
         const safeUpdates = updates.thickness !== undefined
@@ -4727,6 +4909,7 @@ export const useDrawingStore = create<DrawingState>()(
               connectedWalls: Array.isArray(rawWall.connectedWalls) ? rawWall.connectedWalls : [],
               openings: Array.isArray(rawWall.openings) ? rawWall.openings : [],
               properties3D: rawWall.properties3D ?? { ...DEFAULT_WALL_3D },
+              graph: rawWall.graph,
             };
             const rebuilt = rebuildWallGeometry(baseWall);
             return bindWallAttributes(rebuilt, rawWall.properties3D ?? undefined);
@@ -4910,7 +5093,15 @@ export const useDrawingStore = create<DrawingState>()(
             guides: data.guides || [],
             symbols: data.symbols || [],
             hvacElements: importedHvacElements,
-            walls: attributeHydration.walls,
+            // Normalize through the wall-graph mirror: stamps graph identity
+            // (one-time endpoint-weld migration for legacy docs, wall ids kept)
+            // and solver-mitred interior/exterior lines, so the plan renders
+            // solver-true straight from load — same source of truth as 3D.
+            walls: legacyWallsFromGraph(
+              wallGraphFromLegacyWalls(attributeHydration.walls, WALL_GRAPH_IDS),
+              attributeHydration.walls,
+              buildWallMirrorCallbacks(get),
+            ),
             rooms: attributeHydration.rooms,
             sectionLines: importedSectionLines,
             elevationViews: importedElevationViews,

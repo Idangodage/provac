@@ -24,6 +24,7 @@ import {
   type MarqueeSelectionState,
   type OpeningPointerInteraction,
 } from "./DrawingCanvas.types";
+import { WallDimensionChip } from "./WallDimensionChip";
 import {
   snapWallPoint,
   snapPointToGrid,
@@ -60,6 +61,11 @@ import {
   SectionLineRenderer,
   HvacPlanRenderer,
 } from "./canvas";
+import {
+  BoardRulers,
+  cycleBoardUnit,
+  type BoardUnit,
+} from "./canvas/board";
 import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
 import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
@@ -77,17 +83,13 @@ import {
 import {
   HybridProjectionLayer,
   type Hybrid3DViewState,
+  type HybridViewStyle,
 } from "./canvas/hybrid/HybridProjectionLayer";
 import type {
   DerivedBoardView,
   HybridViewportController,
 } from "./canvas/hybrid/hybridViewportController";
 import { modelPointToWorld } from "./canvas/modelSpace";
-import {
-  BoardRulers,
-  cycleBoardUnit,
-  type BoardUnit,
-} from "./canvas/board";
 import {
   installCanvasRenderScheduler,
   restoreCanvasRenderScheduler,
@@ -370,7 +372,34 @@ export function DrawingCanvas({
   const [hybridView, setHybridView] =
     useState<Hybrid3DViewState>(DEFAULT_HYBRID_VIEW);
   const hybridViewRef = useRef<Hybrid3DViewState>(DEFAULT_HYBRID_VIEW);
-  const hybridViewOnly = hybridView.blend > 0.05;
+  // Azimuth-rotated flat plan (reference: "plan may be rotated deliberately"):
+  // a valid VIEW state — content stays glued via the sheet matrix — but tools
+  // and the axis-aligned rulers are suspended until the user squares up (2D
+  // button) because Fabric hit-testing assumes an unrotated board.
+  const [isViewRotated, setIsViewRotated] = useState(false);
+  const hybridViewOnly = hybridView.blend > 0.05 || isViewRotated;
+  // Solid → X-ray → Wire view style (reference cycle; button + X key).
+  const [viewStyle, setViewStyle] = useState<HybridViewStyle>("solid");
+  const cycleViewStyle = useCallback(() => {
+    setViewStyle((prev) => (prev === "solid" ? "xray" : prev === "xray" ? "wire" : "solid"));
+  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "x" || event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
+      }
+      cycleViewStyle();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [cycleViewStyle]);
 
   const setViewportSizeIfChanged = useCallback(
     (width: number, height: number) => {
@@ -419,6 +448,12 @@ export function DrawingCanvas({
     updateSymbol,
     deleteSymbol,
     addWall,
+    wallGraphAddChain,
+    wallGraphMoveNode,
+    wallGraphMoveEdges,
+    wallGraphFlip,
+    wallGraphSplit,
+    wallGraphSetLength,
     deleteSelected,
     updateWall,
     updateWalls,
@@ -436,7 +471,6 @@ export function DrawingCanvas({
     sectionLineDrawingState,
     startWallDrawing,
     updateWallPreview,
-    commitWall,
     cancelWallDrawing,
     startSectionLineDrawing,
     updateSectionLinePreview,
@@ -494,6 +528,12 @@ export function DrawingCanvas({
       updateSymbol: state.updateSymbol,
       deleteSymbol: state.deleteSymbol,
       addWall: state.addWall,
+      wallGraphAddChain: state.wallGraphAddChain,
+      wallGraphMoveNode: state.wallGraphMoveNode,
+      wallGraphMoveEdges: state.wallGraphMoveEdges,
+      wallGraphFlip: state.wallGraphFlip,
+      wallGraphSplit: state.wallGraphSplit,
+      wallGraphSetLength: state.wallGraphSetLength,
       deleteSelected: state.deleteSelected,
       updateWall: state.updateWall,
       updateWalls: state.updateWalls,
@@ -796,6 +836,15 @@ export function DrawingCanvas({
   const roomById = useMemo(
     () => new Map(rooms.map((room) => [room.id, room])),
     [rooms],
+  );
+  // Exactly-one-selected wall drives the temp-dimension chip (both views).
+  const singleSelectedWall = useMemo(() => {
+    if (selectedIds.length !== 1) return null;
+    return walls.find((wall) => wall.id === selectedIds[0]) ?? null;
+  }, [selectedIds, walls]);
+  const handleSplitWallAtMidpoint = useCallback(
+    (edgeId: string) => wallGraphSplit(edgeId, 0.5),
+    [wallGraphSplit],
   );
 
   const {
@@ -1288,6 +1337,11 @@ export function DrawingCanvas({
   // Last view the CAMERA wrote to the board — the store→camera bridge uses it
   // to tell camera echoes apart from external (toolbar/fit) view changes.
   const lastCameraViewRef = useRef<{ zoom: number; pan: Point2D } | null>(null);
+  // Pan tool / space-drag route: truck the CAMERA (the one navigation owner);
+  // the Fabric viewport derives from it in the same render-pump frame.
+  const handlePanViewportByPixels = useCallback((dxPx: number, dyPx: number) => {
+    hybridControllerRef.current?.truckPixels(dxPx, dyPx);
+  }, []);
   // CAMERA → BOARD (reference-app practice): the hybrid camera owns all
   // navigation (wheel-zoom-to-cursor, MMB pan, RMB tilt); each frame it hands
   // us the flat-equivalent Fabric viewport. Apply to Fabric + refs in the SAME
@@ -1541,6 +1595,7 @@ export function DrawingCanvas({
     selectWallSegmentWithinInterval,
     detectRooms,
     regenerateElevations,
+    wallGraphMoveNode,
     saveToHistory,
     setProcessingStatus,
     onDragStateChange: setIsHandleDragging,
@@ -1605,9 +1660,8 @@ export function DrawingCanvas({
     overlayCanvasRef: snapOverlayRef, // [SNAP WIRE]
     startWallDrawing,
     updateWallPreview,
-    commitWall,
     cancelWallDrawing,
-    connectWalls,
+    wallGraphAddChain,
   });
 
   // Room tool hook (2-click rectangle)
@@ -2278,6 +2332,7 @@ export function DrawingCanvas({
       scheduleDimensionLayerRefresh,
       setViewTransform,
       setInteractionViewTransform,
+      panViewportByPixels: handlePanViewportByPixels,
       setCanvasState,
       setPlacementValid,
       setHoveredElement,
@@ -2587,6 +2642,7 @@ export function DrawingCanvas({
           onControllerReady={handleHybridControllerReady}
           applyDerivedView={applyDerivedHybridView}
           onPolarChange={handleHybridPolarChange}
+          onViewRotatedChange={setIsViewRotated}
           onDebug={setTiltDebug}
           getViewportMatrix={() => fabricRef.current?.viewportTransform ?? null}
           walls={walls}
@@ -2595,6 +2651,21 @@ export function DrawingCanvas({
           objectDefinitions={objectDefinitions}
           hvacElements={hvacElements}
           onWebglUnavailable={handleHybridWebglUnavailable}
+          selectedIds={selectedIds}
+          hoveredElementId={hoveredElementId}
+          viewStyle={viewStyle}
+          onHoverWall={setHoveredElement}
+          onSelectWall={setSelectedIds}
+          onSplitWall={handleSplitWallAtMidpoint}
+          onMoveWallNode={wallGraphMoveNode}
+          onMoveWallEdges={wallGraphMoveEdges}
+        />
+        <WallDimensionChip
+          wall={singleSelectedWall}
+          controllerRef={hybridControllerRef}
+          viewportWidth={hostWidth}
+          viewportHeight={hostHeight}
+          onCommitLength={wallGraphSetLength}
         />
       </div>
 
@@ -2624,6 +2695,19 @@ export function DrawingCanvas({
             className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
           >
             Convert to Door Opening
+          </button>
+          <button
+            type="button"
+            title="Mirror the wall body to the other side of its centerline (justification left↔right)"
+            onClick={() => {
+              // FLIP (reference practice): the centerline nodes never move —
+              // only the body side changes, and joins re-solve on that side.
+              wallGraphFlip([wallContextMenu.wallId]);
+              closeWallContextMenu();
+            }}
+            className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+          >
+            Flip Side
           </button>
         </div>
       )}
@@ -2749,8 +2833,11 @@ export function DrawingCanvas({
 
       <div
         style={{
-          opacity: planLayerOpacity,
-          transition: hybridView.blend > 0 ? "opacity 120ms linear" : undefined,
+          // Rulers are axis-aligned world X/Y strips — hidden while the plan
+          // is azimuth-rotated (they'd read wrong), like at high tilt.
+          opacity: isViewRotated ? 0 : planLayerOpacity,
+          transition:
+            hybridView.blend > 0 || isViewRotated ? "opacity 120ms linear" : undefined,
           pointerEvents: projectionViewOnly ? "none" : undefined,
         }}
       >
@@ -2791,6 +2878,16 @@ export function DrawingCanvas({
           }`}
         >
           3D
+        </button>
+        <button
+          type="button"
+          title="View style: Solid → X-ray → Wire (X)"
+          onClick={cycleViewStyle}
+          className={`border-l border-slate-300 px-2.5 py-1 capitalize transition-colors ${
+            viewStyle !== "solid" ? "bg-[#4f8cff] text-white" : "hover:bg-slate-100"
+          }`}
+        >
+          {viewStyle}
         </button>
       </div>
 

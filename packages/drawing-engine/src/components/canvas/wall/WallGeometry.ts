@@ -220,18 +220,15 @@ export function wallAngle(wall: Wall): number {
 }
 
 export function angleBetweenWalls(wall1: Wall, wall2: Wall, sharedEndpoint: Point2D): number {
-  let dir1: Point2D;
-  let dir2: Point2D;
-
   const isWall1Start = Math.abs(wall1.startPoint.x - sharedEndpoint.x) < 0.1 &&
     Math.abs(wall1.startPoint.y - sharedEndpoint.y) < 0.1;
-  dir1 = isWall1Start
+  const dir1: Point2D = isWall1Start
     ? direction(wall1.startPoint, wall1.endPoint)
     : direction(wall1.endPoint, wall1.startPoint);
 
   const isWall2Start = Math.abs(wall2.startPoint.x - sharedEndpoint.x) < 0.1 &&
     Math.abs(wall2.startPoint.y - sharedEndpoint.y) < 0.1;
-  dir2 = isWall2Start
+  const dir2: Point2D = isWall2Start
     ? direction(wall2.startPoint, wall2.endPoint)
     : direction(wall2.endPoint, wall2.startPoint);
 
@@ -363,6 +360,12 @@ export function computeWallBodyPolygon(wall: Wall): Point2D[] {
 export function computeWallPolygon(wall: Wall, joins?: JoinData[]): Point2D[] {
   const JOIN_ENDPOINT_TOLERANCE = 2;
   const basePolygon = computeWallBodyPolygon(wall);
+  // Wall-graph walls (src/wallcore) carry solver-mitred interior/exterior
+  // lines stamped by the mirror bridge — the base quad IS the exact footprint;
+  // legacy endpoint-join adjustments would fight the solved corners.
+  if (wall.graph) {
+    return basePolygon;
+  }
   let interiorStart = basePolygon[0];
   let interiorEnd = basePolygon[1];
   let exteriorEnd = basePolygon[2];

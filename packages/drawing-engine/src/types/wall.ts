@@ -312,6 +312,13 @@ export interface Wall {
   connectedWalls: string[];      // IDs of walls sharing endpoints
   openings: Opening[];
   properties3D: Wall3D;
+  /**
+   * Shared-node wall-graph identity (src/wallcore): node ids + justification
+   * mirrored onto this legacy wall, so the topology graph is exactly
+   * reconstructible from history snapshots and saved documents. Absent on
+   * legacy documents until the one-time weld migration stamps it.
+   */
+  graph?: { a: string; b: string; justification: 'center' | 'left' | 'right' };
 }
 
 /**
