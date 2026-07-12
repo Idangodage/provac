@@ -82,6 +82,7 @@ import {
 } from "./canvas/hvac/refrigerantPipePairModel";
 import {
   HybridProjectionLayer,
+  type HybridPipeInteractionHandle,
   type Hybrid3DViewState,
   type HybridViewStyle,
 } from "./canvas/hybrid/HybridProjectionLayer";
@@ -356,6 +357,17 @@ export function DrawingCanvas({
     cx: number;
     cy: number;
   } | null>(null);
+  const developerDiagnosticsEnabled = useMemo(() => {
+    if ((globalThis as Record<string, unknown>).__HVAC_PIPE_ROUTING_DEBUG__ === true) {
+      return true;
+    }
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem("hvac.pipe.debug") === "1";
+    } catch {
+      return false;
+    }
+  }, []);
   const [openingInteractionActive, setOpeningInteractionActive] =
     useState(false);
   const [isHandleDragging, setIsHandleDragging] = useState(false);
@@ -1324,6 +1336,7 @@ export function DrawingCanvas({
   // The studio overlay renders the live draw preview as its own pair, so the
   // draw tool feeds it the route here (imperatively — only the overlay re-renders).
   const pipeStudioOverlayRef = useRef<PipeStudioOverlayHandle | null>(null);
+  const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the
   // live camera-controls tilt controller (for the explicit 2D/3D toggle).
   const planSheetRef = useRef<HTMLDivElement | null>(null);
@@ -1407,6 +1420,7 @@ export function DrawingCanvas({
   );
   const handleDraftPipeRoute = useCallback((route: Point2D[] | null) => {
     pipeStudioOverlayRef.current?.setDraftRoute(route);
+    hybridPipeInteractionRef.current?.setRouteActive(Boolean(route && route.length > 0));
     const anchor =
       route && route.length >= 2 ? route[route.length - 2] ?? null : null;
     setDraftPipeAnchorMm((current) => {
@@ -1422,6 +1436,7 @@ export function DrawingCanvas({
   // Enter (imperative: only the overlay re-renders).
   const handleDraftPipes = useCallback((elements: HvacElement[] | null) => {
     pipeStudioOverlayRef.current?.setDraftPipes(elements);
+    hybridPipeInteractionRef.current?.setDraftPipes(elements);
   }, []);
   // Snap-hover indicator: the tool forwards the detected snap point; the overlay
   // renders it with the same endpoint-handle bullseye a committed pipe shows.
@@ -1451,7 +1466,10 @@ export function DrawingCanvas({
     hvacElements,
     zoom: viewportZoom,
     snapToGrid: resolvedSnapToGrid,
-    gridSize: effectiveSnapGridSize,
+    // Pipe pointer coordinates are canonical model millimetres. Passing the
+    // Fabric scene-pixel step here made a 20 mm grid behave like 75.59 mm and
+    // visibly pulled the preview away from the cursor.
+    gridSize: snapStepMm,
     addHvacElements,
     deleteHvacElement,
     updateHvacElement,
@@ -1461,7 +1479,9 @@ export function DrawingCanvas({
     onDraftRouteChange: handleDraftPipeRoute,
     onDraftPipesChange: handleDraftPipes,
     onSnapIndicatorChange: handleSnapIndicator,
-    overlayOwnsPipePreview: !projectionViewOnly,
+    // Both the flat SVG overlay and the tilted Three preview consume the same
+    // built elements. Each renderer decides visibility from the camera state.
+    overlayOwnsPipePreview: true,
   });
 
   // Extension: a pipe-end / bundle / branch-kit-port grip hands us the bundle to
@@ -2643,9 +2663,10 @@ export function DrawingCanvas({
           applyDerivedView={applyDerivedHybridView}
           onPolarChange={handleHybridPolarChange}
           onViewRotatedChange={setIsViewRotated}
-          onDebug={setTiltDebug}
+          onDebug={developerDiagnosticsEnabled ? setTiltDebug : undefined}
           getViewportMatrix={() => fabricRef.current?.viewportTransform ?? null}
           walls={walls}
+          wallColorMode={wallSettings.wallColorMode}
           rooms={rooms}
           symbols={symbols}
           objectDefinitions={objectDefinitions}
@@ -2659,6 +2680,11 @@ export function DrawingCanvas({
           onSplitWall={handleSplitWallAtMidpoint}
           onMoveWallNode={wallGraphMoveNode}
           onMoveWallEdges={wallGraphMoveEdges}
+          pipeToolActive={tool === "refrigerant-pipe"}
+          onPipePointerDown={handleRefrigerantPipeMouseDown}
+          onPipePointerMove={handleRefrigerantPipeMouseMove}
+          onPipePointerCancel={_cancelRefrigerantPipeDrawing}
+          pipeInteractionRef={hybridPipeInteractionRef}
         />
         <WallDimensionChip
           wall={singleSelectedWall}
@@ -2891,7 +2917,7 @@ export function DrawingCanvas({
         </button>
       </div>
 
-      {tiltDebug && (
+      {developerDiagnosticsEnabled && tiltDebug && (
         <div
           className="pointer-events-none absolute right-2 bottom-2 z-[40] rounded bg-black/75 px-2 py-1 font-mono text-[11px] leading-tight text-lime-300"
           style={{ whiteSpace: "pre" }}

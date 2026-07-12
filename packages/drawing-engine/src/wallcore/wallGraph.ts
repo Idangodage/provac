@@ -87,6 +87,7 @@ export function createEdge(
     baseOffset: params.baseOffset,
     justification: params.justification,
     material: params.material,
+    materialId: params.materialId,
   };
   doc.edges[edge.id] = edge;
   return edge;
@@ -109,6 +110,7 @@ export function splitEdgeAt(
     baseOffset: edge.baseOffset,
     justification: edge.justification,
     material: edge.material,
+    materialId: edge.materialId,
   };
   createEdge(doc, edge.a, node.id, params, ids);
   createEdge(doc, node.id, edge.b, params, ids);

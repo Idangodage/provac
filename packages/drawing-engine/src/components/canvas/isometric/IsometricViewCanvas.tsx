@@ -60,13 +60,18 @@ import {
 } from "../modelSpace";
 import { hasRenderer } from "../object/FurnitureSymbolRenderer";
 import { createOptimizedFurnitureModel3D } from "../object/three3d/Furniture3DRenderer";
+import { getWallSurfaceTexture } from "../wall/wallSurfaceTexture";
 
 import {
   createWallOpenings3D,
   type OpeningRenderOptions,
 } from "./Opening3DRenderer";
 import { buildIsometricWallBandsInBackground } from "./isometricWallBandsWorkerClient";
-import { buildIsometricWallBandsSignature } from "./wallBands";
+import {
+  buildIsometricWallBandsSignature,
+  type IsometricWallBand,
+  type IsometricWallPalette,
+} from "./wallBands";
 
 const VIEW_MARGIN = 1.14;
 const EPSILON = 0.001;
@@ -84,11 +89,7 @@ const DIMENSION_PLANE_LIFT_MM = 28;
 const DIMENSION_LABEL_LIFT_MM = 28;
 const DIMENSION_TERMINATOR_SIZE_MM = 72;
 
-type WallPalette = {
-  top: string;
-  side: string;
-  outline: string;
-};
+type WallPalette = IsometricWallPalette;
 
 type SolidPalette = {
   color: string;
@@ -104,16 +105,7 @@ type Hvac3DPalette = {
   label: string;
 };
 
-type WallBand = {
-  polygon: Point2D[][];
-  baseElevation: number;
-  height: number;
-  palette: WallPalette;
-  name: string;
-  showOutline?: boolean;
-  showTopCap?: boolean;
-  topCapInsetMm?: number;
-};
+type WallBand = IsometricWallBand;
 
 type LabelAnchor = {
   key: string;
@@ -1186,32 +1178,40 @@ const _wallCapMaskMaterial = new THREE.MeshBasicMaterial({
 });
 
 function getSharedWallMaterial(
-  color: string,
-  roughness: number,
-  metalness: number,
+  palette: WallPalette,
 ): THREE.MeshStandardMaterial {
-  const key = `${color}|${roughness}|${metalness}`;
+  const key = `${palette.key}|side`;
   let mat = _wallMaterialCache.get(key);
   if (!mat) {
-    mat = new THREE.MeshStandardMaterial({ color, roughness, metalness });
+    mat = new THREE.MeshStandardMaterial({
+      color: palette.surface.color,
+      map: getWallSurfaceTexture(palette),
+      roughness: palette.surface.roughness,
+      metalness: palette.surface.metalness,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    });
     _wallMaterialCache.set(key, mat);
   }
   return mat;
 }
 
-function getSharedWallTopMaterial(color: string): THREE.MeshStandardMaterial {
-  let mat = _wallTopMaterialCache.get(color);
+function getSharedWallTopMaterial(palette: WallPalette): THREE.MeshStandardMaterial {
+  const key = `${palette.key}|top`;
+  let mat = _wallTopMaterialCache.get(key);
   if (!mat) {
     mat = new THREE.MeshStandardMaterial({
-      color,
-      roughness: 0.96,
-      metalness: 0.01,
+      color: palette.surface.topColor,
+      map: getWallSurfaceTexture(palette),
+      roughness: palette.surface.roughness,
+      metalness: palette.surface.metalness,
       side: THREE.DoubleSide,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    _wallTopMaterialCache.set(color, mat);
+    _wallTopMaterialCache.set(key, mat);
   }
   return mat;
 }
@@ -1278,8 +1278,8 @@ function createWallMesh(
   }
 
   const group = new THREE.Group();
-  const sideMaterial = getSharedWallMaterial(palette.side, 0.98, 0);
-  const topMaterial = getSharedWallTopMaterial(palette.top);
+  const sideMaterial = getSharedWallMaterial(palette);
+  const topMaterial = getSharedWallTopMaterial(palette);
 
   polygons.forEach((simplePolygon) => {
     const shape = buildShapeFromPolygon(simplePolygon);
@@ -1298,7 +1298,20 @@ function createWallMesh(
 
     // Hide the extrusion cap faces so any visible horizontal surface comes
     // only from the explicit top-cap mesh, which uses the safer polygon path.
-    group.add(new THREE.Mesh(geometry, [_wallCapMaskMaterial, sideMaterial]));
+    const wallBody = new THREE.Mesh(geometry, [_wallCapMaskMaterial, sideMaterial]);
+    wallBody.castShadow = true;
+    wallBody.receiveShadow = true;
+    group.add(wallBody);
+
+    if (showOutline) {
+      const edgeGeometry = new THREE.EdgesGeometry(geometry, 32);
+      const edges = new THREE.LineSegments(
+        edgeGeometry,
+        getSharedOutlineMaterial(palette.outline, 0.68),
+      );
+      edges.renderOrder = 4;
+      group.add(edges);
+    }
 
     if (showTopCap) {
       const topGeometry = new THREE.ShapeGeometry(shape);
@@ -1307,31 +1320,6 @@ function createWallMesh(
       group.add(topCap);
     }
 
-    if (!showOutline) {
-      return;
-    }
-
-    simplePolygon.forEach((ring, ringIndex) => {
-      const points = sanitizeRing(ring);
-      if (points.length < 3) {
-        return;
-      }
-
-      const outlinePoints = points.map(
-        (point) =>
-          new THREE.Vector3(point.x, point.y, baseElevation + height + 4),
-      );
-      outlinePoints.push(outlinePoints[0].clone());
-
-      const outlineGeometry = new THREE.BufferGeometry().setFromPoints(
-        outlinePoints,
-      );
-      const outlineMaterial = getSharedOutlineMaterial(
-        palette.outline,
-        ringIndex === 0 ? 0.6 : 0.42,
-      );
-      group.add(new THREE.Line(outlineGeometry, outlineMaterial));
-    });
   });
 
   return group;

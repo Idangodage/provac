@@ -737,6 +737,7 @@ export function useCanvasMouseHandlers(
             segments,
             wallSettings.defaultThickness,
             wallSettings.defaultMaterial,
+            wallSettings.defaultMaterialId,
           );
           return;
         }

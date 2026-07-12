@@ -420,6 +420,8 @@ export interface WallSettings {
   partitionMode: PartitionWallMode;
   defaultLayerCount: number;      // default wall layer count
   defaultMaterial: WallMaterial;
+  /** Canonical library material for new walls; coarse enum is legacy fallback. */
+  defaultMaterialId: string;
   defaultLayer: WallLayer;
   showCenterLines: boolean;
   showHeightTags: boolean;
@@ -533,6 +535,7 @@ export const DEFAULT_WALL_SETTINGS: WallSettings = {
   partitionMode: 'full',
   defaultLayerCount: DEFAULT_WALL_LAYER_COUNT,
   defaultMaterial: 'brick',
+  defaultMaterialId: 'exterior-brick-200',
   defaultLayer: 'partition',
   showCenterLines: true,
   showHeightTags: false,

@@ -34,6 +34,8 @@ export interface WallEdge2 {
    */
   justification: WallJustification;
   material: string;
+  /** Canonical architectural material; legacy coarse material remains fallback. */
+  materialId?: string;
 }
 
 /** The persisted wall graph — plain records, order-independent semantics. */
@@ -48,6 +50,7 @@ export interface WallParams {
   baseOffset: number;
   justification: WallJustification;
   material: string;
+  materialId?: string;
 }
 
 export const DEFAULT_WALL_PARAMS: WallParams = Object.freeze({

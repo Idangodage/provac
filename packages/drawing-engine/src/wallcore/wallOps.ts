@@ -83,7 +83,7 @@ export function moveWallNode(
 export function setWallParams(
   doc: WallGraphDoc,
   edgeIds: WallEntityId[],
-  patch: Partial<Pick<WallEdge2, 'thickness' | 'height' | 'baseOffset' | 'justification' | 'material'>>,
+  patch: Partial<Pick<WallEdge2, 'thickness' | 'height' | 'baseOffset' | 'justification' | 'material' | 'materialId'>>,
 ): void {
   for (const id of edgeIds) {
     const e = doc.edges[id];

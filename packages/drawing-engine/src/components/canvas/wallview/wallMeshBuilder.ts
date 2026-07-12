@@ -26,16 +26,23 @@ export interface WallChunkData {
   edgesGeometry: THREE.BufferGeometry;
 }
 
+export interface WallChunkBuildOptions {
+  /** Entity id -> Three.js material slot; preserves one merged/pickable chunk. */
+  materialIndexByEntityId?: ReadonlyMap<WallEntityId, number>;
+}
+
 interface Prism {
   entityId: WallEntityId;
   polygon: Vec2[]; // CCW
   z0: number;
   z1: number;
+  materialIndex: number;
 }
 
 export function buildWallChunkGeometry(
   solve: WallSolveResult,
   levelElevation = 0,
+  options: WallChunkBuildOptions = {},
 ): WallChunkData {
   const prisms: Prism[] = [];
   for (const f of solve.footprints) {
@@ -46,6 +53,7 @@ export function buildWallChunkGeometry(
       polygon: poly,
       z0: levelElevation + f.baseOffset,
       z1: levelElevation + f.baseOffset + f.height,
+      materialIndex: options.materialIndexByEntityId?.get(f.edgeId) ?? 0,
     });
   }
   for (const w of solve.wedges) {
@@ -56,15 +64,18 @@ export function buildWallChunkGeometry(
       polygon: poly,
       z0: levelElevation + w.baseOffset,
       z1: levelElevation + w.baseOffset + w.height,
+      materialIndex: options.materialIndexByEntityId?.get(w.nodeId) ?? 0,
     });
   }
 
   const positions: number[] = [];
   const normals: number[] = [];
+  const uvs: number[] = [];
   const entityIndex: number[] = [];
   const indices: number[] = [];
   const entityIds: WallEntityId[] = [];
   const entityIdxOf = new Map<WallEntityId, number>();
+  const groups: Array<{ start: number; count: number; materialIndex: number }> = [];
 
   const vertex = (
     x: number,
@@ -74,9 +85,12 @@ export function buildWallChunkGeometry(
     ny: number,
     nz: number,
     ei: number,
+    u: number,
+    v: number,
   ): number => {
     positions.push(x, y, z);
     normals.push(nx, ny, nz);
+    uvs.push(u, v);
     entityIndex.push(ei);
     return positions.length / 3 - 1;
   };
@@ -89,15 +103,16 @@ export function buildWallChunkGeometry(
       entityIdxOf.set(prism.entityId, ei);
     }
     const poly = prism.polygon;
+    const groupStart = indices.length;
     const contour = poly.map((p) => new THREE.Vector2(p[0], p[1]));
     const tris = THREE.ShapeUtils.triangulateShape(contour, []);
 
     // top cap (+Z) and bottom cap (−Z)
     const topBase = positions.length / 3;
-    for (const p of poly) vertex(p[0], p[1], prism.z1, 0, 0, 1, ei);
+    for (const p of poly) vertex(p[0], p[1], prism.z1, 0, 0, 1, ei, p[0], p[1]);
     for (const t of tris) indices.push(topBase + t[0], topBase + t[1], topBase + t[2]);
     const botBase = positions.length / 3;
-    for (const p of poly) vertex(p[0], p[1], prism.z0, 0, 0, -1, ei);
+    for (const p of poly) vertex(p[0], p[1], prism.z0, 0, 0, -1, ei, p[0], p[1]);
     for (const t of tris) indices.push(botBase + t[2], botBase + t[1], botBase + t[0]);
 
     // side quads
@@ -111,59 +126,48 @@ export function buildWallChunkGeometry(
       // CCW polygon → outward normal = (edge dir) rotated -90° = (ey, -ex)
       const nx = ey / len;
       const ny = -ex / len;
-      const v0 = vertex(a[0], a[1], prism.z0, nx, ny, 0, ei);
-      const v1 = vertex(b[0], b[1], prism.z0, nx, ny, 0, ei);
-      const v2 = vertex(b[0], b[1], prism.z1, nx, ny, 0, ei);
-      const v3 = vertex(a[0], a[1], prism.z1, nx, ny, 0, ei);
+      const v0 = vertex(a[0], a[1], prism.z0, nx, ny, 0, ei, 0, prism.z0);
+      const v1 = vertex(b[0], b[1], prism.z0, nx, ny, 0, ei, len, prism.z0);
+      const v2 = vertex(b[0], b[1], prism.z1, nx, ny, 0, ei, len, prism.z1);
+      const v3 = vertex(a[0], a[1], prism.z1, nx, ny, 0, ei, 0, prism.z1);
       indices.push(v0, v1, v2, v0, v2, v3);
     }
+    groups.push({
+      start: groupStart,
+      count: indices.length - groupStart,
+      materialIndex: prism.materialIndex,
+    });
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
   geometry.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(normals), 3));
+  geometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
   geometry.setAttribute(
     "entityIndex",
     new THREE.BufferAttribute(new Float32Array(entityIndex), 1),
   );
   geometry.setIndex(indices);
+  groups.forEach((group) => geometry.addGroup(group.start, group.count, group.materialIndex));
   return { geometry, entityIds, edgesGeometry: buildBoundaryEdgesGeometry(positions, indices) };
 }
 
 /**
- * Unique-edge extraction (reference `rebuildEdges` port). Edges are keyed by
- * RAW vertex indices, exactly like the reference: faces never share indices
- * (caps and side quads each own their vertices), so face-border edges survive
- * as outlines, while triangle diagonals INSIDE a face (shared indices within
- * the same cap fan / quad) appear twice and cancel. The result is the crisp
- * quad-outline wireframe of the screenshots — no triangle diagonals.
+ * Feature-edge extraction for crisp CAD silhouettes. Geometry positions are
+ * hashed so separately-owned cap/side vertices still resolve as one physical
+ * edge; coplanar triangulation edges are suppressed by the crease threshold.
  */
 export function buildBoundaryEdgesGeometry(
   positions: readonly number[],
   indices: readonly number[],
 ): THREE.BufferGeometry {
-  const edgeCount = new Map<string, number>();
-  for (let t = 0; t < indices.length; t += 3) {
-    for (let k = 0; k < 3; k += 1) {
-      const va = indices[t + k]!;
-      const vb = indices[t + ((k + 1) % 3)]!;
-      if (va === vb) continue;
-      const key = va < vb ? `${va}_${vb}` : `${vb}_${va}`;
-      edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1);
-    }
-  }
-
-  const linePositions: number[] = [];
-  for (const [key, count] of edgeCount) {
-    if (count !== 1) continue;
-    const [a, b] = key.split('_').map(Number) as [number, number];
-    linePositions.push(
-      positions[a * 3]!, positions[a * 3 + 1]!, positions[a * 3 + 2]!,
-      positions[b * 3]!, positions[b * 3 + 1]!, positions[b * 3 + 2]!,
-    );
-  }
-  const edges = new THREE.BufferGeometry();
-  edges.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linePositions), 3));
+  const source = new THREE.BufferGeometry();
+  source.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+  source.setIndex([...indices]);
+  // Position-hashed crease extraction suppresses coincident cap/side borders
+  // and coplanar tessellation seams while retaining silhouettes and openings.
+  const edges = new THREE.EdgesGeometry(source, 32);
+  source.dispose();
   return edges;
 }
 

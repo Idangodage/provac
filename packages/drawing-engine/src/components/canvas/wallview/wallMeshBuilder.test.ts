@@ -25,8 +25,11 @@ describe('wall chunk geometry (reference wallMesh port)', () => {
 
     const pos = chunk.geometry.getAttribute('position');
     const ent = chunk.geometry.getAttribute('entityIndex');
+    const uv = chunk.geometry.getAttribute('uv');
     expect(pos.count).toBeGreaterThan(0);
     expect(ent.count).toBe(pos.count);
+    expect(uv.count).toBe(pos.count);
+    expect(chunk.geometry.groups).toHaveLength(chunk.entityIds.length);
     expect(chunk.geometry.getIndex()!.count % 3).toBe(0);
 
     // every z is either the base (0) or the top (wall height)
@@ -43,14 +46,14 @@ describe('wall chunk geometry (reference wallMesh port)', () => {
     }
   });
 
-  it('emits quad-outline boundary edges (single wall box = 24 segments)', () => {
+  it('emits every physical box edge once (single wall box = 12 segments)', () => {
     const doc = createEmptyWallGraph();
     addWallChain(doc, [[0, 0], [4000, 0]], DEFAULT_WALL_PARAMS, sequentialWallIds('e'));
     const chunk = buildWallChunkGeometry(solveWallGraphDoc(doc), 0);
     // One prism: top cap 4 border edges + bottom 4 + four side quads × 4 —
     // triangle diagonals (shared indices within a face) cancel out.
     const positions = chunk.edgesGeometry.getAttribute('position');
-    expect(positions.count).toBe(24 * 2);
+    expect(positions.count).toBe(12 * 2);
   });
 
   it('T-junction wedge becomes a prism too (junction core is solid)', () => {
@@ -63,5 +66,19 @@ describe('wall chunk geometry (reference wallMesh port)', () => {
     const chunk = buildWallChunkGeometry(solve, 0);
     // 3 edges (host split in two + stem) + 1 wedge
     expect(chunk.entityIds).toHaveLength(4);
+  });
+
+  it('assigns deterministic material groups without splitting the pick chunk', () => {
+    const doc = createEmptyWallGraph();
+    addWallChain(doc, [[0, 0], [4000, 0]], DEFAULT_WALL_PARAMS, sequentialWallIds('g'));
+    const solve = solveWallGraphDoc(doc);
+    const edgeId = solve.footprints[0]!.edgeId;
+    const chunk = buildWallChunkGeometry(solve, 0, {
+      materialIndexByEntityId: new Map([[edgeId, 3]]),
+    });
+
+    expect(chunk.geometry.groups).toHaveLength(1);
+    expect(chunk.geometry.groups[0]!.materialIndex).toBe(3);
+    expect(chunk.entityIds).toEqual([edgeId]);
   });
 });

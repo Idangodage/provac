@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyCanvasTransform,
+  affineMatrixToSvg,
   canvasTransformToSvgMatrix,
   clientPointToLocalScreen,
   clientPointToWorld,
+  clientPointToWorldFromFabricViewport,
+  fabricViewportToWorldSvgMatrix,
   getCanvasTransform,
   inverseCanvasTransform,
   screenLengthToWorld,
@@ -13,6 +16,7 @@ import {
   worldLengthToScreen,
   worldTo3D,
   worldToScreen,
+  worldToScreenFromFabricViewport,
   type ViewTransform2D,
 } from './coordinateTransform';
 import { MM_TO_PX } from './scale';
@@ -85,6 +89,59 @@ describe('canonical canvas transform helpers', () => {
     const view = getCanvasTransform(2, { x: 100, y: 50 });
     const k = MM_TO_PX * view.zoom;
     expect(canvasTransformToSvgMatrix(view)).toBe(`matrix(${k} 0 0 ${k} ${view.panPx.x} ${view.panPx.y})`);
+  });
+
+  it('converts a live Fabric scene-pixel matrix to the world-mm SVG matrix', () => {
+    const fabricViewport = [2, 0, 0, 2, -135, 48] as const;
+    const matrix = fabricViewportToWorldSvgMatrix(fabricViewport);
+    expect(matrix).toEqual([
+      2 * MM_TO_PX,
+      0,
+      0,
+      2 * MM_TO_PX,
+      -135,
+      48,
+    ]);
+    expect(affineMatrixToSvg(matrix)).toBe(
+      `matrix(${2 * MM_TO_PX} 0 0 ${2 * MM_TO_PX} -135 48)`,
+    );
+  });
+
+  it('uses one live matrix for rendered position and pointer inversion', () => {
+    const viewport = [1.75, 0.23, -0.12, 1.6, 211, -73] as const;
+    const world = { x: 812.5, y: -330.25 };
+    const screen = worldToScreenFromFabricViewport(world, viewport);
+    const rect = { left: 320, top: 76 };
+    const resolved = clientPointToWorldFromFabricViewport(
+      screen.x + rect.left,
+      screen.y + rect.top,
+      rect,
+      viewport,
+    );
+    expect(resolved).not.toBeNull();
+    expect(resolved?.x).toBeCloseTo(world.x, 8);
+    expect(resolved?.y).toBeCloseTo(world.y, 8);
+  });
+
+  it('is independent of device pixel ratio because CSS client pixels drive NDC', () => {
+    const viewport = [0.8, 0, 0, 0.8, 19, 33] as const;
+    const world = { x: 400, y: 250 };
+    const cssScreen = worldToScreenFromFabricViewport(world, viewport);
+    for (const devicePixelRatio of [1, 1.25, 2, 3]) {
+      // The backing-buffer size changes with DPR, but PointerEvent.clientX/Y and
+      // getBoundingClientRect() stay in CSS pixels. DPR therefore never enters
+      // this conversion pipeline.
+      const backingBufferX = cssScreen.x * devicePixelRatio;
+      expect(backingBufferX / devicePixelRatio).toBeCloseTo(cssScreen.x, 10);
+      const resolved = clientPointToWorldFromFabricViewport(
+        cssScreen.x,
+        cssScreen.y,
+        { left: 0, top: 0 },
+        viewport,
+      );
+      expect(resolved?.x).toBeCloseTo(world.x, 8);
+      expect(resolved?.y).toBeCloseTo(world.y, 8);
+    }
   });
 });
 

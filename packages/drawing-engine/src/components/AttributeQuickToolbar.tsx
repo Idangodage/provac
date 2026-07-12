@@ -84,7 +84,7 @@ export function AttributeQuickToolbar({
 
   const partitionToolActive = activeTool === 'partition-wall';
 
-  const currentMaterialId = selectedWall?.properties3D.materialId ?? '';
+  const currentMaterialId = selectedWall?.properties3D.materialId ?? wallSettings.defaultMaterialId;
   const currentHeight = selectedWall?.properties3D.height ?? wallSettings.defaultHeight;
   const currentThickness = selectedWall?.thickness
     ?? (partitionToolActive ? wallSettings.defaultPartitionThickness : wallSettings.defaultThickness);
@@ -122,7 +122,10 @@ export function AttributeQuickToolbar({
         material: resolveWallMaterialFromLibrary(materialId),
       });
     } else {
-      setWallSettings({ defaultMaterial: resolveWallMaterialFromLibrary(materialId) });
+      setWallSettings({
+        defaultMaterial: resolveWallMaterialFromLibrary(materialId),
+        defaultMaterialId: materialId,
+      });
       setWallPreviewMaterial(resolveWallMaterialFromLibrary(materialId));
     }
   };

@@ -5,6 +5,7 @@ import {
   polygon as turfPolygon,
 } from '@turf/turf';
 
+import { resolveWallVisualStyle, type WallSurfaceVisual } from '../../../attributes';
 import type { JoinData, Point2D, Wall } from '../../../types';
 import { computeWallJoinMapWithShadows } from '../wall/WallJoinNetwork';
 import {
@@ -15,8 +16,9 @@ import {
 const EPSILON = 0.001;
 
 export type IsometricWallPalette = {
-  top: string;
-  side: string;
+  key: string;
+  materialId: string;
+  surface: WallSurfaceVisual;
   outline: string;
 };
 
@@ -43,21 +45,19 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function wallPalette(material: Wall['material']): IsometricWallPalette {
-  switch (material) {
-    case 'brick':
-      return { top: '#d9b8a4', side: '#b7866b', outline: '#7a5643' };
-    case 'concrete':
-      return { top: '#d7dde5', side: '#b6c0cb', outline: '#6c7783' };
-    case 'partition':
-    default:
-      return { top: '#e4d2c2', side: '#ba8a6d', outline: '#8a654d' };
-  }
+function wallPalette(wall: Wall): IsometricWallPalette {
+  const style = resolveWallVisualStyle(wall);
+  return {
+    key: style.key,
+    materialId: style.materialId,
+    surface: style.surface,
+    outline: style.edges.modelColor,
+  };
 }
 
 function wallStyleKey(wall: Wall): string {
   return [
-    wall.material,
+    resolveWallVisualStyle(wall).key,
     Math.round(wall.properties3D.baseElevation ?? 0),
     Math.round(wall.properties3D.height ?? 2700),
   ].join('|');
@@ -256,7 +256,7 @@ export function buildUnifiedWallBands(
     const baseElevation = groupWalls[0].properties3D.baseElevation ?? 0;
     const wallHeight = Math.max(1, groupWalls[0].properties3D.height ?? 2700);
     const wallTop = baseElevation + wallHeight;
-    const palette = wallPalette(groupWalls[0].material);
+    const palette = wallPalette(groupWalls[0]);
 
     visibleWalls.forEach((wall, wallIndex) => {
       const polygon: Point2D[][] = [computeRenderableWallPolygon(wall, joinsMap.get(wall.id))];
@@ -271,7 +271,7 @@ export function buildUnifiedWallBands(
           wallHeight,
           palette,
           baseName,
-          false,
+          true,
           true,
           0,
         );
@@ -305,7 +305,7 @@ export function buildUnifiedWallBands(
             bandHeight,
             palette,
             `${baseName}-b${index}`,
-            false,
+            bandTop >= wallTop - EPSILON,
             bandTop >= wallTop - EPSILON,
             0,
           );
@@ -320,7 +320,7 @@ export function buildUnifiedWallBands(
           bandHeight,
           palette,
           `${baseName}-b${index}`,
-          false,
+          true,
           bandTop >= wallTop - EPSILON,
           0,
         );

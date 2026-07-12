@@ -11,6 +11,11 @@ import {
   type BranchKitProposalValidity,
 } from '../hvac/branchKitProposal';
 import { planBundleBypasses } from '../hvac/pipeClashRouting';
+import {
+  attachPipeRoute3dToElements,
+  hasExplicitPipeRoute3d,
+  type PipePlacementPoint,
+} from '../hvac/pipeRoute3d';
 import { getActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
 import {
   buildRefrigerantPipeElements,
@@ -103,8 +108,8 @@ export interface UseRefrigerantPipeToolResult {
     bundle: RefrigerantPipeBundleConnection,
     opts?: { lineMode?: RefrigerantPipeLineMode },
   ) => void;
-  handleMouseDown: (point: Point2D) => void;
-  handleMouseMove: (point: Point2D) => void;
+  handleMouseDown: (point: PipePlacementPoint) => void;
+  handleMouseMove: (point: PipePlacementPoint) => void;
   handleDoubleClick: () => void;
   handleKeyDown: (event: KeyboardEvent) => boolean;
   handleKeyUp: (event: KeyboardEvent) => void;
@@ -119,14 +124,27 @@ export interface UseRefrigerantPipeToolResult {
 const PIPE_ROUTE_ANGLE_SNAP_DEG = 45;
 const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
 type RefrigerantPipeHoverSelection = 'gas' | 'liquid' | null;
-type RefrigerantPipeSnapSource = 'model' | 'rendered' | 'visible' | null;
+type RefrigerantPipeSnapSource = 'projected' | 'model' | 'rendered' | 'visible' | null;
+
+function readProjectedSnapTarget(point: PipePlacementPoint): RefrigerantPipeBundleConnection | null {
+  const candidate = point.snapTarget;
+  if (!candidate || typeof candidate !== 'object') return null;
+  const bundle = candidate as Partial<RefrigerantPipeBundleConnection>;
+  return bundle.point
+    && typeof bundle.point.x === 'number'
+    && typeof bundle.point.y === 'number'
+    && typeof bundle.elevationMm === 'number'
+    ? bundle as RefrigerantPipeBundleConnection
+    : null;
+}
 
 function createRefrigerantBundleId(): string {
   return `refrigerant-bundle-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function distance(a: Point2D, b: Point2D): number {
-  return Math.hypot(a.x - b.x, a.y - b.y);
+function distance(a: PipePlacementPoint, b: PipePlacementPoint): number {
+  const dz = typeof a.z === 'number' && typeof b.z === 'number' ? a.z - b.z : 0;
+  return Math.hypot(a.x - b.x, a.y - b.y, dz);
 }
 
 /**
@@ -264,10 +282,10 @@ export function useRefrigerantPipeTool(
     overlayOwnsPipePreview,
   } = options;
 
-  const routePointsRef = useRef<Point2D[]>([]);
+  const routePointsRef = useRef<PipePlacementPoint[]>([]);
   const startBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
   const endBundleRef = useRef<RefrigerantPipeBundleConnection | null>(null);
-  const previewPointRef = useRef<Point2D | null>(null);
+  const previewPointRef = useRef<PipePlacementPoint | null>(null);
   // Per-session line-mode override. When an extension session is seeded from an
   // existing end (continue that gas/liquid line, or the pair), it wins over the
   // global `pipeLineMode` selector; cleared on reset so plain drawing falls back
@@ -442,8 +460,8 @@ export function useRefrigerantPipeTool(
     [zoom],
   );
 
-  const snapPoint = useCallback((point: Point2D, allowBundleSnap: boolean): {
-    point: Point2D;
+  const snapPoint = useCallback((point: PipePlacementPoint, allowBundleSnap: boolean): {
+    point: PipePlacementPoint;
     bundle: RefrigerantPipeBundleConnection | null;
     source: RefrigerantPipeSnapSource;
   } => {
@@ -469,23 +487,38 @@ export function useRefrigerantPipeTool(
         );
       };
 
-      const renderedBundle =
+      const projectedBundle = readProjectedSnapTarget(point);
+      if (projectedBundle && !shouldExcludeBundle(projectedBundle)) {
+        bundle = projectedBundle;
+        source = 'projected';
+      }
+      const legacyPlanSnapAllowed = typeof point.z !== 'number' || !Number.isFinite(point.z);
+      const renderedBundle = legacyPlanSnapAllowed
+        ? (
         hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(
           point,
           thresholdMm,
-        ) ?? null;
-      const visibleFieldBundle =
+        ) ?? null
+        )
+        : null;
+      const visibleFieldBundle = legacyPlanSnapAllowed
+        ? (
         findNearestVisibleRefrigerantPipeBundleTarget(
           hvacElements,
           point,
           thresholdMm,
-        ) ?? null;
-      const modelBundle =
+        ) ?? null
+        )
+        : null;
+      const modelBundle = legacyPlanSnapAllowed
+        ? (
         findNearestRefrigerantPipeBundleTarget(
           hvacElements,
           point,
           thresholdMm,
-        ) ?? null;
+        ) ?? null
+        )
+        : null;
 
       const renderedCandidate = !shouldExcludeBundle(renderedBundle)
         ? renderedBundle
@@ -499,7 +532,9 @@ export function useRefrigerantPipeTool(
 
       // Routing datum must always be centerline model data. Use rendered targets
       // only as fallback when model targets are not available.
-      if (modelCandidate) {
+      if (bundle) {
+        // Screen-space 3D resolver already chose this exact target.
+      } else if (modelCandidate) {
         bundle = modelCandidate;
         source = 'model';
       } else if (renderedCandidate) {
@@ -530,10 +565,13 @@ export function useRefrigerantPipeTool(
         })()
       : null;
 
-    let nextPoint = snappedBundle?.point ?? point;
+    let nextPoint: PipePlacementPoint = snappedBundle
+      ? { ...snappedBundle.point, z: snappedBundle.elevationMm }
+      : point;
     // Alt = momentary free-angle override: skip angle + grid snapping so a vertex
     // can be placed exactly under the cursor.
     const freeAngleOverride = altPressedRef.current;
+    const viewAdaptive3d = typeof nextPoint.z === 'number' && Number.isFinite(nextPoint.z);
     const effectiveAngleMode = resolveEffectiveAngleMode(pipeAngleMode, pipeMaterialMode);
     // Free/flexible routing should track the cursor continuously. Grid snapping
     // is reserved for constrained hard-angle runs; otherwise the preview jumps
@@ -542,52 +580,61 @@ export function useRefrigerantPipeTool(
       snapToGrid &&
       !snappedBundle &&
       !freeAngleOverride &&
+      !viewAdaptive3d &&
       effectiveAngleMode !== 'free';
     const previousPoint =
       !snappedBundle && routePointsRef.current.length > 0
         ? routePointsRef.current[routePointsRef.current.length - 1]!
         : null;
 
-    if (previousPoint && !freeAngleOverride) {
+    if (previousPoint && !freeAngleOverride && !viewAdaptive3d) {
       const ortho = shiftPressedRef.current || effectiveAngleMode === 'ortho';
       const angleConstrained = ortho || effectiveAngleMode === 'diagonal';
       if (ortho) {
-        nextPoint = applyOrthogonalConstraint(previousPoint, nextPoint);
+        nextPoint = { ...applyOrthogonalConstraint(previousPoint, nextPoint), z: nextPoint.z };
       } else if (effectiveAngleMode === 'diagonal') {
-        nextPoint = applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG);
+        nextPoint = {
+          ...applyAngularConstraint(previousPoint, nextPoint, PIPE_ROUTE_ANGLE_SNAP_DEG),
+          z: nextPoint.z,
+        };
       }
       if (gridActive) {
         // Land near the grid while preserving the constrained bearing, so an
         // axis-aligned riser/main keeps its alignment to the previous vertex
         // instead of being knocked off by a full two-axis grid round — fixes A2
         // sub-grid drift that the previous "grid-then-angle" order reintroduced.
-        nextPoint = angleConstrained
+        const constrained = angleConstrained
           ? snapAlongRayToGrid(previousPoint, nextPoint, gridSize)
           : snapPointToGrid(nextPoint, gridSize);
+        nextPoint = { ...constrained, z: nextPoint.z };
       }
     } else if (gridActive) {
       // First vertex (no previous point): snap freely to the grid.
-      nextPoint = snapPointToGrid(nextPoint, gridSize);
+      nextPoint = { ...snapPointToGrid(nextPoint, gridSize), z: nextPoint.z };
     }
 
     return { point: nextPoint, bundle: snappedBundle, source };
   }, [gridSize, hvacElements, hvacRendererRef, pipeAngleMode, pipeMaterialMode, resolveExtensionThresholdMm, snapToGrid]);
 
   const renderRoutePreview = useCallback((
-    routePoints: Point2D[],
+    routePoints: PipePlacementPoint[],
     endBundleConnection: RefrigerantPipeBundleConnection | null = null,
     startBundleConnectionOverride: RefrigerantPipeBundleConnection | null = null,
     ghostElements: Array<Omit<HvacElement, 'id'>> = [],
   ) => {
-    const builtElements = routePoints.length >= 2
+    const rawBuiltElements = routePoints.length >= 2
       ? buildRefrigerantPipeElements(routePoints, {
           segmentMaterialMode: pipeMaterialMode,
           lineMode: sessionLineModeRef.current ?? pipeLineMode,
           startBundleConnection:
             startBundleConnectionOverride ?? startBundleRef.current,
           endBundleConnection,
+          elevationMm: hasExplicitPipeRoute3d(routePoints)
+            ? Math.min(...routePoints.map((point) => point.z!))
+            : undefined,
         })
       : [];
+    const builtElements = attachPipeRoute3dToElements(rawBuiltElements, routePoints);
     // Extension preview goes through the SAME merge the commit will run: the
     // draft becomes the host element(s) with the in-progress tail appended (real
     // host ids — the overlay hides its store copy while a draft overrides it), so
@@ -686,7 +733,7 @@ export function useRefrigerantPipeTool(
     return proposal;
   }, [clearBranchKitProposal, hvacElements]);
 
-  const commitRoute = useCallback((candidateFinalPoint?: Point2D) => {
+  const commitRoute = useCallback((candidateFinalPoint?: PipePlacementPoint) => {
     const routePoints = [...routePointsRef.current];
     if (candidateFinalPoint) {
       const lastPoint = routePoints[routePoints.length - 1];
@@ -703,13 +750,17 @@ export function useRefrigerantPipeTool(
       return false;
     }
 
-    const nextElements = buildRefrigerantPipeElements(dedupedPoints, {
+    const rawNextElements = buildRefrigerantPipeElements(dedupedPoints, {
       bundleId: createRefrigerantBundleId(),
       segmentMaterialMode: pipeMaterialMode,
       lineMode: sessionLineModeRef.current ?? pipeLineMode,
       startBundleConnection: startBundleRef.current,
       endBundleConnection: endBundleRef.current,
+      elevationMm: hasExplicitPipeRoute3d(dedupedPoints)
+        ? Math.min(...dedupedPoints.map((point) => point.z!))
+        : undefined,
     });
+    const nextElements = attachPipeRoute3dToElements(rawNextElements, dedupedPoints);
     if (debugEnabledRef.current && startBundleRef.current) {
       nextElements.forEach((element) => {
         const properties = (element.properties ?? {}) as {
@@ -777,7 +828,12 @@ export function useRefrigerantPipeTool(
     // then bends exactly like a mid-draw vertex instead of two butted bodies
     // meeting with a crack. Falls through to add-new when merging doesn't apply
     // (fresh draw, unit-port / branch-kit starts, or no open matching host end).
-    if (startBundleRef.current && updateHvacElement && saveToHistory) {
+    if (
+      !hasExplicitPipeRoute3d(dedupedPoints)
+      && startBundleRef.current
+      && updateHvacElement
+      && saveToHistory
+    ) {
       const mergeUpdates = buildRefrigerantPipeExtensionMerge(
         hvacElements,
         startBundleRef.current,
@@ -808,7 +864,7 @@ export function useRefrigerantPipeTool(
     // bypasses. Off by default — routes commit exactly as drawn and the user
     // applies a bypass deliberately from the clash overlay card. Opt in via the
     // `autoBypassOnCommit` routing setting.
-    if (getActivePipeRoutingSettings().autoBypassOnCommit) {
+    if (!hasExplicitPipeRoute3d(dedupedPoints) && getActivePipeRoutingSettings().autoBypassOnCommit) {
       try {
         const stagedElements = nextElements.map((element, index) => ({
           ...element,
@@ -924,6 +980,10 @@ export function useRefrigerantPipeTool(
     }
     const proposal = refreshBranchKitProposal(cursor);
     if (proposal) {
+      // The proposal's tee point is the visible preview endpoint. Enter or a
+      // double-click must commit that exact point, not the unsnapped cursor
+      // sampled before proposal resolution.
+      previewPointRef.current = proposal.teePoint;
       renderRoutePreview(
         [...routePointsRef.current, proposal.teePoint],
         null,
@@ -956,7 +1016,7 @@ export function useRefrigerantPipeTool(
   ) => {
     resetDrawing();
     sessionLineModeRef.current = opts?.lineMode ?? null;
-    const startPoint = bundle.point;
+    const startPoint: PipePlacementPoint = { ...bundle.point, z: bundle.elevationMm };
     routePointsRef.current = [startPoint];
     startBundleRef.current = bundle;
     previewPointRef.current = null;
@@ -972,20 +1032,34 @@ export function useRefrigerantPipeTool(
     resetDrawing,
   ]);
 
-  const handleMouseDown = useCallback((point: Point2D) => {
+  const handleMouseDown = useCallback((point: PipePlacementPoint) => {
+    const authoritative3d = typeof point.z === 'number' && Number.isFinite(point.z);
     // First click always runs the detection engine: starting near ANY open end
     // (single or pair, gas or liquid) seamlessly continues that run with its real
     // identity — regardless of the toolbar Lines selector or how the tool was
     // re-entered. Only when nothing is near do we fall through to a fresh route.
     if (routePointsRef.current.length === 0) {
-      const extension = findNearestRefrigerantPipeExtensionTarget(
-        hvacElements,
-        point,
-        resolveExtensionThresholdMm(),
-      );
-      if (extension) {
-        beginRouteFromBundle(extension.bundle, { lineMode: extension.lineMode });
+      const projectedTarget = readProjectedSnapTarget(point);
+      if (projectedTarget) {
+        beginRouteFromBundle(projectedTarget, {
+          lineMode:
+            projectedTarget.guideReference === 'gas'
+            || projectedTarget.guideReference === 'liquid'
+              ? projectedTarget.guideReference
+              : 'pair',
+        });
         return;
+      }
+      if (!authoritative3d) {
+        const extension = findNearestRefrigerantPipeExtensionTarget(
+          hvacElements,
+          point,
+          resolveExtensionThresholdMm(),
+        );
+        if (extension) {
+          beginRouteFromBundle(extension.bundle, { lineMode: extension.lineMode });
+          return;
+        }
       }
     }
 
@@ -1034,7 +1108,7 @@ export function useRefrigerantPipeTool(
     // A single-line continuation can also FINISH by welding onto another lone open
     // end of the same kind — the case the generic pair/unit snapPoint above misses.
     const sessionMode = sessionLineModeRef.current;
-    if (sessionMode === 'gas' || sessionMode === 'liquid') {
+    if (!authoritative3d && (sessionMode === 'gas' || sessionMode === 'liquid')) {
       const weld = findNearestRefrigerantPipeExtensionTarget(
         hvacElements,
         point,
@@ -1057,7 +1131,7 @@ export function useRefrigerantPipeTool(
     // session line-mode override), so a placement click during an extension can
     // never silently drop a branch kit before the user commits with Enter.
     const proposal =
-      sessionLineModeRef.current === null && pipeLineMode === 'pair'
+      !authoritative3d && sessionLineModeRef.current === null && pipeLineMode === 'pair'
         ? branchKitProposalRef.current
         : null;
     if (proposal && proposal.validity !== 'invalid') {
@@ -1087,7 +1161,8 @@ export function useRefrigerantPipeTool(
     snapPoint,
   ]);
 
-  const handleMouseMove = useCallback((point: Point2D) => {
+  const handleMouseMove = useCallback((point: PipePlacementPoint) => {
+    const authoritative3d = typeof point.z === 'number' && Number.isFinite(point.z);
     const { point: snappedPoint, bundle, source } = snapPoint(point, true);
     renderDebugOverlays(bundle, snappedPoint, source);
     if (bundle && source !== 'model') {
@@ -1102,11 +1177,13 @@ export function useRefrigerantPipeTool(
       clearBranchKitProposal();
       // Idle hover: run the same engine the first click will, so an open end lights
       // up with a "click to continue this run" cue that matches what the click does.
-      const extension = findNearestRefrigerantPipeExtensionTarget(
-        hvacElements,
-        point,
-        resolveExtensionThresholdMm(),
-      );
+      const extension = authoritative3d
+        ? null
+        : findNearestRefrigerantPipeExtensionTarget(
+            hvacElements,
+            point,
+            resolveExtensionThresholdMm(),
+          );
       renderSnapMarkers(extension?.bundle ?? bundle);
       if (extension) {
         setProcessingStatus(
@@ -1134,6 +1211,7 @@ export function useRefrigerantPipeTool(
     const singleWeldMode = sessionLineModeRef.current;
     if (
       !bundle
+      && !authoritative3d
       && (singleWeldMode === 'gas' || singleWeldMode === 'liquid')
     ) {
       const weld = findNearestRefrigerantPipeExtensionTarget(
@@ -1168,7 +1246,7 @@ export function useRefrigerantPipeTool(
     // while EXTENDING an existing run (a session line-mode override marks an
     // extension: it continues that run, it does not tap another).
     const proposal =
-      bundle || sessionLineModeRef.current !== null || pipeLineMode !== 'pair'
+      bundle || authoritative3d || sessionLineModeRef.current !== null || pipeLineMode !== 'pair'
         ? null
         : refreshBranchKitProposal(snappedPoint);
     if (proposal) {

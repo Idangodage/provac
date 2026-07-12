@@ -29,9 +29,12 @@ import {
 
 import type { HvacElement, Point2D } from '../../../types';
 import {
+  affineMatrixToSvg,
   canvasTransformToSvgMatrix,
-  clientPointToWorld,
+  clientPointToWorldFromFabricViewport,
+  fabricViewportToWorldSvgMatrix,
   getCanvasTransform,
+  type FabricViewportMatrix,
 } from '../coordinateTransform';
 import { MM_TO_PX } from '../scale';
 
@@ -618,13 +621,33 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   // Snap-hover indicator (world mm) pushed by the draw tool — rendered with the
   // same endpoint-handle bullseye a committed pipe shows.
   const [snapIndicator, setSnapIndicator] = useState<Point2D | null>(null);
+  // The matrix used to render the overlay is also the matrix used to invert
+  // pointer positions. Keeping this ref in the imperative same-frame path
+  // avoids stale React pan/zoom values during camera navigation.
+  const liveViewportRef = useRef<FabricViewportMatrix>([
+    viewportZoom,
+    0,
+    0,
+    viewportZoom,
+    -panOffset.x * viewportZoom,
+    -panOffset.y * viewportZoom,
+  ]);
   // Same-frame viewport bond (see PipeStudioOverlayHandle.syncViewTransform).
   // Writes land AFTER any React commit in the frame (host calls from Fabric's
   // rAF `after:render`), so the live matrix always wins over a stale render.
   const syncViewTransform = useCallback((vpt: readonly number[]) => {
     const g = gRef.current;
     if (!g || vpt.length < 6) return;
-    const value = `matrix(${vpt[0]} ${vpt[1]} ${vpt[2]} ${vpt[3]} ${vpt[4]} ${vpt[5]})`;
+    const live: FabricViewportMatrix = [
+      Number(vpt[0]),
+      Number(vpt[1]),
+      Number(vpt[2]),
+      Number(vpt[3]),
+      Number(vpt[4]),
+      Number(vpt[5]),
+    ];
+    liveViewportRef.current = live;
+    const value = affineMatrixToSvg(fabricViewportToWorldSvgMatrix(live));
     if (g.getAttribute('transform') !== value) {
       g.setAttribute('transform', value);
     }
@@ -1108,8 +1131,13 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const toWorld = useCallback((clientX: number, clientY: number): Point2D | null => {
     const svg = svgRef.current;
     if (!svg) return null;
-    return clientPointToWorld(clientX, clientY, svg.getBoundingClientRect(), view);
-  }, [view]);
+    return clientPointToWorldFromFabricViewport(
+      clientX,
+      clientY,
+      svg.getBoundingClientRect(),
+      liveViewportRef.current,
+    );
+  }, []);
 
   const updateNearbyBranchKitPort = useCallback(
     (clientX: number, clientY: number): string | null => {

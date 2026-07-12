@@ -57,6 +57,7 @@
     "three": "^0.183.1",
     "three-bvh-csg": "^0.0.18",
     "three-mesh-bvh": "^0.9.10",
+    "zod": "^3.23.8",
     "zustand": "^4.5.2"
   },
   "devDependencies": {

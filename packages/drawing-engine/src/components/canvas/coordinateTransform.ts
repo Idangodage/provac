@@ -41,6 +41,16 @@ export interface Vec3 {
   z: number;
 }
 
+/** Fabric affine viewport matrix. Its input coordinates are scene pixels. */
+export type FabricViewportMatrix = readonly [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+
 function safeScale(zoom: number): number {
   const k = MM_TO_PX * zoom;
   if (!Number.isFinite(k) || Math.abs(k) < 1e-9) {
@@ -104,6 +114,79 @@ export function clientPointToWorld(
 export function canvasTransformToSvgMatrix(view: ViewTransform2D): string {
   const k = MM_TO_PX * view.zoom;
   return `matrix(${k} 0 0 ${k} ${view.panPx.x} ${view.panPx.y})`;
+}
+
+/**
+ * Convert Fabric's scene-pixel viewport matrix into the SVG matrix required by
+ * child geometry authored in model millimetres.
+ *
+ * Fabric shapes are already multiplied by `MM_TO_PX` before the viewport is
+ * applied. SVG pipe routes are not, so copying the Fabric matrix verbatim
+ * shrinks and displaces them by 25.4 / 96. Translation is already in screen
+ * pixels and must not be scaled.
+ */
+export function fabricViewportToWorldSvgMatrix(
+  viewport: FabricViewportMatrix,
+): FabricViewportMatrix {
+  return [
+    viewport[0] * MM_TO_PX,
+    viewport[1] * MM_TO_PX,
+    viewport[2] * MM_TO_PX,
+    viewport[3] * MM_TO_PX,
+    viewport[4],
+    viewport[5],
+  ];
+}
+
+export function affineMatrixToSvg(matrix: FabricViewportMatrix): string {
+  return `matrix(${matrix[0]} ${matrix[1]} ${matrix[2]} ${matrix[3]} ${matrix[4]} ${matrix[5]})`;
+}
+
+/** Apply a live Fabric viewport to an authoritative model-mm point. */
+export function worldToScreenFromFabricViewport(
+  worldMm: Point2D,
+  viewport: FabricViewportMatrix,
+): Point2D {
+  const matrix = fabricViewportToWorldSvgMatrix(viewport);
+  return {
+    x: matrix[0] * worldMm.x + matrix[2] * worldMm.y + matrix[4],
+    y: matrix[1] * worldMm.x + matrix[3] * worldMm.y + matrix[5],
+  };
+}
+
+/**
+ * Inverse of {@link worldToScreenFromFabricViewport}. Handles a general
+ * rotate/skew affine matrix so pointer conversion remains correct if the board
+ * gains a deliberate 2D rotation in the future.
+ */
+export function screenToWorldFromFabricViewport(
+  screenPx: Point2D,
+  viewport: FabricViewportMatrix,
+): Point2D | null {
+  const matrix = fabricViewportToWorldSvgMatrix(viewport);
+  const determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) {
+    return null;
+  }
+  const x = screenPx.x - matrix[4];
+  const y = screenPx.y - matrix[5];
+  return {
+    x: (matrix[3] * x - matrix[2] * y) / determinant,
+    y: (-matrix[1] * x + matrix[0] * y) / determinant,
+  };
+}
+
+/** Browser client point -> model millimetres using the live render matrix. */
+export function clientPointToWorldFromFabricViewport(
+  clientX: number,
+  clientY: number,
+  rect: LocalScreenRect,
+  viewport: FabricViewportMatrix,
+): Point2D | null {
+  return screenToWorldFromFabricViewport(
+    clientPointToLocalScreen(clientX, clientY, rect),
+    viewport,
+  );
 }
 
 /** Pixels for a millimetre length at the given zoom (no pan). */

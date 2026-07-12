@@ -33,9 +33,14 @@
 
 import * as fabric from 'fabric';
 
-import { colorFromExposure, getArchitecturalMaterial, heatColorFromUValue } from '../../../attributes';
+import {
+  colorFromExposure,
+  heatColorFromUValue,
+  PROFESSIONAL_WALL_EDGES,
+  resolveWallVisualStyle,
+  resolveWallVisualStyleForMaterial,
+} from '../../../attributes';
 import type { Point2D, Room, Wall, WallColorMode, WallMaterial, JoinData, SymbolInstance2D } from '../../../types';
-import { WALL_MATERIAL_COLORS } from '../../../types/wall';
 import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
 import { MM_TO_PX } from '../scale';
 
@@ -54,6 +59,7 @@ import {
 import type { RoomBoundarySelectionSegment } from './RoomBoundarySelection';
 import type { EnhancedSnapResult } from './WallSnapping';
 import { primeWallSelectionGeometryInBackground } from './wallSelectionWorkerClient';
+import { createWallPatternCanvas } from './wallPatternCanvas';
 import { computeWallUnionRenderData, type WallUnionComponent, type WallUnionRenderData } from './WallUnionGeometry';
 import {
   refreshAllWalls, // [PATCH APPLIED]
@@ -125,10 +131,10 @@ const OPENING_DOOR_ARC_STROKE = '#2b160b';
  */
 export const VISUAL_CONFIG = {
   // Wall body
-  wallStroke: '#000000',
-  wallStrokeWidth: 2,
-  centerLineStroke: '#000000',
-  centerLineWidth: 1,
+  wallStroke: PROFESSIONAL_WALL_EDGES.planColor,
+  wallStrokeWidth: PROFESSIONAL_WALL_EDGES.planWidthPx,
+  centerLineStroke: PROFESSIONAL_WALL_EDGES.centerLineColor,
+  centerLineWidth: PROFESSIONAL_WALL_EDGES.centerLineWidthPx,
 
   // Selection — the shared accent (#4f8cff) so 2D reads exactly like the 3D
   // outline effect (reference: hover soft/50%, selection strong).
@@ -224,7 +230,7 @@ export class WallRenderer {
   private rooms: Room[] = [];
   private showCenterLines: boolean = true;
   private pageHeight: number;
-  private hatchPatterns: Map<WallMaterial, fabric.Pattern | null> = new Map();
+  private materialPatterns: Map<string, fabric.Pattern | null> = new Map();
   private selectedWallIds: Set<string> = new Set();
   private selectedRoomBoundarySegments: RoomBoundarySelectionSegment[] = [];
   private controlPointObjects: Map<string, fabric.FabricObject[]> = new Map();
@@ -258,52 +264,26 @@ export class WallRenderer {
   constructor(canvas: fabric.Canvas, pageHeight: number = 3000) {
     this.canvas = canvas;
     this.pageHeight = pageHeight;
-    this.initializePatterns();
   }
 
   // ─── Pattern Initialization ─────────────────────────────────────────────
 
-  private initializePatterns(): void {
-    const hatchPattern = this.createHatchPattern('#A3A3A3');
-    this.hatchPatterns.set('brick', hatchPattern);
-    this.hatchPatterns.set('concrete', null);
-    this.hatchPatterns.set('partition', null);
-  }
+  private getMaterialPattern(wall: Wall): fabric.Pattern | null {
+    const style = resolveWallVisualStyle(wall);
+    const cached = this.materialPatterns.get(style.key);
+    if (cached !== undefined) return cached;
 
-  private createHatchPattern(strokeColor: string): fabric.Pattern | null {
-    const patternSize = 10;
-    const devicePixelRatio =
-      typeof window !== 'undefined' && Number.isFinite(window.devicePixelRatio)
-        ? Math.max(1, window.devicePixelRatio)
-        : 1;
-    const patternCanvas = document.createElement('canvas');
-    patternCanvas.width = patternSize * devicePixelRatio;
-    patternCanvas.height = patternSize * devicePixelRatio;
-    patternCanvas.style.width = `${patternSize}px`;
-    patternCanvas.style.height = `${patternSize}px`;
-    const ctx = patternCanvas.getContext('2d');
-
-    if (!ctx) return null;
-
-    ctx.scale(devicePixelRatio, devicePixelRatio);
-    ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = '#B0B0B0';
-    ctx.fillRect(0, 0, patternSize, patternSize);
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = 1;
-    ctx.lineCap = 'square';
-    ctx.lineJoin = 'miter';
-    ctx.beginPath();
-    for (let offset = -patternSize; offset <= patternSize; offset += patternSize) {
-      ctx.moveTo(offset, patternSize);
-      ctx.lineTo(offset + patternSize, 0);
-    }
-    ctx.stroke();
-
-    return new fabric.Pattern({
-      source: patternCanvas,
-      repeat: 'repeat',
-    });
+    const patternCanvas = createWallPatternCanvas(style, 'plan-cut');
+    const inverseZoom = 1 / Math.max(this.canvas.getZoom(), 0.01);
+    const pattern = patternCanvas
+      ? new fabric.Pattern({
+          source: patternCanvas,
+          repeat: 'repeat',
+          patternTransform: [inverseZoom, 0, 0, inverseZoom, 0, 0],
+        })
+      : null;
+    this.materialPatterns.set(style.key, pattern);
+    return pattern;
   }
 
   // ─── Coordinate Conversion ──────────────────────────────────────────────
@@ -572,6 +552,11 @@ export class WallRenderer {
     // Skip if zoom didn't meaningfully change (< 0.5% difference)
     if (Math.abs(zoom - prevZoom) / Math.max(prevZoom, 0.01) < 0.005) return;
 
+    const inverseZoom = 1 / Math.max(zoom, 0.01);
+    this.materialPatterns.forEach((pattern) => {
+      if (pattern) pattern.patternTransform = [inverseZoom, 0, 0, inverseZoom, 0, 0];
+    });
+
     // Refresh selection outlines stroke widths
     this.wallObjects.forEach((group) => {
       const selOutline = group.getObjects().find((obj) => (obj as NamedObject).name === 'selectionOutline');
@@ -626,22 +611,31 @@ export class WallRenderer {
   // ─── Fill Resolution ────────────────────────────────────────────────────
 
   private resolveWallVisualFill(wall: Wall): string | fabric.Pattern {
-    const materialColors = WALL_MATERIAL_COLORS[wall.material];
-    const libraryMaterial = getArchitecturalMaterial(wall.properties3D.materialId);
-    const defaultMaterialFill = libraryMaterial?.color ?? materialColors.fill;
+    const style = resolveWallVisualStyle(wall);
     const exposureDirection = wall.properties3D.exposureOverride ?? wall.properties3D.exposureDirection;
     const fillColor = this.wallColorMode === 'u-value'
       ? heatColorFromUValue(wall.properties3D.overallUValue)
       : this.wallColorMode === 'exposure'
         ? colorFromExposure(exposureDirection)
-        : defaultMaterialFill;
+        : style.plan.fillColor;
 
-    if (this.wallColorMode === 'material' && materialColors.pattern === 'hatch') {
-      const pattern = this.hatchPatterns.get(wall.material);
+    if (this.wallColorMode === 'material') {
+      const pattern = this.getMaterialPattern(wall);
       if (pattern) return pattern;
     }
 
     return fillColor;
+  }
+
+  private wallVisualFillKey(wall: Wall): string {
+    if (this.wallColorMode === 'u-value') {
+      return `u-value|${heatColorFromUValue(wall.properties3D.overallUValue)}`;
+    }
+    if (this.wallColorMode === 'exposure') {
+      const direction = wall.properties3D.exposureOverride ?? wall.properties3D.exposureDirection;
+      return `exposure|${colorFromExposure(direction)}`;
+    }
+    return resolveWallVisualStyle(wall).key;
   }
 
   // ─── Path Data Helpers ──────────────────────────────────────────────────
@@ -674,28 +668,74 @@ export class WallRenderer {
 
   // ─── Merged Component Rendering ─────────────────────────────────────────
 
-  private renderMergedComponent(component: WallUnionComponent, representativeWall: Wall): void {
-    const pathData = this.wallComponentPathData(component);
-    if (!pathData) return;
-    const visualFill = this.resolveWallVisualFill(representativeWall);
-    const componentStrokeWidth = this.toSceneSize(VISUAL_CONFIG.wallStrokeWidth);
-    const usesPatternFill = typeof visualFill !== 'string';
-
-    const mergedFillPath = new fabric.Path(pathData, {
+  private addComponentFill(
+    pathData: string,
+    wall: Wall,
+    name: string,
+    clipPathData?: string
+  ): void {
+    const visualFill = this.resolveWallVisualFill(wall);
+    const fillPath = new fabric.Path(pathData, {
       fill: visualFill,
       fillRule: 'evenodd',
-      stroke: VISUAL_CONFIG.wallStroke,
-      strokeWidth: componentStrokeWidth,
+      stroke: 'transparent',
+      strokeWidth: 0,
       strokeLineJoin: 'miter',
-      paintFirst: 'stroke',
       selectable: false,
       evented: false,
-      objectCaching: !usesPatternFill,
+      objectCaching: typeof visualFill === 'string',
+      clipPath: clipPathData
+        ? new fabric.Path(clipPathData, {
+            fillRule: 'evenodd',
+            absolutePositioned: true,
+          })
+        : undefined,
     });
-    (mergedFillPath as NamedObject).name = 'wall-component-fill';
+    (fillPath as NamedObject).name = name;
+    this.canvas.add(fillPath);
+    this.componentObjects.push(fillPath);
+  }
 
-    this.canvas.add(mergedFillPath);
-    this.componentObjects.push(mergedFillPath);
+  private renderMergedComponent(component: WallUnionComponent, componentWalls: Wall[]): void {
+    const pathData = this.wallComponentPathData(component);
+    if (!pathData) return;
+    const orderedWalls = [...componentWalls].sort((left, right) => {
+      const layerPriority = Number(right.layer === 'structural') - Number(left.layer === 'structural');
+      if (layerPriority !== 0) return layerPriority;
+      if (right.thickness !== left.thickness) return right.thickness - left.thickness;
+      return left.id.localeCompare(right.id);
+    });
+    const representativeWall = orderedWalls[0];
+    if (!representativeWall) return;
+    const visualFill = this.resolveWallVisualFill(representativeWall);
+    const usesPatternFill = typeof visualFill !== 'string';
+    this.addComponentFill(pathData, representativeWall, 'wall-component-fill');
+
+    // A connected topology can contain multiple detailed materials. Keep one
+    // outer union outline, but layer each non-dominant material's own unioned
+    // cut fill inside it instead of coloring the full network from wall[0].
+    const representativeStyleKey = this.wallVisualFillKey(representativeWall);
+    const wallsByStyle = new Map<string, Wall[]>();
+    componentWalls.forEach((wall) => {
+      const key = this.wallVisualFillKey(wall);
+      wallsByStyle.set(key, [...(wallsByStyle.get(key) ?? []), wall]);
+    });
+    [...wallsByStyle.entries()]
+      .filter(([key]) => key !== representativeStyleKey)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .forEach(([key, styleWalls]) => {
+        const materialComponents = computeWallUnionRenderData(styleWalls).components;
+        const materialPathData = this.componentPolygonsPathData(
+          materialComponents.flatMap((materialComponent) => materialComponent.polygons)
+        );
+        if (!materialPathData) return;
+        this.addComponentFill(
+          materialPathData,
+          styleWalls[0],
+          `wall-component-material-${key}`,
+          pathData
+        );
+      });
 
     const overlayPathData = this.componentPolygonsPathData(component.junctionOverlays);
     if (overlayPathData) {
@@ -786,11 +826,11 @@ export class WallRenderer {
     });
 
     for (const component of renderData.components) {
-      const representativeWall = component.wallIds
+      const componentWalls = component.wallIds
         .map((wallId) => wallsById.get(wallId))
-        .find((wall): wall is Wall => Boolean(wall));
-      if (!representativeWall) continue;
-      this.renderMergedComponent(component, representativeWall);
+        .filter((wall): wall is Wall => Boolean(wall));
+      if (componentWalls.length === 0) continue;
+      this.renderMergedComponent(component, componentWalls);
     }
 
     return componentWallsByWallId;
@@ -928,8 +968,10 @@ export class WallRenderer {
     const canvasVertices = interactionVertices.map((v) => this.toCanvasPoint(v));
 
     const dragEdgeStrokeWidth = this.toSceneSize(VISUAL_CONFIG.wallStrokeWidth);
+    const dragFill = resolveWallVisualStyle(wall).plan.fillColor;
     const fillPolygon = new fabric.Polygon(canvasVertices, {
-      fill: this.dragOptimizedMode ? 'rgba(148,163,184,0.18)' : 'rgba(0,0,0,0.001)',
+      fill: this.dragOptimizedMode ? dragFill : 'rgba(0,0,0,0.001)',
+      opacity: this.dragOptimizedMode ? 0.72 : 1,
       stroke: 'transparent',
       strokeWidth: 0,
       selectable: false,
@@ -1332,14 +1374,21 @@ export class WallRenderer {
   renderPreviewWalls(
     segments: Array<{ startPoint: Point2D; endPoint: Point2D }>,
     thickness: number,
-    material: WallMaterial = 'brick'
+    material: WallMaterial = 'brick',
+    materialId?: string
   ): void {
     this.clearPreviewWall();
     if (segments.length === 0) return;
-    const materialColors = WALL_MATERIAL_COLORS[material];
-    const hatchPattern =
-      materialColors.pattern === 'hatch' ? this.hatchPatterns.get(material) ?? null : null;
-    const previewFill: string | fabric.Pattern = hatchPattern ?? materialColors.fill;
+    const style = resolveWallVisualStyleForMaterial(material, materialId);
+    const patternCanvas = createWallPatternCanvas(style, 'plan-cut');
+    const inverseZoom = 1 / Math.max(this.canvas.getZoom(), 0.01);
+    const previewFill: string | fabric.Pattern = patternCanvas
+      ? new fabric.Pattern({
+          source: patternCanvas,
+          repeat: 'repeat',
+          patternTransform: [inverseZoom, 0, 0, inverseZoom, 0, 0],
+        })
+      : style.plan.fillColor;
 
     for (const segment of segments) {
       const dx = segment.endPoint.x - segment.startPoint.x;
@@ -2633,6 +2682,6 @@ export class WallRenderer {
 
   dispose(): void {
     this.clearAllWalls();
-    this.hatchPatterns.clear();
+    this.materialPatterns.clear();
   }
 }

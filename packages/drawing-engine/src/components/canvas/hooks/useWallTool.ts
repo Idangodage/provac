@@ -46,7 +46,12 @@ export interface UseWallToolOptions {
    */
   wallGraphAddChain: (
     points: Point2D[],
-    params?: Partial<{ thickness: number; height: number; material: string }>,
+    params?: Partial<{
+      thickness: number;
+      height: number;
+      material: string;
+      materialId: string;
+    }>,
   ) => string[];
   onWallCreated?: (wallId: string) => void;
   onRoomClosed?: (wallIds: string[]) => void; // [SNAP WIRE]
@@ -290,7 +295,10 @@ export function useWallTool({
         wallPreviewRef.current?.startPreview(
           snapResult.snappedPoint,
           wallDrawingState.previewThickness,
-          wallDrawingState.previewMaterial
+          wallDrawingState.previewMaterial,
+          wallDrawingState.previewMaterial === wallSettings.defaultMaterial
+            ? wallSettings.defaultMaterialId
+            : undefined
         );
       } else {
         // Second click: commit the segment THROUGH THE WALL GRAPH (shared-node
@@ -322,6 +330,9 @@ export function useWallTool({
           {
             thickness: wallDrawingState.previewThickness,
             material: wallDrawingState.previewMaterial,
+            materialId: wallDrawingState.previewMaterial === wallSettings.defaultMaterial
+              ? wallSettings.defaultMaterialId
+              : undefined,
           },
         );
         if (segmentIds.length > 0) {
@@ -354,6 +365,9 @@ export function useWallTool({
             snapResult.snappedPoint,
             wallDrawingState.previewThickness,
             wallDrawingState.previewMaterial,
+            wallDrawingState.previewMaterial === wallSettings.defaultMaterial
+              ? wallSettings.defaultMaterialId
+              : undefined,
             continuationWall
           );
         } else {

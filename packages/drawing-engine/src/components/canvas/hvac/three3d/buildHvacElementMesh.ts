@@ -10,6 +10,7 @@ import {
 } from "../ductedIndoorUnitModel";
 import { buildGiDuctVisual } from "../giDuctModel";
 import type { PipeBypass } from "../pipeBypass";
+import { readPipeRouteNodes3d } from "../pipeRoute3d";
 import { computeFittingRunMm } from "../pipeRoutingRules";
 import {
   buildRefrigerantBranchKitViewModel,
@@ -1365,6 +1366,8 @@ export function buildHvacElementMesh(
     if (model) {
       const group = new THREE.Group();
       group.name = `hvac-${element.id}`;
+      group.userData.hvacElementId = element.id;
+      group.userData.hvacElementType = element.type;
       // Anchor at the UNCLAMPED element centre — the exact point every 2D
       // consumer (plan renderer, hit testing, overlays) uses. Size clamps are
       // for geometry only; putting them in the anchor shifts sub-60 mm
@@ -1418,6 +1421,8 @@ export function buildHvacElementMesh(
     inlinePlacement?.rotationDeg ?? effectiveElement.rotation,
   );
   group.name = `hvac-${effectiveElement.id}`;
+  group.userData.hvacElementId = effectiveElement.id;
+  group.userData.hvacElementType = effectiveElement.type;
 
   switch (normalizedType) {
     case "wall-mounted-ac":
@@ -1937,6 +1942,46 @@ export function buildHvacElementMesh(
       const insulationColor = "#e6edf2";
       const coreColor = visual.lineKind === "gas" ? "#c5894d" : "#dca25d";
       const bypasses = visual.bypasses;
+      const routeNodes3d = readPipeRouteNodes3d(effectiveElement);
+      if (routeNodes3d.length >= 2) {
+        // Absolute model-space centreline nodes from the authoritative pointer
+        // pipeline. Do not add the element bbox offset or scalar elevation a
+        // second time; the permanent model->world basis handles view chirality.
+        group.position.set(0, 0, 0);
+        group.rotation.set(0, 0, 0);
+        const points = routeNodes3d.map(
+          (node) => new THREE.Vector3(node.x, node.y, node.z),
+        );
+        const endpointState = context.pipeEndpointStateMap?.get(effectiveElement.id) ?? {
+          openStart: false,
+          openEnd: false,
+        };
+        const insulation = createTubeAlongPoints(
+          points,
+          visual.outerRadiusMm,
+          insulationColor,
+          {
+            renderOrder: 18,
+            openStart: endpointState.openStart,
+            openEnd: endpointState.openEnd,
+            cornerStyle: "round",
+          },
+        );
+        if (insulation) group.add(insulation);
+        const core = createTubeAlongPoints(
+          points,
+          visual.coreRadiusMm,
+          coreColor,
+          {
+            renderOrder: 19,
+            openStart: endpointState.openStart,
+            openEnd: endpointState.openEnd,
+            cornerStyle: "round",
+          },
+        );
+        if (core) group.add(core);
+        break;
+      }
       const chainState = context.pipeRenderChainStateMap?.get(effectiveElement.id) ?? null;
       if (chainState && !chainState.renderAsHead) {
         return group;

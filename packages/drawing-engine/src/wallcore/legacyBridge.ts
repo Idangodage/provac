@@ -36,7 +36,7 @@ export interface LegacyWallLike {
   endPoint: { x: number; y: number };
   thickness: number;
   material: string;
-  properties3D?: { height?: number };
+  properties3D?: { height?: number; baseElevation?: number; materialId?: string };
   graph?: WallGraphMeta;
 }
 
@@ -71,9 +71,10 @@ export function wallGraphFromLegacyWalls(
       b: meta.b,
       thickness: wall.thickness,
       height: wall.properties3D?.height ?? DEFAULT_LEGACY_WALL_HEIGHT,
-      baseOffset: 0,
+      baseOffset: wall.properties3D?.baseElevation ?? 0,
       justification: meta.justification,
       material: wall.material,
+      materialId: wall.properties3D?.materialId,
     };
   }
 
@@ -94,9 +95,10 @@ export function wallGraphFromLegacyWalls(
       b,
       thickness: wall.thickness,
       height: wall.properties3D?.height ?? DEFAULT_LEGACY_WALL_HEIGHT,
-      baseOffset: 0,
+      baseOffset: wall.properties3D?.baseElevation ?? 0,
       justification: 'center',
       material: wall.material,
+      materialId: wall.properties3D?.materialId,
     };
   }
 
@@ -163,7 +165,12 @@ export function legacyWallsFromGraph<W extends LegacyWallLike>(
           thickness: edge.thickness,
           material: edge.material,
           properties3D: prev.properties3D
-            ? { ...prev.properties3D, height: edge.height }
+            ? {
+                ...prev.properties3D,
+                height: edge.height,
+                baseElevation: edge.baseOffset,
+                materialId: edge.materialId ?? prev.properties3D.materialId,
+              }
             : prev.properties3D,
           graph: meta,
         }

@@ -1881,13 +1881,14 @@ export interface DrawingState {
       height: number;
       justification: 'center' | 'left' | 'right';
       material: string;
+      materialId: string;
     }>,
   ) => string[];
   wallGraphMoveNode: (nodeId: string, to: Point2D, weld?: boolean) => void;
   wallGraphMoveEdges: (edgeIds: string[], delta: Point2D) => void;
   wallGraphSetParams: (
     edgeIds: string[],
-    patch: Partial<Pick<WallEdge2, 'thickness' | 'height' | 'baseOffset' | 'justification' | 'material'>>,
+    patch: Partial<Pick<WallEdge2, 'thickness' | 'height' | 'baseOffset' | 'justification' | 'material' | 'materialId'>>,
   ) => void;
   wallGraphFlip: (edgeIds: string[]) => void;
   wallGraphSetLength: (edgeId: string, length: number, anchor: 'a' | 'b') => void;
@@ -2114,10 +2115,11 @@ function buildWallMirrorCallbacks(get: () => DrawingState): MirrorCallbacks<Wall
         openings: [],
         properties3D: { ...DEFAULT_WALL_3D },
       };
-      const materialId = getDefaultMaterialIdForWallMaterial(material);
+      const materialId = edge.materialId ?? getDefaultMaterialIdForWallMaterial(material);
       return bindWallAttributes(rebuildWallGeometry(base), {
         materialId,
         height: edge.height,
+        baseElevation: edge.baseOffset,
         layerCount: get().wallSettings.defaultLayerCount ?? DEFAULT_WALL_LAYER_COUNT,
         thermalResistance:
           getArchitecturalMaterial(materialId)?.thermalResistance ??
@@ -3185,6 +3187,12 @@ export const useDrawingStore = create<DrawingState>()(
 
       wallGraphAddChain: (points, params) => {
         let created: string[] = [];
+        const material = params?.material ?? 'brick';
+        const materialId = params?.materialId ?? (
+          material === get().wallSettings.defaultMaterial
+            ? get().wallSettings.defaultMaterialId
+            : getDefaultMaterialIdForWallMaterial(material as WallMaterial)
+        );
         applyWallGraphOperation(get, set, 'Draw wall', (draft) => {
           created = coreAddWallChain(
             draft,
@@ -3194,7 +3202,8 @@ export const useDrawingStore = create<DrawingState>()(
               height: params?.height ?? get().wallSettings.defaultHeight ?? DEFAULT_WALL_HEIGHT,
               baseOffset: 0,
               justification: params?.justification ?? 'center',
-              material: params?.material ?? 'brick',
+              material,
+              materialId,
             },
             WALL_GRAPH_IDS,
           );
@@ -3906,7 +3915,7 @@ export const useDrawingStore = create<DrawingState>()(
             height: resolvedHeight,
             materialId: partitionToolActive
               ? getDefaultMaterialIdForWallMaterial('partition')
-              : undefined,
+              : wallSettings.defaultMaterialId,
           },
         });
 
@@ -4039,6 +4048,14 @@ export const useDrawingStore = create<DrawingState>()(
         if (safeSettings.gridSize !== undefined) {
           safeSettings.gridSize = Math.max(1, safeSettings.gridSize);
         }
+        if (
+          safeSettings.defaultMaterial !== undefined &&
+          safeSettings.defaultMaterialId === undefined
+        ) {
+          safeSettings.defaultMaterialId = getDefaultMaterialIdForWallMaterial(
+            safeSettings.defaultMaterial
+          );
+        }
 
         set((state) => ({
           wallSettings: { ...state.wallSettings, ...safeSettings },
@@ -4066,6 +4083,9 @@ export const useDrawingStore = create<DrawingState>()(
       createRoomWalls: (config, startCorner) => {
         const { width, height, wallThickness, material } = config;
         const layer = material === 'partition' ? 'partition' : 'structural';
+        const defaultMaterialId = material === get().wallSettings.defaultMaterial
+          ? get().wallSettings.defaultMaterialId
+          : getDefaultMaterialIdForWallMaterial(material);
 
         const corners: Point2D[] = [
           startCorner,
@@ -4084,6 +4104,7 @@ export const useDrawingStore = create<DrawingState>()(
             thickness: wallThickness,
             material,
             layer,
+            properties3D: { materialId: defaultMaterialId },
           });
           wallIds.push(wallId);
         }
@@ -4975,10 +4996,20 @@ export const useDrawingStore = create<DrawingState>()(
             importedRooms
           );
 
+          const importedWallSettings =
+            typeof data.wallSettings === 'object' && data.wallSettings ? data.wallSettings : {};
           const nextWallSettings = {
             ...DEFAULT_WALL_SETTINGS,
-            ...(typeof data.wallSettings === 'object' && data.wallSettings ? data.wallSettings : {}),
+            ...importedWallSettings,
           } as WallSettings;
+          if (
+            typeof (importedWallSettings as Partial<WallSettings>).defaultMaterialId !== 'string' ||
+            !getArchitecturalMaterial(nextWallSettings.defaultMaterialId)
+          ) {
+            nextWallSettings.defaultMaterialId = getDefaultMaterialIdForWallMaterial(
+              nextWallSettings.defaultMaterial
+            );
+          }
           nextWallSettings.defaultThickness = clampThickness(nextWallSettings.defaultThickness);
           nextWallSettings.defaultPartitionThickness = clampThickness(nextWallSettings.defaultPartitionThickness);
           nextWallSettings.defaultHeight = clampHeight(nextWallSettings.defaultHeight);

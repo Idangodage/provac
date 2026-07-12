@@ -64,3 +64,4 @@ export { VrfBoard } from './render/VrfBoard';
 export { KitBody, KitPorts, cachePixelRatio, type PortState } from './render/KitShape';
 export { makeRunGeometryCache, makeKitBodyCache, type RunGeometryCache, type KitBodyCache } from './render/geometryCache';
 export { Toolbar } from './ui/Toolbar';
+export * from './interaction';

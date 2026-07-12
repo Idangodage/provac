@@ -22,7 +22,11 @@ const callbacks: MirrorCallbacks<LegacyWallLike & { connectedWalls?: string[] }>
     endPoint: { x: end[0], y: end[1] },
     thickness: edge.thickness,
     material: edge.material,
-    properties3D: { height: edge.height },
+    properties3D: {
+      height: edge.height,
+      baseElevation: edge.baseOffset,
+      materialId: edge.materialId,
+    },
   }),
   rebuildGeometry: (wall) => wall,
 };
@@ -86,5 +90,51 @@ describe('legacy → graph reconstruction / migration', () => {
     // migration preserves wall ids so openings/selection keep working
     expect(doc.edges.w1).toBeDefined();
     expect(doc.edges.w2).toBeDefined();
+  });
+
+  it('round-trips wall base elevation into the 3D graph offset', () => {
+    const legacy: LegacyWallLike[] = [{
+      id: 'raised-wall',
+      startPoint: { x: 0, y: 0 },
+      endPoint: { x: 3000, y: 0 },
+      thickness: 180,
+      material: 'concrete',
+      properties3D: { height: 2400, baseElevation: 450 },
+    }];
+    const doc = wallGraphFromLegacyWalls(legacy, ids('r'));
+    expect(doc.edges['raised-wall']!.baseOffset).toBe(450);
+
+    const mirrored = legacyWallsFromGraph(doc, legacy, callbacks);
+    expect(mirrored[0]!.properties3D?.baseElevation).toBe(450);
+  });
+
+  it('preserves the canonical material id through graph splits', () => {
+    const legacy: LegacyWallLike[] = [{
+      id: 'wood-wall',
+      startPoint: { x: 0, y: 0 },
+      endPoint: { x: 5000, y: 0 },
+      thickness: 180,
+      material: 'partition',
+      properties3D: {
+        height: 2700,
+        materialId: 'exterior-wood-siding-25',
+      },
+    }];
+    const doc = wallGraphFromLegacyWalls(legacy, ids('s'));
+    const edge = doc.edges['wood-wall']!;
+    const midpoint = { x: 2500, y: 0 };
+    const node = findNodeNear(doc, [midpoint.x, midpoint.y], 1);
+    expect(node).toBeNull();
+
+    // Adding a crossing chain splits the existing host edge; both child edges
+    // must keep the detailed material, not collapse to generic partition.
+    addWallChain(doc, [[2500, -1000], [2500, 1000]], DEFAULT_WALL_PARAMS, ids('x'));
+    const inherited = Object.values(doc.edges).filter(
+      (candidate) => candidate.materialId === edge.materialId
+    );
+    expect(inherited).toHaveLength(2);
+    inherited.forEach((candidate) => {
+      expect(candidate.materialId).toBe('exterior-wood-siding-25');
+    });
   });
 });

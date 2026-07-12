@@ -13,6 +13,7 @@ import {
   DEFAULT_ARCHITECTURAL_MATERIALS,
   DEFAULT_ROOM_HVAC_TEMPLATES,
   calculateMaterialResistance,
+  getDefaultMaterialIdForWallMaterial,
   getArchitecturalMaterial,
   resolveWallMaterialFromLibrary,
 } from "../attributes";
@@ -2850,7 +2851,10 @@ function WallToolSection() {
           }
           onChange={(e) => {
             const material = e.target.value as WallMaterial;
-            setWallSettings({ defaultMaterial: material });
+            setWallSettings({
+              defaultMaterial: material,
+              defaultMaterialId: getDefaultMaterialIdForWallMaterial(material),
+            });
             setWallPreviewMaterial(material);
           }}
           disabled={partitionToolActive}

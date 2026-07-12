@@ -1,10 +1,31 @@
 "use client";
 
-import { useEffect, useMemo, useRef, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type MutableRefObject,
+  type RefObject,
+} from "react";
 import * as THREE from "three";
 
+import {
+  colorFromExposure,
+  heatColorFromUValue,
+  PROFESSIONAL_WALL_EDGES,
+  resolveWallVisualStyle,
+  type WallVisualStyle,
+} from "../../../attributes";
 import type { ArchitecturalObjectDefinition } from "../../../data";
-import type { HvacElement, Point2D, Room, SymbolInstance2D, Wall } from "../../../types";
+import type {
+  HvacElement,
+  Point2D,
+  Room,
+  SymbolInstance2D,
+  Wall,
+  WallColorMode,
+} from "../../../types";
 import { generateId } from "../../../utils/geometry";
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
@@ -14,6 +35,29 @@ import {
   buildRefrigerantPipeRenderChainStateMap,
   getVisibleRefrigerantPipeStraightSegmentTargets,
 } from "../hvac/refrigerantPipeRenderState";
+import {
+  applyPipeAxisConstraint,
+  createDrawingPlane,
+  createPointerRay,
+  getPointerNDC,
+  intersectPointerRayWithAxis,
+  projectPointerToDrawingPlane,
+  resolveActiveDrawingPlane,
+  resolveSnappedPipePoint,
+  worldPointScreenDistance,
+  type DrawingSurfaceHit,
+  type PipeDrawingPlane,
+  type PipeSnapCandidate,
+} from "../hvac/pipePointerProjection";
+import {
+  readPipeRouteNodes3d,
+  type PipePlacementPoint,
+} from "../hvac/pipeRoute3d";
+import {
+  getRefrigerantPipeBundleSnapTargets,
+  resolveRefrigerantPipeSpec,
+  type RefrigerantPipeBundleConnection,
+} from "../hvac/refrigerantPipePairModel";
 import { buildHvacElementMesh } from "../hvac/three3d";
 import { createWallOpenings3D } from "../isometric/Opening3DRenderer";
 import {
@@ -25,6 +69,7 @@ import {
   worldPointToModel,
 } from "../modelSpace";
 import { MM_TO_PX } from "../scale";
+import { getWallSurfaceTexture } from "../wall/wallSurfaceTexture";
 import { buildWallChunkGeometry } from "../wallview/wallMeshBuilder";
 
 import { HandleLayer3D, type HandleDef3D } from "./handleLayer3D";
@@ -106,6 +151,7 @@ export interface HybridProjectionLayerProps {
     cy: number;
   }) => void;
   walls: Wall[];
+  wallColorMode?: WallColorMode;
   rooms: Room[];
   symbols: SymbolInstance2D[];
   objectDefinitions: ArchitecturalObjectDefinition[];
@@ -124,6 +170,18 @@ export interface HybridProjectionLayerProps {
   onMoveWallNode?: (nodeId: string, to: Point2D, weld: boolean) => void;
   /** Body-drag drop → translate the whole wall(s) by a delta. */
   onMoveWallEdges?: (edgeIds: string[], delta: Point2D) => void;
+  /** Active CAD tool. Pipe LMB is resolved here while the 3D sheet is engaged. */
+  pipeToolActive?: boolean;
+  onPipePointerDown?: (point: PipePlacementPoint) => void;
+  onPipePointerMove?: (point: PipePlacementPoint) => void;
+  onPipePointerCancel?: () => void;
+  /** Imperative preview/session bridge; avoids React updates per pointer frame. */
+  pipeInteractionRef?: MutableRefObject<HybridPipeInteractionHandle | null>;
+}
+
+export interface HybridPipeInteractionHandle {
+  setDraftPipes: (elements: HvacElement[] | null) => void;
+  setRouteActive: (active: boolean) => void;
 }
 
 type SceneState = {
@@ -140,6 +198,8 @@ type SceneState = {
   handleLayer: HandleLayer3D;
   /** Current wall chunk (solid+edges+pick); set by the content effect. */
   wallChunk: WallChunkGroupData | null;
+  /** Transient pipe preview, rebuilt at most once per animation frame. */
+  pipePreviewLayer: THREE.Group;
   /** Outline composer; created once the controller/camera exist. */
   postfx: HybridPostFX | null;
 };
@@ -150,6 +210,16 @@ const MAX_CAMERA_DISTANCE_MM = 220000;
 const FLAT_SHEET_POLAR = THREE.MathUtils.degToRad(0.03);
 /** Coarser threshold for the rotated-plan STATE (avoids flicker in damping tails). */
 const ROTATED_PLAN_EPSILON = THREE.MathUtils.degToRad(0.5);
+
+function pipeProjectionDebugEnabled(): boolean {
+  if ((globalThis as Record<string, unknown>).__HVAC_PIPE_ROUTING_DEBUG__ === true) return true;
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("hvac.pipe.debug") === "1";
+  } catch {
+    return false;
+  }
+}
 const FLOOR_MATERIAL = new THREE.MeshStandardMaterial({
   color: "#eef4ec",
   transparent: true,
@@ -272,21 +342,40 @@ function createRoomFloor(room: Room): THREE.Object3D | null {
 // hemisphere/directional rig shades faces distinctly, always-on boundary edge
 // lines so the wall outline reads in every view style, and a ghost variant
 // for X-ray.
-const WALL_SOLID_MATERIAL = new THREE.MeshLambertMaterial({
-  color: "#b6b0a6",
-  side: THREE.DoubleSide,
-});
-const WALL_GHOST_MATERIAL = new THREE.MeshLambertMaterial({
-  color: "#b6b0a6",
-  transparent: true,
-  opacity: 0.12,
-  depthWrite: false,
-  side: THREE.DoubleSide,
-});
+const WALL_SOLID_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
+const WALL_GHOST_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
+
+function getHybridWallMaterial(
+  style: WallVisualStyle,
+  ghost: boolean,
+): THREE.MeshStandardMaterial {
+  const cache = ghost ? WALL_GHOST_MATERIAL_CACHE : WALL_SOLID_MATERIAL_CACHE;
+  const key = `${style.key}|${ghost ? "ghost" : "solid"}`;
+  let material = cache.get(key);
+  if (!material) {
+    material = new THREE.MeshStandardMaterial({
+      color: style.surface.color,
+      map: getWallSurfaceTexture(style),
+      roughness: style.surface.roughness,
+      metalness: style.surface.metalness,
+      transparent: ghost,
+      opacity: ghost ? 0.14 : 1,
+      depthWrite: !ghost,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    });
+    cache.set(key, material);
+  }
+  return material;
+}
+
 const WALL_EDGE_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0x565b63,
+  color: PROFESSIONAL_WALL_EDGES.modelColor,
   transparent: true,
-  opacity: 0.8,
+  opacity: PROFESSIONAL_WALL_EDGES.modelOpacity,
+  depthWrite: false,
 });
 
 export type HybridViewStyle = "solid" | "xray" | "wire";
@@ -298,6 +387,8 @@ interface WallChunkGroupData {
   /** Always-invisible full-geometry raycast target (works in every style). */
   pick: THREE.Mesh;
   entityIds: string[];
+  solidMaterials: THREE.Material | THREE.Material[];
+  ghostMaterials: THREE.Material | THREE.Material[];
 }
 
 /**
@@ -306,17 +397,85 @@ interface WallChunkGroupData {
  * T/X junction cores and flipped bodies are topology-true in 3D — identical
  * source of truth as the 2D plan (see src/wallcore).
  */
-function createWallChunkGroup(walls: Wall[]): WallChunkGroupData | null {
+function resolveHybridWallStyle(wall: Wall, colorMode: WallColorMode): WallVisualStyle {
+  const style = resolveWallVisualStyle(wall);
+  if (colorMode === "material") return style;
+
+  const exposureDirection = wall.properties3D.exposureOverride ?? wall.properties3D.exposureDirection;
+  const displayColor = colorMode === "u-value"
+    ? heatColorFromUValue(wall.properties3D.overallUValue)
+    : colorFromExposure(exposureDirection);
+  return {
+    ...style,
+    key: `${style.key}|${colorMode}|${displayColor}`,
+    baseColor: displayColor,
+    plan: {
+      ...style.plan,
+      fillColor: displayColor,
+    },
+    surface: {
+      ...style.surface,
+      color: displayColor,
+      topColor: displayColor,
+      patternOpacity: 0,
+    },
+  };
+}
+
+function createWallChunkGroup(
+  walls: Wall[],
+  wallColorMode: WallColorMode,
+): WallChunkGroupData | null {
   if (walls.length === 0) return null;
   const graph = wallGraphFromLegacyWalls(walls, { newId: generateId });
   const solve = solveWallGraphDoc(graph);
   if (solve.footprints.length === 0) return null;
-  const chunk = buildWallChunkGeometry(solve, 0);
+
+  // Material slots are stable regardless of wall iteration order. Edge
+  // footprints retain their own detailed materialId; junction wedges inherit
+  // the dominant adjacent wall (structural first, then thicker, then id).
+  const styleByWallId = new Map(
+    walls.map((wall) => [wall.id, resolveHybridWallStyle(wall, wallColorMode)] as const),
+  );
+  const styles = [...new Map(
+    [...styleByWallId.values()].map((style) => [style.key, style] as const),
+  ).values()].sort((left, right) => left.key.localeCompare(right.key));
+  const materialIndexByStyleKey = new Map(
+    styles.map((style, index) => [style.key, index] as const),
+  );
+  const materialIndexByEntityId = new Map<string, number>();
+  walls.forEach((wall) => {
+    const style = styleByWallId.get(wall.id);
+    if (style) materialIndexByEntityId.set(wall.id, materialIndexByStyleKey.get(style.key) ?? 0);
+  });
+  Object.keys(graph.nodes).forEach((nodeId) => {
+    const dominantWall = walls
+      .filter((wall) => {
+        const edge = graph.edges[wall.id];
+        return edge?.a === nodeId || edge?.b === nodeId;
+      })
+      .sort((left, right) => {
+        const layerPriority = Number(right.layer === "structural") - Number(left.layer === "structural");
+        if (layerPriority !== 0) return layerPriority;
+        if (right.thickness !== left.thickness) return right.thickness - left.thickness;
+        return left.id.localeCompare(right.id);
+      })[0];
+    const style = dominantWall ? styleByWallId.get(dominantWall.id) : undefined;
+    materialIndexByEntityId.set(nodeId, style ? materialIndexByStyleKey.get(style.key) ?? 0 : 0);
+  });
+
+  const chunk = buildWallChunkGeometry(solve, 0, { materialIndexByEntityId });
 
   const group = new THREE.Group();
   group.name = "hybrid-wall-chunk";
 
-  const solid = new THREE.Mesh(chunk.geometry, WALL_SOLID_MATERIAL);
+  const solidMaterialList = styles.map((style) => getHybridWallMaterial(style, false));
+  const ghostMaterialList = styles.map((style) => getHybridWallMaterial(style, true));
+  const solidMaterials: THREE.Material | THREE.Material[] =
+    solidMaterialList.length === 1 ? solidMaterialList[0]! : solidMaterialList;
+  const ghostMaterials: THREE.Material | THREE.Material[] =
+    ghostMaterialList.length === 1 ? ghostMaterialList[0]! : ghostMaterialList;
+  const solid = new THREE.Mesh(chunk.geometry, solidMaterials);
   solid.name = "hybrid-wall-solid";
   solid.castShadow = true;
   solid.receiveShadow = true;
@@ -332,7 +491,15 @@ function createWallChunkGroup(walls: Wall[]): WallChunkGroupData | null {
   pick.userData.entityIds = chunk.entityIds;
 
   group.add(solid, edges, pick);
-  return { group, solid, edges, pick, entityIds: chunk.entityIds };
+  return {
+    group,
+    solid,
+    edges,
+    pick,
+    entityIds: chunk.entityIds,
+    solidMaterials,
+    ghostMaterials,
+  };
 }
 
 function createSymbolMesh(
@@ -521,6 +688,10 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   viewBasis.add(proxyLayer);
   const handleLayer = new HandleLayer3D();
   viewBasis.add(handleLayer.group);
+  const pipePreviewLayer = new THREE.Group();
+  pipePreviewLayer.name = "hybrid-pipe-preview";
+  pipePreviewLayer.renderOrder = 880;
+  viewBasis.add(pipePreviewLayer);
 
   // Reference lighting rig (light-adapted): hemisphere + one angled key so
   // wall faces shade distinctly (top vs side) without shadow maps.
@@ -538,6 +709,7 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
     groundGridMaterial,
     proxyLayer,
     handleLayer,
+    pipePreviewLayer,
     wallChunk: null,
     postfx: null,
   };
@@ -599,7 +771,7 @@ function applyViewStyle(sceneState: SceneState, style: HybridViewStyle): void {
   const chunk = sceneState.wallChunk;
   if (chunk) {
     chunk.solid.visible = style !== "wire";
-    chunk.solid.material = style === "xray" ? WALL_GHOST_MATERIAL : WALL_SOLID_MATERIAL;
+    chunk.solid.material = style === "xray" ? chunk.ghostMaterials : chunk.solidMaterials;
     chunk.edges.visible = true;
   }
   sceneState.root.traverse((object) => {
@@ -609,6 +781,42 @@ function applyViewStyle(sceneState: SceneState, style: HybridViewStyle): void {
       object.visible = style === "solid";
     }
   });
+}
+
+function rebuildPipePreviewLayer(
+  sceneState: SceneState,
+  draftPipes: readonly HvacElement[] | null,
+  committedElements: readonly HvacElement[],
+): void {
+  clearGroup(sceneState.pipePreviewLayer);
+  if (!draftPipes || draftPipes.length === 0) return;
+  const allElements = [...committedElements, ...draftPipes];
+  const endpointState = buildRefrigerantPipeEndpointRenderStateMap(allElements);
+  const context = {
+    allElements,
+    pipeEndpointStateMap: endpointState,
+    pipeRenderChainStateMap: buildRefrigerantPipeRenderChainStateMap(allElements, endpointState),
+    pipeTargets: getVisibleRefrigerantPipeStraightSegmentTargets(allElements),
+  };
+  for (const element of draftPipes) {
+    const mesh = buildHvacElementMesh(element, context);
+    if (!mesh || mesh.children.length === 0) continue;
+    tuneHvacMesh(mesh);
+    mesh.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      const previewMaterials = materials.map((material) => {
+        const clone = material.clone();
+        clone.transparent = true;
+        clone.opacity = Math.min(clone.opacity, 0.72);
+        clone.depthWrite = false;
+        return clone;
+      });
+      child.material = Array.isArray(child.material) ? previewMaterials : previewMaterials[0]!;
+      child.renderOrder = Math.max(child.renderOrder, 880);
+    });
+    sceneState.pipePreviewLayer.add(mesh);
+  }
 }
 
 export function HybridProjectionLayer({
@@ -628,6 +836,7 @@ export function HybridProjectionLayer({
   onDebug,
   getViewportMatrix,
   walls,
+  wallColorMode = "material",
   rooms,
   symbols,
   objectDefinitions,
@@ -641,11 +850,55 @@ export function HybridProjectionLayer({
   onSplitWall,
   onMoveWallNode,
   onMoveWallEdges,
+  pipeToolActive = false,
+  onPipePointerDown,
+  onPipePointerMove,
+  onPipePointerCancel,
+  pipeInteractionRef,
 }: HybridProjectionLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pipeDiagnosticRef = useRef<HTMLPreElement | null>(null);
   const sceneStateRef = useRef<SceneState | null>(null);
   const controllerRef = useRef<HybridViewportController | null>(null);
   const requestFrameRef = useRef<(() => void) | null>(null);
+  const draftPipesRef = useRef<HvacElement[] | null>(null);
+  const routeActiveRef = useRef(false);
+  const resetPipePlacementRef = useRef<(() => void) | null>(null);
+  const previewRebuildFrameRef = useRef<number | null>(null);
+  const hvacElementsRef = useRef(hvacElements);
+  hvacElementsRef.current = hvacElements;
+  const schedulePreviewRebuild = useCallback(() => {
+    if (previewRebuildFrameRef.current !== null || typeof window === "undefined") return;
+    previewRebuildFrameRef.current = window.requestAnimationFrame(() => {
+      previewRebuildFrameRef.current = null;
+      const sceneState = sceneStateRef.current;
+      if (!sceneState) return;
+      rebuildPipePreviewLayer(sceneState, draftPipesRef.current, hvacElementsRef.current);
+      requestFrameRef.current?.();
+    });
+  }, []);
+  const interactionHandleRef = useRef<HybridPipeInteractionHandle | null>(null);
+  if (!interactionHandleRef.current) {
+    interactionHandleRef.current = {
+      setDraftPipes: (elements) => {
+        draftPipesRef.current = elements;
+        schedulePreviewRebuild();
+      },
+      setRouteActive: (active) => {
+        routeActiveRef.current = active;
+        if (!active) resetPipePlacementRef.current?.();
+      },
+    };
+  }
+  useEffect(() => {
+    if (!pipeInteractionRef) return undefined;
+    pipeInteractionRef.current = interactionHandleRef.current;
+    return () => {
+      if (pipeInteractionRef.current === interactionHandleRef.current) {
+        pipeInteractionRef.current = null;
+      }
+    };
+  }, [pipeInteractionRef]);
   // Live prop mirrors so the render pump reads current values without re-subscribing.
   const boardRef = useRef({ width, height, viewportZoom, panOffset, blend: view.blend });
   boardRef.current = { width, height, viewportZoom, panOffset, blend: view.blend };
@@ -682,6 +935,14 @@ export function HybridProjectionLayer({
   onMoveWallNodeRef.current = onMoveWallNode;
   const onMoveWallEdgesRef = useRef(onMoveWallEdges);
   onMoveWallEdgesRef.current = onMoveWallEdges;
+  const pipeToolActiveRef = useRef(pipeToolActive);
+  pipeToolActiveRef.current = pipeToolActive;
+  const onPipePointerDownRef = useRef(onPipePointerDown);
+  onPipePointerDownRef.current = onPipePointerDown;
+  const onPipePointerMoveRef = useRef(onPipePointerMove);
+  onPipePointerMoveRef.current = onPipePointerMove;
+  const onPipePointerCancelRef = useRef(onPipePointerCancel);
+  onPipePointerCancelRef.current = onPipePointerCancel;
   const objectDefinitionsById = useMemo(
     () => new Map(objectDefinitions.map((definition) => [definition.id, definition])),
     [objectDefinitions],
@@ -699,6 +960,7 @@ export function HybridProjectionLayer({
       return undefined;
     }
     sceneStateRef.current = sceneState;
+    if (draftPipesRef.current) schedulePreviewRebuild();
 
     const controller = new HybridViewportController();
     controllerRef.current = controller;
@@ -798,6 +1060,305 @@ export function HybridProjectionLayer({
     };
     const modelToWorldPoint = (p: readonly [number, number, number]): THREE.Vector3 =>
       modelPointToWorld({ x: p[0], y: p[1] }, p[2]);
+
+    const pipePlacementState: {
+      lockedPlane: PipeDrawingPlane | null;
+      lastCommittedWorld: THREE.Vector3 | null;
+      pointerId: number | null;
+    } = {
+      lockedPlane: null,
+      lastCommittedWorld: null,
+      pointerId: null,
+    };
+    const resetPipePlacement = (): void => {
+      pipePlacementState.lockedPlane = null;
+      pipePlacementState.lastCommittedWorld = null;
+      pipePlacementState.pointerId = null;
+      const diagnostic = pipeDiagnosticRef.current;
+      if (diagnostic) diagnostic.style.display = "none";
+    };
+    resetPipePlacementRef.current = resetPipePlacement;
+
+    const objectAncestry = (object: THREE.Object3D): THREE.Object3D[] => {
+      const result: THREE.Object3D[] = [];
+      let current: THREE.Object3D | null = object;
+      while (current && current !== sceneState.root) {
+        result.push(current);
+        current = current.parent;
+      }
+      return result;
+    };
+
+    const raycastDrawingSurface = (ray: THREE.Ray): DrawingSurfaceHit | null => {
+      const s = sceneStateRef.current;
+      if (!s) return null;
+      raycaster.ray.copy(ray);
+      raycaster.near = 0;
+      raycaster.far = Number.POSITIVE_INFINITY;
+      const hits = raycaster.intersectObject(s.root, true);
+      for (const hit of hits) {
+        if (!(hit.object instanceof THREE.Mesh) || !hit.face) continue;
+        const ancestry = objectAncestry(hit.object);
+        const names = ancestry.map((object) => object.name);
+        if (names.some((name) => name === "hybrid-wall-pick")) continue;
+        const hvacRoot = ancestry.find((object) => object.name.startsWith("hvac-"));
+        const hvacType = hvacRoot?.userData.hvacElementType as string | undefined;
+        if (hvacType === "refrigerant-pipe" || hvacType === "refrigerant-pipe-pair") {
+          continue;
+        }
+        const kind: DrawingSurfaceHit["kind"] | null = names.some(
+          (name) => name === "hybrid-page-plane" || name.startsWith("hybrid-room-floor-"),
+        )
+          ? "floor"
+          : names.some((name) => name === "hybrid-wall-solid" || name.startsWith("hybrid-openings-"))
+            ? "wall"
+            : hvacRoot
+              ? "equipment-face"
+              : null;
+        if (!kind) continue;
+        const normal = hit.face.normal
+          .clone()
+          .applyMatrix3(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld))
+          .normalize();
+        const xAxisHint = new THREE.Vector3(1, 0, 0)
+          .transformDirection(hit.object.matrixWorld)
+          .normalize();
+        return {
+          id: `${kind}:${hvacRoot?.name ?? (hit.object.name || hit.object.uuid)}`,
+          kind,
+          point: hit.point.clone(),
+          normal,
+          xAxisHint,
+        };
+      }
+      return null;
+    };
+
+    const pipeSnapBundleByCandidateId = new Map<string, RefrigerantPipeBundleConnection>();
+    const pipeSnapCandidates = (
+      canvasPoint: THREE.Vector2,
+    ): PipeSnapCandidate[] => {
+      const result: PipeSnapCandidate[] = [];
+      const viewport = viewportSize();
+      pipeSnapBundleByCandidateId.clear();
+      const elements = hvacElementsRef.current;
+      const typeById = new Map(elements.map((element) => [element.id, element.type]));
+      getRefrigerantPipeBundleSnapTargets(elements).forEach((target, index) => {
+        const world = modelPointToWorld(target.point, target.elevationMm);
+        const cameraPoint = world.clone().applyMatrix4(controller.camera.matrixWorldInverse);
+        const projected = world.clone().project(controller.camera);
+        if (cameraPoint.z >= 0 || projected.z < -1 || projected.z > 1) return;
+        const sourceType = target.sourceElementId
+          ? typeById.get(target.sourceElementId)
+          : undefined;
+        const kind: PipeSnapCandidate["kind"] = target.connectionKind === "unit-port"
+          ? "equipment-port"
+          : sourceType === "refrigerant-branch-kit" || sourceType === "accessory"
+            ? "fitting"
+            : "pipe-endpoint";
+        const id = `bundle:${target.sourceElementId ?? "anonymous"}:${target.terminalRole ?? index}`;
+        const candidate: PipeSnapCandidate = {
+          id,
+          kind,
+          point: world,
+          screenDistancePx: worldPointScreenDistance(
+            world,
+            canvasPoint,
+            controller.camera,
+            viewport,
+          ),
+        };
+        result.push(candidate);
+        pipeSnapBundleByCandidateId.set(id, target);
+      });
+      const pipeSpecs = elements.flatMap((element) => (
+        element.type === "refrigerant-pipe"
+          ? [{ element, spec: resolveRefrigerantPipeSpec(element.properties, elements) }]
+          : []
+      ));
+      const bundleCounts = new Map<string, number>();
+      pipeSpecs.forEach(({ spec }) => {
+        if (spec.bundleId) bundleCounts.set(spec.bundleId, (bundleCounts.get(spec.bundleId) ?? 0) + 1);
+      });
+      pipeSpecs.forEach(({ element, spec }) => {
+        if (spec.bundleId && (bundleCounts.get(spec.bundleId) ?? 0) > 1) return;
+        const route3d = readPipeRouteNodes3d(element);
+        const nodes = route3d.length >= 2
+          ? route3d
+          : spec.routePoints.map((point) => ({
+              ...point,
+              z: element.elevation + spec.outerDiameterMm / 2,
+            }));
+        if (nodes.length < 2) return;
+        [0, nodes.length - 1].forEach((nodeIndex, endpointIndex) => {
+          const node = nodes[nodeIndex]!;
+          const adjacent = nodes[nodeIndex === 0 ? 1 : nodeIndex - 1]!;
+          const dx = node.x - adjacent.x;
+          const dy = node.y - adjacent.y;
+          const length = Math.hypot(dx, dy) || 1;
+          const direction = { x: dx / length, y: dy / length };
+          const target: RefrigerantPipeBundleConnection = {
+            point: { x: node.x, y: node.y },
+            gasPoint: { x: node.x, y: node.y },
+            liquidPoint: { x: node.x, y: node.y },
+            gasFieldPoint: { x: node.x, y: node.y },
+            liquidFieldPoint: { x: node.x, y: node.y },
+            gasOuterDiameterMm: spec.outerDiameterMm,
+            liquidOuterDiameterMm: spec.outerDiameterMm,
+            gasDirection: direction,
+            liquidDirection: direction,
+            direction,
+            elevationMm: node.z,
+            gasElevationMm: node.z,
+            liquidElevationMm: node.z,
+            connectionKind: "field-pipe",
+            guideReference: spec.lineKind,
+            sourceElementId: element.id,
+          };
+          const world = modelPointToWorld(target.point, target.elevationMm);
+          const cameraPoint = world.clone().applyMatrix4(controller.camera.matrixWorldInverse);
+          const projected = world.clone().project(controller.camera);
+          if (cameraPoint.z >= 0 || projected.z < -1 || projected.z > 1) return;
+          const id = `single:${element.id}:${endpointIndex === 0 ? "start" : "end"}`;
+          result.push({
+            id,
+            kind: "pipe-endpoint",
+            point: world,
+            screenDistancePx: worldPointScreenDistance(
+              world,
+              canvasPoint,
+              controller.camera,
+              viewport,
+            ),
+          });
+          pipeSnapBundleByCandidateId.set(id, target);
+        });
+      });
+      return result;
+    };
+
+    const writePipeDiagnostic = (
+      e: PointerEvent,
+      plane: PipeDrawingPlane,
+      rawWorld: THREE.Vector3,
+      snappedWorld: THREE.Vector3,
+      ray: THREE.Ray,
+      constraint: string,
+      snap: PipeSnapCandidate | null,
+    ): void => {
+      const diagnostic = pipeDiagnosticRef.current;
+      if (!diagnostic || !pipeProjectionDebugEnabled()) return;
+      const rect = canvas.getBoundingClientRect();
+      const coordinates = getPointerNDC(e.clientX, e.clientY, rect);
+      const fmt = (value: THREE.Vector3 | THREE.Vector2) => value
+        .toArray()
+        .map((component) => component.toFixed(3))
+        .join(", ");
+      diagnostic.style.display = "block";
+      diagnostic.textContent = [
+        `client: ${e.clientX.toFixed(1)}, ${e.clientY.toFixed(1)}`,
+        `canvas: ${fmt(coordinates.canvas)}  ndc: ${fmt(coordinates.ndc)}`,
+        `ray.o: ${fmt(ray.origin)}  ray.d: ${fmt(ray.direction)}`,
+        `plane: ${plane.kind} / ${plane.id}  n: ${fmt(plane.normal)}`,
+        `raw: ${fmt(rawWorld)}`,
+        `snapped: ${fmt(snappedWorld)}${snap ? ` (${snap.kind}:${snap.id})` : ""}`,
+        `constraint: ${constraint}`,
+      ].join("\n");
+    };
+
+    const resolvePipePointer = (
+      e: PointerEvent,
+      lockPlane: boolean,
+    ): { point: PipePlacementPoint; world: THREE.Vector3; plane: PipeDrawingPlane } | null => {
+      const rect = canvas.getBoundingClientRect();
+      const coordinates = getPointerNDC(e.clientX, e.clientY, rect);
+      const ray = createPointerRay(coordinates.ndc, controller.camera);
+      const surfaceHit = pipePlacementState.lockedPlane ? null : raycastDrawingSurface(ray);
+      const fallbackZ = pipePlacementState.lastCommittedWorld?.z ?? 0;
+      const horizontalPlane = createDrawingPlane(
+        "model-floor",
+        "work-plane",
+        new THREE.Vector3(0, 0, fallbackZ),
+        new THREE.Vector3(0, 0, 1),
+        new THREE.Vector3(1, 0, 0),
+      );
+      const plane = resolveActiveDrawingPlane({
+        camera: controller.camera,
+        lockedPlane: pipePlacementState.lockedPlane,
+        surfaceHit: e.altKey ? null : surfaceHit,
+        explicitPlane:
+          !pipePlacementState.lockedPlane && !e.altKey && !surfaceHit
+            ? horizontalPlane
+            : null,
+        anchor: pipePlacementState.lastCommittedWorld,
+        fallbackOrigin: new THREE.Vector3(0, 0, fallbackZ),
+      });
+      const projection = projectPointerToDrawingPlane(
+        e.clientX,
+        e.clientY,
+        rect,
+        controller.camera,
+        plane,
+      );
+      if (!projection) return null;
+      let constrained = projection.rawWorldPoint;
+      let constraint = "none";
+      if (pipePlacementState.lastCommittedWorld && (e.ctrlKey || e.metaKey)) {
+        const axisHit = intersectPointerRayWithAxis(
+          projection.ray,
+          pipePlacementState.lastCommittedWorld,
+          new THREE.Vector3(0, 0, 1),
+        );
+        if (axisHit) {
+          constrained = axisHit;
+          constraint = "world-z";
+        }
+      } else if (pipePlacementState.lastCommittedWorld && e.shiftKey) {
+        const delta = constrained.clone().sub(pipePlacementState.lastCommittedWorld);
+        const axis = Math.abs(delta.dot(plane.xAxis)) >= Math.abs(delta.dot(plane.yAxis))
+          ? "local-x"
+          : "local-y";
+        constrained = applyPipeAxisConstraint(
+          pipePlacementState.lastCommittedWorld,
+          constrained,
+          axis,
+          plane,
+        );
+        constraint = axis;
+      }
+      const snapped = (e.ctrlKey || e.metaKey)
+        ? { point: constrained.clone(), candidate: null }
+        : resolveSnappedPipePoint(
+            constrained,
+            pipeSnapCandidates(coordinates.canvas),
+            14,
+          );
+      if (lockPlane && !pipePlacementState.lockedPlane) {
+        pipePlacementState.lockedPlane = plane;
+      }
+      writePipeDiagnostic(
+        e,
+        plane,
+        projection.rawWorldPoint,
+        snapped.point,
+        projection.ray,
+        constraint,
+        snapped.candidate,
+      );
+      const model = worldPointToModel(snapped.point);
+      return {
+        point: {
+          x: model.x,
+          y: model.y,
+          z: model.z,
+          snapTarget: snapped.candidate
+            ? pipeSnapBundleByCandidateId.get(snapped.candidate.id)
+            : undefined,
+        },
+        world: snapped.point,
+        plane,
+      };
+    };
 
     const raycastWallId = (point: { x: number; y: number }): string | null => {
       const s = sceneStateRef.current;
@@ -928,6 +1489,13 @@ export function HybridProjectionLayer({
       const s = sceneStateRef.current;
       if (!s) return;
       if (controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      if (pipeToolActiveRef.current) {
+        // MMB/RMB remain camera navigation; LMB/hover belong to the pipe tool.
+        if ((e.buttons & 6) !== 0) return;
+        const resolved = resolvePipePointer(e, false);
+        if (resolved) onPipePointerMoveRef.current?.(resolved.point);
+        return;
+      }
       const point = hostPoint(e);
       if (!point) return;
       if (pickState.drag) {
@@ -950,12 +1518,14 @@ export function HybridProjectionLayer({
           pickState.bodyDrag.active = true;
           buildBodyGhost(pickState.bodyDrag.edgeIds);
         }
-        if (pickState.bodyDrag.active && pickState.ghostBody) {
-          pickState.ghostBody.position.set(
-            model.x - pickState.bodyDrag.downModel.x,
-            model.y - pickState.bodyDrag.downModel.y,
-            0,
-          );
+        if (pickState.bodyDrag.active) {
+          // updateBodyGhost moves the translucent ghost AND rebuilds the
+          // dashed leader lines from each original footprint corner to its
+          // moved preview corner.
+          updateBodyGhost({
+            x: model.x - pickState.bodyDrag.downModel.x,
+            y: model.y - pickState.bodyDrag.downModel.y,
+          });
           request();
         }
         return;
@@ -976,6 +1546,18 @@ export function HybridProjectionLayer({
       if (e.button !== 0) return;
       const s = sceneStateRef.current;
       if (!s || controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      if (pipeToolActiveRef.current) {
+        const resolved = resolvePipePointer(e, true);
+        if (!resolved) return;
+        e.preventDefault();
+        e.stopPropagation();
+        pipePlacementState.lastCommittedWorld = resolved.world.clone();
+        pipePlacementState.pointerId = e.pointerId;
+        interactionElement.setPointerCapture?.(e.pointerId);
+        onPipePointerDownRef.current?.(resolved.point);
+        request();
+        return;
+      }
       const point = hostPoint(e);
       if (!point) return;
       pickState.downX = e.clientX;
@@ -1053,6 +1635,11 @@ export function HybridProjectionLayer({
           /* pointer already released */
         }
       };
+      if (pipeToolActiveRef.current && e.button === 0) {
+        releaseCapture();
+        pipePlacementState.pointerId = null;
+        return;
+      }
       if (pickState.drag) {
         const drag = pickState.drag;
         pickState.drag = null;
@@ -1097,6 +1684,31 @@ export function HybridProjectionLayer({
     interactionElement.addEventListener("pointermove", handlePointerMove3D);
     interactionElement.addEventListener("pointerdown", handlePointerDown3D);
     interactionElement.addEventListener("pointerup", handlePointerUp3D);
+    const handlePointerCancel3D = (ev: Event): void => {
+      const e = ev as PointerEvent;
+      if (!pipeToolActiveRef.current) return;
+      try {
+        interactionElement.releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* pointer already released */
+      }
+      routeActiveRef.current = false;
+      resetPipePlacement();
+      onPipePointerCancelRef.current?.();
+    };
+    interactionElement.addEventListener("pointercancel", handlePointerCancel3D);
+
+    // Continue a live multi-click route even if the pointer briefly leaves the
+    // host. Avoid duplicating events that already bubbled from the host.
+    const handleWindowPipeMove = (ev: Event): void => {
+      const e = ev as PointerEvent;
+      if (!pipeToolActiveRef.current || !routeActiveRef.current) return;
+      if (e.target instanceof Node && interactionElement.contains(e.target)) return;
+      if ((e.buttons & 6) !== 0 || controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      const resolved = resolvePipePointer(e, false);
+      if (resolved) onPipePointerMoveRef.current?.(resolved.point);
+    };
+    window.addEventListener("pointermove", handleWindowPipeMove);
 
     let raf: number | null = null;
     let lastTs = typeof performance !== "undefined" ? performance.now() : 0;
@@ -1168,6 +1780,7 @@ export function HybridProjectionLayer({
       // The 3D content is live the moment any tilt begins; while flat only the
       // grid shows (the crisp DOM sheet carries the drawing).
       s.root.visible = !isFlat;
+      s.pipePreviewLayer.visible = !isFlat;
       // Walls RISE from the paper: flat during the sheet crossfade (top face
       // glued to the plan footprint — a full-height solid would parallax its
       // top by height·tanφ and read as a broken double wall), then grow to
@@ -1258,9 +1871,16 @@ export function HybridProjectionLayer({
       interactionElement.removeEventListener("pointermove", handlePointerMove3D);
       interactionElement.removeEventListener("pointerdown", handlePointerDown3D);
       interactionElement.removeEventListener("pointerup", handlePointerUp3D);
+      interactionElement.removeEventListener("pointercancel", handlePointerCancel3D);
+      window.removeEventListener("pointermove", handleWindowPipeMove);
+      resetPipePlacementRef.current = null;
       removeGhost();
       removeBodyGhost();
       if (raf != null && typeof window !== "undefined") window.cancelAnimationFrame(raf);
+      if (previewRebuildFrameRef.current !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(previewRebuildFrameRef.current);
+        previewRebuildFrameRef.current = null;
+      }
       requestFrameRef.current = null;
       onControllerReadyRef.current?.(null);
       controller.dispose();
@@ -1276,6 +1896,7 @@ export function HybridProjectionLayer({
       sceneState.handleLayer.dispose();
       sceneState.wallChunk = null;
       clearGroup(sceneState.root);
+      clearGroup(sceneState.pipePreviewLayer);
       sceneState.renderer.dispose();
       sceneStateRef.current = null;
     };
@@ -1293,7 +1914,7 @@ export function HybridProjectionLayer({
       if (floor) sceneState.root.add(floor);
     });
 
-    const wallChunkData = createWallChunkGroup(walls);
+    const wallChunkData = createWallChunkGroup(walls, wallColorMode);
     sceneState.wallChunk = wallChunkData;
     if (wallChunkData) sceneState.root.add(wallChunkData.group);
 
@@ -1301,7 +1922,9 @@ export function HybridProjectionLayer({
       const openings = createWallOpenings3D(wall);
       if (openings.children.length > 0) {
         openings.name = `hybrid-openings-${wall.id}`;
-        sceneState.root.add(openings);
+        // Wall body, linework and hosted openings rise as one architectural
+        // system during the 2D -> 3D handoff.
+        (wallChunkData?.group ?? sceneState.root).add(openings);
       }
     });
 
@@ -1334,6 +1957,7 @@ export function HybridProjectionLayer({
     applyViewStyle(sceneState, viewStyleRef.current);
     refreshOutlineProxies(sceneState, walls, selectedIdsRef.current, hoveredRef.current);
     requestFrameRef.current?.();
+    schedulePreviewRebuild();
   }, [
     hvacElements,
     objectDefinitionsById,
@@ -1341,7 +1965,9 @@ export function HybridProjectionLayer({
     pageWidthMm,
     rooms,
     symbols,
+    wallColorMode,
     walls,
+    schedulePreviewRebuild,
   ]);
 
   // Hover / selection → outline proxies (reference refreshProxies wiring).
@@ -1424,14 +2050,21 @@ export function HybridProjectionLayer({
   // above it (z-1) and fades on tilt to reveal the 3D content (root.visible toggles
   // the content in the pump so only the grid shows while flat).
   return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 z-0 block pointer-events-none"
-      style={{
-        width: "100%",
-        height: "100%",
-        opacity: width <= 0 || height <= 0 ? 0 : 1,
-      }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 z-0 block pointer-events-none"
+        style={{
+          width: "100%",
+          height: "100%",
+          opacity: width <= 0 || height <= 0 ? 0 : 1,
+        }}
+      />
+      <pre
+        ref={pipeDiagnosticRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-3 left-3 z-[25] hidden rounded bg-slate-950/90 p-2 text-[10px] leading-4 text-emerald-300 shadow-lg"
+      />
+    </>
   );
 }
