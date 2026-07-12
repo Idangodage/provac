@@ -1,4 +1,5 @@
 export * from './material-library';
+export * from './wall-visual-style';
 export * from './hvac';
 export * from './observer';
 export * from './schemas';

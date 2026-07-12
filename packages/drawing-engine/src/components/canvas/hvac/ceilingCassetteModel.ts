@@ -1,5 +1,12 @@
 import type { HvacElement } from '../../../types';
 
+import {
+  computeIndoorDrainPortStubLengthMm,
+  computeIndoorRefrigerantPortStubLengthMm,
+  DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
+  DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
+} from './refrigerantPipeDimensions';
+
 export interface CeilingCassetteBoxSpec {
   x: number;
   y: number;
@@ -15,6 +22,7 @@ export interface CeilingCassetteSlotSpec extends CeilingCassetteBoxSpec {
 }
 
 export interface CeilingCassettePipePortSpec {
+  kind: 'gas' | 'liquid' | 'drain';
   x: number;
   y: number;
   z: number;
@@ -75,6 +83,24 @@ export interface CeilingCassetteModelSpec {
   pipePorts: CeilingCassettePipePortSpec[];
 }
 
+export function getCeilingCassettePipePortEndpointLocal(
+  port: CeilingCassettePipePortSpec,
+): { x: number; y: number } {
+  return {
+    x: port.x + port.collarLength + port.length - port.flangeThickness * 0.15,
+    y: port.y,
+  };
+}
+
+export function getCeilingCassettePipePortConnectionLocal(
+  port: CeilingCassettePipePortSpec,
+): { x: number; y: number } {
+  return {
+    x: port.x + port.collarLength - port.flangeThickness * 0.15,
+    y: port.y,
+  };
+}
+
 function clampValue(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -110,10 +136,10 @@ export function buildCeilingCassetteModel(
 ): CeilingCassetteModelSpec {
   const gasPipeDiameterMm = readFlexibleNumberProperty(element.properties, 'refrigerantGasPipeDiameterMm')
     ?? readFlexibleNumberProperty(element.properties, 'Refrigerant Gas Pipe Diameter (mm)')
-    ?? 12.7;
+    ?? DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM;
   const liquidPipeDiameterMm = readFlexibleNumberProperty(element.properties, 'refrigerantLiquidPipeDiameterMm')
     ?? readFlexibleNumberProperty(element.properties, 'Refrigerant Liquid Pipe Diameter (mm)')
-    ?? 6.35;
+    ?? DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM;
   const drainPipeDiameterMm = readFlexibleNumberProperty(element.properties, 'drainPipeDiameter1Mm')
     ?? readFlexibleNumberProperty(element.properties, 'Drain Pipe Diameter 1 (mm)')
     ?? 32;
@@ -326,45 +352,70 @@ export function buildCeilingCassetteModel(
     cornerRadius: baseDepth * 0.02,
   };
 
+  // Fixed center-to-center spacing: 42mm vertical between gas and liquid ports
+  const refrigerantPortCenterSpacing = 42;
+  const refrigerantBundleCenterY = Math.max(
+    refrigerantPortCenterSpacing / 2 + 6,
+    baseDepth * 0.08,
+  );
+  const gasPortY = refrigerantBundleCenterY - refrigerantPortCenterSpacing / 2;
+  const liquidPortY = refrigerantBundleCenterY + refrigerantPortCenterSpacing / 2;
+
+  const gasPortRadius = Math.max(4.5, gasPipeDiameterMm / 2);
+  const liquidPortRadius = Math.max(3, liquidPipeDiameterMm / 2);
+  const gasPortLength = computeIndoorRefrigerantPortStubLengthMm(
+    gasPipeDiameterMm,
+  );
+  const liquidPortLength = computeIndoorRefrigerantPortStubLengthMm(
+    liquidPipeDiameterMm,
+  );
+  const drainPortRadius = Math.max(5, drainPipeDiameterMm / 2);
+  const drainPortLength = computeIndoorDrainPortStubLengthMm(
+    drainPipeDiameterMm,
+  );
+
   const pipePorts: CeilingCassettePipePortSpec[] = [
     buildPipePortSpec({
+      kind: 'gas',
       x: baseWidth * 0.4,
-      y: baseDepth * 0.04,
+      y: gasPortY,
       z: bodyBaseZ + cassetteBodyHeight * 0.82,
-      radius: Math.max(4.5, gasPipeDiameterMm / 2),
-      length: Math.max(38, baseWidth * 0.14),
-      bandRadius: Math.max(4, gasPipeDiameterMm / 2 + 1.5),
+      radius: gasPortRadius,
+      length: gasPortLength,
+      bandRadius: Math.max(4, gasPortRadius + 1.5),
       color: '#c5894d',
       collarColor: '#1f2937',
       flangeColor: '#e0c9a8',
       bandColor: '#d4723c',
-      bandOffsetX: Math.max(38, baseWidth * 0.14) * 0.7,
+      bandOffsetX: gasPortLength * 0.7,
     }),
     buildPipePortSpec({
+      kind: 'liquid',
       x: baseWidth * 0.4,
-      y: baseDepth * 0.12,
+      y: liquidPortY,
       z: bodyBaseZ + cassetteBodyHeight * 0.72,
-      radius: Math.max(3, liquidPipeDiameterMm / 2),
-      length: Math.max(32, baseWidth * 0.12),
-      bandRadius: Math.max(4, liquidPipeDiameterMm / 2 + 1.5),
+      radius: liquidPortRadius,
+      length: liquidPortLength,
+      bandRadius: Math.max(4, liquidPortRadius + 1.5),
       color: '#dca25d',
       collarColor: '#1f2937',
       flangeColor: '#e8d4ac',
       bandColor: '#c8962e',
-      bandOffsetX: Math.max(38, baseWidth * 0.14) * 0.7,
+      bandOffsetX: liquidPortLength * 0.7,
     }),
     buildPipePortSpec({
+      kind: 'drain',
       x: baseWidth * 0.4,
       y: baseDepth * 0.2,
       z: bodyBaseZ + cassetteBodyHeight * 0.58,
-      radius: Math.max(5, drainPipeDiameterMm / 2),
-      length: Math.max(42, baseWidth * 0.15),
-      bandRadius: Math.max(6, drainPipeDiameterMm / 2 + 2),
+      radius: drainPortRadius,
+      length: drainPortLength,
+      bandRadius: Math.max(6, drainPortRadius + 2),
       color: '#7eb8d8',
       collarColor: '#4b5563',
       flangeColor: '#b0c4d4',
       bandColor: '#3a8fc2',
-      bandOffsetX: Math.max(38, baseWidth * 0.14) * 0.7,
+      bandOffsetX: drainPortLength * 0.7,
     }),
   ];
 

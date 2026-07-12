@@ -719,7 +719,9 @@ export class RoomRenderer {
       stroke: 'transparent',
       strokeWidth: 0,
       selectable: false,
-      evented: true,
+      // Room selection already has a geometric fallback in the canvas event
+      // pipeline, so the invisible fill should not swallow HVAC clicks.
+      evented: false,
     });
     this.annotate(fill, room.id, 'roomFill');
 

@@ -5,6 +5,7 @@
  * Extracted for cleaner imports and better separation of concerns.
  */
 
+import type { BoardSettings } from '../components/canvas/measurement';
 import type {
     Point2D,
     DisplayUnit,
@@ -24,6 +25,8 @@ import type {
     SplineSettings,
     SplineMethod,
 } from '../types';
+
+export type RefrigerantPipeDrawMode = 'hard' | 'flexible';
 
 // =============================================================================
 // State Types
@@ -49,6 +52,7 @@ export interface DrawingState {
 
     // Tool State
     activeTool: DrawingTool;
+    refrigerantPipeDrawMode: RefrigerantPipeDrawMode;
     activeLayerId: string | null;
     selectedElementIds: string[];
     hoveredElementId: string | null;
@@ -68,6 +72,7 @@ export interface DrawingState {
     showGrid: boolean;
     showRulers: boolean;
     pageConfig: PageConfig;
+    boardSettings: BoardSettings;
 
     // Preview State
     previewHeight: number;
@@ -148,6 +153,7 @@ export interface SelectionActions {
 }
 
 export interface ToolActions {
+    setRefrigerantPipeDrawMode: (mode: RefrigerantPipeDrawMode) => void;
     setActiveTool: (tool: DrawingTool) => void;
     setTool: (tool: DrawingTool) => void;
 }
@@ -163,6 +169,7 @@ export interface ViewActions {
     setShowRulers: (show: boolean) => void;
     toggleRulers: () => void;
     setPageConfig: (config: Partial<PageConfig>) => void;
+    setBoardSettings: (settings: Partial<BoardSettings>) => void;
     resetView: () => void;
     zoomToFit: () => void;
 }

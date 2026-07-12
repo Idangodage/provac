@@ -10,10 +10,10 @@ import { useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 
 import type { Point2D, Room, Wall, WallSettings, WallDrawingState } from '../../../types';
 import { MM_TO_PX } from '../scale'; // [SNAP WIRE]
+import { resolveRoomBoundarySelectionSegments } from '../wall/RoomBoundarySelection';
 import { buildTemporaryWall } from '../wall/WallJoinNetwork';
 import { WallManager } from '../wall/WallManager';
 import { WallPreview } from '../wall/WallPreview';
-import { resolveRoomBoundarySelectionSegments } from '../wall/RoomBoundarySelection';
 import { WallRenderer } from '../wall/WallRenderer';
 import { WallSnapIndicatorRenderer } from '../wall/WallSnapIndicatorRenderer'; // [SNAP WIRE]
 import { snapWallPoint } from '../wall/WallSnapping';
@@ -38,11 +38,21 @@ export interface UseWallToolOptions {
   overlayCanvasRef?: React.RefObject<HTMLCanvasElement | null>; // [SNAP WIRE] overlay for snap indicators
   startWallDrawing: (startPoint: Point2D) => void;
   updateWallPreview: (currentPoint: Point2D) => void;
-  commitWall: () => string | null;
   cancelWallDrawing: () => void;
-  connectWalls: (wallId: string, otherWallId: string) => void;
-  addWall?: (params: { startPoint: Point2D; endPoint: Point2D; thickness?: number; material?: string; layer?: string }) => string; // [SNAP WIRE]
-  deleteWall?: (id: string) => void; // [SNAP WIRE]
+  /**
+   * Commit one segment through the shared-node wall graph (src/wallcore):
+   * welds/splits/crossings happen inside the store command — the tool never
+   * patches topology by hand.
+   */
+  wallGraphAddChain: (
+    points: Point2D[],
+    params?: Partial<{
+      thickness: number;
+      height: number;
+      material: string;
+      materialId: string;
+    }>,
+  ) => string[];
   onWallCreated?: (wallId: string) => void;
   onRoomClosed?: (wallIds: string[]) => void; // [SNAP WIRE]
 }
@@ -79,11 +89,8 @@ export function useWallTool({
   overlayCanvasRef, // [SNAP WIRE]
   startWallDrawing,
   updateWallPreview,
-  commitWall,
   cancelWallDrawing,
-  connectWalls,
-  addWall: addWallProp, // [SNAP WIRE]
-  deleteWall: deleteWallProp, // [SNAP WIRE]
+  wallGraphAddChain,
   onWallCreated,
   onRoomClosed, // [SNAP WIRE]
 }: UseWallToolOptions): UseWallToolResult {
@@ -99,6 +106,7 @@ export function useWallTool({
   const lastSnapResultRef = useRef<EnhancedSnapResult | null>(null); // [SNAP WIRE]
   const snapIndicatorRef = useRef<WallSnapIndicatorRenderer | null>(null); // [SNAP WIRE]
   const chainWallIdsRef = useRef<string[]>([]); // [SNAP WIRE] track wall chain for room close
+  const chainStartPointRef = useRef<Point2D | null>(null); // first click of the chain (room close)
   const panOffsetRef = useRef(panOffset); // keep current pan offset for snap indicator coordinate conversion
   const selectionPresentationSignatureRef = useRef<string>('');
   const wallsRef = useRef(walls);
@@ -269,6 +277,7 @@ export function useWallTool({
         // First click: start wall drawing
         startWallDrawing(snapResult.snappedPoint);
         chainWallIdsRef.current = []; // [SNAP WIRE] reset chain
+        chainStartPointRef.current = snapResult.snappedPoint;
 
         // Track if we snapped to an endpoint
         if (
@@ -286,137 +295,86 @@ export function useWallTool({
         wallPreviewRef.current?.startPreview(
           snapResult.snappedPoint,
           wallDrawingState.previewThickness,
-          wallDrawingState.previewMaterial
+          wallDrawingState.previewMaterial,
+          wallDrawingState.previewMaterial === wallSettings.defaultMaterial
+            ? wallSettings.defaultMaterialId
+            : undefined
         );
       } else {
-        // Second click: commit wall
+        // Second click: commit the segment THROUGH THE WALL GRAPH (shared-node
+        // topology — reference-app semantics): endpoints WELD into existing
+        // corners, clicking a wall body SPLITS it (T-junction), drawing across
+        // a wall splits both (X-junction). No ad-hoc connect/split here — the
+        // graph maintains all of it inside one store command.
         updateWallPreview(snapResult.snappedPoint);
 
-        // [SNAP WIRE] Room close detection — if snapped point matches drawState.startPoint within 2mm
         const drawStart = wallDrawingState.startPoint;
-        const isRoomClose = drawStart && chainWallIdsRef.current.length >= 2 &&
-          snapResult.snapType === 'endpoint' &&
+        if (!drawStart) return;
+        const segmentLen = Math.hypot(
+          snapResult.snappedPoint.x - drawStart.x,
+          snapResult.snappedPoint.y - drawStart.y,
+        );
+        if (segmentLen < 1) return; // ignore sub-mm clicks
+
+        // Room-close detection: back on the chain's first point within 2mm.
+        const chainAnchor = chainStartPointRef.current ?? drawStart;
+        const isRoomClose =
+          chainWallIdsRef.current.length >= 2 &&
           Math.hypot(
-            snapResult.snappedPoint.x - (chainWallIdsRef.current.length > 0 ? walls.find(w => w.id === chainWallIdsRef.current[0])?.startPoint?.x ?? drawStart.x : drawStart.x),
-            snapResult.snappedPoint.y - (chainWallIdsRef.current.length > 0 ? walls.find(w => w.id === chainWallIdsRef.current[0])?.startPoint?.y ?? drawStart.y : drawStart.y)
-          ) <= 2; // [SNAP WIRE] 2mm tolerance
+            snapResult.snappedPoint.x - chainAnchor.x,
+            snapResult.snappedPoint.y - chainAnchor.y,
+          ) <= 2;
 
-        // [SNAP WIRE] T-junction detection: snapped to a wall body, not its endpoints
-        const isTJunction = snapResult.snapType === 'endpoint' &&
-          snapResult.connectedWallId &&
-          snapResult.endpoint === undefined;
+        const segmentIds = wallGraphAddChain(
+          [drawStart, snapResult.snappedPoint],
+          {
+            thickness: wallDrawingState.previewThickness,
+            material: wallDrawingState.previewMaterial,
+            materialId: wallDrawingState.previewMaterial === wallSettings.defaultMaterial
+              ? wallSettings.defaultMaterialId
+              : undefined,
+          },
+        );
+        if (segmentIds.length > 0) {
+          chainWallIdsRef.current.push(...segmentIds);
+          onWallCreated?.(segmentIds[segmentIds.length - 1]!);
+        }
 
-        const newWallId = commitWall();
+        if (isRoomClose) {
+          onRoomClosed?.([...chainWallIdsRef.current]);
+          cancelWallDrawing();
+          wallPreviewRef.current?.clearPreview();
+          snapIndicatorRef.current?.clear();
+          lastSnappedWallRef.current = null;
+          chainWallIdsRef.current = [];
+          chainStartPointRef.current = null;
+          return;
+        }
 
-        if (newWallId) {
-          chainWallIdsRef.current.push(newWallId); // [SNAP WIRE]
-
-          // Connect to start point wall if snapped
-          if (lastSnappedWallRef.current) {
-            connectWalls(newWallId, lastSnappedWallRef.current.wallId);
-          }
-
-          // [SNAP WIRE] Handle T-junction splitting
-          if (isTJunction && snapResult.connectedWallId && addWallProp && deleteWallProp) {
-            const hostWall = walls.find(w => w.id === snapResult.connectedWallId);
-            if (hostWall) {
-              // Create segment A (hostWall start → snap point)
-              const segmentAParams = {
-                startPoint: { ...hostWall.startPoint },
-                endPoint: { ...snapResult.snappedPoint },
-                thickness: hostWall.thickness,
-                material: hostWall.material as any,
-                layer: hostWall.layer as any,
-              };
-
-              // Create segment B (snap point → hostWall end)
-              const segmentBParams = {
-                startPoint: { ...snapResult.snappedPoint },
-                endPoint: { ...hostWall.endPoint },
-                thickness: hostWall.thickness,
-                material: hostWall.material as any,
-                layer: hostWall.layer as any,
-              };
-
-              // Remove host wall, add segments
-              deleteWallProp(hostWall.id);
-              const actualSegAId = addWallProp(segmentAParams);
-              const actualSegBId = addWallProp(segmentBParams);
-
-              // Connect the new wall and segments at the junction
-              connectWalls(newWallId, actualSegAId);
-              connectWalls(newWallId, actualSegBId);
-              connectWalls(actualSegAId, actualSegBId);
-
-              // Preserve original host connections on the new segments
-              for (const connId of hostWall.connectedWalls) {
-                if (connId !== newWallId) {
-                  // Check which segment the connected wall is closer to
-                  const connWall = walls.find(w => w.id === connId);
-                  if (connWall) {
-                    const dToStart = Math.min(
-                      Math.hypot(connWall.startPoint.x - hostWall.startPoint.x, connWall.startPoint.y - hostWall.startPoint.y),
-                      Math.hypot(connWall.endPoint.x - hostWall.startPoint.x, connWall.endPoint.y - hostWall.startPoint.y)
-                    );
-                    const dToEnd = Math.min(
-                      Math.hypot(connWall.startPoint.x - hostWall.endPoint.x, connWall.startPoint.y - hostWall.endPoint.y),
-                      Math.hypot(connWall.endPoint.x - hostWall.endPoint.x, connWall.endPoint.y - hostWall.endPoint.y)
-                    );
-                    if (dToStart < dToEnd) {
-                      connectWalls(actualSegAId, connId);
-                    } else {
-                      connectWalls(actualSegBId, connId);
-                    }
-                  }
-                }
-              }
-            }
-          } else if (
-            // [SNAP WIRE] Endpoint connection (snapping to existing endpoint)
-            (snapResult.snapType === 'endpoint' || snapResult.snapType === 'midpoint') &&
-            snapResult.connectedWallId
-          ) {
-            connectWalls(newWallId, snapResult.connectedWallId);
-            lastSnappedWallRef.current = {
-              wallId: snapResult.connectedWallId,
-            };
-          } else {
-            lastSnappedWallRef.current = null;
-          }
-
-          onWallCreated?.(newWallId);
-
-          // [SNAP WIRE] Room close detection
-          if (isRoomClose) {
-            const roomWallIds = [...chainWallIdsRef.current];
-            onRoomClosed?.(roomWallIds);
-            cancelWallDrawing();
-            wallPreviewRef.current?.clearPreview();
-            snapIndicatorRef.current?.clear(); // [SNAP WIRE]
-            lastSnappedWallRef.current = null;
-            chainWallIdsRef.current = [];
-            return;
-          }
-
-          // If chain mode, update preview for next wall
-          if (wallDrawingState.chainMode) {
-            const continuationWall = buildTemporaryWall(
-              '__preview-anchor__',
-              wallDrawingState.startPoint ?? snapResult.snappedPoint,
-              snapResult.snappedPoint,
-              wallDrawingState.previewThickness,
-              wallDrawingState.previewMaterial
-            );
-            wallPreviewRef.current?.startPreview(
-              snapResult.snappedPoint,
-              wallDrawingState.previewThickness,
-              wallDrawingState.previewMaterial,
-              continuationWall
-            );
-          } else {
-            wallPreviewRef.current?.clearPreview();
-            snapIndicatorRef.current?.clear(); // [SNAP WIRE]
-          }
+        if (wallDrawingState.chainMode) {
+          // Re-anchor the chain at the fresh corner and keep drafting.
+          startWallDrawing(snapResult.snappedPoint);
+          const continuationWall = buildTemporaryWall(
+            '__preview-anchor__',
+            drawStart,
+            snapResult.snappedPoint,
+            wallDrawingState.previewThickness,
+            wallDrawingState.previewMaterial
+          );
+          wallPreviewRef.current?.startPreview(
+            snapResult.snappedPoint,
+            wallDrawingState.previewThickness,
+            wallDrawingState.previewMaterial,
+            wallDrawingState.previewMaterial === wallSettings.defaultMaterial
+              ? wallSettings.defaultMaterialId
+              : undefined,
+            continuationWall
+          );
+        } else {
+          cancelWallDrawing();
+          wallPreviewRef.current?.clearPreview();
+          snapIndicatorRef.current?.clear();
+          chainStartPointRef.current = null;
         }
       }
     },
@@ -428,11 +386,8 @@ export function useWallTool({
       zoom,
       startWallDrawing,
       updateWallPreview,
-      commitWall,
+      wallGraphAddChain,
       cancelWallDrawing,
-      connectWalls,
-      addWallProp, // [SNAP WIRE]
-      deleteWallProp, // [SNAP WIRE]
       onWallCreated,
       onRoomClosed, // [SNAP WIRE]
     ]

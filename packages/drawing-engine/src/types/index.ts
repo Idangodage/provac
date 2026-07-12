@@ -4,12 +4,12 @@
  * Core type definitions for the drawing system.
  */
 
-import type { ReactNode } from 'react';
+import type { ReactNode } from "react";
 
 // Re-export wall types
-export * from './wall';
-export * from './grips';
-export * from './room';
+export * from "./wall";
+export * from "./grips";
+export * from "./room";
 
 // =============================================================================
 // Geometry Types
@@ -20,7 +20,7 @@ export interface Point2D {
   y: number;
 }
 
-export type DisplayUnit = 'mm' | 'cm' | 'm' | 'ft-in';
+export type DisplayUnit = "mm" | "cm" | "m" | "ft-in";
 
 export interface Bounds {
   minX: number;
@@ -41,10 +41,14 @@ export interface Transform2D {
 // Spline Types (AutoCAD-like)
 // =============================================================================
 
-export type SplineType = 'catmullRom' | 'bezier' | 'bspline' | 'nurbs';
-export type SplineMethod = 'catmull-rom' | 'bezier' | 'b-spline' | 'nurbs';
-export type SplineFitMethod = 'fit-points' | 'control-vertices';
-export type KnotParameterization = 'uniform' | 'chord' | 'centripetal' | 'custom';
+export type SplineType = "catmullRom" | "bezier" | "bspline" | "nurbs";
+export type SplineMethod = "catmull-rom" | "bezier" | "b-spline" | "nurbs";
+export type SplineFitMethod = "fit-points" | "control-vertices";
+export type KnotParameterization =
+  | "uniform"
+  | "chord"
+  | "centripetal"
+  | "custom";
 
 export interface SplineSettings {
   type?: SplineType;
@@ -78,69 +82,83 @@ export interface SplineControlPoint {
 // =============================================================================
 
 export type SketchType =
-  | 'line'
-  | 'construction-line'
-  | 'polyline'
-  | 'polygon'
-  | 'rectangle'
-  | 'circle'
-  | 'ellipse'
-  | 'arc'
-  | 'spline'
-  | 'revision-cloud'
-  | 'freehand'
-  | 'pencil';
+  | "line"
+  | "construction-line"
+  | "polyline"
+  | "polygon"
+  | "rectangle"
+  | "circle"
+  | "ellipse"
+  | "arc"
+  | "spline"
+  | "revision-cloud"
+  | "freehand"
+  | "pencil";
 
 export type DrawingTool =
-  | 'select'
-  | 'pan'
-  | 'wall'
-  | 'partition-wall'
-  | 'section-line'
-  | 'room'
-  | 'dimension'
-  | 'text'
-  | 'eraser'
-  | 'calibrate'
-  | 'line'
-  | 'construction-line'
-  | 'polyline'
-  | 'polygon'
-  | 'rectangle'
-  | 'circle'
-  | 'ellipse'
-  | 'arc'
-  | 'spline'
-  | 'revision-cloud'
-  | 'pencil'
-  | 'offset'
-  | 'trim'
-  | 'extend';
+  | "select"
+  | "pan"
+  | "wall"
+  | "partition-wall"
+  | "section-line"
+  | "room"
+  | "dimension"
+  | "text"
+  | "eraser"
+  | "calibrate"
+  | "line"
+  | "construction-line"
+  | "polyline"
+  | "polygon"
+  | "rectangle"
+  | "circle"
+  | "ellipse"
+  | "arc"
+  | "spline"
+  | "revision-cloud"
+  | "pencil"
+  | "duct"
+  | "refrigerant-pipe"
+  | "offset"
+  | "trim"
+  | "extend";
 
-export type DimensionType = 'linear' | 'aligned' | 'angular' | 'radius' | 'diameter' | 'area';
-export type DimensionLinearMode = 'horizontal' | 'vertical' | 'aligned';
-export type DimensionStyle = 'architectural' | 'engineering' | 'minimal';
-export type DimensionUnitSystem = 'metric' | 'imperial';
-export type DimensionDisplayFormat = 'auto' | 'mm' | 'm' | 'in' | 'ft-in';
-export type DimensionTerminator = 'arrow' | 'tick';
-export type DimensionPlacementType = 'linear' | 'angular' | 'area';
+export type DimensionType =
+  | "linear"
+  | "aligned"
+  | "angular"
+  | "radius"
+  | "diameter"
+  | "area";
+export type DimensionLinearMode = "horizontal" | "vertical" | "aligned";
+export type DimensionStyle = "architectural" | "engineering" | "minimal";
+export type DimensionUnitSystem = "metric" | "imperial";
+export type DimensionDisplayFormat = "auto" | "mm" | "m" | "in" | "ft-in";
+export type DimensionTerminator = "arrow" | "tick";
+export type DimensionPlacementType = "linear" | "angular" | "area";
 
 export interface DimensionAnchor {
-  kind: 'point' | 'wall-endpoint' | 'wall-midpoint';
+  kind: "point" | "wall-endpoint" | "wall-midpoint";
   point?: Point2D;
   wallId?: string;
-  endpoint?: 'start' | 'end';
+  endpoint?: "start" | "end";
 }
 
 export interface DimensionSettings {
   style: DimensionStyle;
   unitSystem: DimensionUnitSystem;
   displayFormat: DimensionDisplayFormat;
+  /**
+   * Transient render preference derived from the board's assigned display
+   * unit; consulted only when displayFormat is 'auto'. Not persisted intent —
+   * the canvas injects it so dimension labels follow the assigned unit.
+   */
+  preferredUnit?: Extract<DimensionDisplayFormat, 'mm' | 'm' | 'ft-in'>;
   precision: 0 | 1 | 2;
-  defaultOffset: number;            // mm
-  extensionGap: number;             // mm
-  extensionBeyond: number;          // mm
-  textHeightPaperMm: number;        // intended paper text size
+  defaultOffset: number; // mm
+  extensionGap: number; // mm
+  extensionBeyond: number; // mm
+  textHeightPaperMm: number; // intended paper text size
   terminator: DimensionTerminator;
   placementType: DimensionPlacementType;
   showAreaPerimeter: boolean;
@@ -149,16 +167,16 @@ export interface DimensionSettings {
 }
 
 export const DEFAULT_DIMENSION_SETTINGS: DimensionSettings = {
-  style: 'architectural',
-  unitSystem: 'metric',
-  displayFormat: 'auto',
+  style: "architectural",
+  unitSystem: "metric",
+  displayFormat: "auto",
   precision: 1,
   defaultOffset: 500,
   extensionGap: 2,
   extensionBeyond: 20,
   textHeightPaperMm: 2.5,
-  terminator: 'tick',
-  placementType: 'linear',
+  terminator: "tick",
+  placementType: "linear",
   showAreaPerimeter: false,
   autoAvoidOverlap: true,
   showLayer: true,
@@ -169,7 +187,7 @@ export interface Dimension2D {
   type: DimensionType;
   points: Point2D[];
   value: number;
-  unit: 'mm' | 'cm' | 'm' | 'in' | 'ft' | 'ft-in';
+  unit: "mm" | "cm" | "m" | "in" | "ft" | "ft-in";
   text?: string;
   textPosition: Point2D;
   visible: boolean;
@@ -195,7 +213,7 @@ export interface Dimension2D {
 
 export interface Annotation2D {
   id: string;
-  type: 'text' | 'leader' | 'callout';
+  type: "text" | "leader" | "callout";
   position: Point2D;
   text: string;
   leaderPoints?: Point2D[];
@@ -218,7 +236,7 @@ export interface Sketch2D {
 
 export interface Guide {
   id: string;
-  type: 'horizontal' | 'vertical';
+  type: "horizontal" | "vertical";
   offset: number;
 }
 
@@ -260,7 +278,7 @@ export interface SymbolInstance2D {
 // Import/Calibration Types
 // =============================================================================
 
-export type SourceType = 'pdf' | 'image' | 'dxf' | 'ifc' | 'sketch';
+export type SourceType = "pdf" | "image" | "dxf" | "ifc" | "sketch";
 
 export interface CalibrationPoint {
   id: string;
@@ -284,7 +302,7 @@ export interface ImportedDrawing {
 
 export interface DetectedElement {
   id: string;
-  type: 'wall' | 'door' | 'window' | 'room' | 'text' | 'dimension';
+  type: "wall" | "door" | "window" | "room" | "text" | "dimension";
   confidence: number;
   points: Point2D[];
   boundingBox: { x: number; y: number; width: number; height: number };
@@ -313,7 +331,7 @@ export interface DrawingLayer {
 export interface PageConfig {
   width: number;
   height: number;
-  orientation: 'portrait' | 'landscape';
+  orientation: "portrait" | "landscape";
 }
 
 export interface PageLayout {
@@ -321,14 +339,20 @@ export interface PageLayout {
   label: string;
   width: number;
   height: number;
-  orientation: 'portrait' | 'landscape';
+  orientation: "portrait" | "landscape";
 }
 
 // =============================================================================
 // History Types
 // =============================================================================
 
-import type { ElevationView, HvacElement, Room, SectionLine, Wall } from './wall';
+import type {
+  ElevationView,
+  HvacElement,
+  Room,
+  SectionLine,
+  Wall,
+} from "./wall";
 
 export interface HistorySnapshot {
   detectedElements: DetectedElement[];

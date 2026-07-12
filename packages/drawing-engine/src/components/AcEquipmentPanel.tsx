@@ -14,6 +14,7 @@ import {
   SlidersHorizontal,
   Snowflake,
   Wind,
+  GitBranch,
 } from 'lucide-react';
 import React, { useMemo } from 'react';
 
@@ -47,6 +48,8 @@ function categoryIcon(definition: AcEquipmentDefinition): React.ReactNode {
       return <Snowflake size={16} />;
     case 'filter':
       return <Filter size={16} />;
+    case 'refrigerant-branch-kit':
+      return <GitBranch size={16} />;
     case 'control-panel':
       return <MonitorSmartphone size={16} />;
     case 'remote-controller':

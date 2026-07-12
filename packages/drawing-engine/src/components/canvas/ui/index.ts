@@ -3,3 +3,5 @@
  *
  * Reusable UI components for the drawing canvas.
  */
+
+export { BoardCursorHud, type BoardCursorHudProps } from './BoardCursorHud';

@@ -51,7 +51,10 @@ if (authDebug && !googleEnabled) {
 export const authConfig: NextAuthConfig = {
   adapter: PrismaAdapter(prisma),
   debug: authDebug,
-  trustHost: process.env.NODE_ENV === "development",
+  // Vercel (and any reverse proxy) forwards the real host via X-Forwarded-Host.
+  // Auth.js must trust it, otherwise it throws UntrustedHost -> "Configuration"
+  // error (500) on every /api/auth/* route in production.
+  trustHost: true,
   secret: authSecret,
   session: {
     strategy: "jwt",

@@ -1,17 +1,11 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 
+import DrawingEditorWrapper from "@/components/editors/DrawingEditorWrapper";
 import { trpc } from "@/lib/trpc";
-
-// Dynamically import the entire drawing editor to avoid SSR issues with Konva
-const DrawingEditorWrapper = dynamic(
-  () => import("@/components/editors/DrawingEditorWrapper"),
-  { ssr: false, loading: () => <CanvasLoading /> }
-);
 
 function parseCanvasData(input: unknown): unknown {
   if (!input) return undefined;
@@ -55,6 +49,15 @@ export default function DrawingPage() {
     setMounted(true);
   }, []);
 
+  const latestDrawing = drawings?.[0];
+  // Parse once per canvasData identity: re-parsing in the render body would
+  // mint a new object identity every render and re-trigger the editor's
+  // loadData effect, snapping in-progress edits back to last-saved positions.
+  const initialData = useMemo(
+    () => parseCanvasData(latestDrawing?.canvasData),
+    [latestDrawing?.canvasData]
+  );
+
   if (projectLoading || drawingsLoading || !mounted) {
     return <CanvasLoading />;
   }
@@ -72,13 +75,12 @@ export default function DrawingPage() {
     );
   }
 
-  const latestDrawing = drawings?.[0];
-
   return (
     <DrawingEditorWrapper
       projectId={projectId}
       projectName={project.name}
-      initialData={parseCanvasData(latestDrawing?.canvasData)}
+      initialData={initialData}
+      drawingId={latestDrawing?.id}
     />
   );
 }

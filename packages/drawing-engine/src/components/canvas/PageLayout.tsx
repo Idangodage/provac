@@ -14,6 +14,8 @@ export interface PageLayoutProps {
   borderColor?: string;
   shadow?: string;
   originOffset?: Point2D;
+  /** Tint everything outside the sheet so the printable area reads clearly. */
+  dimOutside?: boolean;
 }
 
 /**
@@ -30,6 +32,7 @@ export const PageLayout: React.FC<PageLayoutProps> = ({
   borderColor = '#000000',
   shadow = '0 20px 45px rgba(15, 23, 42, 0.15)',
   originOffset = { x: 0, y: 0 },
+  dimOutside = false,
 }) => {
   if (!showPage || pageWidth <= 0 || pageHeight <= 0) return null;
 
@@ -54,7 +57,11 @@ export const PageLayout: React.FC<PageLayoutProps> = ({
         height: snappedHeight,
         backgroundColor,
         border: `1px solid ${borderColor}`,
-        boxShadow: shadow,
+        // The huge spread shadow tints the off-sheet area, making the page
+        // boundary part of the drawing experience rather than a decoration.
+        boxShadow: dimOutside
+          ? `${shadow}, 0 0 0 100000px rgba(120, 100, 60, 0.055)`
+          : shadow,
         pointerEvents: 'none',
         zIndex: 0,
       }}

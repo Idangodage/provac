@@ -149,6 +149,9 @@ function resolveDisplayFormat(
 ): DimensionDisplayFormat {
   if (override && override !== 'auto') return override;
   if (settings.displayFormat !== 'auto') return settings.displayFormat;
+  // The board's assigned display unit wins over the mm/m auto switch so
+  // dimension labels stay consistent with rulers, HUD and coordinates.
+  if (settings.preferredUnit) return settings.preferredUnit;
   if (settings.unitSystem === 'imperial') return 'ft-in';
   return mm >= 1000 ? 'm' : 'mm';
 }

@@ -1,0 +1,71 @@
+{
+  "source": "MEPcontent MACO VRF (IFC4)",
+  "converter": "ifcopenshell 0.8.5",
+  "models": [
+    {
+      "code": "FDC140KXZES1-W",
+      "file": "models/vrf/maco-vrf-fdc140kxzes1-w.glb",
+      "category": "outdoor-condensing",
+      "unit": "mm",
+      "upAxis": "Z",
+      "sizeMm": {
+        "x": 970.0,
+        "y": 450.0,
+        "z": 845.0
+      },
+      "triangles": 10974
+    },
+    {
+      "code": "FDC280KXZE1",
+      "file": "models/vrf/maco-vrf-fdc280kxze1.glb",
+      "category": "outdoor-condensing",
+      "unit": "mm",
+      "upAxis": "Z",
+      "sizeMm": {
+        "x": 1350.0,
+        "y": 764.0,
+        "z": 1690.0
+      },
+      "triangles": 18256
+    },
+    {
+      "code": "FDC280KXZPE1",
+      "file": "models/vrf/maco-vrf-fdc280kxzpe1.glb",
+      "category": "outdoor-condensing",
+      "unit": "mm",
+      "upAxis": "Z",
+      "sizeMm": {
+        "x": 970.0,
+        "y": 450.0,
+        "z": 1505.0
+      },
+      "triangles": 2524
+    },
+    {
+      "code": "FDT28KXZE1",
+      "file": "models/vrf/maco-vrf-fdt28kxze1.glb",
+      "category": "indoor",
+      "unit": "mm",
+      "upAxis": "Z",
+      "sizeMm": {
+        "x": 1043.0,
+        "y": 950.0,
+        "z": 271.9
+      },
+      "triangles": 5604
+    },
+    {
+      "code": "FDUM22KXE6F-W",
+      "file": "models/vrf/maco-vrf-fdum22kxe6f-w.glb",
+      "category": "indoor",
+      "unit": "mm",
+      "upAxis": "Z",
+      "sizeMm": {
+        "x": 1084.0,
+        "y": 697.0,
+        "z": 300.0
+      },
+      "triangles": 3060
+    }
+  ]
+}

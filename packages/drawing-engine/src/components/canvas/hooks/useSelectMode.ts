@@ -14,7 +14,7 @@ import { useRef, useCallback, useEffect } from 'react';
 import type { MutableRefObject } from 'react';
 
 import { WallRotationOperation } from '../../../operations';
-import type { Point2D, Room, Wall, WallSettings } from '../../../types';
+import type { HvacElement, Point2D, Room, Wall, WallSettings } from '../../../types';
 import {
   MAX_WALL_THICKNESS,
   MIN_WALL_LENGTH,
@@ -25,6 +25,11 @@ import { GeometryEngine } from '../../../utils/geometry-engine';
 import {
   type CornerEnd,
 } from '../../../utils/wallBevel';
+import {
+  buildRefrigerantPipeVisual,
+  resolveRefrigerantPipeSpec,
+  type RefrigerantPipeMaterial,
+} from '../hvac/refrigerantPipePairModel';
 import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
 import { isRoomIsolatedFromAttachments } from '../room/roomIsolation';
 import { MM_TO_PX } from '../scale';
@@ -62,6 +67,8 @@ type WallControlType =
   | 'wall-thickness-interior'
   | 'wall-thickness-exterior'
   | 'wall-rotation-handle'
+  | 'pipe-vertex-handle'
+  | 'pipe-segment-handle'
   | 'room-center-handle'
   | 'room-rotation-handle'
   | 'room-corner-handle'
@@ -85,6 +92,7 @@ export interface UseSelectModeOptions {
   selectedIds: string[];
   wallSettings: WallSettings;
   zoom: number;
+  hvacElements: HvacElement[];
   setSelectedIds: (ids: string[]) => void;
   setHoveredElement: (id: string | null) => void;
   getWall: (id: string) => Wall | undefined;
@@ -99,6 +107,11 @@ export interface UseSelectModeOptions {
     bevel: Partial<{ outerOffset: number; innerOffset: number }>,
     options?: WallUpdateOptions
   ) => void;
+  updateHvacElement: (
+    id: string,
+    updates: Partial<HvacElement>,
+    options?: { skipHistory?: boolean },
+  ) => void;
   resetWallBevel: (wallId: string, end: CornerEnd) => void;
   getCornerBevelDots: (cornerPoint: Point2D) => {
     outerDotPosition: Point2D;
@@ -111,6 +124,12 @@ export interface UseSelectModeOptions {
   selectWallSegmentWithinInterval: (wallId: string, startPoint: Point2D, endPoint: Point2D) => string;
   detectRooms: (options?: { debounce?: boolean }) => void;
   regenerateElevations: (options?: { debounce?: boolean }) => void;
+  /**
+   * Weld-on-drop commit for wall endpoint drags (reference wall.moveNode):
+   * moves the shared graph node and welds into a node / splits a wall body at
+   * the drop point. Runs the full post-edit pipeline internally.
+   */
+  wallGraphMoveNode?: (nodeId: string, to: Point2D, weld?: boolean) => void;
   saveToHistory: (action: string) => void;
   setProcessingStatus: (status: string, isProcessing: boolean) => void;
   onDragStateChange?: (isDragging: boolean) => void;
@@ -123,11 +142,16 @@ interface TargetMeta {
   id?: string;
   wallId?: string;
   roomId?: string;
+  pipeId?: string;
+  pipeVertexIndex?: number;
+  pipeSegmentStartIndex?: number;
+  pipeSegmentEndIndex?: number;
   controlType?: WallControlType;
   cornerIndex?: number;
   scaleDirection?: 'NW' | 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W';
   isWallControl?: boolean;
   isRoomControl?: boolean;
+  isPipeControl?: boolean;
   roomBoundarySelectionKey?: string;
   roomBoundaryStartPoint?: Point2D;
   roomBoundaryEndPoint?: Point2D;
@@ -230,6 +254,27 @@ interface RotateDragState {
   operation: WallRotationOperation;
 }
 
+interface PipeVertexDragState {
+  mode: 'pipe-vertex';
+  pipeId: string;
+  vertexIndex: number;
+  startPointer: Point2D;
+  baselineRoutePoints: Point2D[];
+  segmentMaterials: RefrigerantPipeMaterial[];
+  baselineProperties: Record<string, unknown>;
+}
+
+interface PipeSegmentDragState {
+  mode: 'pipe-segment';
+  pipeId: string;
+  startIndex: number;
+  endIndex: number;
+  startPointer: Point2D;
+  baselineRoutePoints: Point2D[];
+  segmentMaterials: RefrigerantPipeMaterial[];
+  baselineProperties: Record<string, unknown>;
+}
+
 type DragState =
   | IdleDragState
   | ThicknessDragState
@@ -239,7 +284,9 @@ type DragState =
   | RoomCornerDragState
   | RoomScaleDragState
   | RoomRotateDragState
-  | RotateDragState;
+  | RotateDragState
+  | PipeVertexDragState
+  | PipeSegmentDragState;
 
 interface DragApplyResult {
   label: string;
@@ -311,6 +358,29 @@ function midpoint(a: Point2D, b: Point2D): Point2D {
 
 function wallLength(wall: Pick<Wall, 'startPoint' | 'endPoint'>): number {
   return magnitude(subtract(wall.endPoint, wall.startPoint));
+}
+
+type HardDirection8 = 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW';
+
+function classifyHardDirection(start: Point2D, end: Point2D): HardDirection8 | null {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (Math.abs(dx) <= 0.5 && Math.abs(dy) <= 0.5) {
+    return null;
+  }
+  if (Math.abs(dx) <= 0.75) {
+    return dy > 0 ? 'S' : 'N';
+  }
+  if (Math.abs(dy) <= 0.75) {
+    return dx > 0 ? 'E' : 'W';
+  }
+  if (Math.abs(Math.abs(dx) - Math.abs(dy)) <= 1.5) {
+    if (dx > 0 && dy < 0) return 'NE';
+    if (dx > 0 && dy > 0) return 'SE';
+    if (dx < 0 && dy < 0) return 'NW';
+    return 'SW';
+  }
+  return null;
 }
 
 function wallDirection(wall: Pick<Wall, 'startPoint' | 'endPoint'>): Point2D {
@@ -606,12 +676,14 @@ export function useSelectMode({
   selectedIds,
   wallSettings,
   zoom,
+  hvacElements,
   setSelectedIds,
   setHoveredElement,
   getWall,
   updateWall,
   updateWalls,
   updateWallBevel,
+  updateHvacElement,
   resetWallBevel,
   getCornerBevelDots,
   moveRoom,
@@ -619,6 +691,7 @@ export function useSelectMode({
   selectWallSegmentWithinInterval,
   detectRooms,
   regenerateElevations,
+  wallGraphMoveNode,
   saveToHistory,
   setProcessingStatus,
   onDragStateChange,
@@ -650,12 +723,14 @@ export function useSelectMode({
     selectedIds,
     wallSettings,
     zoom,
+    hvacElements,
     setSelectedIds,
     setHoveredElement,
     getWall,
     updateWall,
     updateWalls,
     updateWallBevel,
+    updateHvacElement,
     resetWallBevel,
     getCornerBevelDots,
     moveRoom,
@@ -663,6 +738,7 @@ export function useSelectMode({
     selectWallSegmentWithinInterval,
     detectRooms,
     regenerateElevations,
+    wallGraphMoveNode,
     saveToHistory,
     setProcessingStatus,
     onDragStateChange,
@@ -680,23 +756,26 @@ export function useSelectMode({
   useEffect(() => {
     optionsRef.current = {
       walls,
-      rooms,
-      selectedIds,
-      wallSettings,
-      zoom,
-      setSelectedIds,
-      setHoveredElement,
-      getWall,
-      updateWall,
-      updateWalls,
-      updateWallBevel,
-      resetWallBevel,
-      getCornerBevelDots,
-      moveRoom,
+    rooms,
+    selectedIds,
+    wallSettings,
+    zoom,
+    hvacElements,
+    setSelectedIds,
+    setHoveredElement,
+    getWall,
+    updateWall,
+    updateWalls,
+    updateWallBevel,
+    updateHvacElement,
+    resetWallBevel,
+    getCornerBevelDots,
+    moveRoom,
       connectWalls,
       selectWallSegmentWithinInterval,
       detectRooms,
       regenerateElevations,
+      wallGraphMoveNode,
       saveToHistory,
       setProcessingStatus,
       onDragStateChange,
@@ -708,17 +787,20 @@ export function useSelectMode({
     selectedIds,
     wallSettings,
     zoom,
+    hvacElements,
     setSelectedIds,
     setHoveredElement,
     updateWall,
     updateWalls,
     updateWallBevel,
+    updateHvacElement,
     resetWallBevel,
     getCornerBevelDots,
     moveRoom,
     connectWalls,
     detectRooms,
     regenerateElevations,
+    wallGraphMoveNode,
     saveToHistory,
     setProcessingStatus,
     onDragStateChange,
@@ -1182,6 +1264,84 @@ export function useSelectMode({
     return optionsRef.current.getWall(wallId) ?? optionsRef.current.walls.find((wall) => wall.id === wallId);
   }, []);
 
+  const findHvacById = useCallback((hvacId: string): HvacElement | undefined => {
+    return optionsRef.current.hvacElements.find((element) => element.id === hvacId);
+  }, []);
+
+  const syncPipeBundleMates = useCallback((
+    sourceElement: HvacElement,
+    baselineRoutePoints: Point2D[],
+    nextRoutePoints: Point2D[],
+  ) => {
+    if (sourceElement.type !== 'refrigerant-pipe') {
+      return;
+    }
+    const sourceSpec = resolveRefrigerantPipeSpec(sourceElement.properties);
+    if (!sourceSpec.bundleId) {
+      return;
+    }
+    if (baselineRoutePoints.length !== nextRoutePoints.length) {
+      return;
+    }
+
+    const perPointDelta = nextRoutePoints.map((point, index) =>
+      subtract(point, baselineRoutePoints[index]!),
+    );
+
+    optionsRef.current.hvacElements.forEach((candidate) => {
+      if (candidate.id === sourceElement.id || candidate.type !== 'refrigerant-pipe') {
+        return;
+      }
+      const candidateSpec = resolveRefrigerantPipeSpec(candidate.properties);
+      if (candidateSpec.bundleId !== sourceSpec.bundleId) {
+        return;
+      }
+      if (candidateSpec.routePoints.length !== perPointDelta.length) {
+        return;
+      }
+
+      const nextCandidateRoutePoints = candidateSpec.routePoints.map((point, index) =>
+        add(point, perPointDelta[index]!),
+      );
+      const segmentCount = Math.max(0, nextCandidateRoutePoints.length - 1);
+      const normalizedMaterials = Array.from(
+        { length: segmentCount },
+        (_, index) =>
+          candidateSpec.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible',
+      );
+      const nextCandidateProperties = {
+        ...candidate.properties,
+        routePoints: nextCandidateRoutePoints,
+        segmentMaterials: normalizedMaterials,
+      };
+      const nextCandidateVisual = buildRefrigerantPipeVisual(
+        {
+          ...candidate,
+          properties: nextCandidateProperties,
+        },
+        optionsRef.current.hvacElements,
+      );
+      if (nextCandidateVisual.invalidHardSegmentCount > 0) {
+        return;
+      }
+
+      optionsRef.current.updateHvacElement(
+        candidate.id,
+        {
+          position: {
+            x: nextCandidateVisual.bounds.minX,
+            y: nextCandidateVisual.bounds.minY,
+          },
+          width: nextCandidateVisual.bounds.width,
+          depth: nextCandidateVisual.bounds.height,
+          height: Math.max(1, nextCandidateVisual.outerRadiusMm * 2),
+          properties: nextCandidateProperties,
+        },
+        { skipHistory: true },
+      );
+    });
+  }, []);
+
   const findRoomById = useCallback((roomId: string): Room | undefined => {
     return optionsRef.current.rooms.find((room) => room.id === roomId);
   }, []);
@@ -1414,7 +1574,10 @@ export function useSelectMode({
   }, []);
 
   const getTargetMeta = useCallback((target: FabricObject | undefined | null): TargetMeta => {
-    const typed = target as FabricObject & TargetMeta & { group?: TargetMeta };
+    const typed = target as FabricObject &
+      TargetMeta & {
+        group?: TargetMeta;
+      };
     const group = typed?.group;
 
     const wallId =
@@ -1435,19 +1598,29 @@ export function useSelectMode({
     const roomBoundarySelectionKey = typed?.roomBoundarySelectionKey ?? group?.roomBoundarySelectionKey;
     const roomBoundaryStartPoint = typed?.roomBoundaryStartPoint ?? group?.roomBoundaryStartPoint;
     const roomBoundaryEndPoint = typed?.roomBoundaryEndPoint ?? group?.roomBoundaryEndPoint;
+    const pipeId = typed?.pipeId ?? group?.pipeId;
+    const pipeVertexIndex = typed?.pipeVertexIndex ?? group?.pipeVertexIndex;
+    const pipeSegmentStartIndex = typed?.pipeSegmentStartIndex ?? group?.pipeSegmentStartIndex;
+    const pipeSegmentEndIndex = typed?.pipeSegmentEndIndex ?? group?.pipeSegmentEndIndex;
     const isWallControl = Boolean(typed?.isWallControl && controlType);
     const isRoomControl = Boolean(typed?.isRoomControl && controlType);
+    const isPipeControl = Boolean(typed?.isPipeControl && controlType);
 
     return {
       name: typed?.name,
       id,
       wallId,
       roomId,
+      pipeId,
+      pipeVertexIndex,
+      pipeSegmentStartIndex,
+      pipeSegmentEndIndex,
       controlType,
       cornerIndex,
       scaleDirection,
       isWallControl,
       isRoomControl,
+      isPipeControl,
       roomBoundarySelectionKey,
       roomBoundaryStartPoint,
       roomBoundaryEndPoint,
@@ -1461,7 +1634,7 @@ export function useSelectMode({
           targets
             .map((target) => {
               const meta = getTargetMeta(target);
-              return meta.wallId ?? meta.roomId ?? meta.id;
+              return meta.wallId ?? meta.roomId ?? meta.pipeId ?? meta.id;
             })
             .filter((id): id is string => Boolean(id))
         )
@@ -1653,6 +1826,89 @@ export function useSelectMode({
 
   const beginControlDrag = useCallback((meta: TargetMeta, point: Point2D) => {
     if (!meta.controlType) return false;
+
+    if (
+      meta.controlType === 'pipe-segment-handle' &&
+      meta.pipeId &&
+      typeof meta.pipeSegmentStartIndex === 'number' &&
+      typeof meta.pipeSegmentEndIndex === 'number'
+    ) {
+      const pipeElement = findHvacById(meta.pipeId);
+      if (!pipeElement || pipeElement.type !== 'refrigerant-pipe') {
+        return false;
+      }
+      const pipeSpec = resolveRefrigerantPipeSpec(pipeElement.properties);
+      const startIndex = meta.pipeSegmentStartIndex;
+      const endIndex = meta.pipeSegmentEndIndex;
+      const lastIndex = pipeSpec.routePoints.length - 1;
+      const lockStart = Boolean(pipeSpec.startConnection);
+      const lockEnd = Boolean(pipeSpec.endConnection);
+      if (
+        startIndex < 0 ||
+        endIndex > lastIndex ||
+        (lockStart && startIndex === 0) ||
+        (lockEnd && endIndex === lastIndex) ||
+        endIndex <= startIndex
+      ) {
+        return false;
+      }
+      for (let segmentIndex = startIndex; segmentIndex < endIndex; segmentIndex += 1) {
+        if ((pipeSpec.segmentMaterials[segmentIndex] ?? 'flexible') !== 'hard') {
+          return false;
+        }
+      }
+
+      isWallHandleDraggingRef.current = true;
+      resetDragDynamics(point);
+      dragStateRef.current = {
+        mode: 'pipe-segment',
+        pipeId: pipeElement.id,
+        startIndex,
+        endIndex,
+        startPointer: { ...point },
+        baselineRoutePoints: pipeSpec.routePoints.map((routePoint) => ({ ...routePoint })),
+        segmentMaterials: [...pipeSpec.segmentMaterials],
+        baselineProperties: { ...pipeElement.properties },
+      };
+      return true;
+    }
+
+    if (
+      meta.controlType === 'pipe-vertex-handle' &&
+      meta.pipeId &&
+      typeof meta.pipeVertexIndex === 'number'
+    ) {
+      const pipeElement = findHvacById(meta.pipeId);
+      if (!pipeElement || pipeElement.type !== 'refrigerant-pipe') {
+        return false;
+      }
+      const pipeSpec = resolveRefrigerantPipeSpec(pipeElement.properties);
+      const lastVertexIndex = pipeSpec.routePoints.length - 1;
+      if (meta.pipeVertexIndex < 0 || meta.pipeVertexIndex > lastVertexIndex) {
+        return false;
+      }
+      const isStartEndpoint = meta.pipeVertexIndex === 0;
+      const isEndEndpoint = meta.pipeVertexIndex === lastVertexIndex;
+      if (
+        (isStartEndpoint && Boolean(pipeSpec.startConnection)) ||
+        (isEndEndpoint && Boolean(pipeSpec.endConnection))
+      ) {
+        return false;
+      }
+
+      isWallHandleDraggingRef.current = true;
+      resetDragDynamics(point);
+      dragStateRef.current = {
+        mode: 'pipe-vertex',
+        pipeId: pipeElement.id,
+        vertexIndex: meta.pipeVertexIndex,
+        startPointer: { ...point },
+        baselineRoutePoints: pipeSpec.routePoints.map((routePoint) => ({ ...routePoint })),
+        segmentMaterials: [...pipeSpec.segmentMaterials],
+        baselineProperties: { ...pipeElement.properties },
+      };
+      return true;
+    }
 
     if (meta.controlType === 'room-center-handle' && meta.roomId) {
       const room = findRoomById(meta.roomId);
@@ -1952,7 +2208,15 @@ export function useSelectMode({
     }
 
     return false;
-  }, [buildEndpointConstraints, canRotateWall, findRoomById, findWallById, resetDragDynamics, showGhostWalls]);
+  }, [
+    buildEndpointConstraints,
+    canRotateWall,
+    findHvacById,
+    findRoomById,
+    findWallById,
+    resetDragDynamics,
+    showGhostWalls,
+  ]);
 
   const computePerpendicularSnap = useCallback(
     (state: EndpointDragState, candidatePoint: Point2D): { snapped: Point2D; line?: { start: Point2D; end: Point2D } } => {
@@ -1999,6 +2263,328 @@ export function useSelectMode({
   const applyDrag = useCallback((point: Point2D): DragApplyResult | null => {
     const state = dragStateRef.current;
     if (state.mode === 'idle') return null;
+
+    if (state.mode === 'pipe-segment') {
+      const pipeElement = findHvacById(state.pipeId);
+      if (!pipeElement || pipeElement.type !== 'refrigerant-pipe') {
+        return null;
+      }
+
+      const startPoint = state.baselineRoutePoints[state.startIndex];
+      const endPoint = state.baselineRoutePoints[state.endIndex];
+      if (!startPoint || !endPoint) {
+        return null;
+      }
+      const mainDirection = classifyHardDirection(startPoint, endPoint);
+      if (!mainDirection) {
+        return null;
+      }
+
+      const SQRT_HALF = Math.SQRT1_2;
+      const directionUnit: Record<HardDirection8, Point2D> = {
+        E: { x: 1, y: 0 },
+        NE: { x: SQRT_HALF, y: -SQRT_HALF },
+        N: { x: 0, y: -1 },
+        NW: { x: -SQRT_HALF, y: -SQRT_HALF },
+        W: { x: -1, y: 0 },
+        SW: { x: -SQRT_HALF, y: SQRT_HALF },
+        S: { x: 0, y: 1 },
+        SE: { x: SQRT_HALF, y: SQRT_HALF },
+      };
+      const direction = directionUnit[mainDirection];
+      const segmentNormal = {
+        x: -direction.y,
+        y: direction.x,
+      };
+      const pointerDelta = subtract(point, state.startPointer);
+      const projectedDistance = dot(pointerDelta, segmentNormal);
+      let appliedDistance = projectedDistance;
+      if (
+        optionsRef.current.wallSettings.snapToGrid &&
+        modifierKeysRef.current.shift
+      ) {
+        const gridSize = Math.max(optionsRef.current.wallSettings.gridSize, 1);
+        appliedDistance = Math.round(appliedDistance / gridSize) * gridSize;
+      }
+      const appliedDelta = scale(segmentNormal, appliedDistance);
+
+      const intersectLines = (
+        lineAPoint: Point2D,
+        lineADirection: Point2D,
+        lineBPoint: Point2D,
+        lineBDirection: Point2D,
+      ): Point2D | null => {
+        const determinant =
+          lineADirection.x * lineBDirection.y -
+          lineADirection.y * lineBDirection.x;
+        if (Math.abs(determinant) <= 0.0001) {
+          return null;
+        }
+        const delta = subtract(lineBPoint, lineAPoint);
+        const t =
+          (delta.x * lineBDirection.y - delta.y * lineBDirection.x) /
+          determinant;
+        return add(lineAPoint, scale(lineADirection, t));
+      };
+
+      const areParallel = (a: Point2D, b: Point2D): boolean =>
+        Math.abs(a.x * b.y - a.y * b.x) <= 0.0001;
+      const routePoints = state.baselineRoutePoints;
+      const pointCount = routePoints.length;
+      const terminalIndex = pointCount - 1;
+      const baselineSpec = resolveRefrigerantPipeSpec(state.baselineProperties);
+      const lockStart = Boolean(baselineSpec.startConnection);
+      const lockEnd = Boolean(baselineSpec.endConnection);
+      const isHardSegment = (segmentIndex: number): boolean =>
+        (state.segmentMaterials[segmentIndex] ?? 'flexible') === 'hard';
+      const hardSegmentDirection = (segmentIndex: number): HardDirection8 | null => {
+        if (segmentIndex < 0 || segmentIndex >= pointCount - 1) {
+          return null;
+        }
+        return classifyHardDirection(
+          routePoints[segmentIndex]!,
+          routePoints[segmentIndex + 1]!,
+        );
+      };
+
+      let moveStartIndex = state.startIndex;
+      let moveEndIndex = state.endIndex;
+
+      while (moveStartIndex > 0) {
+        const leftSegmentIndex = moveStartIndex - 1;
+        if (!isHardSegment(leftSegmentIndex)) {
+          break;
+        }
+        const leftDirection = hardSegmentDirection(leftSegmentIndex);
+        if (!leftDirection || !areParallel(directionUnit[leftDirection], direction)) {
+          break;
+        }
+        if (lockStart && leftSegmentIndex === 0) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        moveStartIndex -= 1;
+      }
+
+      while (moveEndIndex < terminalIndex) {
+        const rightSegmentIndex = moveEndIndex;
+        if (!isHardSegment(rightSegmentIndex)) {
+          break;
+        }
+        const rightDirection = hardSegmentDirection(rightSegmentIndex);
+        if (!rightDirection || !areParallel(directionUnit[rightDirection], direction)) {
+          break;
+        }
+        if (lockEnd && rightSegmentIndex === terminalIndex - 1) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        moveEndIndex += 1;
+      }
+
+      const movedPointOverrides = new Map<number, Point2D>();
+      for (let index = moveStartIndex; index <= moveEndIndex; index += 1) {
+        movedPointOverrides.set(index, add(routePoints[index]!, appliedDelta));
+      }
+
+      const leftBoundarySegmentIndex = moveStartIndex - 1;
+      if (leftBoundarySegmentIndex >= 0 && isHardSegment(leftBoundarySegmentIndex)) {
+        const fixedPoint = routePoints[leftBoundarySegmentIndex]!;
+        const leftDirection = hardSegmentDirection(leftBoundarySegmentIndex);
+        const movedBoundaryPoint = movedPointOverrides.get(moveStartIndex)!;
+        if (!leftDirection || areParallel(directionUnit[leftDirection], direction)) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        const leftIntersection = intersectLines(
+          movedBoundaryPoint,
+          direction,
+          fixedPoint,
+          directionUnit[leftDirection],
+        );
+        if (!leftIntersection) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        movedPointOverrides.set(moveStartIndex, leftIntersection);
+      }
+
+      const rightBoundarySegmentIndex = moveEndIndex;
+      if (rightBoundarySegmentIndex < terminalIndex && isHardSegment(rightBoundarySegmentIndex)) {
+        const fixedPoint = routePoints[rightBoundarySegmentIndex + 1]!;
+        const rightDirection = hardSegmentDirection(rightBoundarySegmentIndex);
+        const movedBoundaryPoint = movedPointOverrides.get(moveEndIndex)!;
+        if (!rightDirection || areParallel(directionUnit[rightDirection], direction)) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        const rightIntersection = intersectLines(
+          movedBoundaryPoint,
+          direction,
+          fixedPoint,
+          directionUnit[rightDirection],
+        );
+        if (!rightIntersection) {
+          return {
+            label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+            point: midpoint(startPoint, endPoint),
+          };
+        }
+        movedPointOverrides.set(moveEndIndex, rightIntersection);
+      }
+
+      const nextRoutePoints = state.baselineRoutePoints.map(
+        (routePoint, index): Point2D => movedPointOverrides.get(index) ?? { ...routePoint },
+      );
+      const movedStart = nextRoutePoints[state.startIndex]!;
+      const movedEnd = nextRoutePoints[state.endIndex]!;
+      const movedMainDirection = classifyHardDirection(movedStart, movedEnd);
+      if (!movedMainDirection || movedMainDirection !== mainDirection) {
+        return {
+          label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+          point: midpoint(startPoint, endPoint),
+        };
+      }
+
+      const segmentCount = Math.max(0, nextRoutePoints.length - 1);
+      const normalizedMaterials = Array.from(
+        { length: segmentCount },
+        (_, index) =>
+          state.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible',
+      );
+      const nextProperties = {
+        ...state.baselineProperties,
+        routePoints: nextRoutePoints,
+        segmentMaterials: normalizedMaterials,
+      };
+      const nextVisual = buildRefrigerantPipeVisual(
+        {
+          ...pipeElement,
+          properties: nextProperties,
+        },
+        optionsRef.current.hvacElements,
+      );
+      if (nextVisual.invalidHardSegmentCount > 0) {
+        return {
+          label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+          point: midpoint(startPoint, endPoint),
+        };
+      }
+
+      optionsRef.current.updateHvacElement(
+        pipeElement.id,
+        {
+          position: {
+            x: nextVisual.bounds.minX,
+            y: nextVisual.bounds.minY,
+          },
+          width: nextVisual.bounds.width,
+          depth: nextVisual.bounds.height,
+          height: Math.max(1, nextVisual.outerRadiusMm * 2),
+          properties: nextProperties,
+        },
+        { skipHistory: true },
+      );
+      syncPipeBundleMates(
+        pipeElement,
+        state.baselineRoutePoints,
+        nextRoutePoints,
+      );
+      return {
+        label: `Hard segment S${state.startIndex + 1}-${state.endIndex + 1}`,
+        point: midpoint(movedStart, movedEnd),
+      };
+    }
+
+    if (state.mode === 'pipe-vertex') {
+      const pipeElement = findHvacById(state.pipeId);
+      if (!pipeElement || pipeElement.type !== 'refrigerant-pipe') {
+        return null;
+      }
+
+      let nextPoint = { ...point };
+      const leftMaterial =
+        state.segmentMaterials[state.vertexIndex - 1] ?? 'flexible';
+      const rightMaterial =
+        state.segmentMaterials[state.vertexIndex] ?? leftMaterial;
+      const touchesHardSegment =
+        leftMaterial === 'hard' || rightMaterial === 'hard';
+      if (
+        touchesHardSegment &&
+        optionsRef.current.wallSettings.snapToGrid &&
+        modifierKeysRef.current.shift
+      ) {
+        nextPoint = snapToGrid(nextPoint, optionsRef.current.wallSettings.gridSize);
+      } else if (
+        optionsRef.current.wallSettings.snapToGrid &&
+        modifierKeysRef.current.shift
+      ) {
+        nextPoint = snapToGrid(nextPoint, optionsRef.current.wallSettings.gridSize);
+      }
+
+      const nextRoutePoints = state.baselineRoutePoints.map((routePoint, index) =>
+        index === state.vertexIndex ? nextPoint : { ...routePoint },
+      );
+      const segmentCount = Math.max(0, nextRoutePoints.length - 1);
+      const normalizedMaterials = Array.from(
+        { length: segmentCount },
+        (_, index) =>
+          state.segmentMaterials[index] === 'hard' ? 'hard' : 'flexible',
+      );
+      const nextProperties = {
+        ...state.baselineProperties,
+        routePoints: nextRoutePoints,
+        segmentMaterials: normalizedMaterials,
+      };
+      const nextVisual = buildRefrigerantPipeVisual(
+        {
+          ...pipeElement,
+          properties: nextProperties,
+        },
+        optionsRef.current.hvacElements,
+      );
+      if (touchesHardSegment && nextVisual.invalidHardSegmentCount > 0) {
+        return {
+          label: `Pipe vertex V${state.vertexIndex + 1}`,
+          point: state.baselineRoutePoints[state.vertexIndex] ?? nextPoint,
+        };
+      }
+
+      optionsRef.current.updateHvacElement(
+        pipeElement.id,
+        {
+          position: {
+            x: nextVisual.bounds.minX,
+            y: nextVisual.bounds.minY,
+          },
+          width: nextVisual.bounds.width,
+          depth: nextVisual.bounds.height,
+          height: Math.max(1, nextVisual.outerRadiusMm * 2),
+          properties: nextProperties,
+        },
+        { skipHistory: true },
+      );
+      syncPipeBundleMates(
+        pipeElement,
+        state.baselineRoutePoints,
+        nextRoutePoints,
+      );
+
+      return {
+        label: `Pipe vertex V${state.vertexIndex + 1}`,
+        point: nextPoint,
+      };
+    }
 
     if (state.mode === 'thickness') {
       const baseline = state.baselineWall;
@@ -2802,6 +3388,7 @@ export function useSelectMode({
     clearSnapIndicators,
     connectWallsIfNeeded,
     computePerpendicularSnap,
+    findHvacById,
     findWallById,
     findRoomById,
     findRoomMagneticSnap,
@@ -2812,6 +3399,7 @@ export function useSelectMode({
     clearRotationGuide,
     showRoomRotationGuide,
     showSnapIndicator,
+    syncPipeBundleMates,
     updateWallIfChanged,
     updateWallsIfChanged,
   ]);
@@ -2866,6 +3454,7 @@ export function useSelectMode({
         const hoveredId =
           meta.wallId ??
           meta.roomId ??
+          meta.pipeId ??
           (meta.name?.startsWith('wall-') || meta.name?.startsWith('room-') ? meta.id : null) ??
           null;
         optionsRef.current.setHoveredElement(hoveredId);
@@ -2905,7 +3494,45 @@ export function useSelectMode({
 
     const mode = dragStateRef.current.mode;
     if (mode !== 'idle' && dragChangedRef.current) {
+      // WELD-ON-DROP (reference wall.moveNode): a wall-graph endpoint drag
+      // commits through the shared-node graph, so dropping onto another corner
+      // MERGES the nodes and dropping onto a wall body SPLITS it into a T.
+      // The graph op runs the full post-edit pipeline (rooms, elevations,
+      // history) itself — skip the generic tail when it handled the commit.
+      let committedThroughGraph = false;
+      if (mode === 'endpoint' && optionsRef.current.wallGraphMoveNode) {
+        const endpointState = dragStateRef.current as unknown as {
+          wallId?: string;
+          endpoint?: 'start' | 'end';
+        };
+        const wall = endpointState.wallId ? findWallById(endpointState.wallId) : null;
+        if (wall?.graph && endpointState.endpoint) {
+          const nodeId = endpointState.endpoint === 'start' ? wall.graph.a : wall.graph.b;
+          const dropPoint = endpointState.endpoint === 'start' ? wall.startPoint : wall.endPoint;
+          optionsRef.current.wallGraphMoveNode(nodeId, { x: dropPoint.x, y: dropPoint.y }, true);
+          committedThroughGraph = true;
+        }
+      }
+      if (committedThroughGraph) {
+        dragStateRef.current = { mode: 'idle' };
+        isWallHandleDraggingRef.current = false;
+        dragChangedRef.current = false;
+        smoothedPointerRef.current = null;
+        endpointSnapMemoryRef.current = null;
+        wallUpdateCacheRef.current.clear();
+        connectedPairCacheRef.current.clear();
+        optionsRef.current.onDragStateChange?.(false);
+        optionsRef.current.onRoomDragStateChange?.(null);
+        clearEditVisuals();
+        return;
+      }
       const action =
+        mode === 'pipe-segment'
+          ? 'Move refrigerant pipe hard segment'
+          :
+        mode === 'pipe-vertex'
+          ? 'Edit refrigerant pipe vertex'
+          :
         mode === 'thickness'
           ? 'Adjust wall thickness'
           : mode === 'move'
@@ -2921,8 +3548,19 @@ export function useSelectMode({
                     : mode === 'room-move'
                       ? 'Move room'
                       : 'Edit wall endpoint';
-      optionsRef.current.detectRooms();
-      optionsRef.current.regenerateElevations();
+      const affectsWallGeometry =
+        mode === 'thickness' ||
+        mode === 'move' ||
+        mode === 'rotate' ||
+        mode === 'room-rotate' ||
+        mode === 'room-corner' ||
+        mode === 'room-scale' ||
+        mode === 'room-move' ||
+        mode === 'endpoint';
+      if (affectsWallGeometry) {
+        optionsRef.current.detectRooms();
+        optionsRef.current.regenerateElevations();
+      }
       optionsRef.current.saveToHistory(action);
     }
 
@@ -2959,9 +3597,9 @@ export function useSelectMode({
     ) => {
       const meta = getTargetMeta(target);
 
-      if ((meta.isWallControl || meta.isRoomControl) && beginControlDrag(meta, scenePoint)) {
+      if ((meta.isWallControl || meta.isRoomControl || meta.isPipeControl) && beginControlDrag(meta, scenePoint)) {
         optionsRef.current.onDragStateChange?.(true);
-        const selectedPrimaryId = meta.wallId ?? meta.roomId;
+        const selectedPrimaryId = meta.wallId ?? meta.roomId ?? meta.pipeId;
         if (selectedPrimaryId && !optionsRef.current.selectedIds.includes(selectedPrimaryId)) {
           optionsRef.current.setSelectedIds([selectedPrimaryId]);
         }
@@ -2971,6 +3609,7 @@ export function useSelectMode({
       const clickedId =
         meta.wallId ??
         meta.roomId ??
+        meta.pipeId ??
         (meta.name?.startsWith('wall-') || meta.name?.startsWith('room-') ? meta.id : undefined);
       if (clickedId) {
         if (addToSelection) {

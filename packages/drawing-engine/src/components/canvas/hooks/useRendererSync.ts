@@ -36,16 +36,17 @@ import type {
     MarqueeSelectionState,
     OpeningPointerInteraction,
 } from '../../DrawingCanvas.types';
-import { getToolCursor } from '../toolUtils';
-import { MM_TO_PX } from '../scale';
-import { formatDimensionLength } from '../dimension/dimensionGeometry';
-import type { WallRenderer } from '../wall/WallRenderer';
-import type { RoomRenderer } from '../room/RoomRenderer';
 import type { DimensionRenderer } from '../dimension/DimensionRenderer';
-import type { ObjectRenderer } from '../object/ObjectRenderer';
+import { formatDimensionLength } from '../dimension/dimensionGeometry';
 import type { SectionLineRenderer } from '../elevation/SectionLineRenderer';
 import type { HvacPlanRenderer } from '../hvac/HvacPlanRenderer';
-import { startDragPerfTimer, endDragPerfTimer } from '../perf/dragPerf';
+import type { ObjectRenderer } from '../object/ObjectRenderer';
+import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
+import type { RoomRenderer } from '../room/RoomRenderer';
+import { MM_TO_PX } from '../scale';
+import { getToolCursor } from '../toolUtils';
+import { buildViewportTransform } from '../viewTransform';
+import type { WallRenderer } from '../wall/WallRenderer';
 
 const DRAG_AUTO_DIMENSION_MIN_INTERVAL_MS = 120;
 
@@ -109,9 +110,11 @@ export interface UseRendererSyncOptions {
     activeRoomDragId: string | null;
     persistentRoomControlId: string | null;
     openingInteractionActive: boolean;
+    projectionViewOnly?: boolean;
     pendingPlacementDefinition: ArchitecturalObjectDefinition | null;
     pendingPlacementEquipmentDefinition: AcEquipmentDefinition | null;
     placementRotationDeg: number;
+    konvaPipeEditorEnabled: boolean;
 
     // State setters
     setPlacementRotationDeg: React.Dispatch<React.SetStateAction<number>>;
@@ -171,9 +174,17 @@ export interface UseRendererSyncOptions {
         point: Point2D,
         source: AcEquipmentDefinition | HvacElement,
     ) => {
+        center: Point2D;
         point: Point2D;
         rotationDeg: number;
         valid: boolean;
+        roomId?: string | null;
+        wallId?: string | null;
+        invalidReason?: string | null;
+        widthMm?: number;
+        depthMm?: number;
+        heightMm?: number;
+        placementProperties?: Record<string, unknown>;
     };
 
     // Tool hooks that need cleanup
@@ -245,9 +256,11 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         activeRoomDragId,
         persistentRoomControlId,
         openingInteractionActive,
+        projectionViewOnly = false,
         pendingPlacementDefinition,
         pendingPlacementEquipmentDefinition,
         placementRotationDeg,
+        konvaPipeEditorEnabled,
 
         setPlacementRotationDeg,
         setPlacementValid,
@@ -306,14 +319,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
                 return;
             }
         }
-        const viewportTransform: fabric.TMat2D = [
-            viewportZoom,
-            0,
-            0,
-            viewportZoom,
-            -panOffset.x * viewportZoom,
-            -panOffset.y * viewportZoom,
-        ];
+        const viewportTransform = buildViewportTransform(viewportZoom, panOffset);
         canvas.setViewportTransform(viewportTransform);
         hideActiveSelectionChrome(canvas);
         roomRendererRef.current?.setViewportZoom(viewportZoom, {
@@ -1001,11 +1007,32 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         hvacRendererRef.current.syncElements(hvacElements);
     }, [hvacElements, fabricCanvas, hvacRendererRef, roomRendererRef]);
 
+    // The SVG pipe-studio overlay draws the visible pipes in plan view, so hide
+    // the Fabric pipe bodies there (kept evented for selection / snapping) to
+    // avoid a double image. In projection view the overlay is off, so show them.
+    useEffect(() => {
+        hvacRendererRef.current?.setHideRefrigerantBodies(!projectionViewOnly);
+    }, [projectionViewOnly, hvacElements, fabricCanvas, hvacRendererRef]);
+
     useEffect(() => {
         const hvacIds = new Set(hvacElements.map((element) => element.id));
-        const selectedHvacIds = selectedIds.filter((id) => hvacIds.has(id));
+        const selectedHvacIds = selectedIds.filter((id) => {
+            if (!hvacIds.has(id)) {
+                return false;
+            }
+            if (!konvaPipeEditorEnabled) {
+                return true;
+            }
+            const element = hvacElements.find((entry) => entry.id === id);
+            if (!element) {
+                return false;
+            }
+            // Konva editor currently handles only single-line refrigerant pipes.
+            // Keep Fabric controls active for pipe-pair elements.
+            return element.type !== 'refrigerant-pipe';
+        });
         hvacRendererRef.current?.setSelectedElements(selectedHvacIds);
-    }, [hvacElements, selectedIds, hvacRendererRef]);
+    }, [hvacElements, selectedIds, hvacRendererRef, konvaPipeEditorEnabled]);
 
     useEffect(() => {
         const hvacIds = new Set(hvacElements.map((element) => element.id));
@@ -1135,6 +1162,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
                 placement.point,
                 placement.rotationDeg,
                 placement.valid,
+                placement.placementProperties,
             );
         }
     }, [pendingPlacementDefinition, pendingPlacementEquipmentDefinition, computeHvacPlacement, hvacRendererRef, mousePositionRef, objectRendererRef, placementCursorRef, setPlacementValid, setPlacementRotationDeg]);
@@ -1148,6 +1176,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
             placement.point,
             placement.rotationDeg,
             placement.valid,
+            placement.placementProperties,
         );
     }, [pendingPlacementEquipmentDefinition, placementRotationDeg, computeHvacPlacement, hvacRendererRef, placementCursorRef, setPlacementValid]);
 
@@ -1161,11 +1190,14 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         const effectiveTool = isSpacePressed ? 'pan' : tool;
         const allowSelection =
             effectiveTool === 'select' &&
+            !projectionViewOnly &&
             !pendingPlacementDefinition &&
             !pendingPlacementEquipmentDefinition &&
             !openingInteractionActive;
         const pointerCursor = canvasState.isPanning
             ? 'grabbing'
+            : projectionViewOnly
+                ? 'grab'
             : (pendingPlacementDefinition || pendingPlacementEquipmentDefinition)
                 ? 'crosshair'
                 : getToolCursor(effectiveTool);
@@ -1238,7 +1270,7 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
             hideActiveSelectionChrome(canvas);
         }
         canvas.renderAll();
-    }, [tool, isSpacePressed, canvasState.isPanning, pendingPlacementDefinition, pendingPlacementEquipmentDefinition, openingInteractionActive, fabricRef, marqueeSelectionRef, lastMarqueeSelectionRef, applyMarqueeFilterRef]);
+    }, [tool, isSpacePressed, canvasState.isPanning, projectionViewOnly, pendingPlacementDefinition, pendingPlacementEquipmentDefinition, openingInteractionActive, fabricRef, marqueeSelectionRef, lastMarqueeSelectionRef, applyMarqueeFilterRef]);
 
     return {
         refreshDimensionLayer,

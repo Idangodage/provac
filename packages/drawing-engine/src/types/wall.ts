@@ -44,10 +44,14 @@ export type SectionLineDirection = 1 | -1;
 export type EditorViewMode = 'plan' | 'split' | 'front-elevation' | 'end-elevation' | 'isometric';
 export type HvacElementType =
   | 'ducted-ac'
+  | 'duct'
   | 'split-ac'
   | 'wall-mounted-ac'
   | 'ceiling-cassette-ac'
   | 'ceiling-suspended-ac'
+  | 'refrigerant-pipe'
+  | 'refrigerant-pipe-pair'
+  | 'refrigerant-branch-kit'
   | 'outdoor-unit'
   | 'filter'
   | 'remote-controller'
@@ -308,6 +312,13 @@ export interface Wall {
   connectedWalls: string[];      // IDs of walls sharing endpoints
   openings: Opening[];
   properties3D: Wall3D;
+  /**
+   * Shared-node wall-graph identity (src/wallcore): node ids + justification
+   * mirrored onto this legacy wall, so the topology graph is exactly
+   * reconstructible from history snapshots and saved documents. Absent on
+   * legacy documents until the one-time weld migration stamps it.
+   */
+  graph?: { a: string; b: string; justification: 'center' | 'left' | 'right' };
 }
 
 /**
@@ -409,6 +420,8 @@ export interface WallSettings {
   partitionMode: PartitionWallMode;
   defaultLayerCount: number;      // default wall layer count
   defaultMaterial: WallMaterial;
+  /** Canonical library material for new walls; coarse enum is legacy fallback. */
+  defaultMaterialId: string;
   defaultLayer: WallLayer;
   showCenterLines: boolean;
   showHeightTags: boolean;
@@ -522,6 +535,7 @@ export const DEFAULT_WALL_SETTINGS: WallSettings = {
   partitionMode: 'full',
   defaultLayerCount: DEFAULT_WALL_LAYER_COUNT,
   defaultMaterial: 'brick',
+  defaultMaterialId: 'exterior-brick-200',
   defaultLayer: 'partition',
   showCenterLines: true,
   showHeightTags: false,

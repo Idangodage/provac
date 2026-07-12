@@ -27,6 +27,24 @@ import {
   regenerateElevationViews,
 } from '../components/canvas/elevation';
 import type { FurnitureProjectionInput } from '../components/canvas/elevation';
+import {
+  DEFAULT_PIPE_ROUTING_SETTINGS,
+  resolvePipeRoutingSettings,
+  setActivePipeRoutingSettings,
+  type PipeRoutingSettings,
+} from '../components/canvas/hvac/pipeRoutingSettings';
+import {
+  isRefrigerantPipeElementType,
+  type RefrigerantPipeAngleMode,
+  type RefrigerantPipeLineMode,
+  type RefrigerantPipeMaterial,
+  translateRefrigerantPipeElementProperties,
+} from '../components/canvas/hvac/refrigerantPipePairModel';
+import {
+  DEFAULT_BOARD_SETTINGS,
+  resolveBoardSettings,
+  type BoardSettings,
+} from '../components/canvas/measurement';
 import { DEFAULT_ARCHITECTURAL_OBJECT_LIBRARY } from '../data';
 import type {
   Point2D,
@@ -97,34 +115,52 @@ import {
   withUpdatedBevel,
   type CornerEnd,
 } from '../utils/wallBevel';
+import {
+  legacyWallsFromGraph,
+  wallGraphFromLegacyWalls,
+  type MirrorCallbacks,
+} from '../wallcore/legacyBridge';
+import type { Vec2 as WallVec2 } from '../wallcore/vec2';
+import type { WallEdge2, WallGraphDoc } from '../wallcore/wallModel';
+import {
+  addWallChain as coreAddWallChain,
+  deleteWalls as coreDeleteWalls,
+  flipWallJustification as coreFlipWallJustification,
+  mergeAtNode as coreMergeAtNode,
+  moveWallEdges as coreMoveWallEdges,
+  moveWallNode as coreMoveWallNode,
+  setWallLength as coreSetWallLength,
+  setWallParams as coreSetWallParams,
+  splitWall as coreSplitWall,
+} from '../wallcore/wallOps';
 
 // Import from extracted modules
-import {
-  DEFAULT_PAGE_CONFIG,
-  DEFAULT_LAYERS,
-} from './defaults';
-import {
-  createEmptyHistorySnapshot,
-  createHistoryEntry,
-  createHistorySnapshot,
-} from './helpers';
 import { buildAutoDetectedRooms, createRoomModel } from './autoDetectedRooms';
+import { syncAutoDimensionsInBackground } from './autoDimensionWorkerClient';
 import {
   autoManagedDimensionSignature,
   buildAutoWallDimensions,
   buildRoomAreaDimensions,
   buildMergedAutoManagedDimensions,
-  isAutoManagedDimension,
   mergeAutoManagedDimensions,
   normalizeDimensionPayload,
 } from './autoManagedDimensions';
+import { CURRENT_HVAC_SCHEMA_VERSION, migrateCanvasData } from './canvasDataMigration';
+import {
+  DEFAULT_PAGE_CONFIG,
+  DEFAULT_LAYERS,
+} from './defaults';
 import { regenerateElevationsInBackground } from './elevationGenerationWorkerClient';
+import {
+  createEmptyHistorySnapshot,
+  createHistoryEntry,
+  createHistorySnapshot,
+} from './helpers';
 import {
   inferRoomType,
   roomTopologyHash,
   roomTypeFillColor,
 } from './roomDetection';
-import { syncAutoDimensionsInBackground } from './autoDimensionWorkerClient';
 import { detectRoomsInBackground } from './roomDetectionWorkerClient';
 
 const AUTO_TRIM_TOLERANCE_MM = 120;
@@ -429,6 +465,10 @@ function inferHvacElementCategory(type: HvacElement['type']): HvacElement['categ
       return 'control';
     case 'filter':
     case 'accessory':
+    case 'duct':
+    case 'refrigerant-pipe':
+    case 'refrigerant-pipe-pair':
+    case 'refrigerant-branch-kit':
       return 'accessory';
     case 'diffuser':
     case 'return-grille':
@@ -1724,6 +1764,7 @@ export interface DrawingState {
   rooms: Room[];
   materialLibrary: typeof DEFAULT_ARCHITECTURAL_MATERIALS;
   hvacDesignConditions: HvacDesignConditions;
+  pipeRoutingSettings: PipeRoutingSettings;
   wallDrawingState: WallDrawingState;
   wallSettings: WallSettings;
   sectionLines: SectionLine[];
@@ -1743,6 +1784,9 @@ export interface DrawingState {
 
   // Tool State
   activeTool: DrawingTool;
+  refrigerantPipeDrawMode: RefrigerantPipeMaterial;
+  refrigerantPipeAngleMode: RefrigerantPipeAngleMode;
+  refrigerantPipeLineMode: RefrigerantPipeLineMode;
   activeLayerId: string | null;
   selectedElementIds: string[];
   hoveredElementId: string | null;
@@ -1762,6 +1806,7 @@ export interface DrawingState {
   showGrid: boolean;
   showRulers: boolean;
   pageConfig: PageConfig;
+  boardSettings: BoardSettings;
 
   // Preview State
   previewHeight: number;
@@ -1823,6 +1868,33 @@ export interface DrawingState {
   addSymbol: (symbol: Omit<SymbolInstance2D, 'id'>) => string;
   updateSymbol: (id: string, data: Partial<SymbolInstance2D>, options?: { skipHistory?: boolean }) => void;
   deleteSymbol: (id: string) => void;
+
+  // Actions - Wall graph (NEW shared-node wall system — src/wallcore, the
+  // reference-app architecture; see docs/plan-wall-rebuild-reference-port.md).
+  // The graph is a pure function of `walls` (each mirrored wall carries its
+  // node ids in `wall.graph`), so history/persistence need no extra state.
+  getWallGraph: () => WallGraphDoc;
+  wallGraphAddChain: (
+    points: Point2D[],
+    params?: Partial<{
+      thickness: number;
+      height: number;
+      justification: 'center' | 'left' | 'right';
+      material: string;
+      materialId: string;
+    }>,
+  ) => string[];
+  wallGraphMoveNode: (nodeId: string, to: Point2D, weld?: boolean) => void;
+  wallGraphMoveEdges: (edgeIds: string[], delta: Point2D) => void;
+  wallGraphSetParams: (
+    edgeIds: string[],
+    patch: Partial<Pick<WallEdge2, 'thickness' | 'height' | 'baseOffset' | 'justification' | 'material' | 'materialId'>>,
+  ) => void;
+  wallGraphFlip: (edgeIds: string[]) => void;
+  wallGraphSetLength: (edgeId: string, length: number, anchor: 'a' | 'b') => void;
+  wallGraphSplit: (edgeId: string, t: number) => void;
+  wallGraphMerge: (nodeId: string) => void;
+  wallGraphDelete: (edgeIds: string[]) => void;
 
   // Actions - Walls
   addWall: (params: CreateWallParams) => string;
@@ -1888,6 +1960,7 @@ export interface DrawingState {
   updateRoom: (id: string, updates: Partial<Room>) => void;
   updateRoom3DAttributes: (id: string, updates: Partial<Room3D>) => void;
   setHvacDesignConditions: (updates: Partial<HvacDesignConditions>) => void;
+  setPipeRoutingSettings: (updates: Partial<PipeRoutingSettings>) => void;
   applyRoomTemplateToSelectedRooms: (templateId: string) => void;
   deleteRoom: (id: string) => void;
   getRoom: (id: string) => Room | undefined;
@@ -1920,6 +1993,7 @@ export interface DrawingState {
   deleteWalls: (ids: string[]) => void;
   clearAllWalls: () => void;
   addHvacElement: (element: Omit<Partial<HvacElement>, 'id'> & Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>) => string;
+  addHvacElements: (elements: Array<Omit<Partial<HvacElement>, 'id'> & Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>>) => string[];
   updateHvacElement: (id: string, updates: Partial<HvacElement>, options?: { skipHistory?: boolean }) => void;
   deleteHvacElement: (id: string, options?: { skipHistory?: boolean }) => void;
   duplicateHvacElement: (id: string) => string | null;
@@ -1940,6 +2014,9 @@ export interface DrawingState {
   deleteSelected: () => void;
 
   // Actions - Tools
+  setRefrigerantPipeDrawMode: (mode: RefrigerantPipeMaterial) => void;
+  setRefrigerantPipeAngleMode: (mode: RefrigerantPipeAngleMode) => void;
+  setRefrigerantPipeLineMode: (mode: RefrigerantPipeLineMode) => void;
   setActiveTool: (tool: DrawingTool) => void;
 
   // Alias for backward compatibility
@@ -1960,6 +2037,7 @@ export interface DrawingState {
   setShowRulers: (show: boolean) => void;
   toggleRulers: () => void;
   setPageConfig: (config: Partial<PageConfig>) => void;
+  setBoardSettings: (settings: Partial<BoardSettings>) => void;
   resetView: () => void;
   zoomToFit: () => void;
 
@@ -2010,6 +2088,84 @@ export interface DrawingState {
 }
 
 // =============================================================================
+// Wall graph (NEW shared-node wall system — src/wallcore) helpers
+// =============================================================================
+
+const WALL_GRAPH_IDS = { newId: generateId };
+
+/** Mirror callbacks: how a graph edge materialises as a legacy Wall. */
+function buildWallMirrorCallbacks(get: () => DrawingState): MirrorCallbacks<Wall> {
+  return {
+    createWall: (edge, start, end) => {
+      const thickness = clampThickness(edge.thickness);
+      const material = (edge.material as Wall['material']) ?? 'brick';
+      const base: Wall = {
+        id: edge.id,
+        startPoint: { x: start[0], y: start[1] },
+        endPoint: { x: end[0], y: end[1] },
+        thickness,
+        centerlineOffset: 0,
+        material,
+        layer: 'partition',
+        interiorLine: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
+        exteriorLine: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
+        startBevel: { ...DEFAULT_BEVEL_CONTROL },
+        endBevel: { ...DEFAULT_BEVEL_CONTROL },
+        connectedWalls: [],
+        openings: [],
+        properties3D: { ...DEFAULT_WALL_3D },
+      };
+      const materialId = edge.materialId ?? getDefaultMaterialIdForWallMaterial(material);
+      return bindWallAttributes(rebuildWallGeometry(base), {
+        materialId,
+        height: edge.height,
+        baseElevation: edge.baseOffset,
+        layerCount: get().wallSettings.defaultLayerCount ?? DEFAULT_WALL_LAYER_COUNT,
+        thermalResistance:
+          getArchitecturalMaterial(materialId)?.thermalResistance ??
+          DEFAULT_WALL_3D.thermalResistance,
+      });
+    },
+    rebuildGeometry: (wall) => rebuildWallGeometry(wall),
+    // Solver footprint [aL, bL, bR, aR] → mitred interior (aL→bL) and
+    // exterior (aR→bR) lines, so every 2D consumer (fill quad, boundary
+    // strokes, hit polygon) draws the exact solved body — same geometry as
+    // the 3D prisms.
+    applyFootprint: (wall, corners) => ({
+      ...wall,
+      interiorLine: {
+        start: { x: corners[0][0], y: corners[0][1] },
+        end: { x: corners[1][0], y: corners[1][1] },
+      },
+      exteriorLine: {
+        start: { x: corners[3][0], y: corners[3][1] },
+        end: { x: corners[2][0], y: corners[2][1] },
+      },
+    }),
+  };
+}
+
+/**
+ * Run one wall-graph command: derive the graph from the mirrored walls,
+ * mutate topology via wallcore, mirror back, then the standard post-wall-edit
+ * pipeline (rooms, elevations, history) — same tail as the legacy addWall.
+ */
+function applyWallGraphOperation(
+  get: () => DrawingState,
+  set: (partial: Partial<DrawingState>) => void,
+  label: string,
+  mutate: (draft: WallGraphDoc) => void,
+): void {
+  const graph = wallGraphFromLegacyWalls(get().walls, WALL_GRAPH_IDS);
+  mutate(graph);
+  const walls = legacyWallsFromGraph(graph, get().walls, buildWallMirrorCallbacks(get));
+  set({ walls });
+  get().detectRooms();
+  get().regenerateElevations();
+  get().saveToHistory(label);
+}
+
+// =============================================================================
 // Store Implementation
 // =============================================================================
 
@@ -2030,6 +2186,7 @@ export const useDrawingStore = create<DrawingState>()(
       rooms: [],
       materialLibrary: [...DEFAULT_ARCHITECTURAL_MATERIALS],
       hvacDesignConditions: { ...DEFAULT_HVAC_DESIGN_CONDITIONS },
+      pipeRoutingSettings: { ...DEFAULT_PIPE_ROUTING_SETTINGS },
       wallDrawingState: { ...DEFAULT_WALL_DRAWING_STATE },
       wallSettings: { ...DEFAULT_WALL_SETTINGS },
       sectionLines: [],
@@ -2051,6 +2208,9 @@ export const useDrawingStore = create<DrawingState>()(
       processingStatus: '',
       detectedElements: [],
       activeTool: 'select',
+      refrigerantPipeDrawMode: 'flexible',
+      refrigerantPipeAngleMode: 'auto',
+      refrigerantPipeLineMode: 'pair',
       activeLayerId: 'default',
       selectedElementIds: [],
       hoveredElementId: null,
@@ -2071,6 +2231,7 @@ export const useDrawingStore = create<DrawingState>()(
       showGrid: true,
       showRulers: true,
       pageConfig: { ...DEFAULT_PAGE_CONFIG },
+      boardSettings: { ...DEFAULT_BOARD_SETTINGS },
       previewHeight: 3.0,
       show3DPreview: true,
       autoSync3D: true,
@@ -3021,6 +3182,75 @@ export const useDrawingStore = create<DrawingState>()(
         return effectiveWallId;
       },
 
+      // ── Wall graph (NEW shared-node wall system — see src/wallcore) ──────
+      getWallGraph: () => wallGraphFromLegacyWalls(get().walls, WALL_GRAPH_IDS),
+
+      wallGraphAddChain: (points, params) => {
+        let created: string[] = [];
+        const material = params?.material ?? 'brick';
+        const materialId = params?.materialId ?? (
+          material === get().wallSettings.defaultMaterial
+            ? get().wallSettings.defaultMaterialId
+            : getDefaultMaterialIdForWallMaterial(material as WallMaterial)
+        );
+        applyWallGraphOperation(get, set, 'Draw wall', (draft) => {
+          created = coreAddWallChain(
+            draft,
+            points.map((p): WallVec2 => [p.x, p.y]),
+            {
+              thickness: clampThickness(params?.thickness ?? 150),
+              height: params?.height ?? get().wallSettings.defaultHeight ?? DEFAULT_WALL_HEIGHT,
+              baseOffset: 0,
+              justification: params?.justification ?? 'center',
+              material,
+              materialId,
+            },
+            WALL_GRAPH_IDS,
+          );
+        });
+        return created;
+      },
+
+      wallGraphMoveNode: (nodeId, to, weld) =>
+        applyWallGraphOperation(get, set, 'Move wall corner', (draft) =>
+          coreMoveWallNode(draft, nodeId, [to.x, to.y], { weld }, WALL_GRAPH_IDS),
+        ),
+
+      wallGraphMoveEdges: (edgeIds, delta) =>
+        applyWallGraphOperation(get, set, 'Move walls', (draft) =>
+          coreMoveWallEdges(draft, edgeIds, [delta.x, delta.y]),
+        ),
+
+      wallGraphSetParams: (edgeIds, patch) =>
+        applyWallGraphOperation(get, set, 'Edit wall', (draft) =>
+          coreSetWallParams(draft, edgeIds, patch),
+        ),
+
+      wallGraphFlip: (edgeIds) =>
+        applyWallGraphOperation(get, set, 'Flip wall side', (draft) =>
+          coreFlipWallJustification(draft, edgeIds),
+        ),
+
+      wallGraphSetLength: (edgeId, length, anchor) =>
+        applyWallGraphOperation(get, set, 'Wall length', (draft) =>
+          coreSetWallLength(draft, edgeId, length, anchor),
+        ),
+
+      wallGraphSplit: (edgeId, t) =>
+        applyWallGraphOperation(get, set, 'Split wall', (draft) => {
+          coreSplitWall(draft, edgeId, t, WALL_GRAPH_IDS);
+        }),
+
+      wallGraphMerge: (nodeId) =>
+        applyWallGraphOperation(get, set, 'Merge walls', (draft) => {
+          coreMergeAtNode(draft, nodeId);
+        }),
+
+      wallGraphDelete: (edgeIds) =>
+        applyWallGraphOperation(get, set, 'Delete wall', (draft) =>
+          coreDeleteWalls(draft, edgeIds),
+        ),
+
       updateWall: (id, updates, options) => {
         const safeUpdates = updates.thickness !== undefined
           ? { ...updates, thickness: clampThickness(updates.thickness) }
@@ -3516,6 +3746,19 @@ export const useDrawingStore = create<DrawingState>()(
         }));
       },
 
+      setPipeRoutingSettings: (updates) => {
+        set((state) => {
+          const next = resolvePipeRoutingSettings({
+            ...state.pipeRoutingSettings,
+            ...updates,
+          });
+          // Keep the geometry/clash engines' active settings in sync so a
+          // config change recomputes routes the same way a property edit does.
+          setActivePipeRoutingSettings(next);
+          return { pipeRoutingSettings: next };
+        });
+      },
+
       applyRoomTemplateToSelectedRooms: (templateId) => {
         const template = DEFAULT_ROOM_HVAC_TEMPLATES.find((entry) => entry.id === templateId);
         if (!template) return;
@@ -3672,7 +3915,7 @@ export const useDrawingStore = create<DrawingState>()(
             height: resolvedHeight,
             materialId: partitionToolActive
               ? getDefaultMaterialIdForWallMaterial('partition')
-              : undefined,
+              : wallSettings.defaultMaterialId,
           },
         });
 
@@ -3805,6 +4048,14 @@ export const useDrawingStore = create<DrawingState>()(
         if (safeSettings.gridSize !== undefined) {
           safeSettings.gridSize = Math.max(1, safeSettings.gridSize);
         }
+        if (
+          safeSettings.defaultMaterial !== undefined &&
+          safeSettings.defaultMaterialId === undefined
+        ) {
+          safeSettings.defaultMaterialId = getDefaultMaterialIdForWallMaterial(
+            safeSettings.defaultMaterial
+          );
+        }
 
         set((state) => ({
           wallSettings: { ...state.wallSettings, ...safeSettings },
@@ -3832,6 +4083,9 @@ export const useDrawingStore = create<DrawingState>()(
       createRoomWalls: (config, startCorner) => {
         const { width, height, wallThickness, material } = config;
         const layer = material === 'partition' ? 'partition' : 'structural';
+        const defaultMaterialId = material === get().wallSettings.defaultMaterial
+          ? get().wallSettings.defaultMaterialId
+          : getDefaultMaterialIdForWallMaterial(material);
 
         const corners: Point2D[] = [
           startCorner,
@@ -3850,6 +4104,7 @@ export const useDrawingStore = create<DrawingState>()(
             thickness: wallThickness,
             material,
             layer,
+            properties3D: { materialId: defaultMaterialId },
           });
           wallIds.push(wallId);
         }
@@ -3916,6 +4171,19 @@ export const useDrawingStore = create<DrawingState>()(
         return nextElement.id;
       },
 
+      addHvacElements: (elements) => {
+        const nextElements = elements.map((element) => normalizeHvacElement(element));
+        if (nextElements.length === 0) {
+          return [];
+        }
+        set((state) => ({
+          hvacElements: [...state.hvacElements, ...nextElements],
+        }));
+        get().regenerateElevations({ debounce: true });
+        get().saveToHistory(nextElements.length > 1 ? 'Add refrigerant pipes' : 'Add AC equipment');
+        return nextElements.map((element) => element.id);
+      },
+
       updateHvacElement: (id, updates, options) => {
         let changed = false;
         set((state) => ({
@@ -3976,14 +4244,18 @@ export const useDrawingStore = create<DrawingState>()(
         if (!existing) {
           return null;
         }
+        const duplicateOffset = { x: 200, y: 200 };
         const clone = normalizeHvacElement({
           ...existing,
           id: generateId(),
           label: `${existing.label} Copy`,
           position: {
-            x: existing.position.x + 200,
-            y: existing.position.y + 200,
+            x: existing.position.x + duplicateOffset.x,
+            y: existing.position.y + duplicateOffset.y,
           },
+          properties: isRefrigerantPipeElementType(existing.type)
+            ? translateRefrigerantPipeElementProperties(existing.type, existing.properties, duplicateOffset)
+            : existing.properties,
         });
         set((state) => ({
           hvacElements: [...state.hvacElements, clone],
@@ -4310,6 +4582,24 @@ export const useDrawingStore = create<DrawingState>()(
       exportData: () => get().exportToJSON(),
 
       // Tool Actions
+      setRefrigerantPipeDrawMode: (mode) =>
+        set((state) =>
+          state.refrigerantPipeDrawMode === mode
+            ? state
+            : { refrigerantPipeDrawMode: mode }
+        ),
+      setRefrigerantPipeAngleMode: (mode) =>
+        set((state) =>
+          state.refrigerantPipeAngleMode === mode
+            ? state
+            : { refrigerantPipeAngleMode: mode }
+        ),
+      setRefrigerantPipeLineMode: (mode) =>
+        set((state) =>
+          state.refrigerantPipeLineMode === mode
+            ? state
+            : { refrigerantPipeLineMode: mode }
+        ),
       setActiveTool: (tool) => set((state) => {
         const partitionToolActive = isPartitionWallTool(tool);
         return {
@@ -4353,6 +4643,9 @@ export const useDrawingStore = create<DrawingState>()(
       toggleRulers: () => set((state) => ({ showRulers: !state.showRulers })),
       setPageConfig: (config) => set((state) => ({
         pageConfig: { ...state.pageConfig, ...config }
+      })),
+      setBoardSettings: (settings) => set((state) => ({
+        boardSettings: resolveBoardSettings({ ...state.boardSettings, ...settings }),
       })),
       resetView: () => set({ zoom: 1, panOffset: { x: 0, y: 0 }, resetViewRequestId: Date.now() }),
       zoomToFit: () => set({ zoomToFitRequestId: Date.now() }),
@@ -4562,13 +4855,21 @@ export const useDrawingStore = create<DrawingState>()(
           wallSettings,
           dimensionSettings,
           hvacDesignConditions,
+          pipeRoutingSettings,
           materialLibrary,
+          boardSettings,
+          pageConfig,
+          displayUnit,
+          showGrid,
+          showRulers,
+          snapToGrid,
         } = get();
 
         const attributeEnvelope = createAttributeEnvelope(walls, rooms);
         return JSON.stringify({
           version: '1.0',
           attributeSchemaVersion: 1,
+          hvacSchemaVersion: CURRENT_HVAC_SCHEMA_VERSION,
           dimensions,
           annotations,
           sketches,
@@ -4584,8 +4885,15 @@ export const useDrawingStore = create<DrawingState>()(
           wallSettings,
           dimensionSettings,
           hvacDesignConditions,
+          pipeRoutingSettings,
           materialLibrary,
           attributeEnvelope,
+          boardSettings,
+          pageConfig,
+          displayUnit,
+          showGrid,
+          showRulers,
+          snapToGrid,
           scale: importedDrawing?.scale || 100,
           exportedAt: new Date().toISOString(),
         }, null, 2);
@@ -4593,7 +4901,13 @@ export const useDrawingStore = create<DrawingState>()(
 
       importFromJSON: (json) => {
         try {
-          const data = JSON.parse(json);
+          // Single load chokepoint for every source (localStorage, DB canvasData,
+          // file import). Run the tolerant versioned migrator before the
+          // defensive per-field reads below so the HVAC schema can evolve safely.
+          // `as typeof parsed` keeps the historical `any` typing JSON.parse gave
+          // the rest of this function (the migrator is structurally faithful).
+          const parsed = JSON.parse(json);
+          const data = migrateCanvasData(parsed).data as typeof parsed;
           const rawWalls = Array.isArray(data.walls) ? data.walls : [];
           const importedWalls: Wall[] = rawWalls.map((rawWall: Partial<Wall>) => {
             const baseWall: Wall = {
@@ -4616,6 +4930,7 @@ export const useDrawingStore = create<DrawingState>()(
               connectedWalls: Array.isArray(rawWall.connectedWalls) ? rawWall.connectedWalls : [],
               openings: Array.isArray(rawWall.openings) ? rawWall.openings : [],
               properties3D: rawWall.properties3D ?? { ...DEFAULT_WALL_3D },
+              graph: rawWall.graph,
             };
             const rebuilt = rebuildWallGeometry(baseWall);
             return bindWallAttributes(rebuilt, rawWall.properties3D ?? undefined);
@@ -4681,10 +4996,20 @@ export const useDrawingStore = create<DrawingState>()(
             importedRooms
           );
 
+          const importedWallSettings =
+            typeof data.wallSettings === 'object' && data.wallSettings ? data.wallSettings : {};
           const nextWallSettings = {
             ...DEFAULT_WALL_SETTINGS,
-            ...(typeof data.wallSettings === 'object' && data.wallSettings ? data.wallSettings : {}),
+            ...importedWallSettings,
           } as WallSettings;
+          if (
+            typeof (importedWallSettings as Partial<WallSettings>).defaultMaterialId !== 'string' ||
+            !getArchitecturalMaterial(nextWallSettings.defaultMaterialId)
+          ) {
+            nextWallSettings.defaultMaterialId = getDefaultMaterialIdForWallMaterial(
+              nextWallSettings.defaultMaterial
+            );
+          }
           nextWallSettings.defaultThickness = clampThickness(nextWallSettings.defaultThickness);
           nextWallSettings.defaultPartitionThickness = clampThickness(nextWallSettings.defaultPartitionThickness);
           nextWallSettings.defaultHeight = clampHeight(nextWallSettings.defaultHeight);
@@ -4726,6 +5051,36 @@ export const useDrawingStore = create<DrawingState>()(
               ? nextHvacDesignConditions.seasonalVariation.winterAdjustment
               : DEFAULT_HVAC_DESIGN_CONDITIONS.seasonalVariation.winterAdjustment,
           };
+
+          const nextPipeRoutingSettings = resolvePipeRoutingSettings(
+            typeof data.pipeRoutingSettings === 'object' && data.pipeRoutingSettings
+              ? (data.pipeRoutingSettings as Partial<PipeRoutingSettings>)
+              : null,
+          );
+          // Sync the geometry/clash engines with the loaded document's settings.
+          setActivePipeRoutingSettings(nextPipeRoutingSettings);
+
+          // Board/sheet context travels with the document so a drawing reopens
+          // at the unit, page and scale it was authored with.
+          const nextBoardSettings = resolveBoardSettings(data.boardSettings);
+          const importedPageConfig = (typeof data.pageConfig === 'object' && data.pageConfig ? data.pageConfig : null) as Partial<PageConfig> | null;
+          const nextPageConfig: PageConfig = {
+            ...DEFAULT_PAGE_CONFIG,
+            ...(importedPageConfig &&
+              Number.isFinite(importedPageConfig.width) &&
+              Number.isFinite(importedPageConfig.height) &&
+              (importedPageConfig.width as number) > 0 &&
+              (importedPageConfig.height as number) > 0
+              ? importedPageConfig
+              : {}),
+          };
+          const nextDisplayUnit: DisplayUnit =
+            data.displayUnit === 'mm' || data.displayUnit === 'cm' || data.displayUnit === 'm' || data.displayUnit === 'ft-in'
+              ? data.displayUnit
+              : 'mm';
+          const nextShowGrid = typeof data.showGrid === 'boolean' ? data.showGrid : true;
+          const nextShowRulers = typeof data.showRulers === 'boolean' ? data.showRulers : true;
+          const nextSnapToGrid = typeof data.snapToGrid === 'boolean' ? data.snapToGrid : true;
 
           const nextElevationSettings = {
             ...DEFAULT_ELEVATION_SETTINGS,
@@ -4769,7 +5124,15 @@ export const useDrawingStore = create<DrawingState>()(
             guides: data.guides || [],
             symbols: data.symbols || [],
             hvacElements: importedHvacElements,
-            walls: attributeHydration.walls,
+            // Normalize through the wall-graph mirror: stamps graph identity
+            // (one-time endpoint-weld migration for legacy docs, wall ids kept)
+            // and solver-mitred interior/exterior lines, so the plan renders
+            // solver-true straight from load — same source of truth as 3D.
+            walls: legacyWallsFromGraph(
+              wallGraphFromLegacyWalls(attributeHydration.walls, WALL_GRAPH_IDS),
+              attributeHydration.walls,
+              buildWallMirrorCallbacks(get),
+            ),
             rooms: attributeHydration.rooms,
             sectionLines: importedSectionLines,
             elevationViews: importedElevationViews,
@@ -4778,7 +5141,14 @@ export const useDrawingStore = create<DrawingState>()(
             sectionLineDrawingState: { ...DEFAULT_SECTION_LINE_DRAWING_STATE },
             wallSettings: nextWallSettings,
             hvacDesignConditions: nextHvacDesignConditions,
+            pipeRoutingSettings: nextPipeRoutingSettings,
             materialLibrary: nextMaterialLibrary,
+            boardSettings: nextBoardSettings,
+            pageConfig: nextPageConfig,
+            displayUnit: nextDisplayUnit,
+            showGrid: nextShowGrid,
+            showRulers: nextShowRulers,
+            snapToGrid: nextSnapToGrid,
           });
           lastRoomTopologyHash = '';
           get().detectRooms();

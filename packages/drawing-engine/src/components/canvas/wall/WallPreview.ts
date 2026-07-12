@@ -7,8 +7,11 @@
 
 import * as fabric from 'fabric';
 
+import {
+  PROFESSIONAL_WALL_EDGES,
+  resolveWallVisualStyleForMaterial,
+} from '../../../attributes';
 import type { Point2D, Wall, WallMaterial } from '../../../types';
-import { WALL_MATERIAL_COLORS } from '../../../types/wall';
 import { MM_TO_PX } from '../scale';
 
 import { buildTemporaryWall } from './WallJoinNetwork';
@@ -25,6 +28,7 @@ export class WallPreview {
   private startPoint: Point2D | null = null;
   private thickness: number = 150;
   private material: WallMaterial = 'brick';
+  private materialId: string | undefined;
   private queuedEndPoint: Point2D | null = null;
   private lastEndPoint: Point2D | null = null;
   private walls: Wall[] = [];
@@ -47,6 +51,10 @@ export class WallPreview {
       x: point.x * MM_TO_PX,
       y: this.toCanvasY(point.y),
     };
+  }
+
+  private toSceneSize(screenPx: number): number {
+    return screenPx / Math.max(this.canvas.getZoom(), 0.01);
   }
 
   /**
@@ -72,12 +80,14 @@ export class WallPreview {
     startPoint: Point2D,
     thickness: number,
     material: WallMaterial,
+    materialId?: string,
     preferredStartWall?: Wall | null
   ): void {
     this.clearPreview();
     this.startPoint = { ...startPoint };
     this.thickness = thickness;
     this.material = material;
+    this.materialId = materialId;
     this.preferredStartWall = preferredStartWall ? { ...preferredStartWall } : null;
   }
 
@@ -114,17 +124,17 @@ export class WallPreview {
       this.thickness,
       this.material
     );
-    const materialColors = WALL_MATERIAL_COLORS[this.material];
+    const visualStyle = resolveWallVisualStyleForMaterial(this.material, this.materialId);
     // Live preview should preserve the wall's nominal thickness even when the
     // eventual committed join may be mitered or beveled against nearby walls.
     // Showing the raw body here keeps the preview stable and predictable.
     const previewPolygon = computeWallBodyPolygon(previewWall);
     const previewVertices = previewPolygon.map((point) => this.toCanvasPoint(point));
     const mergedPreviewPath = new fabric.Polygon(previewVertices, {
-      fill: materialColors.fill,
-      opacity: 0.55,
-      stroke: '#000000',
-      strokeWidth: 2,
+      fill: visualStyle.plan.fillColor,
+      opacity: 0.68,
+      stroke: PROFESSIONAL_WALL_EDGES.planColor,
+      strokeWidth: this.toSceneSize(PROFESSIONAL_WALL_EDGES.planWidthPx),
       strokeLineJoin: 'miter',
       selectable: false,
       evented: false,
@@ -139,9 +149,9 @@ export class WallPreview {
         this.toCanvasY(endPoint.y),
       ],
       {
-        stroke: '#000000',
-        strokeWidth: 1,
-        strokeDashArray: [8, 6],
+        stroke: PROFESSIONAL_WALL_EDGES.centerLineColor,
+        strokeWidth: this.toSceneSize(PROFESSIONAL_WALL_EDGES.centerLineWidthPx),
+        strokeDashArray: [this.toSceneSize(8), this.toSceneSize(6)],
         selectable: false,
         evented: false,
       }
@@ -169,11 +179,13 @@ export class WallPreview {
     startPoint: Point2D,
     endPoint: Point2D,
     thickness: number,
-    material: WallMaterial
+    material: WallMaterial,
+    materialId?: string
   ): void {
     this.startPoint = { ...startPoint };
     this.thickness = thickness;
     this.material = material;
+    this.materialId = materialId;
     this.updatePreview(endPoint);
   }
 
@@ -191,6 +203,7 @@ export class WallPreview {
     this.startPoint = null;
     this.lastEndPoint = null;
     this.preferredStartWall = null;
+    this.materialId = undefined;
     this.canvas.requestRenderAll();
   }
 

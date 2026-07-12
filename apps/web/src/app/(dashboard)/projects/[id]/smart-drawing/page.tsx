@@ -9,6 +9,7 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import { useMemo } from 'react';
 
 import { trpc } from '@/lib/trpc';
 
@@ -55,6 +56,15 @@ export default function SmartDrawingPage() {
     { enabled: !!projectId }
   );
 
+  const latestDrawing = drawings?.[0];
+  // Parse once per canvasData identity: re-parsing in the render body would
+  // mint a new object identity every render and re-trigger the editor's
+  // loadData effect, snapping in-progress edits back to last-saved positions.
+  const initialData = useMemo(
+    () => parseCanvasData(latestDrawing?.canvasData),
+    [latestDrawing?.canvasData]
+  );
+
   if (projectLoading || drawingsLoading) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#f6f1e7]">
@@ -79,14 +89,12 @@ export default function SmartDrawingPage() {
     );
   }
 
-  const latestDrawing = drawings?.[0];
-  const initialData = parseCanvasData(latestDrawing?.canvasData);
-
   return (
     <DrawingEditorWrapper
       projectId={projectId}
       projectName={project.name}
       initialData={initialData}
+      drawingId={latestDrawing?.id}
     />
   );
 }

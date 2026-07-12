@@ -6,6 +6,7 @@
 
 import type * as fabric from 'fabric';
 import { useRef, useCallback } from 'react';
+
 import type { Point2D } from '../../../types';
 import {
     buildViewportTransform,
@@ -17,6 +18,13 @@ export interface MiddlePanState {
     lastX: number;
     lastY: number;
 }
+
+// CAMERA OWNS NAVIGATION (reference-app practice — hybridViewportController):
+// MMB pan is camera-controls TRUCK on the interaction host; the Fabric viewport
+// derives from the camera each frame. The handlers below stay inert so pointer
+// events bubble to the camera untouched. Flip to false to restore legacy
+// Fabric-owned panning while debugging.
+const CAMERA_OWNS_MIDDLE_PAN = true;
 
 export interface UseMiddlePanOptions {
     fabricRef: React.RefObject<fabric.Canvas | null>;
@@ -75,6 +83,7 @@ export function useMiddlePan({
 
     const handleMiddleMouseDown = useCallback(
         (event: MouseEvent) => {
+            if (CAMERA_OWNS_MIDDLE_PAN) return;
             if (event.button !== 1) return;
             event.preventDefault();
             const canvas = fabricRef.current;
@@ -99,6 +108,7 @@ export function useMiddlePan({
 
     const handleMiddleMouseMove = useCallback(
         (event: MouseEvent) => {
+            if (CAMERA_OWNS_MIDDLE_PAN) return;
             if (!middlePanRef.current.active) return;
             if ((event.buttons & 4) !== 4) {
                 stopMiddlePan();
