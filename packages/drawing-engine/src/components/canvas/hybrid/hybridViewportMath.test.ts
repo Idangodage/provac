@@ -12,6 +12,8 @@ import {
   deriveBoardViewFromCamera,
   makeOrthoCamera,
   poseUp,
+  resolveHybridCameraViewFromPose,
+  resolveHybridCameraViewPose,
   screenToWorldOnPlaneZ,
   worldToScreen,
   type CameraPose,
@@ -176,5 +178,31 @@ describe('poseUp continuity at the top-down pole', () => {
       }),
       { numRuns: 60 },
     );
+  });
+});
+
+describe('canonical manipulation camera views', () => {
+  it.each(['plan', 'front', 'side', 'iso'] as const)(
+    'round-trips the %s toolbar pose',
+    (view) => {
+      const pose = resolveHybridCameraViewPose(view);
+      expect(resolveHybridCameraViewFromPose(pose.polar, pose.azimuth)).toBe(view);
+    },
+  );
+
+  it('treats a free RMB orbit as isometric manipulation', () => {
+    expect(resolveHybridCameraViewFromPose(degToRad(37), degToRad(18))).toBe('iso');
+  });
+
+  it('recognises wrapped side-view azimuths', () => {
+    expect(resolveHybridCameraViewFromPose(Math.PI / 2, -Math.PI * 1.5)).toBe('side');
+  });
+
+  it('projects world +Y to screen-right in side view', () => {
+    const side = resolveHybridCameraViewPose('side');
+    const camera = makeOrthoCamera(pose(side.polar, side.azimuth), VP, 0.1);
+    const origin = worldToScreen(new THREE.Vector3(0, 0, 0), camera, VP);
+    const positiveY = worldToScreen(new THREE.Vector3(0, 100, 0), camera, VP);
+    expect(positiveY.x).toBeGreaterThan(origin.x);
   });
 });

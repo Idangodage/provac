@@ -18,6 +18,7 @@
  * document renders identically to before this module existed.
  */
 
+import type { ManufacturerRuleProfile } from "../../../vrf/rules";
 import { PX_TO_MM } from "../scale";
 
 import {
@@ -50,6 +51,8 @@ export const DEFAULT_PIPE_ROUTING_ELEVATION_MM = 2600;
 export interface PipeRoutingSettings {
   /** Clear gap between the *insulated* gas and liquid pipes of one bundle. */
   defaultPipeGapMm: number;
+  /** Straight copper reserved along an equipment port normal before the first bend. */
+  minimumPortStubMm: number;
   /** Reserved (auto-route): min clear distance a route keeps from walls. */
   defaultWallClearanceMm: number;
   /** Min clear distance a proposed branch tee keeps from indoor-unit bodies. */
@@ -85,9 +88,9 @@ export interface PipeRoutingSettings {
    */
   autoBypassOnCommit: boolean;
   /**
-   * When true, accepting a branch kit splits the tapped run into two
-   * flow-connected edges at a real tee node (W3b). When false (default), the kit
-   * is overlaid on the intact run (legacy behaviour).
+   * When true (default), accepting a branch kit splits the tapped run into two
+   * flow-connected edges at a real tee node (W3b). When false, the kit is
+   * overlaid on the intact run as a legacy presentation-only fitting.
    */
   enableRealTeeTopology: boolean;
 }
@@ -98,10 +101,11 @@ export interface PipeRoutingSettings {
  */
 export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
   defaultPipeGapMm: DEFAULT_REFRIGERANT_PIPE_GAP_MM, // 1" = 25.4 mm
+  minimumPortStubMm: 200,
   defaultWallClearanceMm: 50,
   defaultUnitClearanceMm: 100,
-  defaultBranchKitClearanceMm: 80,
-  minBranchKitSpacingMm: 300,
+  defaultBranchKitClearanceMm: 300,
+  minBranchKitSpacingMm: 500,
   zOffsetClearanceMm: MIN_INSULATED_CLEARANCE_MM, // 75 mm
   zOffsetStartDistanceMm: BYPASS_OFFSET_MARGIN_MM, // 60 mm
   bendRadiusFactor: 1,
@@ -113,7 +117,7 @@ export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
   bypassFittingAngleDeg: DEFAULT_BYPASS_FITTING_ANGLE_DEG, // 45°
   clashMergeWindowMm: CLASH_MERGE_WINDOW_MM, // 320 mm
   autoBypassOnCommit: false, // clean commits by default; bypass is opt-in via the card
-  enableRealTeeTopology: false, // opt-in: split the run into a real tee on accept (W3b)
+  enableRealTeeTopology: true, // split the run into a real flow-connected tee on accept (W3b)
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -159,6 +163,30 @@ export function resolvePipeRoutingSettings(
     },
   );
   return merged;
+}
+
+/**
+ * Converts the installation values of a selected engineering profile into the
+ * geometry settings consumed by the live routing engine. Fields not governed
+ * by the profile remain document preferences.
+ */
+export function routingSettingsFromRuleProfile(
+  profile: ManufacturerRuleProfile,
+): Partial<PipeRoutingSettings> {
+  const installation = profile.installation;
+  const straightBefore = installation?.minimumBranchStraightBeforeMm?.value;
+  const straightAfter = installation?.minimumBranchStraightAfterMm?.value;
+  const straightZone = [straightBefore, straightAfter]
+    .filter((value): value is number => Number.isFinite(value))
+    .reduce((maximum, value) => Math.max(maximum, value), 0);
+  return {
+    minimumPortStubMm: profile.portDefaults.minimumStraightStubMm.value,
+    defaultUnitClearanceMm: profile.portDefaults.serviceClearanceMm.value,
+    ...(straightZone > 0 ? { defaultBranchKitClearanceMm: straightZone } : {}),
+    ...(installation?.minimumJointSpacingMm
+      ? { minBranchKitSpacingMm: installation.minimumJointSpacingMm.value }
+      : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

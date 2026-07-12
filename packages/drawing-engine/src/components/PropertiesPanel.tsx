@@ -40,15 +40,21 @@ import {
 
 import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
 import {
+  readPipeRouteNodes3d,
+  withCanonicalPipeRoute,
+} from "./canvas/hvac/pipeRoute3d";
+import {
   DEFAULT_PIPE_ROUTING_SETTINGS,
   type PipeRoutingSettings,
 } from "./canvas/hvac/pipeRoutingSettings";
 import {
   buildRefrigerantPipeVisual,
+  constrainRefrigerantPipeRouteForConnections,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeLineMode,
   type RefrigerantPipeMaterial,
 } from "./canvas/hvac/refrigerantPipePairModel";
+import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
 import {
   circularMeetingFootprintMm,
   squareMeetingFootprintMm,
@@ -1408,12 +1414,19 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 }
 
 function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
-  const { selectedElementIds, hvacElements, rooms, updateHvacElement } =
+  const {
+    selectedElementIds,
+    hvacElements,
+    rooms,
+    commitHvacElementCommand,
+    updateHvacElement,
+  } =
     useSmartDrawingStore(
       (state) => ({
         selectedElementIds: state.selectedElementIds,
         hvacElements: state.hvacElements,
         rooms: state.rooms,
+        commitHvacElementCommand: state.commitHvacElementCommand,
         updateHvacElement: state.updateHvacElement,
       }),
       shallow,
@@ -1438,6 +1451,14 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     selectedEquipment.properties,
     "capacityKw",
   );
+  const capacityIndex = propertyAsNumber(
+    selectedEquipment.properties,
+    "capacityIndex",
+    Number.NaN,
+  );
+  const isVrfCapacityEquipment = selectedEquipment.type === "outdoor-unit"
+    || selectedEquipment.category === "indoor-unit"
+    || selectedEquipment.category === "outdoor-unit";
   const heatingCapacityKw = propertyAsNumber(
     selectedEquipment.properties,
     "heatingCapacityKw",
@@ -1474,39 +1495,79 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       (total, segment) => total + segment.lengthMm,
       0,
     );
+    const routeNodes3d = readPipeRouteNodes3d(selectedEquipment);
+    const horizontalLengthMm = routeNodes3d.slice(1).reduce(
+      (total, node, index) => total + Math.hypot(
+        node.x - routeNodes3d[index]!.x,
+        node.y - routeNodes3d[index]!.y,
+      ),
+      0,
+    );
+    const routeSlopePercent = routeNodes3d.length >= 2 && horizontalLengthMm > 1e-6
+      ? ((routeNodes3d[routeNodes3d.length - 1]!.z - routeNodes3d[0]!.z)
+        / horizontalLengthMm) * 100
+      : null;
+    const downstreamCapacityIndex = propertyAsNumber(
+      selectedEquipment.properties,
+      "downstreamCapacityIndex",
+    );
+    const endpointProtection = {
+      start: {
+        connected: Boolean(pipeSpec.startConnection),
+        unitPort: pipeSpec.startConnection?.connectionKind === "unit-port",
+      },
+      end: {
+        connected: Boolean(pipeSpec.endConnection),
+        unitPort: pipeSpec.endConnection?.connectionKind === "unit-port",
+      },
+    };
+    const protectedPlanNodeIndexes = getProtectedPipeNodeIndexes(
+      pipeSpec.routePoints.length,
+      endpointProtection.start,
+      endpointProtection.end,
+    );
+    const protectedElevationNodeIndexes = getProtectedPipeNodeIndexes(
+      routeNodes3d.length,
+      endpointProtection.start,
+      endpointProtection.end,
+    );
 
     const applyPipeRouteUpdate = (
       nextRoutePoints: { x: number; y: number }[],
       nextMaterials: RefrigerantPipeMaterial[],
     ) => {
-      const segmentCount = Math.max(0, nextRoutePoints.length - 1);
+      const constrainedRoutePoints = constrainRefrigerantPipeRouteForConnections(
+        selectedEquipment.type,
+        selectedEquipment.properties,
+        nextRoutePoints,
+      );
+      const segmentCount = Math.max(0, constrainedRoutePoints.length - 1);
       const normalizedMaterials = Array.from(
         { length: segmentCount },
         (_, index) =>
           nextMaterials[index] === "hard" ? "hard" : "flexible",
       );
-      const nextProperties = {
-        ...selectedEquipment.properties,
-        routePoints: nextRoutePoints,
-        segmentMaterials: normalizedMaterials,
-      };
-      const nextVisual = buildRefrigerantPipeVisual({
-        position: selectedEquipment.position,
-        width: selectedEquipment.width,
-        depth: selectedEquipment.depth,
-        elevation: selectedEquipment.elevation,
-        properties: nextProperties,
-      });
+      const routedElement = withCanonicalPipeRoute(
+        selectedEquipment,
+        constrainedRoutePoints,
+        { segmentMaterials: normalizedMaterials },
+      );
+      const nextVisual = buildRefrigerantPipeVisual(routedElement);
 
-      updateHvacElement(selectedEquipment.id, {
-        position: {
-          x: nextVisual.bounds.minX,
-          y: nextVisual.bounds.minY,
-        },
-        width: nextVisual.bounds.width,
-        depth: nextVisual.bounds.height,
-        height: Math.max(1, nextVisual.outerRadiusMm * 2),
-        properties: nextProperties,
+      commitHvacElementCommand("Edit refrigerant pipe route", {
+        updates: [{
+          id: selectedEquipment.id,
+          updates: {
+            position: {
+              x: nextVisual.bounds.minX,
+              y: nextVisual.bounds.minY,
+            },
+            width: nextVisual.bounds.width,
+            depth: nextVisual.bounds.height,
+            height: Math.max(1, nextVisual.outerRadiusMm * 2),
+            properties: routedElement.properties,
+          },
+        }],
       });
     };
 
@@ -1551,7 +1612,8 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       if (
         vertexIndex <= 0 ||
         vertexIndex >= pipeSpec.routePoints.length - 1 ||
-        pipeSpec.routePoints.length <= 2
+        pipeSpec.routePoints.length <= 2 ||
+        protectedPlanNodeIndexes.has(vertexIndex)
       ) {
         return;
       }
@@ -1580,13 +1642,34 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       axis: "x" | "y",
       nextValueMm: number,
     ) => {
-      if (!Number.isFinite(nextValueMm)) {
+      if (!Number.isFinite(nextValueMm) || protectedPlanNodeIndexes.has(vertexIndex)) {
         return;
       }
       const nextRoutePoints = pipeSpec.routePoints.map((point, index) =>
         index === vertexIndex ? { ...point, [axis]: nextValueMm } : point,
       );
       applyPipeRouteUpdate(nextRoutePoints, pipeSpec.segmentMaterials);
+    };
+
+    const updateRouteNodeElevation = (nodeIndex: number, nextValueMm: number) => {
+      if (
+        !Number.isFinite(nextValueMm)
+        || !routeNodes3d[nodeIndex]
+        || protectedElevationNodeIndexes.has(nodeIndex)
+      ) return;
+      const nextNodes = routeNodes3d.map((node, index) =>
+        index === nodeIndex ? { ...node, z: nextValueMm } : node);
+      commitHvacElementCommand("Edit refrigerant pipe elevation", {
+        updates: [{
+          id: selectedEquipment.id,
+          updates: {
+            properties: {
+              ...selectedEquipment.properties,
+              routeNodes3d: nextNodes,
+            },
+          },
+        }],
+      });
     };
 
     return (
@@ -1610,6 +1693,21 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
           <span className="text-sm text-slate-700">
             {fromMm(routeLengthMm, propertyUnit).toFixed(2)}{" "}
             {formatUnit(propertyUnit)}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Size">
+          <span className="text-sm text-slate-700">
+            {pipeSpec.pipeDiameterMm.toFixed(2)} mm OD
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Slope">
+          <span className="text-sm text-slate-700">
+            {routeSlopePercent === null ? "Planar / unset" : `${routeSlopePercent.toFixed(2)}%`}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="Downstream load">
+          <span className="text-sm text-slate-700">
+            {downstreamCapacityIndex > 0 ? downstreamCapacityIndex.toFixed(2) : "Unassigned"}
           </span>
         </PropertyRow>
         <PropertyRow label="Ports">
@@ -1674,6 +1772,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             {pipeSpec.routePoints.map((point, index) => {
               const endpoint =
                 index === 0 || index === pipeSpec.routePoints.length - 1;
+              const protectedNode = protectedPlanNodeIndexes.has(index);
               return (
                 <div
                   key={`pipe-vertex-${index}`}
@@ -1686,6 +1785,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                     type="number"
                     step={propertyUnit === "mm" ? 1 : 0.01}
                     value={fromMm(point.x, propertyUnit).toFixed(2)}
+                    disabled={protectedNode}
                     onChange={(e) =>
                       updateVertexCoordinate(
                         index,
@@ -1693,12 +1793,13 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                         toMm(Number.parseFloat(e.target.value), propertyUnit),
                       )
                     }
-                    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-400"
                   />
                   <input
                     type="number"
                     step={propertyUnit === "mm" ? 1 : 0.01}
                     value={fromMm(point.y, propertyUnit).toFixed(2)}
+                    disabled={protectedNode}
                     onChange={(e) =>
                       updateVertexCoordinate(
                         index,
@@ -1706,14 +1807,14 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                         toMm(Number.parseFloat(e.target.value), propertyUnit),
                       )
                     }
-                    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-400"
                   />
                   <button
                     type="button"
-                    disabled={endpoint}
+                    disabled={endpoint || protectedNode}
                     onClick={() => removeVertex(index)}
                     className={`rounded px-2 py-1 text-xs ${
-                      endpoint
+                      endpoint || protectedNode
                         ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"
                         : "border border-rose-200 bg-white text-rose-600 hover:bg-rose-50"
                     }`}
@@ -1725,6 +1826,37 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             })}
           </div>
         </div>
+        {routeNodes3d.length >= 2 && (
+          <div className="rounded border border-sky-200/80 bg-sky-50/60 p-2">
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
+              Elevation nodes
+            </div>
+            <p className="mb-2 text-[11px] leading-4 text-slate-500">
+              Exact Z remains editable even when the plan view locks elevation.
+            </p>
+            <div className="space-y-1.5">
+              {routeNodes3d.map((node, index) => (
+                <div key={`pipe-node-z-${index}`} className="flex items-center gap-2">
+                  <span className="w-10 text-xs text-slate-500">N{index + 1}</span>
+                  <span className="text-[11px] text-slate-400">Z</span>
+                  <input
+                    type="number"
+                    step={propertyUnit === "mm" ? 1 : 0.01}
+                    value={fromMm(node.z, propertyUnit).toFixed(2)}
+                    disabled={protectedElevationNodeIndexes.has(index)}
+                    onChange={(event) => updateRouteNodeElevation(
+                      index,
+                      toMm(Number.parseFloat(event.target.value), propertyUnit),
+                    )}
+                    className="w-24 rounded border border-sky-200 bg-white px-2 py-1 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                    aria-label={`Route node ${index + 1} elevation`}
+                  />
+                  <span className="text-[11px] text-slate-400">{formatUnit(propertyUnit)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1889,6 +2021,28 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         />
         <span className="text-xs text-slate-500">kW</span>
       </PropertyRow>
+      {isVrfCapacityEquipment && (
+        <PropertyRow label="Capacity index">
+          <input
+            type="number"
+            step={0.1}
+            value={Number.isFinite(capacityIndex) ? capacityIndex : ""}
+            placeholder="Profile value"
+            onChange={(event) => {
+              if (event.target.value.trim() === "") {
+                updateProperties({ capacityIndex: undefined });
+                return;
+              }
+              const parsed = Number.parseFloat(event.target.value);
+              if (!Number.isFinite(parsed)) return;
+              updateProperties({ capacityIndex: Math.max(0, parsed) });
+            }}
+            className="w-28 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+            aria-label="Manufacturer capacity index"
+            title="Use the capacity index from the active manufacturer engineering table."
+          />
+        </PropertyRow>
+      )}
       <PropertyRow label="Airflow">
         <input
           type="number"
@@ -3011,6 +3165,30 @@ function RefrigerantPipeToolSection() {
       suffix: "mm",
     },
     {
+      key: "minimumPortStubMm",
+      label: "Port Straight",
+      min: 0,
+      max: 1000,
+      step: 10,
+      suffix: "mm",
+    },
+    {
+      key: "defaultBranchKitClearanceMm",
+      label: "Branch Straight",
+      min: 0,
+      max: 2000,
+      step: 10,
+      suffix: "mm",
+    },
+    {
+      key: "minBranchKitSpacingMm",
+      label: "Branch Spacing",
+      min: 0,
+      max: 3000,
+      step: 10,
+      suffix: "mm",
+    },
+    {
       key: "zOffsetClearanceMm",
       label: "Clash Clearance",
       min: 0,
@@ -3130,20 +3308,20 @@ function RefrigerantPipeToolSection() {
         <div className="flex items-center gap-1">
           <TabButton
             active={!pipeRoutingSettings.enableRealTeeTopology}
-            label="Overlay"
+            label="Legacy overlay"
             onClick={() => setPipeRoutingSettings({ enableRealTeeTopology: false })}
           />
           <TabButton
             active={pipeRoutingSettings.enableRealTeeTopology}
-            label="Real tee"
+            label="Real split"
             onClick={() => setPipeRoutingSettings({ enableRealTeeTopology: true })}
           />
         </div>
       </PropertyRow>
       <p className="text-[11px] leading-5 text-slate-500">
-        Overlay: the branch kit is drawn on top of the intact run. Real tee
-        (experimental): accepting a kit splits the run into two flow-connected
-        segments through a real tee node.
+        Real split (default): accepting a kit replaces the tapped run with
+        flow-connected inlet and outlet segments. Legacy overlay keeps the host
+        run intact for older drawings.
       </p>
 
       <div className="mt-2 border-t border-slate-100 pt-2">

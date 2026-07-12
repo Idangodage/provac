@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
+import { describe, expect, it } from 'vitest';
 
 import {
   applyPipeAxisConstraint,
   createDrawingPlane,
+  createViewDefaultDrawingPlane,
   createPointerRay,
   getPointerNDC,
   intersectRayWithDrawingTarget,
@@ -65,6 +66,21 @@ describe('pointer coordinates and camera ray', () => {
 });
 
 describe('drawing planes and intersections', () => {
+  it.each([
+    ['plan-2d', [0, 0, 1]],
+    ['front-elevation-2d', [0, 1, 0]],
+    ['side-elevation-2d', [1, 0, 0]],
+    ['isometric', [0, 0, 1]],
+  ] as const)('derives the %s workplane from the shared view policy', (viewMode, normal) => {
+    const plane = createViewDefaultDrawingPlane(
+      viewMode,
+      perspective(),
+      new THREE.Vector3(10, 20, 30),
+    );
+    expect(plane.origin.toArray()).toEqual([10, 20, 30]);
+    expect(plane.normal.toArray()).toEqual(normal);
+  });
+
   it('round-trips transformed plane local/world coordinates', () => {
     const plane = createDrawingPlane(
       'inclined',

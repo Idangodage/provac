@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
+import { describe, expect, it } from 'vitest';
 
 import {
   beginDrag,
@@ -150,6 +150,79 @@ describe('axis and plane drag solvers', () => {
     expect(drag?.plane?.id).toBe('level-02');
     expect(drag?.plane?.normal.toArray()).toEqual([0, 0, 1]);
   });
+
+  it.each([
+    {
+      mode: 'plan-2d' as const,
+      camera: orthoCamera(),
+      planeId: 'view-default-xy',
+      normal: [0, 0, 1],
+    },
+    {
+      mode: 'front-elevation-2d' as const,
+      camera: orthoCamera(new THREE.Vector3(0, -1000, 0), new THREE.Vector3(0, 0, 1)),
+      planeId: 'view-default-xz',
+      normal: [0, 1, 0],
+    },
+    {
+      mode: 'side-elevation-2d' as const,
+      camera: orthoCamera(new THREE.Vector3(1000, 0, 0), new THREE.Vector3(0, 0, 1)),
+      planeId: 'view-default-yz',
+      normal: [1, 0, 0],
+    },
+    {
+      mode: 'isometric' as const,
+      camera: orthoCamera(new THREE.Vector3(700, -800, 900), new THREE.Vector3(0, 0, 1)),
+      planeId: 'view-default-xy',
+      normal: [0, 0, 1],
+    },
+  ])('uses the $mode construction plane for an unconstrained drag', ({
+    mode,
+    camera,
+    planeId,
+    normal,
+  }) => {
+    const drag = beginDrag(
+      pointerForWorld(new THREE.Vector3(), camera),
+      { camera, viewport, viewMode: mode },
+      { anchorWorld: new THREE.Vector3() },
+    );
+    expect(drag?.plane?.id).toBe(planeId);
+    expect(drag?.plane?.normal.toArray()).toEqual(normal);
+  });
+
+  it('uses a camera-facing free-drag plane in perspective 3D', () => {
+    const camera = new THREE.PerspectiveCamera(50, viewport.width / viewport.height, 0.1, 5000);
+    camera.position.set(600, -700, 900);
+    camera.up.set(0, 0, 1);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+    const drag = beginDrag(
+      pointerForWorld(new THREE.Vector3(), camera),
+      { camera, viewport, viewMode: 'perspective-3d' },
+      { anchorWorld: new THREE.Vector3() },
+    );
+    const expectedNormal = camera.getWorldDirection(new THREE.Vector3()).negate();
+    expect(drag?.plane?.id).toBe('view-default-camera-facing');
+    expect(drag?.plane?.normal.distanceTo(expectedNormal)).toBeLessThan(1e-9);
+  });
+
+  it('keeps an explicit active workplane ahead of the view default', () => {
+    const camera = orthoCamera();
+    const explicit = createWorkplane(
+      'explicit-slope',
+      new THREE.Vector3(0, 0, 25),
+      new THREE.Vector3(1, 2, 3),
+    );
+    const drag = beginDrag(
+      { clientX: 500, clientY: 350 },
+      { camera, viewport, viewMode: 'plan-2d', activeWorkplane: explicit },
+      { anchorWorld: new THREE.Vector3(0, 0, 25) },
+    );
+    expect(drag?.plane?.id).toBe('explicit-slope');
+    expect(drag?.plane?.normal.distanceTo(explicit.normal.clone().normalize())).toBeLessThan(1e-9);
+  });
 });
 
 describe('coordinate frames', () => {
@@ -249,4 +322,3 @@ describe('branch orientation', () => {
     expect(nearest?.angularDistanceDeg).toBeCloseTo(8, 8);
   });
 });
-

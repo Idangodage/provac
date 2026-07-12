@@ -7,8 +7,13 @@
  */
 import * as THREE from "three";
 
-export type HandleKind3D = "endpoint" | "midpointInsert";
+export type HandleKind3D = "endpoint" | "midpointInsert" | "pipeVertex";
 export type HandleState3D = "idle" | "hover" | "active";
+
+export type HandleEditTarget3D =
+  | { kind: "pipeVertex"; nodeIndex: number }
+  | { kind: "wallNode" }
+  | { kind: "wallEdge" };
 
 export interface HandleDef3D {
   id: string;
@@ -17,6 +22,8 @@ export interface HandleDef3D {
   p: readonly [number, number, number];
   /** Wall edge or node the handle edits. */
   entityId: string;
+  /** Optional typed edit metadata; omitted by legacy wall handles. */
+  editTarget?: HandleEditTarget3D;
   state?: HandleState3D;
 }
 
@@ -55,11 +62,13 @@ export class HandleLayer3D {
     const square = new THREE.PlaneGeometry(1, 1);
     const diamond = new THREE.PlaneGeometry(0.9, 0.9);
     diamond.rotateZ(Math.PI / 4);
+    const pipeVertex = new THREE.CircleGeometry(0.58, 16);
     this.pools = {
       endpoint: makePool(square),
       midpointInsert: makePool(diamond),
+      pipeVertex: makePool(pipeVertex),
     };
-    this.group.add(this.pools.endpoint, this.pools.midpointInsert);
+    this.group.add(this.pools.endpoint, this.pools.midpointInsert, this.pools.pipeVertex);
   }
 
   setDefs(defs: HandleDef3D[]): void {
@@ -126,7 +135,11 @@ export class HandleLayer3D {
     const matrix = new THREE.Matrix4();
     const color = new THREE.Color();
     const scale = HANDLE_PX * this.unitsPerPixel;
-    const counts: Record<HandleKind3D, number> = { endpoint: 0, midpointInsert: 0 };
+    const counts: Record<HandleKind3D, number> = {
+      endpoint: 0,
+      midpointInsert: 0,
+      pipeVertex: 0,
+    };
 
     for (const def of this.defs) {
       const pool = this.pools[def.kind];

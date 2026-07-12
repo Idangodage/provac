@@ -10,6 +10,7 @@ import {
   lockToHardAngle,
   moveHardSegment,
   moveVertex,
+  resolveEditablePipeVertexIndex,
   reducePipeTool,
   resolveSnap,
   type PipeSegmentMaterial,
@@ -102,6 +103,89 @@ describe('vertex edit ops preserve material identity', () => {
     const twoPt = [p(0, 0), p(10, 0)];
     const res = deleteVertex(twoPt, ['hard'], 0);
     expect(res.route).toEqual(twoPt);
+  });
+});
+
+describe('connected endpoint edit targeting', () => {
+  it('redirects a connected endpoint grip to the adjacent free vertex', () => {
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 4,
+      vertexIndex: 0,
+      startConnected: true,
+      endConnected: false,
+    })).toBe(1);
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 4,
+      vertexIndex: 3,
+      startConnected: false,
+      endConnected: true,
+    })).toBe(2);
+  });
+
+  it('keeps free endpoints and interior vertices directly editable', () => {
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 3,
+      vertexIndex: 0,
+      startConnected: false,
+      endConnected: false,
+    })).toBe(0);
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 3,
+      vertexIndex: 1,
+      startConnected: true,
+      endConnected: true,
+    })).toBe(1);
+  });
+
+  it('skips the protected port-stub node when redirecting an equipment endpoint', () => {
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 5,
+      vertexIndex: 0,
+      startConnected: true,
+      endConnected: false,
+      startProtectedVertexCount: 2,
+    })).toBe(2);
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 5,
+      vertexIndex: 4,
+      startConnected: false,
+      endConnected: true,
+      endProtectedVertexCount: 2,
+    })).toBe(2);
+  });
+
+  it('refuses a two-node run when both endpoints are pinned', () => {
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 2,
+      vertexIndex: 0,
+      startConnected: true,
+      endConnected: true,
+    })).toBeNull();
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 2,
+      vertexIndex: 1,
+      startConnected: true,
+      endConnected: true,
+    })).toBeNull();
+  });
+
+  it('refuses overlapping protected stubs when no free vertex remains', () => {
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 4,
+      vertexIndex: 0,
+      startConnected: true,
+      endConnected: true,
+      startProtectedVertexCount: 2,
+      endProtectedVertexCount: 2,
+    })).toBeNull();
+    expect(resolveEditablePipeVertexIndex({
+      routeLength: 4,
+      vertexIndex: 3,
+      startConnected: true,
+      endConnected: true,
+      startProtectedVertexCount: 2,
+      endProtectedVertexCount: 2,
+    })).toBeNull();
   });
 });
 

@@ -278,6 +278,54 @@ export function moveVertex(route: Point2D[], index: number, to: Point2D): Point2
   return route.map((p, i) => (i === index ? { x: to.x, y: to.y } : { x: p.x, y: p.y }));
 }
 
+export interface EditablePipeVertexInput {
+  routeLength: number;
+  vertexIndex: number;
+  startConnected: boolean;
+  endConnected: boolean;
+  /** Number of fixed nodes at the start (port only = 1, port + rigid stub = 2). */
+  startProtectedVertexCount?: number;
+  /** Number of fixed nodes at the end (port only = 1, rigid stub + port = 2). */
+  endProtectedVertexCount?: number;
+}
+
+/**
+ * Resolves the route node a visible vertex grip is allowed to move. Connected
+ * endpoints stay pinned to their port/fitting; dragging that endpoint grip
+ * redirects the gesture to the first adjacent free node. A two-node run whose
+ * opposite endpoint is also connected has no free node and is not draggable.
+ */
+export function resolveEditablePipeVertexIndex({
+  routeLength,
+  vertexIndex,
+  startConnected,
+  endConnected,
+  startProtectedVertexCount = 1,
+  endProtectedVertexCount = 1,
+}: EditablePipeVertexInput): number | null {
+  if (routeLength < 2 || vertexIndex < 0 || vertexIndex >= routeLength) return null;
+  const lastIndex = routeLength - 1;
+  if (vertexIndex === 0 && startConnected) {
+    const protectedAtEnd = Math.max(1, Math.floor(endProtectedVertexCount));
+    const target = Math.min(
+      lastIndex,
+      Math.max(1, Math.floor(startProtectedVertexCount)),
+    );
+    if (endConnected && target > lastIndex - protectedAtEnd) return null;
+    return target;
+  }
+  if (vertexIndex === lastIndex && endConnected) {
+    const protectedAtStart = Math.max(1, Math.floor(startProtectedVertexCount));
+    const target = Math.max(
+      0,
+      lastIndex - Math.max(1, Math.floor(endProtectedVertexCount)),
+    );
+    if (startConnected && target < protectedAtStart) return null;
+    return target;
+  }
+  return vertexIndex;
+}
+
 /**
  * Inserts a vertex `at`, splitting segment `afterIndex` (between vertices
  * `afterIndex` and `afterIndex+1`). Both halves inherit the split segment's

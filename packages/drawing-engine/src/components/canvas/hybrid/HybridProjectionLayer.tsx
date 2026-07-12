@@ -27,17 +27,19 @@ import type {
   WallColorMode,
 } from "../../../types";
 import { generateId } from "../../../utils/geometry";
+import {
+  beginDrag,
+  createWorkplane,
+  updateDrag,
+  type FrozenDragContext,
+  type TransformConstraint,
+} from "../../../vrf/interaction/interaction-coordinate-service";
+import type { InteractionViewMode } from "../../../vrf/interaction/view-manipulation-policy";
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
 import {
-  buildRefrigerantPipeEndpointRenderStateMap,
-  buildRefrigerantPipeRenderChainStateMap,
-  getVisibleRefrigerantPipeStraightSegmentTargets,
-} from "../hvac/refrigerantPipeRenderState";
-import {
   applyPipeAxisConstraint,
-  createDrawingPlane,
   createPointerRay,
   getPointerNDC,
   intersectPointerRayWithAxis,
@@ -51,13 +53,24 @@ import {
 } from "../hvac/pipePointerProjection";
 import {
   readPipeRouteNodes3d,
+  withCanonicalPipeRoute,
   type PipePlacementPoint,
+  type PipeRouteNode3D,
 } from "../hvac/pipeRoute3d";
 import {
+  buildRefrigerantPipePairVisual,
+  buildRefrigerantPipeVisual,
   getRefrigerantPipeBundleSnapTargets,
+  isRefrigerantPipeElementType,
+  resolveRefrigerantPipePairSpec,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeBundleConnection,
 } from "../hvac/refrigerantPipePairModel";
+import {
+  buildRefrigerantPipeEndpointRenderStateMap,
+  buildRefrigerantPipeRenderChainStateMap,
+  getVisibleRefrigerantPipeStraightSegmentTargets,
+} from "../hvac/refrigerantPipeRenderState";
 import { buildHvacElementMesh } from "../hvac/three3d";
 import { createWallOpenings3D } from "../isometric/Opening3DRenderer";
 import {
@@ -74,8 +87,15 @@ import { buildWallChunkGeometry } from "../wallview/wallMeshBuilder";
 
 import { HandleLayer3D, type HandleDef3D } from "./handleLayer3D";
 import {
+  getProtectedPipeNodeIndexes,
+  moveEditablePipeNode,
+  resolveHybridPipeConstraintKey,
+  type HybridPipeConstraintKey,
+} from "./hybridPipeEditing";
+import {
   HybridViewportController,
   type DerivedBoardView,
+  type HybridCameraView,
 } from "./hybridViewportController";
 import { worldToScreen as projectWorldToScreen } from "./hybridViewportMath";
 import {
@@ -127,6 +147,10 @@ export interface HybridProjectionLayerProps {
   applyDerivedView?: (view: DerivedBoardView) => void;
   /** Live polar (tilt) angle in radians from camera-controls, for the host to derive blend. */
   onPolarChange?: (polar: number) => void;
+  /** Active view policy shared by 3D pipe drawing and vertex manipulation. */
+  interactionViewMode?: InteractionViewMode;
+  /** Classifies toolbar poses and arbitrary RMB orbit for host button state. */
+  onCameraViewChange?: (view: HybridCameraView) => void;
   /**
    * Fires when the flat plan becomes azimuth-ROTATED (reference SPEC §10:
    * "plan may be rotated deliberately") or squares up again. The host locks
@@ -170,6 +194,8 @@ export interface HybridProjectionLayerProps {
   onMoveWallNode?: (nodeId: string, to: Point2D, weld: boolean) => void;
   /** Body-drag drop → translate the whole wall(s) by a delta. */
   onMoveWallEdges?: (edgeIds: string[], delta: Point2D) => void;
+  /** Hybrid vertex-drag drop -> commit one canonical, undoable pipe update. */
+  onCommitPipeRouteEdit?: (elementId: string, routeNodes3d: PipeRouteNode3D[]) => void;
   /** Active CAD tool. Pipe LMB is resolved here while the 3D sheet is engaged. */
   pipeToolActive?: boolean;
   onPipePointerDown?: (point: PipePlacementPoint) => void;
@@ -210,6 +236,109 @@ const MAX_CAMERA_DISTANCE_MM = 220000;
 const FLAT_SHEET_POLAR = THREE.MathUtils.degToRad(0.03);
 /** Coarser threshold for the rotated-plan STATE (avoids flicker in damping tails). */
 const ROTATED_PLAN_EPSILON = THREE.MathUtils.degToRad(0.5);
+
+function resolvePipeEditRouteNodes(
+  element: HvacElement,
+  contextElements: readonly HvacElement[],
+): PipeRouteNode3D[] {
+  const authored = readPipeRouteNodes3d(element);
+  if (authored.length >= 2) return authored;
+  if (element.type === "refrigerant-pipe-pair") {
+    const context = [...contextElements];
+    const spec = resolveRefrigerantPipePairSpec(element.properties, context);
+    const visual = buildRefrigerantPipePairVisual(element, context);
+    const z = element.elevation + (visual.gasLocalZMm + visual.liquidLocalZMm) / 2;
+    return spec.routePoints.map((point) => ({ ...point, z }));
+  }
+  if (element.type === "refrigerant-pipe") {
+    const context = [...contextElements];
+    const spec = resolveRefrigerantPipeSpec(element.properties, context);
+    const visual = buildRefrigerantPipeVisual(element, context);
+    const z = element.elevation + visual.localZMm;
+    return spec.routePoints.map((point) => ({ ...point, z }));
+  }
+  return [];
+}
+
+function resolvePipeEndpointProtection(
+  element: HvacElement,
+  contextElements: readonly HvacElement[],
+): {
+  start: { connected: boolean; unitPort: boolean };
+  end: { connected: boolean; unitPort: boolean };
+} {
+  const context = [...contextElements];
+  if (element.type === "refrigerant-pipe-pair") {
+    const spec = resolveRefrigerantPipePairSpec(element.properties, context);
+    return {
+      start: {
+        connected: Boolean(spec.startBundleConnection),
+        unitPort: spec.startBundleConnection?.connectionKind === "unit-port",
+      },
+      end: {
+        connected: Boolean(spec.endBundleConnection),
+        unitPort: spec.endBundleConnection?.connectionKind === "unit-port",
+      },
+    };
+  }
+  const spec = resolveRefrigerantPipeSpec(element.properties, context);
+  return {
+    start: {
+      connected: Boolean(spec.startConnection),
+      unitPort: spec.startConnection?.connectionKind === "unit-port",
+    },
+    end: {
+      connected: Boolean(spec.endConnection),
+      unitPort: spec.endConnection?.connectionKind === "unit-port",
+    },
+  };
+}
+
+function withHybridPipeEditPreview(
+  element: HvacElement,
+  routeNodes3d: readonly PipeRouteNode3D[],
+): HvacElement {
+  const routePoints = routeNodes3d.map(({ x, y }) => ({ x, y }));
+  const routed = withCanonicalPipeRoute(element, routePoints);
+  const properties: Record<string, unknown> = {
+    ...routed.properties,
+    routeNodes3d: routeNodes3d.map((node) => ({ ...node })),
+  };
+  if (element.type === "refrigerant-pipe") {
+    properties.centerline_start = routePoints[0] ?? element.properties.centerline_start;
+    properties.centerline_end = routePoints.at(-1) ?? element.properties.centerline_end;
+  }
+  return { ...routed, properties };
+}
+
+function pipeTransformConstraint(
+  key: HybridPipeConstraintKey,
+  anchor: THREE.Vector3,
+): TransformConstraint {
+  if (key === "x" || key === "y" || key === "z") {
+    return {
+      kind: "axis",
+      origin: anchor,
+      direction: key === "x"
+        ? new THREE.Vector3(1, 0, 0)
+        : key === "y"
+          ? new THREE.Vector3(0, 1, 0)
+          : new THREE.Vector3(0, 0, 1),
+    };
+  }
+  if (key === "xy" || key === "xz" || key === "yz") {
+    const normal = key === "xy"
+      ? new THREE.Vector3(0, 0, 1)
+      : key === "xz"
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+    return {
+      kind: "plane",
+      workplane: createWorkplane(`pipe-${key}`, anchor, normal),
+    };
+  }
+  return { kind: "free" };
+}
 
 function pipeProjectionDebugEnabled(): boolean {
   if ((globalThis as Record<string, unknown>).__HVAC_PIPE_ROUTING_DEBUG__ === true) return true;
@@ -786,11 +915,23 @@ function applyViewStyle(sceneState: SceneState, style: HybridViewStyle): void {
 function rebuildPipePreviewLayer(
   sceneState: SceneState,
   draftPipes: readonly HvacElement[] | null,
+  editPipe: HvacElement | null,
   committedElements: readonly HvacElement[],
 ): void {
   clearGroup(sceneState.pipePreviewLayer);
-  if (!draftPipes || draftPipes.length === 0) return;
-  const allElements = [...committedElements, ...draftPipes];
+  sceneState.root.children.forEach((child) => {
+    const elementId = child.userData.hvacElementId as string | undefined;
+    const elementType = child.userData.hvacElementType as HvacElement["type"] | undefined;
+    if (elementId && elementType && isRefrigerantPipeElementType(elementType)) {
+      child.visible = elementId !== editPipe?.id;
+    }
+  });
+  const previews = [...(draftPipes ?? []), ...(editPipe ? [editPipe] : [])];
+  if (previews.length === 0) return;
+  const committedContext = editPipe
+    ? committedElements.map((element) => element.id === editPipe.id ? editPipe : element)
+    : [...committedElements];
+  const allElements = [...committedContext, ...(draftPipes ?? [])];
   const endpointState = buildRefrigerantPipeEndpointRenderStateMap(allElements);
   const context = {
     allElements,
@@ -798,7 +939,7 @@ function rebuildPipePreviewLayer(
     pipeRenderChainStateMap: buildRefrigerantPipeRenderChainStateMap(allElements, endpointState),
     pipeTargets: getVisibleRefrigerantPipeStraightSegmentTargets(allElements),
   };
-  for (const element of draftPipes) {
+  for (const element of previews) {
     const mesh = buildHvacElementMesh(element, context);
     if (!mesh || mesh.children.length === 0) continue;
     tuneHvacMesh(mesh);
@@ -832,6 +973,8 @@ export function HybridProjectionLayer({
   onControllerReady,
   applyDerivedView,
   onPolarChange,
+  interactionViewMode = "isometric",
+  onCameraViewChange,
   onViewRotatedChange,
   onDebug,
   getViewportMatrix,
@@ -850,6 +993,7 @@ export function HybridProjectionLayer({
   onSplitWall,
   onMoveWallNode,
   onMoveWallEdges,
+  onCommitPipeRouteEdit,
   pipeToolActive = false,
   onPipePointerDown,
   onPipePointerMove,
@@ -862,6 +1006,7 @@ export function HybridProjectionLayer({
   const controllerRef = useRef<HybridViewportController | null>(null);
   const requestFrameRef = useRef<(() => void) | null>(null);
   const draftPipesRef = useRef<HvacElement[] | null>(null);
+  const editPipePreviewRef = useRef<HvacElement | null>(null);
   const routeActiveRef = useRef(false);
   const resetPipePlacementRef = useRef<(() => void) | null>(null);
   const previewRebuildFrameRef = useRef<number | null>(null);
@@ -873,7 +1018,12 @@ export function HybridProjectionLayer({
       previewRebuildFrameRef.current = null;
       const sceneState = sceneStateRef.current;
       if (!sceneState) return;
-      rebuildPipePreviewLayer(sceneState, draftPipesRef.current, hvacElementsRef.current);
+      rebuildPipePreviewLayer(
+        sceneState,
+        draftPipesRef.current,
+        editPipePreviewRef.current,
+        hvacElementsRef.current,
+      );
       requestFrameRef.current?.();
     });
   }, []);
@@ -904,6 +1054,11 @@ export function HybridProjectionLayer({
   boardRef.current = { width, height, viewportZoom, panOffset, blend: view.blend };
   const onPolarChangeRef = useRef(onPolarChange);
   onPolarChangeRef.current = onPolarChange;
+  const interactionViewModeRef = useRef(interactionViewMode);
+  interactionViewModeRef.current = interactionViewMode;
+  const onCameraViewChangeRef = useRef(onCameraViewChange);
+  onCameraViewChangeRef.current = onCameraViewChange;
+  const lastCameraViewRef = useRef<HybridCameraView>("plan");
   const onViewRotatedChangeRef = useRef(onViewRotatedChange);
   onViewRotatedChangeRef.current = onViewRotatedChange;
   const lastViewRotatedRef = useRef(false);
@@ -935,6 +1090,8 @@ export function HybridProjectionLayer({
   onMoveWallNodeRef.current = onMoveWallNode;
   const onMoveWallEdgesRef = useRef(onMoveWallEdges);
   onMoveWallEdgesRef.current = onMoveWallEdges;
+  const onCommitPipeRouteEditRef = useRef(onCommitPipeRouteEdit);
+  onCommitPipeRouteEditRef.current = onCommitPipeRouteEdit;
   const pipeToolActiveRef = useRef(pipeToolActive);
   pipeToolActiveRef.current = pipeToolActive;
   const onPipePointerDownRef = useRef(onPipePointerDown);
@@ -1006,6 +1163,17 @@ export function HybridProjectionLayer({
         active: boolean;
         pressedId: string;
       } | null;
+      pipeDrag: {
+        elementId: string;
+        nodeIndex: number;
+        handleId: string;
+        protectedIndexes: Set<number>;
+        originalNodes: PipeRouteNode3D[];
+        currentNodes: PipeRouteNode3D[];
+        drag: FrozenDragContext;
+        lastPointer: { clientX: number; clientY: number; pointerId: number };
+      } | null;
+      pipePressedId: string | null;
       lastModel: { x: number; y: number } | null;
       ghost: THREE.LineSegments | null;
       ghostBody: THREE.Object3D | null;
@@ -1018,6 +1186,8 @@ export function HybridProjectionLayer({
       downHandled: false,
       drag: null,
       bodyDrag: null,
+      pipeDrag: null,
+      pipePressedId: null,
       lastModel: null,
       ghost: null,
       ghostBody: null,
@@ -1275,21 +1445,11 @@ export function HybridProjectionLayer({
       const ray = createPointerRay(coordinates.ndc, controller.camera);
       const surfaceHit = pipePlacementState.lockedPlane ? null : raycastDrawingSurface(ray);
       const fallbackZ = pipePlacementState.lastCommittedWorld?.z ?? 0;
-      const horizontalPlane = createDrawingPlane(
-        "model-floor",
-        "work-plane",
-        new THREE.Vector3(0, 0, fallbackZ),
-        new THREE.Vector3(0, 0, 1),
-        new THREE.Vector3(1, 0, 0),
-      );
       const plane = resolveActiveDrawingPlane({
         camera: controller.camera,
         lockedPlane: pipePlacementState.lockedPlane,
-        surfaceHit: e.altKey ? null : surfaceHit,
-        explicitPlane:
-          !pipePlacementState.lockedPlane && !e.altKey && !surfaceHit
-            ? horizontalPlane
-            : null,
+        surfaceHit,
+        viewMode: interactionViewModeRef.current,
         anchor: pipePlacementState.lastCommittedWorld,
         fallbackOrigin: new THREE.Vector3(0, 0, fallbackZ),
       });
@@ -1326,7 +1486,7 @@ export function HybridProjectionLayer({
         );
         constraint = axis;
       }
-      const snapped = (e.ctrlKey || e.metaKey)
+      const snapped = (e.altKey || e.ctrlKey || e.metaKey)
         ? { point: constrained.clone(), candidate: null }
         : resolveSnappedPipePoint(
             constrained,
@@ -1371,6 +1531,26 @@ export function HybridProjectionLayer({
       const hits = raycaster.intersectObject(s.wallChunk.pick, false);
       const wallIds = new Set(wallsRef.current.map((wall) => wall.id));
       return resolveWallHitId(hits, s.wallChunk.entityIds, wallIds);
+    };
+
+    const raycastPipeElementId = (point: { x: number; y: number }): string | null => {
+      const s = sceneStateRef.current;
+      if (!s) return null;
+      const { width: w, height: h } = viewportSize();
+      raycaster.setFromCamera(
+        new THREE.Vector2((point.x / w) * 2 - 1, 1 - (point.y / h) * 2),
+        controller.camera,
+      );
+      const hits = raycaster.intersectObject(s.root, true);
+      for (const hit of hits) {
+        const root = objectAncestry(hit.object).find((candidate) => {
+          const type = candidate.userData.hvacElementType as HvacElement["type"] | undefined;
+          return type ? isRefrigerantPipeElementType(type) : false;
+        });
+        const elementId = root?.userData.hvacElementId as string | undefined;
+        if (elementId) return elementId;
+      }
+      return null;
     };
 
     const GHOST_MATERIAL_3D = new THREE.LineBasicMaterial({
@@ -1484,11 +1664,131 @@ export function HybridProjectionLayer({
       pickState.leaderAnchors = [];
     };
 
+    let activePipeConstraintKey: HybridPipeConstraintKey = "free";
+    const beginPipeDragProjection = (
+      pointer: { clientX: number; clientY: number; pointerId: number },
+      anchorModel: PipeRouteNode3D,
+      constraintKey: HybridPipeConstraintKey,
+    ): FrozenDragContext | null => {
+      const rect = interactionElement.getBoundingClientRect();
+      const anchorWorld = modelToWorldPoint([anchorModel.x, anchorModel.y, anchorModel.z]);
+      return beginDrag(
+        pointer,
+        {
+          camera: controller.camera,
+          viewport: {
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height,
+          },
+          viewMode: interactionViewModeRef.current,
+        },
+        {
+          anchorWorld,
+          constraint: pipeTransformConstraint(constraintKey, anchorWorld),
+        },
+      );
+    };
+
+    const beginPipeVertexDrag = (handle: HandleDef3D, e: PointerEvent): boolean => {
+      if (handle.editTarget?.kind !== "pipeVertex") return false;
+      if (!onCommitPipeRouteEditRef.current) return false;
+      const element = hvacElementsRef.current.find((candidate) => candidate.id === handle.entityId);
+      if (!element || !isRefrigerantPipeElementType(element.type)) return false;
+      const nodes = resolvePipeEditRouteNodes(element, hvacElementsRef.current);
+      const nodeIndex = handle.editTarget.nodeIndex;
+      const anchor = nodes[nodeIndex];
+      if (!anchor) return false;
+      const protection = resolvePipeEndpointProtection(element, hvacElementsRef.current);
+      const protectedIndexes = getProtectedPipeNodeIndexes(
+        nodes.length,
+        protection.start,
+        protection.end,
+      );
+      if (protectedIndexes.has(nodeIndex)) return false;
+      const pointer = { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId };
+      const constraintKey = e.ctrlKey || e.metaKey
+        ? resolveHybridPipeConstraintKey(e)
+        : activePipeConstraintKey;
+      const drag = beginPipeDragProjection(pointer, anchor, constraintKey);
+      if (!drag) return false;
+      pickState.pipeDrag = {
+        elementId: element.id,
+        nodeIndex,
+        handleId: handle.id,
+        protectedIndexes,
+        originalNodes: nodes.map((node) => ({ ...node })),
+        currentNodes: nodes.map((node) => ({ ...node })),
+        drag,
+        lastPointer: pointer,
+      };
+      editPipePreviewRef.current = withHybridPipeEditPreview(element, nodes);
+      schedulePreviewRebuild();
+      return true;
+    };
+
+    const rebasePipeVertexDrag = (constraintKey: HybridPipeConstraintKey): void => {
+      const current = pickState.pipeDrag;
+      if (!current) return;
+      const anchor = current.currentNodes[current.nodeIndex];
+      if (!anchor) return;
+      const drag = beginPipeDragProjection(current.lastPointer, anchor, constraintKey);
+      if (!drag) return;
+      current.drag = drag;
+      activePipeConstraintKey = constraintKey;
+    };
+
+    const updatePipeVertexDrag = (e: PointerEvent): boolean => {
+      const current = pickState.pipeDrag;
+      if (!current) return false;
+      current.lastPointer = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        pointerId: e.pointerId,
+      };
+      const update = updateDrag(current.drag, current.lastPointer);
+      if (!update) return true;
+      const modelPoint = worldPointToModel(update.worldPoint);
+      current.currentNodes = moveEditablePipeNode(
+        current.currentNodes,
+        current.nodeIndex,
+        { x: modelPoint.x, y: modelPoint.y, z: modelPoint.z },
+        current.protectedIndexes,
+      );
+      const activeNode = current.currentNodes[current.nodeIndex];
+      const sceneState = sceneStateRef.current;
+      if (activeNode && sceneState) {
+        sceneState.handleLayer.setDefs(
+          sceneState.handleLayer.getDefs().map((definition) =>
+            definition.id === current.handleId
+              ? { ...definition, p: [activeNode.x, activeNode.y, activeNode.z] }
+              : definition,
+          ),
+        );
+      }
+      const element = hvacElementsRef.current.find(
+        (candidate) => candidate.id === current.elementId,
+      );
+      if (element) {
+        editPipePreviewRef.current = withHybridPipeEditPreview(element, current.currentNodes);
+        schedulePreviewRebuild();
+      }
+      return true;
+    };
+
     const handlePointerMove3D = (ev: Event): void => {
       const e = ev as PointerEvent;
       const s = sceneStateRef.current;
       if (!s) return;
       if (controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      if (pickState.pipeDrag) {
+        e.preventDefault();
+        e.stopPropagation();
+        updatePipeVertexDrag(e);
+        request();
+        return;
+      }
       if (pipeToolActiveRef.current) {
         // MMB/RMB remain camera navigation; LMB/hover belong to the pipe tool.
         if ((e.buttons & 6) !== 0) return;
@@ -1538,7 +1838,7 @@ export function HybridProjectionLayer({
         return;
       }
       if (s.handleLayer.setState("", "idle")) request();
-      onHoverWallRef.current?.(raycastWallId(point));
+      onHoverWallRef.current?.(raycastPipeElementId(point) ?? raycastWallId(point));
     };
 
     const handlePointerDown3D = (ev: Event): void => {
@@ -1564,11 +1864,19 @@ export function HybridProjectionLayer({
       pickState.downY = e.clientY;
       pickState.downHandled = false;
       pickState.bodyDrag = null;
+      pickState.pipePressedId = null;
       const handle = s.handleLayer.hitTest(point.x, point.y, worldToHostScreen, modelToWorldPoint);
       if (handle) {
         pickState.downHandled = true;
         e.preventDefault();
         e.stopPropagation();
+        if (beginPipeVertexDrag(handle, e)) {
+          s.handleLayer.setState(handle.id, "active");
+          interactionElement.setPointerCapture?.(e.pointerId);
+          request();
+          return;
+        }
+        if (handle.kind === "pipeVertex") return;
         if (handle.kind === "midpointInsert") {
           onSplitWallRef.current?.(handle.entityId);
           return;
@@ -1588,6 +1896,15 @@ export function HybridProjectionLayer({
       }
       // No handle → press on a wall BODY arms a body-drag-to-move (activates
       // past a 4px threshold; a pure click falls through to select on up).
+      const pipeId = raycastPipeElementId(point);
+      if (pipeId) {
+        pickState.downHandled = true;
+        pickState.pipePressedId = pipeId;
+        e.preventDefault();
+        e.stopPropagation();
+        interactionElement.setPointerCapture?.(e.pointerId);
+        return;
+      }
       const wallId = raycastWallId(point);
       if (!wallId) return; // empty space; up() clears selection
       pickState.downHandled = true;
@@ -1640,6 +1957,38 @@ export function HybridProjectionLayer({
         pipePlacementState.pointerId = null;
         return;
       }
+      if (pickState.pipeDrag) {
+        const pipeDrag = pickState.pipeDrag;
+        pickState.pipeDrag = null;
+        editPipePreviewRef.current = null;
+        s?.handleLayer.setState("", "idle");
+        releaseCapture();
+        const changed = pipeDrag.currentNodes.some((node, index) => {
+          const original = pipeDrag.originalNodes[index];
+          return !original || Math.hypot(
+            node.x - original.x,
+            node.y - original.y,
+            node.z - original.z,
+          ) > 1e-6;
+        });
+        if (changed) {
+          onCommitPipeRouteEditRef.current?.(
+            pipeDrag.elementId,
+            pipeDrag.currentNodes.map((node) => ({ ...node })),
+          );
+        }
+        schedulePreviewRebuild();
+        request();
+        return;
+      }
+      if (pickState.pipePressedId) {
+        const pipeId = pickState.pipePressedId;
+        pickState.pipePressedId = null;
+        releaseCapture();
+        selectWall(pipeId, e.shiftKey);
+        request();
+        return;
+      }
       if (pickState.drag) {
         const drag = pickState.drag;
         pickState.drag = null;
@@ -1684,14 +2033,58 @@ export function HybridProjectionLayer({
     interactionElement.addEventListener("pointermove", handlePointerMove3D);
     interactionElement.addEventListener("pointerdown", handlePointerDown3D);
     interactionElement.addEventListener("pointerup", handlePointerUp3D);
+    const handlePipeConstraintKeyDown = (e: KeyboardEvent): void => {
+      const target = e.target;
+      if (
+        !pickState.pipeDrag
+        && target instanceof HTMLElement
+        && (target.isContentEditable || target.tagName === "INPUT" || target.tagName === "TEXTAREA")
+      ) {
+        return;
+      }
+      const constraintKey = resolveHybridPipeConstraintKey(e);
+      if (constraintKey === "free") return;
+      activePipeConstraintKey = constraintKey;
+      if (pickState.pipeDrag) {
+        e.preventDefault();
+        rebasePipeVertexDrag(constraintKey);
+      }
+    };
+    const handlePipeConstraintKeyUp = (e: KeyboardEvent): void => {
+      if (["x", "y", "z", "control", "meta"].includes(e.key.toLowerCase())) {
+        activePipeConstraintKey = "free";
+      }
+    };
+    window.addEventListener("keydown", handlePipeConstraintKeyDown);
+    window.addEventListener("keyup", handlePipeConstraintKeyUp);
     const handlePointerCancel3D = (ev: Event): void => {
       const e = ev as PointerEvent;
-      if (!pipeToolActiveRef.current) return;
+      if (pickState.pipeDrag || pickState.pipePressedId) {
+        const cancelledDrag = pickState.pipeDrag;
+        const originalNode = cancelledDrag?.originalNodes[cancelledDrag.nodeIndex];
+        const sceneState = sceneStateRef.current;
+        if (cancelledDrag && originalNode && sceneState) {
+          sceneState.handleLayer.setDefs(
+            sceneState.handleLayer.getDefs().map((definition) =>
+              definition.id === cancelledDrag.handleId
+                ? { ...definition, p: [originalNode.x, originalNode.y, originalNode.z] }
+                : definition,
+            ),
+          );
+        }
+        pickState.pipeDrag = null;
+        pickState.pipePressedId = null;
+        editPipePreviewRef.current = null;
+        sceneStateRef.current?.handleLayer.setState("", "idle");
+        schedulePreviewRebuild();
+        request();
+      }
       try {
         interactionElement.releasePointerCapture?.(e.pointerId);
       } catch {
         /* pointer already released */
       }
+      if (!pipeToolActiveRef.current) return;
       routeActiveRef.current = false;
       resetPipePlacement();
       onPipePointerCancelRef.current?.();
@@ -1828,6 +2221,11 @@ export function HybridProjectionLayer({
         s.renderer.render(s.scene, controller.camera);
       }
       onPolarChangeRef.current?.(controller.polar);
+      const cameraView = controller.cameraView;
+      if (cameraView !== lastCameraViewRef.current) {
+        lastCameraViewRef.current = cameraView;
+        onCameraViewChangeRef.current?.(cameraView);
+      }
       // Rotated-plan state (transition-edge only, coarse threshold): the host
       // locks editing + hides the axis-aligned rulers while rotated.
       const viewRotated = Math.abs(controller.azimuthWrapped) > ROTATED_PLAN_EPSILON;
@@ -1873,6 +2271,9 @@ export function HybridProjectionLayer({
       interactionElement.removeEventListener("pointerup", handlePointerUp3D);
       interactionElement.removeEventListener("pointercancel", handlePointerCancel3D);
       window.removeEventListener("pointermove", handleWindowPipeMove);
+      window.removeEventListener("keydown", handlePipeConstraintKeyDown);
+      window.removeEventListener("keyup", handlePipeConstraintKeyUp);
+      editPipePreviewRef.current = null;
       resetPipePlacementRef.current = null;
       removeGhost();
       removeBodyGhost();
@@ -1985,6 +2386,29 @@ export function HybridProjectionLayer({
     const defs: HandleDef3D[] = [];
     const seenNodes = new Set<string>();
     for (const id of selectedIds ?? []) {
+      const pipe = hvacElements.find(
+        (candidate) => candidate.id === id && isRefrigerantPipeElementType(candidate.type),
+      );
+      if (pipe) {
+        const routeNodes = resolvePipeEditRouteNodes(pipe, hvacElements);
+        const protection = resolvePipeEndpointProtection(pipe, hvacElements);
+        const protectedIndexes = getProtectedPipeNodeIndexes(
+          routeNodes.length,
+          protection.start,
+          protection.end,
+        );
+        routeNodes.forEach((node, nodeIndex) => {
+          if (protectedIndexes.has(nodeIndex)) return;
+          defs.push({
+            id: `pipe:${pipe.id}:${nodeIndex}`,
+            kind: "pipeVertex",
+            p: [node.x, node.y, node.z],
+            entityId: pipe.id,
+            editTarget: { kind: "pipeVertex", nodeIndex },
+          });
+        });
+        continue;
+      }
       const wall = walls.find((candidate) => candidate.id === id);
       if (!wall?.graph) continue;
       if (!seenNodes.has(wall.graph.a)) {
@@ -1994,6 +2418,7 @@ export function HybridProjectionLayer({
           kind: "endpoint",
           p: [wall.startPoint.x, wall.startPoint.y, 5],
           entityId: wall.graph.a,
+          editTarget: { kind: "wallNode" },
         });
       }
       if (!seenNodes.has(wall.graph.b)) {
@@ -2003,6 +2428,7 @@ export function HybridProjectionLayer({
           kind: "endpoint",
           p: [wall.endPoint.x, wall.endPoint.y, 5],
           entityId: wall.graph.b,
+          editTarget: { kind: "wallNode" },
         });
       }
       defs.push({
@@ -2014,11 +2440,12 @@ export function HybridProjectionLayer({
           5,
         ],
         entityId: id,
+        editTarget: { kind: "wallEdge" },
       });
     }
     sceneState.handleLayer.setDefs(defs);
     requestFrameRef.current?.();
-  }, [selectedIds, walls]);
+  }, [hvacElements, selectedIds, walls]);
 
   // View style: Solid → X-ray → Wire (reference applyStyles).
   useEffect(() => {

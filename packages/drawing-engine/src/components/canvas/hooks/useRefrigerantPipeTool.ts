@@ -22,6 +22,7 @@ import {
   buildRefrigerantPipeExtensionMerge,
   findNearestRefrigerantPipeBundleTarget,
   findNearestRefrigerantPipeExtensionTarget,
+  seedRefrigerantPipeRouteStart,
   type RefrigerantPipeAngleMode,
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeLineMode,
@@ -50,7 +51,10 @@ export interface UseRefrigerantPipeToolOptions {
     >
   ) => string[];
   /** Remove an element by id — used to replace a tapped run with its split halves. */
-  deleteHvacElement: (id: string, options?: { skipHistory?: boolean }) => void;
+  commitHvacElementCommand: (
+    action: string,
+    command: { add?: HvacElement[]; removeIds?: string[]; selectedIds?: string[] },
+  ) => string[];
   /**
    * Update an element in place — used to merge an extension INTO the host pipe
    * (one continuous polyline, smooth junction bend) instead of committing a
@@ -271,7 +275,7 @@ export function useRefrigerantPipeTool(
     snapToGrid,
     gridSize,
     addHvacElements,
-    deleteHvacElement,
+    commitHvacElementCommand,
     updateHvacElement,
     saveToHistory,
     setSelectedIds,
@@ -468,7 +472,7 @@ export function useRefrigerantPipeTool(
     const thresholdMm = resolveExtensionThresholdMm();
     let bundle: RefrigerantPipeBundleConnection | null = null;
     let source: RefrigerantPipeSnapSource = null;
-    if (allowBundleSnap) {
+    if (allowBundleSnap && !altPressedRef.current) {
       const shouldExcludeBundle = (candidate: RefrigerantPipeBundleConnection | null): boolean => {
         if (!candidate || !startBundleRef.current?.sourceElementId) {
           return false;
@@ -945,18 +949,12 @@ export function useRefrigerantPipeTool(
       setProcessingStatus('Could not place a branch kit on this run.', false);
       return false;
     }
-    // Place the two joints + connect each line (gas/liquid) independently to its
-    // joint outlet so the connections never cross.
-    const addedIds = addHvacElements(
-      insertion.elementsToAdd as unknown as Parameters<typeof addHvacElements>[0],
-    );
-    // Replace any tapped run(s) the insertion split into run-in/run-out halves.
-    // Empty unless the real-tee topology path produced a split (W3b); skipHistory
-    // so the add + removes collapse into the single "insert branch kit" undo step.
-    insertion.removeElementIds.forEach((id) => {
-      deleteHvacElement(id, { skipHistory: true });
+    const addedIds = commitHvacElementCommand('Insert refrigerant branch kit', {
+      add: insertion.elementsToAdd,
+      removeIds: insertion.removeElementIds,
+      selectedIds: insertion.kitElementIds,
     });
-    setSelectedIds(insertion.kitElementIds.length > 0 ? insertion.kitElementIds : addedIds);
+    if (insertion.kitElementIds.length === 0) setSelectedIds(addedIds);
     setProcessingStatus(
       `Branch kit connected — ${describeBranchKitConnectionType(proposal.connectionType)}`,
       false,
@@ -964,8 +962,7 @@ export function useRefrigerantPipeTool(
     resetDrawing();
     return true;
   }, [
-    addHvacElements,
-    deleteHvacElement,
+    commitHvacElementCommand,
     hvacElements,
     resetDrawing,
     setProcessingStatus,
@@ -1017,17 +1014,28 @@ export function useRefrigerantPipeTool(
     resetDrawing();
     sessionLineModeRef.current = opts?.lineMode ?? null;
     const startPoint: PipePlacementPoint = { ...bundle.point, z: bundle.elevationMm };
-    routePointsRef.current = [startPoint];
+    const routeStart = seedRefrigerantPipeRouteStart(
+      startPoint,
+      bundle,
+      opts?.lineMode ?? pipeLineMode,
+    );
+    routePointsRef.current = routeStart;
     startBundleRef.current = bundle;
     previewPointRef.current = null;
     renderSnapMarkers(bundle);
-    renderDebugOverlays(bundle, startPoint, 'model');
-    clearPreview();
-    onDraftRouteChange?.([startPoint]);
+    renderDebugOverlays(bundle, routeStart[0] ?? startPoint, 'model');
+    if (routeStart.length >= 2) {
+      renderRoutePreview(routeStart);
+    } else {
+      clearPreview();
+    }
+    onDraftRouteChange?.(routeStart);
   }, [
     clearPreview,
     onDraftRouteChange,
+    pipeLineMode,
     renderDebugOverlays,
+    renderRoutePreview,
     renderSnapMarkers,
     resetDrawing,
   ]);
@@ -1066,11 +1074,16 @@ export function useRefrigerantPipeTool(
     const { point: snappedPoint, bundle, source } = snapPoint(point, true);
 
     if (routePointsRef.current.length === 0) {
-      routePointsRef.current = [snappedPoint];
+      const routeStart = seedRefrigerantPipeRouteStart(
+        snappedPoint,
+        bundle,
+        sessionLineModeRef.current ?? pipeLineMode,
+      );
+      routePointsRef.current = routeStart;
       startBundleRef.current = bundle;
       previewPointRef.current = null;
       renderSnapMarkers(bundle);
-      renderDebugOverlays(bundle, snappedPoint, source);
+      renderDebugOverlays(bundle, routeStart[0] ?? snappedPoint, source);
       if (bundle) {
         logDebug('SNAP_LOCKED', {
           source,
@@ -1082,8 +1095,12 @@ export function useRefrigerantPipeTool(
           guideReference: bundle.guideReference ?? null,
         });
       }
-      clearPreview();
-      onDraftRouteChange?.([snappedPoint]);
+      if (routeStart.length >= 2) {
+        renderRoutePreview(routeStart);
+      } else {
+        clearPreview();
+      }
+      onDraftRouteChange?.(routeStart);
       return;
     }
 

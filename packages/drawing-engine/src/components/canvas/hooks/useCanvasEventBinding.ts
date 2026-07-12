@@ -34,6 +34,7 @@ import type {
   SymbolInstance2D,
   Wall,
 } from "../../../types";
+import type { InteractionViewMode } from "../../../vrf/interaction/view-manipulation-policy";
 import type {
   MarqueeSelectionState,
   OpeningPointerInteraction,
@@ -59,6 +60,7 @@ import { MM_TO_PX } from "../scale";
 import { snapPointToGrid } from "../snapping";
 import type { WallRenderer } from "../wall/WallRenderer";
 
+import { resolveKeyboardNudgeDelta } from "./keyboardNudge";
 import type { UseExtendToolResult } from "./useExtendTool";
 import type { UseOffsetToolResult } from "./useOffsetTool";
 import type { UseTrimToolResult } from "./useTrimTool";
@@ -202,6 +204,8 @@ export interface UseCanvasEventBindingOptions {
   objectDefinitionsById: Map<string, ArchitecturalObjectDefinition>;
   resolvedSnapToGrid: boolean;
   effectiveSnapGridSize: number;
+  nudgeStepMm: number;
+  interactionViewMode?: InteractionViewMode;
   projectionViewOnly?: boolean;
   pendingPlacementDefinition: ArchitecturalObjectDefinition | null;
   pendingPlacementEquipmentDefinition: AcEquipmentDefinition | null;
@@ -428,7 +432,7 @@ export interface UseCanvasEventBindingOptions {
   setSectionLineDirection: (direction: SectionLineDirection) => void;
 
   // Nudge
-  nudgeSelectedObjects: (dx: number, dy: number) => boolean;
+  nudgeSelectedObjects: (dx: number, dy: number, dz?: number) => boolean;
 
   // Wall renderer
   wallRenderer: WallRenderer | null;
@@ -440,6 +444,16 @@ export interface UseCanvasEventBindingOptions {
 
 export interface UseCanvasEventBindingResult {
   // Currently returns nothing – the effect is purely side-effectful.
+}
+
+export function resolveKeyboardNudgeStepMm(
+  gridStepMm: number,
+  modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+): number {
+  const base = Number.isFinite(gridStepMm) && gridStepMm > 0 ? gridStepMm : 10;
+  if (modifiers.shiftKey) return base * 10;
+  if (modifiers.ctrlKey || modifiers.metaKey) return base * 0.1;
+  return base;
 }
 
 // =============================================================================
@@ -586,6 +600,8 @@ export function useCanvasEventBinding(
         handleDimensionKeyDown,
         handleDuctKeyDown,
         handleRefrigerantPipeKeyDown,
+        nudgeStepMm,
+        interactionViewMode = "plan-2d",
         offsetTool,
         setTool,
         trimTool,
@@ -624,21 +640,15 @@ export function useCanvasEventBinding(
         return;
       }
       if (tool === "select") {
-        const arrowStep = e.shiftKey ? 1 : 10;
-        if (e.key === "ArrowUp") {
-          if (nudgeSelectedObjects(0, -arrowStep)) e.preventDefault();
-          return;
-        }
-        if (e.key === "ArrowDown") {
-          if (nudgeSelectedObjects(0, arrowStep)) e.preventDefault();
-          return;
-        }
-        if (e.key === "ArrowLeft") {
-          if (nudgeSelectedObjects(-arrowStep, 0)) e.preventDefault();
-          return;
-        }
-        if (e.key === "ArrowRight") {
-          if (nudgeSelectedObjects(arrowStep, 0)) e.preventDefault();
+        const arrowStep = resolveKeyboardNudgeStepMm(nudgeStepMm, e);
+        const delta = resolveKeyboardNudgeDelta(
+          e.key,
+          e.altKey,
+          arrowStep,
+          interactionViewMode,
+        );
+        if (delta) {
+          if (nudgeSelectedObjects(delta.dx, delta.dy, delta.dz)) e.preventDefault();
           return;
         }
       }

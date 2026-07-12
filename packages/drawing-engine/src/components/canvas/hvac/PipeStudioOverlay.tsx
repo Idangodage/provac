@@ -28,6 +28,7 @@ import {
 } from 'react';
 
 import type { HvacElement, Point2D } from '../../../types';
+import { generateId } from '../../../utils/geometry';
 import {
   affineMatrixToSvg,
   canvasTransformToSvgMatrix,
@@ -51,6 +52,8 @@ import {
   BRANCH_KIT_SPRITE_LIQUID,
 } from './branchKitSprite';
 import { buildPipeCenterline, toPolyline, toSvgPathData } from './pipeCenterline';
+import { resolveEditablePipeVertexIndex } from './pipeInteractionCore';
+import { withCanonicalPipeRoute } from './pipeRoute3d';
 import {
   buildRefrigerantBranchKitViewModel,
   resolveRefrigerantBranchKitConnectionIdentity,
@@ -60,7 +63,10 @@ import {
   findNearestRefrigerantPipeBundleTarget,
   findNearestRefrigerantPipeExtensionTarget,
   getBranchKitPortConnections,
+  constrainRefrigerantPipeRouteForConnections,
   resolveRefrigerantPipeBranchKitReconnectionUpdates,
+  resolveRefrigerantPipePairSpec,
+  resolveRefrigerantPipeSpec,
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeLineMode,
 } from './refrigerantPipePairModel';
@@ -240,19 +246,14 @@ interface PipeStudioOverlayProps {
   hvacElements: HvacElement[];
   selectedIds: string[];
   setSelectedIds: (ids: string[]) => void;
-  updateHvacElement: (
-    id: string,
-    updates: Partial<HvacElement>,
-    options?: { skipHistory?: boolean },
-  ) => void;
-  addHvacElement: (
-    element: Omit<Partial<HvacElement>, 'id'> &
-      Pick<
-        HvacElement,
-        'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'
-      >,
-  ) => string;
-  saveToHistory: (action: string) => void;
+  commitHvacElementCommand: (
+    action: string,
+    command: {
+      add?: HvacElement[];
+      updates?: Array<{ id: string; updates: Partial<HvacElement> }>;
+      selectedIds?: string[];
+    },
+  ) => string[];
   /**
    * Continue a run from an existing end: a pipe-end / bundle / branch-kit-port
    * grip hands up the bundle connection to route from + which line(s) to lay.
@@ -276,6 +277,10 @@ interface PipeView {
   offsetSign: number;
   /** Explicit gas<->liquid linkage (same id for the two lines of one bundle). */
   bundleId: string | null;
+  startConnected: boolean;
+  endConnected: boolean;
+  startProtectedVertexCount: number;
+  endProtectedVertexCount: number;
 }
 
 function readNumber(value: unknown, fallback: number): number {
@@ -491,6 +496,25 @@ function toPipeView(el: HvacElement, edited: boolean): PipeView | null {
   if (route.length < 2) return null;
   const outerMm = readNumber(props.outerDiameterMm, DEFAULT_OUTER_DIAMETER_MM);
   const rawKind = typeof props.lineKind === 'string' ? props.lineKind : null;
+  const connectionState = el.type === 'refrigerant-pipe'
+    ? (() => {
+        const spec = resolveRefrigerantPipeSpec(props);
+        return {
+          start: Boolean(spec.startConnection),
+          end: Boolean(spec.endConnection),
+          startProtected: spec.startConnection?.connectionKind === 'unit-port' ? 2 : 1,
+          endProtected: spec.endConnection?.connectionKind === 'unit-port' ? 2 : 1,
+        };
+      })()
+    : (() => {
+        const spec = resolveRefrigerantPipePairSpec(props);
+        return {
+          start: Boolean(spec.startBundleConnection),
+          end: Boolean(spec.endBundleConnection),
+          startProtected: spec.startBundleConnection?.connectionKind === 'unit-port' ? 2 : 1,
+          endProtected: spec.endBundleConnection?.connectionKind === 'unit-port' ? 2 : 1,
+        };
+      })();
   return {
     id: el.id,
     route,
@@ -503,6 +527,10 @@ function toPipeView(el: HvacElement, edited: boolean): PipeView | null {
     bendMm: Math.max(outerMm * 0.8, 12),
     offsetSign: 0,
     bundleId: typeof props.bundleId === 'string' && props.bundleId.length > 0 ? props.bundleId : null,
+    startConnected: connectionState.start,
+    endConnected: connectionState.end,
+    startProtectedVertexCount: connectionState.startProtected,
+    endProtectedVertexCount: connectionState.endProtected,
   };
 }
 
@@ -521,17 +549,22 @@ function bbox(route: Point2D[]): { minX: number; minY: number; maxX: number; max
 }
 
 function withPipeRoute(element: HvacElement, route: Point2D[]): HvacElement {
-  const box = bbox(route);
+  const constrainedRoute = constrainRefrigerantPipeRouteForConnections(
+    element.type,
+    element.properties,
+    route,
+  );
+  const box = bbox(constrainedRoute);
   const margin = readNumber(
     (element.properties as Record<string, unknown>)?.outerDiameterMm,
     DEFAULT_OUTER_DIAMETER_MM,
   );
+  const routedElement = withCanonicalPipeRoute(element, constrainedRoute);
   return {
-    ...element,
+    ...routedElement,
     position: { x: box.minX - margin, y: box.minY - margin },
     width: box.maxX - box.minX + margin * 2,
     depth: box.maxY - box.minY + margin * 2,
-    properties: { ...(element.properties ?? {}), routePoints: route },
   };
 }
 
@@ -578,9 +611,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       hvacElements,
       selectedIds,
       setSelectedIds,
-      updateHvacElement,
-      addHvacElement,
-      saveToHistory,
+      commitHvacElementCommand,
       onBeginExtendRoute,
     },
     ref,
@@ -1181,14 +1212,16 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       const el = hvacElements.find((e) => e.id === id);
       if (!el || el.type !== 'refrigerant-branch-kit') return;
       const props = (el.properties ?? {}) as Record<string, unknown>;
-      updateHvacElement(
-        id,
-        { properties: { ...props, branchKitFlipped: props.branchKitFlipped !== true } },
-        { skipHistory: true },
-      );
-      saveToHistory('Flip branch kit');
+      commitHvacElementCommand('Flip branch kit', {
+        updates: [{
+          id,
+          updates: {
+            properties: { ...props, branchKitFlipped: props.branchKitFlipped !== true },
+          },
+        }],
+      });
     },
-    [hvacElements, updateHvacElement, saveToHistory],
+    [commitHvacElementCommand, hvacElements],
   );
 
   const elementById = useCallback(
@@ -1196,8 +1229,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [hvacElements],
   );
 
-  // Write a single pipe's route to the store WITHOUT touching history, so a
-  // multi-element edit can batch several writes under one saveToHistory call.
+  // Build one pipe update without mutating the store; the caller commits the
+  // completed drag as a single auditable history command.
   const writeRoute = useCallback(
     (id: string, route: Point2D[]) => {
       const el = elementById(id);
@@ -1206,26 +1239,28 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       // so inserted/edited vertices persist.
       editedIdsRef.current.add(id);
       const nextElement = withPipeRoute(el, route);
-      updateHvacElement(
-        id,
-        {
-          position: nextElement.position,
-          width: nextElement.width,
-          depth: nextElement.depth,
-          properties: nextElement.properties,
-        },
-        { skipHistory: true },
-      );
+      return nextElement;
     },
-    [elementById, updateHvacElement],
+    [elementById],
   );
 
   const commitRoute = useCallback(
     (id: string, route: Point2D[], label: string) => {
-      writeRoute(id, route);
-      saveToHistory(label);
+      const nextElement = writeRoute(id, route);
+      if (!nextElement) return;
+      commitHvacElementCommand(label, {
+        updates: [{
+          id,
+          updates: {
+            position: nextElement.position,
+            width: nextElement.width,
+            depth: nextElement.depth,
+            properties: nextElement.properties,
+          },
+        }],
+      });
     },
-    [writeRoute, saveToHistory],
+    [commitHvacElementCommand, writeRoute],
   );
 
   const buildMovePreview = useCallback(
@@ -1281,12 +1316,21 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   );
 
   const onVertexDown = useCallback(
-    (e: ReactPointerEvent, id: string, vi: number, route: Point2D[]) => {
+    (e: ReactPointerEvent, pipe: PipeView, vi: number, route: Point2D[]) => {
       e.stopPropagation();
+      const editableIndex = resolveEditablePipeVertexIndex({
+        routeLength: route.length,
+        vertexIndex: vi,
+        startConnected: pipe.startConnected,
+        endConnected: pipe.endConnected,
+        startProtectedVertexCount: pipe.startProtectedVertexCount,
+        endProtectedVertexCount: pipe.endProtectedVertexCount,
+      });
+      if (editableIndex === null) return;
       const startWorld = toWorld(e.clientX, e.clientY) ?? route[vi]!;
       const startRoute = route.map((p) => ({ ...p }));
-      dragRef.current = { id, vi, startWorld, startRoute };
-      setGhost({ id, route: startRoute.map((p) => ({ ...p })) });
+      dragRef.current = { id: pipe.id, vi: editableIndex, startWorld, startRoute };
+      setGhost({ id: pipe.id, route: startRoute.map((p) => ({ ...p })) });
       (e.target as Element).setPointerCapture?.(e.pointerId);
     },
     [toWorld],
@@ -1391,13 +1435,13 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
           md.items.filter((item) => item.kind === 'pipe')
             .map((item) => item.id),
         );
-        finalElements.forEach((element) => {
+        const updates = finalElements.map((element) => {
           if (movedPipeIds.has(element.id)) {
             editedIdsRef.current.add(element.id);
           }
-          updateHvacElement(
-            element.id,
-            {
+          return {
+            id: element.id,
+            updates: {
               position: element.position,
               rotation: element.rotation,
               width: element.width,
@@ -1407,8 +1451,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
               wallId: element.wallId,
               properties: element.properties,
             },
-            { skipHistory: true },
-          );
+          };
         });
         const hasPipe = md.items.some((i) => i.kind === 'pipe');
         const hasKit = md.items.some((i) => i.kind === 'kit');
@@ -1422,7 +1465,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
               : hasKit
                 ? 'Move branch kit'
                 : 'Move refrigerant pipe';
-        saveToHistory(label);
+        if (updates.length > 0) {
+          commitHvacElementCommand(label, { updates });
+        }
       }
       clearMovePreview();
       return;
@@ -1434,7 +1479,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     }
     setGhost(null);
     setNearBranchKitPortKey(null);
-  }, [ghost, commitRoute, updateHvacElement, saveToHistory, clearMovePreview]);
+  }, [clearMovePreview, commitHvacElementCommand, commitRoute, ghost]);
 
   const onInsert = useCallback(
     (e: ReactPointerEvent, id: string, si: number, route: Point2D[]) => {
@@ -1446,11 +1491,18 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   );
 
   const onDelete = useCallback(
-    (e: ReactMouseEvent, id: string, vi: number, route: Point2D[]) => {
+    (e: ReactMouseEvent, pipe: PipeView, vi: number, route: Point2D[]) => {
       e.preventDefault();
       e.stopPropagation();
-      if (route.length <= 2) return;
-      commitRoute(id, route.filter((_, i) => i !== vi), 'Delete refrigerant pipe vertex');
+      const lastIndex = route.length - 1;
+      const protectedAtStart = pipe.startConnected ? pipe.startProtectedVertexCount : 1;
+      const protectedAtEnd = pipe.endConnected ? pipe.endProtectedVertexCount : 1;
+      if (
+        route.length <= 2
+        || vi < protectedAtStart
+        || vi > lastIndex - protectedAtEnd
+      ) return;
+      commitRoute(pipe.id, route.filter((_, i) => i !== vi), 'Delete refrigerant pipe vertex');
     },
     [commitRoute],
   );
@@ -1595,9 +1647,15 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         branchKitType: 'dis-22-1g',
         branchKitLineKind: kitKind,
         branchKitWallAllowanceMm: 0.9,
+        branchType: 'y-joint',
       };
-      const kitId = addHvacElement({
+      const kitId = generateId();
+      const kitEl: HvacElement = {
+        id: kitId,
         type: 'refrigerant-branch-kit',
+        category: 'accessory',
+        subtype: kitKind === 'gas' ? 'dis-22-1g-gas' : 'dis-22-1g-liquid',
+        modelLabel: kitKind === 'gas' ? 'DIS-22-1G Gas' : 'DIS-22-1G Liquid',
         position: kitPosition,
         rotation: transform.rotDeg,
         width: kw,
@@ -1606,8 +1664,10 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         elevation: KIT_ELEVATION_MM,
         mountType: 'ceiling',
         label: 'Copper branch kit',
+        supplyZoneRatio: 0.5,
         properties: kitProperties,
-      });
+      };
+      let pipeUpdate: { id: string; updates: Partial<HvacElement> } | null = null;
 
       // If a port snapped onto an open pipe end, BIND that pipe end to the kit
       // port: record the connection (sourceElementId + terminalRole) so the kit
@@ -1620,19 +1680,6 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         const whichEnd = snap.targetId.slice(sep + 1) as 'start' | 'end';
         const pipeEl = hvacElements.find((x) => x.id === pipeId);
         if (pipeEl) {
-          const kitEl = {
-            id: kitId,
-            type: 'refrigerant-branch-kit' as const,
-            position: kitPosition,
-            rotation: transform.rotDeg,
-            width: kw,
-            depth: kd,
-            height: kh,
-            elevation: KIT_ELEVATION_MM,
-            mountType: 'ceiling' as const,
-            label: 'Copper branch kit',
-            properties: kitProperties,
-          } as unknown as HvacElement;
           const port = getBranchKitPortConnections(kitEl).find(
             (p) => p.terminalRole === snap.portRole,
           );
@@ -1670,24 +1717,36 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                   sourceElementId: kitId,
                   terminalRole: snap.portRole,
                 };
-            updateHvacElement(
-              pipeId,
-              { properties: { ...props, routePoints: route, [connKey]: connVal } },
-              { skipHistory: true },
-            );
+            const connected = {
+              ...pipeEl,
+              properties: { ...props, [connKey]: connVal },
+            };
+            const routed = withPipeRoute(connected, route);
+            pipeUpdate = {
+              id: pipeId,
+              updates: {
+                position: routed.position,
+                width: routed.width,
+                depth: routed.depth,
+                properties: routed.properties,
+              },
+            };
           }
         }
       }
 
-      saveToHistory('Place copper branch kit');
+      commitHvacElementCommand('Place copper branch kit', {
+        add: [kitEl],
+        updates: pipeUpdate ? [pipeUpdate] : [],
+        selectedIds: [kitId],
+      });
       setPlacingKit(false);
       setKitGhost(null);
       setNearBranchKitPortKey(null);
       // Auto-select the fresh kit so the flip suggestion (ghost + "Flip" chip)
       // appears immediately after this first click — no extra gesture needed.
-      setSelectedIds([kitId]);
     },
-    [toWorld, k, kitPlacement, openEnds, kitKind, addHvacElement, updateHvacElement, hvacElements, saveToHistory, setSelectedIds],
+    [toWorld, k, kitPlacement, openEnds, kitKind, hvacElements, commitHvacElementCommand],
   );
 
   const finishPlaceKit = useCallback((e: ReactMouseEvent) => {
@@ -1976,8 +2035,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                         <g
                           key={`v-${vi}`}
                           style={{ cursor: 'grab', pointerEvents: 'auto' }}
-                          onPointerDown={(e) => onVertexDown(e, p.id, vi, route)}
-                          onContextMenu={(e) => onDelete(e, p.id, vi, route)}
+                          onPointerDown={(e) => onVertexDown(e, p, vi, route)}
+                          onContextMenu={(e) => onDelete(e, p, vi, route)}
                         >
                           <circle cx={pt.x} cy={pt.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
                           <circle cx={pt.x} cy={pt.y} r={handleR} fill="#fff" stroke={ep ? '#0F6E56' : '#185FA5'} strokeWidth={hpx(2)} style={{ pointerEvents: 'none' }} />

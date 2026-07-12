@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
+import { describe, expect, it } from 'vitest';
 
 import type { HvacElement } from '../../../../types';
 import { attachPipeRoute3dToElements } from '../pipeRoute3d';
-import { buildRefrigerantPipeElements } from '../refrigerantPipePairModel';
+import {
+  buildRefrigerantPipeElements,
+  buildRefrigerantPipePairElement,
+} from '../refrigerantPipePairModel';
 
 import { buildHvacElementMesh } from './buildHvacElementMesh';
 
@@ -53,5 +56,28 @@ describe('buildHvacElementMesh routeNodes3d', () => {
     expect(bounds.max.x - bounds.min.x).toBeGreaterThan(500);
     expect(bounds.max.y - bounds.min.y).toBeGreaterThan(250);
     expect(bounds.max.z - bounds.min.z).toBeGreaterThan(500);
+  });
+
+  it('renders a composite pair from its editable 3D guide', () => {
+    const base = buildRefrigerantPipePairElement([
+      { x: 100, y: 200 },
+      { x: 100, y: 200 },
+    ], { elevationMm: 100 });
+    const element = {
+      ...base,
+      id: 'pair-route-3d-test',
+      rotation: base.rotation ?? 0,
+      properties: {
+        ...(base.properties ?? {}),
+        routeNodes3d: [
+          { x: 100, y: 200, z: 120 },
+          { x: 100, y: 200, z: 920 },
+        ],
+      },
+    } as HvacElement;
+    const mesh = buildHvacElementMesh(element, { allElements: [element] });
+    const bounds = new THREE.Box3().setFromObject(mesh!);
+    expect(bounds.max.z - bounds.min.z).toBeGreaterThan(800);
+    expect(bounds.max.x - bounds.min.x).toBeGreaterThan(20);
   });
 });

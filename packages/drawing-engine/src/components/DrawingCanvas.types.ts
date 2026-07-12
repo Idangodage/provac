@@ -6,6 +6,7 @@ import type * as fabric from 'fabric';
 
 import type { AcEquipmentDefinition, ArchitecturalObjectDefinition } from '../data';
 import type { DisplayUnit, Point2D, SymbolInstance2D } from '../types';
+import type { ManufacturerRuleProfile } from '../vrf/rules';
 
 import type { PaperUnit } from './canvas';
 
@@ -40,6 +41,8 @@ export interface DrawingCanvasProps {
     onCancelObjectPlacement?: () => void;
     onEquipmentPlaced?: (definitionId: string) => void;
     onCancelEquipmentPlacement?: () => void;
+    /** Active verified manufacturer profile for live VRF sizing and validation. */
+    vrfRuleProfile?: ManufacturerRuleProfile;
 }
 
 // =============================================================================

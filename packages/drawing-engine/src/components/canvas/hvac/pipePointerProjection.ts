@@ -6,6 +6,8 @@ import {
   createWorkplane,
   intersectRayWithWorkplane,
   ndcPointToRay,
+  resolveViewManipulationPolicy,
+  type InteractionViewMode,
 } from '../../../vrf/interaction/interaction-coordinate-service';
 
 /**
@@ -60,6 +62,7 @@ export interface ResolveDrawingPlaneContext {
   lockedPlane?: PipeDrawingPlane | null;
   surfaceHit?: DrawingSurfaceHit | null;
   viewPlane?: PipeDrawingPlane | null;
+  viewMode?: InteractionViewMode;
   camera: THREE.Camera;
   anchor?: THREE.Vector3 | null;
   fallbackOrigin?: THREE.Vector3;
@@ -220,6 +223,28 @@ export function createCameraFacingDrawingPlane(
   );
 }
 
+export function createViewDefaultDrawingPlane(
+  viewMode: InteractionViewMode,
+  camera: THREE.Camera,
+  origin: THREE.Vector3,
+): PipeDrawingPlane {
+  const policy = resolveViewManipulationPolicy(viewMode);
+  switch (policy.defaultDragPlane) {
+    case 'xy':
+      return createDrawingPlane('view-default-xy', 'view-plane', origin, new THREE.Vector3(0, 0, 1));
+    case 'xz':
+      return createDrawingPlane('view-default-xz', 'view-plane', origin, new THREE.Vector3(0, 1, 0));
+    case 'yz':
+      return createDrawingPlane('view-default-yz', 'view-plane', origin, new THREE.Vector3(1, 0, 0));
+    case 'camera-facing':
+      return createCameraFacingDrawingPlane(camera, origin);
+    default: {
+      const exhaustive: never = policy.defaultDragPlane;
+      return exhaustive;
+    }
+  }
+}
+
 /**
  * Stable priority: an explicitly selected work plane wins, then the plane
  * locked by the first click, then the currently raycast surface, the current
@@ -241,6 +266,13 @@ export function resolveActiveDrawingPlane(
     );
   }
   if (context.viewPlane) return context.viewPlane;
+  if (context.viewMode) {
+    return createViewDefaultDrawingPlane(
+      context.viewMode,
+      context.camera,
+      context.anchor ?? context.fallbackOrigin ?? new THREE.Vector3(),
+    );
+  }
   return createCameraFacingDrawingPlane(
     context.camera,
     context.anchor ?? context.fallbackOrigin ?? new THREE.Vector3(),

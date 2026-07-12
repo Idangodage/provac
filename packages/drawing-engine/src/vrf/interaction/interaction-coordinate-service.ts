@@ -1,15 +1,23 @@
 import * as THREE from 'three';
 
+import {
+  resolveViewManipulationPolicy,
+  type DefaultDragPlane,
+  type InteractionViewMode,
+} from './view-manipulation-policy';
+
+export {
+  resolveViewManipulationPolicy,
+  type CanonicalManipulationView,
+  type DefaultDragPlane,
+  type InteractionViewMode,
+  type ManipulationAxis,
+  type ManipulationPlane,
+  type ViewManipulationPolicy,
+} from './view-manipulation-policy';
+
 const EPSILON = 1e-9;
 const PARALLEL_EPSILON = 1e-7;
-
-export type InteractionViewMode =
-  | 'plan-2d'
-  | 'elevation-2d'
-  | 'section'
-  | 'orthographic-3d'
-  | 'perspective-3d'
-  | 'oblique';
 
 export interface InteractionViewport {
   left: number;
@@ -508,6 +516,42 @@ function defaultFrame(anchor: THREE.Vector3): CoordinateFrame {
   );
 }
 
+function defaultWorkplaneForView(
+  plane: DefaultDragPlane,
+  anchor: THREE.Vector3,
+  camera: THREE.Camera,
+): Workplane {
+  switch (plane) {
+    case 'xy':
+      return createWorkplane(
+        'view-default-xy',
+        anchor,
+        new THREE.Vector3(0, 0, 1),
+        new THREE.Vector3(1, 0, 0),
+      );
+    case 'xz':
+      return createWorkplane(
+        'view-default-xz',
+        anchor,
+        new THREE.Vector3(0, 1, 0),
+        new THREE.Vector3(1, 0, 0),
+      );
+    case 'yz':
+      return createWorkplane(
+        'view-default-yz',
+        anchor,
+        new THREE.Vector3(1, 0, 0),
+        new THREE.Vector3(0, 1, 0),
+      );
+    case 'camera-facing':
+      return createCameraFacingWorkplane(camera, anchor, 'view-default-camera-facing');
+    default: {
+      const exhaustive: never = plane;
+      return exhaustive;
+    }
+  }
+}
+
 export function beginDrag(
   pointer: InteractionPointer,
   context: InteractionContext,
@@ -528,9 +572,15 @@ export function beginDrag(
       }
     : defaultFrame(options.anchorWorld);
   const fallbackPlane = createCameraFacingWorkplane(camera, options.anchorWorld, 'drag-fallback');
+  const viewPolicy = resolveViewManipulationPolicy(context.viewMode);
+  const viewDefaultPlane = defaultWorkplaneForView(
+    viewPolicy.defaultDragPlane,
+    options.anchorWorld,
+    camera,
+  );
   const selectedPlane = constraint.kind === 'plane'
     ? constraint.workplane
-    : options.dragPlane ?? context.activeWorkplane ?? fallbackPlane;
+    : options.dragPlane ?? context.activeWorkplane ?? viewDefaultPlane;
   const plane = constraint.kind === 'axis'
     ? null
     : createWorkplane(
@@ -612,4 +662,3 @@ export function updateDrag(
     frameId: drag.frame.id,
   };
 }
-

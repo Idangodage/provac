@@ -1,8 +1,5 @@
 import type { HvacElement, Point2D } from '../../../types';
-import {
-  normalizePipeRouteNodes3d,
-  translatePipeRouteNodes3d,
-} from './pipeRoute3d';
+
 
 import {
   buildCeilingCassetteModel,
@@ -13,6 +10,11 @@ import {
   translateBypasses,
   type PipeBypass,
 } from './pipeBypass';
+import {
+  normalizePipeRouteNodes3d,
+  withCanonicalPipeRoute,
+  type PipePlacementPoint,
+} from './pipeRoute3d';
 import {
   DEFAULT_PIPE_ROUTING_ELEVATION_MM,
   getActivePipeRoutingSettings,
@@ -173,6 +175,15 @@ export interface RefrigerantPipePairVisualSpec extends RefrigerantPipePairSpec {
 }
 
 export type RefrigerantPipeLineKind = 'gas' | 'liquid';
+
+export function refrigerantBranchKitTerminalIds(
+  elementId: string,
+  lineKind: RefrigerantPipeLineKind,
+  role: RefrigerantBranchTerminalRole,
+): { portId: string; nodeId: string } {
+  const identity = `${elementId}:${lineKind}:${role}`;
+  return { portId: `${identity}:port`, nodeId: `${identity}:node` };
+}
 /**
  * Which line(s) the pipe tool lays on a single draw.
  * - `pair`   — coordinated gas + liquid pair offset from a shared centerline (default).
@@ -181,6 +192,66 @@ export type RefrigerantPipeLineKind = 'gas' | 'liquid';
  */
 export type RefrigerantPipeLineMode = 'pair' | 'gas' | 'liquid';
 export type RefrigerantPipeMaterial = 'hard' | 'flexible';
+
+function routeStartDirection(
+  bundle: RefrigerantPipeBundleConnection,
+  lineMode: RefrigerantPipeLineMode,
+): Point2D {
+  if (lineMode === 'gas') {
+    return normalizeDirection(bundle.gasDirection ?? bundle.direction);
+  }
+  if (lineMode === 'liquid') {
+    return normalizeDirection(bundle.liquidDirection ?? bundle.direction);
+  }
+  return normalizeDirection(bundle.direction);
+}
+
+/**
+ * Starts a live route with the mandatory straight copper stub for equipment
+ * ports. Field-pipe/branch-kit starts intentionally remain one-point seeds so
+ * their existing port topology and continuation behavior are unchanged.
+ */
+export function seedRefrigerantPipeRouteStart(
+  startPoint: PipePlacementPoint,
+  bundle: RefrigerantPipeBundleConnection | null,
+  lineMode: RefrigerantPipeLineMode = 'pair',
+  minimumPortStubMm: number = getActivePipeRoutingSettings().minimumPortStubMm,
+): PipePlacementPoint[] {
+  if (
+    bundle?.connectionKind !== 'unit-port'
+    || !Number.isFinite(minimumPortStubMm)
+    || minimumPortStubMm <= 0
+  ) {
+    return [{ ...startPoint }];
+  }
+
+  const direction = routeStartDirection(bundle, lineMode);
+  const anchor = lineMode === 'gas'
+    ? bundle.gasPoint
+    : lineMode === 'liquid'
+      ? bundle.liquidPoint
+      : {
+          x: (bundle.gasPoint.x + bundle.liquidPoint.x) / 2,
+          y: (bundle.gasPoint.y + bundle.liquidPoint.y) / 2,
+        };
+  const elevation = lineMode === 'gas'
+    ? bundle.gasElevationMm
+    : lineMode === 'liquid'
+      ? bundle.liquidElevationMm
+      : bundle.elevationMm;
+  const start: PipePlacementPoint = {
+    ...startPoint,
+    x: anchor.x,
+    y: anchor.y,
+    z: Number.isFinite(startPoint.z) ? startPoint.z : elevation,
+  };
+  const stub: PipePlacementPoint = {
+    x: start.x + direction.x * minimumPortStubMm,
+    y: start.y + direction.y * minimumPortStubMm,
+    z: start.z,
+  };
+  return [start, stub];
+}
 /**
  * Angle constraint applied to each drawn route vertex.
  * - `auto`     — material-driven (hard ⇒ 45°, flexible ⇒ free); the legacy default.
@@ -857,6 +928,70 @@ function logCenterlineDeviation(
   });
 }
 
+/**
+ * Pins a route to a physical equipment port and reserves a straight first leg
+ * along its outward normal. Any authored vertices inside the protected stub
+ * zone are removed; the first downstream point is retained so manual and 3D
+ * routes continue from the end of the compliant stub instead of being replaced.
+ */
+export function reserveMinimumPortStub(
+  routePoints: readonly Point2D[],
+  portPoint: Point2D,
+  portDirection: Point2D,
+  minimumPortStubMm: number = getActivePipeRoutingSettings().minimumPortStubMm,
+): Point2D[] {
+  const minimumMm = Number.isFinite(minimumPortStubMm)
+    ? Math.max(0, minimumPortStubMm)
+    : 0;
+  if (minimumMm <= 0) {
+    return dedupeConsecutivePoints([{ ...portPoint }, ...routePoints]);
+  }
+
+  const direction = normalizeDirection(portDirection);
+  const stubEnd = add(portPoint, scale(direction, minimumMm));
+  const normalized = dedupeConsecutivePoints([...routePoints]).filter(
+    (point, index) => index > 0 || !pointsNearlyEqual(point, portPoint, 0.2),
+  );
+  const firstBeyondStub = normalized.findIndex(
+    (point) => dot(subtract(point, portPoint), direction) >= minimumMm - 0.2,
+  );
+  const tail = firstBeyondStub >= 0
+    ? normalized.slice(firstBeyondStub)
+    : normalized.length > 0
+      ? [normalized[normalized.length - 1]!]
+      : [];
+
+  return dedupeConsecutivePoints([
+    { ...portPoint },
+    stubEnd,
+    ...tail.filter((point, index) => index > 0 || !pointsNearlyEqual(point, stubEnd, 0.2)),
+  ]);
+}
+
+function reserveUnitPortBundleStubs(
+  routes: { gasRoutePoints: Point2D[]; liquidRoutePoints: Point2D[] },
+  connection: RefrigerantPipeBundleConnection | null,
+): { gasRoutePoints: Point2D[]; liquidRoutePoints: Point2D[] } {
+  if (connection?.connectionKind !== 'unit-port') {
+    return routes;
+  }
+  const minimumMm = getActivePipeRoutingSettings().minimumPortStubMm;
+  return {
+    gasRoutePoints: reserveMinimumPortStub(
+      routes.gasRoutePoints,
+      connection.gasPoint,
+      connection.gasDirection ?? connection.direction,
+      minimumMm,
+    ),
+    liquidRoutePoints: reserveMinimumPortStub(
+      routes.liquidRoutePoints,
+      connection.liquidPoint,
+      connection.liquidDirection ?? connection.direction,
+      minimumMm,
+    ),
+  };
+}
+
 function resolveCenterlinePathWithConnections(
   routePoints: Point2D[],
   startConnection: RefrigerantPipeConnection | null,
@@ -874,7 +1009,13 @@ function resolveCenterlinePathWithConnections(
     return dedupeConsecutivePoints(fallback);
   }
 
-  const anchored = [...points];
+  const anchored = startConnection?.connectionKind === 'unit-port'
+    ? reserveMinimumPortStub(
+        points,
+        startConnection.portPoint,
+        startConnection.direction,
+      )
+    : [...points];
   if (startConnection?.connectionKind === 'field-pipe') {
     logCenterlineDeviation(
       'start-anchor',
@@ -1282,25 +1423,33 @@ export function translateRefrigerantPipePairProperties(
   delta: Point2D,
 ): Record<string, unknown> {
   const spec = resolveRefrigerantPipePairSpec(properties);
-  const translateBundle = (bundle: RefrigerantPipeBundleConnection | null) =>
-    bundle
-      ? {
-          ...bundle,
-          point: add(bundle.point, delta),
-          gasPoint: add(bundle.gasPoint, delta),
-          liquidPoint: add(bundle.liquidPoint, delta),
-          gasFieldPoint: add(bundle.gasFieldPoint, delta),
-          liquidFieldPoint: add(bundle.liquidFieldPoint, delta),
-        }
-      : null;
-
-  return {
-    ...properties,
-    routePoints: spec.routePoints.map((point) => add(point, delta)),
-    routeNodes3d: translatePipeRouteNodes3d(properties.routeNodes3d, delta),
-    startBundleConnection: translateBundle(spec.startBundleConnection),
-    endBundleConnection: translateBundle(spec.endBundleConnection),
-  };
+  let routePoints = spec.routePoints.map((point) => add(point, delta));
+  if (spec.startBundleConnection) {
+    if (spec.startBundleConnection.connectionKind === 'unit-port') {
+      routePoints = reserveMinimumPortStub(
+        routePoints,
+        spec.startBundleConnection.point,
+        spec.startBundleConnection.direction,
+      );
+    } else if (routePoints.length > 0) {
+      routePoints[0] = { ...spec.startBundleConnection.point };
+    }
+  }
+  if (spec.endBundleConnection) {
+    if (spec.endBundleConnection.connectionKind === 'unit-port') {
+      routePoints = reserveMinimumPortStub(
+        [...routePoints].reverse(),
+        spec.endBundleConnection.point,
+        spec.endBundleConnection.direction,
+      ).reverse();
+    } else if (routePoints.length > 0) {
+      routePoints[routePoints.length - 1] = { ...spec.endBundleConnection.point };
+    }
+  }
+  return withCanonicalPipeRoute({ properties }, routePoints, {
+    startBundleConnection: spec.startBundleConnection,
+    endBundleConnection: spec.endBundleConnection,
+  }).properties;
 }
 
 export function resolveRefrigerantPipeSpec(
@@ -1357,31 +1506,40 @@ export function translateRefrigerantPipeProperties(
   delta: Point2D,
 ): Record<string, unknown> {
   const spec = resolveRefrigerantPipeSpec(properties);
-  const nextStartConnection = spec.startConnection
-    ? {
-        ...spec.startConnection,
-        portPoint: add(spec.startConnection.portPoint, delta),
-      }
-    : null;
-  const nextEndConnection = spec.endConnection
-    ? {
-        ...spec.endConnection,
-        portPoint: add(spec.endConnection.portPoint, delta),
-      }
-    : null;
-  const centerlineStart = normalizePoint(properties.centerline_start);
-  const centerlineEnd = normalizePoint(properties.centerline_end);
-
-  return {
-    ...properties,
-    routePoints: spec.routePoints.map((point) => add(point, delta)),
-    routeNodes3d: translatePipeRouteNodes3d(properties.routeNodes3d, delta),
+  let routePoints = spec.routePoints.map((point) => add(point, delta));
+  if (spec.startConnection) {
+    if (spec.startConnection.connectionKind === 'unit-port') {
+      routePoints = reserveMinimumPortStub(
+        routePoints,
+        spec.startConnection.portPoint,
+        spec.startConnection.direction,
+      );
+    } else if (routePoints.length > 0) {
+      routePoints[0] = { ...spec.startConnection.portPoint };
+    }
+  }
+  if (spec.endConnection) {
+    if (spec.endConnection.connectionKind === 'unit-port') {
+      routePoints = reserveMinimumPortStub(
+        [...routePoints].reverse(),
+        spec.endConnection.portPoint,
+        spec.endConnection.direction,
+      ).reverse();
+    } else if (routePoints.length > 0) {
+      routePoints[routePoints.length - 1] = { ...spec.endConnection.portPoint };
+    }
+  }
+  const routed = withCanonicalPipeRoute({ properties }, routePoints, {
     segmentMaterials: spec.segmentMaterials,
-    startConnection: nextStartConnection,
-    endConnection: nextEndConnection,
-    centerline_start: centerlineStart ? add(centerlineStart, delta) : properties.centerline_start,
-    centerline_end: centerlineEnd ? add(centerlineEnd, delta) : properties.centerline_end,
+    startConnection: spec.startConnection,
+    endConnection: spec.endConnection,
     bypasses: translateBypasses(properties.bypasses, delta),
+  });
+  const nextRoute = normalizePointArray(routed.properties.routePoints);
+  return {
+    ...routed.properties,
+    centerline_start: nextRoute[0] ?? properties.centerline_start,
+    centerline_end: nextRoute[nextRoute.length - 1] ?? properties.centerline_end,
   };
 }
 
@@ -1397,6 +1555,83 @@ export function translateRefrigerantPipeElementProperties(
     return translateRefrigerantPipePairProperties(properties, delta);
   }
   return properties;
+}
+
+/**
+ * Re-applies persisted endpoint constraints after an authored route edit.
+ *
+ * Plan/Konva/SVG editors manipulate the shared guide route. A connected end is
+ * not free geometry: field connections remain pinned to their fitting/pipe
+ * terminal, while equipment connections also retain the protected straight
+ * port-normal stub. Keeping this normalization beside the pipe model prevents
+ * individual editors from persisting a route that only looks compliant after
+ * renderer-side healing.
+ */
+export function constrainRefrigerantPipeRouteForConnections(
+  type: HvacElement['type'],
+  properties: Record<string, unknown>,
+  routePoints: readonly Point2D[],
+): Point2D[] {
+  let constrained = routePoints.map((point) => ({ ...point }));
+
+  if (isRefrigerantPipeType(type)) {
+    const spec = resolveRefrigerantPipeSpec(properties);
+    if (spec.startConnection) {
+      constrained = spec.startConnection.connectionKind === 'unit-port'
+        ? reserveMinimumPortStub(
+            constrained,
+            spec.startConnection.portPoint,
+            spec.startConnection.direction,
+          )
+        : constrained.map((point, index) => (
+            index === 0 ? { ...spec.startConnection!.portPoint } : point
+          ));
+    }
+    if (spec.endConnection) {
+      constrained = spec.endConnection.connectionKind === 'unit-port'
+        ? reserveMinimumPortStub(
+            [...constrained].reverse(),
+            spec.endConnection.portPoint,
+            spec.endConnection.direction,
+          ).reverse()
+        : constrained.map((point, index) => (
+            index === constrained.length - 1
+              ? { ...spec.endConnection!.portPoint }
+              : point
+          ));
+    }
+    return constrained;
+  }
+
+  if (isRefrigerantPipePairType(type)) {
+    const spec = resolveRefrigerantPipePairSpec(properties);
+    if (spec.startBundleConnection) {
+      constrained = spec.startBundleConnection.connectionKind === 'unit-port'
+        ? reserveMinimumPortStub(
+            constrained,
+            spec.startBundleConnection.point,
+            spec.startBundleConnection.direction,
+          )
+        : constrained.map((point, index) => (
+            index === 0 ? { ...spec.startBundleConnection!.point } : point
+          ));
+    }
+    if (spec.endBundleConnection) {
+      constrained = spec.endBundleConnection.connectionKind === 'unit-port'
+        ? reserveMinimumPortStub(
+            [...constrained].reverse(),
+            spec.endBundleConnection.point,
+            spec.endBundleConnection.direction,
+          ).reverse()
+        : constrained.map((point, index) => (
+            index === constrained.length - 1
+              ? { ...spec.endBundleConnection!.point }
+              : point
+          ));
+    }
+  }
+
+  return constrained;
 }
 
 function computeBundleCenter(gasPoint: Point2D, liquidPoint: Point2D): Point2D {
@@ -1763,8 +1998,14 @@ export function resolveInlineBranchKitCenter(
 function computeStartTakeoffLength(
   centerSpacingMm: number,
   maxOuterDiameterMm: number,
+  minimumPortStubMm = 0,
 ): number {
-  return Math.max(54, centerSpacingMm + 12, maxOuterDiameterMm * 1.02);
+  return Math.max(
+    54,
+    centerSpacingMm + 12,
+    maxOuterDiameterMm * 1.02,
+    minimumPortStubMm,
+  );
 }
 
 function computeCompactBendRadius(
@@ -3163,6 +3404,9 @@ export function buildRefrigerantPipePairVisual(
   const startTakeoffLengthMm = computeStartTakeoffLength(
     centerSpacingMm,
     Math.max(gasOuterDiameterMm, liquidOuterDiameterMm),
+    spec.startBundleConnection?.connectionKind === 'unit-port'
+      ? getActivePipeRoutingSettings().minimumPortStubMm
+      : 0,
   );
   const {
     gasGuidePoints,
@@ -3175,15 +3419,18 @@ export function buildRefrigerantPipePairVisual(
     centerSpacingMm,
     startTakeoffLengthMm,
   );
-  const { gasRoutePoints, liquidRoutePoints } = buildResolvedPipeRoutePoints({
-    gasGuidePoints,
-    liquidGuidePoints,
-    bundleGuidePoints,
-    startBundleConnection: spec.startBundleConnection,
-    endBundleConnection: spec.endBundleConnection,
-    centerSpacingMm,
-    bendRadiusMm,
-  });
+  const { gasRoutePoints, liquidRoutePoints } = reserveUnitPortBundleStubs(
+    buildResolvedPipeRoutePoints({
+      gasGuidePoints,
+      liquidGuidePoints,
+      bundleGuidePoints,
+      startBundleConnection: spec.startBundleConnection,
+      endBundleConnection: spec.endBundleConnection,
+      centerSpacingMm,
+      bendRadiusMm,
+    }),
+    spec.startBundleConnection,
+  );
   const gasInsulationStartPoint = resolvedGasFieldPoint && spec.startBundleConnection
     ? add(
         resolvedGasFieldPoint,
@@ -3414,6 +3661,15 @@ export function buildRefrigerantPipeElement(
       endConnection: options.endConnection ?? null,
     },
   );
+  // A flare/braze connection cannot bend at the equipment casing. Keep the
+  // reserved first/last port legs rigid even when the active draw mode is
+  // flexible; flexibility begins only after the compliant straight stub.
+  if (segmentMaterials.length > 0 && options.startConnection?.connectionKind === 'unit-port') {
+    segmentMaterials[0] = 'hard';
+  }
+  if (segmentMaterials.length > 0 && options.endConnection?.connectionKind === 'unit-port') {
+    segmentMaterials[segmentMaterials.length - 1] = 'hard';
+  }
   const centerlineStart = centerlineRoutePoints[0] ?? null;
   const centerlineEnd = centerlineRoutePoints[centerlineRoutePoints.length - 1] ?? null;
   const tangentStart = resolveEndpointTangent(centerlineRoutePoints, 'start');
@@ -3562,7 +3818,13 @@ export function buildRefrigerantPipeElements(
     ),
   );
   const maxOuterDiameterMm = Math.max(gasOuterDiameterMm, liquidOuterDiameterMm);
-  const startTakeoffLengthMm = computeStartTakeoffLength(centerSpacingMm, maxOuterDiameterMm);
+  const startTakeoffLengthMm = computeStartTakeoffLength(
+    centerSpacingMm,
+    maxOuterDiameterMm,
+    options?.startBundleConnection?.connectionKind === 'unit-port'
+      ? getActivePipeRoutingSettings().minimumPortStubMm
+      : 0,
+  );
   const {
     gasGuidePoints,
     liquidGuidePoints,
@@ -3574,15 +3836,18 @@ export function buildRefrigerantPipeElements(
     centerSpacingMm,
     startTakeoffLengthMm,
   );
-  const { gasRoutePoints, liquidRoutePoints } = buildResolvedPipeRoutePoints({
-    gasGuidePoints,
-    liquidGuidePoints,
-    bundleGuidePoints,
-    startBundleConnection: options?.startBundleConnection ?? null,
-    endBundleConnection: options?.endBundleConnection ?? null,
-    centerSpacingMm,
-    bendRadiusMm,
-  });
+  const { gasRoutePoints, liquidRoutePoints } = reserveUnitPortBundleStubs(
+    buildResolvedPipeRoutePoints({
+      gasGuidePoints,
+      liquidGuidePoints,
+      bundleGuidePoints,
+      startBundleConnection: options?.startBundleConnection ?? null,
+      endBundleConnection: options?.endBundleConnection ?? null,
+      centerSpacingMm,
+      bendRadiusMm,
+    }),
+    options?.startBundleConnection ?? null,
+  );
   if (options?.startBundleConnection?.connectionKind === 'field-pipe') {
     const expectedGasStart = options.startBundleConnection.gasFieldPoint;
     const expectedLiquidStart = options.startBundleConnection.liquidFieldPoint;
@@ -4148,6 +4413,8 @@ function buildSelfContainedBranchKitBundleTargets(
     const liqDir = lineSelection === 'gas' ? identity.gasDirection : identity.liquidDirection;
     const gasZ = lineSelection === 'liquid' ? model.liquid.centerlineZMm : model.gas.centerlineZMm;
     const liqZ = lineSelection === 'gas' ? model.gas.centerlineZMm : model.liquid.centerlineZMm;
+    const gasIdentity = refrigerantBranchKitTerminalIds(element.id, 'gas', role);
+    const liquidIdentity = refrigerantBranchKitTerminalIds(element.id, 'liquid', role);
 
     return [{
       point: computeBundleCenter(gasP, liqP),
@@ -4165,6 +4432,12 @@ function buildSelfContainedBranchKitBundleTargets(
       liquidElevationMm: element.elevation + liqZ,
       connectionKind: 'field-pipe',
       sourceElementId: element.id,
+      gasSourceElementId: element.id,
+      liquidSourceElementId: element.id,
+      gasPortId: gasIdentity.portId,
+      liquidPortId: liquidIdentity.portId,
+      gasNodeId: gasIdentity.nodeId,
+      liquidNodeId: liquidIdentity.nodeId,
       terminalRole: role,
     }];
   });
@@ -5147,6 +5420,12 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
         direction: { ...connectionDirection },
         elevationMm: connectionElevationMm,
         connectionKind: 'unit-port',
+        portId: spec.lineKind === 'gas'
+          ? sourceBundleTarget.gasPortId ?? sourceBundleTarget.portId
+          : sourceBundleTarget.liquidPortId ?? sourceBundleTarget.portId,
+        nodeId: spec.lineKind === 'gas'
+          ? sourceBundleTarget.gasNodeId ?? sourceBundleTarget.nodeId
+          : sourceBundleTarget.liquidNodeId ?? sourceBundleTarget.nodeId,
         sourceElementId: movedSourceElement.id,
       };
 
@@ -5160,7 +5439,7 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
       ) {
         return;
       }
-      const nextRoutePoints = remapRouteEndpointsForMovedConnection(
+      let nextRoutePoints = remapRouteEndpointsForMovedConnection(
         spec.routePoints,
         {
           previousStart: syncStart ? spec.startConnection?.portPoint ?? null : null,
@@ -5170,13 +5449,32 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
           anchorSnapRadiusMm: 160,
         },
       );
+      if (syncStart && nextStartConnection) {
+        nextRoutePoints = reserveMinimumPortStub(
+          nextRoutePoints,
+          nextStartConnection.portPoint,
+          nextStartConnection.direction,
+        );
+      }
+      if (syncEnd && nextEndConnection) {
+        nextRoutePoints = reserveMinimumPortStub(
+          [...nextRoutePoints].reverse(),
+          nextEndConnection.portPoint,
+          nextEndConnection.direction,
+        ).reverse();
+      }
 
-      const nextProperties: Record<string, unknown> = {
-        ...element.properties,
-        routePoints: nextRoutePoints,
+      const routedElement = withCanonicalPipeRoute(element, nextRoutePoints, {
         startConnection: nextStartConnection,
         endConnection: nextEndConnection,
-      };
+      });
+      const nextProperties: Record<string, unknown> = { ...routedElement.properties };
+      const nextNodes = normalizePipeRouteNodes3d(nextProperties.routeNodes3d);
+      if (nextNodes.length >= 2) {
+        if (syncStart && nextStartConnection) nextNodes[0]!.z = nextStartConnection.elevationMm;
+        if (syncEnd && nextEndConnection) nextNodes[nextNodes.length - 1]!.z = nextEndConnection.elevationMm;
+        nextProperties.routeNodes3d = nextNodes;
+      }
       const nextVisual = buildRefrigerantPipeVisual({
         position: element.position,
         width: element.width,
@@ -5265,7 +5563,7 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
     ) {
       return;
     }
-    const nextRoutePoints = remapRouteEndpointsForMovedConnection(
+    let nextRoutePoints = remapRouteEndpointsForMovedConnection(
       normalizePointArray(element.properties.routePoints),
       {
         previousStart: syncStart ? startBundleConnection?.point ?? null : null,
@@ -5275,13 +5573,36 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
         anchorSnapRadiusMm: 220,
       },
     );
+    if (syncStart && nextStartBundleConnection) {
+      nextRoutePoints = reserveMinimumPortStub(
+        nextRoutePoints,
+        nextStartBundleConnection.point,
+        nextStartBundleConnection.direction,
+      );
+    }
+    if (syncEnd && nextEndBundleConnection) {
+      nextRoutePoints = reserveMinimumPortStub(
+        [...nextRoutePoints].reverse(),
+        nextEndBundleConnection.point,
+        nextEndBundleConnection.direction,
+      ).reverse();
+    }
 
-    const nextProperties: Record<string, unknown> = {
-      ...element.properties,
-      routePoints: nextRoutePoints,
+    const routedElement = withCanonicalPipeRoute(element, nextRoutePoints, {
       startBundleConnection: nextStartBundleConnection,
       endBundleConnection: nextEndBundleConnection,
-    };
+    });
+    const nextProperties: Record<string, unknown> = { ...routedElement.properties };
+    const nextNodes = normalizePipeRouteNodes3d(nextProperties.routeNodes3d);
+    if (nextNodes.length >= 2) {
+      if (syncStart && nextStartBundleConnection) {
+        nextNodes[0]!.z = nextStartBundleConnection.elevationMm;
+      }
+      if (syncEnd && nextEndBundleConnection) {
+        nextNodes[nextNodes.length - 1]!.z = nextEndBundleConnection.elevationMm;
+      }
+      nextProperties.routeNodes3d = nextNodes;
+    }
     const nextVisual = buildRefrigerantPipePairVisual(
       {
         position: element.position,
@@ -5414,6 +5735,8 @@ export function resolveRefrigerantPipeBranchKitReconnectionUpdates(
             ? livePort.liquidElevationMm
             : livePort.gasElevationMm,
           connectionKind: 'field-pipe',
+          portId: (isLiquid ? livePort.liquidPortId : livePort.gasPortId) ?? livePort.portId,
+          nodeId: (isLiquid ? livePort.liquidNodeId : livePort.gasNodeId) ?? livePort.nodeId,
           sourceElementId: movedKitElement.id,
           terminalRole: prev.terminalRole,
         };
@@ -5440,12 +5763,17 @@ export function resolveRefrigerantPipeBranchKitReconnectionUpdates(
           anchorSnapRadiusMm: 160,
         },
       );
-      const nextProperties: Record<string, unknown> = {
-        ...element.properties,
-        routePoints: nextRoutePoints,
+      const routedElement = withCanonicalPipeRoute(element, nextRoutePoints, {
         startConnection: nextStartConnection,
         endConnection: nextEndConnection,
-      };
+      });
+      const nextProperties: Record<string, unknown> = { ...routedElement.properties };
+      const nextNodes = normalizePipeRouteNodes3d(nextProperties.routeNodes3d);
+      if (nextNodes.length >= 2) {
+        if (syncStart && nextStartConnection) nextNodes[0]!.z = nextStartConnection.elevationMm;
+        if (syncEnd && nextEndConnection) nextNodes[nextNodes.length - 1]!.z = nextEndConnection.elevationMm;
+        nextProperties.routeNodes3d = nextNodes;
+      }
       const nextVisual = buildRefrigerantPipeVisual({
         position: element.position,
         width: element.width,
@@ -5537,12 +5865,21 @@ export function resolveRefrigerantPipeBranchKitReconnectionUpdates(
         anchorSnapRadiusMm: 220,
       },
     );
-    const nextProperties: Record<string, unknown> = {
-      ...element.properties,
-      routePoints: nextRoutePoints,
+    const routedElement = withCanonicalPipeRoute(element, nextRoutePoints, {
       startBundleConnection: nextStartBundleConnection,
       endBundleConnection: nextEndBundleConnection,
-    };
+    });
+    const nextProperties: Record<string, unknown> = { ...routedElement.properties };
+    const nextNodes = normalizePipeRouteNodes3d(nextProperties.routeNodes3d);
+    if (nextNodes.length >= 2) {
+      if (syncStart && nextStartBundleConnection) {
+        nextNodes[0]!.z = nextStartBundleConnection.elevationMm;
+      }
+      if (syncEnd && nextEndBundleConnection) {
+        nextNodes[nextNodes.length - 1]!.z = nextEndBundleConnection.elevationMm;
+      }
+      nextProperties.routeNodes3d = nextNodes;
+    }
     const nextVisual = buildRefrigerantPipePairVisual(
       {
         position: element.position,

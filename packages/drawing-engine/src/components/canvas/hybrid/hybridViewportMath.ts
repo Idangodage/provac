@@ -31,6 +31,58 @@ export interface CameraPose {
   distance: number; // mm
 }
 
+export type HybridCameraView = 'plan' | 'front' | 'side' | 'iso';
+
+export interface HybridCameraViewPose {
+  polar: number;
+  azimuth: number;
+}
+
+const ISO_POLAR = Math.acos(1 / Math.sqrt(3));
+
+/** Canonical orthographic camera poses for the manipulation view toolbar. */
+export function resolveHybridCameraViewPose(
+  view: HybridCameraView,
+): HybridCameraViewPose {
+  switch (view) {
+    case 'plan':
+      return { polar: 0, azimuth: 0 };
+    case 'front':
+      return { polar: Math.PI / 2, azimuth: 0 };
+    case 'side':
+      // Camera at world +X looks toward -X, with world +Y screen-right.
+      return { polar: Math.PI / 2, azimuth: Math.PI / 2 };
+    case 'iso':
+      return { polar: ISO_POLAR, azimuth: -Math.PI / 4 };
+    default: {
+      const exhaustive: never = view;
+      return exhaustive;
+    }
+  }
+}
+
+function wrappedAngleDelta(a: number, b: number): number {
+  return Math.abs(THREE.MathUtils.euclideanModulo(a - b + Math.PI, Math.PI * 2) - Math.PI);
+}
+
+/**
+ * Classify the live camera pose for view-aware manipulation. Free RMB orbit
+ * poses intentionally resolve to iso, while exact toolbar elevations retain
+ * their locked-axis front/side policy.
+ */
+export function resolveHybridCameraViewFromPose(
+  polar: number,
+  azimuth: number,
+  toleranceRad = THREE.MathUtils.degToRad(0.75),
+): HybridCameraView {
+  if (Math.abs(polar) <= toleranceRad) return 'plan';
+  if (Math.abs(polar - Math.PI / 2) <= toleranceRad) {
+    if (wrappedAngleDelta(azimuth, 0) <= toleranceRad) return 'front';
+    if (wrappedAngleDelta(azimuth, Math.PI / 2) <= toleranceRad) return 'side';
+  }
+  return 'iso';
+}
+
 // Reference §10 zoom limits: world-units-per-pixel ∈ [0.02 … 20 000 mm/px].
 export const MIN_MM_PER_PX = 0.02;
 export const MAX_MM_PER_PX = 20_000;

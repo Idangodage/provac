@@ -9,6 +9,8 @@ export interface BranchSelectionContext {
   refrigerant: string;
   arrangement: 'heat-pump' | 'heat-recovery';
   systemRole: 'first-branch' | 'intermediate-branch' | 'terminal-header';
+  branchType?: 'y-joint' | 'header' | 'outdoor-multi-kit';
+  headerOutletCount?: number;
   outdoorCapacity?: number;
   downstreamCapacityIndex: number;
   downstreamBranchCount: number;
@@ -61,6 +63,11 @@ export function selectBranchKit(
     if (!rule.refrigerants.some((value) => value.toLowerCase() === context.refrigerant.toLowerCase())) return [];
     if (!rule.arrangements.includes(context.arrangement)) return [];
     if (!rule.allowedSystemRoles.includes(context.systemRole)) return [];
+    if (context.branchType && rule.branchType !== context.branchType) return [];
+    if (
+      context.headerOutletCount !== undefined
+      && rule.headerOutletCount !== context.headerOutletCount
+    ) return [];
     if (!within(
       context.downstreamCapacityIndex,
       rule.downstreamCapacityIndexMin?.value,
@@ -111,4 +118,3 @@ export function selectBranchKit(
     ),
   };
 }
-

@@ -27,9 +27,6 @@ import {
   RotateCcw,
   RotateCw,
   Layers,
-  SplitSquareVertical,
-  ArrowUpFromLine,
-  ArrowRightFromLine,
   Fan,
 } from 'lucide-react';
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
@@ -64,6 +61,7 @@ import type { SymbolDefinition } from './data/symbol-library';
 import { useSmartDrawingStore } from './store';
 import { useDrawingInteractionStore } from './store/interactionStore';
 import type { DisplayUnit, DrawingTool, PageLayout } from './types';
+import type { ManufacturerRuleProfile } from './vrf/rules';
 
 
 // =============================================================================
@@ -83,6 +81,8 @@ export interface SmartDrawingEditorProps {
   readOnly?: boolean;
   /** Custom class name */
   className?: string;
+  /** Verified manufacturer engineering profile used for VRF routing and validation. */
+  vrfRuleProfile?: ManufacturerRuleProfile;
 }
 
 // =============================================================================
@@ -622,6 +622,7 @@ export function SmartDrawingEditor({
   onSave,
   readOnly = false,
   className = '',
+  vrfRuleProfile,
 }: SmartDrawingEditorProps) {
   const PAGE_LAYOUTS: PageLayout[] = [
     { id: 'a4-portrait', label: 'A4 Portrait (210 x 297 mm)', width: mmToPx(210), height: mmToPx(297), orientation: 'portrait' },
@@ -1494,6 +1495,7 @@ export function SmartDrawingEditor({
             onObjectPlaced={handleObjectPlaced}
             onCancelObjectPlacement={handleCancelObjectPlacement}
             onCancelEquipmentPlacement={handleCancelEquipmentPlacement}
+            vrfRuleProfile={vrfRuleProfile}
           />
 
         </div>

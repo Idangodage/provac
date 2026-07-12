@@ -16,6 +16,8 @@ import { useSmartDrawingStore } from "../store";
 import { useDrawingInteractionStore } from "../store/interactionStore";
 import type { HvacElement, Point2D, SymbolInstance2D, Wall } from "../types";
 import { generateId } from "../utils/geometry";
+import type { InteractionViewMode } from "../vrf/interaction/view-manipulation-policy";
+import type { VrfValidationIssue } from "../vrf/rules";
 
 import {
   hideActiveSelectionChrome,
@@ -66,6 +68,7 @@ import {
   cycleBoardUnit,
   type BoardUnit,
 } from "./canvas/board";
+import { useVrfLiveValidation } from "./canvas/hooks/useVrfLiveValidation";
 import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
 import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
@@ -73,21 +76,39 @@ import {
   PipeStudioOverlay,
   type PipeStudioOverlayHandle,
 } from "./canvas/hvac/PipeStudioOverlay";
+import { VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
 import {
+  readPipeRouteNodes3d,
+  withCanonicalPipeRoute,
+  type PipeRouteNode3D,
+} from "./canvas/hvac/pipeRoute3d";
+import { routingSettingsFromRuleProfile } from "./canvas/hvac/pipeRoutingSettings";
+import {
+  buildRefrigerantPipePairVisual,
+  buildRefrigerantPipeVisual,
   isRefrigerantPipeElementType,
+  resolveRefrigerantPipeBranchKitReconnectionUpdates,
+  resolveRefrigerantPipePairSpec,
+  resolveRefrigerantPipeSpec,
   resolveRefrigerantPipeUnitPortReconnectionUpdates,
   translateRefrigerantPipeElementProperties,
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeLineMode,
 } from "./canvas/hvac/refrigerantPipePairModel";
 import {
+  buildVrfValidationFixCommand,
+  resolveVrfValidationIssueElement,
+} from "./canvas/hvac/vrfValidationFixes";
+import {
   HybridProjectionLayer,
   type HybridPipeInteractionHandle,
   type Hybrid3DViewState,
   type HybridViewStyle,
 } from "./canvas/hybrid/HybridProjectionLayer";
+import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
 import type {
   DerivedBoardView,
+  HybridCameraView,
   HybridViewportController,
 } from "./canvas/hybrid/hybridViewportController";
 import { modelPointToWorld } from "./canvas/modelSpace";
@@ -96,6 +117,7 @@ import {
   restoreCanvasRenderScheduler,
 } from "./canvas/renderScheduler";
 import { buildViewportTransform } from "./canvas/viewTransform";
+
 export type { DrawingCanvasProps } from "./DrawingCanvas.types";
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -112,6 +134,13 @@ const DEFAULT_HYBRID_VIEW: Hybrid3DViewState = {
   distanceMm: 8000,
   perspectiveStrength: 0.72,
   isInteracting: false,
+};
+
+const CAMERA_TO_INTERACTION_VIEW: Record<HybridCameraView, InteractionViewMode> = {
+  plan: "plan-2d",
+  front: "front-elevation-2d",
+  side: "side-elevation-2d",
+  iso: "isometric",
 };
 
 type HybridAnchorScreen = {
@@ -204,7 +233,7 @@ function projectHybridPointToScreen(
   };
 }
 
-function stabilizeHybridAnchor(
+function _stabilizeHybridAnchor(
   candidate: Hybrid3DViewState,
   anchorPointMm: Point2D,
   anchorScreen: HybridAnchorScreen,
@@ -259,10 +288,10 @@ export function DrawingCanvas({
   realWorldUnit,
   scaleDrawing = 1,
   scaleReal = 50,
-  rulerMode = "paper",
-  majorTickInterval = 10,
-  tickSubdivisions = 10,
-  showRulerLabels = true,
+  rulerMode: _rulerMode = "paper",
+  majorTickInterval: _majorTickInterval = 10,
+  tickSubdivisions: _tickSubdivisions = 10,
+  showRulerLabels: _showRulerLabels = true,
   gridMode = "paper",
   majorGridSize = 10,
   gridSubdivisions = 10,
@@ -276,6 +305,7 @@ export function DrawingCanvas({
   onCancelObjectPlacement,
   onEquipmentPlaced,
   onCancelEquipmentPlacement,
+  vrfRuleProfile,
 }: DrawingCanvasProps) {
   // Core refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -392,6 +422,8 @@ export function DrawingCanvas({
   const hybridViewOnly = hybridView.blend > 0.05 || isViewRotated;
   // Solid → X-ray → Wire view style (reference cycle; button + X key).
   const [viewStyle, setViewStyle] = useState<HybridViewStyle>("solid");
+  const [interactionViewMode, setInteractionViewMode] =
+    useState<InteractionViewMode>("plan-2d");
   const cycleViewStyle = useCallback(() => {
     setViewStyle((prev) => (prev === "solid" ? "xray" : prev === "xray" ? "wire" : "solid"));
   }, []);
@@ -501,8 +533,9 @@ export function DrawingCanvas({
     resetViewRequestId,
     addHvacElement,
     addHvacElements,
+    commitHvacElementCommand,
+    setPipeRoutingSettings,
     updateHvacElement,
-    deleteHvacElement,
     syncAutoDimensions,
     selectWallSegmentAtPoint,
     selectWallSegmentWithinInterval,
@@ -581,8 +614,9 @@ export function DrawingCanvas({
       resetViewRequestId: state.resetViewRequestId,
       addHvacElement: state.addHvacElement,
       addHvacElements: state.addHvacElements,
+      commitHvacElementCommand: state.commitHvacElementCommand,
+      setPipeRoutingSettings: state.setPipeRoutingSettings,
       updateHvacElement: state.updateHvacElement,
-      deleteHvacElement: state.deleteHvacElement,
       syncAutoDimensions: state.syncAutoDimensions,
       selectWallSegmentAtPoint: state.selectWallSegmentAtPoint,
       selectWallSegmentWithinInterval: state.selectWallSegmentWithinInterval,
@@ -619,8 +653,8 @@ export function DrawingCanvas({
 
   // Derived values
   const resolvedRealWorldUnit = realWorldUnit ?? displayUnit;
-  const resolvedGridSize = gridSize ?? storeGridSize ?? 20;
-  const resolvedShowGrid = showGrid ?? storeShowGrid ?? true;
+  const _resolvedGridSize = gridSize ?? storeGridSize ?? 20;
+  const _resolvedShowGrid = showGrid ?? storeShowGrid ?? true;
   const resolvedShowRulers = showRulers ?? storeShowRulers ?? true;
   const resolvedSnapToGrid = snapToGrid ?? storeSnapToGrid ?? true;
   const safeScaleDrawing =
@@ -630,7 +664,7 @@ export function DrawingCanvas({
   const paperPerRealRatio = safeScaleDrawing / safeScaleReal;
   const safePaperPerRealRatio = Math.max(paperPerRealRatio, 0.000001);
   const viewportZoom = zoom * safePaperPerRealRatio;
-  const overlayPanOffset = useMemo(
+  const _overlayPanOffset = useMemo(
     () => ({
       x: panOffset.x * safePaperPerRealRatio,
       y: panOffset.y * safePaperPerRealRatio,
@@ -638,6 +672,19 @@ export function DrawingCanvas({
     [panOffset.x, panOffset.y, safePaperPerRealRatio],
   );
   const projectionViewOnly = hybridViewOnly;
+  const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile);
+  const appliedVrfProfileRoutingKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!vrfRuleProfile) {
+      appliedVrfProfileRoutingKeyRef.current = null;
+      return;
+    }
+    const routingSettings = routingSettingsFromRuleProfile(vrfRuleProfile);
+    const routingKey = `${vrfRuleProfile.id}:${JSON.stringify(routingSettings)}`;
+    if (appliedVrfProfileRoutingKeyRef.current === routingKey) return;
+    appliedVrfProfileRoutingKeyRef.current = routingKey;
+    setPipeRoutingSettings(routingSettings);
+  }, [setPipeRoutingSettings, vrfRuleProfile]);
   const safeGridSubdivisions =
     Number.isFinite(gridSubdivisions) && gridSubdivisions >= 1
       ? Math.max(1, Math.floor(gridSubdivisions))
@@ -700,7 +747,7 @@ export function DrawingCanvas({
         : mousePosition,
     [cursorSnapActive, mousePosition, effectiveSnapGridSize],
   );
-  const rulerMousePosition = useMemo(
+  const _rulerMousePosition = useMemo(
     () => ({
       x: displayMousePosition.x * safePaperPerRealRatio,
       y: displayMousePosition.y * safePaperPerRealRatio,
@@ -1347,6 +1394,50 @@ export function DrawingCanvas({
     },
     [],
   );
+  const handleCameraViewChange = useCallback((view: HybridCameraView) => {
+    setInteractionViewMode(CAMERA_TO_INTERACTION_VIEW[view]);
+  }, []);
+  const setCameraView = useCallback((view: HybridCameraView) => {
+    setInteractionViewMode(CAMERA_TO_INTERACTION_VIEW[view]);
+    hybridControllerRef.current?.setCameraView(view, true);
+  }, []);
+  const handleCommitHybridPipeRouteEdit = useCallback(
+    (elementId: string, routeNodes3d: PipeRouteNode3D[]) => {
+      const element = hvacElements.find((candidate) => candidate.id === elementId);
+      if (!element || !isRefrigerantPipeElementType(element.type) || routeNodes3d.length < 2) {
+        return;
+      }
+      const routePoints = routeNodes3d.map(({ x, y }) => ({ x, y }));
+      const routed = withCanonicalPipeRoute(element, routePoints);
+      const properties: Record<string, unknown> = {
+        ...routed.properties,
+        routeNodes3d: routeNodes3d.map((node) => ({ ...node })),
+      };
+      if (element.type === "refrigerant-pipe") {
+        properties.centerline_start = routePoints[0];
+        properties.centerline_end = routePoints.at(-1);
+      }
+      const nextElement: HvacElement = { ...routed, properties };
+      const contextElements = hvacElements.map((candidate) =>
+        candidate.id === elementId ? nextElement : candidate,
+      );
+      const visual = element.type === "refrigerant-pipe-pair"
+        ? buildRefrigerantPipePairVisual(nextElement, contextElements)
+        : buildRefrigerantPipeVisual(nextElement, contextElements);
+      commitHvacElementCommand("Edit refrigerant pipe vertex", {
+        updates: [{
+          id: elementId,
+          updates: {
+            position: { x: visual.bounds.minX, y: visual.bounds.minY },
+            width: visual.bounds.width,
+            depth: visual.bounds.height,
+            properties,
+          },
+        }],
+      });
+    },
+    [commitHvacElementCommand, hvacElements],
+  );
   // Last view the CAMERA wrote to the board — the store→camera bridge uses it
   // to tell camera echoes apart from external (toolbar/fit) view changes.
   const lastCameraViewRef = useRef<{ zoom: number; pan: Point2D } | null>(null);
@@ -1471,7 +1562,7 @@ export function DrawingCanvas({
     // visibly pulled the preview away from the cursor.
     gridSize: snapStepMm,
     addHvacElements,
-    deleteHvacElement,
+    commitHvacElementCommand,
     updateHvacElement,
     saveToHistory,
     setSelectedIds,
@@ -1496,31 +1587,117 @@ export function DrawingCanvas({
   );
 
   const nudgeSelectedEntities = useCallback(
-    (dxMm: number, dyMm: number) => {
-      const movedObjects = nudgeSelectedObjects(dxMm, dyMm);
+    (dxMm: number, dyMm: number, dzMm = 0) => {
+      const movedObjects = dzMm === 0
+        ? nudgeSelectedObjects(dxMm, dyMm)
+        : false;
       const selectedSet = new Set(selectedIds);
       const selectedEquipment = hvacElements.filter((element) =>
         selectedSet.has(element.id),
       );
-      let movedEquipment = false;
+      const updatesById = new Map<string, Partial<HvacElement>>();
 
       for (const element of selectedEquipment) {
         if (isRefrigerantPipeElementType(element.type)) {
-          updateHvacElement(element.id, {
-            position: {
-              x: element.position.x + dxMm,
-              y: element.position.y + dyMm,
-            },
-            properties: translateRefrigerantPipeElementProperties(
-              element.type,
-              element.properties,
-              {
-                x: dxMm,
-                y: dyMm,
+          if (dzMm !== 0) {
+            const context = [...hvacElements];
+            const authoredNodes = readPipeRouteNodes3d(element);
+            let routePoints: Point2D[];
+            let fallbackZ: number;
+            let startProtection: { connected: boolean; unitPort: boolean };
+            let endProtection: { connected: boolean; unitPort: boolean };
+            if (element.type === "refrigerant-pipe-pair") {
+              const spec = resolveRefrigerantPipePairSpec(element.properties, context);
+              const visual = buildRefrigerantPipePairVisual(element, context);
+              routePoints = spec.routePoints;
+              fallbackZ = element.elevation
+                + (visual.gasLocalZMm + visual.liquidLocalZMm) / 2;
+              startProtection = {
+                connected: Boolean(spec.startBundleConnection),
+                unitPort: spec.startBundleConnection?.connectionKind === "unit-port",
+              };
+              endProtection = {
+                connected: Boolean(spec.endBundleConnection),
+                unitPort: spec.endBundleConnection?.connectionKind === "unit-port",
+              };
+            } else {
+              const spec = resolveRefrigerantPipeSpec(element.properties, context);
+              const visual = buildRefrigerantPipeVisual(element, context);
+              routePoints = spec.routePoints;
+              fallbackZ = element.elevation + visual.localZMm;
+              startProtection = {
+                connected: Boolean(spec.startConnection),
+                unitPort: spec.startConnection?.connectionKind === "unit-port",
+              };
+              endProtection = {
+                connected: Boolean(spec.endConnection),
+                unitPort: spec.endConnection?.connectionKind === "unit-port",
+              };
+            }
+            const routeNodes3d = authoredNodes.length >= 2
+              ? authoredNodes
+              : routePoints.map((point) => ({ ...point, z: fallbackZ }));
+            const protectedIndexes = getProtectedPipeNodeIndexes(
+              routeNodes3d.length,
+              startProtection,
+              endProtection,
+            );
+            const nextNodes = routeNodes3d.map((node, index) => (
+              protectedIndexes.has(index) ? node : { ...node, z: node.z + dzMm }
+            ));
+            const changed = nextNodes.some((node, index) => (
+              Math.abs(node.z - routeNodes3d[index]!.z) > 1e-6
+            ));
+            if (!changed) continue;
+            updatesById.set(element.id, {
+              ...(protectedIndexes.size === 0
+                ? { elevation: element.elevation + dzMm }
+                : {}),
+              properties: {
+                ...element.properties,
+                routeNodes3d: nextNodes,
               },
-            ),
+            });
+            continue;
+          }
+          const properties = translateRefrigerantPipeElementProperties(
+            element.type,
+            element.properties,
+            { x: dxMm, y: dyMm },
+          );
+          const nextElement = { ...element, properties };
+          const visual = element.type === "refrigerant-pipe-pair"
+            ? buildRefrigerantPipePairVisual(nextElement, hvacElements)
+            : buildRefrigerantPipeVisual(nextElement);
+          updatesById.set(element.id, {
+            position: { x: visual.bounds.minX, y: visual.bounds.minY },
+            width: visual.bounds.width,
+            depth: visual.bounds.height,
+            properties,
           });
-          movedEquipment = true;
+          continue;
+        }
+        if (dzMm !== 0) {
+          const movedElement = {
+            ...element,
+            elevation: element.elevation + dzMm,
+          };
+          updatesById.set(element.id, movedElement);
+          const connectedPipeUpdates = [
+            ...resolveRefrigerantPipeUnitPortReconnectionUpdates(
+              hvacElements,
+              movedElement,
+            ),
+            ...resolveRefrigerantPipeBranchKitReconnectionUpdates(
+              hvacElements,
+              movedElement,
+            ),
+          ];
+          connectedPipeUpdates.forEach((pipeUpdate) => {
+            if (pipeUpdate.id !== element.id) {
+              updatesById.set(pipeUpdate.id, pipeUpdate.updates);
+            }
+          });
           continue;
         }
         const candidateCenter = {
@@ -1537,19 +1714,6 @@ export function DrawingCanvas({
           continue;
         }
 
-        updateHvacElement(element.id, {
-          position: placement.point,
-          rotation: placement.rotationDeg,
-          width: placement.widthMm,
-          depth: placement.depthMm,
-          height: placement.heightMm,
-          roomId: placement.roomId ?? undefined,
-          wallId: placement.wallId ?? undefined,
-          properties: {
-            ...element.properties,
-            ...(placement.placementProperties ?? {}),
-          },
-        });
         const movedElement = {
           ...element,
           position: placement.point,
@@ -1564,30 +1728,53 @@ export function DrawingCanvas({
             ...(placement.placementProperties ?? {}),
           },
         };
-        const connectedPipeUpdates =
-          resolveRefrigerantPipeUnitPortReconnectionUpdates(
+        updatesById.set(element.id, movedElement);
+        const connectedPipeUpdates = [
+          ...resolveRefrigerantPipeUnitPortReconnectionUpdates(
             hvacElements,
             movedElement,
-          );
+          ),
+          ...resolveRefrigerantPipeBranchKitReconnectionUpdates(
+            hvacElements,
+            movedElement,
+          ),
+        ];
         connectedPipeUpdates.forEach((pipeUpdate) => {
           if (pipeUpdate.id === element.id) {
             return;
           }
-          updateHvacElement(pipeUpdate.id, pipeUpdate.updates);
+          updatesById.set(pipeUpdate.id, pipeUpdate.updates);
         });
-        movedEquipment = true;
       }
 
-      return movedObjects || movedEquipment;
+      if (updatesById.size > 0) {
+        commitHvacElementCommand("Nudge HVAC elements", {
+          updates: [...updatesById].map(([id, updates]) => ({ id, updates })),
+        });
+      }
+      return movedObjects || updatesById.size > 0;
     },
     [
       computeHvacPlacement,
+      commitHvacElementCommand,
       hvacElements,
       nudgeSelectedObjects,
       selectedIds,
       setProcessingStatus,
-      updateHvacElement,
     ],
+  );
+
+  const handleApplyVrfValidationFix = useCallback(
+    (issue: VrfValidationIssue) => {
+      const command = buildVrfValidationFixCommand(issue, hvacElements);
+      if (!command) return;
+      const target = resolveVrfValidationIssueElement(issue, hvacElements);
+      commitHvacElementCommand(command.action, {
+        updates: command.updates,
+        selectedIds: target ? [target.id] : undefined,
+      });
+    },
+    [commitHvacElementCommand, hvacElements],
   );
 
   // Global close effect is inside useContextMenuHandlers hook.
@@ -2405,6 +2592,8 @@ export function DrawingCanvas({
     >,
     resolvedSnapToGrid,
     effectiveSnapGridSize,
+    nudgeStepMm: snapStepMm,
+    interactionViewMode,
     projectionViewOnly,
     pendingPlacementDefinition,
     pendingPlacementEquipmentDefinition,
@@ -2584,10 +2773,20 @@ export function DrawingCanvas({
             hvacElements={hvacElements}
             selectedIds={selectedIds}
             setSelectedIds={setSelectedIds}
-            updateHvacElement={updateHvacElement}
-            addHvacElement={addHvacElement}
-            saveToHistory={saveToHistory}
+            commitHvacElementCommand={commitHvacElementCommand}
             onBeginExtendRoute={handleBeginExtendRoute}
+          />
+          <VrfValidationOverlay
+            enabled
+            showMarkers={!projectionViewOnly}
+            width={hostWidth}
+            height={hostHeight}
+            viewportZoom={viewportZoom}
+            panOffset={panOffset}
+            hvacElements={hvacElements}
+            report={vrfValidationReport}
+            onSelectElement={(elementId) => setSelectedIds([elementId])}
+            onApplyFix={handleApplyVrfValidationFix}
           />
           <PipeClashOverlay
             enabled={!projectionViewOnly}
@@ -2662,6 +2861,8 @@ export function DrawingCanvas({
           onControllerReady={handleHybridControllerReady}
           applyDerivedView={applyDerivedHybridView}
           onPolarChange={handleHybridPolarChange}
+          interactionViewMode={interactionViewMode}
+          onCameraViewChange={handleCameraViewChange}
           onViewRotatedChange={setIsViewRotated}
           onDebug={developerDiagnosticsEnabled ? setTiltDebug : undefined}
           getViewportMatrix={() => fabricRef.current?.viewportTransform ?? null}
@@ -2680,6 +2881,7 @@ export function DrawingCanvas({
           onSplitWall={handleSplitWallAtMidpoint}
           onMoveWallNode={wallGraphMoveNode}
           onMoveWallEdges={wallGraphMoveEdges}
+          onCommitPipeRouteEdit={handleCommitHybridPipeRouteEdit}
           pipeToolActive={tool === "refrigerant-pipe"}
           onPipePointerDown={handleRefrigerantPipeMouseDown}
           onPipePointerMove={handleRefrigerantPipeMouseMove}
@@ -2885,26 +3087,28 @@ export function DrawingCanvas({
       {/* SketchUp-style explicit view toggle: camera-only SmoothDamp tween via
           camera-controls — the model never moves. RMB tilt remains available. */}
       <div className="absolute right-3 top-8 z-[30] flex overflow-hidden rounded-md border border-slate-300 bg-white/95 text-[11px] font-semibold text-slate-600 shadow-sm">
-        <button
-          type="button"
-          title="Plan view (top-down)"
-          onClick={() => hybridControllerRef.current?.resetToPlan(true)}
-          className={`px-2.5 py-1 transition-colors ${
-            hybridViewOnly ? "hover:bg-slate-100" : "bg-slate-800 text-white"
-          }`}
-        >
-          2D
-        </button>
-        <button
-          type="button"
-          title="3D view (tilt the board)"
-          onClick={() => hybridControllerRef.current?.tiltTo((45 * Math.PI) / 180, true)}
-          className={`px-2.5 py-1 transition-colors ${
-            hybridViewOnly ? "bg-slate-800 text-white" : "hover:bg-slate-100"
-          }`}
-        >
-          3D
-        </button>
+        {([
+          ["plan", "Plan"],
+          ["front", "Front"],
+          ["side", "Side"],
+          ["iso", "Iso"],
+        ] as const).map(([cameraView, label]) => {
+          const active =
+            interactionViewMode === CAMERA_TO_INTERACTION_VIEW[cameraView];
+          return (
+            <button
+              key={cameraView}
+              type="button"
+              title={`${label} manipulation view`}
+              onClick={() => setCameraView(cameraView)}
+              className={`px-2.5 py-1 transition-colors ${
+                active ? "bg-slate-800 text-white" : "hover:bg-slate-100"
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
         <button
           type="button"
           title="View style: Solid → X-ray → Wire (X)"

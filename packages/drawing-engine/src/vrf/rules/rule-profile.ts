@@ -97,6 +97,8 @@ export const branchKitCatalogRuleSchema = z.object({
   downstreamDiametersMm: z.array(z.number().finite().positive()).optional(),
   headerOutletCount: z.number().int().positive().optional(),
   compatibleReducerIds: z.array(z.string().min(1)).optional(),
+  /** Equivalent route length contributed by this fitting. */
+  equivalentLengthMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
   orientation: branchOrientationRuleSchema,
   straightZones: z.array(straightZoneRuleSchema).default([]),
   provenanceNote: z.string().min(1).optional(),
@@ -135,11 +137,33 @@ export const routeLimitRulesSchema = z.object({
   maximumTotalLengthMm: ruleValueSchema(z.number().finite().positive()).optional(),
   maximumEquivalentLengthMm: ruleValueSchema(z.number().finite().positive()).optional(),
   maximumHeightDifferenceMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
+  maximumOutdoorBelowHeightDifferenceMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
   maximumIndoorToBranchLengthMm: ruleValueSchema(z.number().finite().positive()).optional(),
   maximumIndoorUnitCount: ruleValueSchema(z.number().int().positive()).optional(),
 });
 
 export type RouteLimitRules = z.infer<typeof routeLimitRulesSchema>;
+
+/**
+ * Installation-practice rules that are independent of a particular fitting
+ * catalogue row. Values stay profile data (with provenance), never renderer
+ * constants, so a manufacturer family can replace every fallback below.
+ */
+export const installationRulesSchema = z.object({
+  outdoorBranchTiltToleranceDeg: ruleValueSchema(z.number().finite().min(0).max(180)).optional(),
+  indoorBranchTiltToleranceDeg: ruleValueSchema(z.number().finite().min(0).max(180)).optional(),
+  minimumBranchStraightBeforeMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
+  minimumBranchStraightAfterMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
+  headerOutletLevelToleranceMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
+  minimumJointSpacingMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
+  minimumBranchElbowClearanceMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
+  minimumSelectorBoxElbowClearanceMm: ruleValueSchema(z.number().finite().nonnegative()).optional(),
+  minimumGasSlopePercent: ruleValueSchema(z.number().finite().nonnegative()).optional(),
+  requireInsulation: z.boolean().optional(),
+  prohibitUnapprovedTee: z.boolean().optional(),
+});
+
+export type InstallationRules = z.infer<typeof installationRulesSchema>;
 
 export const manufacturerRuleProfileSchema = z.object({
   schemaVersion: z.literal(1),
@@ -153,6 +177,8 @@ export const manufacturerRuleProfileSchema = z.object({
   branchKits: z.array(branchKitCatalogRuleSchema).default([]),
   pipeSizing: z.array(pipeSizingRuleSchema).default([]),
   routeLimits: routeLimitRulesSchema.default({}),
+  /** Optional for schema-v1 migration; the fallback profile supplies defaults. */
+  installation: installationRulesSchema.optional(),
 });
 
 export type ManufacturerRuleProfile = z.infer<typeof manufacturerRuleProfileSchema>;
@@ -206,13 +232,32 @@ export const PROJECT_FALLBACK_RULE_PROFILE: ManufacturerRuleProfile = {
   verified: false,
   sourceReferences: [],
   portDefaults: {
-    minimumStraightStubMm: fallbackValue(150, 'Unverified application fallback.'),
+    minimumStraightStubMm: fallbackValue(200, 'Unverified application fallback.'),
     minimumBendRadiusMm: fallbackValue(60, 'Unverified application fallback.'),
     serviceClearanceMm: fallbackValue(100, 'Unverified application fallback.'),
     allowedExitConeDeg: fallbackValue(45, 'Unverified application fallback.'),
   },
   branchKits: [],
   pipeSizing: [],
-  routeLimits: {},
+  routeLimits: {
+    maximumTotalLengthMm: fallbackValue(150_000, 'Unverified application fallback.'),
+    maximumEquivalentLengthMm: fallbackValue(200_000, 'Unverified application fallback.'),
+    maximumHeightDifferenceMm: fallbackValue(50_000, 'Unverified application fallback.'),
+    maximumOutdoorBelowHeightDifferenceMm: fallbackValue(15_000, 'Unverified application fallback.'),
+    maximumIndoorToBranchLengthMm: fallbackValue(40_000, 'Unverified application fallback.'),
+    maximumIndoorUnitCount: fallbackValue(64, 'Unverified application fallback.'),
+  },
+  installation: {
+    outdoorBranchTiltToleranceDeg: fallbackValue(15, 'Unverified application fallback.'),
+    indoorBranchTiltToleranceDeg: fallbackValue(30, 'Unverified application fallback.'),
+    minimumBranchStraightBeforeMm: fallbackValue(300, 'Unverified application fallback.'),
+    minimumBranchStraightAfterMm: fallbackValue(300, 'Unverified application fallback.'),
+    headerOutletLevelToleranceMm: fallbackValue(5, 'Unverified application fallback.'),
+    minimumJointSpacingMm: fallbackValue(500, 'Unverified application fallback.'),
+    minimumBranchElbowClearanceMm: fallbackValue(500, 'Unverified application fallback.'),
+    minimumSelectorBoxElbowClearanceMm: fallbackValue(1_000, 'Unverified application fallback.'),
+    minimumGasSlopePercent: fallbackValue(1, 'Unverified application fallback.'),
+    requireInsulation: true,
+    prohibitUnapprovedTee: true,
+  },
 };
-

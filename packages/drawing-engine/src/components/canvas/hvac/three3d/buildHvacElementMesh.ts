@@ -1886,6 +1886,71 @@ export function buildHvacElementMesh(
         }
       };
 
+      const routeNodes3d = readPipeRouteNodes3d(effectiveElement);
+      if (routeNodes3d.length >= 2) {
+        // A composite pair stores one editable 3D guide. Offset both physical
+        // lines from that guide while retaining every authored elevation node.
+        group.position.set(0, 0, 0);
+        group.rotation.set(0, 0, 0);
+        const centerZ = effectiveElement.elevation
+          + (visual.gasLocalZMm + visual.liquidLocalZMm) / 2;
+        const fallbackTangent = (() => {
+          for (let index = 1; index < routeNodes3d.length; index += 1) {
+            const previous = routeNodes3d[index - 1]!;
+            const current = routeNodes3d[index]!;
+            const dx = current.x - previous.x;
+            const dy = current.y - previous.y;
+            if (Math.hypot(dx, dy) > 1e-6) return new THREE.Vector2(dx, dy).normalize();
+          }
+          return new THREE.Vector2(0, 1);
+        })();
+        const offsetRoute = (side: -1 | 1, zOffset: number): THREE.Vector3[] =>
+          routeNodes3d.map((node, index) => {
+            const previous = routeNodes3d[Math.max(0, index - 1)]!;
+            const next = routeNodes3d[Math.min(routeNodes3d.length - 1, index + 1)]!;
+            const tangent = new THREE.Vector2(next.x - previous.x, next.y - previous.y);
+            if (tangent.lengthSq() <= 1e-12) tangent.copy(fallbackTangent);
+            tangent.normalize();
+            const normal = new THREE.Vector2(-tangent.y, tangent.x)
+              .multiplyScalar(side * visual.centerSpacingMm / 2);
+            return new THREE.Vector3(node.x + normal.x, node.y + normal.y, node.z + zOffset);
+          });
+        const gasPoints = offsetRoute(
+          1,
+          effectiveElement.elevation + visual.gasLocalZMm - centerZ,
+        );
+        const liquidPoints = offsetRoute(
+          -1,
+          effectiveElement.elevation + visual.liquidLocalZMm - centerZ,
+        );
+        const addRouteTube3d = (
+          points: THREE.Vector3[],
+          radius: number,
+          color: string,
+          renderOrder: number,
+          openStart = false,
+        ): void => {
+          const tube = createTubeAlongPoints(points, radius, color, {
+            renderOrder,
+            openStart,
+            openEnd: false,
+            cornerStyle: "round",
+          });
+          if (tube) group.add(tube);
+        };
+        addRouteTube3d(gasPoints, visual.gasOuterRadiusMm, insulationColor, 18, isFieldPipeStart);
+        addRouteTube3d(
+          liquidPoints,
+          visual.liquidOuterRadiusMm,
+          insulationColor,
+          18,
+          isFieldPipeStart,
+        );
+        addRouteTube3d(gasPoints, visual.gasCoreRadiusMm, gasColor, 19);
+        addRouteTube3d(liquidPoints, visual.liquidCoreRadiusMm, liquidColor, 19);
+        break;
+      }
+
       // Stitch the connection stub and the core run into one continuous
       // poly-line so they render as a single swept copper tube (no separate
       // uncapped stub cylinder poking out past the insulation).

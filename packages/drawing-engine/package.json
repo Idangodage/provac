@@ -32,6 +32,14 @@
     "./vrf": {
       "types": "./src/vrf/index.ts",
       "default": "./src/vrf/index.ts"
+    },
+    "./vrf/domain": {
+      "types": "./src/vrf/domain/index.ts",
+      "default": "./src/vrf/domain/index.ts"
+    },
+    "./vrf/rules": {
+      "types": "./src/vrf/rules/index.ts",
+      "default": "./src/vrf/rules/index.ts"
     }
   },
   "scripts": {

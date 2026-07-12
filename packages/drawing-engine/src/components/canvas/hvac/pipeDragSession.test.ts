@@ -4,6 +4,7 @@ import type { Point2D } from '../../../types';
 
 import { beginPipeDrag, type PipeCommitActions, type PipeDragGhost } from './pipeDragSession';
 import type { PipeSegmentMaterial } from './pipeInteractionCore';
+import { withCanonicalPipeRoute } from './pipeRoute3d';
 
 const p = (x: number, y: number): Point2D => ({ x, y });
 const baseline: PipeDragGhost = {
@@ -61,6 +62,53 @@ describe('pipeDragSession — commit-once boundary', () => {
     expect(session.commit(actions, (g) => ({ properties: { routePoints: g.route } }), 'a')).toBe(true);
     expect(session.commit(actions, (g) => ({ properties: { routePoints: g.route } }), 'b')).toBe(false);
     expect(update).toHaveBeenCalledTimes(1);
+    expect(history).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits a 3D-authored plan edit once with canonical XYZ nodes and materials', () => {
+    const { actions, update, history } = spyActions();
+    const element = {
+      properties: {
+        routePoints: baseline.route,
+        routeNodes3d: [
+          { x: 0, y: 0, z: 200 },
+          { x: 100, y: 0, z: 350 },
+          { x: 100, y: 100, z: 500 },
+        ],
+        segmentMaterials: baseline.materials,
+      },
+    };
+    const session = beginPipeDrag('pipe-3d', baseline);
+    const nextRoute = [p(0, 0), p(120, 40), p(100, 100)];
+    session.update({ route: nextRoute, materials: ['flexible', 'hard'] });
+
+    const committed = session.commit(
+      actions,
+      (ghost) => ({
+        properties: withCanonicalPipeRoute(element, ghost.route, {
+          segmentMaterials: ghost.materials,
+        }).properties,
+      }),
+      'Edit refrigerant pipe vertex',
+    );
+
+    expect(committed).toBe(true);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(
+      'pipe-3d',
+      {
+        properties: {
+          routePoints: nextRoute,
+          routeNodes3d: [
+            { x: 0, y: 0, z: 200 },
+            { x: 120, y: 40, z: 350 },
+            { x: 100, y: 100, z: 500 },
+          ],
+          segmentMaterials: ['flexible', 'hard'],
+        },
+      },
+      { skipHistory: true },
+    );
     expect(history).toHaveBeenCalledTimes(1);
   });
 

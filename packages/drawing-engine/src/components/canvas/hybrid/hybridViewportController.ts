@@ -23,8 +23,11 @@ import * as THREE from 'three';
 import {
   clampOrthoZoom,
   deriveBoardViewFromCamera,
+  resolveHybridCameraViewFromPose,
+  resolveHybridCameraViewPose,
   screenToWorldOnPlaneZ,
   type DerivedBoardView,
+  type HybridCameraView,
 } from './hybridViewportMath';
 
 CameraControls.install({ THREE });
@@ -33,6 +36,7 @@ CameraControls.install({ THREE });
 // property-tested — the reference-app practice). This class only owns the
 // camera-controls wiring and input mapping.
 export type { DerivedBoardView } from './hybridViewportMath';
+export type { HybridCameraView } from './hybridViewportMath';
 
 const TILT_MAX_POLAR = THREE.MathUtils.degToRad(58);
 const PLAN_SNAP_POLAR = THREE.MathUtils.degToRad(5);
@@ -111,7 +115,9 @@ export class HybridViewportController {
       }
       this.rotateGestureActive = true;
       controls.mouseButtons.right = A.ROTATE;
-      controls.maxPolarAngle = TILT_MAX_POLAR;
+      // Preserve the established PLAN->TILT limit, but do not clamp an
+      // explicit front/side elevation the instant RMB orbit begins.
+      controls.maxPolarAngle = Math.max(TILT_MAX_POLAR, controls.polarAngle);
       const rect = el.getBoundingClientRect();
       const hit = this.screenToPlane(e.clientX - rect.left, e.clientY - rect.top);
       if (hit) controls.setOrbitPoint(hit.x, hit.y, hit.z);
@@ -218,6 +224,34 @@ export class HybridViewportController {
     this.controls.maxPolarAngle = 0;
   }
 
+  /** Set one of the canonical manipulation views without moving the model. */
+  setCameraView(view: HybridCameraView, animate = true): void {
+    if (!this.controls) return;
+    if (view === 'plan') {
+      this.resetToPlan(animate);
+      return;
+    }
+    const pose = resolveHybridCameraViewPose(view);
+    this.rotateGestureActive = false;
+    this.controls.normalizeRotations();
+    this.controls.setFocalOffset(0, 0, 0, false);
+    this.controls.minPolarAngle = 0;
+    this.controls.maxPolarAngle = Math.max(TILT_MAX_POLAR, pose.polar);
+    void this.controls.rotateTo(pose.azimuth, pose.polar, animate);
+  }
+
+  setFrontView(animate = true): void {
+    this.setCameraView('front', animate);
+  }
+
+  setSideView(animate = true): void {
+    this.setCameraView('side', animate);
+  }
+
+  setIsometricView(animate = true): void {
+    this.setCameraView('iso', animate);
+  }
+
   /**
    * SketchUp-style explicit 2D↔3D toggle: SmoothDamp the camera to the given
    * polar tilt (camera-only — the model never moves). Pivots on the current
@@ -242,6 +276,9 @@ export class HybridViewportController {
   }
   get azimuth(): number {
     return this.controls?.azimuthAngle ?? 0;
+  }
+  get cameraView(): HybridCameraView {
+    return resolveHybridCameraViewFromPose(this.polar, this.azimuthWrapped);
   }
   /** Azimuth wrapped to (−π, π] — camera-controls accumulates full turns. */
   get azimuthWrapped(): number {

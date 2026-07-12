@@ -1749,6 +1749,13 @@ function bindRoomAttributes(room: Room, defaults?: Partial<Room3D>): Room {
 // Store Interface
 // =============================================================================
 
+export interface HvacElementCommand {
+  add?: HvacElement[];
+  removeIds?: string[];
+  updates?: Array<{ id: string; updates: Partial<HvacElement> }>;
+  selectedIds?: string[];
+}
+
 export interface DrawingState {
   // Drawing Elements
   dimensions: Dimension2D[];
@@ -1994,6 +2001,7 @@ export interface DrawingState {
   clearAllWalls: () => void;
   addHvacElement: (element: Omit<Partial<HvacElement>, 'id'> & Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>) => string;
   addHvacElements: (elements: Array<Omit<Partial<HvacElement>, 'id'> & Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>>) => string[];
+  commitHvacElementCommand: (action: string, command: HvacElementCommand) => string[];
   updateHvacElement: (id: string, updates: Partial<HvacElement>, options?: { skipHistory?: boolean }) => void;
   deleteHvacElement: (id: string, options?: { skipHistory?: boolean }) => void;
   duplicateHvacElement: (id: string) => string | null;
@@ -4182,6 +4190,47 @@ export const useDrawingStore = create<DrawingState>()(
         get().regenerateElevations({ debounce: true });
         get().saveToHistory(nextElements.length > 1 ? 'Add refrigerant pipes' : 'Add AC equipment');
         return nextElements.map((element) => element.id);
+      },
+
+      commitHvacElementCommand: (action, command) => {
+        const additions = (command.add ?? []).map((element) => normalizeHvacElement(element));
+        const additionIds = new Set(additions.map((element) => element.id));
+        const removeIds = new Set(command.removeIds ?? []);
+        const updatesById = new Map(
+          (command.updates ?? []).map((entry) => [entry.id, entry.updates]),
+        );
+        set((state) => {
+          const nextElements = state.hvacElements
+            .filter((element) => !removeIds.has(element.id) && !additionIds.has(element.id))
+            .map((element) => {
+              const updates = updatesById.get(element.id);
+              if (!updates) return element;
+              return normalizeHvacElement({
+                ...element,
+                ...updates,
+                id: element.id,
+                properties: updates.properties
+                  ? { ...element.properties, ...updates.properties }
+                  : element.properties,
+              });
+            });
+          nextElements.push(...additions);
+          const availableIds = new Set(nextElements.map((element) => element.id));
+          const selected = command.selectedIds
+            ? command.selectedIds.filter((id) => availableIds.has(id))
+            : state.selectedElementIds.filter((id) => availableIds.has(id));
+          return {
+            hvacElements: nextElements,
+            selectedElementIds: selected,
+            selectedIds: selected,
+            hoveredElementId: state.hoveredElementId && availableIds.has(state.hoveredElementId)
+              ? state.hoveredElementId
+              : null,
+          };
+        });
+        get().regenerateElevations({ debounce: true });
+        get().saveToHistory(action);
+        return additions.map((element) => element.id);
       },
 
       updateHvacElement: (id, updates, options) => {

@@ -9,6 +9,7 @@ export interface BranchWorldFrame {
   up: RuleVec3;
   splitPlaneNormal: RuleVec3;
   outletDirections?: RuleVec3[];
+  fittingType?: 'y-joint' | 'header' | 'outdoor-multi-kit';
 }
 
 export interface BranchOrientationMeasurement {
@@ -65,9 +66,11 @@ export function measureBranchOrientation(
   const actualUp = normalize(subtract(up, scale(forward, dot(up, forward))), expectedUp);
   const rollDeg = signedAngleAround(expectedUp, actualUp, forward);
   const splitVerticality = Math.abs(dot(splitNormal, worldUp));
-  const mode: BranchOrientationMode = splitVerticality >= Math.SQRT1_2
-    ? 'horizontal-split'
-    : 'vertical-split';
+  const mode: BranchOrientationMode = frame.fittingType === 'header'
+    ? 'horizontal-header'
+    : splitVerticality >= Math.SQRT1_2
+      ? 'horizontal-split'
+      : 'vertical-split';
   return { mode, rollDeg, pitchDeg };
 }
 
@@ -119,4 +122,3 @@ export function nearestAllowedOrientation(
     ),
   };
 }
-
