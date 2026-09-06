@@ -81,4 +81,64 @@ describe('wall chunk geometry (reference wallMesh port)', () => {
     expect(chunk.geometry.groups[0]!.materialIndex).toBe(3);
     expect(chunk.entityIds).toEqual([edgeId]);
   });
+
+  it('assigns only upward faces to the plan-matched material without altering picking', () => {
+    const doc = createEmptyWallGraph();
+    addWallChain(doc, [[0, 0], [4000, 0]], DEFAULT_WALL_PARAMS, sequentialWallIds('cap'));
+    const solve = solveWallGraphDoc(doc);
+    const edgeId = solve.footprints[0]!.edgeId;
+    const chunk = buildWallChunkGeometry(solve, 300, {
+      materialIndexByEntityId: new Map([[edgeId, 2]]),
+      topMaterialIndexByEntityId: new Map([[edgeId, 5]]),
+    });
+    const normal = chunk.geometry.getAttribute('normal');
+    const position = chunk.geometry.getAttribute('position');
+    const uv = chunk.geometry.getAttribute('uv');
+    const index = chunk.geometry.getIndex()!;
+    expect(chunk.geometry.groups.map((group) => group.materialIndex)).toEqual([5, 2]);
+    for (const group of chunk.geometry.groups) {
+      for (let offset = group.start; offset < group.start + group.count; offset += 1) {
+        const vertex = index.getX(offset);
+        expect(normal.getZ(vertex) === 1).toBe(group.materialIndex === 5);
+        if (group.materialIndex === 5) {
+          expect(uv.getX(vertex)).toBe(position.getX(vertex));
+          expect(uv.getY(vertex)).toBe(position.getY(vertex));
+        }
+      }
+    }
+    expect(chunk.entityIds).toEqual([edgeId]);
+  });
+
+  it('outlines joined room walls continuously without diagonal miter seams', () => {
+    const doc = createEmptyWallGraph();
+    addWallChain(doc, [[0, 0], [5000, 0], [5000, 3000], [0, 3000], [0, 0]], DEFAULT_WALL_PARAMS, sequentialWallIds('room'));
+    const chunk = buildWallChunkGeometry(solveWallGraphDoc(doc));
+    const positions = chunk.edgesGeometry.getAttribute('position');
+    // Inner and outer rectangular perimeters, each with 12 physical edges.
+    expect(positions.count).toBe(48);
+    for (let index = 0; index < positions.count; index += 2) {
+      const delta = [
+        positions.getX(index + 1) - positions.getX(index),
+        positions.getY(index + 1) - positions.getY(index),
+        positions.getZ(index + 1) - positions.getZ(index),
+      ];
+      expect(delta.filter((value) => Math.abs(value) > 0.001)).toHaveLength(1);
+    }
+  });
+
+  it('removes internal end-cap lines at a T junction', () => {
+    const doc = createEmptyWallGraph();
+    const ids = sequentialWallIds('junction');
+    addWallChain(doc, [[-3000, 0], [3000, 0]], DEFAULT_WALL_PARAMS, ids);
+    addWallChain(doc, [[0, 0], [0, 3000]], DEFAULT_WALL_PARAMS, ids);
+    const chunk = buildWallChunkGeometry(solveWallGraphDoc(doc));
+    const positions = chunk.edgesGeometry.getAttribute('position');
+    // A T silhouette has 8 corners, no independent prism outlines inside it.
+    expect(positions.count).toBe(8 * 3 * 2);
+    for (let index = 0; index < positions.count; index += 2) {
+      const middleX = (positions.getX(index) + positions.getX(index + 1)) / 2;
+      const middleY = (positions.getY(index) + positions.getY(index + 1)) / 2;
+      expect(Math.abs(middleX) < 99 && Math.abs(middleY) < 99).toBe(false);
+    }
+  });
 });

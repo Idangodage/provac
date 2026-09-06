@@ -3,15 +3,20 @@
 import * as THREE from "three";
 
 import type { HvacElement, Point2D } from "../../../../types";
+import { markMaterialOwned } from "../../threeResourceLifecycle";
 import { buildCeilingCassetteModel } from "../ceilingCassetteModel";
+import { compileCopperSocketElbowRoute } from "../copperSocketElbowRoute";
+import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "../copperSocketElbows";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
 } from "../ductedIndoorUnitModel";
+import { resolveFieldPipeBendRadiusMm } from "../fieldPipeBends";
 import { buildGiDuctVisual } from "../giDuctModel";
 import type { PipeBypass } from "../pipeBypass";
-import { readPipeRouteNodes3d } from "../pipeRoute3d";
+import { liftPipePlanRouteTo3d, readPipeRouteNodes3d } from "../pipeRoute3d";
 import { computeFittingRunMm } from "../pipeRoutingRules";
+import { getActivePipeRoutingSettings } from "../pipeRoutingSettings";
 import {
   buildRefrigerantBranchKitViewModel,
   isRefrigerantBranchKitElement,
@@ -32,6 +37,7 @@ import type {
 } from "../refrigerantPipeRenderState";
 import { getUnitPipePortSpec } from "../unitPipePortModel";
 
+import { buildCopperSocketElbowMesh } from "./copperSocketElbowMesh";
 import { instantiateGlbModel } from "./glbModelCache";
 import {
   buildCylinderGeometry,
@@ -44,6 +50,14 @@ const EPSILON = 0.001;
 
 /** Default cross-section facets for swept pipe / fitting geometry. */
 const PIPE_RADIAL_SEGMENTS = 24;
+
+/** Service colours match the plan convention in every projection. */
+export const REFRIGERANT_PIPE_3D_COLORS = {
+  gas: "#4088b3",
+  liquid: "#bc863f",
+  gasCopper: "#c5894d",
+  liquidCopper: "#dca25d",
+} as const;
 
 const MEP_PROJECTION_PALETTE = {
   ductTop: "#8d99a6",
@@ -83,6 +97,8 @@ type Hvac3DPalette = {
 type BoxMaterialKey = `${string}|${number}|${0 | 1}`;
 
 const MATERIAL_CACHE = new Map<BoxMaterialKey, THREE.MeshStandardMaterial>();
+const EXPOSED_CORE_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
+const COPPER_FITTING_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
 
 export function isProjectionCoreHvacType(type: HvacElement["type"]): boolean {
   return (
@@ -121,6 +137,33 @@ function getSharedBoxMaterial(
       metalness: 0.06,
     });
     MATERIAL_CACHE.set(key, material);
+  }
+  return material;
+}
+
+function getExposedCoreMaterial(color: string): THREE.MeshStandardMaterial {
+  let material = EXPOSED_CORE_MATERIAL_CACHE.get(color);
+  if (!material) {
+    material = new THREE.MeshStandardMaterial({
+      color,
+      roughness: 0.72,
+      metalness: 0.2,
+      // The copper cross-section is intentionally coplanar with the insulation
+      // end cap. Pull it forward in depth without changing model-space bounds.
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    EXPOSED_CORE_MATERIAL_CACHE.set(color, material);
+  }
+  return material;
+}
+
+function getCopperFittingMaterial(color: string): THREE.MeshStandardMaterial {
+  let material = COPPER_FITTING_MATERIAL_CACHE.get(color);
+  if (!material) {
+    material = new THREE.MeshStandardMaterial({ color, roughness: 0.36, metalness: 0.65 });
+    COPPER_FITTING_MATERIAL_CACHE.set(color, material);
   }
   return material;
 }
@@ -391,13 +434,17 @@ function createTubeAlongPoints(
   points: THREE.Vector3[],
   radius: number,
   color: string,
-  options?: {
+  options: {
     opacity?: number;
     renderOrder?: number;
     radialSegments?: number;
     openStart?: boolean;
     openEnd?: boolean;
-    cornerStyle?: "round" | "elbow";
+    /** Resolved document-policy centreline bend radius. */
+    bendRadiusMm: number;
+    surfaceRole?: "insulation" | "core";
+    lineKind?: "gas" | "liquid";
+    preservePlanGeometry?: boolean;
   },
 ): THREE.Object3D | null {
   if (points.length < 2) {
@@ -419,7 +466,7 @@ function createTubeAlongPoints(
   const finalPoints = cleaned.map((point) => point.clone());
   const continuationOverlapMm = Math.max(1.5, radius * 0.75);
 
-  if (options?.openStart && finalPoints.length >= 2) {
+  if (options.openStart && finalPoints.length >= 2) {
     const startDirection = finalPoints[1]!.clone().sub(finalPoints[0]!);
     if (startDirection.length() > EPSILON) {
       startDirection.normalize();
@@ -429,7 +476,7 @@ function createTubeAlongPoints(
     }
   }
 
-  if (options?.openEnd && finalPoints.length >= 2) {
+  if (options.openEnd && finalPoints.length >= 2) {
     const lastIndex = finalPoints.length - 1;
     const endDirection = finalPoints[lastIndex]!
       .clone()
@@ -446,21 +493,141 @@ function createTubeAlongPoints(
   // caps and no full-radius ball-joint spheres, so bends stay smooth and the
   // coincident-face z-fighting of the old cylinder chain disappears.
   const geometry = buildSweptTubeGeometry(finalPoints, radius, {
-    radialSegments: options?.radialSegments ?? PIPE_RADIAL_SEGMENTS,
-    capStart: !options?.openStart,
-    capEnd: !options?.openEnd,
+    radialSegments: options.radialSegments ?? PIPE_RADIAL_SEGMENTS,
+    bendRadiusMm: options.bendRadiusMm,
+    preservePlanGeometry: options.preservePlanGeometry,
+    capStart: !options.openStart,
+    capEnd: !options.openEnd,
   });
   if (!geometry) {
     return null;
   }
 
-  const opacity = options?.opacity ?? 1;
+  const opacity = options.opacity ?? 1;
   const material = getSharedBoxMaterial(color, opacity, opacity < 1);
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.renderOrder = options?.renderOrder ?? 18;
+  mesh.renderOrder = options.renderOrder ?? 18;
+  if (options.surfaceRole) {
+    mesh.userData.pipeSurfaceRole = options.surfaceRole;
+  }
+  if (options.lineKind) {
+    mesh.userData.pipeLineKind = options.lineKind;
+    mesh.name = `refrigerant-${options.lineKind}-${options.surfaceRole ?? "tube"}`;
+  }
+  // Exact connection coordinates remain available to picking and diagnostics;
+  // the optional join overlap is a surface treatment, never a new endpoint.
+  mesh.userData.pipeRouteEndpoints = {
+    start: cleaned[0]!.toArray(),
+    end: cleaned[cleaned.length - 1]!.toArray(),
+  };
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
+}
+
+/** CxC assembly geometry is resolved once, then shared by the copper and cover
+ * surfaces. Internal tube ends reach the insertion stops and have no end disks. */
+function addSocketElbowPipeAssembly(group: THREE.Group, points: THREE.Vector3[], outerRadius: number,
+  coreRadius: number, options: { lineKind: 'gas' | 'liquid'; bendRadiusMm: number;
+    openStart?: boolean; openEnd?: boolean; startStraightMm?: number; endStraightMm?: number; minimumBendRadiusMm?: number }): boolean {
+  const route = compileCopperSocketElbowRoute(points.map(point => ({ x: point.x, y: point.y, z: point.z })),
+    coreRadius * 2, { startStraightMm: options.startStraightMm, endStraightMm: options.endStraightMm,
+      minimumBendRadiusMm: options.minimumBendRadiusMm });
+  if (!route.fittings.length) return false;
+  const vectors = (nodes: { x: number; y: number; z: number }[]) => nodes.map(node => new THREE.Vector3(node.x, node.y, node.z));
+  const serviceColor = REFRIGERANT_PIPE_3D_COLORS[options.lineKind];
+  const copperColor = '#c78363';
+  route.insulationRuns.forEach((run, index) => {
+    const insulation = createTubeAlongPoints(vectors(run), outerRadius, serviceColor, {
+      renderOrder: 18, lineKind: options.lineKind, surfaceRole: 'insulation',
+      bendRadiusMm: options.bendRadiusMm, preservePlanGeometry: true,
+      openStart: index === 0 && options.openStart,
+      openEnd: index === route.insulationRuns.length - 1 && options.openEnd,
+    });
+    if (insulation) group.add(insulation);
+  });
+  // Copper tube wall is a presentation assumption until a tube schedule supplies
+  // it. The fitting's independently published wall/bore never inherits this value.
+  const pipeWall = Math.min(coreRadius * 0.35, Math.max(0.6, coreRadius * 0.08));
+  for (const run of route.pipeRuns) {
+    for (const inside of [false, true]) {
+      const geometry = buildSweptTubeGeometry(vectors(run), inside ? coreRadius - pipeWall : coreRadius, {
+        radialSegments: PIPE_RADIAL_SEGMENTS, bendRadiusMm: options.bendRadiusMm,
+        preservePlanGeometry: true, capStart: false, capEnd: false,
+      });
+      if (!geometry) continue;
+      const material = new THREE.MeshStandardMaterial({ color: copperColor, roughness: 0.3, metalness: 0.75,
+        side: inside ? THREE.BackSide : THREE.FrontSide });
+      markMaterialOwned(material);
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.userData.pipeSurfaceRole = inside ? 'copper-bore' : 'copper-tube';
+      mesh.userData.pipeLineKind = options.lineKind;
+      mesh.userData.pipeRouteEndpoints = { start: [run[0]!.x, run[0]!.y, run[0]!.z],
+        end: [run.at(-1)!.x, run.at(-1)!.y, run.at(-1)!.z] };
+      group.add(mesh);
+    }
+  }
+  for (const fitting of route.fittings) group.add(buildCopperSocketElbowMesh(fitting, {
+    lineKind: options.lineKind, color: copperColor, insulationThicknessMm: Math.max(0, outerRadius - coreRadius),
+    showInsulation: getActivePipeRoutingSettings().fittingDisplay === 'insulated',
+  }));
+  group.userData.copperElbowIssues = [...(group.userData.copperElbowIssues ?? []), ...route.issues];
+  group.userData.pipeRouteEndpoints = { start: points[0]!.toArray(), end: points.at(-1)!.toArray() };
+  group.userData.pipeRouteEndpointsByService = { ...group.userData.pipeRouteEndpointsByService,
+    [options.lineKind]: group.userData.pipeRouteEndpoints };
+  const prior = group.userData.copperElbowCounts ?? { ninety: 0, fortyFive: 0 };
+  group.userData.copperElbowCounts = { ninety: prior.ninety + route.fittings.filter(fitting => fitting.spec.angleDeg === 90).length,
+    fortyFive: prior.fortyFive + route.fittings.filter(fitting => fitting.spec.angleDeg === 45).length };
+  return true;
+}
+
+/**
+ * Shows only the copper cross-section at genuinely unconnected route ends.
+ * The opaque insulation owns the full run; drawing a second coaxial tube below
+ * it wastes fill-rate and can leak through when depth precision degrades.
+ */
+function addExposedCoreEndCaps(
+  parent: THREE.Group,
+  points: readonly THREE.Vector3[],
+  radius: number,
+  color: string,
+  options: { start: boolean; end: boolean },
+): void {
+  if (points.length < 2 || radius <= EPSILON) return;
+
+  const addCap = (atStart: boolean): void => {
+    const endpointIndex = atStart ? 0 : points.length - 1;
+    const endpoint = points[endpointIndex]!;
+    let neighbor: THREE.Vector3 | null = null;
+    for (
+      let index = atStart ? 1 : points.length - 2;
+      atStart ? index < points.length : index >= 0;
+      index += atStart ? 1 : -1
+    ) {
+      const candidate = points[index]!;
+      if (candidate.distanceTo(endpoint) > EPSILON) {
+        neighbor = candidate;
+        break;
+      }
+    }
+    if (!neighbor) return;
+
+    const outward = endpoint.clone().sub(neighbor).normalize();
+    const cap = new THREE.Mesh(
+      new THREE.CircleGeometry(radius, PIPE_RADIAL_SEGMENTS),
+      getExposedCoreMaterial(color),
+    );
+    cap.name = `hvac-pipe-exposed-core-${atStart ? "start" : "end"}`;
+    cap.position.copy(endpoint);
+    cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), outward);
+    cap.renderOrder = 20;
+    cap.userData.pipeSurfaceRole = "exposed-core";
+    cap.userData.pipeEndpoint = atStart ? "start" : "end";
+    parent.add(cap);
+  };
+
+  if (options.start) addCap(true);
+  if (options.end) addCap(false);
 }
 
 interface ElevationProfileSpan {
@@ -853,6 +1020,354 @@ function addHvacPipePort(
       { rotation, radialSegments },
     ),
   );
+}
+
+function addLocalMeshOutline(
+  group: THREE.Group,
+  mesh: THREE.Mesh,
+  name: string,
+  options?: {
+    color?: string;
+    opacity?: number;
+    renderOrder?: number;
+    thresholdAngleDeg?: number;
+  },
+): void {
+  const material = markMaterialOwned(
+    new THREE.LineBasicMaterial({
+      color: options?.color ?? "#52606d",
+      transparent: true,
+      opacity: options?.opacity ?? 0.72,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  ) as THREE.LineBasicMaterial;
+  const outline = new THREE.LineSegments(
+    new THREE.EdgesGeometry(mesh.geometry, options?.thresholdAngleDeg ?? 28),
+    material,
+  );
+  outline.name = `${name}-outline`;
+  outline.position.copy(mesh.position);
+  outline.rotation.copy(mesh.rotation);
+  outline.quaternion.copy(mesh.quaternion);
+  outline.scale.copy(mesh.scale);
+  outline.renderOrder = options?.renderOrder ?? 42;
+  outline.frustumCulled = false;
+  outline.userData.hvacEquipmentVisibilityOverlay = true;
+  group.add(outline);
+}
+
+function addNamedCassettePart(
+  group: THREE.Group,
+  name: string,
+  mesh: THREE.Mesh,
+  options?: {
+    outline?: boolean;
+    outlineColor?: string;
+    outlineOpacity?: number;
+    outlineRenderOrder?: number;
+  },
+): THREE.Mesh {
+  mesh.name = name;
+  mesh.userData.hvacEquipmentVisibilityOverlay = true;
+  group.add(mesh);
+  if (options?.outline) {
+    addLocalMeshOutline(group, mesh, name, {
+      color: options.outlineColor,
+      opacity: options.outlineOpacity,
+      renderOrder: options.outlineRenderOrder,
+    });
+  }
+  return mesh;
+}
+
+function addCeilingCassetteVisibleModel(
+  group: THREE.Group,
+  element: HvacElement,
+  options?: { catalogModelLoaded?: boolean },
+): void {
+  const cassette = buildCeilingCassetteModel(element);
+  const hasCatalogModel = options?.catalogModelLoaded === true;
+  const bodyOpacity = hasCatalogModel ? 0.5 : 1;
+  const topOpacity = hasCatalogModel ? 0.62 : 1;
+  const panelLift = hasCatalogModel ? 1.6 : 0;
+  const detailLift = hasCatalogModel ? 2.4 : 0;
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-hidden-body",
+    createRoundedLocalExtrudedMesh(
+      cassette.hiddenBody.width,
+      cassette.hiddenBody.depth,
+      cassette.hiddenBody.height,
+      cassette.hiddenBody.cornerRadius,
+      hasCatalogModel ? "#aab6c2" : "#94a3b8",
+      new THREE.Vector3(
+        cassette.hiddenBody.x,
+        cassette.hiddenBody.y,
+        cassette.hiddenBody.z,
+      ),
+      { opacity: bodyOpacity, renderOrder: hasCatalogModel ? 24 : 18 },
+    ),
+    {
+      outline: true,
+      outlineColor: "#40505f",
+      outlineOpacity: hasCatalogModel ? 0.62 : 0.48,
+    },
+  );
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-top-cap",
+    createRoundedLocalExtrudedMesh(
+      cassette.topCap.width,
+      cassette.topCap.depth,
+      cassette.topCap.height,
+      cassette.topCap.cornerRadius,
+      "#a8b3bd",
+      new THREE.Vector3(cassette.topCap.x, cassette.topCap.y, cassette.topCap.z),
+      { opacity: topOpacity, renderOrder: hasCatalogModel ? 24 : 18 },
+    ),
+  );
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-drain-pump-housing",
+    createRoundedLocalExtrudedMesh(
+      cassette.drainPumpHousing.width,
+      cassette.drainPumpHousing.depth,
+      cassette.drainPumpHousing.height,
+      cassette.drainPumpHousing.cornerRadius,
+      "#8a949d",
+      new THREE.Vector3(
+        cassette.drainPumpHousing.x,
+        cassette.drainPumpHousing.y,
+        cassette.drainPumpHousing.z,
+      ),
+      {
+        bevelEnabled: false,
+        curveSegments: 8,
+        opacity: topOpacity,
+        renderOrder: hasCatalogModel ? 25 : 18,
+      },
+    ),
+  );
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-face-panel",
+    createRoundedLocalExtrudedMesh(
+      cassette.facePanel.width,
+      cassette.facePanel.depth,
+      cassette.facePanel.height,
+      cassette.facePanel.cornerRadius,
+      "#fbfcfd",
+      new THREE.Vector3(
+        cassette.facePanel.x,
+        cassette.facePanel.y,
+        cassette.facePanel.z + panelLift,
+      ),
+      {
+        bevelThickness: cassette.facePanel.bevelThickness,
+        bevelSize: cassette.facePanel.bevelSize,
+        bevelSegments: 4,
+        renderOrder: 28,
+      },
+    ),
+    {
+      outline: true,
+      outlineColor: "#52606d",
+      outlineOpacity: 0.76,
+      outlineRenderOrder: 44,
+    },
+  );
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-inner-panel",
+    createRoundedLocalExtrudedMesh(
+      cassette.innerPanel.width,
+      cassette.innerPanel.depth,
+      cassette.innerPanel.height,
+      cassette.innerPanel.cornerRadius,
+      "#eef3f7",
+      new THREE.Vector3(
+        cassette.innerPanel.x,
+        cassette.innerPanel.y,
+        cassette.innerPanel.z + detailLift,
+      ),
+      {
+        bevelThickness: cassette.innerPanel.bevelThickness,
+        bevelSize: cassette.innerPanel.bevelSize,
+        bevelSegments: 4,
+        renderOrder: 29,
+      },
+    ),
+  );
+
+  cassette.slots.forEach((slot, index) => {
+    addNamedCassettePart(
+      group,
+      `ceiling-cassette-discharge-slot-${index + 1}`,
+      createRoundedLocalExtrudedMesh(
+        slot.width,
+        slot.depth,
+        slot.height,
+        slot.cornerRadius,
+        "#1a2030",
+        new THREE.Vector3(slot.x, slot.y, slot.z + detailLift),
+        { renderOrder: 30, bevelEnabled: false, curveSegments: 8 },
+      ),
+    );
+  });
+
+  cassette.vanes.forEach((vane, index) => {
+    addNamedCassettePart(
+      group,
+      `ceiling-cassette-discharge-vane-${index + 1}`,
+      createLocalBoxMesh(
+        vane.width,
+        vane.depth,
+        vane.height,
+        "#d0d8e0",
+        new THREE.Vector3(vane.x, vane.y, vane.z + detailLift),
+        { renderOrder: 31 },
+      ),
+    );
+  });
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-return-grille-frame",
+    createRoundedLocalExtrudedMesh(
+      cassette.grille.size,
+      cassette.grille.size,
+      cassette.grille.frameHeight,
+      cassette.grille.cornerRadius,
+      "#cdd5dc",
+      new THREE.Vector3(
+        cassette.grille.x,
+        cassette.grille.y,
+        cassette.grille.z + detailLift,
+      ),
+      { bevelEnabled: false, renderOrder: 30 },
+    ),
+  );
+
+  addVentSlats(group, {
+    count: cassette.grille.slatCount,
+    width: cassette.grille.slatSpan,
+    depth: 1.5,
+    height: 1.5,
+    startX: 0,
+    startY: -cassette.grille.slatInset,
+    startZ: cassette.grille.horizontalSlatZ + detailLift,
+    stepY: cassette.grille.slatStep,
+    color: "#8a97a4",
+  });
+  addVentSlats(group, {
+    count: cassette.grille.slatCount,
+    width: 1.5,
+    depth: cassette.grille.slatSpan,
+    height: 1.5,
+    startX: -cassette.grille.slatInset,
+    startY: 0,
+    startZ: cassette.grille.verticalSlatZ + detailLift,
+    stepX: cassette.grille.slatStep,
+    color: "#96a3af",
+  });
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-accent-bar",
+    createLocalBoxMesh(
+      cassette.accentBar.width,
+      cassette.accentBar.depth,
+      cassette.accentBar.height,
+      hvacPaletteForElement(element).accent,
+      new THREE.Vector3(
+        cassette.accentBar.x,
+        cassette.accentBar.y,
+        cassette.accentBar.z + detailLift,
+      ),
+      { renderOrder: 31 },
+    ),
+  );
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-service-tab",
+    createLocalBoxMesh(
+      cassette.serviceTab.width,
+      cassette.serviceTab.depth,
+      cassette.serviceTab.height,
+      "#eef3f7",
+      new THREE.Vector3(
+        cassette.serviceTab.x,
+        cassette.serviceTab.y,
+        cassette.serviceTab.z + detailLift,
+      ),
+      { renderOrder: 31 },
+    ),
+  );
+
+  addNamedCassettePart(
+    group,
+    "ceiling-cassette-connection-pod",
+    createRoundedLocalExtrudedMesh(
+      cassette.connectionPod.width,
+      cassette.connectionPod.depth,
+      cassette.connectionPod.height,
+      cassette.connectionPod.cornerRadius,
+      "#2d353d",
+      new THREE.Vector3(
+        cassette.connectionPod.x,
+        cassette.connectionPod.y,
+        cassette.connectionPod.z,
+      ),
+      {
+        bevelEnabled: false,
+        curveSegments: 8,
+        opacity: hasCatalogModel ? 0.86 : 1,
+        renderOrder: 31,
+      },
+    ),
+  );
+
+  cassette.pipePorts.forEach((port) => {
+    const portGroup = new THREE.Group();
+    portGroup.name = `ceiling-cassette-${port.kind}-port`;
+    portGroup.userData.hvacEquipmentVisibilityOverlay = true;
+    addHvacPipePort(portGroup, {
+      anchor: new THREE.Vector3(port.x, port.y, port.z),
+      radius: port.radius,
+      length: port.length,
+      color: port.color,
+      collarColor: port.collarColor,
+      collarRadius: port.collarRadius,
+      collarLength: port.collarLength,
+      flangeColor: port.flangeColor,
+      flangeThickness: port.flangeThickness,
+    });
+    addNamedCassettePart(
+      portGroup,
+      `ceiling-cassette-${port.kind}-port-band`,
+      createLocalCylinderMesh(
+        port.bandRadius,
+        port.bandRadius,
+        3,
+        port.bandColor,
+        new THREE.Vector3(port.x + port.bandOffsetX, port.y, port.z),
+        {
+          rotation: new THREE.Euler(0, 0, Math.PI / 2),
+          radialSegments: 16,
+          renderOrder: 33,
+        },
+      ),
+    );
+    group.add(portGroup);
+  });
 }
 
 function addGenericUnitPipePorts(
@@ -1379,6 +1894,11 @@ export function buildHvacElementMesh(
       );
       group.rotation.z = THREE.MathUtils.degToRad(element.rotation);
       group.add(model);
+      if (element.type === "ceiling-cassette-ac") {
+        addCeilingCassetteVisibleModel(group, element, {
+          catalogModelLoaded: true,
+        });
+      }
       return group;
     }
   }
@@ -1570,93 +2090,7 @@ export function buildHvacElementMesh(
       break;
     }
     case "ceiling-cassette-ac": {
-      const cassette = buildCeilingCassetteModel(effectiveElement);
-      group.add(
-        createRoundedLocalExtrudedMesh(
-          cassette.hiddenBody.width,
-          cassette.hiddenBody.depth,
-          cassette.hiddenBody.height,
-          cassette.hiddenBody.cornerRadius,
-          "#94a3b8",
-          new THREE.Vector3(
-            cassette.hiddenBody.x,
-            cassette.hiddenBody.y,
-            cassette.hiddenBody.z,
-          ),
-        ),
-      );
-      group.add(
-        createRoundedLocalExtrudedMesh(
-          cassette.facePanel.width,
-          cassette.facePanel.depth,
-          cassette.facePanel.height,
-          cassette.facePanel.cornerRadius,
-          "#dbe5ee",
-          new THREE.Vector3(
-            cassette.facePanel.x,
-            cassette.facePanel.y,
-            cassette.facePanel.z,
-          ),
-          {
-            bevelThickness: cassette.facePanel.bevelThickness,
-            bevelSize: cassette.facePanel.bevelSize,
-          },
-        ),
-      );
-      group.add(
-        createRoundedLocalExtrudedMesh(
-          cassette.innerPanel.width,
-          cassette.innerPanel.depth,
-          cassette.innerPanel.height,
-          cassette.innerPanel.cornerRadius,
-          "#f8fafc",
-          new THREE.Vector3(
-            cassette.innerPanel.x,
-            cassette.innerPanel.y,
-            cassette.innerPanel.z,
-          ),
-          {
-            bevelThickness: cassette.innerPanel.bevelThickness,
-            bevelSize: cassette.innerPanel.bevelSize,
-          },
-        ),
-      );
-      cassette.slots.forEach((slot) => {
-        group.add(
-          createRoundedLocalExtrudedMesh(
-            slot.width,
-            slot.depth,
-            slot.height,
-            slot.cornerRadius,
-            "#1f2937",
-            new THREE.Vector3(slot.x, slot.y, slot.z),
-            { renderOrder: 19, bevelEnabled: false },
-          ),
-        );
-      });
-      addVentSlats(group, {
-        count: cassette.grille.slatCount,
-        width: cassette.grille.slatSpan,
-        depth: 1.5,
-        height: 1.5,
-        startY: -cassette.grille.slatInset,
-        startZ: cassette.grille.horizontalSlatZ,
-        stepY: cassette.grille.slatStep,
-        color: "#8a97a4",
-      });
-      cassette.pipePorts.forEach((port) => {
-        addHvacPipePort(group, {
-          anchor: new THREE.Vector3(port.x, port.y, port.z),
-          radius: port.radius,
-          length: port.length,
-          color: port.color,
-          collarColor: port.collarColor,
-          collarRadius: port.collarRadius,
-          collarLength: port.collarLength,
-          flangeColor: port.flangeColor,
-          flangeThickness: port.flangeThickness,
-        });
-      });
+      addCeilingCassetteVisibleModel(group, effectiveElement);
       break;
     }
     case "refrigerant-branch-kit": {
@@ -1664,7 +2098,6 @@ export function buildHvacElementMesh(
       const lineSelection = resolveRefrigerantBranchKitLineSelection(effectiveElement);
       const renderGasLine = lineSelection !== "liquid";
       const renderLiquidLine = lineSelection !== "gas";
-      const insulationColor = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.insulationBody;
       const gasCopper = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.gasCopper;
       const liquidCopper = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.liquidCopper;
       const bandColor = REFRIGERANT_BRANCH_KIT_COLOR_PALETTE.fittingBand;
@@ -1678,6 +2111,7 @@ export function buildHvacElementMesh(
         radius: number,
         color: string,
         renderOrder: number,
+        lineKind: "gas" | "liquid",
         openStart = false,
         openEnd = false,
       ): void => {
@@ -1689,8 +2123,12 @@ export function buildHvacElementMesh(
             renderOrder,
             openStart,
             openEnd,
-            cornerStyle: "round",
+            // The kit is a manufactured component. Its shared tube dimensions
+            // define the display fillet; field-pipe bend defaults cannot reshape it.
+            bendRadiusMm: radius * 2,
             radialSegments: 18,
+            surfaceRole: "insulation",
+            lineKind,
           },
         );
         if (tube) {
@@ -1730,7 +2168,7 @@ export function buildHvacElementMesh(
         });
       };
 
-      const renderLine = (line: typeof branchKit.gas, copperColor: string): void => {
+      const renderLine = (line: typeof branchKit.gas, copperColor: string, lineKind: "gas" | "liquid"): void => {
         const z = line.centerlineZMm;
         const toVec = (point: Point2D): THREE.Vector3 => pointToVector(point, z);
 
@@ -1739,8 +2177,9 @@ export function buildHvacElementMesh(
           line.inletTube.points,
           z,
           line.inletTube.outerDiameterMm / 2 + 9,
-          insulationColor,
+          REFRIGERANT_PIPE_3D_COLORS[lineKind],
           18,
+          lineKind,
         );
 
         // Copper body: union inlet + reducer + the bridged run + the branch
@@ -1800,6 +2239,7 @@ export function buildHvacElementMesh(
               line.branchTube.outerDiameterMm / 2,
               {
                 radialSegments: PIPE_RADIAL_SEGMENTS,
+                bendRadiusMm: line.branchTube.outerDiameterMm,
                 capStart: true,
                 capEnd: true,
                 weld: true,
@@ -1812,11 +2252,14 @@ export function buildHvacElementMesh(
         if (copperGeometry) {
           const copperMesh = new THREE.Mesh(
             copperGeometry,
-            getSharedBoxMaterial(copperColor, 1, false),
+            getCopperFittingMaterial(copperColor),
           );
           copperMesh.renderOrder = 20;
           copperMesh.castShadow = true;
           copperMesh.receiveShadow = true;
+          copperMesh.name = `refrigerant-${lineKind}-branch-fitting`;
+          copperMesh.userData.pipeLineKind = lineKind;
+          copperMesh.userData.pipeSurfaceRole = "fitting";
           group.add(copperMesh);
         }
 
@@ -1824,370 +2267,152 @@ export function buildHvacElementMesh(
       };
 
       if (renderGasLine) {
-        renderLine(branchKit.gas, gasCopper);
+        renderLine(branchKit.gas, gasCopper, "gas");
       }
       if (renderLiquidLine) {
-        renderLine(branchKit.liquid, liquidCopper);
+        renderLine(branchKit.liquid, liquidCopper, "liquid");
       }
       break;
     }
     case "refrigerant-pipe-pair": {
       const visual = buildRefrigerantPipePairVisual(effectiveElement, context.allElements);
-      // The pair's local tube points are relative to visual.bounds.center —
-      // anchor the group there so the local frame and group origin coincide
-      // (the element bbox centre can differ from the padded route-bounds one).
-      group.position.x = visual.bounds.center.x;
-      group.position.y = visual.bounds.center.y;
-      const insulationColor = "#dce6ed";
-      const gasColor = "#c5894d";
-      const liquidColor = "#dca25d";
-      const isFieldPipeStart =
-        visual.startBundleConnection?.connectionKind === "field-pipe";
+      // Use the same physical lanes and takeoffs as plan view. The editable 3D
+      // guide contributes elevation only; it must not invent a second offset.
+      group.position.set(0, 0, 0);
+      group.rotation.set(0, 0, 0);
+      const authoredGuide = readPipeRouteNodes3d(effectiveElement);
+      const baselineZ = effectiveElement.elevation
+        + (visual.gasLocalZMm + visual.liquidLocalZMm) / 2;
+      const guide = authoredGuide.length >= 2
+        ? authoredGuide
+        : visual.routePoints.map((point) => ({ ...point, z: baselineZ }));
+      const pureVertical = guide.length >= 2 && guide.every((node) =>
+        Math.hypot(node.x - guide[0]!.x, node.y - guide[0]!.y) <= EPSILON,
+      ) && !visual.startBundleConnection && !visual.endBundleConnection;
 
-      const buildContinuousCorePoints = (
-        stub: { start: Point2D; end: Point2D } | null,
-        points: Point2D[],
-      ): Point2D[] => {
-        if (!stub) {
-          return points;
+      for (const lineKind of ["gas", "liquid"] as const) {
+        const gas = lineKind === "gas";
+        const outerRadius = gas ? visual.gasOuterRadiusMm : visual.liquidOuterRadiusMm;
+        const coreRadius = gas ? visual.gasCoreRadiusMm : visual.liquidCoreRadiusMm;
+        const localZ = gas ? visual.gasLocalZMm : visual.liquidLocalZMm;
+        const planPoints = gas ? visual.gasContinuousOuterPoints : visual.liquidContinuousOuterPoints;
+        const lineOffsetZ = effectiveElement.elevation + localZ - baselineZ;
+        const lineConnection = (bundle: typeof visual.startBundleConnection) => bundle ? {
+          connectionKind: bundle.connectionKind,
+          elevationMm: gas ? bundle.gasElevationMm : bundle.liquidElevationMm,
+        } : null;
+        const startConnection = lineConnection(visual.startBundleConnection);
+        const endConnection = lineConnection(visual.endBundleConnection);
+        const elevatedGuide = guide.map((node) => ({ ...node, z: node.z + lineOffsetZ }));
+        const bendRadiusMm = resolveFieldPipeBendRadiusMm(outerRadius * 2, effectiveElement.properties.bendRadiusFactor);
+        const nodes = pureVertical
+          ? elevatedGuide.map((node) => ({
+              ...node,
+              x: node.x + (gas ? -1 : 1) * visual.centerSpacingMm / 2,
+            }))
+          : liftPipePlanRouteTo3d(planPoints, elevatedGuide, { startConnection, endConnection, outerDiameterMm: outerRadius * 2, bendRadiusMm,
+              pipeDiameterMm: usesCopperSocketElbows(effectiveElement.properties) ? coreRadius * 2 : undefined,
+              minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(effectiveElement.properties) });
+        const points = nodes.map((node) => new THREE.Vector3(node.x, node.y, node.z));
+        if (usesCopperSocketElbows(effectiveElement.properties) && addSocketElbowPipeAssembly(group, points, outerRadius, coreRadius, {
+          lineKind, bendRadiusMm,
+          minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(effectiveElement.properties),
+          openStart: visual.startBundleConnection?.connectionKind === 'field-pipe' && !visual.startBundleConnection.terminalRole,
+          openEnd: visual.endBundleConnection?.connectionKind === 'field-pipe' && !visual.endBundleConnection.terminalRole,
+          startStraightMm: startConnection?.connectionKind === 'unit-port' ? getActivePipeRoutingSettings().minimumPortStubMm : 0,
+          endStraightMm: endConnection?.connectionKind === 'unit-port' ? getActivePipeRoutingSettings().minimumPortStubMm : 0,
+        })) {
+          addExposedCoreEndCaps(group, points, coreRadius,
+            gas ? REFRIGERANT_PIPE_3D_COLORS.gasCopper : REFRIGERANT_PIPE_3D_COLORS.liquidCopper, {
+              start: visual.startBundleConnection === null, end: visual.endBundleConnection === null,
+            });
+          continue;
         }
-        if (points.length === 0) {
-          return [stub.end];
-        }
-        const firstPoint = points[0]!;
-        if (Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <= 0.2) {
-          return points;
-        }
-        return [stub.end, ...points];
-      };
-
-      const addRouteTube = (
-        points: Point2D[],
-        z: number,
-        radius: number,
-        color: string,
-        renderOrder: number,
-        openStart = false,
-        openEnd = false,
-      ): void => {
-        const tube = createTubeAlongPoints(
-          points.map((point) => new THREE.Vector3(point.x, point.y, z)),
-          radius,
-          color,
-          {
-            renderOrder,
-            openStart,
-            openEnd,
-            cornerStyle: "round",
-          },
-        );
-        if (tube) {
-          group.add(tube);
-        }
-      };
-
-      const routeNodes3d = readPipeRouteNodes3d(effectiveElement);
-      if (routeNodes3d.length >= 2) {
-        // A composite pair stores one editable 3D guide. Offset both physical
-        // lines from that guide while retaining every authored elevation node.
-        group.position.set(0, 0, 0);
-        group.rotation.set(0, 0, 0);
-        const centerZ = effectiveElement.elevation
-          + (visual.gasLocalZMm + visual.liquidLocalZMm) / 2;
-        const fallbackTangent = (() => {
-          for (let index = 1; index < routeNodes3d.length; index += 1) {
-            const previous = routeNodes3d[index - 1]!;
-            const current = routeNodes3d[index]!;
-            const dx = current.x - previous.x;
-            const dy = current.y - previous.y;
-            if (Math.hypot(dx, dy) > 1e-6) return new THREE.Vector2(dx, dy).normalize();
-          }
-          return new THREE.Vector2(0, 1);
-        })();
-        const offsetRoute = (side: -1 | 1, zOffset: number): THREE.Vector3[] =>
-          routeNodes3d.map((node, index) => {
-            const previous = routeNodes3d[Math.max(0, index - 1)]!;
-            const next = routeNodes3d[Math.min(routeNodes3d.length - 1, index + 1)]!;
-            const tangent = new THREE.Vector2(next.x - previous.x, next.y - previous.y);
-            if (tangent.lengthSq() <= 1e-12) tangent.copy(fallbackTangent);
-            tangent.normalize();
-            const normal = new THREE.Vector2(-tangent.y, tangent.x)
-              .multiplyScalar(side * visual.centerSpacingMm / 2);
-            return new THREE.Vector3(node.x + normal.x, node.y + normal.y, node.z + zOffset);
+        const tube = createTubeAlongPoints(points, outerRadius, REFRIGERANT_PIPE_3D_COLORS[lineKind], {
+          renderOrder: 18,
+          // Unit and fitting sockets finish flush at their true endpoints. Only
+          // an actual pipe continuation needs the tiny seam overlap.
+          openStart: visual.startBundleConnection?.connectionKind === "field-pipe"
+            && !visual.startBundleConnection.terminalRole,
+          openEnd: visual.endBundleConnection?.connectionKind === "field-pipe"
+            && !visual.endBundleConnection.terminalRole,
+          bendRadiusMm,
+          surfaceRole: "insulation",
+          lineKind,
+          preservePlanGeometry: true,
+        });
+        if (tube) group.add(tube);
+        addExposedCoreEndCaps(group, points, coreRadius,
+          gas ? REFRIGERANT_PIPE_3D_COLORS.gasCopper : REFRIGERANT_PIPE_3D_COLORS.liquidCopper, {
+            start: visual.startBundleConnection === null,
+            end: visual.endBundleConnection === null,
           });
-        const gasPoints = offsetRoute(
-          1,
-          effectiveElement.elevation + visual.gasLocalZMm - centerZ,
-        );
-        const liquidPoints = offsetRoute(
-          -1,
-          effectiveElement.elevation + visual.liquidLocalZMm - centerZ,
-        );
-        const addRouteTube3d = (
-          points: THREE.Vector3[],
-          radius: number,
-          color: string,
-          renderOrder: number,
-          openStart = false,
-        ): void => {
-          const tube = createTubeAlongPoints(points, radius, color, {
-            renderOrder,
-            openStart,
-            openEnd: false,
-            cornerStyle: "round",
-          });
-          if (tube) group.add(tube);
-        };
-        addRouteTube3d(gasPoints, visual.gasOuterRadiusMm, insulationColor, 18, isFieldPipeStart);
-        addRouteTube3d(
-          liquidPoints,
-          visual.liquidOuterRadiusMm,
-          insulationColor,
-          18,
-          isFieldPipeStart,
-        );
-        addRouteTube3d(gasPoints, visual.gasCoreRadiusMm, gasColor, 19);
-        addRouteTube3d(liquidPoints, visual.liquidCoreRadiusMm, liquidColor, 19);
-        break;
       }
-
-      // Stitch the connection stub and the core run into one continuous
-      // poly-line so they render as a single swept copper tube (no separate
-      // uncapped stub cylinder poking out past the insulation).
-      const buildCorePolyline = (
-        stub: { start: Point2D; end: Point2D } | null,
-        points: Point2D[],
-      ): Point2D[] => {
-        const base = buildContinuousCorePoints(stub, points);
-        return stub ? [stub.start, ...base] : base;
-      };
-
-      addRouteTube(
-        visual.gasLocalContinuousOuterPoints,
-        visual.gasLocalZMm,
-        visual.gasOuterRadiusMm,
-        insulationColor,
-        18,
-        isFieldPipeStart,
-        false,
-      );
-      addRouteTube(
-        visual.liquidLocalContinuousOuterPoints,
-        visual.liquidLocalZMm,
-        visual.liquidOuterRadiusMm,
-        insulationColor,
-        18,
-        isFieldPipeStart,
-        false,
-      );
-      // Core copper: one capped swept tube per line, flush at the connection
-      // end instead of an extended bare rod.
-      addRouteTube(
-        buildCorePolyline(visual.gasLocalStub, visual.gasLocalOuterPoints),
-        visual.gasLocalZMm,
-        visual.gasCoreRadiusMm,
-        gasColor,
-        19,
-        false,
-        false,
-      );
-      addRouteTube(
-        buildCorePolyline(visual.liquidLocalStub, visual.liquidLocalOuterPoints),
-        visual.liquidLocalZMm,
-        visual.liquidCoreRadiusMm,
-        liquidColor,
-        19,
-        false,
-        false,
-      );
       break;
     }
     case "refrigerant-pipe": {
       const visual = buildRefrigerantPipeVisual(effectiveElement, context.allElements);
-      const insulationColor = "#e6edf2";
-      const coreColor = visual.lineKind === "gas" ? "#c5894d" : "#dca25d";
-      const bypasses = visual.bypasses;
-      const routeNodes3d = readPipeRouteNodes3d(effectiveElement);
-      if (routeNodes3d.length >= 2) {
-        // Absolute model-space centreline nodes from the authoritative pointer
-        // pipeline. Do not add the element bbox offset or scalar elevation a
-        // second time; the permanent model->world basis handles view chirality.
-        group.position.set(0, 0, 0);
-        group.rotation.set(0, 0, 0);
-        const points = routeNodes3d.map(
-          (node) => new THREE.Vector3(node.x, node.y, node.z),
-        );
-        const endpointState = context.pipeEndpointStateMap?.get(effectiveElement.id) ?? {
-          openStart: false,
-          openEnd: false,
-        };
-        const insulation = createTubeAlongPoints(
-          points,
-          visual.outerRadiusMm,
-          insulationColor,
-          {
-            renderOrder: 18,
-            openStart: endpointState.openStart,
-            openEnd: endpointState.openEnd,
-            cornerStyle: "round",
-          },
-        );
-        if (insulation) group.add(insulation);
-        const core = createTubeAlongPoints(
-          points,
-          visual.coreRadiusMm,
-          coreColor,
-          {
-            renderOrder: 19,
-            openStart: endpointState.openStart,
-            openEnd: endpointState.openEnd,
-            cornerStyle: "round",
-          },
-        );
-        if (core) group.add(core);
+      const authoredGuide = readPipeRouteNodes3d(effectiveElement);
+      const chainState = authoredGuide.length >= 2 ? null
+        : context.pipeRenderChainStateMap?.get(effectiveElement.id) ?? null;
+      if (chainState && !chainState.renderAsHead) return group;
+
+      group.position.set(0, 0, 0);
+      group.rotation.set(0, 0, 0);
+      const lineKind = chainState?.lineKind ?? visual.lineKind;
+      const outerRadius = chainState?.outerRadiusMm ?? visual.outerRadiusMm;
+      const coreRadius = chainState?.coreRadiusMm ?? visual.coreRadiusMm;
+      const planPoints = chainState?.continuousOuterPoints ?? visual.continuousOuterPoints;
+      const baselineZ = chainState?.elevationMm ?? effectiveElement.elevation + visual.localZMm;
+      const tail = chainState
+        ? context.allElements.find((candidate) => candidate.id === chainState.tailId)
+        : null;
+      const startConnection = visual.startConnection;
+      const endConnection = tail
+        ? buildRefrigerantPipeVisual(tail, context.allElements).endConnection
+        : visual.endConnection;
+      const guide = authoredGuide.length >= 2 ? authoredGuide
+        : buildElevationProfiledPoints(planPoints, baselineZ, { x: 0, y: 0 }, visual.bypasses)
+          .map((point) => ({ x: point.x, y: point.y, z: point.z }));
+      const bendRadiusMm = resolveFieldPipeBendRadiusMm(outerRadius * 2, effectiveElement.properties.bendRadiusFactor);
+      const nodes = liftPipePlanRouteTo3d(planPoints, guide, { startConnection, endConnection, outerDiameterMm: outerRadius * 2, bendRadiusMm,
+        pipeDiameterMm: usesCopperSocketElbows(effectiveElement.properties) ? coreRadius * 2 : undefined,
+        minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(effectiveElement.properties) });
+      const points = nodes.map((node) => new THREE.Vector3(node.x, node.y, node.z));
+      const endpointState = chainState ?? context.pipeEndpointStateMap?.get(effectiveElement.id);
+      const openStart = !startConnection?.terminalRole && (endpointState?.openStart
+        ?? startConnection?.connectionKind === "field-pipe");
+      const openEnd = !endConnection?.terminalRole && (endpointState?.openEnd
+        ?? endConnection?.connectionKind === "field-pipe");
+      if (usesCopperSocketElbows(effectiveElement.properties) && addSocketElbowPipeAssembly(group, points, outerRadius, coreRadius, {
+        lineKind, bendRadiusMm, openStart, openEnd,
+        minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(effectiveElement.properties),
+        startStraightMm: startConnection?.connectionKind === 'unit-port' ? getActivePipeRoutingSettings().minimumPortStubMm : 0,
+        endStraightMm: endConnection?.connectionKind === 'unit-port' ? getActivePipeRoutingSettings().minimumPortStubMm : 0,
+      })) {
+        addExposedCoreEndCaps(group, points, coreRadius,
+          lineKind === 'gas' ? REFRIGERANT_PIPE_3D_COLORS.gasCopper : REFRIGERANT_PIPE_3D_COLORS.liquidCopper, {
+            start: !startConnection && !openStart, end: !endConnection && !openEnd,
+          });
         break;
       }
-      const chainState = context.pipeRenderChainStateMap?.get(effectiveElement.id) ?? null;
-      if (chainState && !chainState.renderAsHead) {
-        return group;
-      }
-      const endpointState = context.pipeEndpointStateMap?.get(effectiveElement.id) ?? {
-        openStart: false,
-        openEnd: false,
-      };
-      const buildContinuousCorePoints = (
-        stub: { start: Point2D; end: Point2D } | null,
-        points: Point2D[],
-      ): Point2D[] => {
-        if (!stub) {
-          return points;
-        }
-        if (points.length === 0) {
-          return [stub.end];
-        }
-        const firstPoint = points[0]!;
-        if (Math.hypot(firstPoint.x - stub.end.x, firstPoint.y - stub.end.y) <= 0.2) {
-          return points;
-        }
-        return [stub.end, ...points];
-      };
-
-      // Raise/lower the tube across each Z-offset bypass span. `centerOffset`
-      // maps the world-space bypass points into the tube's coordinate space
-      // (local bounds-centred for the standalone branch, absolute for chains).
-      const addRouteTube = (
-        points: Point2D[],
-        z: number,
-        radius: number,
-        color: string,
-        renderOrder: number,
-        centerOffset: Point2D,
-        openStart = false,
-        openEnd = false,
-      ): void => {
-        const tube = createTubeAlongPoints(
-          buildElevationProfiledPoints(points, z, centerOffset, bypasses),
-          radius,
-          color,
-          {
-            renderOrder,
-            openStart,
-            openEnd,
-            cornerStyle: "round",
-          },
-        );
-        if (tube) {
-          group.add(tube);
-        }
-      };
-
-      const addStub = (
-        stub: { start: Point2D; end: Point2D } | null,
-        z: number,
-        radius: number,
-        color: string,
-        renderOrder: number,
-      ): void => {
-        if (!stub) {
-          return;
-        }
-        const segment = createCylinderBetweenPoints(
-          new THREE.Vector3(stub.start.x, stub.start.y, z),
-          new THREE.Vector3(stub.end.x, stub.end.y, z),
-          radius,
-          color,
-          {
-            renderOrder,
-            capStart: false,
-            capEnd: false,
-          },
-        );
-        if (segment) {
-          group.add(segment);
-        }
-      };
-
-      if (chainState) {
-        group.position.set(0, 0, 0);
-        group.rotation.z = 0;
-        const absoluteOffset: Point2D = { x: 0, y: 0 };
-        addRouteTube(
-          chainState.continuousOuterPoints,
-          chainState.elevationMm,
-          chainState.outerRadiusMm,
-          insulationColor,
-          18,
-          absoluteOffset,
-          chainState.openStart,
-          chainState.openEnd,
-        );
-        addStub(
-          chainState.absoluteStub,
-          chainState.elevationMm,
-          chainState.coreRadiusMm,
-          coreColor,
-          19,
-        );
-        addRouteTube(
-          chainState.corePoints,
-          chainState.elevationMm,
-          chainState.coreRadiusMm,
-          coreColor,
-          19,
-          absoluteOffset,
-          chainState.openStart || Boolean(chainState.absoluteStub),
-          chainState.openEnd,
-        );
-      } else {
-        const localOffset = visual.bounds.center;
-        // Standalone tube points are local to visual.bounds.center — anchor
-        // the group at that exact model point so the local frame and the
-        // group origin coincide by construction (the element bbox centre can
-        // differ from the padded route-bounds centre).
-        group.position.x = localOffset.x;
-        group.position.y = localOffset.y;
-        addRouteTube(
-          visual.localContinuousOuterPoints,
-          visual.localZMm,
-          visual.outerRadiusMm,
-          insulationColor,
-          18,
-          localOffset,
-          endpointState.openStart,
-          endpointState.openEnd,
-        );
-        addStub(visual.localStub, visual.localZMm, visual.coreRadiusMm, coreColor, 19);
-        addRouteTube(
-          buildContinuousCorePoints(visual.localStub, visual.localOuterPoints),
-          visual.localZMm,
-          visual.coreRadiusMm,
-          coreColor,
-          19,
-          localOffset,
-          endpointState.openStart || Boolean(visual.localStub),
-          endpointState.openEnd,
-        );
-      }
+      const insulation = createTubeAlongPoints(points, outerRadius, REFRIGERANT_PIPE_3D_COLORS[lineKind], {
+        renderOrder: 18,
+        openStart,
+        openEnd,
+        bendRadiusMm,
+        surfaceRole: "insulation",
+        lineKind,
+        preservePlanGeometry: true,
+      });
+      if (insulation) group.add(insulation);
+      // A closed insulation shell hides the copper along the run. Only loose
+      // ends need a copper cross-section, including legacy plan-only pipes.
+      addExposedCoreEndCaps(group, points, coreRadius,
+        lineKind === "gas" ? REFRIGERANT_PIPE_3D_COLORS.gasCopper : REFRIGERANT_PIPE_3D_COLORS.liquidCopper, {
+          start: !startConnection && !openStart,
+          end: !endConnection && !openEnd,
+        });
       break;
     }
     case "duct": {

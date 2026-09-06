@@ -124,12 +124,13 @@ export function planSheetOpacityForPolar(polar: number): number {
 }
 
 /**
- * Wall height reveal: while the sheet is still visible the 3D walls stay FLAT
+ * Shared height reveal: while the sheet is still visible the 3D objects stay flat
  * (their top face sits on the plan footprint, so the crossfade shows ONE
  * image — a tall solid would parallax-shift its top by height·tanφ and read
- * as a broken double wall). Once the sheet is gone the walls rise out of the
+ * as a broken double image). Once the sheet is gone the objects rise out of the
  * paper to full height. Pure view-side reveal of a derived render cache —
- * model data never changes.
+ * model data never changes. Apply once to the shared reveal parent so pipe
+ * terminals, equipment ports and architectural openings stay attached.
  */
 export const WALL_RISE_START_RAD = SHEET_FADE_END_RAD;
 export const WALL_RISE_END_RAD = THREE.MathUtils.degToRad(26);

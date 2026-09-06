@@ -1,13 +1,13 @@
 /**
  * Engineering rules for VRF refrigerant copper-pipe routing and clash avoidance.
  *
- * These constants encode real-world installation practice so the clash-detection
- * and Z-offset routing engine ({@link ./pipeClashRouting}) has a single source of
- * truth. All distances are in millimetres (the drawing model's native unit).
+ * These are application/project geometry defaults, not universal manufacturer
+ * requirements. A verified system profile governs installation. All distances
+ * are millimetres (the drawing model's native unit).
  */
 
 /**
- * Minimum clear gap that must be maintained between the *insulated* outer
+ * Default project clear gap between the *insulated* outer
  * surfaces of any two pipes (gas, liquid, branch, main, or existing route).
  * The pipe outer diameters used throughout the engine already include the
  * insulation allowance (see `resolveInsulatedOuterDiameterMm`), so this gap is
@@ -16,8 +16,8 @@
 export const MIN_INSULATED_CLEARANCE_MM = 75;
 
 /**
- * Default copper fitting style for a bypass offset. 45° offsets read cleaner and
- * add less resistance than 90° elbows, matching typical shop-drawing practice.
+ * Default geometric fitting style for an explicitly requested bypass offset.
+ * Pressure loss is not calculated from this angle alone.
  */
 export const DEFAULT_BYPASS_FITTING_ANGLE_DEG: 45 | 90 = 45;
 

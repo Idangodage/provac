@@ -25,6 +25,8 @@ import {
   sortArchitecturalObjects,
   type ObjectSortMode,
 } from '../data';
+import { safeSetLocalStorageJson } from '../utils/safeBrowserStorage';
+
 import {
   hasRenderer,
   renderFurniturePlan,
@@ -364,7 +366,7 @@ export function ObjectLibraryPanel({
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem('drawing-library-favorites', JSON.stringify(Array.from(favorites)));
+    safeSetLocalStorageJson('drawing-library-favorites', Array.from(favorites));
   }, [favorites]);
 
   const filteredObjects = useMemo(() => {

@@ -22,6 +22,12 @@ function pointsEqual(left: Point2D, right: Point2D): boolean {
   return left.x === right.x && left.y === right.y;
 }
 
+function finitePointOr(candidate: Point2D, fallback: Point2D): Point2D {
+  return Number.isFinite(candidate.x) && Number.isFinite(candidate.y)
+    ? { x: candidate.x, y: candidate.y }
+    : fallback;
+}
+
 export const useDrawingInteractionStore = create<DrawingInteractionState>()((set) => ({
   mousePosition: ORIGIN,
   hoveredElementId: null,
@@ -47,10 +53,13 @@ export const useDrawingInteractionStore = create<DrawingInteractionState>()((set
     )),
   setViewTransform: (zoom, panOffset) =>
     set((state) => {
-      const nextZoom = Math.max(0.1, Math.min(10, zoom));
-      return state.zoom === nextZoom && pointsEqual(state.panOffset, panOffset)
+      const nextZoom = Number.isFinite(zoom)
+        ? Math.max(0.1, Math.min(10, zoom))
+        : state.zoom;
+      const nextPanOffset = finitePointOr(panOffset, state.panOffset);
+      return state.zoom === nextZoom && pointsEqual(state.panOffset, nextPanOffset)
         ? state
-        : { zoom: nextZoom, panOffset };
+        : { zoom: nextZoom, panOffset: nextPanOffset };
     }),
   resetViewTransform: () =>
     set((state) => (

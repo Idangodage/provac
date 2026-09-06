@@ -1,6 +1,7 @@
 import type { Room, Wall } from '../types';
 
 import { buildAutoDetectedRooms } from './autoDetectedRooms';
+import { LatestOnlyAsyncQueue } from './latestOnlyAsyncQueue';
 import type {
   RoomDetectionWorkerRequest,
   RoomDetectionWorkerResponse,
@@ -10,30 +11,49 @@ let workerInstance: Worker | null = null;
 let workerDisabled = false;
 let requestIdCounter = 0;
 
-const pendingRequests = new Map<
-  number,
-  {
-    resolve: (rooms: Room[]) => void;
-    reject: (error: unknown) => void;
-  }
->();
+interface RoomDetectionParams {
+  topology: string;
+  walls: Wall[];
+  rooms: Room[];
+}
 
-function resolvePendingRequest(requestId: number, rooms: Room[]): void {
-  const pending = pendingRequests.get(requestId);
-  if (!pending) return;
-  pendingRequests.delete(requestId);
+interface ActiveWorkerRequest {
+  requestId: number;
+  resolve: (rooms: Room[]) => void;
+  reject: (error: unknown) => void;
+}
+
+let activeWorkerRequest: ActiveWorkerRequest | null = null;
+
+function resolveActiveWorkerRequest(requestId: number, rooms: Room[]): void {
+  if (activeWorkerRequest?.requestId !== requestId) return;
+  const pending = activeWorkerRequest;
+  activeWorkerRequest = null;
   pending.resolve(rooms);
 }
 
-function rejectPendingRequests(error: unknown): void {
-  pendingRequests.forEach((pending) => pending.reject(error));
-  pendingRequests.clear();
+function rejectActiveWorkerRequest(error: unknown): void {
+  const pending = activeWorkerRequest;
+  activeWorkerRequest = null;
+  pending?.reject(error);
 }
 
 function disposeWorker(): void {
   if (!workerInstance) return;
-  workerInstance.terminate();
-  workerInstance = null;
+  try {
+    workerInstance.terminate();
+  } finally {
+    workerInstance = null;
+  }
+}
+
+function disableWorker(error: unknown): void {
+  workerDisabled = true;
+  try {
+    disposeWorker();
+  } finally {
+    rejectActiveWorkerRequest(error);
+  }
 }
 
 function getRoomDetectionWorker(): Worker | null {
@@ -55,13 +75,15 @@ function getRoomDetectionWorker(): Worker | null {
       if (!message || message.type !== 'detect-rooms-result') {
         return;
       }
-      resolvePendingRequest(message.requestId, message.rooms);
+      resolveActiveWorkerRequest(message.requestId, message.rooms);
     });
 
     worker.addEventListener('error', (event) => {
-      workerDisabled = true;
-      disposeWorker();
-      rejectPendingRequests(event.error ?? new Error('Room detection worker failed.'));
+      disableWorker(event.error ?? new Error('Room detection worker failed.'));
+    });
+
+    worker.addEventListener('messageerror', () => {
+      disableWorker(new Error('Room detection worker returned an unreadable message.'));
     });
 
     workerInstance = worker;
@@ -73,19 +95,23 @@ function getRoomDetectionWorker(): Worker | null {
   }
 }
 
-export async function detectRoomsInBackground(params: {
-  topology: string;
-  walls: Wall[];
-  rooms: Room[];
-}): Promise<Room[]> {
+function runFallback(params: RoomDetectionParams): Promise<Room[]> {
+  return new Promise<Room[]>((resolve, reject) => {
+    const schedule = typeof window !== 'undefined' ? window.setTimeout : setTimeout;
+    schedule(() => {
+      try {
+        resolve(buildAutoDetectedRooms(params.walls, params.rooms));
+      } catch (error) {
+        reject(error);
+      }
+    }, 0);
+  });
+}
+
+function executeRoomDetection(params: RoomDetectionParams): Promise<Room[]> {
   const worker = getRoomDetectionWorker();
   if (!worker) {
-    return new Promise<Room[]>((resolve) => {
-      const schedule = typeof window !== 'undefined' ? window.setTimeout : setTimeout;
-      schedule(() => {
-        resolve(buildAutoDetectedRooms(params.walls, params.rooms));
-      }, 0);
-    });
+    return runFallback(params);
   }
 
   const requestId = ++requestIdCounter;
@@ -98,7 +124,19 @@ export async function detectRoomsInBackground(params: {
   };
 
   return new Promise<Room[]>((resolve, reject) => {
-    pendingRequests.set(requestId, { resolve, reject });
-    worker.postMessage(request);
+    activeWorkerRequest = { requestId, resolve, reject };
+    try {
+      worker.postMessage(request);
+    } catch (error) {
+      disableWorker(error);
+    }
   });
+}
+
+const roomDetectionQueue = new LatestOnlyAsyncQueue<RoomDetectionParams, Room[]>(
+  executeRoomDetection
+);
+
+export function detectRoomsInBackground(params: RoomDetectionParams): Promise<Room[]> {
+  return roomDetectionQueue.enqueue(params);
 }

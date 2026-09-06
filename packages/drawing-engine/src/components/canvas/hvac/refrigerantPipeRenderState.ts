@@ -1,5 +1,6 @@
 import type { HvacElement, Point2D } from "../../../types";
 
+import { readPipeRouteNodes3d } from "./pipeRoute3d";
 import { getActivePipeRoutingSettings } from "./pipeRoutingSettings";
 import {
   buildRefrigerantPipeVisual,
@@ -291,7 +292,10 @@ export function buildRefrigerantPipeRenderChainStateMap(
 
   elements.forEach((element) => {
     elementsById.set(element.id, element);
-    if (element.type !== "refrigerant-pipe") {
+    // An authored 3D route is rendered independently by the mesh builder. It
+    // cannot hide plan-only continuations or be folded into their flat chain.
+    // Endpoint states remain shared so each boundary still joins seamlessly.
+    if (element.type !== "refrigerant-pipe" || readPipeRouteNodes3d(element).length >= 2) {
       return;
     }
     const visual = buildRefrigerantPipeVisual(element, elements);

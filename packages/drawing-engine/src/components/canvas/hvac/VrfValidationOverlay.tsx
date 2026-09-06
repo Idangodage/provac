@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { HvacElement, Point2D } from '../../../types';
 import type {
@@ -16,6 +16,7 @@ import { resolveVrfValidationIssueElement } from './vrfValidationFixes';
 export interface VrfValidationOverlayProps {
   enabled: boolean;
   showMarkers?: boolean;
+  showSummary?: boolean;
   width: number;
   height: number;
   viewportZoom: number;
@@ -35,7 +36,7 @@ const LEVEL_PRIORITY: Record<ValidationLevel, number> = {
 
 const LEVEL_STYLE: Record<ValidationLevel, { fill: string; ring: string; label: string }> = {
   error: { fill: '#dc2626', ring: 'rgba(220,38,38,.24)', label: 'Error' },
-  warning: { fill: '#d97706', ring: 'rgba(217,119,6,.22)', label: 'Warning' },
+  warning: { fill: '#b45309', ring: 'rgba(180,83,9,.22)', label: 'Warning' },
   advisory: { fill: '#2563eb', ring: 'rgba(37,99,235,.2)', label: 'Advisory' },
   information: { fill: '#64748b', ring: 'rgba(100,116,139,.18)', label: 'Information' },
 };
@@ -98,6 +99,7 @@ function issueElement(issue: VrfValidationIssue, elements: HvacElement[]): HvacE
 export function VrfValidationOverlay({
   enabled,
   showMarkers = true,
+  showSummary = true,
   width,
   height,
   viewportZoom,
@@ -107,6 +109,9 @@ export function VrfValidationOverlay({
   onSelectElement,
   onApplyFix,
 }: VrfValidationOverlayProps): JSX.Element | null {
+  const [expanded, setExpanded] = useState(false);
+  const collapsedButtonRef = useRef<HTMLButtonElement | null>(null);
+  const collapseButtonRef = useRef<HTMLButtonElement | null>(null);
   const visibleIssues = useMemo(
     () => report.issues
       .filter((issue) => issue.level !== 'information')
@@ -130,18 +135,35 @@ export function VrfValidationOverlay({
     }));
   }, [hvacElements, report]);
 
-  if (!enabled || visibleIssues.length === 0) return null;
+  useEffect(() => {
+    if (!enabled || !showSummary || visibleIssues.length === 0) {
+      setExpanded(false);
+    }
+  }, [enabled, showSummary, visibleIssues.length]);
+
+  if (
+    !enabled
+    || visibleIssues.length === 0
+    || (!showSummary && (!showMarkers || markers.length === 0))
+  ) return null;
   return (
     <div
       className="pointer-events-none absolute left-0 top-0 z-[12] overflow-hidden"
       style={{ width, height }}
-      aria-label={`${markers.length} VRF validation marker${markers.length === 1 ? '' : 's'}`}
+      aria-label={`${visibleIssues.length} VRF validation issue${visibleIssues.length === 1 ? '' : 's'}`}
     >
       {showMarkers && markers.map(({ element, issues, anchor }) => {
         const level = issues[0]!.level;
         const style = LEVEL_STYLE[level];
         const left = -panOffset.x * viewportZoom + anchor.x * MM_TO_PX * viewportZoom;
         const top = -panOffset.y * viewportZoom + anchor.y * MM_TO_PX * viewportZoom;
+        const markerExtent = 17;
+        if (
+          left < -markerExtent
+          || left > width + markerExtent
+          || top < -markerExtent
+          || top > height + markerExtent
+        ) return null;
         const title = issues.map((issue) => `${issue.code}: ${issue.message}`).join('\n');
         return (
           <button
@@ -160,78 +182,122 @@ export function VrfValidationOverlay({
           </button>
         );
       })}
-      <section
-        className="pointer-events-auto absolute right-3 top-3 w-72 overflow-hidden rounded-lg border border-slate-200 bg-white/95 text-slate-700 shadow-lg backdrop-blur"
-        aria-label="VRF validation issues"
-      >
-        <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">VRF checks</div>
-            <div className="text-[11px] text-slate-500">
-              {report.counts.error} errors · {report.counts.warning} warnings
+      {showSummary && (!expanded ? (
+        <button
+          ref={collapsedButtonRef}
+          type="button"
+          className={`pointer-events-auto absolute right-3 top-16 flex items-center gap-2 rounded-full border bg-white/95 px-3 py-1.5 text-[11px] font-semibold shadow-sm backdrop-blur transition-colors hover:bg-white ${
+            report.commitBlocked
+              ? 'border-rose-200 text-rose-700'
+              : 'border-amber-200 text-amber-700'
+          }`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setExpanded(true);
+            window.requestAnimationFrame(() => collapseButtonRef.current?.focus());
+          }}
+          aria-expanded={false}
+          aria-controls="vrf-validation-issues"
+          title={`${report.counts.error} errors, ${report.counts.warning} warnings. Show VRF checks.`}
+        >
+          <span
+            className={`h-2 w-2 rounded-full ${
+              report.commitBlocked ? 'bg-rose-600' : 'bg-amber-500'
+            }`}
+          />
+          <span>VRF checks</span>
+          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-700">
+            {visibleIssues.length}
+          </span>
+        </button>
+      ) : (
+        <section
+          id="vrf-validation-issues"
+          className="pointer-events-auto absolute right-3 top-16 w-72 max-w-[calc(100%-1.5rem)] overflow-hidden rounded-lg border border-slate-200 bg-white/95 text-slate-700 shadow-lg backdrop-blur"
+          aria-label="VRF validation issues"
+        >
+          <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">VRF checks</div>
+              <div className="text-[11px] text-slate-500">
+                {report.counts.error} errors · {report.counts.warning} warnings
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                  report.commitBlocked
+                    ? 'bg-rose-100 text-rose-700'
+                    : 'bg-amber-100 text-amber-700'
+                }`}
+              >
+                {report.commitBlocked ? 'Action needed' : 'Review'}
+              </span>
+              <button
+                ref={collapseButtonRef}
+                type="button"
+                className="rounded px-1.5 py-0.5 text-sm leading-none text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setExpanded(false);
+                  window.requestAnimationFrame(() => collapsedButtonRef.current?.focus());
+                }}
+                aria-label="Collapse VRF checks"
+                aria-expanded
+                aria-controls="vrf-validation-issues"
+              >
+                ×
+              </button>
             </div>
           </div>
-          <span
-            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-              report.commitBlocked
-                ? 'bg-rose-100 text-rose-700'
-                : 'bg-amber-100 text-amber-700'
-            }`}
-          >
-            {report.commitBlocked ? 'Action needed' : 'Review'}
-          </span>
-        </div>
-        <div className="max-h-44 overflow-y-auto py-1">
-          {visibleIssues.slice(0, 8).map((issue) => {
-            const element = issueElement(issue, hvacElements);
-            const style = LEVEL_STYLE[issue.level];
-            return (
-              <div
-                key={issue.id}
-                className="flex items-start gap-1 px-1 hover:bg-slate-50"
-                title={issue.suggestedFix ?? issue.message}
-              >
-                <button
-                  type="button"
-                  disabled={!element}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (element) onSelectElement?.(element.id);
-                  }}
-                  className="flex min-w-0 flex-1 items-start gap-2 px-2 py-1.5 text-left disabled:cursor-default"
+          <div className="max-h-44 overflow-y-auto py-1">
+            {visibleIssues.map((issue) => {
+              const element = issueElement(issue, hvacElements);
+              const style = LEVEL_STYLE[issue.level];
+              return (
+                <div
+                  key={issue.id}
+                  className="flex items-start gap-1 px-1 hover:bg-slate-50"
+                  title={issue.suggestedFix ?? issue.message}
                 >
-                  <span
-                    className="mt-1 h-2 w-2 shrink-0 rounded-full"
-                    style={{ background: style.fill }}
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-[10px] font-semibold text-slate-500">{issue.code}</span>
-                    <span className="block text-[11px] leading-4 text-slate-700">{issue.message}</span>
-                  </span>
-                </button>
-                {issue.fix && onApplyFix && (
                   <button
                     type="button"
+                    disabled={!element}
                     onClick={(event) => {
                       event.stopPropagation();
-                      onApplyFix(issue);
+                      if (element) onSelectElement?.(element.id);
                     }}
-                    className="mt-1.5 shrink-0 rounded bg-sky-50 px-2 py-1 text-[10px] font-semibold text-sky-700 hover:bg-sky-100"
-                    title={issue.suggestedFix ?? 'Apply deterministic fix'}
+                    className="flex min-w-0 flex-1 items-start gap-2 px-2 py-1.5 text-left disabled:cursor-default"
                   >
-                    Fix
+                    <span
+                      className="mt-1 h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: style.fill }}
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-[10px] font-semibold text-slate-500">{issue.code}</span>
+                      <span className="block text-[11px] leading-4 text-slate-700">{issue.message}</span>
+                    </span>
                   </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {visibleIssues.length > 8 && (
-          <div className="border-t border-slate-100 px-3 py-1.5 text-[10px] text-slate-500">
-            +{visibleIssues.length - 8} more issues
+                  {issue.fix && onApplyFix && (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onApplyFix(issue);
+                      }}
+                      className="mt-1.5 shrink-0 rounded bg-sky-50 px-2 py-1 text-[10px] font-semibold text-sky-700 hover:bg-sky-100"
+                      title={issue.suggestedFix ?? 'Apply deterministic fix'}
+                      aria-label={`Apply fix for ${issue.code}: ${issue.message}`}
+                    >
+                      Fix
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        )}
-      </section>
+        </section>
+      ))}
     </div>
   );
 }

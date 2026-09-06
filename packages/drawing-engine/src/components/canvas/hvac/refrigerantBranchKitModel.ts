@@ -1,4 +1,5 @@
 import type { HvacElement, Point2D } from "../../../types";
+
 import {
   DEFAULT_REFRIGERANT_DRAWN_OUTER_DIAMETER_MM,
   DEFAULT_REFRIGERANT_PIPE_GAP_MM,
@@ -115,6 +116,97 @@ export interface RefrigerantBranchKitConnectionIdentity {
   liquidDirection: Point2D;
   direction: Point2D;
   guideReference?: RefrigerantBranchLineKind;
+}
+
+/**
+ * A REFNET/Y-joint may be rolled 180 degrees around its straight-through axis
+ * without reversing refrigerant flow. In plan that operation mirrors the
+ * branch leg across the trunk centreline. Keep the transform in the shared
+ * model so plan, snapping, hit testing, and 3D all use identical terminals.
+ */
+function mirrorBranchKitPoint(point: Point2D): Point2D {
+  return { x: point.x, y: -point.y };
+}
+
+function mirrorBranchKitReducer(
+  reducer: RefrigerantBranchKitReducerSpec,
+): RefrigerantBranchKitReducerSpec {
+  return {
+    ...reducer,
+    start: mirrorBranchKitPoint(reducer.start),
+    end: mirrorBranchKitPoint(reducer.end),
+  };
+}
+
+function mirrorBranchKitLine(
+  line: RefrigerantBranchKitLineSpec,
+): RefrigerantBranchKitLineSpec {
+  const mirrorTube = (tube: RefrigerantBranchKitTubeSpec): RefrigerantBranchKitTubeSpec => ({
+    ...tube,
+    points: tube.points.map(mirrorBranchKitPoint),
+  });
+  const mirrorTerminal = (
+    terminal: RefrigerantBranchKitTerminalSpec,
+  ): RefrigerantBranchKitTerminalSpec => ({
+    ...terminal,
+    point: mirrorBranchKitPoint(terminal.point),
+    direction: mirrorBranchKitPoint(terminal.direction),
+  });
+  return {
+    ...line,
+    inletTube: mirrorTube(line.inletTube),
+    inletRunTube: mirrorTube(line.inletRunTube),
+    mainTube: mirrorTube(line.mainTube),
+    branchTube: mirrorTube(line.branchTube),
+    inletReducer: line.inletReducer ? mirrorBranchKitReducer(line.inletReducer) : null,
+    manifold: {
+      ...line.manifold,
+      outline: line.manifold.outline.map(mirrorBranchKitPoint),
+      highlightPath: line.manifold.highlightPath.map(mirrorBranchKitPoint),
+    },
+    junction: {
+      mainSections: line.junction.mainSections.map(mirrorBranchKitReducer),
+      branchSection: mirrorBranchKitReducer(line.junction.branchSection),
+    },
+    splitNode: {
+      ...line.splitNode,
+      center: mirrorBranchKitPoint(line.splitNode.center),
+    },
+    inletTerminal: mirrorTerminal(line.inletTerminal),
+    runOutletTerminal: mirrorTerminal(line.runOutletTerminal),
+    branchOutletTerminal: mirrorTerminal(line.branchOutletTerminal),
+    bands: line.bands.map((band) => ({
+      ...band,
+      center: mirrorBranchKitPoint(band.center),
+      direction: mirrorBranchKitPoint(band.direction),
+    })),
+  };
+}
+
+function applyBranchKitRoll(
+  model: RefrigerantBranchKitModelSpec,
+  properties: Record<string, unknown>,
+): RefrigerantBranchKitModelSpec {
+  const roll = properties.branchKitRollDeg;
+  if (typeof roll !== "number" || !Number.isFinite(roll)) {
+    return model;
+  }
+  const normalized = ((roll % 360) + 360) % 360;
+  if (Math.abs(normalized - 180) > 0.01) {
+    return model;
+  }
+  return {
+    ...model,
+    bounds: {
+      ...model.bounds,
+      minY: -model.bounds.maxY,
+      maxY: -model.bounds.minY,
+      center: mirrorBranchKitPoint(model.bounds.center),
+    },
+    gas: mirrorBranchKitLine(model.gas),
+    liquid: mirrorBranchKitLine(model.liquid),
+    labelAnchor: mirrorBranchKitPoint(model.labelAnchor),
+  };
 }
 
 export const REFRIGERANT_BRANCH_KIT_COLOR_PALETTE = {
@@ -494,8 +586,6 @@ function buildBranchLineGeometry(
   const reducerEndX = reducerStartX + reducerLengthMm;
   const collectorLengthMm = clamp(config.overallLengthMm * 0.12, 36, 52);
   const splitX = reducerEndX + clamp(config.overallLengthMm * 0.15, 46, 68);
-  const collectorStartX = splitX - collectorLengthMm / 2;
-  const collectorEndX = splitX + collectorLengthMm / 2;
   const junctionSleeve1LengthMm = clamp(collectorLengthMm * 0.16, 7, 10);
   const junctionSleeve2LengthMm = clamp(collectorLengthMm * 0.15, 6, 10);
   const junctionTransition1LengthMm = clamp(collectorLengthMm * 0.12, 5, 8);
@@ -806,11 +896,6 @@ function buildBranchLineGeometry(
     inletOuterDiameterMm,
     runOuterDiameterMm,
     branchOuterDiameterMm,
-  );
-  const maxCoreDiameterMm = Math.max(
-    config.inletCoreDiameterMm,
-    config.runCoreDiameterMm,
-    config.branchCoreDiameterMm,
   );
   const splitNode = {
     center: {
@@ -1282,7 +1367,7 @@ export function buildRefrigerantBranchKitViewModel(
   const model = buildRefrigerantBranchKitModel(element);
   const lineSelection = resolveRefrigerantBranchKitLineSelection(element);
   if (lineSelection === "both") {
-    return model;
+    return applyBranchKitRoll(model, element.properties);
   }
 
   const selectedLine =
@@ -1297,7 +1382,7 @@ export function buildRefrigerantBranchKitViewModel(
   );
   const offset = selectedBounds.center;
 
-  return {
+  return applyBranchKitRoll({
     ...model,
     bounds: {
       ...selectedBounds,
@@ -1312,7 +1397,7 @@ export function buildRefrigerantBranchKitViewModel(
     gas: translateBranchKitLine(model.gas, offset),
     liquid: translateBranchKitLine(model.liquid, offset),
     labelAnchor: translatePoint(model.labelAnchor, offset),
-  };
+  }, element.properties);
 }
 
 export function getRefrigerantBranchKitPlanBounds(

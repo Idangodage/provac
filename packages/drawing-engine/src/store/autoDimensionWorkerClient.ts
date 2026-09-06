@@ -1,39 +1,61 @@
 import type { Dimension2D, DimensionSettings, Room, Wall } from '../types';
 
-import { buildMergedAutoManagedDimensions } from './autoManagedDimensions';
 import type {
   AutoDimensionWorkerRequest,
   AutoDimensionWorkerResponse,
 } from './autoDimension.worker';
+import { buildMergedAutoManagedDimensions } from './autoManagedDimensions';
+import { LatestOnlyAsyncQueue } from './latestOnlyAsyncQueue';
 
 let workerInstance: Worker | null = null;
 let workerDisabled = false;
 let requestIdCounter = 0;
 
-const pendingRequests = new Map<
-  number,
-  {
-    resolve: (dimensions: Dimension2D[]) => void;
-    reject: (error: unknown) => void;
-  }
->();
+interface AutoDimensionParams {
+  signature: string;
+  walls: Wall[];
+  rooms: Room[];
+  dimensionSettings: DimensionSettings;
+  dimensions: Dimension2D[];
+}
 
-function resolvePendingRequest(requestId: number, dimensions: Dimension2D[]): void {
-  const pending = pendingRequests.get(requestId);
-  if (!pending) return;
-  pendingRequests.delete(requestId);
+interface ActiveWorkerRequest {
+  requestId: number;
+  resolve: (dimensions: Dimension2D[]) => void;
+  reject: (error: unknown) => void;
+}
+
+let activeWorkerRequest: ActiveWorkerRequest | null = null;
+
+function resolveActiveWorkerRequest(requestId: number, dimensions: Dimension2D[]): void {
+  if (activeWorkerRequest?.requestId !== requestId) return;
+  const pending = activeWorkerRequest;
+  activeWorkerRequest = null;
   pending.resolve(dimensions);
 }
 
-function rejectPendingRequests(error: unknown): void {
-  pendingRequests.forEach((pending) => pending.reject(error));
-  pendingRequests.clear();
+function rejectActiveWorkerRequest(error: unknown): void {
+  const pending = activeWorkerRequest;
+  activeWorkerRequest = null;
+  pending?.reject(error);
 }
 
 function disposeWorker(): void {
   if (!workerInstance) return;
-  workerInstance.terminate();
-  workerInstance = null;
+  try {
+    workerInstance.terminate();
+  } finally {
+    workerInstance = null;
+  }
+}
+
+function disableWorker(error: unknown): void {
+  workerDisabled = true;
+  try {
+    disposeWorker();
+  } finally {
+    rejectActiveWorkerRequest(error);
+  }
 }
 
 function getAutoDimensionWorker(): Worker | null {
@@ -55,13 +77,15 @@ function getAutoDimensionWorker(): Worker | null {
       if (!message || message.type !== 'sync-auto-dimensions-result') {
         return;
       }
-      resolvePendingRequest(message.requestId, message.dimensions);
+      resolveActiveWorkerRequest(message.requestId, message.dimensions);
     });
 
     worker.addEventListener('error', (event) => {
-      workerDisabled = true;
-      disposeWorker();
-      rejectPendingRequests(event.error ?? new Error('Auto-dimension worker failed.'));
+      disableWorker(event.error ?? new Error('Auto-dimension worker failed.'));
+    });
+
+    worker.addEventListener('messageerror', () => {
+      disableWorker(new Error('Auto-dimension worker returned an unreadable message.'));
     });
 
     workerInstance = worker;
@@ -73,21 +97,23 @@ function getAutoDimensionWorker(): Worker | null {
   }
 }
 
-export async function syncAutoDimensionsInBackground(params: {
-  signature: string;
-  walls: Wall[];
-  rooms: Room[];
-  dimensionSettings: DimensionSettings;
-  dimensions: Dimension2D[];
-}): Promise<Dimension2D[]> {
+function runFallback(params: AutoDimensionParams): Promise<Dimension2D[]> {
+  return new Promise<Dimension2D[]>((resolve, reject) => {
+    const schedule = typeof window !== 'undefined' ? window.setTimeout : setTimeout;
+    schedule(() => {
+      try {
+        resolve(buildMergedAutoManagedDimensions(params));
+      } catch (error) {
+        reject(error);
+      }
+    }, 0);
+  });
+}
+
+function executeAutoDimensionSync(params: AutoDimensionParams): Promise<Dimension2D[]> {
   const worker = getAutoDimensionWorker();
   if (!worker) {
-    return new Promise<Dimension2D[]>((resolve) => {
-      const schedule = typeof window !== 'undefined' ? window.setTimeout : setTimeout;
-      schedule(() => {
-        resolve(buildMergedAutoManagedDimensions(params));
-      }, 0);
-    });
+    return runFallback(params);
   }
 
   const requestId = ++requestIdCounter;
@@ -102,7 +128,21 @@ export async function syncAutoDimensionsInBackground(params: {
   };
 
   return new Promise<Dimension2D[]>((resolve, reject) => {
-    pendingRequests.set(requestId, { resolve, reject });
-    worker.postMessage(request);
+    activeWorkerRequest = { requestId, resolve, reject };
+    try {
+      worker.postMessage(request);
+    } catch (error) {
+      disableWorker(error);
+    }
   });
+}
+
+const autoDimensionQueue = new LatestOnlyAsyncQueue<AutoDimensionParams, Dimension2D[]>(
+  executeAutoDimensionSync
+);
+
+export function syncAutoDimensionsInBackground(
+  params: AutoDimensionParams
+): Promise<Dimension2D[]> {
+  return autoDimensionQueue.enqueue(params);
 }

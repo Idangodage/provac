@@ -32,9 +32,9 @@ import {
 export interface UseTrimToolOptions {
   fabricRef: React.RefObject<FabricCanvas | null>;
   walls: Wall[];
-  updateWall: (id: string, updates: Partial<Wall>) => void;
+  updateWall: (id: string, updates: Partial<Wall>, options?: { skipHistory?: boolean }) => void;
   addWall: (params: { startPoint: Point2D; endPoint: Point2D; thickness?: number }) => string;
-  deleteWall: (id: string) => void;
+  deleteWall: (id: string, options?: { skipHistory?: boolean }) => void;
   connectWalls: (wallId: string, otherWallId: string) => void;
   setTool: (tool: DrawingTool) => void;
   detectRooms: (options?: { debounce?: boolean }) => void;
@@ -366,10 +366,10 @@ export function useTrimTool(options: UseTrimToolOptions): UseTrimToolResult {
       const newLength = distance(wall.startPoint, candidate.intersectionPoint);
       if (newLength < MIN_WALL_LENGTH) {
         // Wall would be too short — delete it instead
-        deleteWall(wall.id);
+        deleteWall(wall.id, { skipHistory: true });
         setProcessingStatus('Wall deleted (would be too short after trim).', false);
       } else {
-        updateWall(wall.id, { endPoint: { ...candidate.intersectionPoint } });
+        updateWall(wall.id, { endPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
         setProcessingStatus(
           `Trimmed wall to ${Math.round(newLength)} mm.`,
           false
@@ -379,10 +379,10 @@ export function useTrimTool(options: UseTrimToolOptions): UseTrimToolResult {
       // Keep intersectionPoint → endPoint
       const newLength = distance(candidate.intersectionPoint, wall.endPoint);
       if (newLength < MIN_WALL_LENGTH) {
-        deleteWall(wall.id);
+        deleteWall(wall.id, { skipHistory: true });
         setProcessingStatus('Wall deleted (would be too short after trim).', false);
       } else {
-        updateWall(wall.id, { startPoint: { ...candidate.intersectionPoint } });
+        updateWall(wall.id, { startPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
         setProcessingStatus(
           `Trimmed wall to ${Math.round(newLength)} mm.`,
           false

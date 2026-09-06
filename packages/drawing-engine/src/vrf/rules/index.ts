@@ -6,3 +6,5 @@ export * from './pipe-sizing';
 export * from './branch-orientation';
 export * from './validation-engine';
 export * from './document-validation-adapter';
+export * from './route-elevation';
+export * from './network-elevation-paths';

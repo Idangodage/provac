@@ -93,4 +93,36 @@ describe("solveBranchKitSnap", () => {
     );
     expect(snap).toBeNull();
   });
+
+  it("keeps gas and liquid socket identities even when the wrong line is closer", () => {
+    const ports: PlaceablePort[] = [{ ...PORTS[0]!, lineKind: 'gas' }];
+    const targets: SnapTargetEnd[] = [
+      { id: 'liquid', point: { x: -L, y: 0 }, direction: { x: 1, y: 0 }, lineKind: 'liquid' },
+      { id: 'gas', point: { x: -L, y: 8 }, direction: { x: 1, y: 0 }, lineKind: 'gas' },
+    ];
+    const result = solveBranchKitSnap(ports, targets, { x: 0, y: 0 }, 20);
+    expect(result.snap?.targetId).toBe('gas');
+    const landed = applyPlacement(result.transform, ports[0]!.point);
+    expect(landed.x).toBeCloseTo(targets[1]!.point.x, 6);
+    expect(landed.y).toBeCloseTo(targets[1]!.point.y, 6);
+    expect(solveBranchKitSnap([{ ...ports[0]!, lineKind: 'both' }], targets, { x: 0, y: 0 }, 20).snap).toBeNull();
+  });
+
+  it("rejects occupied ends and roles that would reverse the required inlet", () => {
+    const target: SnapTargetEnd = {
+      id: 'upstream', point: { x: L, y: 0 }, direction: { x: -1, y: 0 },
+      acceptsPortRoles: ['inlet'],
+    };
+    expect(solveBranchKitSnap(PORTS, [target], { x: 0, y: 0 }, 20).snap).toBeNull();
+    expect(solveBranchKitSnap(PORTS, [{ ...target, acceptsPortRoles: undefined, connected: true }], { x: 0, y: 0 }, 20).snap).toBeNull();
+  });
+
+  it("keeps tied snaps stable when scene order changes and ignores invalid axes", () => {
+    const first: SnapTargetEnd = { id: 'a', point: { x: -L, y: 4 }, direction: { x: 1, y: 0 } };
+    const second: SnapTargetEnd = { ...first, id: 'b', point: { x: -L, y: -4 } };
+    for (const targets of [[first, second], [second, first]]) {
+      expect(solveBranchKitSnap(PORTS, targets, { x: 0, y: 0 }, 20).snap?.targetId).toBe('a');
+    }
+    expect(solveBranchKitSnap(PORTS, [{ ...first, direction: { x: 0, y: 0 } }], { x: 0, y: 0 }, 20).snap).toBeNull();
+  });
 });

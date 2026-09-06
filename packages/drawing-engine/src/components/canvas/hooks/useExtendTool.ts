@@ -29,7 +29,7 @@ import {
 export interface UseExtendToolOptions {
   fabricRef: React.RefObject<FabricCanvas | null>;
   walls: Wall[];
-  updateWall: (id: string, updates: Partial<Wall>) => void;
+  updateWall: (id: string, updates: Partial<Wall>, options?: { skipHistory?: boolean }) => void;
   connectWalls: (wallId: string, otherWallId: string) => void;
   setTool: (tool: DrawingTool) => void;
   detectRooms: (options?: { debounce?: boolean }) => void;
@@ -508,9 +508,9 @@ export function useExtendTool(options: UseExtendToolOptions): UseExtendToolResul
     if (!candidate) return;
 
     if (candidate.endpoint === 'start') {
-      updateWall(candidate.wall.id, { startPoint: { ...candidate.intersectionPoint } });
+      updateWall(candidate.wall.id, { startPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
     } else {
-      updateWall(candidate.wall.id, { endPoint: { ...candidate.intersectionPoint } });
+      updateWall(candidate.wall.id, { endPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
     }
 
     if (
@@ -520,9 +520,9 @@ export function useExtendTool(options: UseExtendToolOptions): UseExtendToolResul
       (candidate.targetExtensionLength ?? 0) > MIN_EXTENSION_MM
     ) {
       if (candidate.targetEndpoint === 'start') {
-        updateWall(candidate.targetWall.id, { startPoint: { ...candidate.intersectionPoint } });
+        updateWall(candidate.targetWall.id, { startPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
       } else {
-        updateWall(candidate.targetWall.id, { endPoint: { ...candidate.intersectionPoint } });
+        updateWall(candidate.targetWall.id, { endPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
       }
     }
 

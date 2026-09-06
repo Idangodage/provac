@@ -8,20 +8,21 @@
  * hybrid scene renders it through the permanent mirror view basis exactly like
  * every other model mesh — never mutate it for view reasons.
  */
+import { featureCollection, polygon, union } from '@turf/turf';
 import * as THREE from "three";
 
 import type { Vec2 } from "../../../wallcore/vec2";
 import type { WallEntityId } from "../../../wallcore/wallModel";
 import { polygonArea, type WallSolveResult } from "../../../wallcore/wallSolver";
+import { wallSideTextureU } from '../wall/wallThreeVisual';
 
 export interface WallChunkData {
   geometry: THREE.BufferGeometry;
   /** entityIndex attribute value → entity id */
   entityIds: WallEntityId[];
   /**
-   * Boundary edge lines (reference `rebuildEdges` port): every triangle edge
-   * that appears exactly ONCE across the chunk — interior shared edges cancel
-   * out — so walls read with crisp outlines in every view style.
+   * Physical silhouette/crease edges. Joining footprint end faces are excluded
+   * so the model has the same continuous perimeter as the plan.
    */
   edgesGeometry: THREE.BufferGeometry;
 }
@@ -29,6 +30,8 @@ export interface WallChunkData {
 export interface WallChunkBuildOptions {
   /** Entity id -> Three.js material slot; preserves one merged/pickable chunk. */
   materialIndexByEntityId?: ReadonlyMap<WallEntityId, number>;
+  /** Optional plan-matched top-cap material; side and bottom retain the body slot. */
+  topMaterialIndexByEntityId?: ReadonlyMap<WallEntityId, number>;
 }
 
 interface Prism {
@@ -37,6 +40,7 @@ interface Prism {
   z0: number;
   z1: number;
   materialIndex: number;
+  topMaterialIndex: number;
 }
 
 export function buildWallChunkGeometry(
@@ -54,6 +58,8 @@ export function buildWallChunkGeometry(
       z0: levelElevation + f.baseOffset,
       z1: levelElevation + f.baseOffset + f.height,
       materialIndex: options.materialIndexByEntityId?.get(f.edgeId) ?? 0,
+      topMaterialIndex: options.topMaterialIndexByEntityId?.get(f.edgeId)
+        ?? options.materialIndexByEntityId?.get(f.edgeId) ?? 0,
     });
   }
   for (const w of solve.wedges) {
@@ -65,6 +71,8 @@ export function buildWallChunkGeometry(
       z0: levelElevation + w.baseOffset,
       z1: levelElevation + w.baseOffset + w.height,
       materialIndex: options.materialIndexByEntityId?.get(w.nodeId) ?? 0,
+      topMaterialIndex: options.topMaterialIndexByEntityId?.get(w.nodeId)
+        ?? options.materialIndexByEntityId?.get(w.nodeId) ?? 0,
     });
   }
 
@@ -111,6 +119,7 @@ export function buildWallChunkGeometry(
     const topBase = positions.length / 3;
     for (const p of poly) vertex(p[0], p[1], prism.z1, 0, 0, 1, ei, p[0], p[1]);
     for (const t of tris) indices.push(topBase + t[0], topBase + t[1], topBase + t[2]);
+    const topEnd = indices.length;
     const botBase = positions.length / 3;
     for (const p of poly) vertex(p[0], p[1], prism.z0, 0, 0, -1, ei, p[0], p[1]);
     for (const t of tris) indices.push(botBase + t[2], botBase + t[1], botBase + t[0]);
@@ -126,17 +135,20 @@ export function buildWallChunkGeometry(
       // CCW polygon → outward normal = (edge dir) rotated -90° = (ey, -ex)
       const nx = ey / len;
       const ny = -ex / len;
-      const v0 = vertex(a[0], a[1], prism.z0, nx, ny, 0, ei, 0, prism.z0);
-      const v1 = vertex(b[0], b[1], prism.z0, nx, ny, 0, ei, len, prism.z0);
-      const v2 = vertex(b[0], b[1], prism.z1, nx, ny, 0, ei, len, prism.z1);
-      const v3 = vertex(a[0], a[1], prism.z1, nx, ny, 0, ei, 0, prism.z1);
+      const u0 = wallSideTextureU(a[0], a[1], nx, ny);
+      const u1 = wallSideTextureU(b[0], b[1], nx, ny);
+      const v0 = vertex(a[0], a[1], prism.z0, nx, ny, 0, ei, u0, prism.z0);
+      const v1 = vertex(b[0], b[1], prism.z0, nx, ny, 0, ei, u1, prism.z0);
+      const v2 = vertex(b[0], b[1], prism.z1, nx, ny, 0, ei, u1, prism.z1);
+      const v3 = vertex(a[0], a[1], prism.z1, nx, ny, 0, ei, u0, prism.z1);
       indices.push(v0, v1, v2, v0, v2, v3);
     }
-    groups.push({
-      start: groupStart,
-      count: indices.length - groupStart,
-      materialIndex: prism.materialIndex,
-    });
+    if (prism.topMaterialIndex !== prism.materialIndex) {
+      groups.push({ start: groupStart, count: topEnd - groupStart, materialIndex: prism.topMaterialIndex });
+      groups.push({ start: topEnd, count: indices.length - topEnd, materialIndex: prism.materialIndex });
+    } else {
+      groups.push({ start: groupStart, count: indices.length - groupStart, materialIndex: prism.materialIndex });
+    }
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -149,7 +161,46 @@ export function buildWallChunkGeometry(
   );
   geometry.setIndex(indices);
   groups.forEach((group) => geometry.addGroup(group.start, group.count, group.materialIndex));
-  return { geometry, entityIds, edgesGeometry: buildBoundaryEdgesGeometry(positions, indices) };
+  return { geometry, entityIds, edgesGeometry: buildPrismBoundaryEdges(prisms) };
+}
+
+/** Union only the outline source; editable/pickable wall triangles stay intact. */
+function buildPrismBoundaryEdges(prisms: Prism[]): THREE.BufferGeometry {
+  const bands = new Map<string, Prism[]>();
+  for (const prism of prisms) {
+    const key = `${prism.z0}|${prism.z1}`;
+    const band = bands.get(key);
+    if (band) band.push(prism);
+    else bands.set(key, [prism]);
+  }
+  const edgePositions: number[] = [];
+  for (const band of bands.values()) {
+    const first = band[0]!;
+    const polygons = band.map((prism) => polygon([[...prism.polygon, prism.polygon[0]!].map((point) => [...point])]));
+    const merged = polygons.length === 1 ? polygons[0]! : union(featureCollection(polygons));
+    if (!merged) continue;
+    const components = merged.geometry.type === 'Polygon'
+      ? [merged.geometry.coordinates]
+      : merged.geometry.coordinates;
+    for (const rings of components) {
+      const shape = new THREE.Shape(rings[0]!.slice(0, -1).map((point) => new THREE.Vector2(point[0], point[1])));
+      for (const ring of rings.slice(1)) {
+        shape.holes.push(new THREE.Path(ring.slice(0, -1).map((point) => new THREE.Vector2(point[0], point[1]))));
+      }
+      const boundary = new THREE.ExtrudeGeometry(shape, { depth: first.z1 - first.z0, bevelEnabled: false, steps: 1, curveSegments: 1 });
+      boundary.translate(0, 0, first.z0);
+      const edges = new THREE.EdgesGeometry(boundary, 32);
+      const positions = edges.getAttribute('position');
+      for (let index = 0; index < positions.count; index += 1) {
+        edgePositions.push(positions.getX(index), positions.getY(index), positions.getZ(index));
+      }
+      boundary.dispose();
+      edges.dispose();
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3));
+  return geometry;
 }
 
 /**

@@ -21,6 +21,16 @@ import CameraControls from 'camera-controls';
 import * as THREE from 'three';
 
 import {
+  HYBRID_VIEW_TRANSITION_SECONDS,
+  nearestEquivalentAzimuth,
+  sampleHybridViewTransition,
+  type HybridViewTransitionPose,
+} from './hybridViewTransition';
+import {
+  resolveOrthographicFit,
+  resolveOrthographicFitForPose,
+} from './hybridViewportFit';
+import {
   clampOrthoZoom,
   deriveBoardViewFromCamera,
   resolveHybridCameraViewFromPose,
@@ -52,6 +62,17 @@ export class HybridViewportController {
   private windowHandlers: Array<[string, EventListener]> = [];
   private planeZ = 0;
   private viewport = { width: 2, height: 2 };
+  private readonly contentBounds = new THREE.Box3();
+  private viewTransition: {
+    from: HybridViewTransitionPose;
+    to: HybridViewTransitionPose;
+    elapsed: number;
+    requestedView: HybridCameraView;
+    lockPlan: boolean;
+  } | null = null;
+  private lastPlanFraming: { target: THREE.Vector3; zoom: number } | null = null;
+  /** Explicit Fit follows the model across views until manual navigation. */
+  private followFit = false;
   /**
    * True while the RMB tilt gesture is physically held. camera-controls fires
    * `rest` whenever damping settles — INCLUDING mid-drag when the pointer
@@ -63,7 +84,10 @@ export class HybridViewportController {
   onChange: (() => void) | null = null;
 
   constructor() {
-    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 1e9);
+    // The render pump tightens this around live scene bounds. Keep the
+    // pre-content fallback finite too: an orthographic 1..1e9 range has only
+    // ~60 mm depth precision and makes nested pipe surfaces bleed through.
+    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 2_000_000);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(0, 0, 1_000_000);
   }
@@ -95,7 +119,10 @@ export class HybridViewportController {
 
     const kick = (): void => this.onChange?.();
     controls.addEventListener('update', kick);
-    controls.addEventListener('controlstart', kick);
+    controls.addEventListener('controlstart', () => {
+      this.interruptViewTransition();
+      kick();
+    });
     controls.addEventListener('control', kick);
     controls.addEventListener('wake', kick);
     controls.addEventListener('transitionstart', kick);
@@ -108,6 +135,7 @@ export class HybridViewportController {
     // horizontal two-finger scroll trucks.
     this.cap(el, 'pointerdown', (ev) => {
       const e = ev as PointerEvent;
+      if (e.button === 1 || e.button === 2) this.interruptViewTransition();
       if (e.button !== 2) return;
       if (e.shiftKey) {
         controls.mouseButtons.right = A.TRUCK;
@@ -135,6 +163,7 @@ export class HybridViewportController {
     this.capWindow('pointercancel', endRotateGesture);
     this.cap(el, 'wheel', (ev) => {
       const e = ev as WheelEvent;
+      this.interruptViewTransition();
       controls.dollySpeed = e.shiftKey ? 0.2 : 1.0;
       if (!e.ctrlKey && e.deltaX !== 0) {
         e.preventDefault();
@@ -155,7 +184,17 @@ export class HybridViewportController {
    */
   setBoardView(pxPerMm: number, centerWorldX: number, centerWorldY: number, planeZ = 0): void {
     if (!this.controls) return;
+    if (
+      !Number.isFinite(pxPerMm) ||
+      pxPerMm <= 0 ||
+      !Number.isFinite(centerWorldX) ||
+      !Number.isFinite(centerWorldY) ||
+      !Number.isFinite(planeZ)
+    ) {
+      return;
+    }
     this.planeZ = planeZ;
+    this.interruptViewTransition();
     // Clear any RMB-pivot focal offset first: with an offset, the TARGET does
     // not project to the screen centre, so a target-based set would disagree
     // with the pose-based derivation forever (the derive→store→bridge loop
@@ -163,6 +202,7 @@ export class HybridViewportController {
     this.controls.setFocalOffset(0, 0, 0, false);
     void this.controls.zoomTo(clampOrthoZoom(pxPerMm), false);
     void this.controls.moveTo(centerWorldX, centerWorldY, planeZ, false);
+    this.onChange?.();
   }
 
   /**
@@ -183,21 +223,24 @@ export class HybridViewportController {
       this.camera,
       this.viewport,
       this.planeZ,
-      this.controls?.getTarget(new THREE.Vector3()),
+      this.controls?.getTarget(new THREE.Vector3(), false),
     );
   }
 
   /** Pan by screen pixels (trackpad horizontal scroll / external pan calls). */
   truckPixels(dxPx: number, dyPx: number): void {
     if (!this.controls) return;
+    if (!Number.isFinite(dxPx) || !Number.isFinite(dyPx)) return;
+    this.interruptViewTransition();
     const mmPerPx = 1 / Math.max(this.camera.zoom, 1e-9);
     // Sign matches the reference app: scroll right/down moves content left/up.
     void this.controls.truck(-dxPx * mmPerPx, -dyPx * mmPerPx, false);
+    this.onChange?.();
   }
 
   setSize(width: number, height: number): void {
-    const w = Math.max(1, width);
-    const h = Math.max(1, height);
+    const w = Number.isFinite(width) ? Math.max(1, width) : this.viewport.width;
+    const h = Number.isFinite(height) ? Math.max(1, height) : this.viewport.height;
     this.viewport = { width: w, height: h };
     this.camera.left = -w / 2;
     this.camera.right = w / 2;
@@ -206,9 +249,84 @@ export class HybridViewportController {
     this.camera.updateProjectionMatrix();
   }
 
+  /** Store render-world bounds for canonical-view and explicit Fit commands. */
+  setContentBounds(bounds: THREE.Box3): void {
+    const values = [
+      bounds.min.x,
+      bounds.min.y,
+      bounds.min.z,
+      bounds.max.x,
+      bounds.max.y,
+      bounds.max.z,
+    ];
+    if (bounds.isEmpty() || values.every(Number.isFinite)) {
+      this.contentBounds.copy(bounds);
+    }
+  }
+
+  /**
+   * Fit visible content while preserving the exact requested camera pose.
+   * camera-controls' built-in fit rounds isometric cameras to the nearest
+   * principal axis, so ProvacX uses the eight-corner projection solver.
+   */
+  fitContent(
+    view?: HybridCameraView,
+    animate = true,
+    paddingPx = 24,
+  ): boolean {
+    if (!this.controls) return false;
+    const live = this.capturePose();
+    // Fit during a view change continues toward that requested orientation.
+    const destination = this.viewTransition?.to ?? live;
+    const fit = view
+      ? resolveOrthographicFit(
+          this.contentBounds,
+          this.viewport,
+          view,
+          paddingPx,
+        )
+      : resolveOrthographicFitForPose(
+          this.contentBounds,
+          this.viewport,
+          {
+            polar: destination.polar,
+            azimuth: destination.azimuth,
+          },
+          paddingPx,
+        );
+    if (!fit) return false;
+    this.followFit = true;
+    this.beginViewTransition({
+      ...destination,
+      ...(view ? resolveHybridCameraViewPose(view) : {}),
+      target: fit.target,
+      focalOffset: new THREE.Vector3(),
+      zoom: fit.zoom,
+    }, view ?? this.cameraView, animate, view ? view === 'plan' : destination.polar <= FLAT_POLAR_EPSILON);
+    return true;
+  }
+
   /** Per-frame pump — returns true while camera-controls is still animating. */
-  update(delta: number): boolean {
-    return this.controls?.update(delta) ?? false;
+  update(delta: number, elapsedDelta = delta): boolean {
+    if (!this.controls) return false;
+    const transition = this.viewTransition;
+    if (transition) {
+      transition.elapsed += Number.isFinite(elapsedDelta) ? Math.max(0, elapsedDelta) : 0;
+      const progress = transition.elapsed >= HYBRID_VIEW_TRANSITION_SECONDS - 1e-9
+        ? 1
+        : transition.elapsed / HYBRID_VIEW_TRANSITION_SECONDS;
+      this.applyPose(sampleHybridViewTransition(transition.from, transition.to, progress));
+      // Keep the transition guard through update: camera-controls can emit
+      // `rest` on every sampled frame, including just after leaving plan.
+      this.controls.update(delta);
+      this.camera.updateMatrixWorld();
+      if (progress >= 1) {
+        if (transition.lockPlan) this.controls.maxPolarAngle = 0;
+        this.viewTransition = null;
+      }
+      return true;
+    }
+    return this.controls.update(delta);
   }
 
   /**
@@ -218,26 +336,32 @@ export class HybridViewportController {
    * renders rotated/offset under the unrotated plan (the "plane jumped" bug).
    */
   resetToPlan(animate = true): void {
-    if (!this.controls) return;
-    this.controls.normalizeRotations();
-    void this.controls.rotateTo(0, 0, animate);
-    this.controls.maxPolarAngle = 0;
+    this.setCameraView('plan', animate);
   }
 
   /** Set one of the canonical manipulation views without moving the model. */
   setCameraView(view: HybridCameraView, animate = true): void {
     if (!this.controls) return;
-    if (view === 'plan') {
-      this.resetToPlan(animate);
-      return;
+    const live = this.capturePose();
+    const previousView = this.cameraView;
+    const center = this.screenToPlane(this.viewport.width / 2, this.viewport.height / 2);
+    if (this.isFlatView(FLAT_POLAR_EPSILON) && center) {
+      this.lastPlanFraming = { target: center.clone(), zoom: live.zoom };
     }
     const pose = resolveHybridCameraViewPose(view);
-    this.rotateGestureActive = false;
-    this.controls.normalizeRotations();
-    this.controls.setFocalOffset(0, 0, 0, false);
-    this.controls.minPolarAngle = 0;
-    this.controls.maxPolarAngle = Math.max(TILT_MAX_POLAR, pose.polar);
-    void this.controls.rotateTo(pose.azimuth, pose.polar, animate);
+    const fromElevation = previousView === 'front' || previousView === 'side';
+    const restore = view === 'plan' && fromElevation ? this.lastPlanFraming : null;
+    const fit = this.followFit || view === 'front' || view === 'side'
+      ? resolveOrthographicFit(this.contentBounds, this.viewport, view, 24)
+      : null;
+    this.beginViewTransition({
+      ...live,
+      ...pose,
+      // Floor projection is undefined in elevation; retain a finite target.
+      target: fit?.target ?? restore?.target ?? (!fromElevation ? center : null) ?? live.target,
+      zoom: fit?.zoom ?? restore?.zoom ?? live.zoom,
+      focalOffset: new THREE.Vector3(),
+    }, view, animate, view === 'plan');
   }
 
   setFrontView(animate = true): void {
@@ -259,12 +383,15 @@ export class HybridViewportController {
    */
   tiltTo(polarRad: number, animate = true): void {
     if (!this.controls) return;
+    if (!Number.isFinite(polarRad)) return;
     if (polarRad <= PLAN_SNAP_POLAR) {
       this.resetToPlan(animate);
       return;
     }
-    this.controls.maxPolarAngle = TILT_MAX_POLAR;
-    void this.controls.rotatePolarTo(Math.min(polarRad, TILT_MAX_POLAR), animate);
+    this.beginViewTransition({
+      ...this.capturePose(),
+      polar: Math.min(polarRad, TILT_MAX_POLAR),
+    }, 'iso', animate, false);
   }
 
   get isTilted(): boolean {
@@ -278,7 +405,10 @@ export class HybridViewportController {
     return this.controls?.azimuthAngle ?? 0;
   }
   get cameraView(): HybridCameraView {
-    return resolveHybridCameraViewFromPose(this.polar, this.azimuthWrapped);
+    return this.viewTransition?.requestedView ?? resolveHybridCameraViewFromPose(this.polar, this.azimuthWrapped);
+  }
+  get isTransitioning(): boolean {
+    return this.viewTransition !== null;
   }
   /** Azimuth wrapped to (−π, π] — camera-controls accumulates full turns. */
   get azimuthWrapped(): number {
@@ -297,6 +427,7 @@ export class HybridViewportController {
   }
 
   dispose(): void {
+    this.viewTransition = null;
     for (const [name, fn] of this.capHandlers) this.el?.removeEventListener(name, fn, true);
     this.capHandlers = [];
     if (typeof window !== 'undefined') {
@@ -308,10 +439,74 @@ export class HybridViewportController {
     this.el = null;
   }
 
+  private capturePose(): HybridViewTransitionPose {
+    const spherical = this.controls!.getSpherical(new THREE.Spherical(), false);
+    return {
+      azimuth: spherical.theta,
+      polar: spherical.phi,
+      distance: spherical.radius,
+      zoom: this.camera.zoom,
+      target: this.controls!.getTarget(new THREE.Vector3(), false),
+      focalOffset: this.controls!.getFocalOffset(new THREE.Vector3(), false),
+    };
+  }
+
+  private applyPose(pose: HybridViewTransitionPose): void {
+    const controls = this.controls!;
+    void controls.rotateTo(pose.azimuth, pose.polar, false);
+    void controls.dollyTo(pose.distance, false);
+    void controls.moveTo(pose.target.x, pose.target.y, pose.target.z, false);
+    void controls.setFocalOffset(pose.focalOffset.x, pose.focalOffset.y, pose.focalOffset.z, false);
+    void controls.zoomTo(pose.zoom, false);
+  }
+
+  private beginViewTransition(
+    to: HybridViewTransitionPose,
+    requestedView: HybridCameraView,
+    animate: boolean,
+    lockPlan: boolean,
+  ): void {
+    const controls = this.controls!;
+    const from = this.capturePose();
+    this.rotateGestureActive = false;
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.max(TILT_MAX_POLAR, from.polar, to.polar);
+    this.viewTransition = { from, to, elapsed: 0, requestedView, lockPlan };
+    const reducedMotion = typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const unchanged = Math.abs(nearestEquivalentAzimuth(from.azimuth, to.azimuth) - from.azimuth) < 1e-7
+      && Math.abs(from.polar - to.polar) < 1e-5
+      && Math.abs(from.distance - to.distance) < 1e-6
+      && Math.abs(Math.log(from.zoom / to.zoom)) < 1e-9
+      && from.target.distanceToSquared(to.target) < 1e-10
+      && from.focalOffset.distanceToSquared(to.focalOffset) < 1e-10;
+    const animateMotion = animate && !reducedMotion && !unchanged;
+    // Freeze pending native damping at the displayed pose. stop() cannot be
+    // used here: camera-controls implements it by jumping to the old endpoint.
+    this.applyPose(animateMotion ? from : sampleHybridViewTransition(from, to, 1));
+    controls.update(0);
+    this.camera.updateMatrixWorld();
+    if (!animateMotion) {
+      if (lockPlan) controls.maxPolarAngle = 0;
+      this.viewTransition = null;
+    }
+    this.onChange?.();
+  }
+
+  private interruptViewTransition(): void {
+    this.followFit = false;
+    if (!this.viewTransition) return;
+    // Every tween sample already wrote both the live and destination values
+    // in camera-controls, so handing back to input cannot resume an old tween.
+    this.viewTransition = null;
+    this.onChange?.();
+  }
+
   private planBackSnap(): void {
     if (!this.controls) return;
     // Never snap while the tilt gesture is still held (see rotateGestureActive).
-    if (this.rotateGestureActive) return;
+    if (this.rotateGestureActive || this.viewTransition) return;
     if (this.controls.polarAngle < PLAN_SNAP_POLAR && this.controls.maxPolarAngle > 0) {
       // Settle FLAT at the CURRENT orientation (reference SPEC §10: "plan may
       // be rotated in azimuth deliberately") — never spin the scene back to

@@ -8,6 +8,7 @@ import type {
   VrfPipingDocument,
 } from '../domain/types';
 
+import { buildNetworkElevationPaths } from './network-elevation-paths';
 import { selectPipeSize } from './pipe-sizing';
 import type { ManufacturerRuleProfile } from './rule-profile';
 import type {
@@ -259,16 +260,6 @@ function straightStubLength(
   return length;
 }
 
-function hasSagPocket(points: readonly Vec3[]): boolean {
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const previous = points[index - 1]!;
-    const point = points[index]!;
-    const next = points[index + 1]!;
-    if (point.z < previous.z - 0.1 && point.z < next.z - 0.1) return true;
-  }
-  return false;
-}
-
 function horizontalRouteLength(points: readonly Vec3[]): number {
   let total = 0;
   for (let index = 1; index < points.length; index += 1) {
@@ -330,6 +321,32 @@ function toValidationPort(
   };
 }
 
+type ValidationRunGeometry = Pick<ValidationRunInput,
+  'id' | 'startPort' | 'endPort' | 'startPortStubMm' | 'endPortStubMm'>;
+
+function toValidationRunGeometry(
+  document: VrfPipingDocument,
+  run: PipeRun,
+  ports: Map<string, ValidationPortInput>,
+  profile?: ManufacturerRuleProfile,
+  nodePositions = run.nodeIds.flatMap(id => document.routeNodes[id] ? [document.routeNodes[id]!.position] : []),
+): ValidationRunGeometry {
+  const startPortRecord = run.sourcePortId ? document.equipmentPorts[run.sourcePortId] : undefined;
+  const endPortRecord = run.targetPortId ? document.equipmentPorts[run.targetPortId] : undefined;
+  const fallbackExitCone = profile?.portDefaults.allowedExitConeDeg?.value ?? 2;
+  return {
+    id: run.id,
+    startPort: run.sourcePortId ? ports.get(run.sourcePortId) : undefined,
+    endPort: run.targetPortId ? ports.get(run.targetPortId) : undefined,
+    startPortStubMm: startPortRecord
+      ? straightStubLength(nodePositions, 'start', portWorldDirection(document, startPortRecord), startPortRecord.allowedExitConeDeg ?? fallbackExitCone)
+      : undefined,
+    endPortStubMm: endPortRecord
+      ? straightStubLength(nodePositions, 'end', portWorldDirection(document, endPortRecord), endPortRecord.allowedExitConeDeg ?? fallbackExitCone)
+      : undefined,
+  };
+}
+
 function toValidationRun(
   document: VrfPipingDocument,
   run: PipeRun,
@@ -349,13 +366,6 @@ function toValidationRun(
     const node = document.routeNodes[id];
     return node ? [node.position] : [];
   });
-  const startPortRecord = run.sourcePortId
-    ? document.equipmentPorts[run.sourcePortId]
-    : undefined;
-  const endPortRecord = run.targetPortId
-    ? document.equipmentPorts[run.targetPortId]
-    : undefined;
-  const fallbackExitCone = profile?.portDefaults.allowedExitConeDeg?.value ?? 2;
   const explicitExpectedDiameter = jsonNumber(run.metadata, 'expectedDiameterMm');
   const downstreamCapacityIndex = topologyCapacityIndex
     ?? jsonNumber(run.metadata, 'downstreamCapacityIndex');
@@ -366,6 +376,7 @@ function toValidationRun(
         currentOutsideDiameterMm: firstEdge?.nominalDiameterMm,
       })
     : null;
+  const geometry = toValidationRunGeometry(document, run, ports, profile, nodePositions);
   return {
     id: run.id,
     systemType: run.systemType,
@@ -375,24 +386,10 @@ function toValidationRun(
     expectedDiameterMm: explicitExpectedDiameter
       ?? sizing?.preferred?.rule.outsideDiameterMm.value,
     nodePositions,
-    startPort: run.sourcePortId ? ports.get(run.sourcePortId) : undefined,
-    endPort: run.targetPortId ? ports.get(run.targetPortId) : undefined,
-    startPortStubMm: startPortRecord
-      ? straightStubLength(
-          nodePositions,
-          'start',
-          portWorldDirection(document, startPortRecord),
-          startPortRecord.allowedExitConeDeg ?? fallbackExitCone,
-        )
-      : undefined,
-    endPortStubMm: endPortRecord
-      ? straightStubLength(
-          nodePositions,
-          'end',
-          portWorldDirection(document, endPortRecord),
-          endPortRecord.allowedExitConeDeg ?? fallbackExitCone,
-        )
-      : undefined,
+    startPort: geometry.startPort,
+    endPort: geometry.endPort,
+    startPortStubMm: geometry.startPortStubMm,
+    endPortStubMm: geometry.endPortStubMm,
     bendRadiiMm: jsonNumberArray(run.metadata, 'bendRadiiMm'),
     minimumBendRadiusMm,
     equivalentLengthMm: jsonNumber(run.metadata, 'equivalentLengthMm'),
@@ -400,7 +397,10 @@ function toValidationRun(
       && edges.every((edge) => edge.insulationThicknessMm !== undefined),
     slopeTowardOutdoorPercent: jsonNumber(run.metadata, 'slopeTowardOutdoorPercent')
       ?? inferredSlopeTowardOutdoor(document, run, nodePositions),
-    hasSagPocket: jsonBoolean(run.metadata, 'hasSagPocket') ?? hasSagPocket(nodePositions),
+    // Only preserve an explicit engineering flag here. The rule engine screens
+    // geometry separately, without labelling every low point an unapproved trap.
+    hasSagPocket: jsonBoolean(run.metadata, 'hasSagPocket'),
+    legacyElevationBypassCount: jsonNumber(run.metadata, 'legacyElevationBypassCount'),
     flowDirectionValid: jsonBoolean(run.metadata, 'flowDirectionValid'),
   };
 }
@@ -529,49 +529,23 @@ function distanceToAdjacentBranchAlongTopology(
   return undefined;
 }
 
-function toValidationBranch(
+type ValidationBranchGeometry = Pick<ValidationBranchInput,
+  'id' | 'model' | 'frame' | 'upstreamStraightMm' | 'downstreamStraightMm'>;
+
+function toValidationBranchGeometry(
   document: VrfPipingDocument,
   branch: BranchKitComponent,
-  allBranches: readonly BranchKitComponent[],
-  topologyCapacityIndex?: number,
-): ValidationBranchInput {
-  const arrangementValue = jsonString(branch.metadata, 'arrangement');
-  const arrangement = arrangementValue === 'heat-recovery' ? 'heat-recovery' : 'heat-pump';
+): ValidationBranchGeometry {
   const forward = normalize(rotateByQuaternion(branch.localForward, branch.orientation));
-  const inletDirection = branch.inletNodeIds[0]
-    ? directionAwayFromNode(document, branch.inletNodeIds[0])
-    : null;
-  const adjacentBranchDistance = distanceToAdjacentBranchAlongTopology(
-    document,
-    branch,
-    allBranches,
-  );
   const outletStraightMm = branch.outletNodeIds.map(
     (id) => straightLengthAtNode(document, id) ?? 0,
   );
   const inletStraightMm = branch.inletNodeIds
     .map((id) => straightLengthAtNode(document, id))
     .find((value): value is number => value !== undefined);
-  const insulationThicknessMm = jsonNumber(branch.metadata, 'insulationThicknessMm');
   return {
     id: branch.id,
     model: branch.model,
-    branchType: branch.branchType,
-    selection: {
-      manufacturer: branch.manufacturer,
-      family: branch.family,
-      refrigerant: jsonString(branch.metadata, 'refrigerant') ?? 'unspecified',
-      arrangement,
-      systemRole: branch.systemRole,
-      branchType: branch.branchType,
-      headerOutletCount: branch.branchType === 'header' ? branch.outletNodeIds.length : undefined,
-      outdoorCapacity: branch.upstreamOutdoorCapacity,
-      downstreamCapacityIndex: topologyCapacityIndex ?? branch.downstreamCapacityIndex,
-      downstreamBranchCount: downstreamBranchCount(document, branch),
-      upstreamDiametersMm: incidentDiameters(document, branch.inletNodeIds),
-      downstreamDiametersMm: incidentDiameters(document, branch.outletNodeIds),
-      currentModel: branch.model,
-    },
     frame: {
       forward,
       up: normalize(rotateByQuaternion(branch.localUp, branch.orientation)),
@@ -597,6 +571,48 @@ function toValidationBranch(
     },
     upstreamStraightMm: inletStraightMm,
     downstreamStraightMm: outletStraightMm,
+  };
+}
+
+function toValidationBranch(
+  document: VrfPipingDocument,
+  branch: BranchKitComponent,
+  allBranches: readonly BranchKitComponent[],
+  topologyCapacityIndex?: number,
+): ValidationBranchInput {
+  const arrangementValue = jsonString(branch.metadata, 'arrangement');
+  const arrangement = arrangementValue === 'heat-recovery' ? 'heat-recovery' : 'heat-pump';
+  const geometry = toValidationBranchGeometry(document, branch);
+  const forward = geometry.frame.forward;
+  const inletDirection = branch.inletNodeIds[0]
+    ? directionAwayFromNode(document, branch.inletNodeIds[0])
+    : null;
+  const adjacentBranchDistance = distanceToAdjacentBranchAlongTopology(document, branch, allBranches);
+  const inletStraightMm = geometry.upstreamStraightMm;
+  const outletStraightMm = geometry.downstreamStraightMm ?? [];
+  const insulationThicknessMm = jsonNumber(branch.metadata, 'insulationThicknessMm');
+  return {
+    id: branch.id,
+    model: branch.model,
+    branchType: branch.branchType,
+    selection: {
+      manufacturer: branch.manufacturer,
+      family: branch.family,
+      refrigerant: jsonString(branch.metadata, 'refrigerant') ?? 'unspecified',
+      arrangement,
+      systemRole: branch.systemRole,
+      branchType: branch.branchType,
+      headerOutletCount: branch.branchType === 'header' ? branch.outletNodeIds.length : undefined,
+      outdoorCapacity: branch.upstreamOutdoorCapacity,
+      downstreamCapacityIndex: topologyCapacityIndex ?? branch.downstreamCapacityIndex,
+      downstreamBranchCount: downstreamBranchCount(document, branch),
+      upstreamDiametersMm: incidentDiameters(document, branch.inletNodeIds),
+      downstreamDiametersMm: incidentDiameters(document, branch.outletNodeIds),
+      currentModel: branch.model,
+    },
+    frame: geometry.frame,
+    upstreamStraightMm: geometry.upstreamStraightMm,
+    downstreamStraightMm: geometry.downstreamStraightMm,
     outletElevationsMm: branch.outletNodeIds.flatMap((id) => {
       const node = document.routeNodes[id];
       return node ? [node.position.z] : [];
@@ -627,10 +643,75 @@ function runDirection(document: VrfPipingDocument, runId: string): Vec3 | null {
   });
 }
 
-function runStart(document: VrfPipingDocument, runId: string): Vec3 | null {
+function runPlanPoints(document: VrfPipingDocument, runId: string): Vec3[] {
   const run = document.pipeRuns[runId];
-  const node = run?.nodeIds[0] ? document.routeNodes[run.nodeIds[0]!] : undefined;
-  return node?.position ?? null;
+  if (!run) return [];
+  return run.nodeIds.flatMap((id) => {
+    const node = document.routeNodes[id];
+    return node ? [node.position] : [];
+  });
+}
+
+interface Point2Like { x: number; y: number }
+
+function planPointAtArcLength(points: readonly Vec3[], fraction: number): Point2Like | null {
+  if (points.length < 2) return null;
+  let total = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    total += Math.hypot(points[index]!.x - points[index - 1]!.x, points[index]!.y - points[index - 1]!.y);
+  }
+  if (total <= 1e-9) return null;
+  let remaining = total * Math.max(0, Math.min(1, fraction));
+  for (let index = 1; index < points.length; index += 1) {
+    const from = points[index - 1]!;
+    const to = points[index]!;
+    const segment = Math.hypot(to.x - from.x, to.y - from.y);
+    if (segment <= 1e-9) continue;
+    if (remaining <= segment) {
+      const t = remaining / segment;
+      return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+    }
+    remaining -= segment;
+  }
+  const last = points[points.length - 1]!;
+  return { x: last.x, y: last.y };
+}
+
+function planDistanceToPolyline(point: Point2Like, points: readonly Vec3[]): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < points.length; index += 1) {
+    const from = points[index - 1]!;
+    const to = points[index]!;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const lengthSq = dx * dx + dy * dy;
+    const t = lengthSq <= 1e-12
+      ? 0
+      : Math.max(0, Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSq));
+    best = Math.min(best, Math.hypot(point.x - (from.x + dx * t), point.y - (from.y + dy * t)));
+  }
+  return best;
+}
+
+/**
+ * Measured pair separation: median plan-space offset between the gas and
+ * liquid centerlines sampled away from the ends. The port fan-in/fan-out
+ * legs intentionally deviate from the routed spacing (unit ports sit at the
+ * manufacturer's own spacing), so end-node distance is not a valid signal.
+ */
+function measuredPairSeparationMm(
+  gasPoints: readonly Vec3[],
+  liquidPoints: readonly Vec3[],
+): number | null {
+  if (gasPoints.length < 2 || liquidPoints.length < 2) return null;
+  const offsets = [0.3, 0.5, 0.7]
+    .map((fraction) => planPointAtArcLength(gasPoints, fraction))
+    .filter((sample): sample is Point2Like => sample !== null)
+    .map((sample) => planDistanceToPolyline(sample, liquidPoints))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  if (offsets.length === 0) return null;
+  return offsets[Math.floor(offsets.length / 2)]!;
 }
 
 function toValidationPair(
@@ -643,8 +724,12 @@ function toValidationPair(
   if (!pair || !gasRunId || !liquidRunId) return null;
   const gasDirection = runDirection(document, gasRunId);
   const liquidDirection = runDirection(document, liquidRunId);
-  const gasStart = runStart(document, gasRunId);
-  const liquidStart = runStart(document, liquidRunId);
+  const measured = pair.separationMm > 0
+    ? measuredPairSeparationMm(
+        runPlanPoints(document, gasRunId),
+        runPlanPoints(document, liquidRunId),
+      )
+    : null;
   return {
     id: pair.id,
     gasRunId,
@@ -652,8 +737,24 @@ function toValidationPair(
     directionAlignmentDot: gasDirection && liquidDirection
       ? dot(gasDirection, liquidDirection)
       : 1,
-    separationMm: gasStart && liquidStart ? distance(gasStart, liquidStart) : pair.separationMm,
+    // Without a trustworthy required spacing or measurable geometry, report
+    // the required value so the separation rule stays silent.
+    separationMm: measured ?? pair.separationMm,
     requiredSeparationMm: pair.separationMm,
+  };
+}
+
+/** Identical physical measurements used by the full rule snapshot, without its
+ * independent capacity, sizing, pair-spacing and elevation projections. */
+export function buildVrfGeometrySnapshot(
+  document: VrfPipingDocument,
+  profile?: ManufacturerRuleProfile,
+): { runs: ValidationRunGeometry[]; branches: ValidationBranchGeometry[] } {
+  const ports = Object.values(document.equipmentPorts).map(port => toValidationPort(document, port));
+  const portById = new Map(ports.map(port => [port.id, port]));
+  return {
+    runs: Object.values(document.pipeRuns).map(run => toValidationRunGeometry(document, run, portById, profile)),
+    branches: Object.values(document.branchKits).map(branch => toValidationBranchGeometry(document, branch)),
   };
 }
 
@@ -706,6 +807,7 @@ export function buildVrfValidationSnapshot(
       .filter((node) => !node.componentId && node.connectedEdgeIds.length === 3)
       .map((node) => jsonString(node.metadata, 'sourceElementId') ?? node.id),
     indoorUnitCount: indoorEquipment.length,
+    elevationPaths: buildNetworkElevationPaths(document),
     outdoorIndoorVerticalSeparations: outdoorEquipment.length === 1
       ? indoorEquipment.map((indoor) => ({
           entityId: indoor.id,

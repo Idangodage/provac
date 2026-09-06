@@ -1,10 +1,8 @@
 /**
  * Canonical wall graphics shared by plan, hybrid 2D/3D and isometric views.
  *
- * Professional BIM applications keep one material identity while exposing
- * view-appropriate graphics: a drafting cut fill in plan and a restrained
- * shaded surface in 3D. Renderers must consume this resolver rather than
- * inventing their own wall palettes.
+ * Plan and the horizontal 3D wall caps share one material appearance and
+ * physical pattern repeat. Vertical faces add lighting to that same color.
  */
 
 import type { Wall } from '../types';
@@ -29,15 +27,18 @@ export interface WallPlanVisual {
   /** Drafting-pattern foreground, derived from the canonical material color. */
   patternColor: string;
   pattern: WallPatternKind;
-  /** View-space tile size keeps the cut fill legible and avoids visual noise. */
+  /** Raster resolution only; repeatMm controls the actual drawing scale. */
   patternTilePx: number;
+  repeatMm: number;
+  patternOpacity: number;
 }
 
 export interface WallSurfaceVisual {
   /** Canonical material color used by every shaded 3D wall renderer. */
   color: string;
-  /** Slight lift for upward faces; lighting still provides the main shading. */
+  /** Same albedo as plan; upward faces do not receive a second color tint. */
   topColor: string;
+  patternColor: string;
   pattern: WallPatternKind;
   /** Real-world texture repeat so orbiting/zooming never changes its scale. */
   repeatMm: number;
@@ -50,6 +51,7 @@ export interface WallEdgeVisual {
   planColor: string;
   modelColor: string;
   planWidthPx: number;
+  modelWidthPx: number;
   centerLineColor: string;
   centerLineWidthPx: number;
   modelOpacity: number;
@@ -68,24 +70,22 @@ export interface WallVisualStyle {
 
 export const PROFESSIONAL_WALL_EDGES: WallEdgeVisual = Object.freeze({
   planColor: '#26323f',
-  modelColor: '#46515f',
+  modelColor: '#26323f',
   planWidthPx: 1.7,
+  modelWidthPx: 1.7,
   centerLineColor: '#718096',
   centerLineWidthPx: 0.85,
-  modelOpacity: 0.72,
+  modelOpacity: 1,
 });
 
 type FamilyVisual = Pick<
   WallSurfaceVisual,
   'pattern' | 'repeatMm' | 'roughness' | 'metalness' | 'patternOpacity'
-> & {
-  patternTilePx: number;
-};
+>;
 
 const FAMILY_VISUALS: Record<MaterialFamily, FamilyVisual> = {
   masonry: {
     pattern: 'running-bond',
-    patternTilePx: 18,
     repeatMm: 400,
     roughness: 0.9,
     metalness: 0,
@@ -93,7 +93,6 @@ const FAMILY_VISUALS: Record<MaterialFamily, FamilyVisual> = {
   },
   concrete: {
     pattern: 'aggregate',
-    patternTilePx: 16,
     repeatMm: 520,
     roughness: 0.97,
     metalness: 0,
@@ -101,7 +100,6 @@ const FAMILY_VISUALS: Record<MaterialFamily, FamilyVisual> = {
   },
   wood: {
     pattern: 'wood-grain',
-    patternTilePx: 20,
     repeatMm: 260,
     roughness: 0.8,
     metalness: 0,
@@ -109,7 +107,6 @@ const FAMILY_VISUALS: Record<MaterialFamily, FamilyVisual> = {
   },
   metal: {
     pattern: 'crosshatch',
-    patternTilePx: 14,
     repeatMm: 180,
     roughness: 0.42,
     metalness: 0.68,
@@ -117,7 +114,6 @@ const FAMILY_VISUALS: Record<MaterialFamily, FamilyVisual> = {
   },
   insulation: {
     pattern: 'insulation',
-    patternTilePx: 20,
     repeatMm: 360,
     roughness: 0.99,
     metalness: 0,
@@ -125,7 +121,6 @@ const FAMILY_VISUALS: Record<MaterialFamily, FamilyVisual> = {
   },
   finish: {
     pattern: 'diagonal',
-    patternTilePx: 16,
     repeatMm: 240,
     roughness: 0.94,
     metalness: 0,
@@ -199,29 +194,33 @@ export function resolveWallVisualStyleForMaterial(
   const resolved = resolveMaterial(materialId, legacyMaterial);
   const family = FAMILY_VISUALS[resolved.family];
   const baseColor = resolved.color;
+  const displayColor = mixHexColor(baseColor, '#ffffff', 0.58);
+  const patternColor = mixHexColor(baseColor, '#172033', 0.48);
+  const patternOpacity = Math.min(0.55, family.patternOpacity * 3);
 
   return {
-    key: `${resolved.materialId}|${baseColor}|${family.pattern}`,
+    key: `${resolved.materialId}|${displayColor}|${patternColor}|${family.pattern}|${family.repeatMm}|${patternOpacity}`,
     materialId: resolved.materialId,
     materialName: resolved.name,
     family: resolved.family,
     baseColor,
     plan: {
-      // Plan is a cut graphic, not a photographic texture. Retain the hue but
-      // lift the value so annotations and openings stay highly legible.
-      fillColor: mixHexColor(baseColor, '#ffffff', 0.58),
-      patternColor: mixHexColor(baseColor, '#172033', 0.48),
+      fillColor: displayColor,
+      patternColor,
       pattern: family.pattern,
-      patternTilePx: family.patternTilePx,
+      patternTilePx: 96,
+      repeatMm: family.repeatMm,
+      patternOpacity,
     },
     surface: {
-      color: mixHexColor(baseColor, '#ffffff', 0.05),
-      topColor: mixHexColor(baseColor, '#ffffff', 0.2),
+      color: displayColor,
+      topColor: displayColor,
+      patternColor,
       pattern: family.pattern,
       repeatMm: family.repeatMm,
       roughness: family.roughness,
       metalness: family.metalness,
-      patternOpacity: family.patternOpacity,
+      patternOpacity,
     },
     edges: PROFESSIONAL_WALL_EDGES,
   };

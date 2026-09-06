@@ -95,6 +95,7 @@ interface PipeDescriptor {
   runId: string;
   routePoints: Point2D[];
   explicitRoute3d: Vec3[];
+  legacyElevationBypassCount?: number;
   diameterMm: number;
   insulationThicknessMm: number | undefined;
   pipeKind: string;
@@ -102,7 +103,11 @@ interface PipeDescriptor {
   endConnection: EndpointConnection | null;
   bundleId?: string;
   pairSourceId?: string;
+  /** Clear wall-to-wall gap the pair was routed with. */
   pairSeparationMm?: number;
+  /** Centerline-to-centerline spacing the pair was routed with. */
+  pairCenterSpacingMm?: number;
+  outerDiameterMm?: number;
   defaultStartNodeId: string;
   defaultEndNodeId: string;
 }
@@ -309,6 +314,9 @@ function pipeDescriptors(elements: HvacElement[]): PipeDescriptor[] {
         runId,
         routePoints: spec.routePoints,
         explicitRoute3d: normalizePipeRouteNodes3d(element.properties.routeNodes3d),
+        legacyElevationBypassCount: spec.bypasses.filter((bypass) => (
+          Math.abs(bypass.bypassElevationMm - bypass.baseElevationMm) >= 0.5
+        )).length,
         diameterMm: spec.pipeDiameterMm,
         insulationThicknessMm: element.properties.insulated === false
           ? undefined
@@ -319,6 +327,8 @@ function pipeDescriptors(elements: HvacElement[]): PipeDescriptor[] {
         bundleId: spec.bundleId,
         pairSourceId: spec.bundleId,
         pairSeparationMm: readNumber(element.properties, ['pipeGapMm']),
+        pairCenterSpacingMm: readNumber(element.properties, ['pairCenterSpacingMm']),
+        outerDiameterMm: readNumber(element.properties, ['outerDiameterMm']),
         defaultStartNodeId: hvacVrfSemanticIds.routeNode(runId, 'start'),
         defaultEndNodeId: hvacVrfSemanticIds.routeNode(runId, 'end'),
       }];
@@ -343,6 +353,9 @@ function pipeDescriptors(elements: HvacElement[]): PipeDescriptor[] {
         bundleId: readString(element.properties, ['bundleId']) ?? element.id,
         pairSourceId: readString(element.properties, ['bundleId']) ?? element.id,
         pairSeparationMm: spec.pipeGapMm,
+        pairCenterSpacingMm:
+          (spec.gasOuterDiameterMm + spec.liquidOuterDiameterMm) / 2 + spec.pipeGapMm,
+        outerDiameterMm: lineKind === 'gas' ? spec.gasOuterDiameterMm : spec.liquidOuterDiameterMm,
         defaultStartNodeId: hvacVrfSemanticIds.routeNode(runId, 'start'),
         defaultEndNodeId: hvacVrfSemanticIds.routeNode(runId, 'end'),
       };
@@ -819,6 +832,7 @@ function addPipes(
         routeClass: descriptor.element.properties.routeClass,
         equivalentLengthMm: readNumber(descriptor.element.properties, ['equivalentLengthMm']),
         minimumBendRadiusMm: readNumber(descriptor.element.properties, ['minimumBendRadiusMm']),
+        bendRadiusFactor: readNumber(descriptor.element.properties, ['bendRadiusFactor']),
         bendRadiiMm: descriptor.element.properties.bendRadiiMm,
         downstreamCapacityIndex: readNumber(descriptor.element.properties, [
           'downstreamCapacityIndex',
@@ -833,6 +847,9 @@ function addPipes(
           'slopePercent',
         ]),
         hasSagPocket: descriptor.element.properties.hasSagPocket,
+        legacyElevationBypassCount: descriptor.explicitRoute3d.length < 2
+          ? descriptor.legacyElevationBypassCount
+          : undefined,
         flowDirectionValid: descriptor.element.properties.flowDirectionValid,
       }),
     };
@@ -878,12 +895,24 @@ function addPipes(
     const liquidRunIds = group.filter((item) => item.lineKind === 'liquid').map((item) => item.runId);
     if (!gasRunIds.length || !liquidRunIds.length) continue;
     const id = hvacVrfSemanticIds.pipePairAssembly(sourceId);
+    // The assembly's separation is the routed centerline-to-centerline spacing.
+    // Prefer the explicitly persisted value; legacy elements only stored the
+    // clear wall gap, so rebuild center spacing from the lines' outer radii.
+    const explicitSpacing = group.find(
+      (item) => item.pairCenterSpacingMm !== undefined,
+    )?.pairCenterSpacingMm;
+    const clearGap = group.find((item) => item.pairSeparationMm !== undefined)?.pairSeparationMm;
+    const gasOuter = group.find((item) => item.lineKind === 'gas')?.outerDiameterMm;
+    const liquidOuter = group.find((item) => item.lineKind === 'liquid')?.outerDiameterMm;
+    const derivedSpacing = clearGap !== undefined && gasOuter !== undefined && liquidOuter !== undefined
+      ? clearGap + gasOuter / 2 + liquidOuter / 2
+      : undefined;
     document.pipePairAssemblies[id] = {
       id,
       kind: 'pipe-pair-assembly',
       gasRunIds,
       liquidRunIds,
-      separationMm: group.find((item) => item.pairSeparationMm !== undefined)?.pairSeparationMm ?? 0,
+      separationMm: explicitSpacing ?? derivedSpacing ?? 0,
       allowIndependentAdjustment: true,
       flowDirection: 'forward',
       metadata: metadata({ sourceBundleId: sourceId }),

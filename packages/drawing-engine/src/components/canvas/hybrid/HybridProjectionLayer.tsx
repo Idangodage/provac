@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type MutableRefObject,
   type RefObject,
 } from "react";
@@ -18,6 +19,7 @@ import {
   type WallVisualStyle,
 } from "../../../attributes";
 import type { ArchitecturalObjectDefinition } from "../../../data";
+import { useSmartDrawingStore } from "../../../store";
 import type {
   HvacElement,
   Point2D,
@@ -34,20 +36,27 @@ import {
   type FrozenDragContext,
   type TransformConstraint,
 } from "../../../vrf/interaction/interaction-coordinate-service";
+import {
+  SnapManager,
+  type SnapCandidate,
+  type SnapType,
+} from "../../../vrf/interaction/snap-manager";
 import type { InteractionViewMode } from "../../../vrf/interaction/view-manipulation-policy";
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
 import {
   applyPipeAxisConstraint,
+  createDrawingPlane,
   createPointerRay,
   getPointerNDC,
   intersectPointerRayWithAxis,
+  pointSatisfiesPipeAxisConstraint,
   projectPointerToDrawingPlane,
   resolveActiveDrawingPlane,
-  resolveSnappedPipePoint,
   worldPointScreenDistance,
   type DrawingSurfaceHit,
+  type PipeAxisConstraint,
   type PipeDrawingPlane,
   type PipeSnapCandidate,
 } from "../hvac/pipePointerProjection";
@@ -71,7 +80,12 @@ import {
   buildRefrigerantPipeRenderChainStateMap,
   getVisibleRefrigerantPipeStraightSegmentTargets,
 } from "../hvac/refrigerantPipeRenderState";
+import { buildSmartDraftingFeedback } from "../hvac/smartDraftingFeedback";
 import { buildHvacElementMesh } from "../hvac/three3d";
+import {
+  getUniqueHvacModelUrls,
+  preloadGlb,
+} from "../hvac/three3d/glbModelCache";
 import { createWallOpenings3D } from "../isometric/Opening3DRenderer";
 import {
   MODEL_SPACE_DEV_ASSERTIONS,
@@ -82,7 +96,13 @@ import {
   worldPointToModel,
 } from "../modelSpace";
 import { MM_TO_PX } from "../scale";
+import {
+  disposeOwnedMaterial,
+  disposeObject3DResources,
+  markMaterialOwned,
+} from "../threeResourceLifecycle";
 import { getWallSurfaceTexture } from "../wall/wallSurfaceTexture";
+import { createWallOutline } from "../wall/wallThreeVisual";
 import { buildWallChunkGeometry } from "../wallview/wallMeshBuilder";
 
 import { HandleLayer3D, type HandleDef3D } from "./handleLayer3D";
@@ -92,12 +112,16 @@ import {
   resolveHybridPipeConstraintKey,
   type HybridPipeConstraintKey,
 } from "./hybridPipeEditing";
+import { measureUnrevealedContentBounds } from "./hybridScenePresentation";
 import {
   HybridViewportController,
   type DerivedBoardView,
   type HybridCameraView,
 } from "./hybridViewportController";
-import { worldToScreen as projectWorldToScreen } from "./hybridViewportMath";
+import {
+  updateOrthographicCameraClipping,
+  worldToScreen as projectWorldToScreen,
+} from "./hybridViewportMath";
 import {
   computePlanSheetCssMatrix,
   planSheetCssMatrixToString,
@@ -144,7 +168,7 @@ export interface HybridProjectionLayerProps {
    * frame the pump derives the flat-equivalent Fabric viewport of the camera
    * pose and hands it here — the host applies it to Fabric, refs, and store.
    */
-  applyDerivedView?: (view: DerivedBoardView) => void;
+  applyDerivedView?: (view: DerivedBoardView, synchronousPaint?: boolean) => void;
   /** Live polar (tilt) angle in radians from camera-controls, for the host to derive blend. */
   onPolarChange?: (polar: number) => void;
   /** Active view policy shared by 3D pipe drawing and vertex manipulation. */
@@ -216,7 +240,13 @@ type SceneState = {
   camera: THREE.OrthographicCamera;
   /** Permanent model→world basis (scale(1,−1,1)) — see modelSpace.ts. */
   viewBasis: THREE.Group;
+  /** View-only height reveal shared by equipment, pipework and architecture. */
+  revealLayer: THREE.Group;
+  /** Page and floor surfaces retain their actual depth throughout the reveal. */
+  surfaceLayer: THREE.Group;
   root: THREE.Group;
+  /** Tight world-space bounds for camera depth clipping (ground grid excluded). */
+  contentBounds: THREE.Box3;
   groundGridMaterial: THREE.ShaderMaterial;
   /** Outline proxy meshes (survives content clears; rise-synced in the pump). */
   proxyLayer: THREE.Group;
@@ -467,26 +497,25 @@ function createRoomFloor(room: Room): THREE.Object3D | null {
   return mesh;
 }
 
-// Wall materials (light-adapted reference tokens): Lambert solid so the
-// hemisphere/directional rig shades faces distinctly, always-on boundary edge
-// lines so the wall outline reads in every view style, and a ghost variant
-// for X-ray.
-const WALL_SOLID_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
-const WALL_GHOST_MATERIAL_CACHE = new Map<string, THREE.MeshStandardMaterial>();
+// Caps preserve the exact plan albedo during camera transitions. Vertical
+// faces keep lighting cues while using that same material tile and scale.
+type HybridWallMaterial = THREE.MeshStandardMaterial | THREE.MeshBasicMaterial;
+const WALL_SOLID_MATERIAL_CACHE = new Map<string, HybridWallMaterial>();
+const WALL_GHOST_MATERIAL_CACHE = new Map<string, HybridWallMaterial>();
 
 function getHybridWallMaterial(
   style: WallVisualStyle,
   ghost: boolean,
-): THREE.MeshStandardMaterial {
+  top = false,
+): HybridWallMaterial {
   const cache = ghost ? WALL_GHOST_MATERIAL_CACHE : WALL_SOLID_MATERIAL_CACHE;
-  const key = `${style.key}|${ghost ? "ghost" : "solid"}`;
+  const key = `${style.key}|${ghost ? "ghost" : "solid"}|${top ? "top" : "side"}`;
   let material = cache.get(key);
   if (!material) {
-    material = new THREE.MeshStandardMaterial({
-      color: style.surface.color,
-      map: getWallSurfaceTexture(style),
-      roughness: style.surface.roughness,
-      metalness: style.surface.metalness,
+    const map = getWallSurfaceTexture(style);
+    const parameters = {
+      color: map ? '#ffffff' : (top ? style.surface.topColor : style.surface.color),
+      map,
       transparent: ghost,
       opacity: ghost ? 0.14 : 1,
       depthWrite: !ghost,
@@ -494,25 +523,22 @@ function getHybridWallMaterial(
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
-    });
+      toneMapped: false,
+    };
+    material = top
+      ? new THREE.MeshBasicMaterial(parameters)
+      : new THREE.MeshStandardMaterial({ ...parameters, roughness: style.surface.roughness, metalness: style.surface.metalness });
     cache.set(key, material);
   }
   return material;
 }
-
-const WALL_EDGE_MATERIAL = new THREE.LineBasicMaterial({
-  color: PROFESSIONAL_WALL_EDGES.modelColor,
-  transparent: true,
-  opacity: PROFESSIONAL_WALL_EDGES.modelOpacity,
-  depthWrite: false,
-});
 
 export type HybridViewStyle = "solid" | "xray" | "wire";
 
 interface WallChunkGroupData {
   group: THREE.Group;
   solid: THREE.Mesh;
-  edges: THREE.LineSegments;
+  edges: ReturnType<typeof createWallOutline>;
   /** Always-invisible full-geometry raycast target (works in every style). */
   pick: THREE.Mesh;
   entityIds: string[];
@@ -593,13 +619,22 @@ function createWallChunkGroup(
     materialIndexByEntityId.set(nodeId, style ? materialIndexByStyleKey.get(style.key) ?? 0 : 0);
   });
 
-  const chunk = buildWallChunkGeometry(solve, 0, { materialIndexByEntityId });
+  const topMaterialIndexByEntityId = new Map(
+    [...materialIndexByEntityId].map(([id, index]) => [id, index + styles.length]),
+  );
+  const chunk = buildWallChunkGeometry(solve, 0, { materialIndexByEntityId, topMaterialIndexByEntityId });
 
   const group = new THREE.Group();
   group.name = "hybrid-wall-chunk";
 
-  const solidMaterialList = styles.map((style) => getHybridWallMaterial(style, false));
-  const ghostMaterialList = styles.map((style) => getHybridWallMaterial(style, true));
+  const solidMaterialList = [
+    ...styles.map((style) => getHybridWallMaterial(style, false)),
+    ...styles.map((style) => getHybridWallMaterial(style, false, true)),
+  ];
+  const ghostMaterialList = [
+    ...styles.map((style) => getHybridWallMaterial(style, true)),
+    ...styles.map((style) => getHybridWallMaterial(style, true, true)),
+  ];
   const solidMaterials: THREE.Material | THREE.Material[] =
     solidMaterialList.length === 1 ? solidMaterialList[0]! : solidMaterialList;
   const ghostMaterials: THREE.Material | THREE.Material[] =
@@ -609,7 +644,12 @@ function createWallChunkGroup(
   solid.castShadow = true;
   solid.receiveShadow = true;
 
-  const edges = new THREE.LineSegments(chunk.edgesGeometry, WALL_EDGE_MATERIAL);
+  const edges = createWallOutline(chunk.edgesGeometry, {
+    color: PROFESSIONAL_WALL_EDGES.modelColor,
+    opacity: PROFESSIONAL_WALL_EDGES.modelOpacity,
+    widthPx: PROFESSIONAL_WALL_EDGES.modelWidthPx,
+  });
+  chunk.edgesGeometry.dispose();
   edges.name = "hybrid-wall-edges";
 
   // Reference practice: picking uses an ALWAYS-INVISIBLE full mesh so hover/
@@ -660,11 +700,7 @@ function tuneHvacMesh(mesh: THREE.Object3D): void {
 }
 
 function disposeObject(object: THREE.Object3D): void {
-  object.traverse((child) => {
-    if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.LineSegments) {
-      child.geometry.dispose();
-    }
-  });
+  disposeObject3DResources(object);
 }
 
 function clearGroup(group: THREE.Group): void {
@@ -672,6 +708,14 @@ function clearGroup(group: THREE.Group): void {
     group.remove(child);
     disposeObject(child);
   });
+}
+
+function refreshSceneContentBounds(sceneState: SceneState): void {
+  measureUnrevealedContentBounds(
+    sceneState.revealLayer,
+    [sceneState.root, sceneState.surfaceLayer, sceneState.pipePreviewLayer],
+    sceneState.contentBounds,
+  );
 }
 
 /**
@@ -802,9 +846,16 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   applyModelToWorldBasis(viewBasis);
   scene.add(viewBasis);
 
+  const revealLayer = new THREE.Group();
+  revealLayer.name = "hybrid-height-reveal";
+  viewBasis.add(revealLayer);
+  const surfaceLayer = new THREE.Group();
+  surfaceLayer.name = "hybrid-ground-surfaces";
+  viewBasis.add(surfaceLayer);
+
   const root = new THREE.Group();
   root.name = "hybrid-model-root";
-  viewBasis.add(root);
+  revealLayer.add(root);
 
   // Persistent adaptive ground grid (survives content clears — never in `root`).
   const groundGridMaterial = createGroundGridMaterial();
@@ -814,13 +865,13 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   // survive content rebuilds; the pump keeps proxies rise-synced with walls.
   const proxyLayer = new THREE.Group();
   proxyLayer.name = "hybrid-outline-proxies";
-  viewBasis.add(proxyLayer);
+  revealLayer.add(proxyLayer);
   const handleLayer = new HandleLayer3D();
   viewBasis.add(handleLayer.group);
   const pipePreviewLayer = new THREE.Group();
   pipePreviewLayer.name = "hybrid-pipe-preview";
   pipePreviewLayer.renderOrder = 880;
-  viewBasis.add(pipePreviewLayer);
+  revealLayer.add(pipePreviewLayer);
 
   // Reference lighting rig (light-adapted): hemisphere + one angled key so
   // wall faces shade distinctly (top vs side) without shadow maps.
@@ -834,7 +885,10 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
     scene,
     camera,
     viewBasis,
+    revealLayer,
+    surfaceLayer,
     root,
+    contentBounds: new THREE.Box3(),
     groundGridMaterial,
     proxyLayer,
     handleLayer,
@@ -903,7 +957,7 @@ function applyViewStyle(sceneState: SceneState, style: HybridViewStyle): void {
     chunk.solid.material = style === "xray" ? chunk.ghostMaterials : chunk.solidMaterials;
     chunk.edges.visible = true;
   }
-  sceneState.root.traverse((object) => {
+  sceneState.surfaceLayer.traverse((object) => {
     if (object.name.startsWith("hybrid-room-floor-")) {
       object.visible = style !== "wire";
     } else if (object.name === "hybrid-page-plane") {
@@ -927,7 +981,10 @@ function rebuildPipePreviewLayer(
     }
   });
   const previews = [...(draftPipes ?? []), ...(editPipe ? [editPipe] : [])];
-  if (previews.length === 0) return;
+  if (previews.length === 0) {
+    refreshSceneContentBounds(sceneState);
+    return;
+  }
   const committedContext = editPipe
     ? committedElements.map((element) => element.id === editPipe.id ? editPipe : element)
     : [...committedElements];
@@ -947,7 +1004,8 @@ function rebuildPipePreviewLayer(
       if (!(child instanceof THREE.Mesh)) return;
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       const previewMaterials = materials.map((material) => {
-        const clone = material.clone();
+        const clone = markMaterialOwned(material.clone());
+        disposeOwnedMaterial(material);
         clone.transparent = true;
         clone.opacity = Math.min(clone.opacity, 0.72);
         clone.depthWrite = false;
@@ -958,6 +1016,7 @@ function rebuildPipePreviewLayer(
     });
     sceneState.pipePreviewLayer.add(mesh);
   }
+  refreshSceneContentBounds(sceneState);
 }
 
 export function HybridProjectionLayer({
@@ -1000,11 +1059,19 @@ export function HybridProjectionLayer({
   onPipePointerCancel,
   pipeInteractionRef,
 }: HybridProjectionLayerProps) {
+  const fittingDisplay = useSmartDrawingStore(state => state.pipeRoutingSettings.fittingDisplay);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pipeDiagnosticRef = useRef<HTMLPreElement | null>(null);
+  const smartDraftingHudRef = useRef<HTMLDivElement | null>(null);
+  const smartDraftingLabelRef = useRef<HTMLDivElement | null>(null);
+  const smartDraftingMetricsRef = useRef<HTMLDivElement | null>(null);
+  const smartDraftingHintRef = useRef<HTMLDivElement | null>(null);
+  const smartDraftingStatusRef = useRef<HTMLDivElement | null>(null);
   const sceneStateRef = useRef<SceneState | null>(null);
   const controllerRef = useRef<HybridViewportController | null>(null);
   const requestFrameRef = useRef<(() => void) | null>(null);
+  const [glbLoadRevision, setGlbLoadRevision] = useState(0);
+  const [rendererRevision, setRendererRevision] = useState(0);
   const draftPipesRef = useRef<HvacElement[] | null>(null);
   const editPipePreviewRef = useRef<HvacElement | null>(null);
   const routeActiveRef = useRef(false);
@@ -1024,6 +1091,7 @@ export function HybridProjectionLayer({
         editPipePreviewRef.current,
         hvacElementsRef.current,
       );
+      controllerRef.current?.setContentBounds(sceneState.contentBounds);
       requestFrameRef.current?.();
     });
   }, []);
@@ -1104,6 +1172,24 @@ export function HybridProjectionLayer({
     () => new Map(objectDefinitions.map((definition) => [definition.id, definition])),
     [objectDefinitions],
   );
+  const hvacModelUrlKey = useMemo(
+    () => getUniqueHvacModelUrls(hvacElements).join("\u0000"),
+    [hvacElements],
+  );
+
+  useEffect(() => {
+    if (!hvacModelUrlKey) return;
+    let active = true;
+    hvacModelUrlKey.split("\u0000").forEach((url) => {
+      preloadGlb(url, () => {
+        if (!active) return;
+        setGlbLoadRevision((revision) => revision + 1);
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [hvacModelUrlKey]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1116,6 +1202,7 @@ export function HybridProjectionLayer({
       onWebglUnavailable?.();
       return undefined;
     }
+    canvas.style.visibility = "";
     sceneStateRef.current = sceneState;
     if (draftPipesRef.current) schedulePreviewRebuild();
 
@@ -1137,11 +1224,39 @@ export function HybridProjectionLayer({
       sceneState.postfx = null; // plain render fallback
     }
 
-    const handleContextLost = (event: Event) => {
-      event.preventDefault();
+    let renderingDisabled = false;
+    const resetPlanSheet = (): void => {
+      const sheet = planSheetRefRef.current?.current ?? null;
+      if (!sheet) return;
+      sheet.style.transform = "";
+      sheet.style.opacity = "";
+      sheet.style.pointerEvents = "";
+      sheet.style.willChange = "";
+    };
+    const disableWebgl = (error?: unknown): void => {
+      if (renderingDisabled) return;
+      renderingDisabled = true;
+      if (raf !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(raf);
+        raf = null;
+      }
+      canvas.style.visibility = "hidden";
+      resetPlanSheet();
+      if (error) {
+        console.error("Hybrid WebGL renderer disabled; using the 2D plan fallback.", error);
+      }
       onWebglUnavailable?.();
     };
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      disableWebgl();
+    };
+    const handleContextRestored = () => {
+      if (!renderingDisabled) return;
+      setRendererRevision((revision) => revision + 1);
+    };
     canvas.addEventListener("webglcontextlost", handleContextLost, false);
+    canvas.addEventListener("webglcontextrestored", handleContextRestored, false);
 
     // ── 3D wall picking / selection / micro-edit handles ──────────────────
     // LMB is unclaimed while the 3D view is engaged (the plan sheet is
@@ -1240,12 +1355,67 @@ export function HybridProjectionLayer({
       lastCommittedWorld: null,
       pointerId: null,
     };
+    const pipeSnapManager = new SnapManager();
+    const draftingAnnouncementIntervalMs = 1_000;
+    let lastAnnouncedDraftingStatus = "";
+    let lastAnnouncedDraftingLabel = "";
+    let lastDraftingAnnouncementAt = Number.NEGATIVE_INFINITY;
+    let pendingDraftingAnnouncement: { status: string; label: string } | null = null;
+    let draftingAnnouncementTimer: number | null = null;
+    const publishDraftingAnnouncement = (status: string, label: string): void => {
+      const liveRegion = smartDraftingStatusRef.current;
+      if (liveRegion && status !== lastAnnouncedDraftingStatus) {
+        liveRegion.textContent = status;
+        lastAnnouncedDraftingStatus = status;
+      }
+      lastAnnouncedDraftingLabel = label;
+      lastDraftingAnnouncementAt = performance.now();
+    };
+    const queueDraftingAnnouncement = (status: string, label: string): void => {
+      const now = performance.now();
+      const semanticContextChanged = label !== lastAnnouncedDraftingLabel;
+      const remainingDelay = draftingAnnouncementIntervalMs - (now - lastDraftingAnnouncementAt);
+      pendingDraftingAnnouncement = { status, label };
+      if (semanticContextChanged || remainingDelay <= 0) {
+        if (draftingAnnouncementTimer !== null) {
+          window.clearTimeout(draftingAnnouncementTimer);
+          draftingAnnouncementTimer = null;
+        }
+        const pending = pendingDraftingAnnouncement;
+        pendingDraftingAnnouncement = null;
+        publishDraftingAnnouncement(pending.status, pending.label);
+        return;
+      }
+      if (draftingAnnouncementTimer !== null) return;
+      draftingAnnouncementTimer = window.setTimeout(() => {
+        draftingAnnouncementTimer = null;
+        const pending = pendingDraftingAnnouncement;
+        pendingDraftingAnnouncement = null;
+        if (pending) publishDraftingAnnouncement(pending.status, pending.label);
+      }, Math.max(0, remainingDelay));
+    };
+    const hideSmartDraftingHud = (): void => {
+      const draftingHud = smartDraftingHudRef.current;
+      if (draftingHud) draftingHud.style.display = "none";
+      if (draftingAnnouncementTimer !== null) {
+        window.clearTimeout(draftingAnnouncementTimer);
+        draftingAnnouncementTimer = null;
+      }
+      pendingDraftingAnnouncement = null;
+      const liveRegion = smartDraftingStatusRef.current;
+      if (liveRegion) liveRegion.textContent = "";
+      lastAnnouncedDraftingStatus = "";
+      lastAnnouncedDraftingLabel = "";
+      lastDraftingAnnouncementAt = Number.NEGATIVE_INFINITY;
+    };
     const resetPipePlacement = (): void => {
       pipePlacementState.lockedPlane = null;
       pipePlacementState.lastCommittedWorld = null;
       pipePlacementState.pointerId = null;
+      pipeSnapManager.reset();
       const diagnostic = pipeDiagnosticRef.current;
       if (diagnostic) diagnostic.style.display = "none";
+      hideSmartDraftingHud();
     };
     resetPipePlacementRef.current = resetPipePlacement;
 
@@ -1407,6 +1577,66 @@ export function HybridProjectionLayer({
       return result;
     };
 
+    const managedSnapType = (kind: PipeSnapCandidate["kind"]): SnapType => {
+      switch (kind) {
+        case "fitting":
+          return "branch-outlet";
+        case "guide":
+          return "pipe-centreline";
+        case "surface":
+          return "wall-face";
+        case "construction-plane":
+          return "level";
+        default:
+          return kind;
+      }
+    };
+
+    const managedSnapMessage = (candidate: PipeSnapCandidate): string => {
+      const target = pipeSnapBundleByCandidateId.get(candidate.id);
+      const source = target?.sourceElementId
+        ? hvacElementsRef.current.find((element) => element.id === target.sourceElementId)
+        : undefined;
+      const role = target?.terminalRole?.replaceAll("-", " ");
+      if (source) {
+        return role ? `${source.label} ${role}` : source.label;
+      }
+      switch (candidate.kind) {
+        case "equipment-port":
+          return "Equipment port";
+        case "pipe-endpoint":
+          return "Pipe endpoint";
+        case "fitting":
+          return "Fitting connection";
+        case "guide":
+          return "Pipe centreline";
+        case "surface":
+          return "Surface";
+        case "construction-plane":
+          return "Construction plane";
+      }
+    };
+
+    const toManagedSnapCandidate = (
+      candidate: PipeSnapCandidate,
+      isValid = true,
+    ): SnapCandidate => {
+      const target = pipeSnapBundleByCandidateId.get(candidate.id);
+      return {
+        id: candidate.id,
+        type: managedSnapType(candidate.kind),
+        worldPoint: candidate.point,
+        screenDistancePx: candidate.screenDistancePx,
+        targetEntityId: target?.sourceElementId,
+        message: managedSnapMessage(candidate),
+        isValid,
+        metadata: {
+          pipeSnapKind: candidate.kind,
+          terminalRole: target?.terminalRole,
+        },
+      };
+    };
+
     const writePipeDiagnostic = (
       e: PointerEvent,
       plane: PipeDrawingPlane,
@@ -1436,6 +1666,67 @@ export function HybridProjectionLayer({
       ].join("\n");
     };
 
+    const updateSmartDraftingHud = (
+      e: PointerEvent,
+      plane: PipeDrawingPlane,
+      constraint: PipeAxisConstraint,
+      currentWorld: THREE.Vector3,
+      snap: PipeSnapCandidate | null,
+      snapMessage?: string,
+    ): void => {
+      const hud = smartDraftingHudRef.current;
+      const anchorWorld = pipePlacementState.lastCommittedWorld;
+      if (!hud || !anchorWorld) {
+        if (hud) hud.style.display = "none";
+        return;
+      }
+      const anchor = worldPointToModel(anchorWorld);
+      const current = worldPointToModel(currentWorld);
+      const feedback = buildSmartDraftingFeedback({
+        anchor,
+        current,
+        workplaneKind: plane.kind,
+        axisConstraint: constraint,
+        snap: snap
+          ? {
+              kind: snap.kind,
+              message: snapMessage,
+            }
+          : null,
+      });
+      if (smartDraftingLabelRef.current) {
+        smartDraftingLabelRef.current.textContent = feedback.nearCursor.label;
+      }
+      if (smartDraftingMetricsRef.current) {
+        smartDraftingMetricsRef.current.textContent = feedback.nearCursor.metrics;
+      }
+      if (smartDraftingHintRef.current) {
+        smartDraftingHintRef.current.textContent = feedback.nearCursor.hint;
+      }
+      queueDraftingAnnouncement(feedback.ariaLabel, feedback.label);
+
+      const rect = canvas.getBoundingClientRect();
+      const pointerX = e.clientX - rect.left;
+      const pointerY = e.clientY - rect.top;
+      const estimatedWidth = 288;
+      const estimatedHeight = 78;
+      const left = Math.max(
+        12,
+        Math.min(pointerX + 18, Math.max(12, rect.width - estimatedWidth - 12)),
+      );
+      const preferredTop = pointerY + 18;
+      const desiredTop = preferredTop + estimatedHeight <= rect.height - 12
+        ? preferredTop
+        : pointerY - estimatedHeight - 18;
+      const top = Math.max(
+        12,
+        Math.min(desiredTop, Math.max(12, rect.height - estimatedHeight - 12)),
+      );
+      hud.style.left = `${left}px`;
+      hud.style.top = `${top}px`;
+      hud.style.display = "block";
+    };
+
     const resolvePipePointer = (
       e: PointerEvent,
       lockPlane: boolean,
@@ -1460,9 +1751,13 @@ export function HybridProjectionLayer({
         controller.camera,
         plane,
       );
-      if (!projection) return null;
+      if (!projection) {
+        pipeSnapManager.reset();
+        hideSmartDraftingHud();
+        return null;
+      }
       let constrained = projection.rawWorldPoint;
-      let constraint = "none";
+      let constraint: PipeAxisConstraint = "none";
       if (pipePlacementState.lastCommittedWorld && (e.ctrlKey || e.metaKey)) {
         const axisHit = intersectPointerRayWithAxis(
           projection.ray,
@@ -1486,36 +1781,70 @@ export function HybridProjectionLayer({
         );
         constraint = axis;
       }
-      const snapped = (e.altKey || e.ctrlKey || e.metaKey)
-        ? { point: constrained.clone(), candidate: null }
-        : resolveSnappedPipePoint(
+      const rawSnapCandidates = pipeSnapCandidates(coordinates.canvas);
+      const rawCandidateById = new Map(
+        rawSnapCandidates.map((candidate) => [candidate.id, candidate]),
+      );
+      const snappingDisabled = e.altKey || e.ctrlKey || e.metaKey;
+      if (snappingDisabled) pipeSnapManager.reset();
+      const snapResolution = snappingDisabled
+        ? {
+            point: constrained.clone(),
+            candidate: null,
+          }
+        : pipeSnapManager.resolve(
             constrained,
-            pipeSnapCandidates(coordinates.canvas),
-            14,
+            rawSnapCandidates.map((candidate) => toManagedSnapCandidate(
+              candidate,
+              !pipePlacementState.lastCommittedWorld
+              || pointSatisfiesPipeAxisConstraint(
+                pipePlacementState.lastCommittedWorld,
+                candidate.point,
+                constraint,
+                plane,
+              ),
+            )),
           );
+      const snappedCandidate = snapResolution.candidate
+        ? rawCandidateById.get(snapResolution.candidate.id) ?? null
+        : null;
       if (lockPlane && !pipePlacementState.lockedPlane) {
-        pipePlacementState.lockedPlane = plane;
+        pipePlacementState.lockedPlane = createDrawingPlane(
+          `${plane.id}:anchor`,
+          plane.kind,
+          snapResolution.point,
+          plane.normal,
+          plane.xAxis,
+        );
       }
       writePipeDiagnostic(
         e,
         plane,
         projection.rawWorldPoint,
-        snapped.point,
+        snapResolution.point,
         projection.ray,
         constraint,
-        snapped.candidate,
+        snappedCandidate,
       );
-      const model = worldPointToModel(snapped.point);
+      updateSmartDraftingHud(
+        e,
+        plane,
+        constraint,
+        snapResolution.point,
+        snappedCandidate,
+        snapResolution.candidate?.message,
+      );
+      const model = worldPointToModel(snapResolution.point);
       return {
         point: {
           x: model.x,
           y: model.y,
           z: model.z,
-          snapTarget: snapped.candidate
-            ? pipeSnapBundleByCandidateId.get(snapped.candidate.id)
+          snapTarget: snappedCandidate
+            ? pipeSnapBundleByCandidateId.get(snappedCandidate.id)
             : undefined,
         },
-        world: snapped.point,
+        world: snapResolution.point,
         plane,
       };
     };
@@ -1780,8 +2109,10 @@ export function HybridProjectionLayer({
     const handlePointerMove3D = (ev: Event): void => {
       const e = ev as PointerEvent;
       const s = sceneStateRef.current;
-      if (!s) return;
-      if (controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      if (!s || controller.isTransitioning || controller.isFlatView(FLAT_SHEET_POLAR)) {
+        hideSmartDraftingHud();
+        return;
+      }
       if (pickState.pipeDrag) {
         e.preventDefault();
         e.stopPropagation();
@@ -1791,7 +2122,10 @@ export function HybridProjectionLayer({
       }
       if (pipeToolActiveRef.current) {
         // MMB/RMB remain camera navigation; LMB/hover belong to the pipe tool.
-        if ((e.buttons & 6) !== 0) return;
+        if ((e.buttons & 6) !== 0) {
+          hideSmartDraftingHud();
+          return;
+        }
         const resolved = resolvePipePointer(e, false);
         if (resolved) onPipePointerMoveRef.current?.(resolved.point);
         return;
@@ -1843,9 +2177,15 @@ export function HybridProjectionLayer({
 
     const handlePointerDown3D = (ev: Event): void => {
       const e = ev as PointerEvent;
-      if (e.button !== 0) return;
+      if (e.button !== 0) {
+        if (pipeToolActiveRef.current) hideSmartDraftingHud();
+        return;
+      }
       const s = sceneStateRef.current;
-      if (!s || controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      if (!s || controller.isTransitioning || controller.isFlatView(FLAT_SHEET_POLAR)) {
+        hideSmartDraftingHud();
+        return;
+      }
       if (pipeToolActiveRef.current) {
         const resolved = resolvePipePointer(e, true);
         if (!resolved) return;
@@ -2097,7 +2437,10 @@ export function HybridProjectionLayer({
       const e = ev as PointerEvent;
       if (!pipeToolActiveRef.current || !routeActiveRef.current) return;
       if (e.target instanceof Node && interactionElement.contains(e.target)) return;
-      if ((e.buttons & 6) !== 0 || controller.isFlatView(FLAT_SHEET_POLAR)) return;
+      if ((e.buttons & 6) !== 0 || controller.isTransitioning || controller.isFlatView(FLAT_SHEET_POLAR)) {
+        hideSmartDraftingHud();
+        return;
+      }
       const resolved = resolvePipePointer(e, false);
       if (resolved) onPipePointerMoveRef.current?.(resolved.point);
     };
@@ -2105,55 +2448,94 @@ export function HybridProjectionLayer({
 
     let raf: number | null = null;
     let lastTs = typeof performance !== "undefined" ? performance.now() : 0;
+    let pumpActive = false;
     let lastW = -1;
     let lastH = -1;
+    let lastPixelRatio = -1;
     // The camera adopts the board's CURRENT pan/zoom once on mount, then OWNS
     // the view (reference-app practice: camera is the one navigation owner).
     let cameraAdoptedBoard = false;
+    const adoptBoardCamera = (): void => {
+      if (cameraAdoptedBoard) return;
+      const { width: width0, height: height0, viewportZoom: zoom0, panOffset: pan } =
+        boardRef.current;
+      const boardWidth = Math.max(1, Math.floor(width0));
+      const boardHeight = Math.max(1, Math.floor(height0));
+      const matrix = getViewportMatrixRef.current?.();
+      const matrixZoom = matrix && matrix.length >= 6 ? Number(matrix[0]) : Number.NaN;
+      const fallbackZoom = Number.isFinite(zoom0) && zoom0 > 0 ? zoom0 : 1;
+      const liveZoom = Number.isFinite(matrixZoom) && matrixZoom > 0
+        ? matrixZoom
+        : fallbackZoom;
+      const matrixPanX = matrix && matrix.length >= 6 ? Number(matrix[4]) : Number.NaN;
+      const matrixPanY = matrix && matrix.length >= 6 ? Number(matrix[5]) : Number.NaN;
+      const safePanX = Number.isFinite(pan.x) ? pan.x : 0;
+      const safePanY = Number.isFinite(pan.y) ? pan.y : 0;
+      const panPxX = Number.isFinite(matrixPanX) ? matrixPanX : -safePanX * liveZoom;
+      const panPxY = Number.isFinite(matrixPanY) ? matrixPanY : -safePanY * liveZoom;
+      const pxPerMm = MM_TO_PX * liveZoom;
+      const centerWorld = modelPointToWorld({
+        x: (boardWidth / 2 - panPxX) / pxPerMm,
+        y: (boardHeight / 2 - panPxY) / pxPerMm,
+      });
+      controller.setBoardView(pxPerMm, centerWorld.x, centerWorld.y, 0);
+      cameraAdoptedBoard = true;
+    };
 
     // One frame: board zoom/centre → ortho camera, camera-controls adds the tilt,
     // grid density follows the zoom, render. Returns true while still animating.
-    const renderScene = (delta: number): boolean => {
+    const renderScene = (delta: number, elapsedDelta: number): boolean => {
       const s = sceneStateRef.current;
       if (!s) return false;
-      const { width: w0, height: h0, viewportZoom: z0, panOffset: pan } = boardRef.current;
+      const { width: w0, height: h0 } = boardRef.current;
       const w = Math.max(1, Math.floor(w0));
       const h = Math.max(1, Math.floor(h0));
       const pixelRatio =
         typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
-      s.renderer.setPixelRatio(pixelRatio);
-      s.renderer.setSize(w, h, false);
+      const sizeChanged = w !== lastW || h !== lastH;
+      const pixelRatioChanged = Math.abs(pixelRatio - lastPixelRatio) > 1e-6;
+      // A backing-buffer resize reallocates and clears GPU storage. Resize the
+      // renderer and composer only when the CSS size or DPR actually changed.
+      if (pixelRatioChanged) {
+        s.renderer.setPixelRatio(pixelRatio);
+        lastPixelRatio = pixelRatio;
+      }
+      if (sizeChanged || pixelRatioChanged) {
+        s.renderer.setSize(w, h, false);
+        s.postfx?.setSize(w, h);
+      }
       // Frustum (in pixels) only on actual resize — matches the reference; resetting
       // it every frame can fight camera-controls' ortho zoom.
-      if (w !== lastW || h !== lastH) {
+      if (sizeChanged) {
         controller.setSize(w, h);
-        s.postfx?.setSize(w, h);
         lastW = w;
         lastH = h;
       }
       // One-time adoption: seed the camera from wherever the board currently
       // is (restored project pan/zoom); after this the flow is CAMERA → BOARD.
-      if (!cameraAdoptedBoard) {
-        const m = getViewportMatrixRef.current?.();
-        const z0Live = Math.max(m && m.length >= 6 ? (m[0] as number) : z0, 1e-6);
-        const panPxX0 = m && m.length >= 6 ? (m[4] as number) : -pan.x * z0Live;
-        const panPxY0 = m && m.length >= 6 ? (m[5] as number) : -pan.y * z0Live;
-        const pxPerMm0 = MM_TO_PX * z0Live;
-        // The board centre is a MODEL point (y down); camera-controls works in
-        // WORLD space, one mirror away (see the view basis in createSceneState).
-        const centerWorld0 = modelPointToWorld({
-          x: (w / 2 - panPxX0) / pxPerMm0,
-          y: (h / 2 - panPxY0) / pxPerMm0,
-        });
-        controller.setBoardView(pxPerMm0, centerWorld0.x, centerWorld0.y, 0);
-        cameraAdoptedBoard = true;
-      }
-      const animating = controller.update(delta);
+      adoptBoardCamera();
+      const animating = controller.update(delta, elapsedDelta);
+      updateOrthographicCameraClipping(controller.camera, s.contentBounds);
       // CAMERA → BOARD: derive the flat-equivalent Fabric viewport from the
       // camera pose and hand it to the host (fabric + refs + store) so every
       // DOM layer shows exactly what the camera sees — one navigation owner.
       const derived = controller.deriveBoardView();
-      applyDerivedViewRef.current?.(derived);
+      if (
+        !Number.isFinite(derived.zoom) ||
+        derived.zoom <= 0 ||
+        !Number.isFinite(derived.panPxX) ||
+        !Number.isFinite(derived.panPxY)
+      ) {
+        throw new Error("Hybrid camera produced a non-finite viewport.");
+      }
+      const polar = controller.polar;
+      const isFlat = controller.isFlatView(FLAT_SHEET_POLAR);
+      const sheetOpacity = isFlat ? 1 : planSheetOpacityForPolar(polar);
+      // Paint the raster and SVG before their CSS projection, in this frame.
+      // While fully in 3D, avoid rebuilding the invisible plan on every tick.
+      if (sheetOpacity > 0 || !animating) {
+        applyDerivedViewRef.current?.(derived, sheetOpacity > 0);
+      }
       const z = Math.max(derived.zoom, 1e-6);
       const panPxX = derived.panPxX;
       const panPxY = derived.panPxY;
@@ -2166,29 +2548,24 @@ export function HybridProjectionLayer({
         assertModelToWorldBasis(s.viewBasis, "Hybrid view basis");
         assertCanonicalModelRoot(s.root, "Hybrid content root");
       }
-      const polar = controller.polar;
       // "Flat" means polar AND azimuth are home — an azimuth-only rotation
       // still needs the sheet matrix (the Fabric board cannot rotate).
-      const isFlat = controller.isFlatView(FLAT_SHEET_POLAR);
+      if (isFlat || controller.isTransitioning || !pipeToolActiveRef.current || !routeActiveRef.current) {
+        hideSmartDraftingHud();
+      }
       // The 3D content is live the moment any tilt begins; while flat only the
       // grid shows (the crisp DOM sheet carries the drawing).
       s.root.visible = !isFlat;
+      s.surfaceLayer.visible = !isFlat;
       s.pipePreviewLayer.visible = !isFlat;
-      // Walls RISE from the paper: flat during the sheet crossfade (top face
-      // glued to the plan footprint — a full-height solid would parallax its
-      // top by height·tanφ and read as a broken double wall), then grow to
-      // full height once the sheet is gone. Derived-cache reveal only.
+      s.proxyLayer.visible = !isFlat;
+      // All elevated geometry rises together. Revealing only walls left units
+      // and connected pipes floating above the plan during the crossfade.
       const rise = Math.max(wallRiseForPolar(polar), 0.002);
-      const wallChunk = s.root.getObjectByName("hybrid-wall-chunk");
-      if (wallChunk) {
-        // Keep a few mm of body so the flattened walls stay above floor fills.
-        wallChunk.scale.z = rise;
-      }
-      // Outline proxies mirror the wall triangles — rise with them.
-      s.proxyLayer.scale.z = rise;
+      s.revealLayer.scale.z = rise;
       // Handles stay ~10px on screen at any zoom (reference practice).
       s.handleLayer.updateScale(1 / Math.max(controller.camera.zoom, 1e-9));
-      s.handleLayer.group.visible = !isFlat;
+      s.handleLayer.group.visible = !isFlat && rise === 1 && !controller.isTransitioning;
       // Paper bond through the transition: tilt the ENTIRE 2D sheet (Fabric +
       // overlays) with the exact affine projection of the model plane, so the
       // drawing stays glued to the paper while the sheet cross-fades into the
@@ -2199,23 +2576,25 @@ export function HybridProjectionLayer({
         if (isFlat) {
           if (sheet.style.transform !== "") sheet.style.transform = "";
           if (sheet.style.opacity !== "1") sheet.style.opacity = "1";
-          if (sheet.style.pointerEvents !== "") sheet.style.pointerEvents = "";
+          sheet.style.pointerEvents = controller.isTransitioning ? "none" : "";
+          if (sheet.style.willChange !== "auto") sheet.style.willChange = "auto";
         } else {
           controller.camera.updateMatrixWorld();
           const sheetMatrix = computePlanSheetCssMatrix(
             controller.camera,
-            [z, 0, 0, z, panPxX, panPxY],
+            getViewportMatrixRef.current?.() ?? [z, 0, 0, z, panPxX, panPxY],
             w,
             h,
           );
           sheet.style.transform = planSheetCssMatrixToString(sheetMatrix);
-          sheet.style.opacity = String(planSheetOpacityForPolar(polar));
+          sheet.style.opacity = String(sheetOpacity);
           sheet.style.pointerEvents = "none";
+          sheet.style.willChange = sheetOpacity > 0 ? "transform, opacity" : "auto";
         }
       }
       s.groundGridMaterial.uniforms.uMinor.value = computeBoardGridSteps(z).minorMm;
       s.groundGridMaterial.uniforms.uMajor.value = computeBoardGridSteps(z).majorMm;
-      if (s.postfx) {
+      if (!isFlat && s.postfx?.hasOutlines) {
         s.postfx.render(delta);
       } else {
         s.renderer.render(s.scene, controller.camera);
@@ -2244,28 +2623,46 @@ export function HybridProjectionLayer({
       return animating;
     };
 
-    // Continuous loop: the 3D grid must track the DOM objects frame-for-frame during
-    // 2D pan/zoom (and 3D orbit) so they move as ONE — an on-demand render lags a few
-    // frames behind the immediate DOM update and reads as "independent movement".
-    // Rendering a single grid plane (+ content when tilted) every frame is cheap.
-    // (Idle-throttle / demand rendering → perf pass in M7.)
+    // Invalidation-driven pump: interaction and prop changes request one frame;
+    // camera damping alone keeps it alive for subsequent animation frames.
     const frame = (ts: number): void => {
       raf = null;
-      const delta = Math.min(0.05, (ts - lastTs) / 1000);
+      if (renderingDisabled || (typeof document !== "undefined" && document.hidden)) return;
+      const elapsedDelta = Math.max(0, (ts - lastTs) / 1000);
+      const delta = Math.min(0.05, elapsedDelta);
       lastTs = ts;
-      renderScene(delta);
-      request();
+      try {
+        pumpActive = renderScene(delta, elapsedDelta);
+        if (pumpActive) request();
+      } catch (error) {
+        disableWebgl(error);
+      }
     };
     const request = (): void => {
-      if (raf == null && typeof window !== "undefined") raf = window.requestAnimationFrame(frame);
+      if (!renderingDisabled && raf == null && typeof window !== "undefined") {
+        if (!pumpActive) lastTs = performance.now();
+        raf = window.requestAnimationFrame(frame);
+      }
     };
+    const handleVisibilityChange = (): void => {
+      lastTs = performance.now();
+      if (!document.hidden) request();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     controller.onChange = request;
     requestFrameRef.current = request;
+    // Seed restored pan/zoom before exposing programmatic view controls. This
+    // prevents a fast Plan/Front/Side/Iso/Fit click from being overwritten by
+    // the first animation frame's one-time board adoption.
+    adoptBoardCamera();
     onControllerReadyRef.current?.(controller);
     request();
 
     return () => {
+      renderingDisabled = true;
       canvas.removeEventListener("webglcontextlost", handleContextLost, false);
+      canvas.removeEventListener("webglcontextrestored", handleContextRestored, false);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       interactionElement.removeEventListener("pointermove", handlePointerMove3D);
       interactionElement.removeEventListener("pointerdown", handlePointerDown3D);
       interactionElement.removeEventListener("pointerup", handlePointerUp3D);
@@ -2273,6 +2670,10 @@ export function HybridProjectionLayer({
       window.removeEventListener("pointermove", handleWindowPipeMove);
       window.removeEventListener("keydown", handlePipeConstraintKeyDown);
       window.removeEventListener("keyup", handlePipeConstraintKeyUp);
+      if (draftingAnnouncementTimer !== null) {
+        window.clearTimeout(draftingAnnouncementTimer);
+        draftingAnnouncementTimer = null;
+      }
       editPipePreviewRef.current = null;
       resetPipePlacementRef.current = null;
       removeGhost();
@@ -2286,33 +2687,40 @@ export function HybridProjectionLayer({
       onControllerReadyRef.current?.(null);
       controller.dispose();
       controllerRef.current = null;
-      const sheet = planSheetRefRef.current?.current ?? null;
-      if (sheet) {
-        sheet.style.transform = "";
-        sheet.style.opacity = "";
-        sheet.style.pointerEvents = "";
-      }
+      resetPlanSheet();
+      canvas.style.visibility = "";
       sceneState.postfx?.dispose();
       sceneState.postfx = null;
       sceneState.handleLayer.dispose();
       sceneState.wallChunk = null;
       clearGroup(sceneState.root);
+      clearGroup(sceneState.surfaceLayer);
       clearGroup(sceneState.pipePreviewLayer);
+      clearGroup(sceneState.proxyLayer);
+      const groundGrid = sceneState.viewBasis.getObjectByName("hybrid-ground-grid");
+      if (groundGrid instanceof THREE.Mesh) groundGrid.geometry.dispose();
+      sceneState.groundGridMaterial.dispose();
+      BODY_GHOST_MATERIAL.dispose();
+      LEADER_MATERIAL.dispose();
+      GHOST_MATERIAL_3D.dispose();
+      sceneState.renderer.renderLists.dispose();
       sceneState.renderer.dispose();
+      sceneState.renderer.forceContextLoss();
       sceneStateRef.current = null;
     };
-  }, [interactionElement, onWebglUnavailable]);
+  }, [interactionElement, onWebglUnavailable, rendererRevision]);
 
   useEffect(() => {
     const sceneState = sceneStateRef.current;
     if (!sceneState) return;
 
     clearGroup(sceneState.root);
-    sceneState.root.add(createPagePlane(pageWidthMm, pageHeightMm));
+    clearGroup(sceneState.surfaceLayer);
+    sceneState.surfaceLayer.add(createPagePlane(pageWidthMm, pageHeightMm));
 
     rooms.forEach((room) => {
       const floor = createRoomFloor(room);
-      if (floor) sceneState.root.add(floor);
+      if (floor) sceneState.surfaceLayer.add(floor);
     });
 
     const wallChunkData = createWallChunkGroup(walls, wallColorMode);
@@ -2353,6 +2761,8 @@ export function HybridProjectionLayer({
       tuneHvacMesh(mesh);
       sceneState.root.add(mesh);
     });
+    refreshSceneContentBounds(sceneState);
+    controllerRef.current?.setContentBounds(sceneState.contentBounds);
     // Content changed → re-apply the view style and rebuild outline proxies
     // against the fresh chunk (selection may reference rebuilt geometry).
     applyViewStyle(sceneState, viewStyleRef.current);
@@ -2360,6 +2770,8 @@ export function HybridProjectionLayer({
     requestFrameRef.current?.();
     schedulePreviewRebuild();
   }, [
+    glbLoadRevision,
+    fittingDisplay,
     hvacElements,
     objectDefinitionsById,
     pageHeightMm,
@@ -2491,6 +2903,32 @@ export function HybridProjectionLayer({
         ref={pipeDiagnosticRef}
         aria-hidden="true"
         className="pointer-events-none absolute bottom-3 left-3 z-[25] hidden rounded bg-slate-950/90 p-2 text-[10px] leading-4 text-emerald-300 shadow-lg"
+      />
+      <div
+        ref={smartDraftingHudRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute z-[25] hidden rounded-md border border-slate-500/60 bg-slate-950/90 px-2.5 py-2 text-slate-100 shadow-lg backdrop-blur-sm"
+        style={{ maxWidth: "min(18rem, calc(100% - 1.5rem))" }}
+      >
+        <div
+          ref={smartDraftingLabelRef}
+          className="truncate text-[11px] font-semibold leading-4 text-cyan-200"
+        />
+        <div
+          ref={smartDraftingMetricsRef}
+          className="truncate whitespace-nowrap text-xs font-medium leading-4 tabular-nums"
+        />
+        <div
+          ref={smartDraftingHintRef}
+          className="truncate text-[10px] leading-4 text-slate-400"
+        />
+      </div>
+      <div
+        ref={smartDraftingStatusRef}
+        className="sr-only"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
       />
     </>
   );

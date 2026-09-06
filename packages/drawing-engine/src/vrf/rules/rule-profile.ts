@@ -256,7 +256,9 @@ export const PROJECT_FALLBACK_RULE_PROFILE: ManufacturerRuleProfile = {
     minimumJointSpacingMm: fallbackValue(500, 'Unverified application fallback.'),
     minimumBranchElbowClearanceMm: fallbackValue(500, 'Unverified application fallback.'),
     minimumSelectorBoxElbowClearanceMm: fallbackValue(1_000, 'Unverified application fallback.'),
-    minimumGasSlopePercent: fallbackValue(1, 'Unverified application fallback.'),
+    // VRF slope requirements depend on the manufacturer and system role.
+    // A generic refrigeration suction-line gradient must not force every
+    // reversible VRF gas main away from a level installation.
     requireInsulation: true,
     prohibitUnapprovedTee: true,
   },

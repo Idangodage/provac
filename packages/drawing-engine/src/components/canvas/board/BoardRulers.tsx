@@ -10,6 +10,7 @@ import {
   formatBoardLabel,
   type BoardUnit,
 } from './boardGridMath';
+import { getBoardRulerTicks } from './boardRulerTicks';
 
 export interface BoardRulersProps {
   /** Outer-container width in CSS px. */
@@ -63,6 +64,7 @@ export const BoardRulers: React.FC<BoardRulersProps> = ({
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    if (![width, height, viewportZoom, panOffset.x, panOffset.y, offset.x, offset.y].every(Number.isFinite)) return;
 
     const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1;
     const w = Math.max(1, Math.floor(width));
@@ -110,8 +112,8 @@ export const BoardRulers: React.FC<BoardRulersProps> = ({
         ctx.strokeStyle = level.color;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        const first = Math.ceil(worldStart / level.stepMm) * level.stepMm;
-        for (let g = first; g <= worldEnd; g += level.stepMm) {
+        const ticks = getBoardRulerTicks(worldStart, worldEnd, level.stepMm, w - leftSize);
+        for (const g of ticks) {
           const sx = Math.round(worldToScreenX(g)) + 0.5;
           if (sx < leftSize) continue;
           ctx.moveTo(sx, topSize);
@@ -121,7 +123,7 @@ export const BoardRulers: React.FC<BoardRulersProps> = ({
         if (level.label) {
           ctx.fillStyle = LABEL_COLOR;
           ctx.textAlign = 'center';
-          for (let g = first; g <= worldEnd; g += level.stepMm) {
+          for (const g of ticks) {
             const sx = worldToScreenX(g);
             if (sx < leftSize + 6) continue;
             ctx.fillText(formatBoardLabel(g, unit), sx, topSize * 0.42);
@@ -138,8 +140,8 @@ export const BoardRulers: React.FC<BoardRulersProps> = ({
         ctx.strokeStyle = level.color;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        const first = Math.ceil(worldStart / level.stepMm) * level.stepMm;
-        for (let g = first; g <= worldEnd; g += level.stepMm) {
+        const ticks = getBoardRulerTicks(worldStart, worldEnd, level.stepMm, h - topSize);
+        for (const g of ticks) {
           const sy = Math.round(worldToScreenY(g)) + 0.5;
           if (sy < topSize) continue;
           ctx.moveTo(leftSize, sy);
@@ -149,7 +151,7 @@ export const BoardRulers: React.FC<BoardRulersProps> = ({
         if (level.label) {
           ctx.fillStyle = LABEL_COLOR;
           ctx.textAlign = 'center';
-          for (let g = first; g <= worldEnd; g += level.stepMm) {
+          for (const g of ticks) {
             const sy = worldToScreenY(g);
             if (sy < topSize + 8) continue;
             ctx.save();

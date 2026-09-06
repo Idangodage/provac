@@ -1,0 +1,4045 @@
+[
+  {
+    "name": "default-balanced",
+    "options": {
+      "outdoorUnitId": "outdoor",
+      "indoorUnitIds": [
+        "indoor-a",
+        "indoor-b"
+      ],
+      "objective": "balanced"
+    },
+    "document": {
+      "id": "vrf-piping-network",
+      "schemaVersion": 1,
+      "equipmentNodes": {
+        "outdoor": {
+          "id": "outdoor",
+          "kind": "equipment",
+          "equipmentType": "outdoor-unit",
+          "capacityIndex": 100,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "outdoor:gas",
+            "outdoor:liquid"
+          ]
+        },
+        "indoor-a": {
+          "id": "indoor-a",
+          "kind": "equipment",
+          "equipmentType": "indoor-unit",
+          "capacityIndex": 50,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "indoor-a:gas",
+            "indoor-a:liquid"
+          ]
+        },
+        "indoor-b": {
+          "id": "indoor-b",
+          "kind": "equipment",
+          "equipmentType": "indoor-unit",
+          "capacityIndex": 50,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "indoor-b:gas",
+            "indoor-b:liquid"
+          ]
+        }
+      },
+      "equipmentPorts": {
+        "outdoor:gas": {
+          "id": "outdoor:gas",
+          "equipmentId": "outdoor",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "outdoor:liquid": {
+          "id": "outdoor:liquid",
+          "equipmentId": "outdoor",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-a:gas": {
+          "id": "indoor-a:gas",
+          "equipmentId": "indoor-a",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-a:liquid": {
+          "id": "indoor-a:liquid",
+          "equipmentId": "indoor-a",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-b:gas": {
+          "id": "indoor-b:gas",
+          "equipmentId": "indoor-b",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-b:liquid": {
+          "id": "indoor-b:liquid",
+          "equipmentId": "indoor-b",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        }
+      },
+      "routeNodes": {
+        "gas:root": {
+          "id": "gas:root",
+          "kind": "endpoint",
+          "position": {
+            "x": -200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:0"
+          ]
+        },
+        "gas:inlet": {
+          "id": "gas:inlet",
+          "kind": "endpoint",
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:1"
+          ]
+        },
+        "gas:out-a": {
+          "id": "gas:out-a",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:a:0"
+          ]
+        },
+        "gas:out-b": {
+          "id": "gas:out-b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 200,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:b:0"
+          ]
+        },
+        "gas:a": {
+          "id": "gas:a",
+          "kind": "endpoint",
+          "position": {
+            "x": 2200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:a:0"
+          ]
+        },
+        "gas:b": {
+          "id": "gas:b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 1200,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:b:0"
+          ]
+        },
+        "liquid:root": {
+          "id": "liquid:root",
+          "kind": "endpoint",
+          "position": {
+            "x": -200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:0"
+          ]
+        },
+        "liquid:inlet": {
+          "id": "liquid:inlet",
+          "kind": "endpoint",
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:1"
+          ]
+        },
+        "liquid:out-a": {
+          "id": "liquid:out-a",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:a:0"
+          ]
+        },
+        "liquid:out-b": {
+          "id": "liquid:out-b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 200,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:b:0"
+          ]
+        },
+        "liquid:a": {
+          "id": "liquid:a",
+          "kind": "endpoint",
+          "position": {
+            "x": 2200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:a:0"
+          ]
+        },
+        "liquid:b": {
+          "id": "liquid:b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 1200,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:b:0"
+          ]
+        },
+        "gas:trunk-bend": {
+          "id": "gas:trunk-bend",
+          "kind": "bend",
+          "position": {
+            "x": 400,
+            "y": 150,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:0",
+            "gas:main:1"
+          ]
+        },
+        "liquid:trunk-bend": {
+          "id": "liquid:trunk-bend",
+          "kind": "bend",
+          "position": {
+            "x": 400,
+            "y": 150,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:0",
+            "liquid:main:1"
+          ]
+        }
+      },
+      "segmentEdges": {
+        "gas:a:0": {
+          "id": "gas:a:0",
+          "kind": "pipe-segment",
+          "runId": "gas:a",
+          "startNodeId": "gas:out-a",
+          "endNodeId": "gas:a",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:b:0": {
+          "id": "gas:b:0",
+          "kind": "pipe-segment",
+          "runId": "gas:b",
+          "startNodeId": "gas:out-b",
+          "endNodeId": "gas:b",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:a:0": {
+          "id": "liquid:a:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:a",
+          "startNodeId": "liquid:out-a",
+          "endNodeId": "liquid:a",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:b:0": {
+          "id": "liquid:b:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:b",
+          "startNodeId": "liquid:out-b",
+          "endNodeId": "liquid:b",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:main:0": {
+          "id": "gas:main:0",
+          "kind": "pipe-segment",
+          "runId": "gas:main",
+          "startNodeId": "gas:root",
+          "endNodeId": "gas:trunk-bend",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:main:1": {
+          "id": "gas:main:1",
+          "kind": "pipe-segment",
+          "runId": "gas:main",
+          "startNodeId": "gas:trunk-bend",
+          "endNodeId": "gas:inlet",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:main:0": {
+          "id": "liquid:main:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:main",
+          "startNodeId": "liquid:root",
+          "endNodeId": "liquid:trunk-bend",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:main:1": {
+          "id": "liquid:main:1",
+          "kind": "pipe-segment",
+          "runId": "liquid:main",
+          "startNodeId": "liquid:trunk-bend",
+          "endNodeId": "liquid:inlet",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        }
+      },
+      "pipeRuns": {
+        "gas:main": {
+          "id": "gas:main",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:root",
+            "gas:trunk-bend",
+            "gas:inlet"
+          ],
+          "segmentEdgeIds": [
+            "gas:main:0",
+            "gas:main:1"
+          ],
+          "sourcePortId": "outdoor:gas"
+        },
+        "gas:a": {
+          "id": "gas:a",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:out-a",
+            "gas:a"
+          ],
+          "segmentEdgeIds": [
+            "gas:a:0"
+          ],
+          "targetPortId": "indoor-a:gas"
+        },
+        "gas:b": {
+          "id": "gas:b",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:out-b",
+            "gas:b"
+          ],
+          "segmentEdgeIds": [
+            "gas:b:0"
+          ],
+          "targetPortId": "indoor-b:gas"
+        },
+        "liquid:main": {
+          "id": "liquid:main",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:root",
+            "liquid:trunk-bend",
+            "liquid:inlet"
+          ],
+          "segmentEdgeIds": [
+            "liquid:main:0",
+            "liquid:main:1"
+          ],
+          "sourcePortId": "outdoor:liquid"
+        },
+        "liquid:a": {
+          "id": "liquid:a",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:out-a",
+            "liquid:a"
+          ],
+          "segmentEdgeIds": [
+            "liquid:a:0"
+          ],
+          "targetPortId": "indoor-a:liquid"
+        },
+        "liquid:b": {
+          "id": "liquid:b",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:out-b",
+            "liquid:b"
+          ],
+          "segmentEdgeIds": [
+            "liquid:b:0"
+          ],
+          "targetPortId": "indoor-b:liquid"
+        }
+      },
+      "reducers": {},
+      "branchKits": {
+        "gas:branch": {
+          "id": "gas:branch",
+          "kind": "branch-kit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "model": "Y100",
+          "branchType": "y-joint",
+          "systemRole": "first-branch",
+          "lineKind": "gas",
+          "inletNodeIds": [
+            "gas:inlet"
+          ],
+          "outletNodeIds": [
+            "gas:out-a",
+            "gas:out-b"
+          ],
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2700
+          },
+          "orientation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "localForward": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "localUp": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "splitPlaneNormal": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "downstreamCapacityIndex": 100,
+          "ruleProfileId": "test",
+          "metadata": {
+            "refrigerant": "R32",
+            "arrangement": "heat-pump",
+            "equivalentLengthMm": 500
+          }
+        },
+        "liquid:branch": {
+          "id": "liquid:branch",
+          "kind": "branch-kit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "model": "Y100",
+          "branchType": "y-joint",
+          "systemRole": "first-branch",
+          "lineKind": "liquid",
+          "inletNodeIds": [
+            "liquid:inlet"
+          ],
+          "outletNodeIds": [
+            "liquid:out-a",
+            "liquid:out-b"
+          ],
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2600
+          },
+          "orientation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "localForward": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "localUp": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "splitPlaneNormal": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "downstreamCapacityIndex": 100,
+          "ruleProfileId": "test",
+          "metadata": {
+            "refrigerant": "R32",
+            "arrangement": "heat-pump",
+            "equivalentLengthMm": 500
+          }
+        }
+      },
+      "pipePairAssemblies": {},
+      "diagnostics": []
+    },
+    "expected": {
+      "feasible": true,
+      "hardIssues": [],
+      "advisoryIssues": [
+        "Manufacturer model rules are not verified; this network is a preliminary layout.",
+        "Pipe and branch-kit sizing needs additional manufacturer data; see the component recommendations.",
+        "Equivalent length is incomplete until model-specific bend and fitting allowances are supplied."
+      ],
+      "score": 11.189404243672723,
+      "manufacturerQualification": "preliminary",
+      "recommendations": [
+        {
+          "entityId": "gas:main",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 100,
+          "status": "missing-data",
+          "note": "The outdoor-to-first-branch main needs its model-specific table and length-dependent sizing rules."
+        },
+        {
+          "entityId": "gas:a",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "gas:b",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "liquid:main",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 100,
+          "status": "missing-data",
+          "note": "The outdoor-to-first-branch main needs its model-specific table and length-dependent sizing rules."
+        },
+        {
+          "entityId": "liquid:a",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "liquid:b",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "gas:branch",
+          "kind": "branch-kit",
+          "downstreamCapacityIndex": 100,
+          "status": "missing-data",
+          "note": "A compatible manufacturer kit and complete capacity data are needed for final selection."
+        },
+        {
+          "entityId": "liquid:branch",
+          "kind": "branch-kit",
+          "downstreamCapacityIndex": 100,
+          "status": "missing-data",
+          "note": "A compatible manufacturer kit and complete capacity data are needed for final selection."
+        }
+      ],
+      "paths": [
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-a",
+          "lineKind": "gas",
+          "runIds": [
+            "gas:main",
+            "gas:a"
+          ],
+          "branchIds": [
+            "gas:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-b",
+          "lineKind": "gas",
+          "runIds": [
+            "gas:main",
+            "gas:b"
+          ],
+          "branchIds": [
+            "gas:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-a",
+          "lineKind": "liquid",
+          "runIds": [
+            "liquid:main",
+            "liquid:a"
+          ],
+          "branchIds": [
+            "liquid:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-b",
+          "lineKind": "liquid",
+          "runIds": [
+            "liquid:main",
+            "liquid:b"
+          ],
+          "branchIds": [
+            "liquid:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        }
+      ],
+      "metrics": {
+        "pipeLengthMm": 6473.863375370596,
+        "gasLengthMm": 3236.931687685298,
+        "liquidLengthMm": 3236.931687685298,
+        "networkLengthMm": 3236.931687685298,
+        "maxPathLengthMm": 2236.931687685298,
+        "maxEquivalentPathLengthMm": null,
+        "bendCount": 0.6238330430189547,
+        "branchPairCount": 1,
+        "riserCount": 0,
+        "verticalTravelMm": 0,
+        "elevationReversalCount": 0,
+        "connectedIndoorCount": 2,
+        "estimatedCost": null,
+        "relativeCostIndex": 9.941738157634813,
+        "wallCrossingCount": 0,
+        "totalCapacityIndex": 100
+      }
+    }
+  },
+  {
+    "name": "verified-cost",
+    "options": {
+      "outdoorUnitId": "outdoor",
+      "indoorUnitIds": [
+        "indoor-a",
+        "indoor-b"
+      ],
+      "profile": {
+        "schemaVersion": 1,
+        "id": "test",
+        "manufacturer": "Test",
+        "family": "Heat pump",
+        "refrigerants": [
+          "R32"
+        ],
+        "verified": true,
+        "sourceReferences": [],
+        "portDefaults": {
+          "minimumStraightStubMm": {
+            "value": 200,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBendRadiusMm": {
+            "value": 60,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "serviceClearanceMm": {
+            "value": 100,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "allowedExitConeDeg": {
+            "value": 45,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          }
+        },
+        "branchKits": [
+          {
+            "id": "Y100",
+            "manufacturer": "Test",
+            "family": "Heat pump",
+            "model": "Y100",
+            "branchType": "y-joint",
+            "allowedSystemRoles": [
+              "first-branch",
+              "intermediate-branch"
+            ],
+            "refrigerants": [
+              "R32"
+            ],
+            "arrangements": [
+              "heat-pump"
+            ],
+            "downstreamCapacityIndexMin": {
+              "value": 1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "downstreamCapacityIndexMax": {
+              "value": 100,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "outdoorCapacityMin": {
+              "value": 1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "outdoorCapacityMax": {
+              "value": 100,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "orientation": {
+              "allowedModes": [
+                "horizontal-split"
+              ]
+            },
+            "straightZones": [],
+            "equivalentLengthMm": {
+              "value": 500,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            }
+          }
+        ],
+        "pipeSizing": [
+          {
+            "id": "gas-50",
+            "systemType": "refrigerant-gas",
+            "capacityIndexMin": 1,
+            "capacityIndexMax": 50,
+            "outsideDiameterMm": {
+              "value": 19.1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "minimumBendRadiusMm": {
+              "value": 80,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            }
+          }
+        ],
+        "routeLimits": {
+          "maximumTotalLengthMm": {
+            "value": 3500,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          },
+          "maximumEquivalentLengthMm": {
+            "value": 2750,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          },
+          "maximumIndoorToBranchLengthMm": {
+            "value": 1500,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          }
+        },
+        "installation": {
+          "outdoorBranchTiltToleranceDeg": {
+            "value": 15,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "indoorBranchTiltToleranceDeg": {
+            "value": 30,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchStraightBeforeMm": {
+            "value": 300,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchStraightAfterMm": {
+            "value": 300,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "headerOutletLevelToleranceMm": {
+            "value": 5,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumJointSpacingMm": {
+            "value": 500,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchElbowClearanceMm": {
+            "value": 500,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumSelectorBoxElbowClearanceMm": {
+            "value": 1000,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "requireInsulation": true,
+          "prohibitUnapprovedTee": true
+        }
+      },
+      "rates": {
+        "currency": "EUR",
+        "gasPipePerMetre": 10,
+        "liquidPipePerMetre": 5,
+        "elbowEach": 2,
+        "branchPairEach": 30,
+        "riserEach": 3
+      },
+      "objective": "cost"
+    },
+    "document": {
+      "id": "vrf-piping-network",
+      "schemaVersion": 1,
+      "equipmentNodes": {
+        "outdoor": {
+          "id": "outdoor",
+          "kind": "equipment",
+          "equipmentType": "outdoor-unit",
+          "capacityIndex": 100,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "outdoor:gas",
+            "outdoor:liquid"
+          ]
+        },
+        "indoor-a": {
+          "id": "indoor-a",
+          "kind": "equipment",
+          "equipmentType": "indoor-unit",
+          "capacityIndex": 50,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "indoor-a:gas",
+            "indoor-a:liquid"
+          ]
+        },
+        "indoor-b": {
+          "id": "indoor-b",
+          "kind": "equipment",
+          "equipmentType": "indoor-unit",
+          "capacityIndex": 50,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "indoor-b:gas",
+            "indoor-b:liquid"
+          ]
+        }
+      },
+      "equipmentPorts": {
+        "outdoor:gas": {
+          "id": "outdoor:gas",
+          "equipmentId": "outdoor",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "outdoor:liquid": {
+          "id": "outdoor:liquid",
+          "equipmentId": "outdoor",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-a:gas": {
+          "id": "indoor-a:gas",
+          "equipmentId": "indoor-a",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-a:liquid": {
+          "id": "indoor-a:liquid",
+          "equipmentId": "indoor-a",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-b:gas": {
+          "id": "indoor-b:gas",
+          "equipmentId": "indoor-b",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-b:liquid": {
+          "id": "indoor-b:liquid",
+          "equipmentId": "indoor-b",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        }
+      },
+      "routeNodes": {
+        "gas:root": {
+          "id": "gas:root",
+          "kind": "endpoint",
+          "position": {
+            "x": -200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:0"
+          ]
+        },
+        "gas:inlet": {
+          "id": "gas:inlet",
+          "kind": "endpoint",
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:1"
+          ]
+        },
+        "gas:out-a": {
+          "id": "gas:out-a",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:a:0"
+          ]
+        },
+        "gas:out-b": {
+          "id": "gas:out-b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 200,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:b:0"
+          ]
+        },
+        "gas:a": {
+          "id": "gas:a",
+          "kind": "endpoint",
+          "position": {
+            "x": 2200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:a:0"
+          ]
+        },
+        "gas:b": {
+          "id": "gas:b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 1200,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:b:0"
+          ]
+        },
+        "liquid:root": {
+          "id": "liquid:root",
+          "kind": "endpoint",
+          "position": {
+            "x": -200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:0"
+          ]
+        },
+        "liquid:inlet": {
+          "id": "liquid:inlet",
+          "kind": "endpoint",
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:1"
+          ]
+        },
+        "liquid:out-a": {
+          "id": "liquid:out-a",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:a:0"
+          ]
+        },
+        "liquid:out-b": {
+          "id": "liquid:out-b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 200,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:b:0"
+          ]
+        },
+        "liquid:a": {
+          "id": "liquid:a",
+          "kind": "endpoint",
+          "position": {
+            "x": 2200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:a:0"
+          ]
+        },
+        "liquid:b": {
+          "id": "liquid:b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 1200,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:b:0"
+          ]
+        },
+        "gas:trunk-bend": {
+          "id": "gas:trunk-bend",
+          "kind": "bend",
+          "position": {
+            "x": 400,
+            "y": 150,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:0",
+            "gas:main:1"
+          ]
+        },
+        "liquid:trunk-bend": {
+          "id": "liquid:trunk-bend",
+          "kind": "bend",
+          "position": {
+            "x": 400,
+            "y": 150,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:0",
+            "liquid:main:1"
+          ]
+        }
+      },
+      "segmentEdges": {
+        "gas:a:0": {
+          "id": "gas:a:0",
+          "kind": "pipe-segment",
+          "runId": "gas:a",
+          "startNodeId": "gas:out-a",
+          "endNodeId": "gas:a",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:b:0": {
+          "id": "gas:b:0",
+          "kind": "pipe-segment",
+          "runId": "gas:b",
+          "startNodeId": "gas:out-b",
+          "endNodeId": "gas:b",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:a:0": {
+          "id": "liquid:a:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:a",
+          "startNodeId": "liquid:out-a",
+          "endNodeId": "liquid:a",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:b:0": {
+          "id": "liquid:b:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:b",
+          "startNodeId": "liquid:out-b",
+          "endNodeId": "liquid:b",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:main:0": {
+          "id": "gas:main:0",
+          "kind": "pipe-segment",
+          "runId": "gas:main",
+          "startNodeId": "gas:root",
+          "endNodeId": "gas:trunk-bend",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:main:1": {
+          "id": "gas:main:1",
+          "kind": "pipe-segment",
+          "runId": "gas:main",
+          "startNodeId": "gas:trunk-bend",
+          "endNodeId": "gas:inlet",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:main:0": {
+          "id": "liquid:main:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:main",
+          "startNodeId": "liquid:root",
+          "endNodeId": "liquid:trunk-bend",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:main:1": {
+          "id": "liquid:main:1",
+          "kind": "pipe-segment",
+          "runId": "liquid:main",
+          "startNodeId": "liquid:trunk-bend",
+          "endNodeId": "liquid:inlet",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        }
+      },
+      "pipeRuns": {
+        "gas:main": {
+          "id": "gas:main",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:root",
+            "gas:trunk-bend",
+            "gas:inlet"
+          ],
+          "segmentEdgeIds": [
+            "gas:main:0",
+            "gas:main:1"
+          ],
+          "sourcePortId": "outdoor:gas"
+        },
+        "gas:a": {
+          "id": "gas:a",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:out-a",
+            "gas:a"
+          ],
+          "segmentEdgeIds": [
+            "gas:a:0"
+          ],
+          "targetPortId": "indoor-a:gas"
+        },
+        "gas:b": {
+          "id": "gas:b",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:out-b",
+            "gas:b"
+          ],
+          "segmentEdgeIds": [
+            "gas:b:0"
+          ],
+          "targetPortId": "indoor-b:gas"
+        },
+        "liquid:main": {
+          "id": "liquid:main",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:root",
+            "liquid:trunk-bend",
+            "liquid:inlet"
+          ],
+          "segmentEdgeIds": [
+            "liquid:main:0",
+            "liquid:main:1"
+          ],
+          "sourcePortId": "outdoor:liquid"
+        },
+        "liquid:a": {
+          "id": "liquid:a",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:out-a",
+            "liquid:a"
+          ],
+          "segmentEdgeIds": [
+            "liquid:a:0"
+          ],
+          "targetPortId": "indoor-a:liquid"
+        },
+        "liquid:b": {
+          "id": "liquid:b",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:out-b",
+            "liquid:b"
+          ],
+          "segmentEdgeIds": [
+            "liquid:b:0"
+          ],
+          "targetPortId": "indoor-b:liquid"
+        }
+      },
+      "reducers": {},
+      "branchKits": {
+        "gas:branch": {
+          "id": "gas:branch",
+          "kind": "branch-kit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "model": "Y100",
+          "branchType": "y-joint",
+          "systemRole": "first-branch",
+          "lineKind": "gas",
+          "inletNodeIds": [
+            "gas:inlet"
+          ],
+          "outletNodeIds": [
+            "gas:out-a",
+            "gas:out-b"
+          ],
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2700
+          },
+          "orientation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "localForward": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "localUp": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "splitPlaneNormal": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "downstreamCapacityIndex": 100,
+          "ruleProfileId": "test",
+          "metadata": {
+            "refrigerant": "R32",
+            "arrangement": "heat-pump",
+            "equivalentLengthMm": 500
+          }
+        },
+        "liquid:branch": {
+          "id": "liquid:branch",
+          "kind": "branch-kit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "model": "Y100",
+          "branchType": "y-joint",
+          "systemRole": "first-branch",
+          "lineKind": "liquid",
+          "inletNodeIds": [
+            "liquid:inlet"
+          ],
+          "outletNodeIds": [
+            "liquid:out-a",
+            "liquid:out-b"
+          ],
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2600
+          },
+          "orientation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "localForward": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "localUp": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "splitPlaneNormal": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "downstreamCapacityIndex": 100,
+          "ruleProfileId": "test",
+          "metadata": {
+            "refrigerant": "R32",
+            "arrangement": "heat-pump",
+            "equivalentLengthMm": 500
+          }
+        }
+      },
+      "pipePairAssemblies": {},
+      "diagnostics": []
+    },
+    "expected": {
+      "feasible": true,
+      "hardIssues": [],
+      "advisoryIssues": [
+        "Pipe gas:a equipment outlet stub is below 200 mm.",
+        "Pipe gas:b equipment outlet stub is below 200 mm.",
+        "Pipe liquid:a equipment outlet stub is below 200 mm.",
+        "Pipe liquid:b equipment outlet stub is below 200 mm.",
+        "Pipe and branch-kit sizing needs additional manufacturer data; see the component recommendations.",
+        "Equivalent length is incomplete until model-specific bend and fitting allowances are supplied."
+      ],
+      "score": 2.6600547133772463,
+      "manufacturerQualification": "preliminary",
+      "recommendations": [
+        {
+          "entityId": "gas:main",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 100,
+          "status": "missing-data",
+          "note": "The outdoor-to-first-branch main needs its model-specific table and length-dependent sizing rules."
+        },
+        {
+          "entityId": "gas:a",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "gas:b",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "liquid:main",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 100,
+          "status": "missing-data",
+          "note": "The outdoor-to-first-branch main needs its model-specific table and length-dependent sizing rules."
+        },
+        {
+          "entityId": "liquid:a",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "liquid:b",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "gas:branch",
+          "kind": "branch-kit",
+          "downstreamCapacityIndex": 100,
+          "recommendedModel": "Y100",
+          "status": "matches",
+          "note": "Kit selection follows actual downstream equipment and the outdoor-facing inlet."
+        },
+        {
+          "entityId": "liquid:branch",
+          "kind": "branch-kit",
+          "downstreamCapacityIndex": 100,
+          "recommendedModel": "Y100",
+          "status": "matches",
+          "note": "Kit selection follows actual downstream equipment and the outdoor-facing inlet."
+        }
+      ],
+      "paths": [
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-a",
+          "lineKind": "gas",
+          "runIds": [
+            "gas:main",
+            "gas:a"
+          ],
+          "branchIds": [
+            "gas:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-b",
+          "lineKind": "gas",
+          "runIds": [
+            "gas:main",
+            "gas:b"
+          ],
+          "branchIds": [
+            "gas:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-a",
+          "lineKind": "liquid",
+          "runIds": [
+            "liquid:main",
+            "liquid:a"
+          ],
+          "branchIds": [
+            "liquid:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-b",
+          "lineKind": "liquid",
+          "runIds": [
+            "liquid:main",
+            "liquid:b"
+          ],
+          "branchIds": [
+            "liquid:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        }
+      ],
+      "metrics": {
+        "pipeLengthMm": 6473.863375370596,
+        "gasLengthMm": 3236.931687685298,
+        "liquidLengthMm": 3236.931687685298,
+        "networkLengthMm": 3236.931687685298,
+        "maxPathLengthMm": 2236.931687685298,
+        "maxEquivalentPathLengthMm": null,
+        "bendCount": 0.6238330430189547,
+        "branchPairCount": 1,
+        "riserCount": 0,
+        "verticalTravelMm": 0,
+        "elevationReversalCount": 0,
+        "connectedIndoorCount": 2,
+        "estimatedCost": 79.80164140131738,
+        "currency": "EUR",
+        "relativeCostIndex": 9.941738157634813,
+        "wallCrossingCount": 0,
+        "totalCapacityIndex": 100
+      }
+    }
+  },
+  {
+    "name": "verified-fewest-fittings",
+    "options": {
+      "outdoorUnitId": "outdoor",
+      "indoorUnitIds": [
+        "indoor-a",
+        "indoor-b"
+      ],
+      "profile": {
+        "schemaVersion": 1,
+        "id": "test",
+        "manufacturer": "Test",
+        "family": "Heat pump",
+        "refrigerants": [
+          "R32"
+        ],
+        "verified": true,
+        "sourceReferences": [],
+        "portDefaults": {
+          "minimumStraightStubMm": {
+            "value": 200,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBendRadiusMm": {
+            "value": 60,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "serviceClearanceMm": {
+            "value": 100,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "allowedExitConeDeg": {
+            "value": 45,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          }
+        },
+        "branchKits": [
+          {
+            "id": "Y100",
+            "manufacturer": "Test",
+            "family": "Heat pump",
+            "model": "Y100",
+            "branchType": "y-joint",
+            "allowedSystemRoles": [
+              "first-branch",
+              "intermediate-branch"
+            ],
+            "refrigerants": [
+              "R32"
+            ],
+            "arrangements": [
+              "heat-pump"
+            ],
+            "downstreamCapacityIndexMin": {
+              "value": 1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "downstreamCapacityIndexMax": {
+              "value": 100,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "outdoorCapacityMin": {
+              "value": 1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "outdoorCapacityMax": {
+              "value": 100,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "orientation": {
+              "allowedModes": [
+                "horizontal-split"
+              ]
+            },
+            "straightZones": [],
+            "equivalentLengthMm": {
+              "value": 500,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            }
+          }
+        ],
+        "pipeSizing": [
+          {
+            "id": "gas-50",
+            "systemType": "refrigerant-gas",
+            "capacityIndexMin": 1,
+            "capacityIndexMax": 50,
+            "outsideDiameterMm": {
+              "value": 19.1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "minimumBendRadiusMm": {
+              "value": 80,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            }
+          }
+        ],
+        "routeLimits": {
+          "maximumTotalLengthMm": {
+            "value": 3500,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          },
+          "maximumEquivalentLengthMm": {
+            "value": 2750,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          },
+          "maximumIndoorToBranchLengthMm": {
+            "value": 1500,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          }
+        },
+        "installation": {
+          "outdoorBranchTiltToleranceDeg": {
+            "value": 15,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "indoorBranchTiltToleranceDeg": {
+            "value": 30,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchStraightBeforeMm": {
+            "value": 300,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchStraightAfterMm": {
+            "value": 300,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "headerOutletLevelToleranceMm": {
+            "value": 5,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumJointSpacingMm": {
+            "value": 500,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchElbowClearanceMm": {
+            "value": 500,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumSelectorBoxElbowClearanceMm": {
+            "value": 1000,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "requireInsulation": true,
+          "prohibitUnapprovedTee": true
+        }
+      },
+      "rates": {
+        "currency": "EUR",
+        "gasPipePerMetre": 10,
+        "liquidPipePerMetre": 5,
+        "elbowEach": 2,
+        "branchPairEach": 30,
+        "riserEach": 3
+      },
+      "objective": "fewest-fittings"
+    },
+    "document": {
+      "id": "vrf-piping-network",
+      "schemaVersion": 1,
+      "equipmentNodes": {
+        "outdoor": {
+          "id": "outdoor",
+          "kind": "equipment",
+          "equipmentType": "outdoor-unit",
+          "capacityIndex": 100,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "outdoor:gas",
+            "outdoor:liquid"
+          ]
+        },
+        "indoor-a": {
+          "id": "indoor-a",
+          "kind": "equipment",
+          "equipmentType": "indoor-unit",
+          "capacityIndex": 50,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "indoor-a:gas",
+            "indoor-a:liquid"
+          ]
+        },
+        "indoor-b": {
+          "id": "indoor-b",
+          "kind": "equipment",
+          "equipmentType": "indoor-unit",
+          "capacityIndex": 50,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "indoor-b:gas",
+            "indoor-b:liquid"
+          ]
+        }
+      },
+      "equipmentPorts": {
+        "outdoor:gas": {
+          "id": "outdoor:gas",
+          "equipmentId": "outdoor",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "outdoor:liquid": {
+          "id": "outdoor:liquid",
+          "equipmentId": "outdoor",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-a:gas": {
+          "id": "indoor-a:gas",
+          "equipmentId": "indoor-a",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-a:liquid": {
+          "id": "indoor-a:liquid",
+          "equipmentId": "indoor-a",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-b:gas": {
+          "id": "indoor-b:gas",
+          "equipmentId": "indoor-b",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-b:liquid": {
+          "id": "indoor-b:liquid",
+          "equipmentId": "indoor-b",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        }
+      },
+      "routeNodes": {
+        "gas:root": {
+          "id": "gas:root",
+          "kind": "endpoint",
+          "position": {
+            "x": -200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:0"
+          ]
+        },
+        "gas:inlet": {
+          "id": "gas:inlet",
+          "kind": "endpoint",
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:1"
+          ]
+        },
+        "gas:out-a": {
+          "id": "gas:out-a",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:a:0"
+          ]
+        },
+        "gas:out-b": {
+          "id": "gas:out-b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 200,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:b:0"
+          ]
+        },
+        "gas:a": {
+          "id": "gas:a",
+          "kind": "endpoint",
+          "position": {
+            "x": 2200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:a:0"
+          ]
+        },
+        "gas:b": {
+          "id": "gas:b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 1200,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:b:0"
+          ]
+        },
+        "liquid:root": {
+          "id": "liquid:root",
+          "kind": "endpoint",
+          "position": {
+            "x": -200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:0"
+          ]
+        },
+        "liquid:inlet": {
+          "id": "liquid:inlet",
+          "kind": "endpoint",
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:1"
+          ]
+        },
+        "liquid:out-a": {
+          "id": "liquid:out-a",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:a:0"
+          ]
+        },
+        "liquid:out-b": {
+          "id": "liquid:out-b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 200,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:b:0"
+          ]
+        },
+        "liquid:a": {
+          "id": "liquid:a",
+          "kind": "endpoint",
+          "position": {
+            "x": 2200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:a:0"
+          ]
+        },
+        "liquid:b": {
+          "id": "liquid:b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 1200,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:b:0"
+          ]
+        },
+        "gas:trunk-bend": {
+          "id": "gas:trunk-bend",
+          "kind": "bend",
+          "position": {
+            "x": 400,
+            "y": 150,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:0",
+            "gas:main:1"
+          ]
+        },
+        "liquid:trunk-bend": {
+          "id": "liquid:trunk-bend",
+          "kind": "bend",
+          "position": {
+            "x": 400,
+            "y": 150,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:0",
+            "liquid:main:1"
+          ]
+        }
+      },
+      "segmentEdges": {
+        "gas:a:0": {
+          "id": "gas:a:0",
+          "kind": "pipe-segment",
+          "runId": "gas:a",
+          "startNodeId": "gas:out-a",
+          "endNodeId": "gas:a",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:b:0": {
+          "id": "gas:b:0",
+          "kind": "pipe-segment",
+          "runId": "gas:b",
+          "startNodeId": "gas:out-b",
+          "endNodeId": "gas:b",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:a:0": {
+          "id": "liquid:a:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:a",
+          "startNodeId": "liquid:out-a",
+          "endNodeId": "liquid:a",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:b:0": {
+          "id": "liquid:b:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:b",
+          "startNodeId": "liquid:out-b",
+          "endNodeId": "liquid:b",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:main:0": {
+          "id": "gas:main:0",
+          "kind": "pipe-segment",
+          "runId": "gas:main",
+          "startNodeId": "gas:root",
+          "endNodeId": "gas:trunk-bend",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:main:1": {
+          "id": "gas:main:1",
+          "kind": "pipe-segment",
+          "runId": "gas:main",
+          "startNodeId": "gas:trunk-bend",
+          "endNodeId": "gas:inlet",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:main:0": {
+          "id": "liquid:main:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:main",
+          "startNodeId": "liquid:root",
+          "endNodeId": "liquid:trunk-bend",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:main:1": {
+          "id": "liquid:main:1",
+          "kind": "pipe-segment",
+          "runId": "liquid:main",
+          "startNodeId": "liquid:trunk-bend",
+          "endNodeId": "liquid:inlet",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        }
+      },
+      "pipeRuns": {
+        "gas:main": {
+          "id": "gas:main",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:root",
+            "gas:trunk-bend",
+            "gas:inlet"
+          ],
+          "segmentEdgeIds": [
+            "gas:main:0",
+            "gas:main:1"
+          ],
+          "sourcePortId": "outdoor:gas"
+        },
+        "gas:a": {
+          "id": "gas:a",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:out-a",
+            "gas:a"
+          ],
+          "segmentEdgeIds": [
+            "gas:a:0"
+          ],
+          "targetPortId": "indoor-a:gas"
+        },
+        "gas:b": {
+          "id": "gas:b",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:out-b",
+            "gas:b"
+          ],
+          "segmentEdgeIds": [
+            "gas:b:0"
+          ],
+          "targetPortId": "indoor-b:gas"
+        },
+        "liquid:main": {
+          "id": "liquid:main",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:root",
+            "liquid:trunk-bend",
+            "liquid:inlet"
+          ],
+          "segmentEdgeIds": [
+            "liquid:main:0",
+            "liquid:main:1"
+          ],
+          "sourcePortId": "outdoor:liquid"
+        },
+        "liquid:a": {
+          "id": "liquid:a",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:out-a",
+            "liquid:a"
+          ],
+          "segmentEdgeIds": [
+            "liquid:a:0"
+          ],
+          "targetPortId": "indoor-a:liquid"
+        },
+        "liquid:b": {
+          "id": "liquid:b",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:out-b",
+            "liquid:b"
+          ],
+          "segmentEdgeIds": [
+            "liquid:b:0"
+          ],
+          "targetPortId": "indoor-b:liquid"
+        }
+      },
+      "reducers": {},
+      "branchKits": {
+        "gas:branch": {
+          "id": "gas:branch",
+          "kind": "branch-kit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "model": "Y100",
+          "branchType": "y-joint",
+          "systemRole": "first-branch",
+          "lineKind": "gas",
+          "inletNodeIds": [
+            "gas:inlet"
+          ],
+          "outletNodeIds": [
+            "gas:out-a",
+            "gas:out-b"
+          ],
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2700
+          },
+          "orientation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "localForward": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "localUp": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "splitPlaneNormal": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "downstreamCapacityIndex": 100,
+          "ruleProfileId": "test",
+          "metadata": {
+            "refrigerant": "R32",
+            "arrangement": "heat-pump",
+            "equivalentLengthMm": 500
+          }
+        },
+        "liquid:branch": {
+          "id": "liquid:branch",
+          "kind": "branch-kit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "model": "Y100",
+          "branchType": "y-joint",
+          "systemRole": "first-branch",
+          "lineKind": "liquid",
+          "inletNodeIds": [
+            "liquid:inlet"
+          ],
+          "outletNodeIds": [
+            "liquid:out-a",
+            "liquid:out-b"
+          ],
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2600
+          },
+          "orientation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "localForward": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "localUp": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "splitPlaneNormal": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "downstreamCapacityIndex": 100,
+          "ruleProfileId": "test",
+          "metadata": {
+            "refrigerant": "R32",
+            "arrangement": "heat-pump",
+            "equivalentLengthMm": 500
+          }
+        }
+      },
+      "pipePairAssemblies": {},
+      "diagnostics": []
+    },
+    "expected": {
+      "feasible": true,
+      "hardIssues": [],
+      "advisoryIssues": [
+        "Pipe gas:a equipment outlet stub is below 200 mm.",
+        "Pipe gas:b equipment outlet stub is below 200 mm.",
+        "Pipe liquid:a equipment outlet stub is below 200 mm.",
+        "Pipe liquid:b equipment outlet stub is below 200 mm.",
+        "Pipe and branch-kit sizing needs additional manufacturer data; see the component recommendations.",
+        "Equivalent length is incomplete until model-specific bend and fitting allowances are supplied."
+      ],
+      "score": 2.624597023164562,
+      "manufacturerQualification": "preliminary",
+      "recommendations": [
+        {
+          "entityId": "gas:main",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 100,
+          "status": "missing-data",
+          "note": "The outdoor-to-first-branch main needs its model-specific table and length-dependent sizing rules."
+        },
+        {
+          "entityId": "gas:a",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "gas:b",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "liquid:main",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 100,
+          "status": "missing-data",
+          "note": "The outdoor-to-first-branch main needs its model-specific table and length-dependent sizing rules."
+        },
+        {
+          "entityId": "liquid:a",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "liquid:b",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "gas:branch",
+          "kind": "branch-kit",
+          "downstreamCapacityIndex": 100,
+          "recommendedModel": "Y100",
+          "status": "matches",
+          "note": "Kit selection follows actual downstream equipment and the outdoor-facing inlet."
+        },
+        {
+          "entityId": "liquid:branch",
+          "kind": "branch-kit",
+          "downstreamCapacityIndex": 100,
+          "recommendedModel": "Y100",
+          "status": "matches",
+          "note": "Kit selection follows actual downstream equipment and the outdoor-facing inlet."
+        }
+      ],
+      "paths": [
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-a",
+          "lineKind": "gas",
+          "runIds": [
+            "gas:main",
+            "gas:a"
+          ],
+          "branchIds": [
+            "gas:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-b",
+          "lineKind": "gas",
+          "runIds": [
+            "gas:main",
+            "gas:b"
+          ],
+          "branchIds": [
+            "gas:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-a",
+          "lineKind": "liquid",
+          "runIds": [
+            "liquid:main",
+            "liquid:a"
+          ],
+          "branchIds": [
+            "liquid:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-b",
+          "lineKind": "liquid",
+          "runIds": [
+            "liquid:main",
+            "liquid:b"
+          ],
+          "branchIds": [
+            "liquid:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        }
+      ],
+      "metrics": {
+        "pipeLengthMm": 6473.863375370596,
+        "gasLengthMm": 3236.931687685298,
+        "liquidLengthMm": 3236.931687685298,
+        "networkLengthMm": 3236.931687685298,
+        "maxPathLengthMm": 2236.931687685298,
+        "maxEquivalentPathLengthMm": null,
+        "bendCount": 0.6238330430189547,
+        "branchPairCount": 1,
+        "riserCount": 0,
+        "verticalTravelMm": 0,
+        "elevationReversalCount": 0,
+        "connectedIndoorCount": 2,
+        "estimatedCost": 79.80164140131738,
+        "currency": "EUR",
+        "relativeCostIndex": 9.941738157634813,
+        "wallCrossingCount": 0,
+        "totalCapacityIndex": 100
+      }
+    }
+  },
+  {
+    "name": "verified-violations",
+    "options": {
+      "outdoorUnitId": "outdoor",
+      "indoorUnitIds": [
+        "indoor-a",
+        "indoor-b"
+      ],
+      "profile": {
+        "schemaVersion": 1,
+        "id": "test",
+        "manufacturer": "Test",
+        "family": "Heat pump",
+        "refrigerants": [
+          "R32"
+        ],
+        "verified": true,
+        "sourceReferences": [],
+        "portDefaults": {
+          "minimumStraightStubMm": {
+            "value": 1200,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          },
+          "minimumBendRadiusMm": {
+            "value": 60,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "serviceClearanceMm": {
+            "value": 100,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "allowedExitConeDeg": {
+            "value": 45,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          }
+        },
+        "branchKits": [
+          {
+            "id": "Y100",
+            "manufacturer": "Test",
+            "family": "Heat pump",
+            "model": "Y100",
+            "branchType": "y-joint",
+            "allowedSystemRoles": [
+              "first-branch",
+              "intermediate-branch"
+            ],
+            "refrigerants": [
+              "R32"
+            ],
+            "arrangements": [
+              "heat-pump"
+            ],
+            "downstreamCapacityIndexMin": {
+              "value": 1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "downstreamCapacityIndexMax": {
+              "value": 100,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "outdoorCapacityMin": {
+              "value": 1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "outdoorCapacityMax": {
+              "value": 100,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "orientation": {
+              "allowedModes": [
+                "horizontal-split"
+              ]
+            },
+            "straightZones": [],
+            "equivalentLengthMm": {
+              "value": 500,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            }
+          }
+        ],
+        "pipeSizing": [
+          {
+            "id": "gas-50",
+            "systemType": "refrigerant-gas",
+            "capacityIndexMin": 1,
+            "capacityIndexMax": 50,
+            "outsideDiameterMm": {
+              "value": 19.1,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            },
+            "minimumBendRadiusMm": {
+              "value": 80,
+              "verified": true,
+              "source": "manufacturer-model",
+              "sourceReference": "test-profile"
+            }
+          }
+        ],
+        "routeLimits": {
+          "maximumTotalLengthMm": {
+            "value": 3500,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          },
+          "maximumEquivalentLengthMm": {
+            "value": 1000,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          },
+          "maximumIndoorToBranchLengthMm": {
+            "value": 1500,
+            "verified": true,
+            "source": "manufacturer-model",
+            "sourceReference": "test-profile"
+          }
+        },
+        "installation": {
+          "outdoorBranchTiltToleranceDeg": {
+            "value": 15,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "indoorBranchTiltToleranceDeg": {
+            "value": 30,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchStraightBeforeMm": {
+            "value": 300,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchStraightAfterMm": {
+            "value": 300,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "headerOutletLevelToleranceMm": {
+            "value": 5,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumJointSpacingMm": {
+            "value": 500,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumBranchElbowClearanceMm": {
+            "value": 500,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "minimumSelectorBoxElbowClearanceMm": {
+            "value": 1000,
+            "source": "fallback",
+            "verified": false,
+            "note": "Unverified application fallback."
+          },
+          "requireInsulation": true,
+          "prohibitUnapprovedTee": true
+        }
+      },
+      "objective": "balanced"
+    },
+    "document": {
+      "id": "vrf-piping-network",
+      "schemaVersion": 1,
+      "equipmentNodes": {
+        "outdoor": {
+          "id": "outdoor",
+          "kind": "equipment",
+          "equipmentType": "outdoor-unit",
+          "capacityIndex": 100,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "outdoor:gas",
+            "outdoor:liquid"
+          ]
+        },
+        "indoor-a": {
+          "id": "indoor-a",
+          "kind": "equipment",
+          "equipmentType": "indoor-unit",
+          "capacityIndex": 50,
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "indoor-a:gas",
+            "indoor-a:liquid"
+          ]
+        },
+        "indoor-b": {
+          "id": "indoor-b",
+          "kind": "equipment",
+          "equipmentType": "indoor-unit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "transform": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 2600
+            },
+            "orientation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          },
+          "portIds": [
+            "indoor-b:gas",
+            "indoor-b:liquid"
+          ]
+        }
+      },
+      "equipmentPorts": {
+        "outdoor:gas": {
+          "id": "outdoor:gas",
+          "equipmentId": "outdoor",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "outdoor:liquid": {
+          "id": "outdoor:liquid",
+          "equipmentId": "outdoor",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-a:gas": {
+          "id": "indoor-a:gas",
+          "equipmentId": "indoor-a",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-a:liquid": {
+          "id": "indoor-a:liquid",
+          "equipmentId": "indoor-a",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-b:gas": {
+          "id": "indoor-b:gas",
+          "equipmentId": "indoor-b",
+          "systemType": "refrigerant-gas",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        },
+        "indoor-b:liquid": {
+          "id": "indoor-b:liquid",
+          "equipmentId": "indoor-b",
+          "systemType": "refrigerant-liquid",
+          "positionLocal": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "directionLocal": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "connectionDiameterMm": 15.9,
+          "connectionType": "brazed",
+          "compatiblePipeKinds": [
+            "copper"
+          ],
+          "isConnected": true
+        }
+      },
+      "routeNodes": {
+        "gas:root": {
+          "id": "gas:root",
+          "kind": "endpoint",
+          "position": {
+            "x": -200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:0"
+          ]
+        },
+        "gas:inlet": {
+          "id": "gas:inlet",
+          "kind": "endpoint",
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2300
+          },
+          "connectedEdgeIds": [
+            "gas:main:1"
+          ]
+        },
+        "gas:out-a": {
+          "id": "gas:out-a",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 0,
+            "z": 2300
+          },
+          "connectedEdgeIds": [
+            "gas:a:0"
+          ]
+        },
+        "gas:out-b": {
+          "id": "gas:out-b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 200,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:b:0"
+          ]
+        },
+        "gas:a": {
+          "id": "gas:a",
+          "kind": "endpoint",
+          "position": {
+            "x": 2200,
+            "y": 0,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:a:0"
+          ]
+        },
+        "gas:b": {
+          "id": "gas:b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 1200,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:b:0"
+          ]
+        },
+        "liquid:root": {
+          "id": "liquid:root",
+          "kind": "endpoint",
+          "position": {
+            "x": -200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:0"
+          ]
+        },
+        "liquid:inlet": {
+          "id": "liquid:inlet",
+          "kind": "endpoint",
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:1"
+          ]
+        },
+        "liquid:out-a": {
+          "id": "liquid:out-a",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:a:0"
+          ]
+        },
+        "liquid:out-b": {
+          "id": "liquid:out-b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 200,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:b:0"
+          ]
+        },
+        "liquid:a": {
+          "id": "liquid:a",
+          "kind": "endpoint",
+          "position": {
+            "x": 2200,
+            "y": 0,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:a:0"
+          ]
+        },
+        "liquid:b": {
+          "id": "liquid:b",
+          "kind": "endpoint",
+          "position": {
+            "x": 1200,
+            "y": 1200,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:b:0"
+          ]
+        },
+        "gas:trunk-bend": {
+          "id": "gas:trunk-bend",
+          "kind": "bend",
+          "position": {
+            "x": 400,
+            "y": 150,
+            "z": 2700
+          },
+          "connectedEdgeIds": [
+            "gas:main:0",
+            "gas:main:1"
+          ]
+        },
+        "liquid:trunk-bend": {
+          "id": "liquid:trunk-bend",
+          "kind": "bend",
+          "position": {
+            "x": 400,
+            "y": 150,
+            "z": 2600
+          },
+          "connectedEdgeIds": [
+            "liquid:main:0",
+            "liquid:main:1"
+          ]
+        }
+      },
+      "segmentEdges": {
+        "gas:a:0": {
+          "id": "gas:a:0",
+          "kind": "pipe-segment",
+          "runId": "gas:a",
+          "startNodeId": "gas:out-a",
+          "endNodeId": "gas:a",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:b:0": {
+          "id": "gas:b:0",
+          "kind": "pipe-segment",
+          "runId": "gas:b",
+          "startNodeId": "gas:out-b",
+          "endNodeId": "gas:b",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:a:0": {
+          "id": "liquid:a:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:a",
+          "startNodeId": "liquid:out-a",
+          "endNodeId": "liquid:a",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:b:0": {
+          "id": "liquid:b:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:b",
+          "startNodeId": "liquid:out-b",
+          "endNodeId": "liquid:b",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:main:0": {
+          "id": "gas:main:0",
+          "kind": "pipe-segment",
+          "runId": "gas:main",
+          "startNodeId": "gas:root",
+          "endNodeId": "gas:trunk-bend",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "gas:main:1": {
+          "id": "gas:main:1",
+          "kind": "pipe-segment",
+          "runId": "gas:main",
+          "startNodeId": "gas:trunk-bend",
+          "endNodeId": "gas:inlet",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:main:0": {
+          "id": "liquid:main:0",
+          "kind": "pipe-segment",
+          "runId": "liquid:main",
+          "startNodeId": "liquid:root",
+          "endNodeId": "liquid:trunk-bend",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        },
+        "liquid:main:1": {
+          "id": "liquid:main:1",
+          "kind": "pipe-segment",
+          "runId": "liquid:main",
+          "startNodeId": "liquid:trunk-bend",
+          "endNodeId": "liquid:inlet",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nominalDiameterMm": 15.9,
+          "outsideDiameterMm": 15.9
+        }
+      },
+      "pipeRuns": {
+        "gas:main": {
+          "id": "gas:main",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:root",
+            "gas:trunk-bend",
+            "gas:inlet"
+          ],
+          "segmentEdgeIds": [
+            "gas:main:0",
+            "gas:main:1"
+          ],
+          "sourcePortId": "outdoor:gas"
+        },
+        "gas:a": {
+          "id": "gas:a",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:out-a",
+            "gas:a"
+          ],
+          "segmentEdgeIds": [
+            "gas:a:0"
+          ],
+          "targetPortId": "indoor-a:gas"
+        },
+        "gas:b": {
+          "id": "gas:b",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-gas",
+          "lineKind": "gas",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "gas:out-b",
+            "gas:b"
+          ],
+          "segmentEdgeIds": [
+            "gas:b:0"
+          ],
+          "targetPortId": "indoor-b:gas"
+        },
+        "liquid:main": {
+          "id": "liquid:main",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:root",
+            "liquid:trunk-bend",
+            "liquid:inlet"
+          ],
+          "segmentEdgeIds": [
+            "liquid:main:0",
+            "liquid:main:1"
+          ],
+          "sourcePortId": "outdoor:liquid"
+        },
+        "liquid:a": {
+          "id": "liquid:a",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:out-a",
+            "liquid:a"
+          ],
+          "segmentEdgeIds": [
+            "liquid:a:0"
+          ],
+          "targetPortId": "indoor-a:liquid"
+        },
+        "liquid:b": {
+          "id": "liquid:b",
+          "kind": "pipe-run",
+          "systemType": "refrigerant-liquid",
+          "lineKind": "liquid",
+          "pipeKind": "copper",
+          "nodeIds": [
+            "liquid:out-b",
+            "liquid:b"
+          ],
+          "segmentEdgeIds": [
+            "liquid:b:0"
+          ],
+          "targetPortId": "indoor-b:liquid"
+        }
+      },
+      "reducers": {},
+      "branchKits": {
+        "gas:branch": {
+          "id": "gas:branch",
+          "kind": "branch-kit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "model": "Y100",
+          "branchType": "y-joint",
+          "systemRole": "first-branch",
+          "lineKind": "gas",
+          "inletNodeIds": [
+            "gas:inlet"
+          ],
+          "outletNodeIds": [
+            "gas:out-a",
+            "gas:out-b"
+          ],
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2700
+          },
+          "orientation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "localForward": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "localUp": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "splitPlaneNormal": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "downstreamCapacityIndex": 100,
+          "ruleProfileId": "test",
+          "metadata": {
+            "refrigerant": "R32",
+            "arrangement": "heat-pump",
+            "equivalentLengthMm": 500
+          }
+        },
+        "liquid:branch": {
+          "id": "liquid:branch",
+          "kind": "branch-kit",
+          "manufacturer": "Test",
+          "family": "Heat pump",
+          "model": "Y100",
+          "branchType": "y-joint",
+          "systemRole": "first-branch",
+          "lineKind": "liquid",
+          "inletNodeIds": [
+            "liquid:inlet"
+          ],
+          "outletNodeIds": [
+            "liquid:out-a",
+            "liquid:out-b"
+          ],
+          "position": {
+            "x": 1000,
+            "y": 0,
+            "z": 2600
+          },
+          "orientation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "localForward": {
+            "x": 1,
+            "y": 0,
+            "z": 0
+          },
+          "localUp": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "splitPlaneNormal": {
+            "x": 0,
+            "y": 0,
+            "z": 1
+          },
+          "downstreamCapacityIndex": 100,
+          "ruleProfileId": "test",
+          "metadata": {
+            "refrigerant": "R32",
+            "arrangement": "heat-pump",
+            "equivalentLengthMm": 500
+          }
+        }
+      },
+      "pipePairAssemblies": {},
+      "diagnostics": []
+    },
+    "expected": {
+      "feasible": false,
+      "hardIssues": [
+        "Pipe gas:a equipment outlet stub is below 1200 mm.",
+        "Pipe gas:b equipment outlet stub is below 1200 mm.",
+        "Pipe liquid:a equipment outlet stub is below 1200 mm.",
+        "Pipe liquid:b equipment outlet stub is below 1200 mm.",
+        "The gas path to indoor-a exceeds the equivalent-length limit.",
+        "The gas path to indoor-b exceeds the equivalent-length limit.",
+        "The liquid path to indoor-a exceeds the equivalent-length limit.",
+        "The liquid path to indoor-b exceeds the equivalent-length limit.",
+        "Automatic routing cannot introduce a gas low pocket on the path to indoor-a; use a continuous service level or explicitly design the manufacturer-required geometry.",
+        "Automatic routing cannot introduce a gas low pocket on the path to indoor-b; use a continuous service level or explicitly design the manufacturer-required geometry."
+      ],
+      "advisoryIssues": [
+        "Indoor manufacturer capacity indices are missing; kW and BTU values cannot substitute for a capacity index.",
+        "Pipe and branch-kit sizing needs additional manufacturer data; see the component recommendations.",
+        "Equivalent length is incomplete until model-specific bend and fitting allowances are supplied.",
+        "The complete elevation profile contains a low pocket; review model-specific oil-return requirements."
+      ],
+      "score": 64.81594895876714,
+      "manufacturerQualification": "preliminary",
+      "recommendations": [
+        {
+          "entityId": "gas:main",
+          "kind": "pipe",
+          "downstreamCapacityIndex": null,
+          "status": "missing-data",
+          "note": "The outdoor-to-first-branch main needs its model-specific table and length-dependent sizing rules."
+        },
+        {
+          "entityId": "gas:a",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "gas:b",
+          "kind": "pipe",
+          "downstreamCapacityIndex": null,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "liquid:main",
+          "kind": "pipe",
+          "downstreamCapacityIndex": null,
+          "status": "missing-data",
+          "note": "The outdoor-to-first-branch main needs its model-specific table and length-dependent sizing rules."
+        },
+        {
+          "entityId": "liquid:a",
+          "kind": "pipe",
+          "downstreamCapacityIndex": 50,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "liquid:b",
+          "kind": "pipe",
+          "downstreamCapacityIndex": null,
+          "status": "matches",
+          "recommendedDiameterMm": 15.9,
+          "note": "Terminal tube matches the equipment connection diameter."
+        },
+        {
+          "entityId": "gas:branch",
+          "kind": "branch-kit",
+          "downstreamCapacityIndex": null,
+          "status": "missing-data",
+          "note": "A compatible manufacturer kit and complete capacity data are needed for final selection."
+        },
+        {
+          "entityId": "liquid:branch",
+          "kind": "branch-kit",
+          "downstreamCapacityIndex": null,
+          "status": "missing-data",
+          "note": "A compatible manufacturer kit and complete capacity data are needed for final selection."
+        }
+      ],
+      "paths": [
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-a",
+          "lineKind": "gas",
+          "runIds": [
+            "gas:main",
+            "gas:a"
+          ],
+          "branchIds": [
+            "gas:branch"
+          ],
+          "actualLengthMm": 2432.044798402362,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1077.032961426901,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-b",
+          "lineKind": "gas",
+          "runIds": [
+            "gas:main",
+            "gas:b"
+          ],
+          "branchIds": [
+            "gas:branch"
+          ],
+          "actualLengthMm": 2355.011836975461,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-a",
+          "lineKind": "liquid",
+          "runIds": [
+            "liquid:main",
+            "liquid:a"
+          ],
+          "branchIds": [
+            "liquid:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        },
+        {
+          "outdoorUnitId": "outdoor",
+          "indoorUnitId": "indoor-b",
+          "lineKind": "liquid",
+          "runIds": [
+            "liquid:main",
+            "liquid:b"
+          ],
+          "branchIds": [
+            "liquid:branch"
+          ],
+          "actualLengthMm": 2236.931687685298,
+          "equivalentLengthMm": null,
+          "firstBranchToIndoorLengthMm": 1000,
+          "heightDifferenceMm": 0
+        }
+      ],
+      "metrics": {
+        "pipeLengthMm": 6668.97648608766,
+        "gasLengthMm": 3432.044798402362,
+        "liquidLengthMm": 3236.931687685298,
+        "networkLengthMm": 3432.044798402362,
+        "maxPathLengthMm": 2432.044798402362,
+        "maxEquivalentPathLengthMm": null,
+        "bendCount": 0.780717262792535,
+        "branchPairCount": 1,
+        "riserCount": 2,
+        "verticalTravelMm": 800,
+        "elevationReversalCount": 2,
+        "connectedIndoorCount": 2,
+        "estimatedCost": null,
+        "relativeCostIndex": 13.254514433182063,
+        "wallCrossingCount": 0,
+        "totalCapacityIndex": null
+      }
+    }
+  }
+]

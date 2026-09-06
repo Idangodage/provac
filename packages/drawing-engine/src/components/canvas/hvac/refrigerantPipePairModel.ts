@@ -1,16 +1,19 @@
 import type { HvacElement, Point2D } from '../../../types';
 
-
 import {
   buildCeilingCassetteModel,
   getCeilingCassettePipePortEndpointLocal,
 } from './ceilingCassetteModel';
+import { compileCopperSocketElbowRoute } from './copperSocketElbowRoute';
+import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from './copperSocketElbows';
+import { buildCircularFieldPipeSegments, resolveFieldPipeBendRadiusMm, resolveFieldPipeBends, type FieldPipeStraightAllowances } from './fieldPipeBends';
 import {
   normalizeBypasses,
   translateBypasses,
   type PipeBypass,
 } from './pipeBypass';
 import {
+  liftPipePlanRouteTo3d,
   normalizePipeRouteNodes3d,
   withCanonicalPipeRoute,
   type PipePlacementPoint,
@@ -117,6 +120,11 @@ export interface RefrigerantPipeBundleConnection {
   gasSourceElementId?: string;
   liquidSourceElementId?: string;
   terminalRole?: RefrigerantBranchTerminalRole;
+  /**
+   * Plan-space AABB of the owning unit's footprint (unit-port targets only) so
+   * route builders can keep field pipes from crossing the equipment body.
+   */
+  sourceBoundsMm?: { minX: number; minY: number; maxX: number; maxY: number };
 }
 
 export interface RefrigerantPipeBundleSegmentConnection
@@ -883,9 +891,17 @@ function dedupeConsecutivePoints(points: Point2D[]): Point2D[] {
   const deduped: Point2D[] = [];
   points.forEach((point) => {
     const previous = deduped[deduped.length - 1];
-    if (!previous || Math.hypot(previous.x - point.x, previous.y - point.y) > 0.01) {
+    if (!previous) {
       deduped.push(point);
+      return;
     }
+    const dx = previous.x - point.x; const dy = previous.y - point.y;
+    // An axis already outside the tolerance proves the Euclidean distance is
+    // outside too. Preserve the exact hypot decision at the boundary and for
+    // nonfinite legacy inputs; ordinary sampled pipe spans need no square root.
+    const separated = Number.isFinite(dx) && Number.isFinite(dy) && (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01)
+      || Math.hypot(dx, dy) > 0.01;
+    if (separated) deduped.push(point);
   });
   return deduped;
 }
@@ -948,48 +964,334 @@ export function reserveMinimumPortStub(
   }
 
   const direction = normalizeDirection(portDirection);
+  const lateral = perpendicular(direction);
   const stubEnd = add(portPoint, scale(direction, minimumMm));
   const normalized = dedupeConsecutivePoints([...routePoints]).filter(
     (point, index) => index > 0 || !pointsNearlyEqual(point, portPoint, 0.2),
   );
+
+  // Fast path: the route already provides the compliant straight stub (takeoff
+  // builders emit it). Splicing here would delete their carefully built
+  // gather/fan vertices, so leave compliant routes untouched.
+  const STUB_LATERAL_TOLERANCE_MM = 1;
+  let compliantPrefix = 0;
+  while (compliantPrefix < normalized.length) {
+    const offset = subtract(normalized[compliantPrefix]!, portPoint);
+    if (Math.abs(dot(offset, lateral)) > STUB_LATERAL_TOLERANCE_MM) break;
+    if (dot(offset, direction) >= minimumMm - 0.2) {
+      return dedupeConsecutivePoints([{ ...portPoint }, ...normalized]);
+    }
+    compliantPrefix += 1;
+  }
+
   const firstBeyondStub = normalized.findIndex(
     (point) => dot(subtract(point, portPoint), direction) >= minimumMm - 0.2,
   );
+  // When no vertex projects beyond the stub plane (e.g. the route sweeps
+  // around the unit and approaches laterally), keep everything outside the
+  // port's protective bubble instead of discarding the route.
   const tail = firstBeyondStub >= 0
     ? normalized.slice(firstBeyondStub)
-    : normalized.length > 0
-      ? [normalized[normalized.length - 1]!]
-      : [];
+    : (() => {
+        const outsideBubble = normalized.filter((point) => {
+          const offset = subtract(point, portPoint);
+          return Math.hypot(offset.x, offset.y) >= minimumMm - 0.2;
+        });
+        if (outsideBubble.length > 0) return outsideBubble;
+        return normalized.length > 0 ? [normalized[normalized.length - 1]!] : [];
+      })();
+
+  // Reconnect beyond the protected straight with a 45-degree fan-out when
+  // space permits, or a perpendicular gather for a constrained approach.
+  const tailStart = tail[0];
+  const elbowPoints: Point2D[] = [];
+  if (tailStart && !pointsNearlyEqual(tailStart, stubEnd, 0.2)) {
+    const lateralOffsetMm = dot(subtract(tailStart, stubEnd), lateral);
+    const alongOffsetMm = dot(subtract(tailStart, stubEnd), direction);
+    if (Math.abs(lateralOffsetMm) > 0.2 && Math.abs(alongOffsetMm) > 0.2) {
+      // Use a forward 45-degree fan-out when there is room after the reserved
+      // straight. A tiny perpendicular dogleg creates cramped socket elbows.
+      const advanceMm = alongOffsetMm >= Math.abs(lateralOffsetMm)
+        ? Math.abs(lateralOffsetMm)
+        : 0;
+      elbowPoints.push(add(add(stubEnd, scale(direction, advanceMm)), scale(lateral, lateralOffsetMm)));
+    }
+  }
 
   return dedupeConsecutivePoints([
     { ...portPoint },
     stubEnd,
+    ...elbowPoints,
     ...tail.filter((point, index) => index > 0 || !pointsNearlyEqual(point, stubEnd, 0.2)),
   ]);
+}
+
+/**
+ * Drops the leading takeoff/weld artifacts of a route so a moved connection can
+ * rebuild its port approach from scratch. Reconnection must be idempotent:
+ * patching the previously patched head accumulates a staircase of stale stub
+ * and elbow fragments after every equipment move. Takeoff artifacts are all
+ * short legs (stub, gather, elbow); the authored field run starts at the first
+ * long leg, so everything before it is regenerated by the fresh weld.
+ */
+function stripPortTakeoffArtifacts(
+  routePoints: Point2D[],
+  minKeepLegMm = 300,
+): Point2D[] {
+  const deduped = dedupeConsecutivePoints(routePoints);
+  let index = 0;
+  while (index < deduped.length - 2) {
+    const legMm = Math.hypot(
+      deduped[index + 1]!.x - deduped[index]!.x,
+      deduped[index + 1]!.y - deduped[index]!.y,
+    );
+    if (legMm >= minKeepLegMm) break;
+    index += 1;
+  }
+  return deduped.slice(index);
+}
+
+/**
+ * Collapses arc-sampled bends back into single corner vertices: group segments
+ * into straight runs by accumulated heading change, keep runs longer than the
+ * arc-chord scale, and place one vertex at each leg-to-leg intersection.
+ * (PipeStudioOverlay applies the same idea for rendering; this model-space
+ * variant feeds reflow so rebuilt routes stay compact and weldable.)
+ */
+function sharpenPipeRouteCorners(routePoints: Point2D[]): Point2D[] {
+  const cleaned = dedupeConsecutivePoints(routePoints);
+  if (cleaned.length <= 3) return cleaned;
+
+  const HEADING_TOLERANCE_RAD = 0.2;
+  // Above arc-chord-run scale: heading-grouped bend-arc fragments come in runs
+  // of up to ~100mm, while authored legs at reflow scale are longer.
+  const MIN_LEG_MM = 120;
+  type Run = { start: Point2D; end: Point2D; lengthMm: number; direction: Point2D };
+  const runs: Run[] = [];
+  let runStart = cleaned[0]!;
+  let runEnd = cleaned[1]!;
+  let runDirection = normalizeDirection(subtract(runEnd, runStart));
+  let runLength = Math.hypot(runEnd.x - runStart.x, runEnd.y - runStart.y);
+  for (let index = 1; index < cleaned.length - 1; index += 1) {
+    const from = cleaned[index]!;
+    const to = cleaned[index + 1]!;
+    const segmentDirection = normalizeDirection(subtract(to, from));
+    const headingDelta = Math.acos(
+      Math.max(-1, Math.min(1, dot(runDirection, segmentDirection))),
+    );
+    if (headingDelta < HEADING_TOLERANCE_RAD) {
+      runEnd = to;
+      runLength += Math.hypot(to.x - from.x, to.y - from.y);
+    } else {
+      runs.push({ start: runStart, end: runEnd, lengthMm: runLength, direction: runDirection });
+      runStart = from;
+      runEnd = to;
+      runDirection = segmentDirection;
+      runLength = Math.hypot(to.x - from.x, to.y - from.y);
+    }
+  }
+  runs.push({ start: runStart, end: runEnd, lengthMm: runLength, direction: runDirection });
+
+  const legs = runs.filter((run) => run.lengthMm >= MIN_LEG_MM);
+  if (legs.length < 2) return cleaned;
+
+  const sharpened: Point2D[] = [{ ...legs[0]!.start }];
+  for (let index = 0; index < legs.length - 1; index += 1) {
+    const exit = legs[index]!.end;
+    const entry = legs[index + 1]!.start;
+    const corner = lineIntersection(
+      legs[index]!.start,
+      legs[index]!.direction,
+      entry,
+      legs[index + 1]!.direction,
+    );
+    // Miter limit: a near-parallel pair intersects far away — keep the arc's
+    // own endpoints instead of shooting a spike kilometres off the route.
+    const gapMm = Math.hypot(entry.x - exit.x, entry.y - exit.y);
+    const miterLimitMm = gapMm * 4 + 60;
+    if (
+      corner
+      && Math.hypot(corner.x - exit.x, corner.y - exit.y) <= miterLimitMm
+    ) {
+      sharpened.push(corner);
+    } else {
+      sharpened.push({ ...exit }, { ...entry });
+    }
+  }
+  sharpened.push({ ...legs[legs.length - 1]!.end });
+  return dedupeConsecutivePoints(sharpened);
+}
+
+/**
+ * Minimum-bend absorption for reflowed routes, constrained so that NOTHING
+ * after the second bend ever moves:
+ * - A perpendicular first leg slides its entry vertex along its OWN line onto
+ *   the port axis (the leg is trimmed/extended; its line and every later
+ *   vertex stay fixed) — the takeoff then joins it with a single elbow.
+ * - A first leg parallel to the port normal may slide onto the axis ONLY when
+ *   the next leg is perpendicular to the slide, because then the second bend
+ *   merely slides along its own line (trim/extend). Otherwise the leg stays
+ *   put and the takeoff bridges the offset with its Z — downstream geometry
+ *   is sacred.
+ */
+function alignReflowRouteToPortAxis(
+  routePoints: Point2D[],
+  portAnchor: Point2D,
+  portDirection: Point2D,
+): Point2D[] {
+  if (routePoints.length < 2) return routePoints;
+  const direction = normalizeDirection(portDirection);
+  const lateral = perpendicular(direction);
+  const aligned = routePoints.map((point) => ({ ...point }));
+  const legDirection = normalizeDirection(subtract(aligned[1]!, aligned[0]!));
+  const ALIGN_TOLERANCE = Math.cos(0.2);
+  const axisAlignment = dot(legDirection, direction);
+  if (axisAlignment >= ALIGN_TOLERANCE) {
+    if (aligned.length < 3) return aligned;
+    const nextLegDirection = normalizeDirection(subtract(aligned[2]!, aligned[1]!));
+    const nextLegSlidesInPlace = Math.abs(dot(nextLegDirection, direction)) <= 0.2;
+    if (!nextLegSlidesInPlace) return aligned;
+    // Project each slid vertex onto the axis individually so the leg lies
+    // exactly on the port line; the second bend slides along its own leg.
+    for (const index of [0, 1]) {
+      const lateralOffsetMm = dot(subtract(portAnchor, aligned[index]!), lateral);
+      aligned[index] = add(aligned[index]!, scale(lateral, lateralOffsetMm));
+    }
+    return dedupeConsecutivePoints(aligned);
+  }
+  if (Math.abs(dot(legDirection, lateral)) >= ALIGN_TOLERANCE) {
+    const entryAdvanceMm = dot(subtract(aligned[0]!, portAnchor), direction);
+    aligned[0] = add(portAnchor, scale(direction, entryAdvanceMm));
+    return dedupeConsecutivePoints(aligned);
+  }
+  return aligned;
+}
+
+/** Axial distance occupied by two tangent, equal-radius offset bends. */
+function unitPortGatherAdvanceMm(displacementMm: number, radiusMm: number): number {
+  const radius = Math.max(1, radiusMm);
+  const angle = Math.acos(Math.max(0, 1 - Math.abs(displacementMm) / (2 * radius)));
+  return 2 * radius * Math.sin(angle);
+}
+
+/** Required straight corridor from the bundle datum before its first field
+ * elbow. Includes each actual socket's axial stagger, its protected straight
+ * and the two tangent bends needed to reach the paired service lane. The field
+ * elbow's tangent setback is NOT included; route solvers add that separately. */
+export function getUnitPortApproachStraightMm(
+  connection: RefrigerantPipeBundleConnection,
+  centerSpacingMm: number,
+  bendRadiusMm: number,
+  minimumPortStubMm: number,
+): number {
+  const direction = normalizeDirection(connection.direction);
+  const normal = perpendicular(direction);
+  const bundleCenter = computeBundleCenter(connection.gasFieldPoint, connection.liquidFieldPoint);
+  const offsets = resolveParallelBundleOffsets(connection, centerSpacingMm);
+  return Math.max(minimumPortStubMm, ...([
+    [connection.gasPoint, offsets.gasOffsetMm],
+    [connection.liquidPoint, offsets.liquidOffsetMm],
+  ] as const).map(([point, offset]) => {
+    const displacement = offset - dot(subtract(point, bundleCenter), normal);
+    const stagger = dot(subtract(point, connection.point), direction);
+    return stagger + minimumPortStubMm + unitPortGatherAdvanceMm(displacement, bendRadiusMm);
+  }));
+}
+
+/** Shape the socket gather once, leaving its downstream parallel lane intact. */
+function roundEngineeringUnitPortApproach(
+  points: Point2D[], portPoint: Point2D, portDirection: Point2D,
+  minimumStraightMm: number, radiusMm: number,
+): Point2D[] {
+  const direction = normalizeDirection(portDirection);
+  const normal = perpendicular(direction);
+  const radius = Math.max(1, radiusMm);
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const entry = points[index]!; const exit = points[index + 1]!;
+    const delta = subtract(exit, entry);
+    const length = Math.hypot(delta.x, delta.y);
+    if (length < 1e-6) continue;
+    const heading = dot(scale(delta, 1 / length), direction);
+    // A substantial perpendicular run is already the main field route. Never
+    // replace it with a longer gather that jumps across a real route bend.
+    if (Math.abs(heading) < 1e-6 && length > radius * 2) break;
+    if (heading < 1 - 1e-8) continue;
+    const offset = dot(subtract(entry, portPoint), normal);
+    const displacement = Math.abs(offset);
+    if (displacement <= 0.2) continue;
+    const angle = Math.acos(Math.max(0, 1 - displacement / (2 * radius)));
+    const advance = unitPortGatherAdvanceMm(displacement, radius);
+    const finishStation = minimumStraightMm + advance;
+    if (dot(subtract(exit, portPoint), direction) < finishStation - 1e-6) continue;
+    const sign = Math.sign(offset);
+    const localPoint = (x: number, y: number) => add(portPoint, add(scale(direction, x), scale(normal, y)));
+    const result = [{ ...portPoint }, localPoint(minimumStraightMm, 0)];
+    const segments = arcChordCount(angle);
+    for (let step = 1; step <= segments; step += 1) {
+      const theta = angle * step / segments;
+      result.push(localPoint(minimumStraightMm + radius * Math.sin(theta), sign * radius * (1 - Math.cos(theta))));
+    }
+    const middleStraight = Math.max(0, displacement - 2 * radius);
+    const firstEndX = minimumStraightMm + radius * Math.sin(angle);
+    const secondStartY = sign * (radius * (1 - Math.cos(angle)) + middleStraight);
+    if (middleStraight > 0.2) result.push(localPoint(firstEndX, secondStartY));
+    for (let step = 1; step <= segments; step += 1) {
+      const theta = angle * (1 - step / segments);
+      result.push(localPoint(firstEndX + radius * (Math.sin(angle) - Math.sin(theta)),
+        secondStartY + sign * radius * (Math.cos(theta) - Math.cos(angle))));
+    }
+    return dedupeConsecutivePoints([...result, ...points.slice(index + 1)]);
+  }
+  return points;
 }
 
 function reserveUnitPortBundleStubs(
   routes: { gasRoutePoints: Point2D[]; liquidRoutePoints: Point2D[] },
   connection: RefrigerantPipeBundleConnection | null,
+  endConnection: RefrigerantPipeBundleConnection | null = null,
+  minimumBendRadiusMm?: number,
 ): { gasRoutePoints: Point2D[]; liquidRoutePoints: Point2D[] } {
-  if (connection?.connectionKind !== 'unit-port') {
-    return routes;
-  }
+  let { gasRoutePoints, liquidRoutePoints } = routes;
   const minimumMm = getActivePipeRoutingSettings().minimumPortStubMm;
-  return {
-    gasRoutePoints: reserveMinimumPortStub(
-      routes.gasRoutePoints,
+  const reserve = (points: Point2D[], point: Point2D, direction: Point2D): Point2D[] => {
+    const reserved = reserveMinimumPortStub(points, point, direction, minimumMm);
+    return minimumBendRadiusMm === undefined ? reserved
+      : roundEngineeringUnitPortApproach(reserved, point, direction, minimumMm, minimumBendRadiusMm);
+  };
+  if (connection?.connectionKind === 'unit-port') {
+    gasRoutePoints = reserve(
+      gasRoutePoints,
       connection.gasPoint,
       connection.gasDirection ?? connection.direction,
-      minimumMm,
-    ),
-    liquidRoutePoints: reserveMinimumPortStub(
-      routes.liquidRoutePoints,
+    );
+    liquidRoutePoints = reserve(
+      liquidRoutePoints,
       connection.liquidPoint,
       connection.liquidDirection ?? connection.direction,
-      minimumMm,
-    ),
-  };
+    );
+  }
+  // The arriving end needs the same straight stub + orthogonal gather as the
+  // start: reserve it on the reversed polyline so the final leg enters the
+  // port dead-on along its normal instead of diving in diagonally.
+  if (endConnection?.connectionKind === 'unit-port') {
+    const reserveEnd = (points: Point2D[], portPoint: Point2D, direction: Point2D): Point2D[] =>
+      reserve(
+        [...points].reverse(),
+        portPoint,
+        direction,
+      ).reverse();
+    gasRoutePoints = reserveEnd(
+      gasRoutePoints,
+      endConnection.gasPoint,
+      endConnection.gasDirection ?? endConnection.direction,
+    );
+    liquidRoutePoints = reserveEnd(
+      liquidRoutePoints,
+      endConnection.liquidPoint,
+      endConnection.liquidDirection ?? endConnection.direction,
+    );
+  }
+  return { gasRoutePoints, liquidRoutePoints };
 }
 
 function resolveCenterlinePathWithConnections(
@@ -1122,63 +1424,18 @@ interface RefrigerantPipeSegmentPathSpec {
   index: number;
   material: RefrigerantPipeMaterial;
   invalidHardGeometry: boolean;
+  /** Keep authored hard-angle failures distinct from replaceable formed bends. */
+  invalidHardRouteGeometry?: boolean;
+  unresolvedFieldBends?: Array<{ corner: Point2D; reason: 'direction-reversal' | 'insufficient-straight' }>;
   points: Point2D[];
   lengthMm: number;
-}
-
-function catmullRomPoint(
-  p0: Point2D,
-  p1: Point2D,
-  p2: Point2D,
-  p3: Point2D,
-  t: number,
-): Point2D {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return {
-    x:
-      0.5 *
-      ((2 * p1.x) +
-        (-p0.x + p2.x) * t +
-        (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-        (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
-    y:
-      0.5 *
-      ((2 * p1.y) +
-        (-p0.y + p2.y) * t +
-        (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-        (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
-  };
-}
-
-function buildFlexibleSegmentSplinePoints(
-  routePoints: Point2D[],
-  segmentIndex: number,
-): Point2D[] {
-  const start = routePoints[segmentIndex];
-  const end = routePoints[segmentIndex + 1];
-  if (!start || !end) {
-    return [];
-  }
-
-  const previous = routePoints[Math.max(0, segmentIndex - 1)] ?? start;
-  const next = routePoints[Math.min(routePoints.length - 1, segmentIndex + 2)] ?? end;
-  const spanLengthMm = Math.hypot(end.x - start.x, end.y - start.y);
-  const sampleCount = Math.max(5, Math.min(24, Math.round(spanLengthMm / 12)));
-  const sampled: Point2D[] = [start];
-
-  for (let sampleIndex = 1; sampleIndex < sampleCount; sampleIndex += 1) {
-    const t = sampleIndex / sampleCount;
-    sampled.push(catmullRomPoint(previous, start, end, next, t));
-  }
-  sampled.push(end);
-
-  return dedupeConsecutivePoints(sampled);
 }
 
 function buildRefrigerantPipeSegmentPaths(
   routePoints: Point2D[],
   segmentMaterials: RefrigerantPipeMaterial[],
+  bendRadiusMm: number,
+  allowances: FieldPipeStraightAllowances,
 ): RefrigerantPipeSegmentPathSpec[] {
   const dedupedRoutePoints = dedupeConsecutivePoints(routePoints);
   if (dedupedRoutePoints.length < 2) {
@@ -1189,6 +1446,8 @@ function buildRefrigerantPipeSegmentPaths(
     dedupedRoutePoints.length - 1,
   );
   const segments: RefrigerantPipeSegmentPathSpec[] = [];
+  const fieldRoute: Point2D[] = [dedupedRoutePoints[0]!];
+  const spanOwners: number[] = [];
   for (let index = 0; index < dedupedRoutePoints.length - 1; index += 1) {
     const start = dedupedRoutePoints[index]!;
     const end = dedupedRoutePoints[index + 1]!;
@@ -1196,7 +1455,7 @@ function buildRefrigerantPipeSegmentPaths(
     const hardSegmentRoute = material === 'hard'
       ? buildHardSegmentRoute(start, end)
       : {
-        points: buildFlexibleSegmentSplinePoints(dedupedRoutePoints, index),
+        points: [start, end],
         invalidHardGeometry: false,
       };
     const segmentPoints = dedupeConsecutivePoints(hardSegmentRoute.points);
@@ -1207,9 +1466,32 @@ function buildRefrigerantPipeSegmentPaths(
       index,
       material,
       invalidHardGeometry: hardSegmentRoute.invalidHardGeometry,
-      points: segmentPoints,
-      lengthMm: polylineLength(segmentPoints),
+      invalidHardRouteGeometry: hardSegmentRoute.invalidHardGeometry,
+      points: [],
+      lengthMm: 0,
     });
+    for (const point of segmentPoints.slice(1)) {
+      fieldRoute.push(point);
+      spanOwners.push(segments.length - 1);
+    }
+  }
+
+  buildCircularFieldPipeSegments(fieldRoute, bendRadiusMm, allowances).forEach((span, index) => {
+    const owner = segments[spanOwners[index]!]!;
+    owner.points.push(...(owner.points.length ? span.points.slice(1) : span.points));
+    owner.lengthMm += span.lengthMm;
+    owner.invalidHardGeometry ||= span.invalidBend;
+  });
+  // A successful socket elbow may replace a failed formed bend at this exact
+  // corner. Retain the reason and owner so it cannot erase an unrelated
+  // reversal, hard-angle failure, or another elbow's insufficient clearance.
+  for (const bend of resolveFieldPipeBends(fieldRoute, bendRadiusMm, allowances)) {
+    if (bend.fits || !bend.unresolvedReason) continue;
+    for (const ownerIndex of new Set([spanOwners[bend.vertexIndex - 1], spanOwners[bend.vertexIndex]])) {
+      const owner = ownerIndex === undefined ? undefined : segments[ownerIndex];
+      if (!owner) continue;
+      (owner.unresolvedFieldBends ??= []).push({ corner: fieldRoute[bend.vertexIndex]!, reason: bend.unresolvedReason });
+    }
   }
 
   if (segments.length === 0 && dedupedRoutePoints.length >= 2) {
@@ -1536,8 +1818,16 @@ export function translateRefrigerantPipeProperties(
     bypasses: translateBypasses(properties.bypasses, delta),
   });
   const nextRoute = normalizePointArray(routed.properties.routePoints);
+  const authoredCenterline = normalizePointArray(properties.authoredCenterlineRoute);
   return {
     ...routed.properties,
+    ...(authoredCenterline.length >= 2
+      ? {
+          authoredCenterlineRoute: authoredCenterline.map(
+            (point) => add(point, delta),
+          ),
+        }
+      : {}),
     centerline_start: nextRoute[0] ?? properties.centerline_start,
     centerline_end: nextRoute[nextRoute.length - 1] ?? properties.centerline_end,
   };
@@ -1675,6 +1965,7 @@ function buildUnitPortBundleConnection(options: {
   gasElevationMm: number;
   liquidElevationMm: number;
   sourceElementId?: string;
+  sourceBoundsMm?: { minX: number; minY: number; maxX: number; maxY: number };
 }): RefrigerantPipeBundleConnection {
   const direction = normalizeDirection(options.direction);
   const bundleCenter = computeBundleCenter(options.gasPoint, options.liquidPoint);
@@ -1711,6 +2002,7 @@ function buildUnitPortBundleConnection(options: {
       liquidElevationMm: options.liquidElevationMm,
       connectionKind: 'unit-port',
       sourceElementId: options.sourceElementId,
+      sourceBoundsMm: options.sourceBoundsMm,
     };
   }
 
@@ -1742,6 +2034,28 @@ function buildUnitPortBundleConnection(options: {
     liquidElevationMm: options.liquidElevationMm,
     connectionKind: 'unit-port',
     sourceElementId: options.sourceElementId,
+    sourceBoundsMm: options.sourceBoundsMm,
+  };
+}
+
+function elementFootprintBoundsMm(
+  element: HvacPipeSnapSource,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const center = absoluteCenter(element);
+  const halfWidth = element.width / 2;
+  const halfDepth = element.depth / 2;
+  const rotation = element.rotation ?? 0;
+  const corners = [
+    { x: -halfWidth, y: -halfDepth },
+    { x: halfWidth, y: -halfDepth },
+    { x: halfWidth, y: halfDepth },
+    { x: -halfWidth, y: halfDepth },
+  ].map((corner) => add(center, rotateLocalPoint(corner, rotation)));
+  return {
+    minX: Math.min(...corners.map((corner) => corner.x)),
+    minY: Math.min(...corners.map((corner) => corner.y)),
+    maxX: Math.max(...corners.map((corner) => corner.x)),
+    maxY: Math.max(...corners.map((corner) => corner.y)),
   };
 }
 
@@ -1779,6 +2093,7 @@ function resolveUnitPortBundleConnectionForElement(
       gasElevationMm: element.elevation + gasPort.z,
       liquidElevationMm: element.elevation + liquidPort.z,
       sourceElementId: element.id,
+      sourceBoundsMm: elementFootprintBoundsMm(element),
     });
   }
 
@@ -1821,6 +2136,7 @@ function resolveUnitPortBundleConnectionForElement(
     gasElevationMm: element.elevation + gasPort.localZ,
     liquidElevationMm: element.elevation + liquidPort.localZ,
     sourceElementId: element.id,
+    sourceBoundsMm: elementFootprintBoundsMm(element),
   });
 }
 
@@ -1999,25 +2315,36 @@ function computeStartTakeoffLength(
   centerSpacingMm: number,
   maxOuterDiameterMm: number,
   minimumPortStubMm = 0,
+  bendRadiusMm = 0,
 ): number {
+  // The compliant stub must stay straight until the first bend STARTS, so the
+  // takeoff reserves the stub plus the bend arc's tangent offset.
   return Math.max(
     54,
     centerSpacingMm + 12,
     maxOuterDiameterMm * 1.02,
-    minimumPortStubMm,
+    minimumPortStubMm + Math.max(0, bendRadiusMm),
   );
 }
 
 function computeCompactBendRadius(
   centerSpacingMm: number,
   maxOuterDiameterMm: number,
+  requestedFactor?: number,
 ): number {
-  return Math.max(6, maxOuterDiameterMm * 0.42, centerSpacingMm * 0.12);
+  return Math.max(6, maxOuterDiameterMm * 0.42, centerSpacingMm * 0.12,
+    requestedFactor === undefined ? 0 : maxOuterDiameterMm * requestedFactor);
+}
+
+function explicitBendRadiusFactor(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function computeConnectionOverlapLength(maxOuterDiameterMm: number): number {
   return Math.max(2.5, Math.min(6, maxOuterDiameterMm * 0.2));
 }
+
+const END_APPROACH_CLEARANCE_MM = 120;
 
 /**
  * Appends a short direction-aligned tail at the end of the guide route so the
@@ -2029,6 +2356,7 @@ function appendEndApproachTail(
   guidePoints: Point2D[],
   endBundleConnection: RefrigerantPipeBundleConnection | null,
   tailLengthMm: number,
+  bendRadiusMm: number,
 ): Point2D[] {
   if (!endBundleConnection || guidePoints.length < 1) {
     return guidePoints;
@@ -2044,16 +2372,115 @@ function appendEndApproachTail(
     endBundleConnection.gasFieldPoint,
     endBundleConnection.liquidFieldPoint,
   );
-  const endDir = endBundleConnection.direction;
+  const endDir = normalizeDirection(endBundleConnection.direction);
+  const endTailLengthMm = endBundleConnection.connectionKind === 'field-pipe'
+    ? Math.max(0, getActivePipeRoutingSettings().defaultBranchKitClearanceMm) + Math.max(0, bendRadiusMm)
+    : tailLengthMm;
 
-  // The approach point sits tailLengthMm outward from endCenter along the port
+  // A branch socket has its own straight requirement. Reusing a long unit
+  // departure stub here can extend past an already valid final elbow and fold
+  // the route back on itself. Recognize the whole inward straight, including
+  // any intermediate collinear waypoints, before adding an approach point.
+  if (pointsNearlyEqual(guidePoints[guidePoints.length - 1]!, endCenter, 0.2)) {
+    let straightLengthMm = 0;
+    let inwardAligned = true;
+    for (let index = guidePoints.length - 2; index >= 0; index -= 1) {
+      const delta = subtract(guidePoints[index]!, endCenter);
+      const along = dot(delta, endDir);
+      const lateral = subtract(delta, scale(endDir, along));
+      if (Math.hypot(lateral.x, lateral.y) > 0.2) break;
+      if (along < straightLengthMm - 0.2) {
+        inwardAligned = false;
+        break;
+      }
+      straightLengthMm = along;
+    }
+    if (inwardAligned && straightLengthMm >= endTailLengthMm - 0.2) return guidePoints;
+    if (inwardAligned && straightLengthMm > 0.2 && endBundleConnection.connectionKind === 'field-pipe') {
+      // A shorter existing leg still establishes the fitting's correct lane.
+      // Its service-specific final elbow is extended by
+      // alignFieldTerminalApproach; inserting a farther collinear vertex here
+      // would introduce a reversal before that clearance correction runs.
+      return guidePoints;
+    }
+  }
+
+  // The approach point sits endTailLengthMm outward from endCenter along the port
   // exit direction. The segment approachPoint -> endCenter is therefore aligned
   // with the port, and offsetPolyline will offset perpendicular to it.
-  const approachPoint = add(endCenter, scale(endDir, tailLengthMm));
+  const approachPoint = add(endCenter, scale(endDir, endTailLengthMm));
 
   const result = guidePoints.slice(0, -1);
+  // A pipe arriving from the far side of the unit must swing around its body,
+  // not through it: detour along the lateral side the route is already on.
+  const bounds = endBundleConnection.connectionKind === 'unit-port'
+    ? endBundleConnection.sourceBoundsMm
+    : undefined;
+  const previousPoint = result[result.length - 1];
+  if (previousPoint && bounds) {
+    const clearance = END_APPROACH_CLEARANCE_MM;
+    const inflated = {
+      minX: bounds.minX - clearance,
+      minY: bounds.minY - clearance,
+      maxX: bounds.maxX + clearance,
+      maxY: bounds.maxY + clearance,
+    };
+    if (segmentIntersectsRect(previousPoint, approachPoint, inflated)) {
+      // Pick the bypass side that CONTINUES the route's incoming heading —
+      // bouncing back the way the route came folds the polyline onto itself
+      // and the parallel offset miters explode at the reversal.
+      const previousPrevious = result[result.length - 2];
+      if (Math.abs(endDir.x) >= Math.abs(endDir.y)) {
+        const headingY = previousPrevious ? previousPoint.y - previousPrevious.y : 0;
+        const useMaxSide = Math.abs(headingY) > 1
+          ? headingY > 0
+          : previousPoint.y > (bounds.minY + bounds.maxY) / 2;
+        const laneY = useMaxSide ? inflated.maxY : inflated.minY;
+        result.push({ x: previousPoint.x, y: laneY }, { x: approachPoint.x, y: laneY });
+      } else {
+        const headingX = previousPrevious ? previousPoint.x - previousPrevious.x : 0;
+        const useMaxSide = Math.abs(headingX) > 1
+          ? headingX > 0
+          : previousPoint.x > (bounds.minX + bounds.maxX) / 2;
+        const laneX = useMaxSide ? inflated.maxX : inflated.minX;
+        result.push({ x: laneX, y: previousPoint.y }, { x: laneX, y: approachPoint.y });
+      }
+    }
+  }
   result.push(approachPoint, endCenter);
   return dedupeConsecutivePoints(result);
+}
+
+function segmentIntersectsRect(
+  start: Point2D,
+  end: Point2D,
+  rect: { minX: number; minY: number; maxX: number; maxY: number },
+): boolean {
+  // Liang-Barsky clip: the segment hits the rect iff a clipped span survives.
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let tMin = 0;
+  let tMax = 1;
+  const edges: Array<[number, number]> = [
+    [-dx, start.x - rect.minX],
+    [dx, rect.maxX - start.x],
+    [-dy, start.y - rect.minY],
+    [dy, rect.maxY - start.y],
+  ];
+  for (const [p, q] of edges) {
+    if (Math.abs(p) < 1e-12) {
+      if (q < 0) return false;
+      continue;
+    }
+    const t = q / p;
+    if (p < 0) {
+      tMin = Math.max(tMin, t);
+    } else {
+      tMax = Math.min(tMax, t);
+    }
+    if (tMin > tMax) return false;
+  }
+  return true;
 }
 
 function buildFieldRoutePoints(
@@ -2154,6 +2581,9 @@ function buildTakeoffTailPoints(
         points.push(projectedLateralPoint);
       }
     }
+    // Only the point inside the takeoff zone is superseded by the straight
+    // takeoff — the rest of the drawn route must survive.
+    points.push(...remaining.slice(1));
     return dedupeConsecutivePoints(points);
   }
 
@@ -2192,27 +2622,35 @@ function buildTwoFortyFiveOffsetTakeoffPoints(
     return dedupeConsecutivePoints(parallelLeadPoints);
   }
 
-  // For the non-selected pipe, start the 45 deg offset immediately from the
-  // unit port. Any remaining straight takeoff length continues after the second
-  // 45 so the bundle spacing is already correct before the first routed bend.
-  const diagonalAdvanceMm = Math.min(takeoffLengthMm, Math.abs(lateralShiftMm));
+  // The trailing pipe must leave its port with the same compliant straight
+  // stub as the lead pipe (flare joints cannot bend at the casing), so the
+  // 45-degree gather to bundle spacing starts only after the takeoff length.
+  // Leading parallel points inside the gather region are superseded by it.
+  const stubEndPoint = add(trailingConnectionPoint, scale(direction, takeoffLengthMm));
   const diagonalJoinPoint = add(
-    add(trailingConnectionPoint, scale(direction, diagonalAdvanceMm)),
+    add(stubEndPoint, scale(direction, Math.abs(lateralShiftMm))),
     scale(normal, lateralShiftMm),
   );
+  const joinAdvanceMm = Math.hypot(
+    diagonalJoinPoint.x - trailingConnectionPoint.x,
+    diagonalJoinPoint.y - trailingConnectionPoint.y,
+  );
 
-  const points: Point2D[] = [diagonalJoinPoint];
-  const parallelTakeoffPoint = parallelLeadPoints[0];
-  if (
-    parallelTakeoffPoint
+  // Drop only the leading parallel points inside the gather region (a
+  // Euclidean bubble around the port) — an axis-projection test would also
+  // discard genuine route vertices when the drawn route turns away sharply.
+  const points: Point2D[] = [stubEndPoint, diagonalJoinPoint];
+  let firstBeyondJoin = 0;
+  while (
+    firstBeyondJoin < parallelLeadPoints.length
     && Math.hypot(
-      parallelTakeoffPoint.x - diagonalJoinPoint.x,
-      parallelTakeoffPoint.y - diagonalJoinPoint.y,
-    ) > 0.2
+      parallelLeadPoints[firstBeyondJoin]!.x - trailingConnectionPoint.x,
+      parallelLeadPoints[firstBeyondJoin]!.y - trailingConnectionPoint.y,
+    ) <= joinAdvanceMm + 0.2
   ) {
-    points.push(parallelTakeoffPoint);
+    firstBeyondJoin += 1;
   }
-  points.push(...parallelLeadPoints.slice(1));
+  points.push(...parallelLeadPoints.slice(firstBeyondJoin));
 
   return dedupeConsecutivePoints(points);
 }
@@ -2334,6 +2772,7 @@ function buildBundleGuideRoutes(
   endBundleConnection: RefrigerantPipeBundleConnection | null,
   centerSpacingMm: number,
   startTakeoffLengthMm: number,
+  bendRadiusMm: number,
 ): {
   gasGuidePoints: Point2D[];
   liquidGuidePoints: Point2D[];
@@ -2351,6 +2790,7 @@ function buildBundleGuideRoutes(
     rawNormalized,
     endBundleConnection,
     endTailLength,
+    bendRadiusMm,
   );
 
   if (!startBundleConnection) {
@@ -2713,6 +3153,66 @@ function anchorGuideRouteStart(
   return anchored;
 }
 
+/**
+ * Resolve a field fitting approach from its own socket axis. Gas/liquid outlet
+ * order may differ from the unit's order, so moving only the final vertex leaves
+ * the preceding elbow on the other lane (sometimes inside the same-service
+ * main). Replace that last elbow and its straight together. Any lateral lane
+ * change happens on the preceding straight; this function never changes Z.
+ */
+function alignFieldTerminalApproach(
+  route: Point2D[],
+  endpoint: Point2D,
+  outwardDirection: Point2D,
+  bendRadiusMm: number,
+  minimumStraightMm: number,
+): Point2D[] {
+  if (route.length < 3) return route;
+  const outward = normalizeDirection(outwardDirection);
+  const radius = Math.max(1, bendRadiusMm);
+  // Arc chords are short; the substantial incoming straight identifies the
+  // last elbow without depending on a fixed number of sampled curve vertices.
+  let incomingIndex = -1;
+  for (let index = route.length - 2; index >= 0; index -= 1) {
+    const delta = subtract(route[index + 1]!, route[index]!);
+    if (Math.hypot(delta.x, delta.y) < radius * 2) continue;
+    if (Math.abs(dot(normalizeDirection(delta), outward)) > 0.995) continue;
+    incomingIndex = index;
+    break;
+  }
+  if (incomingIndex < 0) return route;
+  const entry = route[incomingIndex]!;
+  const incoming = normalizeDirection(subtract(route[incomingIndex + 1]!, entry));
+  const naturalCorner = lineIntersection(entry, incoming, endpoint, outward);
+  if (!naturalCorner) return route;
+  const turn = Math.acos(Math.max(-1, Math.min(1, dot(incoming, scale(outward, -1)))));
+  const elbowSetback = radius * Math.tan(turn / 2);
+  const straight = Math.max(0, minimumStraightMm);
+  const tailLength = Math.max(straight + elbowSetback, dot(subtract(naturalCorner, endpoint), outward));
+  const corner = add(endpoint, scale(outward, tailLength));
+  const availableAdvance = dot(subtract(corner, entry), incoming);
+  const lateralDelta = subtract(subtract(corner, entry), scale(incoming, availableAdvance));
+  const lateralDistance = Math.hypot(lateralDelta.x, lateralDelta.y);
+  const suffix: Point2D[] = [entry];
+  if (lateralDistance > 0.2) {
+    // Two tangent bends gather the line before the final fitting elbow. Small
+    // lateral corrections use a shallower angle to retain the physical radius.
+    const rampAdvance = Math.max(lateralDistance, Math.sqrt(4 * radius * lateralDistance));
+    const lead = radius * 2;
+    if (availableAdvance < lead + rampAdvance + radius * 2 + elbowSetback) return route;
+    const rampStart = add(entry, scale(incoming, lead));
+    const rampEnd = add(add(rampStart, scale(incoming, rampAdvance)), lateralDelta);
+    suffix.push(rampStart, rampEnd);
+  } else if (availableAdvance <= elbowSetback) {
+    return route;
+  }
+  suffix.push(corner, endpoint);
+  return dedupeConsecutivePoints([
+    ...route.slice(0, incomingIndex),
+    ...roundPolylineCorners(dedupeConsecutivePoints(suffix), radius),
+  ]);
+}
+
 function buildResolvedPipeRoutePoints(
   options: {
     gasGuidePoints: Point2D[];
@@ -2743,39 +3243,11 @@ function buildResolvedPipeRoutePoints(
 
   // Simplify guide paths
   const simplifiedBundleGuidePoints = simplifyNearlyCollinearPoints(
-    bundleGuidePoints,
-    { preserveFirstSegment: preserveFieldStartSegment },
+    isUnitPortStart
+      ? [computeBundleCenter(startBundleConnection.gasFieldPoint, startBundleConnection.liquidFieldPoint), ...bundleGuidePoints]
+      : bundleGuidePoints,
+    { preserveFirstSegment: preserveFieldStartSegment && !isUnitPortStart },
   );
-
-  // For FIELD-PIPE connections: Use a simple approach -
-  // Translate the bundle center route to align with gas/liquid outlet centers.
-  // This ensures the pipe centerline passes through the branch kit outlet center.
-  if (isFieldPipeStart && startBundleConnection && simplifiedBundleGuidePoints.length >= 1) {
-    const roundedBundleCenter = roundPolylineCorners(simplifiedBundleGuidePoints, bendRadiusMm);
-    
-    if (roundedBundleCenter.length >= 1) {
-      const bundleStartPoint = roundedBundleCenter[0]!;
-      
-      // Compute translation to move bundle center route to start at gas/liquid field points
-      const gasTranslation = subtract(startBundleConnection.gasFieldPoint, bundleStartPoint);
-      const liquidTranslation = subtract(startBundleConnection.liquidFieldPoint, bundleStartPoint);
-      
-      // Translate entire route to align centerline with outlet center
-      let gasRoutePoints = roundedBundleCenter.map((pt) => add(pt, gasTranslation));
-      let liquidRoutePoints = roundedBundleCenter.map((pt) => add(pt, liquidTranslation));
-      
-      // Anchor end points if end connection exists
-      if (endBundleConnection) {
-        gasRoutePoints = anchorGuideRouteEnd(gasRoutePoints, endBundleConnection.gasFieldPoint);
-        liquidRoutePoints = anchorGuideRouteEnd(liquidRoutePoints, endBundleConnection.liquidFieldPoint);
-      }
-      
-      return {
-        gasRoutePoints: dedupeConsecutivePoints(gasRoutePoints),
-        liquidRoutePoints: dedupeConsecutivePoints(liquidRoutePoints),
-      };
-    }
-  }
 
   // For UNIT-PORT connections: Use the existing offset-based approach
   const simplifiedGasGuidePoints = simplifyNearlyCollinearPoints(
@@ -2787,23 +3259,15 @@ function buildResolvedPipeRoutePoints(
     { preserveFirstSegment: preserveFieldStartSegment },
   );
 
-  // Round guides only for field-pipe starts; skip for unit-port (preserves 45-degree)
+  // Non-unit guides can still provide authored fitting approaches. Unit
+  // sockets connect to the intact parallel lanes below, without stitching
+  // fragments of one sampled curve into another.
   const processedGasGuidePoints = simplifiedGasGuidePoints.length >= 1
     ? dedupeConsecutivePoints(roundPolylineCorners(simplifiedGasGuidePoints, bendRadiusMm))
     : simplifiedGasGuidePoints;
   const processedLiquidGuidePoints = simplifiedLiquidGuidePoints.length >= 1
     ? dedupeConsecutivePoints(roundPolylineCorners(simplifiedLiquidGuidePoints, bendRadiusMm))
     : simplifiedLiquidGuidePoints;
-
-  // For unit-port starts, only keep the 45-degree takeoff segment (first 3 points)
-  // from the guide. The rest comes from centerline-parallel routes for constant spacing.
-  const MAX_UNIT_PORT_TAKEOFF_POINTS = 3;
-  const takeoffGasGuidePoints = isUnitPortStart && processedGasGuidePoints.length > MAX_UNIT_PORT_TAKEOFF_POINTS
-    ? processedGasGuidePoints.slice(0, MAX_UNIT_PORT_TAKEOFF_POINTS)
-    : processedGasGuidePoints;
-  const takeoffLiquidGuidePoints = isUnitPortStart && processedLiquidGuidePoints.length > MAX_UNIT_PORT_TAKEOFF_POINTS
-    ? processedLiquidGuidePoints.slice(0, MAX_UNIT_PORT_TAKEOFF_POINTS)
-    : processedLiquidGuidePoints;
 
   // Compute centerline-parallel base routes (constant spacing through bends).
   // Round the *centerline* once, then offset both pipes from that smooth curve,
@@ -2828,66 +3292,53 @@ function buildResolvedPipeRoutePoints(
       )
     : [];
 
-  // Merge guide geometry (45-degree at start) with parallel routes (constant spacing)
-  const gasParallelRoutePoints = mergeGuideRouteWithParallelRoute(
-    takeoffGasGuidePoints,
-    gasParallelBasePoints,
-  );
-  const liquidParallelRoutePoints = mergeGuideRouteWithParallelRoute(
-    takeoffLiquidGuidePoints,
-    liquidParallelBasePoints,
-  );
+  // Attach physical unit sockets before shaping their gather. Keep the whole
+  // first parallel straight so socket clearance and elbow tangency can use it.
+  // Fitting starts use the same perpendicular offsets and concentric elbows as
+  // the rest of the bundle. A constant world translation aligns the first leg
+  // but collapses the two lines onto each other after a quarter turn.
+  const gasParallelRoutePoints = isUnitPortStart
+    ? [startBundleConnection.gasFieldPoint, ...gasParallelBasePoints]
+    : isFieldPipeStart
+    ? gasParallelBasePoints
+    : mergeGuideRouteWithParallelRoute(processedGasGuidePoints, gasParallelBasePoints);
+  const liquidParallelRoutePoints = isUnitPortStart
+    ? [startBundleConnection.liquidFieldPoint, ...liquidParallelBasePoints]
+    : isFieldPipeStart
+    ? liquidParallelBasePoints
+    : mergeGuideRouteWithParallelRoute(processedLiquidGuidePoints, liquidParallelBasePoints);
+
+  const fieldTerminal = endBundleConnection?.connectionKind === 'field-pipe'
+    && endBundleConnection.terminalRole ? endBundleConnection : null;
+  const minimumTerminalStraightMm = getActivePipeRoutingSettings().defaultBranchKitClearanceMm;
+  const gasTerminalRoutePoints = fieldTerminal ? alignFieldTerminalApproach(
+    gasParallelRoutePoints, fieldTerminal.gasFieldPoint,
+    fieldTerminal.gasDirection ?? fieldTerminal.direction, bendRadiusMm, minimumTerminalStraightMm,
+  ) : gasParallelRoutePoints;
+  const liquidTerminalRoutePoints = fieldTerminal ? alignFieldTerminalApproach(
+    liquidParallelRoutePoints, fieldTerminal.liquidFieldPoint,
+    fieldTerminal.liquidDirection ?? fieldTerminal.direction, bendRadiusMm, minimumTerminalStraightMm,
+  ) : liquidParallelRoutePoints;
 
   // Anchor to connection endpoints
   const anchoredGasRoutePoints = anchorGuideRouteEnd(
     anchorGuideRouteStart(
-      gasParallelRoutePoints,
+      gasTerminalRoutePoints,
       startBundleConnection?.gasFieldPoint ?? null,
     ),
     endBundleConnection?.gasFieldPoint ?? null,
   );
   const anchoredLiquidRoutePoints = anchorGuideRouteEnd(
     anchorGuideRouteStart(
-      liquidParallelRoutePoints,
+      liquidTerminalRoutePoints,
       startBundleConnection?.liquidFieldPoint ?? null,
     ),
     endBundleConnection?.liquidFieldPoint ?? null,
   );
 
-  // Keep unit-port drag behavior visually smooth by stabilizing curved bends
-  // after endpoint anchoring. Re-anchor once more to guarantee exact endpoints.
-  if (isUnitPortStart) {
-    const unitPortDragBendRadiusMm = Math.max(8, bendRadiusMm * 0.65);
-    const roundedAnchoredGasRoutePoints = anchoredGasRoutePoints.length >= 3
-      ? dedupeConsecutivePoints(
-          roundPolylineCorners(anchoredGasRoutePoints, unitPortDragBendRadiusMm),
-        )
-      : anchoredGasRoutePoints;
-    const roundedAnchoredLiquidRoutePoints = anchoredLiquidRoutePoints.length >= 3
-      ? dedupeConsecutivePoints(
-          roundPolylineCorners(anchoredLiquidRoutePoints, unitPortDragBendRadiusMm),
-        )
-      : anchoredLiquidRoutePoints;
-    return {
-      gasRoutePoints: anchorGuideRouteEnd(
-        anchorGuideRouteStart(
-          roundedAnchoredGasRoutePoints,
-          startBundleConnection?.gasFieldPoint ?? null,
-        ),
-        endBundleConnection?.gasFieldPoint ?? null,
-      ),
-      liquidRoutePoints: anchorGuideRouteEnd(
-        anchorGuideRouteStart(
-          roundedAnchoredLiquidRoutePoints,
-          startBundleConnection?.liquidFieldPoint ?? null,
-        ),
-        endBundleConnection?.liquidFieldPoint ?? null,
-      ),
-    };
-  }
-
-  // For non-unit-port starts, use the anchored routes directly
-  // (field-pipe connections are handled above with the translation approach).
+  // These lanes already contain sampled circular arcs. Filleting their
+  // sampled chords again shrinks the joins into tiny reverse-curvature loops.
+  // The final socket reservation shapes its local gather exactly once.
   return {
     gasRoutePoints: anchoredGasRoutePoints,
     liquidRoutePoints: anchoredLiquidRoutePoints,
@@ -3190,10 +3641,151 @@ function buildContinuousOuterConnectionPolyline(
   );
 }
 
-export function buildRefrigerantPipeVisual(
+interface PlanSocketElbowCacheEntry {
+  /** Null retains the current caller's authored points identity when no fitting fits. */
+  points: Point2D[] | null;
+  fittedCorners: Point2D[];
+  pointCount: number;
+}
+
+// Cache only this pure projection, never a visual, scene element, or its arrays.
+// Independent budgets bound long sampled routes as well as many short routes.
+const PLAN_SOCKET_ELBOW_CACHE_MAX_ENTRIES = 512;
+const PLAN_SOCKET_ELBOW_CACHE_MAX_POINTS = 100_000;
+const PLAN_SOCKET_ELBOW_CACHE_MAX_KEY_CHARS = 4_000_000;
+const planSocketElbowCache = new Map<string, PlanSocketElbowCacheEntry>();
+let planSocketElbowCachePointCount = 0;
+let planSocketElbowCacheKeyChars = 0;
+
+function planSocketElbowCacheKey(points: Point2D[], values: number[]): string | null {
+  if (points.length > PLAN_SOCKET_ELBOW_CACHE_MAX_POINTS || !values.every(Number.isFinite)) return null;
+  // Number strings round-trip exactly; distinguish -0 without rounding geometry.
+  const numberKey = (value: number) => Object.is(value, -0) ? '-0' : String(value);
+  let key = `${values.map(numberKey).join(',')}|`;
+  for (const point of points) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    key += `${numberKey(point.x)},${numberKey(point.y)};`;
+    if (key.length > PLAN_SOCKET_ELBOW_CACHE_MAX_KEY_CHARS) return null;
+  }
+  return key;
+}
+
+function copyPlanSocketElbowCacheEntry(entry: PlanSocketElbowCacheEntry, points: Point2D[]) {
+  return {
+    points: entry.points?.map(point => ({ ...point })) ?? points,
+    fittedCorners: entry.fittedCorners.map(point => ({ ...point })),
+  };
+}
+
+function retainPlanSocketElbowCacheEntry(key: string, entry: PlanSocketElbowCacheEntry): void {
+  if (entry.pointCount > PLAN_SOCKET_ELBOW_CACHE_MAX_POINTS
+    || entry.points?.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))
+    || entry.fittedCorners.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return;
+  while (planSocketElbowCache.size >= PLAN_SOCKET_ELBOW_CACHE_MAX_ENTRIES
+    || planSocketElbowCachePointCount + entry.pointCount > PLAN_SOCKET_ELBOW_CACHE_MAX_POINTS
+    || planSocketElbowCacheKeyChars + key.length > PLAN_SOCKET_ELBOW_CACHE_MAX_KEY_CHARS) {
+    const oldest = planSocketElbowCache.entries().next().value;
+    if (!oldest) break;
+    planSocketElbowCache.delete(oldest[0]);
+    planSocketElbowCachePointCount -= oldest[1].pointCount;
+    planSocketElbowCacheKeyChars -= oldest[0].length;
+  }
+  planSocketElbowCache.set(key, entry);
+  planSocketElbowCachePointCount += entry.pointCount;
+  planSocketElbowCacheKeyChars += key.length;
+}
+
+/** The shared fitting compiler is authoritative in plan as well as in 3D.
+ * Retain the authored route and its arbitrary terminal gathers when no actual
+ * factory elbow can fit; the compiler's caller can expose those fit issues. */
+function compilePlanSocketElbowPoints(
+  points: Point2D[], tubeDiameterMm: number, properties: Record<string, unknown>,
+  unitStart: boolean, unitEnd: boolean,
+): { points: Point2D[]; fittedCorners: Point2D[] } {
+  if (!usesCopperSocketElbows(properties)) return { points, fittedCorners: [] };
+  const settings = getActivePipeRoutingSettings();
+  // Resolve live settings on every call; only their effective compiler inputs
+  // belong in the key, including persisted profile radius requirements.
+  const options = {
+    startStraightMm: unitStart ? settings.minimumPortStubMm : 0,
+    endStraightMm: unitEnd ? settings.minimumPortStubMm : 0,
+    minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(properties),
+  };
+  const key = planSocketElbowCacheKey(points,
+    [tubeDiameterMm, options.startStraightMm, options.endStraightMm, options.minimumBendRadiusMm]);
+  const cached = key === null ? undefined : planSocketElbowCache.get(key);
+  if (cached) {
+    planSocketElbowCache.delete(key!);
+    planSocketElbowCache.set(key!, cached);
+    return copyPlanSocketElbowCacheEntry(cached, points);
+  }
+  const compiled = compileCopperSocketElbowRoute(points.map(point => ({ ...point, z: 0 })), tubeDiameterMm, options);
+  const fittedCorners = compiled.fittings.map(fitting => ({ x: fitting.corner.x, y: fitting.corner.y }));
+  const compiledPoints = compiled.fittings.length ? compiled.centerline.map(({ x, y }) => ({ x, y })) : null;
+  const entry = { points: compiledPoints, fittedCorners,
+    pointCount: (compiledPoints?.length ?? 0) + fittedCorners.length };
+  if (key !== null) retainPlanSocketElbowCacheEntry(key, entry);
+  return copyPlanSocketElbowCacheEntry(entry, points);
+}
+
+function updateResolvedFieldBendWarnings(
+  segments: RefrigerantPipeSegmentPathSpec[], fittedCorners: Point2D[],
+): RefrigerantPipeSegmentPathSpec[] {
+  if (!fittedCorners.length) return segments;
+  return segments.map(segment => !segment.unresolvedFieldBends ? segment : {
+    ...segment,
+    invalidHardGeometry: segment.invalidHardRouteGeometry === true || segment.unresolvedFieldBends.some(bend =>
+      bend.reason !== 'insufficient-straight'
+      || !fittedCorners.some(corner => Math.hypot(corner.x - bend.corner.x, corner.y - bend.corner.y) <= 1e-5)),
+  });
+}
+
+/** Keep material/index ownership on the reconstructed path. A fitting can
+ * straddle two authored legs, so assign its sampled edges to their nearest
+ * original owned span rather than replacing every segment with one new owner. */
+function transferPipeSegmentOwnership(
+  points: Point2D[], original: RefrigerantPipeSegmentPathSpec[],
+): RefrigerantPipeSegmentPathSpec[] {
+  const spans = original.flatMap(segment => segment.points.slice(1).map((end, index) => {
+    const start = segment.points[index]!;
+    const dx = end.x - start.x; const dy = end.y - start.y;
+    return { segment, x: start.x, y: start.y, dx, dy, squaredLength: dx * dx + dy * dy };
+  }));
+  const result: RefrigerantPipeSegmentPathSpec[] = [];
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1]!; const end = points[index]!;
+    const midpointX = (start.x + end.x) * 0.5;
+    const midpointY = (start.y + end.y) * 0.5;
+    let best = spans[0]?.segment; let bestDistance = Number.POSITIVE_INFINITY;
+    for (const span of spans) {
+      // This projection is evaluated for every new edge/original span pair.
+      // Scalar arithmetic preserves operation order and first-span tie breaks
+      // without allocating temporary vectors in the quadratic inner loop.
+      const t = span.squaredLength > 1e-12 ? Math.max(0, Math.min(1,
+        ((midpointX - span.x) * span.dx + (midpointY - span.y) * span.dy) / span.squaredLength)) : 0;
+      const offsetX = midpointX - (span.x + span.dx * t);
+      const offsetY = midpointY - (span.y + span.dy * t);
+      const squaredDistance = offsetX * offsetX + offsetY * offsetY;
+      if (squaredDistance < bestDistance) { best = span.segment; bestDistance = squaredDistance; }
+    }
+    if (!best) continue;
+    const previous = result.at(-1);
+    if (previous?.index === best.index && previous.material === best.material
+      && previous.invalidHardGeometry === best.invalidHardGeometry) previous.points.push(end);
+    else result.push({ ...best, points: [start, end], lengthMm: 0 });
+  }
+  return result.map(segment => ({ ...segment, lengthMm: polylineLength(segment.points) }));
+}
+
+/** Exact world-space pipe geometry without drawing-only ownership and local
+ * coordinate arrays. Each call resolves live sockets and owns its result. */
+export type RefrigerantPipePhysicalPathSpec = Omit<RefrigerantPipeVisualSpec,
+  'localOuterPoints' | 'localContinuousOuterPoints' | 'segmentVisuals' | 'invalidHardSegmentCount'>;
+
+function buildRefrigerantPipePhysicalState(
   element: Pick<HvacElement, 'position' | 'width' | 'depth' | 'properties'> & { elevation?: number },
   contextElements?: HvacPipeSnapSource[],
-): RefrigerantPipeVisualSpec {
+) {
   const spec = resolveRefrigerantPipeSpec(element.properties, contextElements);
   const outerRadiusMm = spec.outerDiameterMm / 2;
   const coreRadiusMm = spec.pipeDiameterMm / 2;
@@ -3217,11 +3809,25 @@ export function buildRefrigerantPipeVisual(
   // the false "second snap" look and leaves a visible gap after moves.
   const startExposedTailLengthMm = 0;
   const endExposedTailLengthMm = 0;
-  const normalizedRoutePoints = simplifyNearlyCollinearPoints(spec.routePoints);
-  const segmentPathSpecs = buildRefrigerantPipeSegmentPaths(
-    normalizedRoutePoints,
-    spec.segmentMaterials,
-  );
+  // Paired lane routes already contain the shared circular bends and port
+  // transitions. Re-splining each sample with Catmull-Rom creates overshoots at
+  // short takeoffs; treating sample chords as hard runs creates stair steps.
+  const derivedPairLane = Array.isArray(element.properties.authoredCenterlineRoute);
+  const normalizedRoutePoints = derivedPairLane ? dedupeConsecutivePoints(spec.routePoints)
+    : simplifyNearlyCollinearPoints(spec.routePoints);
+  const segmentPathSpecs: RefrigerantPipeSegmentPathSpec[] = derivedPairLane
+    ? normalizedRoutePoints.slice(1).map((end, index) => ({
+        index,
+        material: spec.segmentMaterials[index] ?? 'flexible',
+        invalidHardGeometry: false,
+        points: [normalizedRoutePoints[index]!, end],
+        lengthMm: Math.hypot(end.x - normalizedRoutePoints[index]!.x, end.y - normalizedRoutePoints[index]!.y),
+      }))
+    : buildRefrigerantPipeSegmentPaths(normalizedRoutePoints, spec.segmentMaterials,
+      resolveFieldPipeBendRadiusMm(spec.outerDiameterMm, element.properties.bendRadiusFactor), {
+        startStraightMm: isUnitPortStartConnection ? getActivePipeRoutingSettings().minimumPortStubMm : 0,
+        endStraightMm: isUnitPortEndConnection ? getActivePipeRoutingSettings().minimumPortStubMm : 0,
+      });
   const renderedRoutePoints = dedupeConsecutivePoints(
     segmentPathSpecs.flatMap((segment, index) =>
       index === 0 ? segment.points : segment.points.slice(1),
@@ -3286,9 +3892,13 @@ export function buildRefrigerantPipeVisual(
       ? [routeEndPoint]
       : []),
   ]);
-  const outerPoints = simplifyNearlyCollinearPoints(
+  // These points already describe exact circular arcs. Approximate collinear
+  // cleanup can erase a small-radius tangent entry and turn it into a kink.
+  const sourceOuterPoints = dedupeConsecutivePoints(
     outerPolylinePoints.length >= 2 ? outerPolylinePoints : fallbackOuterPoints,
   );
+  const { points: outerPoints, fittedCorners } = compilePlanSocketElbowPoints(sourceOuterPoints, spec.pipeDiameterMm, element.properties,
+    isUnitPortStartConnection, isUnitPortEndConnection);
   const stubStart = spec.startConnection && isUnitPortStartConnection
     ? add(spec.startConnection.portPoint, scale(spec.startConnection.direction, -connectionOverlapMm))
     : null;
@@ -3320,7 +3930,41 @@ export function buildRefrigerantPipeVisual(
     stub,
     outerPoints,
   );
-  const segmentVisuals: RefrigerantPipeSegmentVisualSpec[] = adjustedSegmentPathSpecs
+  return {
+    physical: {
+      ...spec,
+      bounds,
+      outerRadiusMm,
+      coreRadiusMm,
+      localZMm,
+      outerPoints,
+      continuousOuterPoints,
+      localStub: computeLocalStub(stubStart, stubEnd, bounds.center),
+    },
+    sourceOuterPoints,
+    adjustedSegmentPathSpecs,
+    fittedCorners,
+  };
+}
+
+export function buildRefrigerantPipePhysicalPath(
+  element: Pick<HvacElement, 'position' | 'width' | 'depth' | 'properties'> & { elevation?: number },
+  contextElements?: HvacPipeSnapSource[],
+): RefrigerantPipePhysicalPathSpec {
+  return buildRefrigerantPipePhysicalState(element, contextElements).physical;
+}
+
+export function buildRefrigerantPipeVisual(
+  element: Pick<HvacElement, 'position' | 'width' | 'depth' | 'properties'> & { elevation?: number },
+  contextElements?: HvacPipeSnapSource[],
+): RefrigerantPipeVisualSpec {
+  const { physical, sourceOuterPoints, adjustedSegmentPathSpecs, fittedCorners } =
+    buildRefrigerantPipePhysicalState(element, contextElements);
+  const { bounds, outerPoints, continuousOuterPoints } = physical;
+  const resolvedSegmentWarnings = updateResolvedFieldBendWarnings(adjustedSegmentPathSpecs, fittedCorners);
+  const authoritativeSegments = outerPoints === sourceOuterPoints ? resolvedSegmentWarnings
+    : transferPipeSegmentOwnership(outerPoints, resolvedSegmentWarnings);
+  const segmentVisuals: RefrigerantPipeSegmentVisualSpec[] = authoritativeSegments
     .map((segment) => {
       const absolutePoints = dedupeConsecutivePoints(segment.points);
       if (absolutePoints.length < 2) {
@@ -3340,18 +3984,11 @@ export function buildRefrigerantPipeVisual(
     (segment) => segment.invalidHardGeometry,
   ).length;
   return {
-    ...spec,
-    bounds,
-    outerRadiusMm,
-    coreRadiusMm,
-    localZMm,
-    outerPoints,
+    ...physical,
     localOuterPoints: outerPoints.map((point) => subtract(point, bounds.center)),
-    continuousOuterPoints,
     localContinuousOuterPoints: continuousOuterPoints.map((point) =>
       subtract(point, bounds.center),
     ),
-    localStub: computeLocalStub(stubStart, stubEnd, bounds.center),
     segmentVisuals,
     invalidHardSegmentCount,
   };
@@ -3385,6 +4022,7 @@ export function buildRefrigerantPipePairVisual(
     computeCompactBendRadius(
       centerSpacingMm,
       Math.max(gasOuterDiameterMm, liquidOuterDiameterMm),
+      explicitBendRadiusFactor(element.properties.bendRadiusFactor),
     ),
   );
   const isUnitPortConnection = spec.startBundleConnection?.connectionKind === 'unit-port';
@@ -3407,6 +4045,7 @@ export function buildRefrigerantPipePairVisual(
     spec.startBundleConnection?.connectionKind === 'unit-port'
       ? getActivePipeRoutingSettings().minimumPortStubMm
       : 0,
+    bendRadiusMm,
   );
   const {
     gasGuidePoints,
@@ -3418,6 +4057,7 @@ export function buildRefrigerantPipePairVisual(
     spec.endBundleConnection,
     centerSpacingMm,
     startTakeoffLengthMm,
+    bendRadiusMm,
   );
   const { gasRoutePoints, liquidRoutePoints } = reserveUnitPortBundleStubs(
     buildResolvedPipeRoutePoints({
@@ -3430,6 +4070,8 @@ export function buildRefrigerantPipePairVisual(
       bendRadiusMm,
     }),
     spec.startBundleConnection,
+    spec.endBundleConnection,
+    explicitBendRadiusFactor(element.properties.bendRadiusFactor) === undefined ? undefined : bendRadiusMm,
   );
   const gasInsulationStartPoint = resolvedGasFieldPoint && spec.startBundleConnection
     ? add(
@@ -3444,8 +4086,8 @@ export function buildRefrigerantPipePairVisual(
       )
     : resolvedLiquidFieldPoint;
 
-  const gasOuterPoints = gasInsulationStartPoint
-    ? simplifyNearlyCollinearPoints(
+  const gasSourceOuterPoints = gasInsulationStartPoint
+    ? dedupeConsecutivePoints(
         [
           gasInsulationStartPoint,
           ...stripLeadingPointIfEqual(
@@ -3455,20 +4097,10 @@ export function buildRefrigerantPipePairVisual(
               : null,
           ),
         ],
-        {
-          preserveFirstSegment:
-            spec.startBundleConnection?.connectionKind === 'field-pipe',
-        },
       )
-    : simplifyNearlyCollinearPoints(
-        gasRoutePoints,
-        {
-          preserveFirstSegment:
-            spec.startBundleConnection?.connectionKind === 'field-pipe',
-        },
-      );
-  const liquidOuterPoints = liquidInsulationStartPoint
-    ? simplifyNearlyCollinearPoints(
+    : dedupeConsecutivePoints(gasRoutePoints);
+  const liquidSourceOuterPoints = liquidInsulationStartPoint
+    ? dedupeConsecutivePoints(
         [
           liquidInsulationStartPoint,
           ...stripLeadingPointIfEqual(
@@ -3478,18 +4110,13 @@ export function buildRefrigerantPipePairVisual(
               : null,
           ),
         ],
-        {
-          preserveFirstSegment:
-            spec.startBundleConnection?.connectionKind === 'field-pipe',
-        },
       )
-    : simplifyNearlyCollinearPoints(
-        liquidRoutePoints,
-        {
-          preserveFirstSegment:
-            spec.startBundleConnection?.connectionKind === 'field-pipe',
-        },
-      );
+    : dedupeConsecutivePoints(liquidRoutePoints);
+
+  const { points: gasOuterPoints } = compilePlanSocketElbowPoints(gasSourceOuterPoints, spec.gasPipeDiameterMm, element.properties,
+    isUnitPortConnection, spec.endBundleConnection?.connectionKind === 'unit-port');
+  const { points: liquidOuterPoints } = compilePlanSocketElbowPoints(liquidSourceOuterPoints, spec.liquidPipeDiameterMm, element.properties,
+    isUnitPortConnection, spec.endBundleConnection?.connectionKind === 'unit-port');
 
   const boundsSourcePoints = [
     ...bundleGuidePoints,
@@ -3623,6 +4250,21 @@ export function buildRefrigerantPipeElement(
     startConnection?: RefrigerantPipeConnection | null;
     endConnection?: RefrigerantPipeConnection | null;
     elevationMm?: number;
+    /** Clear wall-to-wall gap this line was routed with (pair mode only). */
+    pairClearGapMm?: number;
+    /** Centerline-to-centerline spacing the pair was routed with (pair mode only). */
+    pairCenterSpacingMm?: number;
+    /** Persisted opt-in radius multiplier; omitted for legacy manual geometry. */
+    bendRadiusFactor?: number;
+    /** Verified minimum retained when the document's active settings change. */
+    minimumFieldBendRadiusMm?: number;
+    /**
+     * The user's drawn bundle centerline (pair mode only). Reflow after
+     * equipment moves rebuilds from THIS immutable intent, never from the
+     * generated geometry — re-deriving from built output (arcs, fans,
+     * detours) diverges when applied repeatedly.
+     */
+    authoredCenterlineRoute?: Point2D[];
   },
 ): Omit<Partial<HvacElement>, 'id'> &
   Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'> {
@@ -3675,6 +4317,7 @@ export function buildRefrigerantPipeElement(
   const tangentStart = resolveEndpointTangent(centerlineRoutePoints, 'start');
   const tangentEnd = resolveEndpointTangent(centerlineRoutePoints, 'end');
 
+  const minimumFieldBendRadiusMm = resolveCopperSocketElbowMinimumRadius({ minimumFieldBendRadiusMm: options.minimumFieldBendRadiusMm });
   const properties = {
     routePoints: centerlineRoutePoints,
     pipeDiameterMm: options.pipeDiameterMm,
@@ -3683,6 +4326,19 @@ export function buildRefrigerantPipeElement(
     lineKind: options.lineKind,
     segmentMaterials,
     bundleId: options.bundleId,
+    ...(explicitBendRadiusFactor(options.bendRadiusFactor) === undefined ? {} : { bendRadiusFactor: options.bendRadiusFactor }),
+    ...(minimumFieldBendRadiusMm > 0 ? { minimumFieldBendRadiusMm } : {}),
+    ...(isFiniteNumber(options.pairClearGapMm) ? { pipeGapMm: options.pairClearGapMm } : {}),
+    ...(isFiniteNumber(options.pairCenterSpacingMm)
+      ? { pairCenterSpacingMm: options.pairCenterSpacingMm }
+      : {}),
+    ...(options.authoredCenterlineRoute && options.authoredCenterlineRoute.length >= 2
+      ? {
+          authoredCenterlineRoute: options.authoredCenterlineRoute.map(
+            (point) => ({ x: point.x, y: point.y }),
+          ),
+        }
+      : {}),
     startConnection: options.startConnection ?? null,
     endConnection: options.endConnection ?? null,
     centerline_start: centerlineStart,
@@ -3696,7 +4352,7 @@ export function buildRefrigerantPipeElement(
       continuityToleranceMm: PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM,
     },
   };
-  const visual = buildRefrigerantPipeVisual({
+  const visual = buildRefrigerantPipePhysicalPath({
     position: { x: 0, y: 0 },
     width: 1,
     depth: 1,
@@ -3732,6 +4388,9 @@ export function buildRefrigerantPipeElements(
     liquidPipeDiameterMm?: number;
     insulationThicknessMm?: number;
     pipeGapMm?: number;
+    /** Minimum planar bend radius as a multiple of the insulated outside diameter. */
+    bendRadiusFactor?: number;
+    minimumFieldBendRadiusMm?: number;
     segmentMaterialMode?: RefrigerantPipeMaterial;
     bundleId?: string;
     startBundleConnection?: RefrigerantPipeBundleConnection | null;
@@ -3799,6 +4458,8 @@ export function buildRefrigerantPipeElements(
         outerDiameterMm: isGas ? gasOuterDiameterMm : liquidOuterDiameterMm,
         insulationThicknessMm,
         bundleId: options?.bundleId,
+        bendRadiusFactor: explicitBendRadiusFactor(options?.bendRadiusFactor),
+        minimumFieldBendRadiusMm: options?.minimumFieldBendRadiusMm,
         startConnection: buildSideConnection(options?.startBundleConnection, lineMode),
         endConnection: buildSideConnection(options?.endBundleConnection, lineMode),
         elevationMm: options?.elevationMm,
@@ -3808,13 +4469,29 @@ export function buildRefrigerantPipeElements(
 
   const gasOuterRadiusMm = gasOuterDiameterMm / 2;
   const liquidOuterRadiusMm = liquidOuterDiameterMm / 2;
-  const pipeGapMm = resolvedPipeGapMm();
-  const centerSpacingMm = gasOuterRadiusMm + liquidOuterRadiusMm + pipeGapMm;
+  const requestedPipeGapMm = Math.max(0, readNumber(options?.pipeGapMm, resolvedPipeGapMm()));
+  const fieldStart = options?.startBundleConnection?.connectionKind === 'field-pipe'
+    ? options.startBundleConnection
+    : null;
+  const inheritedSpacingMm = fieldStart ? Math.abs(dot(
+    subtract(fieldStart.liquidFieldPoint, fieldStart.gasFieldPoint),
+    perpendicular(normalizeDirection(fieldStart.direction)),
+  )) : 0;
+  // Continuing an existing bundle/fitting inherits its physical port spacing.
+  // Store that spacing too: otherwise the property panel and later reflow claim
+  // the current document default while the actual connected lanes differ.
+  const centerSpacingMm = inheritedSpacingMm > 0.01
+    ? inheritedSpacingMm
+    : gasOuterRadiusMm + liquidOuterRadiusMm + requestedPipeGapMm;
+  const pipeGapMm = inheritedSpacingMm > 0.01
+    ? Math.max(0, centerSpacingMm - gasOuterRadiusMm - liquidOuterRadiusMm)
+    : requestedPipeGapMm;
   const bendRadiusMm = Math.max(
     12,
     computeCompactBendRadius(
       centerSpacingMm,
       Math.max(gasOuterDiameterMm, liquidOuterDiameterMm),
+      explicitBendRadiusFactor(options?.bendRadiusFactor),
     ),
   );
   const maxOuterDiameterMm = Math.max(gasOuterDiameterMm, liquidOuterDiameterMm);
@@ -3824,6 +4501,7 @@ export function buildRefrigerantPipeElements(
     options?.startBundleConnection?.connectionKind === 'unit-port'
       ? getActivePipeRoutingSettings().minimumPortStubMm
       : 0,
+    bendRadiusMm,
   );
   const {
     gasGuidePoints,
@@ -3835,6 +4513,7 @@ export function buildRefrigerantPipeElements(
     options?.endBundleConnection ?? null,
     centerSpacingMm,
     startTakeoffLengthMm,
+    bendRadiusMm,
   );
   const { gasRoutePoints, liquidRoutePoints } = reserveUnitPortBundleStubs(
     buildResolvedPipeRoutePoints({
@@ -3847,6 +4526,8 @@ export function buildRefrigerantPipeElements(
       bendRadiusMm,
     }),
     options?.startBundleConnection ?? null,
+    options?.endBundleConnection ?? null,
+    explicitBendRadiusFactor(options?.bendRadiusFactor) === undefined ? undefined : bendRadiusMm,
   );
   if (options?.startBundleConnection?.connectionKind === 'field-pipe') {
     const expectedGasStart = options.startBundleConnection.gasFieldPoint;
@@ -3880,9 +4561,16 @@ export function buildRefrigerantPipeElements(
       outerDiameterMm: gasOuterDiameterMm,
       insulationThicknessMm,
       bundleId: options?.bundleId,
+      bendRadiusFactor: explicitBendRadiusFactor(options?.bendRadiusFactor),
+      minimumFieldBendRadiusMm: options?.minimumFieldBendRadiusMm,
       startConnection: buildSideConnection(options?.startBundleConnection, 'gas'),
       endConnection: buildSideConnection(options?.endBundleConnection, 'gas'),
       elevationMm: options?.elevationMm,
+      pairClearGapMm: pipeGapMm,
+      pairCenterSpacingMm: centerSpacingMm,
+      authoredCenterlineRoute: dedupeConsecutivePoints(
+        routePoints.map((point) => ({ x: point.x, y: point.y })),
+      ),
     }),
     buildRefrigerantPipeElement(liquidRoutePoints, {
       lineKind: 'liquid',
@@ -3892,9 +4580,16 @@ export function buildRefrigerantPipeElements(
       outerDiameterMm: liquidOuterDiameterMm,
       insulationThicknessMm,
       bundleId: options?.bundleId,
+      bendRadiusFactor: explicitBendRadiusFactor(options?.bendRadiusFactor),
+      minimumFieldBendRadiusMm: options?.minimumFieldBendRadiusMm,
       startConnection: buildSideConnection(options?.startBundleConnection, 'liquid'),
       endConnection: buildSideConnection(options?.endBundleConnection, 'liquid'),
       elevationMm: options?.elevationMm,
+      pairClearGapMm: pipeGapMm,
+      pairCenterSpacingMm: centerSpacingMm,
+      authoredCenterlineRoute: dedupeConsecutivePoints(
+        routePoints.map((point) => ({ x: point.x, y: point.y })),
+      ),
     }),
   ];
 }
@@ -3907,6 +4602,8 @@ export function buildRefrigerantPipePairElement(
     liquidPipeDiameterMm?: number;
     insulationThicknessMm?: number;
     pipeGapMm?: number;
+    bendRadiusFactor?: number;
+    minimumFieldBendRadiusMm?: number;
     startBundleConnection?: RefrigerantPipeBundleConnection | null;
     elevationMm?: number;
   },
@@ -3942,6 +4639,7 @@ export function buildRefrigerantPipePairElement(
         ) - resolvedElevationMm
       : Math.max(gasOuterDiameterMm, liquidOuterDiameterMm);
 
+  const minimumFieldBendRadiusMm = resolveCopperSocketElbowMinimumRadius({ minimumFieldBendRadiusMm: options?.minimumFieldBendRadiusMm });
   const properties = {
     routePoints: dedupeConsecutivePoints(routePoints),
     gasPipeDiameterMm: options?.gasPipeDiameterMm ?? DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
@@ -3950,6 +4648,8 @@ export function buildRefrigerantPipePairElement(
     liquidOuterDiameterMm,
     insulationThicknessMm,
     pipeGapMm: resolvedPipeGapMm(),
+    ...(explicitBendRadiusFactor(options?.bendRadiusFactor) === undefined ? {} : { bendRadiusFactor: options?.bendRadiusFactor }),
+    ...(minimumFieldBendRadiusMm > 0 ? { minimumFieldBendRadiusMm } : {}),
     startBundleConnection: options?.startBundleConnection ?? null,
   };
   const visual = buildRefrigerantPipePairVisual({
@@ -4161,27 +4861,107 @@ function getRefrigerantPipeStraightSegmentTargets(
     if (points.length < 2) {
       return;
     }
-    const elevationMm = resolvePipeCenterlineElevationMm(element, spec);
-
-    for (let index = 0; index < points.length - 1; index += 1) {
-      const start = points[index]!;
-      const end = points[index + 1]!;
-      const delta = subtract(end, start);
-      const lengthMm = Math.hypot(delta.x, delta.y);
-      if (lengthMm < 0.01) {
-        continue;
+    const authoredNodes = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
+    const baselineZ = spec.startConnection?.elevationMm ?? spec.endConnection?.elevationMm
+      ?? element.elevation + spec.outerDiameterMm / 2;
+    // Resolve exactly the same endpoint levels as the renderer. The first
+    // socket's elevation is not a datum for every span of a multi-level run.
+    const nodes = liftPipePlanRouteTo3d(points, authoredNodes.length >= 2
+      ? authoredNodes
+      : points.map((point) => ({ ...point, z: baselineZ })), {
+      startConnection: spec.startConnection,
+      endConnection: spec.endConnection,
+      outerDiameterMm: spec.outerDiameterMm,
+      bendRadiusMm: resolveFieldPipeBendRadiusMm(spec.outerDiameterMm, element.properties.bendRadiusFactor),
+      pipeDiameterMm: usesCopperSocketElbows(element.properties) ? spec.pipeDiameterMm : undefined,
+      minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(element.properties),
+    });
+    const stations = [0];
+    for (let index = 1; index < nodes.length; index += 1) {
+      stations.push(stations[index - 1]! + Math.hypot(
+        nodes[index]!.x - nodes[index - 1]!.x,
+        nodes[index]!.y - nodes[index - 1]!.y,
+      ));
+    }
+    const stationNear = (point: Point2D): number => {
+      let closestDistance = Number.POSITIVE_INFINITY;
+      let station = 0;
+      for (let index = 1; index < nodes.length; index += 1) {
+        const start = nodes[index - 1]!;
+        const delta = subtract(nodes[index]!, start);
+        const length = stations[index]! - stations[index - 1]!;
+        if (length <= 1e-8) continue;
+        const t = clamp(dot(subtract(point, start), delta) / (length * length), 0, 1);
+        const projected = add(start, scale(delta, t));
+        const offset = Math.hypot(projected.x - point.x, projected.y - point.y);
+        if (offset < closestDistance) {
+          closestDistance = offset;
+          station = stations[index - 1]! + t * length;
+        }
       }
-
-      targets.push({
-        key: `${element.id}:segment:${index}`,
+      return station;
+    };
+    // Legacy bypasses are rendered from separate metadata. Exclude the entire
+    // occupied interval, including its rise and return fittings. Authored 3D
+    // nodes supersede this metadata in the renderer and are inspected directly.
+    const blockedIntervals = authoredNodes.length >= 2 ? []
+      : normalizeBypasses(element.properties.bypasses).map((bypass) => {
+        const enter = stationNear(bypass.enterPoint);
+        const exit = stationNear(bypass.exitPoint);
+        return { start: Math.min(enter, exit), end: Math.max(enter, exit) };
+      });
+    const horizontalSpans: Array<{
+      start: Point2D;
+      end: Point2D;
+      startStation: number;
+      endStation: number;
+      elevationMm: number;
+    }> = [];
+    let lastHorizontalEndIndex = -1;
+    for (let index = 1; index < nodes.length; index += 1) {
+      const start = nodes[index - 1]!;
+      const end = nodes[index]!;
+      const length = stations[index]! - stations[index - 1]!;
+      // A horizontal REFNET cannot be cut into a riser or a sloping segment.
+      if (length < 0.01 || Math.abs(end.z - start.z) > 0.01) continue;
+      const previous = horizontalSpans.at(-1);
+      const direction = normalizeDirection(subtract(end, start));
+      if (previous && lastHorizontalEndIndex === index - 1
+        && Math.abs(previous.endStation - stations[index - 1]!) < 0.01
+        && Math.abs(previous.elevationMm - start.z) < 0.01
+        && dot(normalizeDirection(subtract(previous.end, previous.start)), direction) > 1 - 1e-10) {
+        previous.end = { x: end.x, y: end.y };
+        previous.endStation = stations[index]!;
+      } else {
+        horizontalSpans.push({
+          start: { x: start.x, y: start.y }, end: { x: end.x, y: end.y },
+          startStation: stations[index - 1]!, endStation: stations[index]!, elevationMm: start.z,
+        });
+      }
+      lastHorizontalEndIndex = index;
+    }
+    for (const [spanIndex, span] of horizontalSpans.entries()) {
+      let available = [{ start: span.startStation, end: span.endStation }];
+      for (const blocked of blockedIntervals) {
+        available = available.flatMap((interval) => {
+          if (blocked.end <= interval.start || blocked.start >= interval.end) return [interval];
+          return [
+            { start: interval.start, end: Math.min(interval.end, blocked.start) },
+            { start: Math.max(interval.start, blocked.end), end: interval.end },
+          ].filter((remaining) => remaining.end - remaining.start > 0.01);
+        });
+      }
+      const direction = normalizeDirection(subtract(span.end, span.start));
+      for (const [partIndex, interval] of available.entries()) targets.push({
+        key: `${element.id}:segment:${spanIndex}:${partIndex}`,
         elementId: element.id,
         bundleId: spec.bundleId,
         lineKind: spec.lineKind,
-        start,
-        end,
-        direction: normalizeDirection(delta),
-        lengthMm,
-        elevationMm,
+        start: add(span.start, scale(direction, interval.start - span.startStation)),
+        end: add(span.start, scale(direction, interval.end - span.startStation)),
+        direction,
+        lengthMm: interval.end - interval.start,
+        elevationMm: span.elevationMm,
         outerDiameterMm: spec.outerDiameterMm,
       });
     }
@@ -4687,7 +5467,11 @@ function computeStraightBundleSegmentTargets(
   const usedKeys = new Set<string>();
   const targets: RefrigerantPipeBundleSegmentConnection[] = [];
   candidates.forEach(({ gas, liquid }) => {
-    if (usedKeys.has(gas.key) || usedKeys.has(liquid.key)) {
+    const explicitPair = Boolean(gas.bundleId && gas.bundleId === liquid.bundleId);
+    // Different level-transition stations can divide one lane into several
+    // spans beside a single straight companion span. Every shared horizontal
+    // interval of an identified pair remains eligible.
+    if (!explicitPair && (usedKeys.has(gas.key) || usedKeys.has(liquid.key))) {
       return;
     }
     usedKeys.add(gas.key);
@@ -4739,6 +5523,8 @@ function computeStraightBundleSegmentTargets(
       liquidElevationMm: liquid.elevationMm,
       connectionKind: 'field-pipe',
       sourceElementId: gas.bundleId ?? gas.elementId,
+      gasSourceElementId: gas.elementId,
+      liquidSourceElementId: liquid.elementId,
       segmentStart,
       segmentEnd,
       segmentLengthMm,
@@ -4747,6 +5533,22 @@ function computeStraightBundleSegmentTargets(
   });
 
   return targets;
+}
+
+/**
+ * Returns every paired, level, straight gas/liquid interval that can physically
+ * host an inline fitting. Callers that need to recover from a blocked hover
+ * position can rank and validate these immutable spans without repeatedly
+ * snapping to whichever neighboring pipe happens to be closest.
+ */
+export function getRefrigerantPipeBundleSegmentTargets(
+  elements: HvacPipeSnapSource[],
+  options?: { minSegmentLengthMm?: number },
+): RefrigerantPipeBundleSegmentConnection[] {
+  return computeStraightBundleSegmentTargets(
+    elements,
+    Math.max(1, options?.minSegmentLengthMm ?? 1),
+  );
 }
 
 export function getRefrigerantPipeBundleSnapTargets(
@@ -5090,10 +5892,9 @@ export function findNearestRefrigerantPipeBundleSegmentTarget(
     1,
     options?.minSegmentLengthMm ?? 1,
   );
-  const targets = computeStraightBundleSegmentTargets(
-    elements,
-    minimumSegmentLengthMm,
-  );
+  const targets = getRefrigerantPipeBundleSegmentTargets(elements, {
+    minSegmentLengthMm: minimumSegmentLengthMm,
+  });
   // Deterministic selection: rank candidates by distance quantized into a small
   // tie window, breaking near-ties by the stable sourceElementId. This stops the
   // chosen run from flip-flopping between two near-equidistant parallel mains as
@@ -5368,6 +6169,215 @@ function remapRouteEndpointsForMovedConnection(
   return remapped;
 }
 
+/**
+ * Rebuilds a coordinated gas+liquid pair through the draw-time builder after
+ * one of its unit-port ends moved. Reflow re-derives the centerline from the
+ * retained (stripped, sharpened, axis-aligned) main run, so the pair welds to
+ * the new port with the standard takeoff, correct bundle spacing, and the
+ * minimum number of bends — live, on every move. Returns null when the pair
+ * shape doesn't apply (single lines, branch-kit ends, degenerate tails); the
+ * caller then falls back to per-line reconnection.
+ */
+function rebuildCoordinatedPairReflow(options: {
+  gas: HvacElement;
+  liquid: HvacElement;
+  syncStart: boolean;
+  syncEnd: boolean;
+  movedBundle: RefrigerantPipeBundleConnection;
+  sceneElements: HvacElement[];
+  bundleId: string;
+}): Array<{ id: string; updates: Partial<HvacElement> }> | null {
+  const { gas, liquid, syncStart, syncEnd, movedBundle, sceneElements, bundleId } = options;
+  if (syncStart === syncEnd) return null;
+  const gasSpec = resolveRefrigerantPipeSpec(gas.properties);
+  const liquidSpec = resolveRefrigerantPipeSpec(liquid.properties);
+
+  const resolveBundleForConnection = (
+    connection: RefrigerantPipeConnection | null,
+  ): RefrigerantPipeBundleConnection | null => {
+    if (!connection) return null;
+    if (connection.connectionKind !== 'unit-port' || !connection.sourceElementId) {
+      return null;
+    }
+    const unitElement = sceneElements.find(
+      (candidate) => candidate.id === connection.sourceElementId,
+    );
+    return unitElement
+      ? resolveUnitPortBundleConnectionForElement(unitElement)
+      : null;
+  };
+  const farConnection = syncStart ? gasSpec.endConnection : gasSpec.startConnection;
+  // Branch-kit / field-pipe far ends have their own weld topology — leave them
+  // to the per-line path rather than rebuilding through the pair builder.
+  if (farConnection && farConnection.connectionKind !== 'unit-port') return null;
+  const farBundle = resolveBundleForConnection(farConnection);
+  if (farConnection && !farBundle) return null;
+
+  const spacingMm = (() => {
+    const persisted = readNumber(
+      (gas.properties as Record<string, unknown>).pairCenterSpacingMm,
+      Number.NaN,
+    );
+    if (Number.isFinite(persisted) && persisted > 0) return persisted;
+    return gasSpec.outerDiameterMm / 2 + liquidSpec.outerDiameterMm / 2 + resolvedPipeGapMm();
+  })();
+
+  // Strip the WHOLE old takeoff structurally: every leading vertex inside the
+  // old port's takeoff bubble (stub + gather + slack) belongs to the weld that
+  // is being rebuilt. A leg-length heuristic misses the old gather diagonal,
+  // whose stale lateral level would then resurface as a spike mid-run.
+  const oldConnection = syncStart ? gasSpec.startConnection : gasSpec.endConnection;
+  const oldPortPoint = oldConnection?.portPoint ?? movedBundle.point;
+  const takeoffBubbleMm =
+    getActivePipeRoutingSettings().minimumPortStubMm + spacingMm * 4;
+  // The authored bundle centerline is the reflow's source of truth: reflowing
+  // from generated geometry (arcs, fans, detours) diverges when repeated, but
+  // realigning the same drawn intent is a fixed point. The rebuild below
+  // passes the aligned centerline back through the builder, which re-persists
+  // it, so consecutive moves keep operating on clean authored geometry.
+  const authoredCenterline = normalizePointArray(
+    (gas.properties as Record<string, unknown>).authoredCenterlineRoute,
+  );
+  let centerlineTail: Point2D[] | null = null;
+  let persistedAuthoredCenterline: Point2D[] | null =
+    authoredCenterline.length >= 2 ? authoredCenterline : null;
+  if (authoredCenterline.length >= 2) {
+    const oriented = syncStart
+      ? [...authoredCenterline]
+      : [...authoredCenterline].reverse();
+    // Retain from the first REAL leg that leaves the bubble, keeping that
+    // leg's start vertex even when it sits inside the bubble: the vertex
+    // carries the leg's line. Dropping it would erase the leg (typically the
+    // main's first run) and promote the NEXT leg to "first", letting the
+    // align step slide geometry that lies beyond the second bend.
+    let firstRetainedIndex = Math.max(0, oriented.length - 2);
+    for (let index = 0; index < oriented.length - 1; index += 1) {
+      const legEnd = oriented[index + 1]!;
+      const legEndOutside = Math.hypot(
+        legEnd.x - oldPortPoint.x,
+        legEnd.y - oldPortPoint.y,
+      ) >= takeoffBubbleMm;
+      const legLengthMm = Math.hypot(
+        legEnd.x - oriented[index]!.x,
+        legEnd.y - oriented[index]!.y,
+      );
+      if (legEndOutside && legLengthMm >= spacingMm * 2) {
+        firstRetainedIndex = index;
+        break;
+      }
+    }
+    const tail = oriented.slice(firstRetainedIndex);
+    if (tail.length >= 2) centerlineTail = tail;
+  }
+  if (!centerlineTail) {
+    // Legacy pipes drawn before the authored centerline existed: derive one
+    // from the gas line once; the rebuild persists it for future moves.
+    const orientedGasRoute = syncStart
+      ? [...gasSpec.routePoints]
+      : [...gasSpec.routePoints].reverse();
+    const sharpenedGasRoute = sharpenPipeRouteCorners(orientedGasRoute);
+    // Retain from the first REAL leg that leaves the bubble — including its
+    // start vertex even when that vertex sits inside the bubble, because it
+    // carries the main's line.
+    let firstRetainedIndex = Math.max(0, sharpenedGasRoute.length - 2);
+    for (let index = 0; index < sharpenedGasRoute.length - 1; index += 1) {
+      const legEnd = sharpenedGasRoute[index + 1]!;
+      const legEndOutside = Math.hypot(
+        legEnd.x - oldPortPoint.x,
+        legEnd.y - oldPortPoint.y,
+      ) >= takeoffBubbleMm;
+      const legLengthMm = Math.hypot(
+        legEnd.x - sharpenedGasRoute[index]!.x,
+        legEnd.y - sharpenedGasRoute[index]!.y,
+      );
+      if (legEndOutside && legLengthMm >= spacingMm * 2) {
+        firstRetainedIndex = index;
+        break;
+      }
+    }
+    const gasTail = sharpenedGasRoute.slice(firstRetainedIndex);
+    if (gasTail.length < 2) return null;
+    // Centerline sits half a spacing from the gas line, on the liquid side.
+    const liquidReference = syncStart
+      ? liquidSpec.routePoints[liquidSpec.routePoints.length - 1]
+      : liquidSpec.routePoints[0];
+    const candidateA = offsetPolyline(gasTail, spacingMm / 2);
+    const candidateB = offsetPolyline(gasTail, -spacingMm / 2);
+    const distanceToReference = (candidate: Point2D[]): number => {
+      const probe = candidate[candidate.length - 1]!;
+      return liquidReference
+        ? Math.hypot(probe.x - liquidReference.x, probe.y - liquidReference.y)
+        : Number.POSITIVE_INFINITY;
+    };
+    centerlineTail = distanceToReference(candidateA) <= distanceToReference(candidateB)
+      ? candidateA
+      : candidateB;
+    // Legacy pipes adopt this one-shot derivation as their authored intent so
+    // every later move re-derives from the SAME frozen route.
+    persistedAuthoredCenterline = syncStart
+      ? centerlineTail.map((point) => ({ ...point }))
+      : [...centerlineTail].reverse().map((point) => ({ ...point }));
+  }
+
+  // The tail is oriented with the MOVED end first, so the moved port's axis
+  // drives the minimum-bend absorption regardless of which end moved.
+  let centerline = alignReflowRouteToPortAxis(
+    centerlineTail,
+    movedBundle.point,
+    movedBundle.direction,
+  );
+  if (!syncStart) centerline = [...centerline].reverse();
+  if (centerline.length < 2) return null;
+
+  const startBundle = syncStart ? movedBundle : farBundle;
+  const endBundle = syncStart ? farBundle : movedBundle;
+  const built = buildRefrigerantPipeElements(centerline, {
+    gasPipeDiameterMm: gasSpec.pipeDiameterMm,
+    liquidPipeDiameterMm: liquidSpec.pipeDiameterMm,
+    insulationThicknessMm: gasSpec.insulationThicknessMm,
+    bendRadiusFactor: explicitBendRadiusFactor(gas.properties.bendRadiusFactor)
+      ?? explicitBendRadiusFactor(liquid.properties.bendRadiusFactor),
+    minimumFieldBendRadiusMm: Math.max(resolveCopperSocketElbowMinimumRadius(gas.properties),
+      resolveCopperSocketElbowMinimumRadius(liquid.properties)),
+    bundleId,
+    startBundleConnection: startBundle,
+    endBundleConnection: endBundle,
+  });
+  if (built.length !== 2) return null;
+  const builtGas = built.find((candidate) => candidate.properties?.lineKind === 'gas');
+  const builtLiquid = built.find((candidate) => candidate.properties?.lineKind === 'liquid');
+  if (!builtGas || !builtLiquid) return null;
+
+  return [
+    { element: gas, rebuilt: builtGas },
+    { element: liquid, rebuilt: builtLiquid },
+  ].map(({ element, rebuilt }) => ({
+    id: element.id,
+    updates: {
+      position: rebuilt.position,
+      width: rebuilt.width,
+      depth: rebuilt.depth,
+      height: rebuilt.height,
+      elevation: rebuilt.elevation,
+      properties: {
+        ...element.properties,
+        ...rebuilt.properties,
+        // Reflow must never rewrite the drawn intent: the builder persisted
+        // the ADAPTED centerline it was fed, but the authored route stays
+        // frozen so every future move re-derives from the same source and
+        // moving the unit back restores the original layout exactly.
+        ...(persistedAuthoredCenterline
+          ? {
+              authoredCenterlineRoute: persistedAuthoredCenterline.map(
+                (point) => ({ ...point }),
+              ),
+            }
+          : {}),
+      },
+    },
+  }));
+}
+
 export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
   elements: HvacElement[],
   movedSourceElement: HvacElement,
@@ -5387,8 +6397,58 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
   }
 
   const updates: Array<{ id: string; updates: Partial<HvacElement> }> = [];
+
+  // Coordinated pairs reflow as ONE unit through the draw-time builder so the
+  // rebuilt geometry keeps bundle spacing and minimum bends; per-line handling
+  // below remains the fallback for singles and special welds.
+  const pairHandledIds = new Set<string>();
+  const pipesByBundleId = new Map<string, HvacElement[]>();
+  elements.forEach((element) => {
+    if (element.type !== 'refrigerant-pipe') return;
+    const bundleId = resolveRefrigerantPipeSpec(element.properties).bundleId;
+    if (!bundleId) return;
+    const group = pipesByBundleId.get(bundleId) ?? [];
+    group.push(element);
+    pipesByBundleId.set(bundleId, group);
+  });
+  pipesByBundleId.forEach((group, bundleId) => {
+    if (group.length !== 2) return;
+    const gas = group.find(
+      (candidate) => resolveRefrigerantPipeSpec(candidate.properties).lineKind === 'gas',
+    );
+    const liquid = group.find(
+      (candidate) => resolveRefrigerantPipeSpec(candidate.properties).lineKind === 'liquid',
+    );
+    if (!gas || !liquid) return;
+    const gasSpec = resolveRefrigerantPipeSpec(gas.properties);
+    const liquidSpec = resolveRefrigerantPipeSpec(liquid.properties);
+    const syncStart =
+      isUnitPortConnectionFromSource(gasSpec.startConnection, movedSourceElement.id)
+      && isUnitPortConnectionFromSource(liquidSpec.startConnection, movedSourceElement.id);
+    const syncEnd =
+      isUnitPortConnectionFromSource(gasSpec.endConnection, movedSourceElement.id)
+      && isUnitPortConnectionFromSource(liquidSpec.endConnection, movedSourceElement.id);
+    if (!syncStart && !syncEnd) return;
+    const pairUpdates = rebuildCoordinatedPairReflow({
+      gas,
+      liquid,
+      syncStart,
+      syncEnd,
+      movedBundle: sourceBundleTarget,
+      sceneElements: sceneWithMovedSource,
+      bundleId,
+    });
+    if (!pairUpdates) return;
+    updates.push(...pairUpdates);
+    pairHandledIds.add(gas.id);
+    pairHandledIds.add(liquid.id);
+  });
+
   elements.forEach((element) => {
     if (element.type === 'refrigerant-pipe') {
+      if (pairHandledIds.has(element.id)) {
+        return;
+      }
       const spec = resolveRefrigerantPipeSpec(element.properties);
       const syncStart = isUnitPortConnectionFromSource(
         spec.startConnection,
@@ -5451,14 +6511,14 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
       );
       if (syncStart && nextStartConnection) {
         nextRoutePoints = reserveMinimumPortStub(
-          nextRoutePoints,
+          stripPortTakeoffArtifacts(nextRoutePoints),
           nextStartConnection.portPoint,
           nextStartConnection.direction,
         );
       }
       if (syncEnd && nextEndConnection) {
         nextRoutePoints = reserveMinimumPortStub(
-          [...nextRoutePoints].reverse(),
+          stripPortTakeoffArtifacts([...nextRoutePoints].reverse()),
           nextEndConnection.portPoint,
           nextEndConnection.direction,
         ).reverse();
@@ -5575,14 +6635,14 @@ export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
     );
     if (syncStart && nextStartBundleConnection) {
       nextRoutePoints = reserveMinimumPortStub(
-        nextRoutePoints,
+        stripPortTakeoffArtifacts(nextRoutePoints),
         nextStartBundleConnection.point,
         nextStartBundleConnection.direction,
       );
     }
     if (syncEnd && nextEndBundleConnection) {
       nextRoutePoints = reserveMinimumPortStub(
-        [...nextRoutePoints].reverse(),
+        stripPortTakeoffArtifacts([...nextRoutePoints].reverse()),
         nextEndBundleConnection.point,
         nextEndBundleConnection.direction,
       ).reverse();

@@ -61,6 +61,7 @@ import type { SymbolDefinition } from './data/symbol-library';
 import { useSmartDrawingStore } from './store';
 import { useDrawingInteractionStore } from './store/interactionStore';
 import type { DisplayUnit, DrawingTool, PageLayout } from './types';
+import { safeSetLocalStorageJson } from './utils/safeBrowserStorage';
 import type { ManufacturerRuleProfile } from './vrf/rules';
 
 
@@ -777,12 +778,20 @@ export function SmartDrawingEditor({
     return { totalFloorArea: 0, usableArea: 0, circulationArea: 0 };
   }, []);
 
-  // Load initial data
+  const hydratedDocumentRef = useRef<string | null>(null);
+
+  // The module store is shared, so establish a clean session exactly once per
+  // explicit document key. Query refetch identities must never replace live edits.
   useEffect(() => {
-    if (initialData) {
+    const documentKey = projectId ?? '__standalone-drawing__';
+    if (hydratedDocumentRef.current === documentKey) return;
+    hydratedDocumentRef.current = documentKey;
+    useDrawingInteractionStore.getState().resetInteractionState();
+    loadData({ version: '1.0' });
+    if (initialData !== undefined && initialData !== null) {
       loadData(initialData as Parameters<typeof loadData>[0]);
     }
-  }, [initialData, loadData]);
+  }, [initialData, loadData, projectId]);
 
   // Notify parent of data changes
   useEffect(() => {
@@ -845,12 +854,12 @@ export function SmartDrawingEditor({
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem('drawing-library-custom', JSON.stringify(customLibraryObjects));
+    safeSetLocalStorageJson('drawing-library-custom', customLibraryObjects);
   }, [customLibraryObjects]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem('drawing-library-recent', JSON.stringify(recentObjectUsage));
+    safeSetLocalStorageJson('drawing-library-recent', recentObjectUsage);
   }, [recentObjectUsage]);
 
   useEffect(() => {
@@ -897,16 +906,13 @@ export function SmartDrawingEditor({
 
   useEffect(() => {
     if (typeof window === 'undefined' || !layoutReady) return;
-    window.localStorage.setItem(
-      'smart-drawing-layout-v1',
-      JSON.stringify({
-        showLeftPanel,
-        showRightPanel,
-        leftPanelWidth,
-        leftPanelMode,
-        leftPanelTab,
-      })
-    );
+    safeSetLocalStorageJson('smart-drawing-layout-v1', {
+      showLeftPanel,
+      showRightPanel,
+      leftPanelWidth,
+      leftPanelMode,
+      leftPanelTab,
+    });
   }, [layoutReady, showLeftPanel, showRightPanel, leftPanelWidth, leftPanelMode, leftPanelTab]);
 
   useEffect(() => {

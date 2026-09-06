@@ -33,7 +33,7 @@ export interface UseOffsetToolOptions {
   walls: Wall[];
   selectedIds: string[];
   zoom: number;
-  addWall: (params: CreateWallParams) => string;
+  addWall: (params: CreateWallParams, options?: { skipHistory?: boolean }) => string;
   setSelectedIds: (ids: string[]) => void;
   setTool: (tool: DrawingTool) => void;
   detectRooms: (options?: { debounce?: boolean }) => void;
@@ -326,7 +326,7 @@ export function useOffsetTool(options: UseOffsetToolOptions): UseOffsetToolResul
     const newWallIds: string[] = [];
     for (const wall of state.sourceWalls) {
       const params = computeOffsetWallParams(wall, snappedOffset);
-      const newId = addWall(params);
+      const newId = addWall(params, { skipHistory: true });
       newWallIds.push(newId);
     }
 

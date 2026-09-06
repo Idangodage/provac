@@ -138,6 +138,7 @@ export function PipeClashOverlay({
       if (element.type !== 'refrigerant-pipe') {
         return;
       }
+      if (Array.isArray(element.properties.routeNodes3d) && element.properties.routeNodes3d.length >= 2) return;
       const bypasses = normalizeBypasses(
         (element.properties as { bypasses?: unknown }).bypasses,
       );
@@ -191,6 +192,11 @@ export function PipeClashOverlay({
     ) {
       return null;
     }
+    // Canonical 3D profiles already carry the planned service levels. The
+    // legacy bypass command only writes display metadata and cannot safely
+    // alter them; offering it would promise a change the 3D renderer ignores.
+    if (hvacElements.some(element => selectedBundleElementIds.includes(element.id)
+      && Array.isArray(element.properties.routeNodes3d) && element.properties.routeNodes3d.length >= 2)) return null;
     let plan;
     try {
       plan = planBundleBypasses(hvacElements, selectedBundleElementIds, { mode: 'auto' });
@@ -307,6 +313,8 @@ export function PipeClashOverlay({
     if (!activeCard) {
       return;
     }
+    if (hvacElements.some(element => activeCard.elementIds.includes(element.id)
+      && Array.isArray(element.properties.routeNodes3d) && element.properties.routeNodes3d.length >= 2)) return;
     const plan = planBundleBypasses(hvacElements, activeCard.elementIds, { mode });
     activeCard.elementIds.forEach((id) => {
       updateHvacElement(id, {

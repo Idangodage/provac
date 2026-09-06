@@ -11,6 +11,7 @@
 import * as THREE from 'three';
 
 import type { Opening, Wall } from '../../../types';
+import { markObjectMaterialsOwned } from '../threeResourceLifecycle';
 
 // =============================================================================
 // Constants
@@ -478,10 +479,11 @@ function createWindow3D(
  * Create 3D geometry for a single opening in a wall.
  */
 export function createOpening3D(wall: Wall, opening: Opening): THREE.Group {
-  if (opening.type === 'door') {
-    return createDoor3D(wall, opening);
-  }
-  return createWindow3D(wall, opening);
+  const group = opening.type === 'door'
+    ? createDoor3D(wall, opening)
+    : createWindow3D(wall, opening);
+  markObjectMaterialsOwned(group, { textures: true });
+  return group;
 }
 
 /**
@@ -498,6 +500,7 @@ export function createWallOpenings3D(
     const openingMesh = opening.type === 'door'
       ? createDoor3D(wall, opening, optionsByOpeningId?.[opening.id])
       : createWindow3D(wall, opening);
+    markObjectMaterialsOwned(openingMesh, { textures: true });
     group.add(openingMesh);
   }
   return group;

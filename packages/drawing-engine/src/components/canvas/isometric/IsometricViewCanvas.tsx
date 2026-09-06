@@ -9,7 +9,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
+import { PROFESSIONAL_WALL_EDGES } from "../../../attributes";
 import type { ArchitecturalObjectDefinition } from "../../../data";
+import { useSmartDrawingStore } from "../../../store";
 import type {
   Dimension2D,
   DimensionSettings,
@@ -61,6 +63,7 @@ import {
 import { hasRenderer } from "../object/FurnitureSymbolRenderer";
 import { createOptimizedFurnitureModel3D } from "../object/three3d/Furniture3DRenderer";
 import { getWallSurfaceTexture } from "../wall/wallSurfaceTexture";
+import { applyWallTextureCoordinates, createWallOutline } from "../wall/wallThreeVisual";
 
 import {
   createWallOpenings3D,
@@ -379,7 +382,6 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   ] as Map<string, THREE.Material>[]) {
     for (const [, mat] of cache) sharedSet.add(mat);
   }
-  for (const [, mat] of _outlineMaterialCache) sharedSet.add(mat);
   sharedSet.add(_wallCapMaskMaterial);
 
   if (Array.isArray(material)) {
@@ -1165,8 +1167,7 @@ function solidPalette(
 // band/outline, reducing shader compilations and GPU memory by ~80%.
 
 const _wallMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
-const _wallTopMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
-const _outlineMaterialCache = new Map<string, THREE.LineBasicMaterial>();
+const _wallTopMaterialCache = new Map<string, THREE.MeshBasicMaterial>();
 const _boxMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
 const _wallCapMaskMaterial = new THREE.MeshBasicMaterial({
   transparent: true,
@@ -1183,55 +1184,37 @@ function getSharedWallMaterial(
   const key = `${palette.key}|side`;
   let mat = _wallMaterialCache.get(key);
   if (!mat) {
+    const map = getWallSurfaceTexture(palette);
     mat = new THREE.MeshStandardMaterial({
-      color: palette.surface.color,
-      map: getWallSurfaceTexture(palette),
+      color: map ? '#ffffff' : palette.surface.color,
+      map,
       roughness: palette.surface.roughness,
       metalness: palette.surface.metalness,
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
+      toneMapped: false,
     });
     _wallMaterialCache.set(key, mat);
   }
   return mat;
 }
 
-function getSharedWallTopMaterial(palette: WallPalette): THREE.MeshStandardMaterial {
+function getSharedWallTopMaterial(palette: WallPalette): THREE.MeshBasicMaterial {
   const key = `${palette.key}|top`;
   let mat = _wallTopMaterialCache.get(key);
   if (!mat) {
-    mat = new THREE.MeshStandardMaterial({
-      color: palette.surface.topColor,
-      map: getWallSurfaceTexture(palette),
-      roughness: palette.surface.roughness,
-      metalness: palette.surface.metalness,
+    const map = getWallSurfaceTexture(palette);
+    mat = new THREE.MeshBasicMaterial({
+      color: map ? '#ffffff' : palette.surface.topColor,
+      map,
       side: THREE.DoubleSide,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
-    });
-    _wallTopMaterialCache.set(key, mat);
-  }
-  return mat;
-}
-
-function getSharedOutlineMaterial(
-  color: string,
-  opacity: number,
-): THREE.LineBasicMaterial {
-  const key = `${color}|${opacity}`;
-  let mat = _outlineMaterialCache.get(key);
-  if (!mat) {
-    mat = new THREE.LineBasicMaterial({
-      color,
-      transparent: true,
-      opacity,
-      depthWrite: false,
-      depthTest: true,
       toneMapped: false,
     });
-    _outlineMaterialCache.set(key, mat);
+    _wallTopMaterialCache.set(key, mat);
   }
   return mat;
 }
@@ -1295,6 +1278,7 @@ function createWallMesh(
     });
     geometry.translate(0, 0, baseElevation);
     geometry.computeVertexNormals();
+    applyWallTextureCoordinates(geometry);
 
     // Hide the extrusion cap faces so any visible horizontal surface comes
     // only from the explicit top-cap mesh, which uses the safer polygon path.
@@ -1305,10 +1289,12 @@ function createWallMesh(
 
     if (showOutline) {
       const edgeGeometry = new THREE.EdgesGeometry(geometry, 32);
-      const edges = new THREE.LineSegments(
-        edgeGeometry,
-        getSharedOutlineMaterial(palette.outline, 0.68),
-      );
+      const edges = createWallOutline(edgeGeometry, {
+        color: palette.outline,
+        opacity: PROFESSIONAL_WALL_EDGES.modelOpacity,
+        widthPx: PROFESSIONAL_WALL_EDGES.modelWidthPx,
+      });
+      edgeGeometry.dispose();
       edges.renderOrder = 4;
       group.add(edges);
     }
@@ -4296,6 +4282,7 @@ export function IsometricViewCanvas({
   showResetControl = true,
   viewLabel = "ISOMETRIC VIEW",
 }: IsometricViewCanvasProps) {
+  const fittingDisplay = useSmartDrawingStore(state => state.pipeRoutingSettings.fittingDisplay);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<SceneState | null>(null);
@@ -5180,6 +5167,7 @@ export function IsometricViewCanvas({
     renderRequestedRef.current = true;
   }, [
     activeWallBands,
+    fittingDisplay,
     definitionsById,
     dimensionSettings,
     dimensions,

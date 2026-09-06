@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 
 import type { HvacElement } from '../../../../types';
@@ -47,5 +48,42 @@ describe('buildHvacElementMesh placement', () => {
     expect(group).not.toBeNull();
     expect(group!.position.x).toBeCloseTo(1000 + 600 / 2, 9);
     expect(group!.position.y).toBeCloseTo(2000 + 400 / 2, 9);
+  });
+
+  it('renders ceiling cassette body, face, grille, and service ports as visible 3D equipment', () => {
+    const element = makeElement({
+      type: 'ceiling-cassette-ac',
+      width: 1043,
+      depth: 950,
+      height: 272,
+      elevation: 2600,
+      mountType: 'ceiling',
+      properties: {},
+    });
+    const group = buildHvacElementMesh(element, makeContext(element));
+
+    expect(group).not.toBeNull();
+    expect(group!.position.x).toBeCloseTo(1000 + 1043 / 2, 9);
+    expect(group!.position.y).toBeCloseTo(2000 + 950 / 2, 9);
+    expect(group!.position.z).toBeCloseTo(2600, 9);
+
+    const names = new Set<string>();
+    group!.traverse((object) => {
+      if (object.name) names.add(object.name);
+    });
+
+    expect(names.has('ceiling-cassette-hidden-body')).toBe(true);
+    expect(names.has('ceiling-cassette-face-panel')).toBe(true);
+    expect(names.has('ceiling-cassette-face-panel-outline')).toBe(true);
+    expect(names.has('ceiling-cassette-return-grille-frame')).toBe(true);
+    expect(names.has('ceiling-cassette-connection-pod')).toBe(true);
+    expect(names.has('ceiling-cassette-gas-port')).toBe(true);
+    expect(names.has('ceiling-cassette-liquid-port')).toBe(true);
+    expect(names.has('ceiling-cassette-drain-port')).toBe(true);
+
+    const bounds = new THREE.Box3().setFromObject(group!);
+    expect(bounds.max.z - bounds.min.z).toBeGreaterThan(240);
+    expect(bounds.max.x - bounds.min.x).toBeGreaterThan(1040);
+    expect(bounds.max.y - bounds.min.y).toBeGreaterThan(940);
   });
 });

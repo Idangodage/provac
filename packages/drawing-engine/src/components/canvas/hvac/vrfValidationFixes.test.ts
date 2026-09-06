@@ -57,9 +57,12 @@ describe('VRF validation auto-fixes', () => {
       [pipe()],
     );
     const route = command?.updates[0]?.updates.properties?.routePoints;
+    // Preserve the 200 mm port-normal straight, then gather at 45 degrees
+    // to the field run without a cramped perpendicular dogleg.
     expect(route).toEqual([
       { x: 0, y: 0 },
       { x: 200, y: 0 },
+      { x: 320, y: 120 },
       { x: 800, y: 120 },
     ]);
   });

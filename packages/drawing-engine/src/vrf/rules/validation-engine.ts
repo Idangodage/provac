@@ -4,6 +4,8 @@ import {
   type BranchWorldFrame,
 } from './branch-orientation';
 import { selectBranchKit, type BranchSelectionContext } from './branch-selection';
+import type { NetworkElevationPath } from './network-elevation-paths';
+import { analyzeRouteElevation } from './route-elevation';
 import type { ManufacturerRuleProfile } from './rule-profile';
 
 export type ValidationLevel = 'error' | 'warning' | 'advisory' | 'information';
@@ -58,6 +60,8 @@ export interface ValidationRunInput {
   /** Positive means the modelled fall is toward the outdoor unit. */
   slopeTowardOutdoorPercent?: number;
   hasSagPocket?: boolean;
+  /** Legacy display offsets are not part of the semantic 3D route. */
+  legacyElevationBypassCount?: number;
   flowDirectionValid?: boolean;
 }
 
@@ -101,6 +105,8 @@ export interface VrfValidationSnapshot {
   runs: ValidationRunInput[];
   branches: ValidationBranchInput[];
   pairs: ValidationPairInput[];
+  /** Unique connected outdoor-to-indoor paths spanning more than one run. */
+  elevationPaths?: NetworkElevationPath[];
   cycleEntityIds?: string[];
   disconnectedEntityIds?: string[];
   /** A three-valent topology node without an approved Y/header fitting. */
@@ -266,6 +272,36 @@ function validateRun(run: ValidationRunInput, profile: ManufacturerRuleProfile):
       'The run contains a sag pocket or non-approved U-trap.',
       run.id,
       'Level or re-route the run; use only manufacturer-approved inverted traps.',
+    ));
+  }
+  // Geometry is a review signal, not proof that a manufacturer-required trap
+  // is invalid. Never offer a one-click deletion of an intentional rise/drop.
+  const elevation = analyzeRouteElevation(run.nodePositions);
+  if (lineKind !== 'drain' && !run.hasSagPocket && elevation.lowPockets.length > 0) {
+    const deepest = Math.max(...elevation.lowPockets.map((pocket) => pocket.depthMm));
+    issues.push(makeIssue(
+      'ELEVATION_LOW_POCKET',
+      'warning',
+      `Route contains ${elevation.lowPockets.length} potential low pocket(s), up to ${deepest.toFixed(0)} mm deep.`,
+      run.id,
+      'Review the complete outdoor-to-indoor elevation profile and selected manufacturer oil-return requirements. Geometry alone does not establish oil retention; retain any required trap.',
+    ));
+  } else if (lineKind !== 'drain' && !run.hasSagPocket && elevation.elevationReversals > 0) {
+    issues.push(makeIssue(
+      'ELEVATION_REVERSAL',
+      'advisory',
+      `Route changes vertical direction ${elevation.elevationReversals} time(s), adding ${elevation.excessVerticalTravelMm.toFixed(0)} mm of vertical travel.`,
+      run.id,
+      'Review whether a continuous service level and one monotonic terminal transition can replace this offset while preserving clearances and manufacturer-required geometry.',
+    ));
+  }
+  if ((run.legacyElevationBypassCount ?? 0) > 0) {
+    issues.push(makeIssue(
+      'LEGACY_ELEVATION_BYPASS',
+      'warning',
+      `${run.legacyElevationBypassCount} legacy elevation bypass(es) are displayed outside the saved 3D route.`,
+      run.id,
+      'Review and redraw these offsets in the actual 3D route so elevation, length and low-pocket checks include them.',
     ));
   }
   const totalLength = routeLength(run.nodePositions);
@@ -516,6 +552,35 @@ export function validateVrfNetwork(
     ...snapshot.runs.flatMap((run) => validateRun(run, profile)),
     ...snapshot.branches.flatMap((branch) => validateBranch(branch, profile)),
   ];
+  const runElevations = new Map(snapshot.runs.map((run) => [
+    run.id, analyzeRouteElevation(run.nodePositions),
+  ]));
+  for (const path of snapshot.elevationPaths ?? []) {
+    const elevation = analyzeRouteElevation(path.nodePositions);
+    const knownLowPockets = path.runIds.reduce(
+      (sum, id) => sum + (runElevations.get(id)?.lowPockets.length ?? 0), 0,
+    );
+    const knownReversals = path.runIds.reduce(
+      (sum, id) => sum + (runElevations.get(id)?.elevationReversals ?? 0), 0,
+    );
+    if (elevation.lowPockets.length > knownLowPockets) {
+      issues.push(makeIssue(
+        'NETWORK_ELEVATION_LOW_POCKET',
+        'warning',
+        `The connected ${path.lineKind} path contains a potential low pocket across multiple runs.`,
+        path.indoorEntityId,
+        'Review the complete outdoor-to-indoor level profile, including both sides of each branch. Confirm oil-return requirements for the selected equipment before changing required traps.',
+      ));
+    } else if (elevation.elevationReversals > knownReversals) {
+      issues.push(makeIssue(
+        'NETWORK_ELEVATION_REVERSAL',
+        'advisory',
+        `The connected ${path.lineKind} path adds ${elevation.excessVerticalTravelMm.toFixed(0)} mm of vertical travel through rise/fall reversals across runs.`,
+        path.indoorEntityId,
+        'Check whether the shared service level can reduce transitions while preserving terminal levels, clearances and manufacturer-required piping geometry.',
+      ));
+    }
+  }
   for (const pair of snapshot.pairs) {
     if (pair.directionAlignmentDot < 0.95) {
       issues.push(makeIssue('pipe-pair-direction', 'error', 'Gas and liquid pair directions are not coordinated.', pair.id));

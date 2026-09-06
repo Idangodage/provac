@@ -16,7 +16,14 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-type CacheEntry = { status: "loading" | "loaded" | "error"; scene?: THREE.Group };
+import type { HvacElement } from "../../../../types";
+import { markMaterialOwned } from "../../threeResourceLifecycle";
+
+type CacheEntry = {
+  status: "loading" | "loaded" | "error";
+  scene?: THREE.Group;
+  listeners: Set<() => void>;
+};
 
 const cache = new Map<string, CacheEntry>();
 let loader: GLTFLoader | null = null;
@@ -31,22 +38,52 @@ function getLoader(): GLTFLoader {
 /** Kicks off a load if this URL has not been requested yet. Idempotent.
  * `onSettled` fires once when THIS call's load finishes (success or error). */
 export function preloadGlb(url: string, onSettled?: () => void): void {
-  if (cache.has(url)) {
+  const existing = cache.get(url);
+  if (existing) {
+    if (onSettled) {
+      if (existing.status === "loading") {
+        existing.listeners.add(onSettled);
+      } else {
+        queueMicrotask(onSettled);
+      }
+    }
     return;
   }
-  cache.set(url, { status: "loading" });
+  const listeners = new Set<() => void>();
+  if (onSettled) listeners.add(onSettled);
+  const entry: CacheEntry = { status: "loading", listeners };
+  cache.set(url, entry);
+  const settle = (status: "loaded" | "error", scene?: THREE.Group): void => {
+    entry.status = status;
+    entry.scene = scene;
+    const pending = [...entry.listeners];
+    entry.listeners.clear();
+    pending.forEach((listener) => listener());
+  };
   getLoader().load(
     url,
     (gltf) => {
-      cache.set(url, { status: "loaded", scene: gltf.scene });
-      onSettled?.();
+      settle("loaded", gltf.scene);
     },
     undefined,
     () => {
-      cache.set(url, { status: "error" });
-      onSettled?.();
+      settle("error");
     },
   );
+}
+
+/** Stable unique catalog model URLs referenced by the current HVAC scene. */
+export function getUniqueHvacModelUrls(
+  elements: readonly Pick<HvacElement, "properties">[],
+): string[] {
+  const urls = new Set<string>();
+  elements.forEach((element) => {
+    const value = element.properties?.modelUrl;
+    if (typeof value !== "string") return;
+    const url = value.trim();
+    if (url) urls.add(url);
+  });
+  return [...urls].sort();
 }
 
 function getLoadedGlb(url: string): THREE.Group | null {
@@ -75,8 +112,8 @@ export function instantiateGlbModel(url: string): THREE.Group | null {
       }
       if (mesh.material) {
         mesh.material = Array.isArray(mesh.material)
-          ? mesh.material.map((m) => m.clone())
-          : mesh.material.clone();
+          ? mesh.material.map((m) => markMaterialOwned(m.clone()))
+          : markMaterialOwned(mesh.material.clone());
       }
     }
   });

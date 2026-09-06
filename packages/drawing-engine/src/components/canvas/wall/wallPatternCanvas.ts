@@ -116,39 +116,20 @@ function paintPattern(
 }
 
 /**
- * Builds the same restrained procedural motif for plan and 3D. The plan tile
- * receives drafting colors; the model tile is neutral and is multiplied by
- * the canonical surface color in the Three.js material.
+ * Both renderers use the same colored raster, resolution and linework. Its
+ * scale comes from physical millimetres in the Fabric transform / Three UVs.
  */
 export function createWallPatternCanvas(
   style: WallVisualStyle,
   usage: WallPatternUsage
 ): HTMLCanvasElement | null {
-  if (typeof document === 'undefined') return null;
-
-  const size = usage === 'plan-cut' ? style.plan.patternTilePx : 96;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const context = canvas.getContext('2d');
-  if (!context) return null;
-
-  context.fillStyle = usage === 'plan-cut' ? style.plan.fillColor : '#ffffff';
-  context.fillRect(0, 0, size, size);
-  context.lineWidth = usage === 'plan-cut' ? 1 : 1.15;
-  context.lineCap = 'round';
-  context.lineJoin = 'round';
-  context.strokeStyle = usage === 'plan-cut'
-    ? style.plan.patternColor
-    : `rgba(24, 32, 42, ${style.surface.patternOpacity})`;
-  context.fillStyle = context.strokeStyle;
-
-  paintPattern(
-    context,
-    size,
-    usage === 'plan-cut' ? style.plan.pattern : style.surface.pattern
-  );
-  return canvas;
+  return createWallSurfacePatternCanvas(usage === 'plan-cut' ? {
+    ...style.surface,
+    color: style.plan.fillColor,
+    pattern: style.plan.pattern,
+    patternColor: style.plan.patternColor,
+    patternOpacity: style.plan.patternOpacity,
+  } : style.surface);
 }
 
 export function createWallSurfacePatternCanvas(
@@ -163,13 +144,14 @@ export function createWallSurfacePatternCanvas(
   const context = canvas.getContext('2d');
   if (!context) return null;
 
-  context.fillStyle = '#ffffff';
+  context.fillStyle = surface.color;
   context.fillRect(0, 0, size, size);
-  context.lineWidth = 1.15;
+  context.lineWidth = 1.5;
   context.lineCap = 'round';
   context.lineJoin = 'round';
-  context.strokeStyle = `rgba(24, 32, 42, ${surface.patternOpacity})`;
+  context.strokeStyle = surface.patternColor;
   context.fillStyle = context.strokeStyle;
+  context.globalAlpha = surface.patternOpacity;
   paintPattern(context, size, surface.pattern);
   return canvas;
 }

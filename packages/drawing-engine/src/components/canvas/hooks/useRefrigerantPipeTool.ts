@@ -1,16 +1,22 @@
 import * as fabric from 'fabric';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import * as THREE from 'three';
 
 import type { HvacElement, Point2D } from '../../../types';
+import { SnapManager } from '../../../vrf/interaction/snap-manager';
 import type { HvacPlanRenderer } from '../hvac/HvacPlanRenderer';
 import {
   buildBranchKitInsertion,
+  buildBranchKitRoutePreview,
   describeBranchKitConnectionType,
   proposeBranchKit,
   type BranchKitProposal,
   type BranchKitProposalValidity,
 } from '../hvac/branchKitProposal';
+import { isNetworkLevelPlanCurrent, type NetworkLevelSummary } from '../hvac/networkPipeLevels';
 import { planBundleBypasses } from '../hvac/pipeClashRouting';
+import { resolvePipeCommandKeyAction } from '../hvac/pipeCommandKeyPolicy';
+import { canOfferPipeBranch, describePipeConnection, resolvePipeFinishAction, resolvePipeStartMode, type PipeSnapIndicator } from '../hvac/pipeDraftingPolicy';
 import {
   attachPipeRoute3dToElements,
   hasExplicitPipeRoute3d,
@@ -20,8 +26,8 @@ import { getActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
 import {
   buildRefrigerantPipeElements,
   buildRefrigerantPipeExtensionMerge,
-  findNearestRefrigerantPipeBundleTarget,
   findNearestRefrigerantPipeExtensionTarget,
+  getRefrigerantPipeBundleSnapTargets,
   seedRefrigerantPipeRouteStart,
   type RefrigerantPipeAngleMode,
   type RefrigerantPipeBundleConnection,
@@ -29,6 +35,7 @@ import {
   type RefrigerantPipeMaterial,
 } from '../hvac/refrigerantPipePairModel';
 import { findNearestVisibleRefrigerantPipeBundleTarget } from '../hvac/refrigerantPipeRenderState';
+import { buildRefrigerantBundleSnapCandidates } from '../hvac/refrigerantPipeSnapCandidates';
 import { MM_TO_PX } from '../scale';
 import { snapPointToGrid, applyAngularConstraint, applyOrthogonalConstraint } from '../snapping';
 
@@ -40,6 +47,8 @@ export interface UseRefrigerantPipeToolOptions {
   pipeAngleMode: RefrigerantPipeAngleMode;
   /** Which line(s) to lay: coordinated `pair` (default), or a single `gas`/`liquid` line. */
   pipeLineMode: RefrigerantPipeLineMode;
+  /** Branch taps resolve on the plan plane, including plan inputs carrying Z. */
+  planRouting?: boolean;
   hvacElements: HvacElement[];
   zoom: number;
   snapToGrid: boolean;
@@ -53,7 +62,12 @@ export interface UseRefrigerantPipeToolOptions {
   /** Remove an element by id — used to replace a tapped run with its split halves. */
   commitHvacElementCommand: (
     action: string,
-    command: { add?: HvacElement[]; removeIds?: string[]; selectedIds?: string[] },
+    command: {
+      add?: HvacElement[];
+      removeIds?: string[];
+      updates?: Array<{ id: string; updates: Partial<HvacElement> }>;
+      selectedIds?: string[];
+    },
   ) => string[];
   /**
    * Update an element in place — used to merge an extension INTO the host pipe
@@ -88,7 +102,7 @@ export interface UseRefrigerantPipeToolOptions {
    * The overlay renders it with the SAME endpoint-handle bullseye a committed
    * pipe shows — the tool draws no marker of its own. null hides it.
    */
-  onSnapIndicatorChange?: (point: Point2D | null) => void;
+  onSnapIndicatorChange?: (point: PipeSnapIndicator | null) => void;
   overlayOwnsPipePreview?: boolean;
 }
 
@@ -99,6 +113,9 @@ export interface RefrigerantPipeBranchKitProposalState {
   connectionLabel: string;
   validity: BranchKitProposalValidity;
   violations: string[];
+  orientationLocked?: boolean;
+  notes?: string[];
+  levelSummary?: NetworkLevelSummary;
 }
 
 export interface UseRefrigerantPipeToolResult {
@@ -270,6 +287,7 @@ export function useRefrigerantPipeTool(
     pipeMaterialMode,
     pipeAngleMode,
     pipeLineMode,
+    planRouting = true,
     hvacElements,
     zoom,
     snapToGrid,
@@ -298,10 +316,20 @@ export function useRefrigerantPipeTool(
   const shiftPressedRef = useRef(false);
   // Alt = momentary free-angle override (bypasses angle + grid snapping).
   const altPressedRef = useRef(false);
+  const planSnapManagerRef = useRef(new SnapManager());
   // --- Branch-kit proposal state (real-time) ---
   const branchKitProposalRef = useRef<BranchKitProposal | null>(null);
+  // A rejected/stale branch cannot silently become an ordinary pipe on the
+  // next Enter. A new visible route or proposal must release this guard.
+  const branchReviewMessageRef = useRef<string | null>(null);
   const proposalFlipRef = useRef(false);
-  const proposalSuppressRef = useRef<{ active: boolean; at: Point2D | null }>({
+  const proposalSuppressRef = useRef<{
+    active: boolean;
+    at: Point2D | null;
+    segment?: { start: Point2D; end: Point2D };
+    routePointCount?: number;
+    reviewMessage?: string;
+  }>({
     active: false,
     at: null,
   });
@@ -427,8 +455,11 @@ export function useRefrigerantPipeTool(
   // mm) to the overlay, which renders the same endpoint-handle bullseye a
   // committed pipe shows — one component for every snap affordance.
   const renderSnapMarkers = useCallback((bundle: RefrigerantPipeBundleConnection | null) => {
-    onSnapIndicatorChange?.(bundle ? { x: bundle.point.x, y: bundle.point.y } : null);
-  }, [onSnapIndicatorChange]);
+    onSnapIndicatorChange?.(bundle ? {
+      x: bundle.point.x, y: bundle.point.y,
+      label: describePipeConnection(bundle, sessionLineModeRef.current ?? pipeLineMode),
+    } : null);
+  }, [onSnapIndicatorChange, pipeLineMode]);
 
   const clearPreview = useCallback(() => {
     hvacRendererRef.current?.clearPlacementPreview();
@@ -441,12 +472,31 @@ export function useRefrigerantPipeTool(
     setBranchKitProposalState((previous) => (previous ? null : previous));
   }, []);
 
+  const requireBranchReview = useCallback((message: string, clearProposal = false) => {
+    branchReviewMessageRef.current = message;
+    if (clearProposal) {
+      clearBranchKitProposal();
+    } else {
+      const proposal = branchKitProposalRef.current;
+      if (proposal) branchKitProposalRef.current = {
+        ...proposal, validity: 'invalid', violations: [message, ...proposal.violations],
+      };
+      setBranchKitProposalState((previous) => previous ? {
+        ...previous, validity: 'invalid', violations: [message, ...previous.violations],
+      } : null);
+    }
+    clearPreview();
+    setProcessingStatus(message, false);
+  }, [clearBranchKitProposal, clearPreview, setProcessingStatus]);
+
   const resetDrawing = useCallback(() => {
+    branchReviewMessageRef.current = null;
     routePointsRef.current = [];
     startBundleRef.current = null;
     endBundleRef.current = null;
     previewPointRef.current = null;
     sessionLineModeRef.current = null;
+    planSnapManagerRef.current.reset();
     proposalFlipRef.current = false;
     proposalSuppressRef.current = { active: false, at: null };
     lastProposalCursorRef.current = null;
@@ -463,6 +513,53 @@ export function useRefrigerantPipeTool(
     () => getActivePipeRoutingSettings().snapRadiusPx / Math.max(zoom * MM_TO_PX, 0.01),
     [zoom],
   );
+
+  const isBranchProposalSuppressed = useCallback((cursor: Point2D): boolean => {
+    const suppressed = proposalSuppressRef.current;
+    if (!suppressed.active) return false;
+    let nearest = suppressed.at;
+    if (suppressed.segment) {
+      const { start, end } = suppressed.segment;
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const lengthSquared = dx * dx + dy * dy;
+      const t = lengthSquared > 0
+        ? Math.max(0, Math.min(1, ((cursor.x - start.x) * dx + (cursor.y - start.y) * dy) / lengthSquared))
+        : 0;
+      const onSegment = { x: start.x + t * dx, y: start.y + t * dy };
+      // Recovery can move the kit to another straight beyond a bend. Keep
+      // dismissal valid at the original pointer as well as the offered run;
+      // otherwise the next move at the original location reopens the card.
+      if (!nearest || distance(cursor, onSegment) < distance(cursor, nearest)) nearest = onSegment;
+    }
+    // Dismissal belongs to this run and authored route, so moving along the
+    // same run does not repeatedly reopen the card. Screen-space hysteresis
+    // lets the pointer leave the candidate without flickering at its edge.
+    if (
+      suppressed.routePointCount !== routePointsRef.current.length
+      || (nearest && distance(cursor, nearest) > resolveExtensionThresholdMm() * 1.35)
+    ) {
+      proposalSuppressRef.current = { active: false, at: null };
+      return false;
+    }
+    return true;
+  }, [resolveExtensionThresholdMm]);
+
+  const suppressBranchProposal = useCallback((proposal: BranchKitProposal | null, cursor: Point2D | null) => {
+    const reason = proposal?.validity === 'invalid' ? proposal.violations[0] : null;
+    const reviewMessage = reason
+      ? `${reason} Continue drawing or choose another connection point.`
+      : 'Continue drawing beyond this branch candidate before finishing.';
+    proposalSuppressRef.current = {
+      active: true,
+      at: cursor,
+      segment: proposal ? { start: proposal.target.segmentStart, end: proposal.target.segmentEnd } : undefined,
+      routePointCount: routePointsRef.current.length,
+      reviewMessage,
+    };
+    branchReviewMessageRef.current = reviewMessage;
+    return reviewMessage;
+  }, []);
 
   const snapPoint = useCallback((point: PipePlacementPoint, allowBundleSnap: boolean): {
     point: PipePlacementPoint;
@@ -493,70 +590,90 @@ export function useRefrigerantPipeTool(
 
       const projectedBundle = readProjectedSnapTarget(point);
       if (projectedBundle && !shouldExcludeBundle(projectedBundle)) {
+        planSnapManagerRef.current.reset();
         bundle = projectedBundle;
         source = 'projected';
       }
-      const legacyPlanSnapAllowed = typeof point.z !== 'number' || !Number.isFinite(point.z);
-      const renderedBundle = legacyPlanSnapAllowed
-        ? (
-        hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(
-          point,
-          thresholdMm,
-        ) ?? null
-        )
-        : null;
-      const visibleFieldBundle = legacyPlanSnapAllowed
-        ? (
-        findNearestVisibleRefrigerantPipeBundleTarget(
-          hvacElements,
-          point,
-          thresholdMm,
-        ) ?? null
-        )
-        : null;
-      const modelBundle = legacyPlanSnapAllowed
-        ? (
-        findNearestRefrigerantPipeBundleTarget(
-          hvacElements,
-          point,
-          thresholdMm,
-        ) ?? null
-        )
-        : null;
+      const legacyPlanSnapAllowed = planRouting || typeof point.z !== 'number' || !Number.isFinite(point.z);
+      if (!bundle && legacyPlanSnapAllowed) {
+        const settings = getActivePipeRoutingSettings();
+        const screenPxPerMm = settings.snapRadiusPx / Math.max(thresholdMm, 1e-6);
+        const activeLineMode = sessionLineModeRef.current ?? pipeLineMode;
+        const typeByElementId = new Map(
+          hvacElements.map((element) => [element.id, element.type]),
+        );
+        const snapEntries = buildRefrigerantBundleSnapCandidates({
+          targets: getRefrigerantPipeBundleSnapTargets(hvacElements),
+          pointer: point,
+          lineMode: activeLineMode,
+          screenPxPerMm,
+          sourceTypeById: typeByElementId,
+          isTargetValid: (target) => !shouldExcludeBundle(target),
+          messageForTarget: (target) => formatPortTooltip(
+            target,
+            resolveBundleHoverSelection(target, point),
+          ),
+        });
+        const candidateBundles = new Map(
+          snapEntries.map(({ candidate, bundle: candidateBundle }) => [
+            candidate.id,
+            candidateBundle,
+          ]),
+        );
+        const resolution = planSnapManagerRef.current.resolve(
+          new THREE.Vector3(point.x, point.y, 0),
+          snapEntries.map(({ candidate }) => candidate),
+          {
+            tolerancePx: settings.snapRadiusPx,
+            breakAwayPx: Math.max(
+              settings.snapRadiusPx + 6,
+              settings.snapRadiusPx * 1.55,
+            ),
+          },
+        );
+        if (resolution.candidate) {
+          bundle = candidateBundles.get(resolution.candidate.id) ?? null;
+          source = bundle ? 'model' : null;
+        }
 
-      const renderedCandidate = !shouldExcludeBundle(renderedBundle)
-        ? renderedBundle
-        : null;
-      const visibleFieldCandidate = !shouldExcludeBundle(visibleFieldBundle)
-        ? visibleFieldBundle
-        : null;
-      const modelCandidate = !shouldExcludeBundle(modelBundle)
-        ? modelBundle
-        : null;
-
-      // Routing datum must always be centerline model data. Use rendered targets
-      // only as fallback when model targets are not available.
-      if (bundle) {
-        // Screen-space 3D resolver already chose this exact target.
-      } else if (modelCandidate) {
-        bundle = modelCandidate;
-        source = 'model';
-      } else if (renderedCandidate) {
-        bundle = renderedCandidate;
-        source = 'rendered';
-      } else if (visibleFieldCandidate) {
-        bundle = visibleFieldCandidate;
-        source = 'visible';
-      } else {
-        bundle = null;
-        source = null;
+        // Routing datum must always be centerline model data. Render-derived
+        // targets are a legacy fallback only when no model candidate resolves.
+        if (!bundle) {
+          const renderedBundle =
+            hvacRendererRef.current?.findNearestRenderedRefrigerantPipeBundleTarget(
+              point,
+              thresholdMm,
+            ) ?? null;
+          const visibleFieldBundle = findNearestVisibleRefrigerantPipeBundleTarget(
+            hvacElements,
+            point,
+            thresholdMm,
+          ) ?? null;
+          const renderedCandidate = !shouldExcludeBundle(renderedBundle)
+            ? renderedBundle
+            : null;
+          const visibleFieldCandidate = !shouldExcludeBundle(visibleFieldBundle)
+            ? visibleFieldBundle
+            : null;
+          if (renderedCandidate) {
+            bundle = renderedCandidate;
+            source = 'rendered';
+          } else if (visibleFieldCandidate) {
+            bundle = visibleFieldCandidate;
+            source = 'visible';
+          }
+        }
+      } else if (!legacyPlanSnapAllowed) {
+        planSnapManagerRef.current.reset();
       }
 
-      if (bundle?.connectionKind === 'field-pipe' && source !== 'model') {
+      if (bundle?.connectionKind === 'field-pipe' && source !== 'model' && source !== 'projected') {
         // Do not allow continuation from rendered geometry for field-pipe snaps.
         bundle = null;
         source = null;
       }
+    } else {
+      planSnapManagerRef.current.reset();
     }
 
     const snappedBundle = bundle
@@ -575,7 +692,7 @@ export function useRefrigerantPipeTool(
     // Alt = momentary free-angle override: skip angle + grid snapping so a vertex
     // can be placed exactly under the cursor.
     const freeAngleOverride = altPressedRef.current;
-    const viewAdaptive3d = typeof nextPoint.z === 'number' && Number.isFinite(nextPoint.z);
+    const viewAdaptive3d = !planRouting && typeof nextPoint.z === 'number' && Number.isFinite(nextPoint.z);
     const effectiveAngleMode = resolveEffectiveAngleMode(pipeAngleMode, pipeMaterialMode);
     // Free/flexible routing should track the cursor continuously. Grid snapping
     // is reserved for constrained hard-angle runs; otherwise the preview jumps
@@ -618,7 +735,7 @@ export function useRefrigerantPipeTool(
     }
 
     return { point: nextPoint, bundle: snappedBundle, source };
-  }, [gridSize, hvacElements, hvacRendererRef, pipeAngleMode, pipeMaterialMode, resolveExtensionThresholdMm, snapToGrid]);
+  }, [gridSize, hvacElements, hvacRendererRef, pipeAngleMode, pipeLineMode, pipeMaterialMode, planRouting, resolveExtensionThresholdMm, snapToGrid]);
 
   const renderRoutePreview = useCallback((
     routePoints: PipePlacementPoint[],
@@ -626,6 +743,9 @@ export function useRefrigerantPipeTool(
     startBundleConnectionOverride: RefrigerantPipeBundleConnection | null = null,
     ghostElements: Array<Omit<HvacElement, 'id'>> = [],
   ) => {
+    branchReviewMessageRef.current = proposalSuppressRef.current.active
+      ? proposalSuppressRef.current.reviewMessage ?? branchReviewMessageRef.current
+      : null;
     const rawBuiltElements = routePoints.length >= 2
       ? buildRefrigerantPipeElements(routePoints, {
           segmentMaterialMode: pipeMaterialMode,
@@ -646,7 +766,7 @@ export function useRefrigerantPipeTool(
     const startBundleForMerge =
       startBundleConnectionOverride ?? startBundleRef.current;
     const mergeUpdates =
-      overlayOwnsPipePreview && builtElements.length > 0 && startBundleForMerge
+      overlayOwnsPipePreview && !hasExplicitPipeRoute3d(routePoints) && builtElements.length > 0 && startBundleForMerge
         ? buildRefrigerantPipeExtensionMerge(
             hvacElements,
             startBundleForMerge,
@@ -702,6 +822,41 @@ export function useRefrigerantPipeTool(
     hvacRendererRef.current?.renderElementPreviews(previewElements, true);
   }, [hvacElements, hvacRendererRef, onDraftRouteChange, onDraftPipesChange, overlayOwnsPipePreview, pipeLineMode, pipeMaterialMode]);
 
+  const renderBranchPreview = useCallback((proposal: BranchKitProposal) => {
+    const start = startBundleRef.current;
+    if (!start) return;
+    const plan = proposal.levelPlan;
+    if (plan && !isNetworkLevelPlanCurrent(plan, hvacElements)) {
+      requireBranchReview('Network changed. Move the pointer to review updated levels.', true);
+      return;
+    }
+    if (proposal.validity === 'invalid') {
+      // Keep the ordinary route following the pointer. A rejected suggestion
+      // must not visually move the existing mains to unbuildable draft levels.
+      const cursor = lastProposalCursorRef.current ?? proposal.teePoint;
+      previewPointRef.current = cursor;
+      renderRoutePreview([...routePointsRef.current, cursor]);
+      return;
+    }
+    const route = [...routePointsRef.current, proposal.teePoint];
+    const pipes = buildBranchKitRoutePreview(proposal, start, route);
+    const existingIds = new Set(hvacElements.map((element) => element.id));
+    // Real identities replace the stored bodies in the overlay, making the
+    // complete network level change visible before the atomic command applies.
+    const coordinatedPipes = plan?.feasible ? plan.updates.filter((element) => (
+      existingIds.has(element.id)
+      && (element.type === 'refrigerant-pipe' || element.type === 'refrigerant-pipe-pair')
+    )) : [];
+    const previewPipes = [...coordinatedPipes, ...pipes];
+    onDraftRouteChange?.(route);
+    onDraftPipesChange?.(overlayOwnsPipePreview ? previewPipes : null);
+    hvacRendererRef.current?.renderElementPreviews([
+      ...(overlayOwnsPipePreview ? [] : previewPipes),
+      { ...proposal.gasGhost.element, id: '__branch-kit-preview__-gas' },
+      { ...proposal.liquidGhost.element, id: '__branch-kit-preview__-liquid' },
+    ], true);
+  }, [hvacElements, hvacRendererRef, onDraftPipesChange, onDraftRouteChange, overlayOwnsPipePreview, renderRoutePreview, requireBranchReview]);
+
   const refreshBranchKitProposal = useCallback((
     cursorPoint: Point2D,
   ): BranchKitProposal | null => {
@@ -711,31 +866,49 @@ export function useRefrigerantPipeTool(
       clearBranchKitProposal();
       return null;
     }
-    const suppress = proposalSuppressRef.current;
-    if (suppress.active) {
-      if (suppress.at && distance(cursorPoint, suppress.at) > 120) {
-        proposalSuppressRef.current = { active: false, at: null };
-      } else {
-        clearBranchKitProposal();
-        return null;
-      }
+    if (isBranchProposalSuppressed(cursorPoint)) {
+      clearBranchKitProposal();
+      return null;
     }
     const proposal = proposeBranchKit(hvacElements, startBundle, cursorPoint, {
       flip: proposalFlipRef.current,
+      proposalRadiusMm: resolveExtensionThresholdMm(),
+      authoredRoute: routePointsRef.current,
     });
     if (!proposal) {
       clearBranchKitProposal();
       return null;
     }
     branchKitProposalRef.current = proposal;
+    branchReviewMessageRef.current = null;
     setBranchKitProposalState({
       teePoint: proposal.teePoint,
       connectionLabel: describeBranchKitConnectionType(proposal.connectionType),
       validity: proposal.validity,
       violations: proposal.violations,
+      orientationLocked: proposal.orientationLocked,
+      notes: proposal.notes,
+      levelSummary: proposal.levelPlan ? {
+        gasElevationMm: proposal.levelPlan.gasElevationMm,
+        liquidElevationMm: proposal.levelPlan.liquidElevationMm,
+        clearGapMm: proposal.levelPlan.clearGapMm,
+        coordinatedRunCount: proposal.levelPlan.coordinatedRunCount,
+        connectedIndoorCount: proposal.levelPlan.connectedIndoorCount,
+        connectedOutdoorCount: proposal.levelPlan.connectedOutdoorCount,
+        transitionCount: proposal.levelPlan.transitionCount,
+        verticalTravelMm: proposal.levelPlan.verticalTravelMm,
+        requiresCoordination: proposal.levelPlan.requiresCoordination,
+        notes: proposal.levelPlan.notes,
+      } : undefined,
     });
     return proposal;
-  }, [clearBranchKitProposal, hvacElements]);
+  }, [clearBranchKitProposal, hvacElements, isBranchProposalSuppressed, resolveExtensionThresholdMm]);
+
+  useEffect(() => {
+    const plan = branchKitProposalRef.current?.levelPlan;
+    if (!plan || isNetworkLevelPlanCurrent(plan, hvacElements)) return;
+    requireBranchReview('Network changed. Move the pointer to review updated levels.', true);
+  }, [hvacElements, requireBranchReview]);
 
   const commitRoute = useCallback((candidateFinalPoint?: PipePlacementPoint) => {
     const routePoints = [...routePointsRef.current];
@@ -935,9 +1108,18 @@ export function useRefrigerantPipeTool(
     if (!proposal || !startBundle || proposal.validity === 'invalid') {
       return false;
     }
+    if (proposal.levelPlan
+      && JSON.stringify(proposal.levelPlan.settings) !== JSON.stringify(getActivePipeRoutingSettings())) {
+      requireBranchReview('Routing settings changed. Move the pointer to review the updated clearance and levels.', true);
+      return false;
+    }
+    if (proposal.levelPlan && !isNetworkLevelPlanCurrent(proposal.levelPlan, hvacElements)) {
+      requireBranchReview('Network changed. Move the pointer to review updated levels.', true);
+      return false;
+    }
     let insertion = null;
     try {
-      insertion = buildBranchKitInsertion(proposal, startBundle, hvacElements);
+      insertion = buildBranchKitInsertion(proposal, startBundle, hvacElements, [...routePointsRef.current, proposal.teePoint]);
     } catch (error) {
       if (debugEnabledRef.current) {
         // eslint-disable-next-line no-console
@@ -946,17 +1128,22 @@ export function useRefrigerantPipeTool(
       insertion = null;
     }
     if (!insertion) {
-      setProcessingStatus('Could not place a branch kit on this run.', false);
+      requireBranchReview('Could not validate this connection. Move along the run or adjust the last waypoint, then review again.');
       return false;
     }
-    const addedIds = commitHvacElementCommand('Insert refrigerant branch kit', {
+    const coordinatesLevels = proposal.levelPlan?.requiresCoordination === true;
+    const addedIds = commitHvacElementCommand(coordinatesLevels
+      ? 'Connect branch and coordinate pipe levels' : 'Insert refrigerant branch kit', {
       add: insertion.elementsToAdd,
       removeIds: insertion.removeElementIds,
+      updates: insertion.updates?.map((element) => ({ id: element.id, updates: element })),
       selectedIds: insertion.kitElementIds,
     });
     if (insertion.kitElementIds.length === 0) setSelectedIds(addedIds);
     setProcessingStatus(
-      `Branch kit connected — ${describeBranchKitConnectionType(proposal.connectionType)}`,
+      coordinatesLevels
+        ? 'Branch connected and network levels coordinated. Undo restores the complete change.'
+        : `Branch kit connected — ${describeBranchKitConnectionType(proposal.connectionType)}`,
       false,
     );
     resetDrawing();
@@ -965,11 +1152,13 @@ export function useRefrigerantPipeTool(
     commitHvacElementCommand,
     hvacElements,
     resetDrawing,
+    requireBranchReview,
     setProcessingStatus,
     setSelectedIds,
   ]);
 
   const flipBranchKitProposal = useCallback(() => {
+    if (branchKitProposalRef.current?.orientationLocked) return;
     proposalFlipRef.current = !proposalFlipRef.current;
     const cursor = lastProposalCursorRef.current ?? previewPointRef.current;
     if (!cursor) {
@@ -981,23 +1170,30 @@ export function useRefrigerantPipeTool(
       // double-click must commit that exact point, not the unsnapped cursor
       // sampled before proposal resolution.
       previewPointRef.current = proposal.teePoint;
-      renderRoutePreview(
-        [...routePointsRef.current, proposal.teePoint],
-        null,
-        null,
-        [proposal.gasGhost.element, proposal.liquidGhost.element],
-      );
+      renderBranchPreview(proposal);
     }
-  }, [refreshBranchKitProposal, renderRoutePreview]);
+  }, [refreshBranchKitProposal, renderBranchPreview]);
 
   const dismissBranchKitProposal = useCallback(() => {
     const cursor = lastProposalCursorRef.current ?? previewPointRef.current;
-    proposalSuppressRef.current = { active: true, at: cursor ?? null };
+    const message = suppressBranchProposal(branchKitProposalRef.current, cursor ?? null);
     clearBranchKitProposal();
     if (cursor && routePointsRef.current.length >= 1) {
       renderRoutePreview([...routePointsRef.current, cursor]);
     }
-  }, [clearBranchKitProposal, renderRoutePreview]);
+    setProcessingStatus(message, false);
+  }, [clearBranchKitProposal, renderRoutePreview, setProcessingStatus, suppressBranchProposal]);
+
+  const continueDraftAtBranchCandidate = useCallback((proposal: BranchKitProposal, point: PipePlacementPoint) => {
+    // Suggestions cannot consume an ordinary waypoint click. This remains an
+    // editable draft; no tee is inserted and the main is never changed here.
+    routePointsRef.current = [...routePointsRef.current, point];
+    previewPointRef.current = null;
+    const message = suppressBranchProposal(proposal, point);
+    clearBranchKitProposal();
+    renderRoutePreview(routePointsRef.current);
+    setProcessingStatus(`Waypoint added. ${message}`, false);
+  }, [clearBranchKitProposal, renderRoutePreview, setProcessingStatus, suppressBranchProposal]);
 
   /**
    * Seed a fresh routing session from an existing bundle connection — an open
@@ -1041,7 +1237,7 @@ export function useRefrigerantPipeTool(
   ]);
 
   const handleMouseDown = useCallback((point: PipePlacementPoint) => {
-    const authoritative3d = typeof point.z === 'number' && Number.isFinite(point.z);
+    const authoritative3d = !planRouting && typeof point.z === 'number' && Number.isFinite(point.z);
     // First click always runs the detection engine: starting near ANY open end
     // (single or pair, gas or liquid) seamlessly continues that run with its real
     // identity — regardless of the toolbar Lines selector or how the tool was
@@ -1050,11 +1246,7 @@ export function useRefrigerantPipeTool(
       const projectedTarget = readProjectedSnapTarget(point);
       if (projectedTarget) {
         beginRouteFromBundle(projectedTarget, {
-          lineMode:
-            projectedTarget.guideReference === 'gas'
-            || projectedTarget.guideReference === 'liquid'
-              ? projectedTarget.guideReference
-              : 'pair',
+          lineMode: resolvePipeStartMode(projectedTarget, pipeLineMode, hvacElements),
         });
         return;
       }
@@ -1144,19 +1336,29 @@ export function useRefrigerantPipeTool(
 
     // A live, valid branch-kit proposal: clicking accepts it (inserts the
     // coordinated gas/liquid kits + inline-splits the tapped run). Only for a
-    // fresh pair draw — never on a single line, and never mid-extension (a
-    // session line-mode override), so a placement click during an extension can
-    // never silently drop a branch kit before the user commits with Enter.
-    const proposal =
-      !authoritative3d && sessionLineModeRef.current === null && pipeLineMode === 'pair'
-        ? branchKitProposalRef.current
-        : null;
-    if (proposal && proposal.validity !== 'invalid') {
-      if (acceptBranchKitProposal()) {
-        return;
+    // pair route or continuation. Refresh at the click so acceptance uses the
+    // same physical fitting proposal shown for that location.
+    const proposal = canOfferPipeBranch({
+      planRouting,
+      lineMode: sessionLineModeRef.current ?? pipeLineMode,
+      hasStart: Boolean(startBundleRef.current),
+      hasEndpointSnap: Boolean(bundle),
+      freePointer: altPressedRef.current,
+    }) ? refreshBranchKitProposal(snappedPoint) : null;
+    if (proposal) {
+      if (proposal.validity !== 'invalid') {
+        const accepted = acceptBranchKitProposal();
+        const rejected = branchKitProposalRef.current;
+        // A failed final geometry check also leaves drawing available. Stale
+        // network/settings previews clear the proposal and retain their guard.
+        if (!accepted && rejected?.validity === 'invalid') {
+          continueDraftAtBranchCandidate(rejected, snappedPoint);
+        }
+      } else {
+        continueDraftAtBranchCandidate(proposal, snappedPoint);
       }
+      return;
     }
-
     routePointsRef.current = [...routePointsRef.current, snappedPoint];
     previewPointRef.current = null;
     clearBranchKitProposal();
@@ -1167,10 +1369,14 @@ export function useRefrigerantPipeTool(
     clearBranchKitProposal,
     clearPreview,
     commitRoute,
+    continueDraftAtBranchCandidate,
     hvacElements,
     logDebug,
     onDraftRouteChange,
     pipeLineMode,
+    planRouting,
+    refreshBranchKitProposal,
+    setProcessingStatus,
     renderDebugOverlays,
     renderRoutePreview,
     renderSnapMarkers,
@@ -1179,8 +1385,9 @@ export function useRefrigerantPipeTool(
   ]);
 
   const handleMouseMove = useCallback((point: PipePlacementPoint) => {
-    const authoritative3d = typeof point.z === 'number' && Number.isFinite(point.z);
+    const authoritative3d = !planRouting && typeof point.z === 'number' && Number.isFinite(point.z);
     const { point: snappedPoint, bundle, source } = snapPoint(point, true);
+    isBranchProposalSuppressed(point);
     renderDebugOverlays(bundle, snappedPoint, source);
     if (bundle && source !== 'model') {
       logDebug('NON_MODEL_SNAP_SOURCE', {
@@ -1259,28 +1466,24 @@ export function useRefrigerantPipeTool(
     // When not snapping to an explicit endpoint, look for a branch-kit tee on a
     // nearby run and show the dashed ghost kits + route. Otherwise plain route.
     // A branch kit is inherently a coordinated gas+liquid insertion, so it is
-    // only offered while laying a fresh pair — never on a single line, and never
-    // while EXTENDING an existing run (a session line-mode override marks an
-    // extension: it continues that run, it does not tap another).
-    const proposal =
-      bundle || authoritative3d || sessionLineModeRef.current !== null || pipeLineMode !== 'pair'
-        ? null
-        : refreshBranchKitProposal(snappedPoint);
+    // offered for a pair route or continuation. Endpoint snaps take priority;
+    // Alt gives the user an uninterrupted free-drawing override.
+    const proposal = canOfferPipeBranch({
+      planRouting,
+      lineMode: sessionLineModeRef.current ?? pipeLineMode,
+      hasStart: Boolean(startBundleRef.current),
+      hasEndpointSnap: Boolean(bundle),
+      freePointer: altPressedRef.current,
+    }) ? refreshBranchKitProposal(snappedPoint) : null;
     if (proposal) {
-      renderRoutePreview(
-        [...routePointsRef.current, proposal.teePoint],
-        null,
-        null,
-        [proposal.gasGhost.element, proposal.liquidGhost.element],
-      );
+      previewPointRef.current = proposal.teePoint;
+      renderBranchPreview(proposal);
       setProcessingStatus(
         `Branch kit · ${describeBranchKitConnectionType(proposal.connectionType)}`,
         false,
       );
     } else {
-      if (bundle) {
-        clearBranchKitProposal();
-      }
+      clearBranchKitProposal();
       renderRoutePreview(
         [...routePointsRef.current, snappedPoint],
         bundle,
@@ -1293,7 +1496,9 @@ export function useRefrigerantPipeTool(
       setProcessingStatus(
         bundle
           ? `${readout} · ${formatPortTooltip(bundle, resolveBundleHoverSelection(bundle, point))}`
-          : readout,
+          : proposalSuppressRef.current.active && proposalSuppressRef.current.reviewMessage
+            ? proposalSuppressRef.current.reviewMessage
+            : readout,
         false,
       );
     }
@@ -1301,9 +1506,12 @@ export function useRefrigerantPipeTool(
     clearBranchKitProposal,
     clearPreview,
     hvacElements,
+    isBranchProposalSuppressed,
     logDebug,
     pipeLineMode,
+    planRouting,
     refreshBranchKitProposal,
+    renderBranchPreview,
     renderDebugOverlays,
     renderRoutePreview,
     renderSnapMarkers,
@@ -1312,13 +1520,32 @@ export function useRefrigerantPipeTool(
     snapPoint,
   ]);
 
-  const handleDoubleClick = useCallback(() => {
-    void commitRoute(previewPointRef.current ?? undefined);
-  }, [commitRoute]);
+  const finishRoute = useCallback((): boolean => {
+    if (branchReviewMessageRef.current) {
+      setProcessingStatus(branchReviewMessageRef.current, false);
+      return true;
+    }
+    const action = resolvePipeFinishAction(branchKitProposalRef.current?.validity);
+    if (action === 'branch') {
+      acceptBranchKitProposal();
+      return true;
+    }
+    if (action === 'blocked') {
+      setProcessingStatus(branchKitProposalRef.current?.violations[0] ?? 'Move along the run to fit the branch kit.', false);
+      return true;
+    }
+    return commitRoute(previewPointRef.current ?? undefined);
+  }, [acceptBranchKitProposal, commitRoute, setProcessingStatus]);
+
+  const handleDoubleClick = useCallback(() => { void finishRoute(); }, [finishRoute]);
 
   const cancelDrawing = useCallback(() => {
+    const hadActiveRoute = routePointsRef.current.length > 0;
     resetDrawing();
-  }, [resetDrawing]);
+    if (hadActiveRoute) {
+      setProcessingStatus('Pipe route cancelled.', false);
+    }
+  }, [resetDrawing, setProcessingStatus]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
     if (event.key === 'Shift') {
@@ -1329,21 +1556,19 @@ export function useRefrigerantPipeTool(
       altPressedRef.current = true;
       return false;
     }
-    if (event.key === 'Escape') {
-      if (routePointsRef.current.length === 0) {
-        return false;
-      }
-      if (routePointsRef.current.length >= 2) {
-        return commitRoute();
-      }
+    const commandAction = resolvePipeCommandKeyAction(
+      event.key,
+      routePointsRef.current.length,
+    );
+    if (commandAction === 'cancel') {
       cancelDrawing();
       return true;
     }
-    if (event.key === 'Enter') {
-      return commitRoute(previewPointRef.current ?? undefined);
+    if (commandAction === 'commit') {
+      return finishRoute();
     }
     return false;
-  }, [cancelDrawing, commitRoute]);
+  }, [cancelDrawing, finishRoute]);
 
   const handleKeyUp = useCallback((event: KeyboardEvent) => {
     if (event.key === 'Shift') {

@@ -19,6 +19,7 @@
  */
 
 import type { ManufacturerRuleProfile } from "../../../vrf/rules";
+import { isVerifiedManufacturerValue } from "../../../vrf/rules/rule-profile";
 import { PX_TO_MM } from "../scale";
 
 import {
@@ -49,6 +50,10 @@ export const DEFAULT_PIPE_ROUTING_ELEVATION_MM = 2600;
  * bodies, run ends and other kits.
  */
 export interface PipeRoutingSettings {
+  /** Inspection presentation only; fitting insulation is still part of the installation. */
+  fittingDisplay: 'copper' | 'insulated';
+  /** Verified profile constraint; a smaller unqualified socket elbow is not substituted. */
+  minimumFieldBendRadiusMm: number;
   /** Clear gap between the *insulated* gas and liquid pipes of one bundle. */
   defaultPipeGapMm: number;
   /** Straight copper reserved along an equipment port normal before the first bend. */
@@ -100,6 +105,8 @@ export interface PipeRoutingSettings {
  * pixel-identical until a value is explicitly changed.
  */
 export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
+  fittingDisplay: 'copper',
+  minimumFieldBendRadiusMm: 0,
   defaultPipeGapMm: DEFAULT_REFRIGERANT_PIPE_GAP_MM, // 1" = 25.4 mm
   minimumPortStubMm: 200,
   defaultWallClearanceMm: 50,
@@ -138,6 +145,10 @@ export function resolvePipeRoutingSettings(
   (Object.keys(DEFAULT_PIPE_ROUTING_SETTINGS) as Array<keyof PipeRoutingSettings>).forEach(
     (key) => {
       const value = partial[key];
+      if (key === "fittingDisplay") {
+        if (value === 'copper' || value === 'insulated') merged.fittingDisplay = value;
+        return;
+      }
       if (key === "bypassFittingAngleDeg") {
         if (value === 45 || value === 90) {
           merged.bypassFittingAngleDeg = value;
@@ -180,6 +191,8 @@ export function routingSettingsFromRuleProfile(
     .filter((value): value is number => Number.isFinite(value))
     .reduce((maximum, value) => Math.max(maximum, value), 0);
   return {
+    minimumFieldBendRadiusMm: isVerifiedManufacturerValue(profile.portDefaults.minimumBendRadiusMm)
+      ? profile.portDefaults.minimumBendRadiusMm.value : 0,
     minimumPortStubMm: profile.portDefaults.minimumStraightStubMm.value,
     defaultUnitClearanceMm: profile.portDefaults.serviceClearanceMm.value,
     ...(straightZone > 0 ? { defaultBranchKitClearanceMm: straightZone } : {}),

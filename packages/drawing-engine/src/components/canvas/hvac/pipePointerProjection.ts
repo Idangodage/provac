@@ -316,6 +316,23 @@ export function applyPipeAxisConstraint(
 }
 
 /**
+ * A semantic snap may only win while an axis lock is displayed if its model
+ * point lies on that axis. This prevents a nearby port from silently overriding
+ * Shift/X/Y/Z intent while the HUD still claims the route is constrained.
+ */
+export function pointSatisfiesPipeAxisConstraint(
+  start: THREE.Vector3,
+  candidate: THREE.Vector3,
+  constraint: PipeAxisConstraint,
+  plane: PipeDrawingPlane,
+  toleranceMm = 0.25,
+): boolean {
+  if (constraint === 'none') return true;
+  const constrained = applyPipeAxisConstraint(start, candidate, constraint, plane);
+  return constrained.distanceTo(candidate) <= Math.max(0, toleranceMm);
+}
+
+/**
  * Closest point on an infinite world axis to the current pointer ray. This is
  * the correct way to drive a Z riser (or an explicit axis handle) from any
  * camera angle; projecting a horizontal-plane hit onto Z cannot create an

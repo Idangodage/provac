@@ -7,6 +7,9 @@
 
 "use client";
 
+// Bundler-replaced NODE_ENV literal (this package compiles without node types).
+declare const process: { env: { NODE_ENV?: string } };
+
 import * as fabric from "fabric";
 import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { shallow } from "zustand/shallow";
@@ -68,6 +71,7 @@ import {
   cycleBoardUnit,
   type BoardUnit,
 } from "./canvas/board";
+import { worldToScreenFromFabricViewport } from "./canvas/coordinateTransform";
 import { useVrfLiveValidation } from "./canvas/hooks/useVrfLiveValidation";
 import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
@@ -86,6 +90,7 @@ import { routingSettingsFromRuleProfile } from "./canvas/hvac/pipeRoutingSetting
 import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
+  getRefrigerantPipeBundleSnapTargets,
   isRefrigerantPipeElementType,
   resolveRefrigerantPipeBranchKitReconnectionUpdates,
   resolveRefrigerantPipePairSpec,
@@ -149,6 +154,19 @@ type HybridAnchorScreen = {
   width: number;
   height: number;
 };
+
+type BoardCameraSnapshot = { zoom: number; pan: Point2D };
+
+function matchesBoardCameraSnapshot(
+  snapshot: BoardCameraSnapshot | null,
+  zoom: number,
+  pan: Point2D,
+): boolean {
+  return snapshot !== null &&
+    Math.abs(snapshot.zoom - zoom) / Math.max(zoom, 1e-9) < 1e-4 &&
+    Math.abs(snapshot.pan.x - pan.x) * zoom < 0.5 &&
+    Math.abs(snapshot.pan.y - pan.y) * zoom < 0.5;
+}
 
 type Vector3Like = {
   x: number;
@@ -278,6 +296,11 @@ function _stabilizeHybridAnchor(
 // Component
 // =============================================================================
 
+// Stable defaults keep view-only React updates from invalidating the complete
+// 3D geometry cache when a drawing has no optional object/equipment catalog.
+const EMPTY_OBJECT_DEFINITIONS: ArchitecturalObjectDefinition[] = [];
+const EMPTY_EQUIPMENT_DEFINITIONS: NonNullable<DrawingCanvasProps["equipmentDefinitions"]> = [];
+
 export function DrawingCanvas({
   className = "",
   gridSize,
@@ -297,8 +320,8 @@ export function DrawingCanvas({
   gridSubdivisions = 10,
   backgroundColor = "transparent",
   onCanvasReady,
-  objectDefinitions = [],
-  equipmentDefinitions = [],
+  objectDefinitions = EMPTY_OBJECT_DEFINITIONS,
+  equipmentDefinitions = EMPTY_EQUIPMENT_DEFINITIONS,
   pendingPlacementObjectId = null,
   pendingPlacementEquipmentId = null,
   onObjectPlaced,
@@ -673,6 +696,34 @@ export function DrawingCanvas({
   );
   const projectionViewOnly = hybridViewOnly;
   const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile);
+  // Dev-only scripted-verification handle; the literal NODE_ENV test lets
+  // bundlers strip the block from production builds.
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development" || typeof window === "undefined") {
+      return undefined;
+    }
+    const root = window as unknown as Record<string, unknown>;
+    root.__PROVACX_DEBUG__ = {
+      getHvacElements: () => hvacElements,
+      getVrfReport: () => vrfValidationReport,
+      getPipeSnapTargets: () => getRefrigerantPipeBundleSnapTargets(hvacElements),
+      getPipeVisual: (elementId: string) => {
+        const target = hvacElements.find((candidate) => candidate.id === elementId);
+        return target ? buildRefrigerantPipeVisual(target, hvacElements) : null;
+      },
+      worldToClient: (point: { x: number; y: number }) => {
+        if (!fabricCanvas) return null;
+        const viewport = fabricCanvas.viewportTransform;
+        if (!viewport) return null;
+        const screen = worldToScreenFromFabricViewport(point, viewport as unknown as readonly [number, number, number, number, number, number]);
+        const rect = fabricCanvas.getElement().getBoundingClientRect();
+        return { x: rect.left + screen.x, y: rect.top + screen.y };
+      },
+    };
+    return () => {
+      delete root.__PROVACX_DEBUG__;
+    };
+  }, [fabricCanvas, hvacElements, vrfValidationReport]);
   const appliedVrfProfileRoutingKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!vrfRuleProfile) {
@@ -772,25 +823,29 @@ export function DrawingCanvas({
   const pageHeightMm = pageConfig.height * PX_TO_MM;
   const hybridDrawingBounds = useMemo(() => {
     const points: Point2D[] = [];
+    const addPoint = (point: Point2D | null | undefined): void => {
+      if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+        points.push({ x: point.x, y: point.y });
+      }
+    };
     rooms.forEach((room) => {
-      points.push(...room.vertices);
-      room.holes?.forEach((hole) => points.push(...hole));
+      room.vertices.forEach(addPoint);
+      room.holes?.forEach((hole) => hole.forEach(addPoint));
     });
     walls.forEach((wall) => {
-      points.push(wall.startPoint, wall.endPoint);
+      addPoint(wall.startPoint);
+      addPoint(wall.endPoint);
     });
     hvacElements.forEach((element) => {
-      points.push(
-        element.position,
-        { x: element.position.x + element.width, y: element.position.y },
-        {
-          x: element.position.x + element.width,
-          y: element.position.y + element.depth,
-        },
-        { x: element.position.x, y: element.position.y + element.depth },
-      );
+      addPoint(element.position);
+      addPoint({ x: element.position.x + element.width, y: element.position.y });
+      addPoint({
+        x: element.position.x + element.width,
+        y: element.position.y + element.depth,
+      });
+      addPoint({ x: element.position.x, y: element.position.y + element.depth });
     });
-    symbols.forEach((symbol) => points.push(symbol.position));
+    symbols.forEach((symbol) => addPoint(symbol.position));
 
     if (points.length === 0) {
       return {
@@ -823,12 +878,8 @@ export function DrawingCanvas({
       radius: Math.max(width, height, Math.hypot(width, height) / 2),
     };
   }, [hvacElements, pageHeightMm, pageWidthMm, rooms, symbols, walls]);
-  // Seamless 2D↔3D handoff: the flat plan tilts IN SYNC with the camera-controls
-  // polar via a pure `rotateX` (orthographic foreshortening — no translate/scale/
-  // perspective — so it foreshortens exactly like the ortho 3D scene) and fades
-  // out over the same range the 3D fades in. Because both views share the tilt,
-  // pivot and grid density, there is no jump at the boundary. `pitchDeg` mirrors
-  // the live polar angle in degrees (set by handleHybridPolarChange).
+  // The render pump owns the exact sheet projection and opacity. React only
+  // switches editing and screen chrome at the flat/engaged boundary.
   const planLayerOpacity = clampNumber(1 - hybridView.blend, 0, 1);
   const projectionPlaneStyle = useMemo(
     () => ({
@@ -839,12 +890,15 @@ export function DrawingCanvas({
       // imperatively there, never through React, so the sheet moves in the
       // same frame as the 3D scene and the drawing stays glued to the paper.
       transformOrigin: "0 0" as const,
-      willChange: "transform, opacity" as const,
+      willChange:
+        planLayerOpacity < 0.999 || hybridView.isInteracting
+          ? ("transform, opacity" as const)
+          : ("auto" as const),
       // Sit above the 3D canvas (z-0) so the crisp DOM overlays the 3D scene while
       // flat; as it fades on tilt, the 3D grid + content (below) take over.
       zIndex: 1 as const,
     }),
-    [],
+    [hybridView.isInteracting, planLayerOpacity],
   );
 
   const objectDefinitionsById = useMemo(
@@ -1030,6 +1084,10 @@ export function DrawingCanvas({
 
   const resetHybridView = useCallback(() => {
     hybridDragRef.current = null;
+    if (hybridControllerRef.current) {
+      hybridControllerRef.current.resetToPlan(true);
+      return;
+    }
     commitHybridView((previous) => ({
       ...previous,
       isInteracting: false,
@@ -1055,18 +1113,18 @@ export function DrawingCanvas({
   }, [commitHybridView, hybridDrawingBounds.center, hybridDrawingBounds.radius]);
 
   const handleHybridWebglUnavailable = useCallback(() => {
-    resetHybridView();
-  }, [resetHybridView]);
+    // The render pump has stopped, so a camera transition cannot publish the
+    // flat state. Restore the editable plan directly for this fallback.
+    hybridDragRef.current = null;
+    animateHybridBlend(0);
+  }, [animateHybridBlend]);
 
-  // camera-controls (in HybridProjectionLayer) owns the RMB tilt now. The DOM↔3D
-  // cross-dissolve `blend` derives from the live polar angle it reports: the flat
-  // 2D board fades out over the first few degrees of tilt as the 3D scene fades in.
+  // Keep React out of the per-frame camera animation. Presentation is written
+  // by the render pump; this coarse state only locks editing and screen chrome.
   const handleHybridPolarChange = useCallback(
     (polar: number) => {
-      // Hand the flat DOM off to the 3D scene within the first few degrees of tilt,
-      // near top-down where the two match — beyond that everything is the one 3D
-      // scene (grid + objects) orbiting together.
-      const blend = clampNumber(polar / (4 * (Math.PI / 180)), 0, 1);
+      const blend = polar > 0.03 * (Math.PI / 180) ? 1 : 0;
+      if (hybridViewRef.current.blend === blend) return;
       commitHybridView((previous) => {
         if (Math.abs(previous.blend - blend) < 0.0005) return previous;
         return { ...previous, blend, isInteracting: blend > 0.001 };
@@ -1252,8 +1310,15 @@ export function DrawingCanvas({
   }, [safePaperPerRealRatio, setInteractionViewTransform, setPanOffset, zoom]);
 
   useEffect(() => {
+    const documentViewportZoom = documentZoom * safePaperPerRealRatio;
+    // An earlier camera publication can reach React after the live camera has
+    // advanced. Do not let that echo roll the interaction store/Fabric back.
+    if (
+      matchesBoardCameraSnapshot(lastPublishedCameraViewRef.current, documentViewportZoom, documentPanOffset) &&
+      !matchesBoardCameraSnapshot(lastCameraViewRef.current, documentViewportZoom, documentPanOffset)
+    ) return;
     setInteractionViewTransform(documentZoom, documentPanOffset);
-  }, [documentZoom, documentPanOffset, setInteractionViewTransform]);
+  }, [documentZoom, documentPanOffset, safePaperPerRealRatio, setInteractionViewTransform]);
 
   const {
     projectPointToSegment,
@@ -1383,6 +1448,7 @@ export function DrawingCanvas({
   // The studio overlay renders the live draw preview as its own pair, so the
   // draw tool feeds it the route here (imperatively — only the overlay re-renders).
   const pipeStudioOverlayRef = useRef<PipeStudioOverlayHandle | null>(null);
+  const hybridPlanPaintPendingRef = useRef(false);
   const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the
   // live camera-controls tilt controller (for the explicit 2D/3D toggle).
@@ -1401,6 +1467,9 @@ export function DrawingCanvas({
     setInteractionViewMode(CAMERA_TO_INTERACTION_VIEW[view]);
     hybridControllerRef.current?.setCameraView(view, true);
   }, []);
+  const fitCameraContent = useCallback(() => {
+    hybridControllerRef.current?.fitContent(undefined, true);
+  }, []);
   const handleCommitHybridPipeRouteEdit = useCallback(
     (elementId: string, routeNodes3d: PipeRouteNode3D[]) => {
       const element = hvacElements.find((candidate) => candidate.id === elementId);
@@ -1412,6 +1481,9 @@ export function DrawingCanvas({
       const properties: Record<string, unknown> = {
         ...routed.properties,
         routeNodes3d: routeNodes3d.map((node) => ({ ...node })),
+        // An explicit 3D edit becomes an authored constraint for later plans.
+        networkLevelLocked: true,
+        networkLevelPlan: undefined,
       };
       if (element.type === "refrigerant-pipe") {
         properties.centerline_start = routePoints[0];
@@ -1440,7 +1512,9 @@ export function DrawingCanvas({
   );
   // Last view the CAMERA wrote to the board — the store→camera bridge uses it
   // to tell camera echoes apart from external (toolbar/fit) view changes.
-  const lastCameraViewRef = useRef<{ zoom: number; pan: Point2D } | null>(null);
+  const lastCameraViewRef = useRef<BoardCameraSnapshot | null>(null);
+  const lastPublishedCameraViewRef = useRef<BoardCameraSnapshot | null>(null);
+  const cameraStorePublicationPendingRef = useRef(false);
   // Pan tool / space-drag route: truck the CAMERA (the one navigation owner);
   // the Fabric viewport derives from it in the same render-pump frame.
   const handlePanViewportByPixels = useCallback((dxPx: number, dyPx: number) => {
@@ -1452,9 +1526,17 @@ export function DrawingCanvas({
   // frame; commit to the store once per rAF (same contract the old fabric
   // wheel/pan path used, so every downstream consumer keeps working).
   const applyDerivedHybridView = useCallback(
-    (derived: DerivedBoardView) => {
+    (derived: DerivedBoardView, synchronousPaint = false) => {
       const canvas = fabricRef.current;
       if (!canvas) return;
+      if (
+        !Number.isFinite(derived.zoom) ||
+        derived.zoom <= 0 ||
+        !Number.isFinite(derived.panPxX) ||
+        !Number.isFinite(derived.panPxY)
+      ) {
+        return;
+      }
       const nextZoom = Math.max(derived.zoom, 1e-6);
       const nextPan = {
         x: -derived.panPxX / nextZoom,
@@ -1465,19 +1547,49 @@ export function DrawingCanvas({
         Math.abs(panOffsetRef.current.x - nextPan.x) * nextZoom,
         Math.abs(panOffsetRef.current.y - nextPan.y) * nextZoom,
       );
-      // No-op guard: sub-hundredth-pixel deltas are float noise.
-      if (zoomDelta < 1e-7 && panDeltaPx < 0.01) return;
-      canvas.setViewportTransform(buildViewportTransform(nextZoom, nextPan));
-      canvas.requestRenderAll();
+      // Paint and store publication have different clocks. A no-op paint may
+      // still be the settled endpoint of a deferred camera transition.
+      const viewChanged = zoomDelta >= 1e-7 || panDeltaPx >= 0.01;
+      if (!viewChanged) {
+        // A hidden-plan update may still be waiting for Fabric's next frame
+        // when the user returns to plan. Finish that paint before revealing it.
+        if (synchronousPaint && hybridPlanPaintPendingRef.current) canvas.renderAll();
+      } else {
+        const nextViewport = buildViewportTransform(nextZoom, nextPan);
+        canvas.setViewportTransform(nextViewport);
+        pipeStudioOverlayRef.current?.syncViewTransform(nextViewport);
+        if (synchronousPaint) canvas.renderAll();
+        else {
+          hybridPlanPaintPendingRef.current = true;
+          canvas.requestRenderAll();
+        }
+        cameraStorePublicationPendingRef.current = true;
+      }
       zoomRef.current = nextZoom;
       panOffsetRef.current = nextPan;
       lastCameraViewRef.current = { zoom: nextZoom, pan: nextPan };
       wheelPendingZoom.current = nextZoom / safePaperPerRealRatio;
       wheelPendingPan.current = nextPan;
-      setInteractionViewTransform(wheelPendingZoom.current, nextPan);
+      if (hybridControllerRef.current?.isTransitioning) {
+        if (wheelRafId.current !== null) {
+          cancelAnimationFrame(wheelRafId.current);
+          wheelRafId.current = null;
+        }
+        return;
+      }
+      if (!cameraStorePublicationPendingRef.current) return;
       if (!wheelRafId.current) {
         wheelRafId.current = requestAnimationFrame(() => {
           wheelRafId.current = null;
+          // A new view request may have begun between queuing and this frame.
+          if (hybridControllerRef.current?.isTransitioning) return;
+          if (!cameraStorePublicationPendingRef.current) return;
+          cameraStorePublicationPendingRef.current = false;
+          lastPublishedCameraViewRef.current = {
+            zoom: wheelPendingZoom.current * safePaperPerRealRatio,
+            pan: { ...wheelPendingPan.current },
+          };
+          setInteractionViewTransform(wheelPendingZoom.current, wheelPendingPan.current);
           setViewTransform(wheelPendingZoom.current, wheelPendingPan.current);
         });
       }
@@ -1490,13 +1602,26 @@ export function DrawingCanvas({
   useEffect(() => {
     const controller = hybridControllerRef.current;
     if (!controller) return;
-    const last = lastCameraViewRef.current;
+    if (
+      !Number.isFinite(viewportZoom) ||
+      viewportZoom <= 0 ||
+      !Number.isFinite(panOffset.x) ||
+      !Number.isFinite(panOffset.y)
+    ) {
+      return;
+    }
     const isCameraEcho =
-      last !== null &&
-      Math.abs(last.zoom - viewportZoom) / Math.max(viewportZoom, 1e-9) < 1e-4 &&
-      Math.abs(last.pan.x - panOffset.x) * viewportZoom < 0.5 &&
-      Math.abs(last.pan.y - panOffset.y) * viewportZoom < 0.5;
+      matchesBoardCameraSnapshot(lastCameraViewRef.current, viewportZoom, panOffset) ||
+      matchesBoardCameraSnapshot(lastPublishedCameraViewRef.current, viewportZoom, panOffset);
     if (isCameraEcho) return;
+    // A different store view is a real external navigation command. Honor it
+    // immediately and prevent a queued camera publication overwriting it.
+    cameraStorePublicationPendingRef.current = false;
+    lastPublishedCameraViewRef.current = null;
+    if (wheelRafId.current !== null) {
+      cancelAnimationFrame(wheelRafId.current);
+      wheelRafId.current = null;
+    }
     const pxPerMm = MM_TO_PX * Math.max(viewportZoom, 1e-9);
     const centerWorld = modelPointToWorld({
       x: (hostWidth / 2 + panOffset.x * viewportZoom) / pxPerMm,
@@ -1531,7 +1656,7 @@ export function DrawingCanvas({
   }, []);
   // Snap-hover indicator: the tool forwards the detected snap point; the overlay
   // renders it with the same endpoint-handle bullseye a committed pipe shows.
-  const handleSnapIndicator = useCallback((point: Point2D | null) => {
+  const handleSnapIndicator = useCallback((point: (Point2D & { label?: string }) | null) => {
     pipeStudioOverlayRef.current?.setSnapIndicator(point);
   }, []);
 
@@ -1554,6 +1679,7 @@ export function DrawingCanvas({
     pipeMaterialMode: refrigerantPipeDrawMode,
     pipeAngleMode: refrigerantPipeAngleMode,
     pipeLineMode: refrigerantPipeLineMode,
+    planRouting: !projectionViewOnly,
     hvacElements,
     zoom: viewportZoom,
     snapToGrid: resolvedSnapToGrid,
@@ -1656,6 +1782,8 @@ export function DrawingCanvas({
               properties: {
                 ...element.properties,
                 routeNodes3d: nextNodes,
+                networkLevelLocked: true,
+                networkLevelPlan: undefined,
               },
             });
             continue;
@@ -1681,6 +1809,9 @@ export function DrawingCanvas({
           const movedElement = {
             ...element,
             elevation: element.elevation + dzMm,
+            ...(element.type === "refrigerant-branch-kit"
+              ? { properties: { ...element.properties, networkLevelLocked: true } }
+              : {}),
           };
           updatesById.set(element.id, movedElement);
           const connectedPipeUpdates = [
@@ -2254,6 +2385,7 @@ export function DrawingCanvas({
     // the live viewportTransform into the SVG pipe overlay so pipes/kits move
     // in the SAME frame as walls — never trailing the rAF-deferred store.
     const syncOverlayViewTransform = () => {
+      hybridPlanPaintPendingRef.current = false;
       const vpt = canvas.viewportTransform;
       if (vpt) pipeStudioOverlayRef.current?.syncViewTransform(vpt);
     };
@@ -2762,7 +2894,9 @@ export function DrawingCanvas({
           />
           <PipeStudioOverlay
             ref={pipeStudioOverlayRef}
-            enabled={!projectionViewOnly}
+            ruleProfile={vrfRuleProfile}
+            enabled
+            interactive={!projectionViewOnly}
             width={hostWidth}
             height={hostHeight}
             viewportZoom={viewportZoom}
@@ -2777,8 +2911,9 @@ export function DrawingCanvas({
             onBeginExtendRoute={handleBeginExtendRoute}
           />
           <VrfValidationOverlay
-            enabled
-            showMarkers={!projectionViewOnly}
+            enabled={!projectionViewOnly}
+            showMarkers={!drawingToolActive}
+            showSummary={false}
             width={hostWidth}
             height={hostHeight}
             viewportZoom={viewportZoom}
@@ -2803,6 +2938,8 @@ export function DrawingCanvas({
             tool === "refrigerant-pipe" &&
             refrigerantBranchKitProposal && (
               <PipeBranchKitProposalCard
+                viewportWidth={hostWidth}
+                viewportHeight={hostHeight}
                 screenX={
                   -panOffset.x * viewportZoom +
                   viewportZoom * refrigerantBranchKitProposal.teePoint.x * MM_TO_PX
@@ -2814,6 +2951,9 @@ export function DrawingCanvas({
                 connectionLabel={refrigerantBranchKitProposal.connectionLabel}
                 validity={refrigerantBranchKitProposal.validity}
                 violations={refrigerantBranchKitProposal.violations}
+                orientationLocked={refrigerantBranchKitProposal.orientationLocked}
+                notes={refrigerantBranchKitProposal.notes}
+                levelSummary={refrigerantBranchKitProposal.levelSummary}
                 onAccept={acceptRefrigerantBranchKit}
                 onFlip={flipRefrigerantBranchKit}
                 onDismiss={dismissRefrigerantBranchKit}
@@ -2848,6 +2988,18 @@ export function DrawingCanvas({
             snapped={cursorSnapActive}
           />
         </div>
+        <VrfValidationOverlay
+          enabled={tool === "select"}
+          showMarkers={false}
+          width={hostWidth}
+          height={hostHeight}
+          viewportZoom={viewportZoom}
+          panOffset={panOffset}
+          hvacElements={hvacElements}
+          report={vrfValidationReport}
+          onSelectElement={(elementId) => setSelectedIds([elementId])}
+          onApplyFix={handleApplyVrfValidationFix}
+        />
         <HybridProjectionLayer
           width={hostWidth}
           height={hostHeight}
@@ -3064,8 +3216,7 @@ export function DrawingCanvas({
           // Rulers are axis-aligned world X/Y strips — hidden while the plan
           // is azimuth-rotated (they'd read wrong), like at high tilt.
           opacity: isViewRotated ? 0 : planLayerOpacity,
-          transition:
-            hybridView.blend > 0 || isViewRotated ? "opacity 120ms linear" : undefined,
+          transition: "opacity 160ms ease-out",
           pointerEvents: projectionViewOnly ? "none" : undefined,
         }}
       >
@@ -3086,7 +3237,10 @@ export function DrawingCanvas({
 
       {/* SketchUp-style explicit view toggle: camera-only SmoothDamp tween via
           camera-controls — the model never moves. RMB tilt remains available. */}
-      <div className="absolute right-3 top-8 z-[30] flex overflow-hidden rounded-md border border-slate-300 bg-white/95 text-[11px] font-semibold text-slate-600 shadow-sm">
+      <div
+        className="absolute right-3 top-8 z-[30] flex max-w-[calc(100%-1.5rem)] overflow-x-auto whitespace-nowrap rounded-md border border-slate-300 bg-white/95 text-[11px] font-semibold text-slate-600 shadow-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        aria-label="Drawing view controls"
+      >
         {([
           ["plan", "Plan"],
           ["front", "Front"],
@@ -3100,8 +3254,9 @@ export function DrawingCanvas({
               key={cameraView}
               type="button"
               title={`${label} manipulation view`}
+              aria-pressed={active}
               onClick={() => setCameraView(cameraView)}
-              className={`px-2.5 py-1 transition-colors ${
+              className={`shrink-0 px-2.5 py-1 transition-colors ${
                 active ? "bg-slate-800 text-white" : "hover:bg-slate-100"
               }`}
             >
@@ -3111,9 +3266,17 @@ export function DrawingCanvas({
         })}
         <button
           type="button"
+          title="Fit all visible drawing content"
+          onClick={fitCameraContent}
+          className="shrink-0 border-l border-slate-300 px-2.5 py-1 transition-colors hover:bg-slate-100"
+        >
+          Fit
+        </button>
+        <button
+          type="button"
           title="View style: Solid → X-ray → Wire (X)"
           onClick={cycleViewStyle}
-          className={`border-l border-slate-300 px-2.5 py-1 capitalize transition-colors ${
+          className={`shrink-0 border-l border-slate-300 px-2.5 py-1 capitalize transition-colors ${
             viewStyle !== "solid" ? "bg-[#4f8cff] text-white" : "hover:bg-slate-100"
           }`}
         >

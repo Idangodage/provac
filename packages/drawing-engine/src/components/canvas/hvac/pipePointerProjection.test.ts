@@ -9,6 +9,7 @@ import {
   getPointerNDC,
   intersectRayWithDrawingTarget,
   intersectPointerRayWithAxis,
+  pointSatisfiesPipeAxisConstraint,
   planeLocalToWorld,
   projectPointerToDrawingPlane,
   resolveActiveDrawingPlane,
@@ -149,6 +150,27 @@ describe('constraints and snap priority', () => {
     expect(applyPipeAxisConstraint(start, candidate, 'local-x', plane).toArray()).toEqual([45, 20, 30]);
     expect(applyPipeAxisConstraint(start, candidate, 'local-y', plane).toArray()).toEqual([10, 80, 30]);
     expect(applyPipeAxisConstraint(start, candidate, 'world-z', plane).toArray()).toEqual([10, 20, 95]);
+  });
+
+  it('rejects semantic snaps that would silently override an active axis lock', () => {
+    expect(pointSatisfiesPipeAxisConstraint(
+      start,
+      new THREE.Vector3(100, 20.1, 30),
+      'local-x',
+      plane,
+    )).toBe(true);
+    expect(pointSatisfiesPipeAxisConstraint(
+      start,
+      new THREE.Vector3(100, 21, 30),
+      'local-x',
+      plane,
+    )).toBe(false);
+    expect(pointSatisfiesPipeAxisConstraint(
+      start,
+      new THREE.Vector3(10, 20, 100),
+      'world-z',
+      plane,
+    )).toBe(true);
   });
 
   it('solves a pointer ray against a world-Z riser axis', () => {

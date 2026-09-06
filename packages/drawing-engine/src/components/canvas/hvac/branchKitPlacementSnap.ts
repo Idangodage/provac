@@ -18,6 +18,8 @@ export interface PlaceablePort {
   point: Point2D;
   /** Outward direction of the port in the kit's local frame. */
   direction: Point2D;
+  /** Omit only for legacy geometry without line identities. */
+  lineKind?: 'gas' | 'liquid' | 'both';
 }
 
 export interface SnapTargetEnd {
@@ -26,6 +28,11 @@ export interface SnapTargetEnd {
   point: Point2D;
   /** The pipe's outward heading at that end (points away from the pipe). */
   direction: Point2D;
+  lineKind?: 'gas' | 'liquid' | 'both';
+  /** Connected ends must never be offered as available sockets. */
+  connected?: boolean;
+  /** Source topology can restrict the fitting's incoming/outgoing role. */
+  acceptsPortRoles?: readonly string[];
 }
 
 /** Maps a kit-local point to world: world = rotate(local, rotDeg) + (tx, ty). */
@@ -73,16 +80,29 @@ export function solveBranchKitSnap(
   usedTargetIds: ReadonlySet<string> = new Set(),
 ): { transform: PlacementTransform; snap: BranchKitSnap | null } {
   const base: PlacementTransform = { tx: cursor.x, ty: cursor.y, rotDeg: 0 };
+  if (!Number.isFinite(toleranceMm) || toleranceMm < 0) return { transform: base, snap: null };
   let best: BranchKitSnap | null = null;
   let bestDist = toleranceMm;
 
   for (const port of ports) {
+    if (!Number.isFinite(port.point.x) || !Number.isFinite(port.point.y) ||
+      !Number.isFinite(port.direction.x) || !Number.isFinite(port.direction.y) ||
+      Math.hypot(port.direction.x, port.direction.y) < 1e-6) continue;
     // Port world position at the un-snapped (cursor-centred) transform.
     const world = applyPlacement(base, port.point);
     for (const target of targets) {
-      if (usedTargetIds.has(target.id)) continue;
+      if (usedTargetIds.has(target.id) || target.connected) continue;
+      if (port.lineKind && target.lineKind && port.lineKind !== target.lineKind) continue;
+      if (target.acceptsPortRoles && !target.acceptsPortRoles.includes(port.role)) continue;
+      if (!Number.isFinite(target.point.x) || !Number.isFinite(target.point.y) ||
+        !Number.isFinite(target.direction.x) || !Number.isFinite(target.direction.y) ||
+        Math.hypot(target.direction.x, target.direction.y) < 1e-6) continue;
       const dist = Math.hypot(world.x - target.point.x, world.y - target.point.y);
-      if (dist > bestDist) continue;
+      if (!Number.isFinite(dist) || dist > bestDist) continue;
+      // Scene-array order must not make a stationary preview jump between
+      // equally close ports as element rendering/order changes.
+      if (best && Math.abs(dist - bestDist) < 1e-6 &&
+        `${target.id}:${port.role}` >= `${best.targetId}:${best.portRole}`) continue;
       // Rotate so the port's outward direction faces INTO the pipe end
       // (opposite the pipe's outward heading), then translate the port onto it.
       const desired = angleDeg({ x: -target.direction.x, y: -target.direction.y });

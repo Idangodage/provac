@@ -6,11 +6,9 @@
  * shared arc-spline into a three curve the 3D sweep can consume, so the 3D tube
  * is built from the SAME filleted centerline as the 2D Fabric/Konva paths.
  *
- * NOTE (T1 scope): for now each arc is tessellated into short `LineCurve3`
- * chords within `tolMm`. T3 (3D geometry) replaces the chords with a parametric
- * arc curve + a rotation-minimising frame seed; that upgrade is intentionally
- * deferred. The important T1 invariant — 3D consumes the same centerline as 2D —
- * holds either way.
+ * Arc primitives remain exact parametric circles in three.js. They are not
+ * tessellated and then re-filleted, so the 3D sweep consumes the same centre,
+ * radius and sweep that the SVG/Fabric path uses.
  */
 
 import * as THREE from 'three';
@@ -18,7 +16,28 @@ import * as THREE from 'three';
 import { worldTo3D } from '../coordinateTransform';
 
 import type { PipeCenterline } from './pipeCenterline';
-import { toPolyline } from './pipeCenterline';
+import { CircularArcCurve3 } from './three3d/pipeJointGeometry';
+
+const EPSILON = 1e-6;
+const Z_AXIS = new THREE.Vector3(0, 0, 1);
+
+function signedSweep(startAngle: number, endAngle: number): number {
+  let sweep = endAngle - startAngle;
+  while (sweep > Math.PI) sweep -= Math.PI * 2;
+  while (sweep < -Math.PI) sweep += Math.PI * 2;
+  return sweep;
+}
+
+function offsetLinePoint(
+  point: { x: number; y: number },
+  direction: { x: number; y: number },
+  offsetMm: number,
+): { x: number; y: number } {
+  return {
+    x: point.x - direction.y * offsetMm,
+    y: point.y + direction.x * offsetMm,
+  };
+}
 
 /**
  * Builds a three.js `CurvePath` for the centerline at a given plan elevation
@@ -27,20 +46,59 @@ import { toPolyline } from './pipeCenterline';
 export function toCurvePath3D(
   centerline: PipeCenterline,
   elevationZMm: number,
-  tolMm = 0.5,
+  _tolMm = 0.5,
 ): THREE.CurvePath<THREE.Vector3> | null {
-  const pts = toPolyline(centerline, tolMm);
-  if (pts.length < 2) {
-    return null;
-  }
+  return toOffsetCurvePath3D(centerline, elevationZMm, 0);
+}
+
+/**
+ * Converts a canonical plan centerline to a parallel three.js path.
+ *
+ * Positive offsets are to the left of travel. Lines translate by their normal;
+ * arcs retain their centre and adjust their radius, so two pair paths remain
+ * exactly parallel and concentric through a bend.
+ */
+export function toOffsetCurvePath3D(
+  centerline: PipeCenterline,
+  elevationZMm: number,
+  offsetMm: number,
+): THREE.CurvePath<THREE.Vector3> | null {
   const path = new THREE.CurvePath<THREE.Vector3>();
-  let prev = toVec3(pts[0]!, elevationZMm);
-  for (let i = 1; i < pts.length; i += 1) {
-    const curr = toVec3(pts[i]!, elevationZMm);
-    if (prev.distanceTo(curr) > 1e-6) {
-      path.add(new THREE.LineCurve3(prev, curr));
+  for (const segment of centerline.segments) {
+    if (segment.type === 'line') {
+      const dx = segment.b.x - segment.a.x;
+      const dy = segment.b.y - segment.a.y;
+      const length = Math.hypot(dx, dy);
+      if (length <= EPSILON) continue;
+      const direction = { x: dx / length, y: dy / length };
+      const start = toVec3(
+        offsetLinePoint(segment.a, direction, offsetMm),
+        elevationZMm,
+      );
+      const end = toVec3(
+        offsetLinePoint(segment.b, direction, offsetMm),
+        elevationZMm,
+      );
+      if (start.distanceTo(end) > EPSILON) {
+        path.add(new THREE.LineCurve3(start, end));
+      }
+      continue;
     }
-    prev = curr;
+
+    const sweep = signedSweep(segment.startAngle, segment.endAngle);
+    const directionSign = Math.sign(sweep) || 1;
+    const offsetRadius = segment.radius - directionSign * offsetMm;
+    if (offsetRadius <= EPSILON) continue;
+    const start = toVec3({
+      x: segment.center.x + Math.cos(segment.startAngle) * offsetRadius,
+      y: segment.center.y + Math.sin(segment.startAngle) * offsetRadius,
+    }, elevationZMm);
+    path.add(new CircularArcCurve3(
+      toVec3(segment.center, elevationZMm),
+      start,
+      Z_AXIS,
+      sweep,
+    ));
   }
   return path.curves.length > 0 ? path : null;
 }

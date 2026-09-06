@@ -19,15 +19,20 @@ import {
 import {
   buildCeilingCassetteModel,
 } from "./ceilingCassetteModel";
+import { copperSocketCoverOutline, copperSocketCupOutline } from "./copperSocketElbowPlanGeometry";
+import { compileCopperSocketElbowRoute } from "./copperSocketElbowRoute";
+import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "./copperSocketElbows";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
   getDuctedIndoorUnitOpeningPlanProjection,
   getDuctedIndoorUnitPlanBounds,
 } from "./ductedIndoorUnitModel";
+import { resolveFieldPipeBendRadiusMm } from "./fieldPipeBends";
 import { buildGiDuctVisual, isGiDuctElementType } from "./giDuctModel";
 import { hitTestModelBackedHvacElement } from "./hvacElementHitTesting";
-import { buildPipeCenterline, toPolyline } from "./pipeCenterline";
+import { buildPipePlanTubes, type PlanPipeTube } from "./pipePlanPresentation";
+import { liftPipePlanRouteTo3d, readPipeRouteNodes3d } from "./pipeRoute3d";
 import { getActivePipeRoutingSettings } from "./pipeRoutingSettings";
 import {
   buildRefrigerantBranchKitViewModel,
@@ -1132,6 +1137,7 @@ export class HvacPlanRenderer {
       | "width"
       | "depth"
       | "height"
+      | "elevation"
       | "category"
       | "properties"
     >,
@@ -1206,27 +1212,11 @@ export class HvacPlanRenderer {
       if (points.length < 2) {
         return;
       }
-      // Smooth the drawn corners into true constant-radius arc bends (the
-      // canonical pipe centerline). This only reshapes the stroked line — the
-      // upstream offset / connection / branch-kit logic that produced `points`
-      // is untouched, and the object stays a fabric.Polyline. The radius adapts
-      // to the shortest leg so it never overruns a segment.
-      let renderPoints = points;
-      if (points.length >= 3) {
-        let shortest = Infinity;
-        for (let i = 1; i < points.length; i += 1) {
-          shortest = Math.min(
-            shortest,
-            Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y),
-          );
-        }
-        if (Number.isFinite(shortest) && shortest >= 1) {
-          const radiusMm = Math.max(8, Math.min(shortest * 0.45, 120));
-          renderPoints = toPolyline(buildPipeCenterline(points, radiusMm), 0.75);
-        }
-      }
+      // Connection-aware geometry already defines the pipe centerline, including
+      // its fitting arcs and socket straights. Preview and fallback rendering
+      // must consume those points exactly, just like the studio plan overlay.
       const polyline = new fabric.Polyline(
-        renderPoints.map((point) => ({ x: toPx(point.x), y: toPx(point.y) })),
+        points.map((point) => ({ x: toPx(point.x), y: toPx(point.y) })),
         {
           fill: undefined,
           stroke,
@@ -1243,6 +1233,72 @@ export class HvacPlanRenderer {
       );
       this.annotate(polyline, element.id, name);
       objects.push(polyline);
+    };
+
+    const renderSocketPipeAssembly = (
+      points: Point2D[], outerDiameterMm: number, copperDiameterMm: number,
+      insulationEdgeStroke: string, insulationStroke: string,
+      protectedEnds: { start?: boolean; end?: boolean } = {},
+      planTube?: PlanPipeTube,
+      planOrigin: Point2D = elementCenter(element),
+    ): boolean => {
+      if (!usesCopperSocketElbows(element.properties)) return false;
+      const settings = getActivePipeRoutingSettings();
+      const localize = <T extends Point2D>(point: T): T => ({
+        ...point, x: point.x - planOrigin.x, y: point.y - planOrigin.y,
+      });
+      const route = planTube ? {
+        fittings: (planTube.fittings ?? []).map(fitting => ({
+          ...fitting, corner: localize(fitting.corner), center: localize(fitting.center),
+          entry: localize(fitting.entry), exit: localize(fitting.exit),
+          startFace: localize(fitting.startFace), endFace: localize(fitting.endFace),
+          startStop: localize(fitting.startStop), endStop: localize(fitting.endStop),
+          path: fitting.path.map(localize),
+        })),
+        insulationRuns: (planTube.insulationSegments ?? []).map(run => run.map(localize)),
+        pipeRuns: (planTube.copperSegments ?? []).map(run => run.map(localize)),
+      } : compileCopperSocketElbowRoute(points.map(point => ({ ...point,
+        z: 'z' in point && typeof point.z === 'number' ? point.z : 0,
+      })), copperDiameterMm, {
+        minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(element.properties),
+        startStraightMm: protectedEnds.start ? settings.minimumPortStubMm : 0,
+        endStraightMm: protectedEnds.end ? settings.minimumPortStubMm : 0,
+      });
+      if (!route.fittings.length) return false;
+      const copper = options.valid ? "#c78363" : "#dc2626";
+      for (const run of route.insulationRuns) {
+        renderPipePolyline(run, insulationEdgeStroke, outerDiameterMm + 3, "hvac-socket-pipe-insulation-edge");
+        renderPipePolyline(run, insulationStroke, outerDiameterMm, "hvac-socket-pipe-insulation");
+      }
+      for (const run of route.pipeRuns) renderPipePolyline(run, copper, copperDiameterMm, "hvac-socket-pipe-copper");
+      const polygon = (vertices: Point2D[], fill: string, name: string, stroke?: string): void => {
+        const shape = new fabric.Polygon(vertices.map(toCanvas), {
+          fill, stroke, strokeWidth: stroke ? toPx(0.4) : 0, selectable: false, evented: false,
+        });
+        this.annotate(shape, element.id, name);
+        objects.push(shape);
+      };
+      for (const fitting of route.fittings) {
+        const spec = fitting.spec;
+        const cupRadius = spec.socketOutsideDiameterMm / 2;
+        if (settings.fittingDisplay === 'insulated') {
+          polygon(copperSocketCoverOutline(fitting, cupRadius + Math.max(0, (outerDiameterMm - copperDiameterMm) / 2)),
+            insulationStroke, "hvac-copper-elbow-cover", insulationEdgeStroke);
+          continue;
+        }
+        renderPipePolyline(fitting.path, options.valid ? "#b97143" : copper,
+          spec.bodyOutsideDiameterMm, "hvac-copper-elbow-body");
+        for (const [face, stop, direction] of [[fitting.startFace, fitting.startStop, fitting.startDirection],
+          [fitting.endFace, fitting.endStop, fitting.endDirection]] as const) {
+          const cup = copperSocketCupOutline(face, stop, direction, cupRadius);
+          polygon(cup, options.valid ? "#cb8a60" : copper, "hvac-copper-elbow-cup", "#965931");
+          if (Math.hypot(direction.x, direction.y) > 1e-5) {
+            renderPipePolyline([cup[0]!, cup[3]!], "#784026", Math.max(0.4, spec.wallThicknessMm * 0.7), "hvac-copper-elbow-mouth");
+          }
+        }
+        renderPipePolyline(fitting.path, "#f3c6a0", Math.max(0.7, spec.bodyOutsideDiameterMm * 0.18), "hvac-copper-elbow-highlight");
+      }
+      return true;
     };
 
     const renderPipeRectSegment = (
@@ -1887,7 +1943,8 @@ export class HvacPlanRenderer {
           element,
           hvacContext,
         );
-        const chainState = this.pipeRenderChainStateMap.get(element.id) ?? null;
+        const chainState = readPipeRouteNodes3d(element).length >= 2 ? null
+          : this.pipeRenderChainStateMap.get(element.id) ?? null;
         const headElement =
           chainState && chainState.renderAsHead
             ? this.getRenderSceneElement(chainState.headId) ?? element
@@ -2155,6 +2212,26 @@ export class HvacPlanRenderer {
           break;
         }
 
+        const chainNeedsLevelAdapter = chainState?.renderAsHead && [startConnection, endConnection]
+          .some(connection => connection && Math.abs(connection.elevationMm - chainState.elevationMm) > 1e-5);
+        const socketPoints = chainNeedsLevelAdapter
+          ? liftPipePlanRouteTo3d(chainState.continuousOuterPoints,
+            chainState.continuousOuterPoints.map(point => ({ ...point, z: chainState.elevationMm })), {
+              startConnection, endConnection, outerDiameterMm,
+              bendRadiusMm: resolveFieldPipeBendRadiusMm(outerDiameterMm, element.properties.bendRadiusFactor),
+              pipeDiameterMm: usesCopperSocketElbows(element.properties) ? coreDiameterMm : undefined,
+              minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(element.properties),
+            }).map(point => ({ ...localizePoint(point), z: point.z }))
+          : chainState?.renderAsHead ? chainState.continuousOuterPoints.map(localizePoint)
+            : visual.localContinuousOuterPoints;
+        const socketAssemblyRendered = renderSocketPipeAssembly(
+          socketPoints,
+          outerDiameterMm, coreDiameterMm, insulationEdgeStroke, insulationStroke,
+          { start: startConnection?.connectionKind === 'unit-port', end: endConnection?.connectionKind === 'unit-port' },
+          chainState ? undefined : buildPipePlanTubes(element, hvacContext)[0],
+          visual.bounds.center,
+        );
+        if (!socketAssemblyRendered) {
         renderPipeRectSegment(
           localStub,
           insulationEdgeStroke,
@@ -2263,6 +2340,7 @@ export class HvacPlanRenderer {
               "butt",
             ),
           );
+        }
         }
         const firstOuterPoints = localOuterPointSets[0] ?? [];
         const lastOuterPoints =
@@ -2468,57 +2546,20 @@ export class HvacPlanRenderer {
           );
         }
 
-        renderPolyline(
-          gasLocalOuterEdgePoints,
-          insulationEdgeStroke,
-          visual.gasOuterDiameterMm + 3,
-          "hvac-detail",
-          "round",
-          "butt",
-        );
-        renderPolyline(
-          liquidLocalOuterEdgePoints,
-          insulationEdgeStroke,
-          visual.liquidOuterDiameterMm + 3,
-          "hvac-detail",
-          "round",
-          "butt",
-        );
-        renderPolyline(
-          gasLocalContinuousOuterPoints,
-          insulationStroke,
-          visual.gasOuterDiameterMm,
-          "hvac-detail",
-          "round",
-          "round",
-        );
-        renderPolyline(
-          liquidLocalContinuousOuterPoints,
-          insulationStroke,
-          visual.liquidOuterDiameterMm,
-          "hvac-detail",
-          "round",
-          "round",
-        );
-
-        // Keep the exposed indoor-unit stub and routed copper core in one path
-        // so the 2D plan view does not show a seam at the connection.
-        renderPolyline(
-          visual.gasLocalContinuousCorePoints,
-          gasCoreStroke,
-          visual.gasCoreRadiusMm * 2,
-          "hvac-detail",
-          "round",
-          "butt",
-        );
-        renderPolyline(
-          visual.liquidLocalContinuousCorePoints,
-          liquidCoreStroke,
-          visual.liquidCoreRadiusMm * 2,
-          "hvac-detail",
-          "round",
-          "butt",
-        );
+        const protectedEnds = { start: visual.startBundleConnection?.connectionKind === 'unit-port',
+          end: visual.endBundleConnection?.connectionKind === 'unit-port' };
+        const planTubes = buildPipePlanTubes(element, hvacContext);
+        for (const line of [
+          { points: gasLocalContinuousOuterPoints, edges: gasLocalOuterEdgePoints, core: visual.gasLocalContinuousCorePoints,
+            outside: visual.gasOuterDiameterMm, copper: visual.gasCoreRadiusMm * 2, stroke: gasCoreStroke, planTube: planTubes[0] },
+          { points: liquidLocalContinuousOuterPoints, edges: liquidLocalOuterEdgePoints, core: visual.liquidLocalContinuousCorePoints,
+            outside: visual.liquidOuterDiameterMm, copper: visual.liquidCoreRadiusMm * 2, stroke: liquidCoreStroke, planTube: planTubes[1] },
+        ]) {
+          if (renderSocketPipeAssembly(line.points, line.outside, line.copper, insulationEdgeStroke, insulationStroke, protectedEnds, line.planTube, visual.bounds.center)) continue;
+          renderPolyline(line.edges, insulationEdgeStroke, line.outside + 3, "hvac-detail", "round", "butt");
+          renderPolyline(line.points, insulationStroke, line.outside, "hvac-detail", "round", "round");
+          renderPolyline(line.core, line.stroke, line.copper, "hvac-detail", "round", "butt");
+        }
         const stabilizerRadiusPx = Math.max(
           toPx(visual.bounds.width / 2),
           toPx(visual.bounds.height / 2),
@@ -3950,6 +3991,7 @@ export class HvacPlanRenderer {
       | "width"
       | "depth"
       | "height"
+      | "elevation"
       | "category"
       | "properties"
     >,

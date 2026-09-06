@@ -91,6 +91,7 @@ export default function SmartDrawingPage() {
 
   return (
     <DrawingEditorWrapper
+      key={projectId}
       projectId={projectId}
       projectName={project.name}
       initialData={initialData}

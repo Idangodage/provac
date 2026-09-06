@@ -41,7 +41,7 @@ describe('HvacElement VRF graph adapter', () => {
     const sourceRunId = hvacVrfSemanticIds.pipeRun('source', 'gas');
     const sourceStartNodeId = hvacVrfSemanticIds.routeNode(sourceRunId, 'start');
     const sourceEndNodeId = hvacVrfSemanticIds.routeNode(sourceRunId, 'end');
-    const source = gasPipe('source', [{ x: 0, y: 0 }, { x: 1000, y: 0 }]);
+    const source = gasPipe('source', [{ x: 0, y: 0 }, { x: 1000, y: 0 }], { bendRadiusFactor: 4 });
     const extension = gasPipe(
       'extension',
       [{ x: 0, y: 0 }, { x: -500, y: 0 }],
@@ -58,6 +58,7 @@ describe('HvacElement VRF graph adapter', () => {
     );
 
     const document = buildVrfDocumentFromHvacElements([source, extension]);
+    expect(document.pipeRuns[sourceRunId]?.metadata?.bendRadiusFactor).toBe(4);
     const extensionRun = document.pipeRuns[
       hvacVrfSemanticIds.pipeRun('extension', 'gas')
     ]!;

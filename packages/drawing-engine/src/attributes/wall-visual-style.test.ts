@@ -19,6 +19,19 @@ function wallSource(
 }
 
 describe('canonical wall visual style', () => {
+  it('shares the exact cap palette, physical repeat and outline weight in all views', () => {
+    for (const material of DEFAULT_ARCHITECTURAL_MATERIALS) {
+      const style = resolveWallVisualStyle(wallSource(material.id, material.wallMaterial));
+      expect(style.plan.fillColor).toBe(style.surface.color);
+      expect(style.plan.fillColor).toBe(style.surface.topColor);
+      expect(style.plan.patternColor).toBe(style.surface.patternColor);
+      expect(style.plan.patternOpacity).toBe(style.surface.patternOpacity);
+      expect(style.plan.repeatMm).toBe(style.surface.repeatMm);
+      expect(style.edges.planColor).toBe(style.edges.modelColor);
+      expect(style.edges.planWidthPx).toBe(style.edges.modelWidthPx);
+      expect(style.edges.modelOpacity).toBe(1);
+    }
+  });
   it('treats detailed materialId as authoritative over the legacy wall enum', () => {
     const style = resolveWallVisualStyle(
       wallSource('exterior-wood-siding-25', 'partition')
@@ -70,4 +83,3 @@ describe('canonical wall visual style', () => {
     expect(style.baseColor).toBe('#8b9096');
   });
 });
-

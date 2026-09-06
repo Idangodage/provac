@@ -12,9 +12,11 @@ import {
   deriveBoardViewFromCamera,
   makeOrthoCamera,
   poseUp,
+  resolveOrthographicClippingRange,
   resolveHybridCameraViewFromPose,
   resolveHybridCameraViewPose,
   screenToWorldOnPlaneZ,
+  updateOrthographicCameraClipping,
   worldToScreen,
   type CameraPose,
 } from './hybridViewportMath';
@@ -163,6 +165,62 @@ describe('zoom clamp (reference SPEC §10: mm-per-pixel ∈ [0.02, 20 000])', ()
     expect(1 / clampOrthoZoom(1e-9)).toBeCloseTo(MAX_MM_PER_PX, 6);
     expect(clampOrthoZoom(0.1)).toBe(0.1);
   });
+});
+
+describe('elevation viewport stability', () => {
+  it.each(['front', 'side'] as const)('uses the finite target in %s instead of a remote floor intersection', (view) => {
+    const orientation = resolveHybridCameraViewPose(view);
+    const target = new THREE.Vector3(6000, -2750, 1350);
+    for (const grazingAngle of [0, 1e-10, -1e-10]) {
+      const camera = makeOrthoCamera(
+        pose(orientation.polar + grazingAngle, orientation.azimuth, target), VP, 0.1,
+      );
+      expect(screenToWorldOnPlaneZ(VP.width / 2, VP.height / 2, camera, VP, 0)).toBeNull();
+      const derived = deriveBoardViewFromCamera(camera, VP, 0, target);
+      expect(derived.panPxX).toBeCloseTo(VP.width / 2 - target.x * 0.1, 7);
+      expect(derived.panPxY).toBeCloseTo(VP.height / 2 + target.y * 0.1, 7);
+    }
+  });
+});
+
+describe('orthographic depth precision', () => {
+  it.each(['plan', 'front', 'side', 'iso'] as const)(
+    'tightly brackets model bounds in the %s view',
+    (view) => {
+      const cameraPose = resolveHybridCameraViewPose(view);
+      const camera = makeOrthoCamera(
+        pose(cameraPose.polar, cameraPose.azimuth, new THREE.Vector3(0, 0, 1_500)),
+        VP,
+        0.1,
+      );
+      const bounds = new THREE.Box3(
+        new THREE.Vector3(-5_000, -3_000, 0),
+        new THREE.Vector3(5_000, 3_000, 3_000),
+      );
+
+      const range = resolveOrthographicClippingRange(camera, bounds);
+      expect(range.near).toBeGreaterThan(900_000);
+      expect(range.far - range.near).toBeLessThan(30_000);
+      expect((range.far - range.near) / (2 ** 24 - 1)).toBeLessThan(0.01);
+
+      camera.updateMatrixWorld(true);
+      for (const x of [bounds.min.x, bounds.max.x]) {
+        for (const y of [bounds.min.y, bounds.max.y]) {
+          for (const z of [bounds.min.z, bounds.max.z]) {
+            const depth = -new THREE.Vector3(x, y, z)
+              .applyMatrix4(camera.matrixWorldInverse).z;
+            expect(depth).toBeGreaterThan(range.near);
+            expect(depth).toBeLessThan(range.far);
+          }
+        }
+      }
+
+      expect(updateOrthographicCameraClipping(camera, bounds)).toBe(true);
+      expect(camera.near).toBeCloseTo(range.near, 6);
+      expect(camera.far).toBeCloseTo(range.far, 6);
+      expect(updateOrthographicCameraClipping(camera, bounds)).toBe(false);
+    },
+  );
 });
 
 describe('poseUp continuity at the top-down pole', () => {

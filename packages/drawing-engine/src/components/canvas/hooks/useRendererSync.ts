@@ -48,8 +48,6 @@ import { getToolCursor } from '../toolUtils';
 import { buildViewportTransform } from '../viewTransform';
 import type { WallRenderer } from '../wall/WallRenderer';
 
-const DRAG_AUTO_DIMENSION_MIN_INTERVAL_MS = 120;
-
 // =============================================================================
 // Types
 // =============================================================================
@@ -292,7 +290,6 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
     // Stable ref to the latest refreshDimensionLayer so the settle timer
     // can call it without a declaration-order dependency.
     const refreshDimensionLayerRef = useRef<(() => void) | null>(null);
-    const lastDragAutoDimensionSyncAtRef = useRef(0);
     const previousWallSyncSignatureRef = useRef<{ walls: Wall[] | null; symbols: string | null }>({
         walls: null,
         symbols: null,
@@ -478,38 +475,16 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
     // Keep the ref in sync so the zoom-settle timer always calls the latest version.
     refreshDimensionLayerRef.current = refreshDimensionLayer;
 
-    const scheduleAutoDimensionSync = useCallback(() => {
-        if (typeof window === 'undefined') {
-            syncAutoDimensions();
-            return;
-        }
-        if (autoDimensionSyncFrameRef.current !== null) return;
-        autoDimensionSyncFrameRef.current = window.requestAnimationFrame(() => {
-            autoDimensionSyncFrameRef.current = null;
-            syncAutoDimensions();
-        });
-    }, [syncAutoDimensions, autoDimensionSyncFrameRef]);
-
     // Automatically rebuild all auto-generated dimensions whenever walls, rooms,
     // or dimension settings change — so dimensions are always visible without
     // requiring a manual "Auto Dimension" button press.
-    // During handle dragging, frame-throttle updates so wall dimensions stay live.
+    // Derived dimensions intentionally lag during a live drag. Rebuilding once
+    // on drag commit prevents full-document worker snapshots from queuing at
+    // pointer frequency while keeping committed geometry authoritative.
     useEffect(() => {
         if (wallDrawingState.isDrawing) return;
         if (walls.length === 0 && rooms.length === 0) return;
-        if (isHandleDragging) {
-            const now =
-                typeof performance !== 'undefined' && typeof performance.now === 'function'
-                    ? performance.now()
-                    : Date.now();
-            if (now - lastDragAutoDimensionSyncAtRef.current < DRAG_AUTO_DIMENSION_MIN_INTERVAL_MS) {
-                return;
-            }
-            lastDragAutoDimensionSyncAtRef.current = now;
-            scheduleAutoDimensionSync();
-            return;
-        }
-        lastDragAutoDimensionSyncAtRef.current = 0;
+        if (isHandleDragging) return;
         syncAutoDimensions();
     }, [
         walls,
@@ -517,7 +492,6 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         dimensionSettings,
         wallDrawingState.isDrawing,
         isHandleDragging,
-        scheduleAutoDimensionSync,
         syncAutoDimensions,
     ]);
 

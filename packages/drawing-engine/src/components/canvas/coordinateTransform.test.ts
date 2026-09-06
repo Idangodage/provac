@@ -91,6 +91,18 @@ describe('canonical canvas transform helpers', () => {
     expect(canvasTransformToSvgMatrix(view)).toBe(`matrix(${k} 0 0 ${k} ${view.panPx.x} ${view.panPx.y})`);
   });
 
+  it('never emits a non-finite matrix from a poisoned viewport', () => {
+    const view = viewportToViewTransform(Number.NaN, {
+      x: Number.POSITIVE_INFINITY,
+      y: Number.NaN,
+    });
+    expect(view).toEqual({
+      zoom: expect.any(Number),
+      panPx: { x: 0, y: 0 },
+    });
+    expect(Number.isFinite(view.zoom)).toBe(true);
+  });
+
   it('converts a live Fabric scene-pixel matrix to the world-mm SVG matrix', () => {
     const fabricViewport = [2, 0, 0, 2, -135, 48] as const;
     const matrix = fabricViewportToWorldSvgMatrix(fabricViewport);

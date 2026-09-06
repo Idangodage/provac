@@ -12,7 +12,7 @@
 import { SmartDrawingEditor } from "@provacx/drawing-engine/editor";
 import { ArrowLeft, ArrowRight, Share2 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { trpc } from "@/lib/trpc";
 
@@ -65,6 +65,11 @@ export default function DrawingEditorWrapper({
 
   const { mutateAsync: createDrawing } = trpc.drawing.create.useMutation();
   const { mutateAsync: updateDrawing } = trpc.drawing.update.useMutation();
+
+  useEffect(() => {
+    drawingIdRef.current = initialDrawingId;
+    createInFlightRef.current = null;
+  }, [initialDrawingId, projectId]);
 
   const handleSave = useCallback(
     async (data: unknown) => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   attachPipeRoute3dToElements,
+  liftPipePlanRouteTo3d,
   projectPipeRouteNodes3dForPlanEdit,
   readPipeRouteNodes3d,
   splitPipeRoute3dAtPlanInterval,
@@ -32,6 +33,7 @@ describe('pipeRoute3d', () => {
     expect(readPipeRouteNodes3d(preview as never)).toEqual(readPipeRouteNodes3d(commit as never));
     expect(readPipeRouteNodes3d(preview as never)).toEqual([
       { x: 0, y: 0, z: 200 },
+      { x: 50, y: 0, z: 350 },
       { x: 100, y: 0, z: 500 },
     ]);
   });
@@ -82,7 +84,7 @@ describe('pipeRoute3d', () => {
   it('keeps gas and liquid risers separated when pair routing is vertical', () => {
     const route = [{ x: 40, y: 60, z: 100 }, { x: 40, y: 60, z: 900 }];
     const stamped = attachPipeRoute3dToElements(
-      buildRefrigerantPipeElements(route, { lineMode: 'pair', elevationMm: 100 }),
+      buildRefrigerantPipeElements(route, { lineMode: 'pair', elevationMm: 100, pipeGapMm: 65 }),
       route,
     );
     expect(stamped).toHaveLength(2);
@@ -90,7 +92,55 @@ describe('pipeRoute3d', () => {
     const liquid = readPipeRouteNodes3d(stamped[1] as never);
     expect(gas).toHaveLength(2);
     expect(liquid).toHaveLength(2);
-    expect(Math.hypot(gas[0]!.x - liquid[0]!.x, gas[0]!.y - liquid[0]!.y)).toBeGreaterThan(0);
+    const gasOuter = stamped[0]!.properties!.outerDiameterMm as number;
+    const liquidOuter = stamped[1]!.properties!.outerDiameterMm as number;
+    expect(Math.hypot(gas[0]!.x - liquid[0]!.x, gas[0]!.y - liquid[0]!.y))
+      .toBeCloseTo(gasOuter / 2 + liquidOuter / 2 + 65);
+    expect(stamped[0]!.properties!.routePoints).toEqual([{ x: gas[0]!.x, y: gas[0]!.y }]);
+  });
+
+  it('keeps every generated elbow and adapter in the 3D projection', () => {
+    const plan = [
+      { x: 0, y: -40 }, { x: 200, y: -40 }, { x: 240, y: -80 },
+      { x: 950, y: -80 }, { x: 980, y: -50 }, { x: 980, y: 900 },
+    ];
+    const lifted = liftPipePlanRouteTo3d(plan, [
+      { x: 0, y: 0, z: 2600 }, { x: 1000, y: 0, z: 2600 }, { x: 1000, y: 900, z: 2600 },
+    ]);
+    for (const point of plan) {
+      expect(lifted).toContainEqual({ ...point, z: 2600 });
+    }
+  });
+
+  it('keeps a mid-run vertical level transition when plan corners are inserted', () => {
+    const lifted = liftPipePlanRouteTo3d([
+      { x: 0, y: -40 }, { x: 200, y: -40 }, { x: 800, y: -40 }, { x: 1000, y: -40 },
+    ], [
+      { x: 0, y: 0, z: 200 }, { x: 500, y: 0, z: 200 },
+      { x: 500, y: 0, z: 900 }, { x: 1000, y: 0, z: 900 },
+    ]);
+    expect(lifted).toEqual([
+      { x: 0, y: -40, z: 200 }, { x: 200, y: -40, z: 200 },
+      { x: 500, y: -40, z: 200 }, { x: 500, y: -40, z: 900 },
+      { x: 800, y: -40, z: 900 }, { x: 1000, y: -40, z: 900 },
+    ]);
+  });
+
+  it('adapts individual port levels after straight takeoffs while keeping the main level', () => {
+    const lifted = liftPipePlanRouteTo3d([
+      { x: 0, y: 0 }, { x: 1000, y: 0 },
+    ], [
+      { x: 0, y: 0, z: 2600 }, { x: 1000, y: 0, z: 2600 },
+    ], {
+      startConnection: { elevationMm: 2500, connectionKind: 'unit-port' },
+      endConnection: { elevationMm: 2450, connectionKind: 'unit-port' },
+      minimumPortStubMm: 200,
+    });
+    expect(lifted).toEqual([
+      { x: 0, y: 0, z: 2500 }, { x: 200, y: 0, z: 2500 },
+      { x: 200, y: 0, z: 2600 }, { x: 800, y: 0, z: 2600 },
+      { x: 800, y: 0, z: 2450 }, { x: 1000, y: 0, z: 2450 },
+    ]);
   });
 
   it('moves matching 3D nodes with an edited plan vertex while preserving Z', () => {

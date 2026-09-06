@@ -20,6 +20,13 @@ export class HybridPostFX {
   private readonly composer: EffectComposer;
   private readonly hoverOutline: OutlineEffect;
   private readonly selectionOutline: OutlineEffect;
+  private hoverCount = 0;
+  private selectionCount = 0;
+
+  /** Plain rendering is identical when neither outline has a selection. */
+  get hasOutlines(): boolean {
+    return this.hoverCount > 0 || this.selectionCount > 0;
+  }
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -60,10 +67,12 @@ export class HybridPostFX {
   }
 
   setHover(objects: THREE.Object3D[]): void {
+    this.hoverCount = objects.length;
     this.hoverOutline.selection.set(objects);
   }
 
   setSelection(objects: THREE.Object3D[]): void {
+    this.selectionCount = objects.length;
     this.selectionOutline.selection.set(objects);
   }
 

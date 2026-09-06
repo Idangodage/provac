@@ -1,3 +1,5 @@
+import type { FurnitureProjectionInput } from '../components/canvas/elevation/elevationGenerator';
+import { regenerateElevationViews } from '../components/canvas/elevation/elevationGenerator';
 import type {
   ElevationSettings,
   ElevationView,
@@ -5,41 +7,64 @@ import type {
   SectionLine,
   Wall,
 } from '../types';
-import type { FurnitureProjectionInput } from '../components/canvas/elevation/elevationGenerator';
-import { regenerateElevationViews } from '../components/canvas/elevation/elevationGenerator';
+
 import type {
   RegenerateElevationsWorkerRequest,
   RegenerateElevationsWorkerResponse,
 } from './elevationGeneration.worker';
+import { LatestOnlyAsyncQueue } from './latestOnlyAsyncQueue';
 
 let workerInstance: Worker | null = null;
 let workerDisabled = false;
 let requestIdCounter = 0;
 
-const pendingRequests = new Map<
-  number,
-  {
-    resolve: (views: ElevationView[]) => void;
-    reject: (error: unknown) => void;
-  }
->();
+interface ElevationGenerationParams {
+  signature: string;
+  walls: Wall[];
+  sectionLines: SectionLine[];
+  existingViews: ElevationView[];
+  elevationSettings: ElevationSettings;
+  hvacElements: HvacElement[];
+  furnitureInputs: FurnitureProjectionInput[];
+}
 
-function resolvePendingRequest(requestId: number, elevationViews: ElevationView[]): void {
-  const pending = pendingRequests.get(requestId);
-  if (!pending) return;
-  pendingRequests.delete(requestId);
+interface ActiveWorkerRequest {
+  requestId: number;
+  resolve: (views: ElevationView[]) => void;
+  reject: (error: unknown) => void;
+}
+
+let activeWorkerRequest: ActiveWorkerRequest | null = null;
+
+function resolveActiveWorkerRequest(requestId: number, elevationViews: ElevationView[]): void {
+  if (activeWorkerRequest?.requestId !== requestId) return;
+  const pending = activeWorkerRequest;
+  activeWorkerRequest = null;
   pending.resolve(elevationViews);
 }
 
-function rejectPendingRequests(error: unknown): void {
-  pendingRequests.forEach((pending) => pending.reject(error));
-  pendingRequests.clear();
+function rejectActiveWorkerRequest(error: unknown): void {
+  const pending = activeWorkerRequest;
+  activeWorkerRequest = null;
+  pending?.reject(error);
 }
 
 function disposeWorker(): void {
   if (!workerInstance) return;
-  workerInstance.terminate();
-  workerInstance = null;
+  try {
+    workerInstance.terminate();
+  } finally {
+    workerInstance = null;
+  }
+}
+
+function disableWorker(error: unknown): void {
+  workerDisabled = true;
+  try {
+    disposeWorker();
+  } finally {
+    rejectActiveWorkerRequest(error);
+  }
 }
 
 function getElevationGenerationWorker(): Worker | null {
@@ -61,13 +86,15 @@ function getElevationGenerationWorker(): Worker | null {
       if (!message || message.type !== 'regenerate-elevations-result') {
         return;
       }
-      resolvePendingRequest(message.requestId, message.elevationViews);
+      resolveActiveWorkerRequest(message.requestId, message.elevationViews);
     });
 
     worker.addEventListener('error', (event) => {
-      workerDisabled = true;
-      disposeWorker();
-      rejectPendingRequests(event.error ?? new Error('Elevation generation worker failed.'));
+      disableWorker(event.error ?? new Error('Elevation generation worker failed.'));
+    });
+
+    worker.addEventListener('messageerror', () => {
+      disableWorker(new Error('Elevation generation worker returned an unreadable message.'));
     });
 
     workerInstance = worker;
@@ -79,20 +106,11 @@ function getElevationGenerationWorker(): Worker | null {
   }
 }
 
-export async function regenerateElevationsInBackground(params: {
-  signature: string;
-  walls: Wall[];
-  sectionLines: SectionLine[];
-  existingViews: ElevationView[];
-  elevationSettings: ElevationSettings;
-  hvacElements: HvacElement[];
-  furnitureInputs: FurnitureProjectionInput[];
-}): Promise<ElevationView[]> {
-  const worker = getElevationGenerationWorker();
-  if (!worker) {
-    return new Promise<ElevationView[]>((resolve) => {
-      const schedule = typeof window !== 'undefined' ? window.setTimeout : setTimeout;
-      schedule(() => {
+function runFallback(params: ElevationGenerationParams): Promise<ElevationView[]> {
+  return new Promise<ElevationView[]>((resolve, reject) => {
+    const schedule = typeof window !== 'undefined' ? window.setTimeout : setTimeout;
+    schedule(() => {
+      try {
         resolve(regenerateElevationViews(
           params.walls,
           params.sectionLines,
@@ -101,8 +119,19 @@ export async function regenerateElevationsInBackground(params: {
           params.hvacElements,
           params.furnitureInputs
         ));
-      }, 0);
-    });
+      } catch (error) {
+        reject(error);
+      }
+    }, 0);
+  });
+}
+
+function executeElevationGeneration(
+  params: ElevationGenerationParams
+): Promise<ElevationView[]> {
+  const worker = getElevationGenerationWorker();
+  if (!worker) {
+    return runFallback(params);
   }
 
   const requestId = ++requestIdCounter;
@@ -119,7 +148,22 @@ export async function regenerateElevationsInBackground(params: {
   };
 
   return new Promise<ElevationView[]>((resolve, reject) => {
-    pendingRequests.set(requestId, { resolve, reject });
-    worker.postMessage(request);
+    activeWorkerRequest = { requestId, resolve, reject };
+    try {
+      worker.postMessage(request);
+    } catch (error) {
+      disableWorker(error);
+    }
   });
+}
+
+const elevationGenerationQueue = new LatestOnlyAsyncQueue<
+  ElevationGenerationParams,
+  ElevationView[]
+>(executeElevationGeneration);
+
+export function regenerateElevationsInBackground(
+  params: ElevationGenerationParams
+): Promise<ElevationView[]> {
+  return elevationGenerationQueue.enqueue(params);
 }

@@ -224,5 +224,13 @@ export function viewportToViewTransform(viewportZoom: number, panOffset: Point2D
   const zoom = Number.isFinite(viewportZoom)
     ? Math.max(viewportZoom, MIN_SAFE_VIEWPORT_ZOOM)
     : MIN_SAFE_VIEWPORT_ZOOM;
-  return { zoom, panPx: { x: -panOffset.x * zoom, y: -panOffset.y * zoom } };
+  const panX = Number.isFinite(panOffset.x) ? panOffset.x : 0;
+  const panY = Number.isFinite(panOffset.y) ? panOffset.y : 0;
+  return {
+    zoom,
+    panPx: {
+      x: panX === 0 ? 0 : -panX * zoom,
+      y: panY === 0 ? 0 : -panY * zoom,
+    },
+  };
 }

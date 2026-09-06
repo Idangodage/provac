@@ -33,7 +33,19 @@ type HistorySnapshotSourceRefs = {
     hvacElements: HvacElement[];
 };
 
-const historySnapshotSourceRefs = new WeakMap<HistoryEntry['snapshot'], HistorySnapshotSourceRefs>();
+// Only the newest snapshot needs source references for structural sharing.
+// Retaining refs for every history entry kept the original live object graphs
+// alive alongside their deep-cloned snapshots, nearly doubling history memory.
+let latestHistorySnapshot: HistoryEntry['snapshot'] | null = null;
+let latestHistorySourceRefs: HistorySnapshotSourceRefs | null = null;
+
+function rememberSnapshotSources(
+    snapshot: HistoryEntry['snapshot'],
+    sourceRefs: HistorySnapshotSourceRefs,
+): void {
+    latestHistorySnapshot = snapshot;
+    latestHistorySourceRefs = sourceRefs;
+}
 
 // =============================================================================
 // Deep Clone
@@ -64,7 +76,7 @@ export function createEmptyHistorySnapshot(): HistoryEntry['snapshot'] {
         activeElevationViewId: null,
         hvacElements: [],
     };
-    historySnapshotSourceRefs.set(snapshot, {
+    rememberSnapshotSources(snapshot, {
         detectedElements: snapshot.detectedElements,
         dimensions: snapshot.dimensions,
         annotations: snapshot.annotations,
@@ -101,7 +113,9 @@ export function createHistorySnapshot(state: {
     activeElevationViewId: string | null;
     hvacElements: HvacElement[];
 }, previousSnapshot?: HistoryEntry['snapshot']): HistoryEntry['snapshot'] {
-    const previousRefs = previousSnapshot ? historySnapshotSourceRefs.get(previousSnapshot) : undefined;
+    const previousRefs = previousSnapshot === latestHistorySnapshot
+        ? latestHistorySourceRefs ?? undefined
+        : undefined;
     const snapshot = {
         detectedElements:
             previousSnapshot && previousRefs?.detectedElements === state.detectedElements
@@ -145,7 +159,7 @@ export function createHistorySnapshot(state: {
                 ? previousSnapshot.hvacElements
                 : deepClone(state.hvacElements),
     };
-    historySnapshotSourceRefs.set(snapshot, {
+    rememberSnapshotSources(snapshot, {
         detectedElements: state.detectedElements,
         dimensions: state.dimensions,
         annotations: state.annotations,

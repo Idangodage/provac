@@ -7,6 +7,9 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 
+// Replaced by the application bundler; this library also type-checks without Node globals.
+declare const process: { env: { NODE_ENV?: string } };
+
 import {
   attributeChangeObserver,
   bindRoomGeometryTo3D,
@@ -155,6 +158,7 @@ import {
   createEmptyHistorySnapshot,
   createHistoryEntry,
   createHistorySnapshot,
+  deepClone,
 } from './helpers';
 import {
   inferRoomType,
@@ -196,6 +200,47 @@ const INITIAL_ELEVATION_VIEWS = createStandardElevationViews(
 
 function pointsEqual(left: Point2D, right: Point2D): boolean {
   return left.x === right.x && left.y === right.y;
+}
+
+function importedPoint(
+  value: unknown,
+  fallback: Point2D,
+  field: string,
+): Point2D {
+  if (value === undefined || value === null) return { ...fallback };
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${field} must be a finite point.`);
+  }
+  const candidate = value as { x?: unknown; y?: unknown };
+  if (typeof candidate.x !== 'number' || !Number.isFinite(candidate.x)
+    || typeof candidate.y !== 'number' || !Number.isFinite(candidate.y)) {
+    throw new Error(`${field} must be a finite point.`);
+  }
+  return { x: candidate.x, y: candidate.y };
+}
+
+function importedPointArray(value: unknown, field: string): Point2D[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((point, index) => importedPoint(point, { x: 0, y: 0 }, `${field}[${index}]`));
+}
+
+function preserveCurrentRoomMetadata(detectedRooms: Room[], currentRooms: Room[]): Room[] {
+  const currentById = new Map(currentRooms.map((room) => [room.id, room]));
+  return detectedRooms.map((room) => {
+    const current = currentById.get(room.id);
+    if (!current) return room;
+    return {
+      ...room,
+      name: current.name,
+      roomType: current.roomType,
+      finishes: current.finishes,
+      notes: current.notes,
+      fillColor: current.fillColor,
+      showLabel: current.showLabel,
+      isExterior: current.isExterior,
+      properties3D: { ...current.properties3D },
+    };
+  });
 }
 
 function stringArraysEqual(left: string[], right: string[]): boolean {
@@ -1756,6 +1801,24 @@ export interface HvacElementCommand {
   selectedIds?: string[];
 }
 
+function invalidateDocumentRuntime(): void {
+  clearScheduledRoomDetection();
+  if (elevationRegenTimer) {
+    clearTimeout(elevationRegenTimer);
+    elevationRegenTimer = null;
+  }
+  roomDetectionRequestId += 1;
+  autoDimensionRequestId += 1;
+  elevationGenerationRequestId += 1;
+  lastRoomTopologyHash = '';
+  pendingRoomTopologyHash = '';
+  lastAutoDimensionSignature = '';
+  pendingAutoDimensionSignature = '';
+  lastElevationGenerationSignature = '';
+  pendingElevationGenerationSignature = '';
+  pendingElevationFocusSectionLineId = null;
+}
+
 export interface DrawingState {
   // Drawing Elements
   dimensions: Dimension2D[];
@@ -1904,7 +1967,11 @@ export interface DrawingState {
   wallGraphDelete: (edgeIds: string[]) => void;
 
   // Actions - Walls
-  addWall: (params: CreateWallParams) => string;
+  addWall: (params: CreateWallParams, options?: {
+    skipHistory?: boolean;
+    skipRoomDetection?: boolean;
+    skipElevationRegeneration?: boolean;
+  }) => string;
   updateWall: (
     id: string,
     updates: Partial<Wall>,
@@ -1945,7 +2012,7 @@ export interface DrawingState {
     innerOffset: number;
   } | null;
   updateWall3DAttributes: (id: string, updates: Partial<Wall3D>) => void;
-  deleteWall: (id: string) => void;
+  deleteWall: (id: string, options?: { skipHistory?: boolean }) => void;
   getWall: (id: string) => Wall | undefined;
   addRoom: (params: {
     vertices: Point2D[];
@@ -1991,7 +2058,11 @@ export interface DrawingState {
   generateElevationForSection: (sectionLineId: string) => void;
   regenerateElevations: (options?: { debounce?: boolean; focusSectionLineId?: string | null }) => void;
   setEditorViewMode: (mode: EditorViewMode) => void;
-  connectWalls: (wallId: string, otherWallId: string) => void;
+  connectWalls: (
+    wallId: string,
+    otherWallId: string,
+    options?: { skipRoomDetection?: boolean },
+  ) => void;
   disconnectWall: (wallId: string, otherWallId: string) => void;
   setWallSettings: (settings: Partial<WallSettings>) => void;
   setWallPreviewMaterial: (material: WallMaterial) => void;
@@ -2630,34 +2701,34 @@ export const useDrawingStore = create<DrawingState>()(
               return;
             }
 
-            set((state) => {
-              const currentTopology = roomTopologyHash(state.walls);
-              if (currentTopology !== topology) {
-                return state;
-              }
-              lastRoomTopologyHash = topology;
+            const currentState = get();
+            const currentTopology = roomTopologyHash(currentState.walls);
+            if (currentTopology !== topology) {
               pendingRoomTopologyHash = '';
-              return {
-                rooms: detectedRooms,
-              };
+              get().detectRooms();
+              return;
+            }
+            lastRoomTopologyHash = topology;
+            pendingRoomTopologyHash = '';
+            set({
+              rooms: preserveCurrentRoomMetadata(detectedRooms, currentState.rooms),
             });
           }).catch(() => {
             if (requestId !== roomDetectionRequestId) {
               return;
             }
 
-            set((state) => {
-              const currentTopology = roomTopologyHash(state.walls);
-              if (currentTopology !== topology) {
-                return state;
-              }
-              const detectedRooms = buildAutoDetectedRooms(state.walls, state.rooms);
-              lastRoomTopologyHash = topology;
+            const currentState = get();
+            const currentTopology = roomTopologyHash(currentState.walls);
+            if (currentTopology !== topology) {
               pendingRoomTopologyHash = '';
-              return {
-                rooms: detectedRooms,
-              };
-            });
+              get().detectRooms();
+              return;
+            }
+            const detectedRooms = buildAutoDetectedRooms(currentState.walls, currentState.rooms);
+            lastRoomTopologyHash = topology;
+            pendingRoomTopologyHash = '';
+            set({ rooms: detectedRooms });
           });
         };
 
@@ -3067,7 +3138,7 @@ export const useDrawingStore = create<DrawingState>()(
         get().saveToHistory('Delete section line');
       },
 
-      addWall: (params) => {
+      addWall: (params, options) => {
         const id = generateId();
         const thickness = clampThickness(params.thickness ?? 150);
         const material = params.material ?? 'brick';
@@ -3184,9 +3255,15 @@ export const useDrawingStore = create<DrawingState>()(
             timestamp: Date.now(),
           });
         }
-        get().detectRooms();
-        get().regenerateElevations();
-        get().saveToHistory('Add wall');
+        if (!options?.skipRoomDetection) {
+          get().detectRooms();
+        }
+        if (!options?.skipElevationRegeneration) {
+          get().regenerateElevations();
+        }
+        if (!options?.skipHistory) {
+          get().saveToHistory('Add wall');
+        }
         return effectiveWallId;
       },
 
@@ -3363,11 +3440,11 @@ export const useDrawingStore = create<DrawingState>()(
         if (!options?.skipHistory) {
           get().saveToHistory('Update wall');
         }
-        if (geometryChanged && !options?.skipRoomDetection) {
-          get().detectRooms({ debounce: options?.source === 'drag' });
+        if (geometryChanged && !options?.skipRoomDetection && options?.source !== 'drag') {
+          get().detectRooms();
         }
-        if (elevationChanged && !options?.skipElevationRegeneration) {
-          get().regenerateElevations({ debounce: options?.source === 'drag' });
+        if (elevationChanged && !options?.skipElevationRegeneration && options?.source !== 'drag') {
+          get().regenerateElevations();
         }
       },
 
@@ -3490,11 +3567,11 @@ export const useDrawingStore = create<DrawingState>()(
         if (!options?.skipHistory) {
           get().saveToHistory('Update walls');
         }
-        if (geometryChanged && !options?.skipRoomDetection) {
-          get().detectRooms({ debounce: options?.source === 'drag' });
+        if (geometryChanged && !options?.skipRoomDetection && options?.source !== 'drag') {
+          get().detectRooms();
         }
-        if (elevationChanged && !options?.skipElevationRegeneration) {
-          get().regenerateElevations({ debounce: options?.source === 'drag' });
+        if (elevationChanged && !options?.skipElevationRegeneration && options?.source !== 'drag') {
+          get().regenerateElevations();
         }
       },
 
@@ -3615,7 +3692,7 @@ export const useDrawingStore = create<DrawingState>()(
         get().saveToHistory('Update wall 3D attributes');
       },
 
-      deleteWall: (id) => {
+      deleteWall: (id, options) => {
         const wallToDelete = get().walls.find((wall) => wall.id === id);
         if (!wallToDelete) return;
         const deletedWallIds = new Set([id]);
@@ -3646,7 +3723,9 @@ export const useDrawingStore = create<DrawingState>()(
         }));
         get().detectRooms();
         get().regenerateElevations();
-        get().saveToHistory('Delete wall');
+        if (!options?.skipHistory) {
+          get().saveToHistory('Delete wall');
+        }
       },
 
       getWall: (id) => get().walls.find((w) => w.id === id),
@@ -3964,7 +4043,7 @@ export const useDrawingStore = create<DrawingState>()(
         }));
       },
 
-      connectWalls: (wallId, otherWallId) => {
+      connectWalls: (wallId, otherWallId, options) => {
         if (wallId === otherWallId) return;
         let didChange = false;
         set((state) => {
@@ -4003,7 +4082,7 @@ export const useDrawingStore = create<DrawingState>()(
 
           return { walls: nextWalls };
         });
-        if (didChange) {
+        if (didChange && !options?.skipRoomDetection) {
           get().detectRooms({ debounce: true });
         }
       },
@@ -4113,13 +4192,23 @@ export const useDrawingStore = create<DrawingState>()(
             material,
             layer,
             properties3D: { materialId: defaultMaterialId },
+          }, {
+            skipHistory: true,
+            skipRoomDetection: true,
+            skipElevationRegeneration: true,
           });
           wallIds.push(wallId);
         }
 
         for (let i = 0; i < 4; i++) {
-          get().connectWalls(wallIds[i], wallIds[(i + 1) % 4]);
+          get().connectWalls(wallIds[i], wallIds[(i + 1) % 4], {
+            skipRoomDetection: true,
+          });
         }
+
+        get().detectRooms();
+        get().regenerateElevations();
+        get().saveToHistory('Create room walls');
 
         return wallIds;
       },
@@ -4666,22 +4755,32 @@ export const useDrawingStore = create<DrawingState>()(
 
       // View Actions
       setZoom: (zoom) => set((state) => {
-        const nextZoom = Math.max(0.1, Math.min(10, zoom));
+        const nextZoom = Number.isFinite(zoom)
+          ? Math.max(0.1, Math.min(10, zoom))
+          : state.zoom;
         return state.zoom === nextZoom ? state : { zoom: nextZoom };
       }),
-      setPanOffset: (offset) => set((state) => (
-        pointsEqual(state.panOffset, offset)
+      setPanOffset: (offset) => set((state) => {
+        const nextOffset = Number.isFinite(offset.x) && Number.isFinite(offset.y)
+          ? { x: offset.x, y: offset.y }
+          : state.panOffset;
+        return pointsEqual(state.panOffset, nextOffset)
           ? state
-          : { panOffset: offset }
-      )),
+          : { panOffset: nextOffset };
+      }),
       setViewTransform: (zoom, offset) =>
         set((state) => {
-          const nextZoom = Math.max(0.1, Math.min(10, zoom));
-          return state.zoom === nextZoom && pointsEqual(state.panOffset, offset)
+          const nextZoom = Number.isFinite(zoom)
+            ? Math.max(0.1, Math.min(10, zoom))
+            : state.zoom;
+          const nextOffset = Number.isFinite(offset.x) && Number.isFinite(offset.y)
+            ? { x: offset.x, y: offset.y }
+            : state.panOffset;
+          return state.zoom === nextZoom && pointsEqual(state.panOffset, nextOffset)
             ? state
             : {
               zoom: nextZoom,
-              panOffset: offset,
+              panOffset: nextOffset,
             };
         }),
       setDisplayUnit: (unit) => set({ displayUnit: unit }),
@@ -4832,51 +4931,75 @@ export const useDrawingStore = create<DrawingState>()(
         };
       }),
 
-      undo: () => set((state) => {
-        if (state.historyIndex <= 0) return state;
-        const prevEntry = state.history[state.historyIndex - 1];
-        if (!prevEntry) return state;
-        const nextHistoryIndex = state.historyIndex - 1;
-        return {
-          detectedElements: prevEntry.snapshot.detectedElements,
-          dimensions: prevEntry.snapshot.dimensions,
-          annotations: prevEntry.snapshot.annotations,
-          sketches: prevEntry.snapshot.sketches,
-          symbols: prevEntry.snapshot.symbols,
-          hvacElements: prevEntry.snapshot.hvacElements ?? [],
-          walls: prevEntry.snapshot.walls ?? [],
-          rooms: prevEntry.snapshot.rooms ?? [],
-          sectionLines: prevEntry.snapshot.sectionLines ?? [],
-          elevationViews: prevEntry.snapshot.elevationViews ?? [],
-          activeElevationViewId: prevEntry.snapshot.activeElevationViewId ?? null,
-          historyIndex: nextHistoryIndex,
-          canUndo: nextHistoryIndex > 0,
-          canRedo: nextHistoryIndex < state.history.length - 1,
-        };
-      }),
+      undo: () => {
+        let didChange = false;
+        set((state) => {
+          if (state.historyIndex <= 0) return state;
+          const prevEntry = state.history[state.historyIndex - 1];
+          if (!prevEntry) return state;
+          didChange = true;
+          const nextHistoryIndex = state.historyIndex - 1;
+          return {
+            detectedElements: deepClone(prevEntry.snapshot.detectedElements),
+            dimensions: deepClone(prevEntry.snapshot.dimensions),
+            annotations: deepClone(prevEntry.snapshot.annotations),
+            sketches: deepClone(prevEntry.snapshot.sketches),
+            symbols: deepClone(prevEntry.snapshot.symbols),
+            hvacElements: deepClone(prevEntry.snapshot.hvacElements ?? []),
+            walls: deepClone(prevEntry.snapshot.walls ?? []),
+            rooms: deepClone(prevEntry.snapshot.rooms ?? []),
+            sectionLines: deepClone(prevEntry.snapshot.sectionLines ?? []),
+            elevationViews: deepClone(prevEntry.snapshot.elevationViews ?? []),
+            activeElevationViewId: prevEntry.snapshot.activeElevationViewId ?? null,
+            selectedElementIds: [],
+            selectedIds: [],
+            hoveredElementId: null,
+            historyIndex: nextHistoryIndex,
+            canUndo: nextHistoryIndex > 0,
+            canRedo: nextHistoryIndex < state.history.length - 1,
+          };
+        });
+        if (didChange) {
+          invalidateDocumentRuntime();
+          get().detectRooms();
+          get().regenerateElevations();
+        }
+      },
 
-      redo: () => set((state) => {
-        if (state.historyIndex >= state.history.length - 1) return state;
-        const nextEntry = state.history[state.historyIndex + 1];
-        if (!nextEntry) return state;
-        const nextHistoryIndex = state.historyIndex + 1;
-        return {
-          detectedElements: nextEntry.snapshot.detectedElements,
-          dimensions: nextEntry.snapshot.dimensions,
-          annotations: nextEntry.snapshot.annotations,
-          sketches: nextEntry.snapshot.sketches,
-          symbols: nextEntry.snapshot.symbols,
-          hvacElements: nextEntry.snapshot.hvacElements ?? [],
-          walls: nextEntry.snapshot.walls ?? [],
-          rooms: nextEntry.snapshot.rooms ?? [],
-          sectionLines: nextEntry.snapshot.sectionLines ?? [],
-          elevationViews: nextEntry.snapshot.elevationViews ?? [],
-          activeElevationViewId: nextEntry.snapshot.activeElevationViewId ?? null,
-          historyIndex: nextHistoryIndex,
-          canUndo: nextHistoryIndex > 0,
-          canRedo: nextHistoryIndex < state.history.length - 1,
-        };
-      }),
+      redo: () => {
+        let didChange = false;
+        set((state) => {
+          if (state.historyIndex >= state.history.length - 1) return state;
+          const nextEntry = state.history[state.historyIndex + 1];
+          if (!nextEntry) return state;
+          didChange = true;
+          const nextHistoryIndex = state.historyIndex + 1;
+          return {
+            detectedElements: deepClone(nextEntry.snapshot.detectedElements),
+            dimensions: deepClone(nextEntry.snapshot.dimensions),
+            annotations: deepClone(nextEntry.snapshot.annotations),
+            sketches: deepClone(nextEntry.snapshot.sketches),
+            symbols: deepClone(nextEntry.snapshot.symbols),
+            hvacElements: deepClone(nextEntry.snapshot.hvacElements ?? []),
+            walls: deepClone(nextEntry.snapshot.walls ?? []),
+            rooms: deepClone(nextEntry.snapshot.rooms ?? []),
+            sectionLines: deepClone(nextEntry.snapshot.sectionLines ?? []),
+            elevationViews: deepClone(nextEntry.snapshot.elevationViews ?? []),
+            activeElevationViewId: nextEntry.snapshot.activeElevationViewId ?? null,
+            selectedElementIds: [],
+            selectedIds: [],
+            hoveredElementId: null,
+            historyIndex: nextHistoryIndex,
+            canUndo: nextHistoryIndex > 0,
+            canRedo: nextHistoryIndex < state.history.length - 1,
+          };
+        });
+        if (didChange) {
+          invalidateDocumentRuntime();
+          get().detectRooms();
+          get().regenerateElevations();
+        }
+      },
 
       clearHistory: () => set((state) => ({
         history: [createHistoryEntry('Baseline', createHistorySnapshot(state, state.history[state.historyIndex]?.snapshot))],
@@ -4956,13 +5079,22 @@ export const useDrawingStore = create<DrawingState>()(
           // `as typeof parsed` keeps the historical `any` typing JSON.parse gave
           // the rest of this function (the migrator is structurally faithful).
           const parsed = JSON.parse(json);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new Error('Drawing data must be a JSON object.');
+          }
+          if (
+            typeof parsed.hvacSchemaVersion === 'number' &&
+            parsed.hvacSchemaVersion > CURRENT_HVAC_SCHEMA_VERSION
+          ) {
+            throw new Error('This drawing was created by a newer unsupported version.');
+          }
           const data = migrateCanvasData(parsed).data as typeof parsed;
           const rawWalls = Array.isArray(data.walls) ? data.walls : [];
           const importedWalls: Wall[] = rawWalls.map((rawWall: Partial<Wall>) => {
             const baseWall: Wall = {
               id: rawWall.id ?? generateId(),
-              startPoint: rawWall.startPoint ?? { x: 0, y: 0 },
-              endPoint: rawWall.endPoint ?? { x: 0, y: 0 },
+              startPoint: importedPoint(rawWall.startPoint, { x: 0, y: 0 }, 'wall.startPoint'),
+              endPoint: importedPoint(rawWall.endPoint, { x: 0, y: 0 }, 'wall.endPoint'),
               thickness: clampThickness(rawWall.thickness ?? 150),
               centerlineOffset: rawWall.centerlineOffset ?? 0,
               material: rawWall.material ?? 'partition',
@@ -4972,8 +5104,14 @@ export const useDrawingStore = create<DrawingState>()(
                 : rawWall.partitionMode === 'full'
                   ? 'full'
                   : undefined,
-              interiorLine: rawWall.interiorLine ?? { start: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
-              exteriorLine: rawWall.exteriorLine ?? { start: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
+              interiorLine: {
+                start: importedPoint(rawWall.interiorLine?.start, { x: 0, y: 0 }, 'wall.interiorLine.start'),
+                end: importedPoint(rawWall.interiorLine?.end, { x: 0, y: 0 }, 'wall.interiorLine.end'),
+              },
+              exteriorLine: {
+                start: importedPoint(rawWall.exteriorLine?.start, { x: 0, y: 0 }, 'wall.exteriorLine.start'),
+                end: importedPoint(rawWall.exteriorLine?.end, { x: 0, y: 0 }, 'wall.exteriorLine.end'),
+              },
               startBevel: normalizeBevelControl(rawWall.startBevel),
               endBevel: normalizeBevelControl(rawWall.endBevel),
               connectedWalls: Array.isArray(rawWall.connectedWalls) ? rawWall.connectedWalls : [],
@@ -4987,9 +5125,9 @@ export const useDrawingStore = create<DrawingState>()(
 
           const rawRooms = Array.isArray(data.rooms) ? data.rooms : [];
           const importedRooms: Room[] = rawRooms.map((rawRoom: Partial<Room>) => {
-            const fallbackVertices = Array.isArray(rawRoom.vertices) ? rawRoom.vertices : [];
+            const fallbackVertices = importedPointArray(rawRoom.vertices, 'room.vertices');
             const fallbackHoles = Array.isArray(rawRoom.holes)
-              ? rawRoom.holes.map((hole) => (Array.isArray(hole) ? hole : []))
+              ? rawRoom.holes.map((hole, index) => importedPointArray(hole, `room.holes[${index}]`))
               : [];
             const fallbackArea = typeof rawRoom.area === 'number'
               ? rawRoom.area
@@ -5005,7 +5143,11 @@ export const useDrawingStore = create<DrawingState>()(
               perimeter: typeof rawRoom.perimeter === 'number'
                 ? rawRoom.perimeter
                 : polygonPerimeter(fallbackVertices, fallbackHoles),
-              centroid: rawRoom.centroid ?? polygonCentroid(fallbackVertices, fallbackHoles),
+              centroid: importedPoint(
+                rawRoom.centroid,
+                polygonCentroid(fallbackVertices, fallbackHoles),
+                'room.centroid',
+              ),
               finishes: rawRoom.finishes ?? '',
               notes: rawRoom.notes ?? '',
               fillColor: rawRoom.fillColor ?? roomTypeFillColor(rawRoom.roomType ?? inferRoomType(fallbackArea / 1_000_000)),
@@ -5028,8 +5170,8 @@ export const useDrawingStore = create<DrawingState>()(
                 label: rawLine.label ?? fallbackLabel,
                 name: rawLine.name ?? rawLine.label ?? fallbackLabel,
                 kind: rawLine.kind === 'elevation' ? 'elevation' : 'section',
-                startPoint: rawLine.startPoint ?? { x: 0, y: 0 },
-                endPoint: rawLine.endPoint ?? { x: 0, y: 0 },
+                startPoint: importedPoint(rawLine.startPoint, { x: 0, y: 0 }, 'sectionLine.startPoint'),
+                endPoint: importedPoint(rawLine.endPoint, { x: 0, y: 0 }, 'sectionLine.endPoint'),
                 direction: rawLine.direction === -1 ? -1 : 1,
                 color: rawLine.color ?? DEFAULT_SECTION_LINE_COLOR,
                 depthMm: Math.max(100, rawLine.depthMm ?? DEFAULT_SECTION_LINE_DEPTH_MM),
@@ -5106,8 +5248,6 @@ export const useDrawingStore = create<DrawingState>()(
               ? (data.pipeRoutingSettings as Partial<PipeRoutingSettings>)
               : null,
           );
-          // Sync the geometry/clash engines with the loaded document's settings.
-          setActivePipeRoutingSettings(nextPipeRoutingSettings);
 
           // Board/sheet context travels with the document so a drawing reopens
           // at the unit, page and scale it was authored with.
@@ -5160,6 +5300,9 @@ export const useDrawingStore = create<DrawingState>()(
             }))
             : [];
 
+          // Commit the fully parsed candidate in one state transition and make
+          // all previous-document async results stale before any new work starts.
+          invalidateDocumentRuntime();
           set({
             dimensions: Array.isArray(data.dimensions)
               ? data.dimensions.map((dimension: Omit<Dimension2D, 'id'> & { id: string }) => ({
@@ -5168,10 +5311,10 @@ export const useDrawingStore = create<DrawingState>()(
               }))
               : [],
             dimensionSettings: nextDimensionSettings,
-            annotations: data.annotations || [],
-            sketches: data.sketches || [],
-            guides: data.guides || [],
-            symbols: data.symbols || [],
+            annotations: Array.isArray(data.annotations) ? data.annotations : [],
+            sketches: Array.isArray(data.sketches) ? data.sketches : [],
+            guides: Array.isArray(data.guides) ? data.guides : [],
+            symbols: Array.isArray(data.symbols) ? data.symbols : [],
             hvacElements: importedHvacElements,
             // Normalize through the wall-graph mirror: stamps graph identity
             // (one-time endpoint-weld migration for legacy docs, wall ids kept)
@@ -5198,8 +5341,22 @@ export const useDrawingStore = create<DrawingState>()(
             showGrid: nextShowGrid,
             showRulers: nextShowRulers,
             snapToGrid: nextSnapToGrid,
+            layers: [...DEFAULT_LAYERS],
+            activeLayerId: 'default',
+            importedDrawing: null,
+            detectedElements: [],
+            selectedElementIds: [],
+            selectedIds: [],
+            hoveredElementId: null,
+            activeTool: 'select',
+            tool: 'select',
+            wallDrawingState: { ...DEFAULT_WALL_DRAWING_STATE },
+            editorViewMode: 'plan',
+            zoom: 1,
+            panOffset: { x: 0, y: 0 },
           });
-          lastRoomTopologyHash = '';
+          setActivePipeRoutingSettings(nextPipeRoutingSettings);
+          get().clearHistory();
           get().detectRooms();
           get().regenerateElevations();
           importedSectionLines.forEach((line) => {
@@ -5301,7 +5458,10 @@ export const useDrawingStore = create<DrawingState>()(
         get().saveToHistory('Change spline method');
       },
     }),
-    { name: 'smart-drawing-store' }
+    {
+      name: 'smart-drawing-store',
+      enabled: process.env.NODE_ENV !== 'production',
+    }
   )
 );
 

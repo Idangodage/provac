@@ -38,6 +38,7 @@ import {
   MIN_WALL_THICKNESS,
 } from "../types/wall";
 
+import { NetworkRiserUpgradeAction } from "./canvas/hvac/NetworkRiserUpgradeAction";
 import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
 import {
   readPipeRouteNodes3d,
@@ -1666,6 +1667,8 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             properties: {
               ...selectedEquipment.properties,
               routeNodes3d: nextNodes,
+              networkLevelLocked: true,
+              networkLevelPlan: undefined,
             },
           },
         }],
@@ -1674,6 +1677,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 
     return (
       <div className="space-y-2">
+        <NetworkRiserUpgradeAction selectedId={selectedEquipment.id} />
         <PropertyRow label="Label">
           <input
             type="text"
@@ -1992,6 +1996,9 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             if (!Number.isFinite(parsed)) return;
             updateHvacElement(selectedEquipment.id, {
               elevation: Math.max(0, toMm(parsed, propertyUnit)),
+              ...(selectedEquipment.type === "refrigerant-branch-kit"
+                ? { properties: { ...selectedEquipment.properties, networkLevelLocked: true } }
+                : {}),
             });
           }}
           className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
@@ -3302,26 +3309,6 @@ function RefrigerantPipeToolSection() {
         Off: routes commit exactly as drawn — select a crossing pipe to add an
         offset hop from the card. On: hops are added automatically at every
         crossing.
-      </p>
-
-      <PropertyRow label="Branch tee mode">
-        <div className="flex items-center gap-1">
-          <TabButton
-            active={!pipeRoutingSettings.enableRealTeeTopology}
-            label="Legacy overlay"
-            onClick={() => setPipeRoutingSettings({ enableRealTeeTopology: false })}
-          />
-          <TabButton
-            active={pipeRoutingSettings.enableRealTeeTopology}
-            label="Real split"
-            onClick={() => setPipeRoutingSettings({ enableRealTeeTopology: true })}
-          />
-        </div>
-      </PropertyRow>
-      <p className="text-[11px] leading-5 text-slate-500">
-        Real split (default): accepting a kit replaces the tapped run with
-        flow-connected inlet and outlet segments. Legacy overlay keeps the host
-        run intact for older drawings.
       </p>
 
       <div className="mt-2 border-t border-slate-100 pt-2">

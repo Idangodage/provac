@@ -126,6 +126,26 @@ describe('plan sheet CSS matrix', () => {
     expect(planSheetOpacityForPolar(THREE.MathUtils.degToRad(45))).toBe(0);
   });
 
+  it('keeps a cached plan aligned when the camera pans, zooms and reverses its tilt', () => {
+    const sheetVpt = viewports[1]!;
+    const cameraVpt = viewports[2]!;
+    // The hidden plan may retain its last painted viewport while the live 3D
+    // camera moves. Its projection must use that actual raster/SVG viewport.
+    for (const degrees of [54, 26, 12, 6, 1, 0.0001]) {
+      const camera = makeHybridCamera(THREE.MathUtils.degToRad(degrees), cameraVpt, width, height);
+      const matrix = computePlanSheetCssMatrix(camera, sheetVpt, width, height);
+      for (const point of modelPoints) {
+        const screen = applyCssMatrix(matrix, {
+          x: sheetVpt[4]! + sheetVpt[0]! * MM_TO_PX * point.x,
+          y: sheetVpt[5]! + sheetVpt[0]! * MM_TO_PX * point.y,
+        });
+        const projected = projectModel(camera, point, width, height);
+        expect(screen.x).toBeCloseTo(projected.x, 4);
+        expect(screen.y).toBeCloseTo(projected.y, 4);
+      }
+    }
+  });
+
   it('keeps walls FLAT through the whole sheet crossfade, then rises them', () => {
     // While any part of the sheet is visible the walls must have no height —
     // a tall solid parallax-shifts its top by height·tanφ and reads as a

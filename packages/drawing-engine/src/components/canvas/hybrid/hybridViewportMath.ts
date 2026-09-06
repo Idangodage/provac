@@ -134,6 +134,88 @@ export function makeOrthoCamera(
 }
 
 /** World point → screen px (origin top-left, y down). */
+export interface OrthographicClippingRange {
+  near: number;
+  far: number;
+}
+
+export interface OrthographicClippingOptions {
+  /** Absolute breathing room around the nearest/farthest content. */
+  minPaddingMm?: number;
+  /** Additional padding as a fraction of the visible depth span. */
+  paddingRatio?: number;
+  /** Avoid an over-tight range flickering while camera-controls damps. */
+  minSpanMm?: number;
+  /** Safe initialization range while the scene is still empty. */
+  emptyFarMm?: number;
+}
+
+/**
+ * Tight orthographic clipping range for a world-space content box.
+ *
+ * Orthographic depth is linear, so a 1..1e9 range yields only about 60 mm of
+ * precision in a 24-bit depth buffer. That is larger than pipe insulation and
+ * lets enclosed copper leak through as brown speckles. Projecting the eight
+ * bounds corners into camera space keeps the range close to the actual model
+ * at every canonical view without moving either camera or content.
+ */
+export function resolveOrthographicClippingRange(
+  camera: THREE.OrthographicCamera,
+  bounds: THREE.Box3,
+  options: OrthographicClippingOptions = {},
+): OrthographicClippingRange {
+  const minPaddingMm = Math.max(0, options.minPaddingMm ?? 1_000);
+  const paddingRatio = Math.max(0, options.paddingRatio ?? 0.1);
+  const minSpanMm = Math.max(1, options.minSpanMm ?? 10_000);
+  const emptyFarMm = Math.max(minSpanMm + 1, options.emptyFarMm ?? 2_000_000);
+
+  if (bounds.isEmpty()) {
+    return { near: 1, far: emptyFarMm };
+  }
+
+  camera.updateMatrixWorld(true);
+  let minDepth = Number.POSITIVE_INFINITY;
+  let maxDepth = Number.NEGATIVE_INFINITY;
+  for (const x of [bounds.min.x, bounds.max.x]) {
+    for (const y of [bounds.min.y, bounds.max.y]) {
+      for (const z of [bounds.min.z, bounds.max.z]) {
+        const cameraPoint = new THREE.Vector3(x, y, z).applyMatrix4(camera.matrixWorldInverse);
+        const depth = -cameraPoint.z;
+        if (!Number.isFinite(depth)) continue;
+        minDepth = Math.min(minDepth, depth);
+        maxDepth = Math.max(maxDepth, depth);
+      }
+    }
+  }
+
+  if (!Number.isFinite(minDepth) || !Number.isFinite(maxDepth) || maxDepth <= 0) {
+    return { near: 1, far: emptyFarMm };
+  }
+
+  const contentSpan = Math.max(0, maxDepth - minDepth);
+  const padding = Math.max(minPaddingMm, contentSpan * paddingRatio);
+  const near = Math.max(0.1, minDepth - padding);
+  const far = Math.max(maxDepth + padding, near + minSpanMm);
+  return { near, far };
+}
+
+/** Applies a tight range only when it materially changed the projection. */
+export function updateOrthographicCameraClipping(
+  camera: THREE.OrthographicCamera,
+  bounds: THREE.Box3,
+  options?: OrthographicClippingOptions,
+): boolean {
+  const { near, far } = resolveOrthographicClippingRange(camera, bounds, options);
+  if (Math.abs(camera.near - near) <= 0.1 && Math.abs(camera.far - far) <= 0.1) {
+    return false;
+  }
+  camera.near = near;
+  camera.far = far;
+  camera.updateProjectionMatrix();
+  return true;
+}
+
+/** World point to screen px (origin top-left, y down). */
 export function worldToScreen(
   point: THREE.Vector3,
   camera: THREE.Camera,
@@ -170,8 +252,15 @@ export function screenToWorldOnPlaneZ(
   viewport: Viewport,
   planeZ: number,
 ): THREE.Vector3 | null {
+  const ray = screenRay(x, y, camera, viewport);
+  // Front/side cameras are parallel to the floor, but quaternion arithmetic
+  // leaves a tiny nonzero Z component. Ray.intersectPlane only tests exact
+  // zero, producing intersections ~1e19 mm away and unusable plan viewports.
+  // A grazing ray has no stable floor projection; use the caller's target
+  // fallback (or its elevation workplane) instead.
+  if (Math.abs(ray.direction.z) < 1e-6) return null;
   const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -planeZ);
-  return screenRay(x, y, camera, viewport).intersectPlane(plane, new THREE.Vector3());
+  return ray.intersectPlane(plane, new THREE.Vector3());
 }
 
 /** Clamp ortho zoom (px-per-mm) so mm-per-pixel stays inside the limits. */

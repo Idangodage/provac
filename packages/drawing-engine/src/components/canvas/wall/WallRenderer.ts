@@ -45,6 +45,7 @@ import { endDragPerfTimer, startDragPerfTimer } from '../perf/dragPerf';
 import { MM_TO_PX } from '../scale';
 
 import { renderWallOpenings } from './OpeningRenderer';
+import type { RoomBoundarySelectionSegment } from './RoomBoundarySelection';
 import {
   computeWallPolygon,
   wallBounds,
@@ -56,10 +57,7 @@ import {
   type WallSelectionComponent,
   type WallSelectionPlan,
 } from './WallSelectionGeometry';
-import type { RoomBoundarySelectionSegment } from './RoomBoundarySelection';
 import type { EnhancedSnapResult } from './WallSnapping';
-import { primeWallSelectionGeometryInBackground } from './wallSelectionWorkerClient';
-import { createWallPatternCanvas } from './wallPatternCanvas';
 import { computeWallUnionRenderData, type WallUnionComponent, type WallUnionRenderData } from './WallUnionGeometry';
 import {
   refreshAllWalls, // [PATCH APPLIED]
@@ -67,6 +65,9 @@ import {
   refreshPartialWallGeometry,
   validateWallPolygon, // [PATCH APPLIED]
 } from './WallUpdatePipeline';
+import { createWallPatternCanvas } from './wallPatternCanvas';
+import { anchorWallPatternToModel, wallPatternTransform } from './wallPatternPlacement';
+import { primeWallSelectionGeometryInBackground } from './wallSelectionWorkerClient';
 
 // =============================================================================
 // Types
@@ -266,6 +267,12 @@ export class WallRenderer {
     this.pageHeight = pageHeight;
   }
 
+  /** Detaching a Fabric object does not release its offscreen cache canvas. */
+  private removeFabricObject(object: fabric.FabricObject): void {
+    this.canvas.remove(object);
+    object.dispose();
+  }
+
   // ─── Pattern Initialization ─────────────────────────────────────────────
 
   private getMaterialPattern(wall: Wall): fabric.Pattern | null {
@@ -274,12 +281,11 @@ export class WallRenderer {
     if (cached !== undefined) return cached;
 
     const patternCanvas = createWallPatternCanvas(style, 'plan-cut');
-    const inverseZoom = 1 / Math.max(this.canvas.getZoom(), 0.01);
     const pattern = patternCanvas
       ? new fabric.Pattern({
           source: patternCanvas,
           repeat: 'repeat',
-          patternTransform: [inverseZoom, 0, 0, inverseZoom, 0, 0],
+          patternTransform: wallPatternTransform(style.plan.repeatMm, patternCanvas.width),
         })
       : null;
     this.materialPatterns.set(style.key, pattern);
@@ -520,7 +526,7 @@ export class WallRenderer {
       });
       // Controls are expensive to rebuild per frame; hide during drag and restore after.
       this.controlPointObjects.forEach((controls) => {
-        controls.forEach((control) => this.canvas.remove(control));
+        controls.forEach((control) => this.removeFabricObject(control));
       });
       this.controlPointObjects.clear();
       this.clearBoundaryControlPoints();
@@ -551,11 +557,6 @@ export class WallRenderer {
 
     // Skip if zoom didn't meaningfully change (< 0.5% difference)
     if (Math.abs(zoom - prevZoom) / Math.max(prevZoom, 0.01) < 0.005) return;
-
-    const inverseZoom = 1 / Math.max(zoom, 0.01);
-    this.materialPatterns.forEach((pattern) => {
-      if (pattern) pattern.patternTransform = [inverseZoom, 0, 0, inverseZoom, 0, 0];
-    });
 
     // Refresh selection outlines stroke widths
     this.wallObjects.forEach((group) => {
@@ -591,7 +592,7 @@ export class WallRenderer {
     // Keep merged wall outlines crisp at any zoom level.
     this.componentObjects.forEach((obj) => {
       const typed = obj as NamedObject;
-      if (typed.name === 'wall-component-outline' || typed.name === 'wall-component-fill') {
+      if (typed.name === 'wall-component-outline') {
         obj.set('strokeWidth', this.toSceneSize(VISUAL_CONFIG.wallStrokeWidth));
       } else {
         obj.set('dirty', true);
@@ -692,6 +693,7 @@ export class WallRenderer {
         : undefined,
     });
     (fillPath as NamedObject).name = name;
+    fillPath.set('fill', anchorWallPatternToModel(visualFill, fillPath));
     this.canvas.add(fillPath);
     this.componentObjects.push(fillPath);
   }
@@ -757,6 +759,7 @@ export class WallRenderer {
         clipPath: overlayClip,
       });
       (overlayPath as NamedObject).name = 'wall-component-overlay';
+      overlayPath.set('fill', anchorWallPatternToModel(visualFill, overlayPath));
       this.canvas.add(overlayPath);
       this.componentObjects.push(overlayPath);
     }
@@ -777,7 +780,7 @@ export class WallRenderer {
   }
 
   private clearMergedComponents(): void {
-    this.componentObjects.forEach((object) => this.canvas.remove(object));
+    this.componentObjects.forEach((object) => this.removeFabricObject(object));
     this.componentObjects = [];
   }
 
@@ -837,12 +840,12 @@ export class WallRenderer {
   }
 
   private clearSelectionComponents(): void {
-    this.selectionComponentObjects.forEach((object) => this.canvas.remove(object));
+    this.selectionComponentObjects.forEach((object) => this.removeFabricObject(object));
     this.selectionComponentObjects = [];
   }
 
   private clearHoverComponents(): void {
-    this.hoverComponentObjects.forEach((object) => this.canvas.remove(object));
+    this.hoverComponentObjects.forEach((object) => this.removeFabricObject(object));
     this.hoverComponentObjects = [];
   }
 
@@ -1186,7 +1189,7 @@ export class WallRenderer {
   }
 
   private clearDimensionLabels(): void {
-    this.dimensionObjects.forEach((obj) => this.canvas.remove(obj));
+    this.dimensionObjects.forEach((obj) => this.removeFabricObject(obj));
     this.dimensionObjects = [];
   }
 
@@ -1288,7 +1291,7 @@ export class WallRenderer {
   }
 
   clearSnapIndicators(): void {
-    this.snapIndicatorObjects.forEach((obj) => this.canvas.remove(obj));
+    this.snapIndicatorObjects.forEach((obj) => this.removeFabricObject(obj));
     this.snapIndicatorObjects = [];
   }
 
@@ -1363,7 +1366,7 @@ export class WallRenderer {
   }
 
   clearPreviewWall(): void {
-    this.previewObjects.forEach((obj) => this.canvas.remove(obj));
+    this.previewObjects.forEach((obj) => this.removeFabricObject(obj));
     this.previewObjects = [];
   }
 
@@ -1381,12 +1384,11 @@ export class WallRenderer {
     if (segments.length === 0) return;
     const style = resolveWallVisualStyleForMaterial(material, materialId);
     const patternCanvas = createWallPatternCanvas(style, 'plan-cut');
-    const inverseZoom = 1 / Math.max(this.canvas.getZoom(), 0.01);
     const previewFill: string | fabric.Pattern = patternCanvas
       ? new fabric.Pattern({
           source: patternCanvas,
           repeat: 'repeat',
-          patternTransform: [inverseZoom, 0, 0, inverseZoom, 0, 0],
+          patternTransform: wallPatternTransform(style.plan.repeatMm, patternCanvas.width),
         })
       : style.plan.fillColor;
 
@@ -1420,6 +1422,7 @@ export class WallRenderer {
         opacity: 0.82,
         objectCaching: false,
       });
+      preview.set('fill', anchorWallPatternToModel(previewFill, preview));
 
       this.canvas.add(preview);
       this.previewObjects.push(preview);
@@ -1476,20 +1479,20 @@ export class WallRenderer {
   private removeControlPoints(wallId: string): void {
     const controls = this.controlPointObjects.get(wallId);
     if (!controls) return;
-    controls.forEach((control) => this.canvas.remove(control));
+    controls.forEach((control) => this.removeFabricObject(control));
     this.controlPointObjects.delete(wallId);
   }
 
   private removeBoundaryControlPoints(selectionKey: string): void {
     const controls = this.boundaryControlPointObjects.get(selectionKey);
     if (!controls) return;
-    controls.forEach((control) => this.canvas.remove(control));
+    controls.forEach((control) => this.removeFabricObject(control));
     this.boundaryControlPointObjects.delete(selectionKey);
   }
 
   private clearBoundaryControlPoints(): void {
     this.boundaryControlPointObjects.forEach((controls) => {
-      controls.forEach((control) => this.canvas.remove(control));
+      controls.forEach((control) => this.removeFabricObject(control));
     });
     this.boundaryControlPointObjects.clear();
   }
@@ -2260,7 +2263,7 @@ export class WallRenderer {
     });
 
     this.controlPointObjects.forEach((controls, wallId) => {
-      controls.forEach((control) => this.canvas.remove(control));
+      controls.forEach((control) => this.removeFabricObject(control));
       void wallId;
     });
     this.controlPointObjects.clear();
@@ -2301,7 +2304,7 @@ export class WallRenderer {
   removeWall(wallId: string): void {
     const existing = this.wallObjects.get(wallId);
     if (existing) {
-      this.canvas.remove(existing);
+      this.removeFabricObject(existing);
       this.wallObjects.delete(wallId);
     }
     this.removeControlPoints(wallId);
@@ -2327,12 +2330,12 @@ export class WallRenderer {
       this.clearSelectionComponents();
       this.clearHoverComponents();
       this.clearDimensionLabels();
-      this.wallObjects.forEach((obj) => this.canvas.remove(obj));
+      this.wallObjects.forEach((obj) => this.removeFabricObject(obj));
       this.wallObjects.clear();
       this.wallData.clear();
 
       this.controlPointObjects.forEach((controls) => {
-        controls.forEach((control) => this.canvas.remove(control));
+        controls.forEach((control) => this.removeFabricObject(control));
       });
       this.controlPointObjects.clear();
       this.clearBoundaryControlPoints();
@@ -2664,7 +2667,7 @@ export class WallRenderer {
     this.clearDimensionLabels();
     this.clearSnapIndicators();
     this.clearPreviewWall();
-    this.wallObjects.forEach((obj) => this.canvas.remove(obj));
+    this.wallObjects.forEach((obj) => this.removeFabricObject(obj));
     this.wallObjects.clear();
     this.wallInteractionPolygons.clear();
     this.wallData.clear();
@@ -2673,7 +2676,7 @@ export class WallRenderer {
     this.selectedRoomBoundarySegments = [];
     this.hoveredWallId = null;
     this.controlPointObjects.forEach((controls) => {
-      controls.forEach((control) => this.canvas.remove(control));
+      controls.forEach((control) => this.removeFabricObject(control));
     });
     this.controlPointObjects.clear();
     this.clearBoundaryControlPoints();

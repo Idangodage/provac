@@ -12,20 +12,17 @@
  * which matches real DIS/REFNET practice (gas and liquid branch separately but
  * are installed as a coordinated set). So a branch on a paired run is two kits.
  *
- * IMPORTANT — this reuses the *existing* inline branch-kit placement model so
- * the proposed kits look identical to a hand-placed kit: each kit is placed
- * **on top of the intact run** with the full `branchKitSnap*` metadata that
- * {@link ./HvacPlanRenderer}'s `resolveInlineBranchKitRenderCenter` consumes
- * (segment, projected distance, source element, direction). The run is NOT
- * physically split — the renderer overlays the kit fitting on the continuous
- * pipe (the same way the manual placement tool does).
+ * Preview uses the planned physical service levels. Accepting the proposal replaces
+ * both host pipes with inlet/outlet runs connected to actual kit terminals.
+ * An incomplete replacement is rejected atomically. The catalog geometry is
+ * a layout aid; manufacturer/system capacity selection remains unverified.
  *
  * Two public entry points:
  *  - {@link proposeBranchKit} — geometry used every mouse move to drive the
  *    dashed ghost preview + the "Insert branch kit" card.
  *  - {@link buildBranchKitInsertion} — turns an accepted proposal into the
  *    concrete element additions: the two kit elements + the gas/liquid branch
- *    drop (no run elements are removed).
+ *    drop and replacement host runs.
  *
  * All distances are millimetres. This module is framework-free so it can be
  * unit-tested in isolation.
@@ -37,7 +34,17 @@ import {
 } from '../../../data/ac-equipment-library';
 import type { HvacElement, Point2D } from '../../../types';
 
-import { planBundleBypasses } from './pipeClashRouting';
+import { hasNewNetworkPipeClash } from './networkPipeClearance';
+import {
+  applyNetworkPipeLevels,
+  hasNetworkCornerRiser,
+  isNetworkLevelPlanCurrent,
+  networkFieldConnectionLevel,
+  planNetworkPipeLevels,
+  replanNetworkPipeRisers,
+  type NetworkPipeLevelPlan,
+} from './networkPipeLevels';
+import { buildOrthogonalConnectionRouteCandidates, type OrthogonalConnectionRouteOptions } from './orthogonalConnectionRoute';
 import {
   normalizePipeRouteNodes3d,
   splitPipeRoute3dAtPlanInterval,
@@ -61,18 +68,16 @@ import {
   buildRefrigerantPipeElements,
   findNearestRefrigerantPipeBundleSegmentTarget,
   findNearestRefrigerantPipeSegmentTarget,
+  getRefrigerantPipeBundleSegmentTargets,
+  getUnitPortApproachStraightMm,
   refrigerantBranchKitTerminalIds,
   resolveRefrigerantPipeSpec,
-  type RefrigerantPipeBundleConnection,
   type RefrigerantPipeBundleSegmentConnection,
+  type RefrigerantPipeBundleConnection,
   type RefrigerantPipeConnection,
   type RefrigerantPipeMaterial,
   type RefrigerantPipeSegmentConnection,
 } from './refrigerantPipePairModel';
-import {
-  findNearestVisibleRefrigerantPipeBundleSegmentTarget,
-  findNearestVisibleRefrigerantPipeSegmentTarget,
-} from './refrigerantPipeRenderState';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -143,6 +148,18 @@ export interface BranchKitProposal {
   target: BranchKitProposalTarget;
   /** True when the branch outlets were flipped to face the opposite side. */
   flip: boolean;
+  /** Source topology fixes inlet/outlet orientation; a visual flip would reverse it. */
+  orientationLocked?: boolean;
+  /** Geometry alone cannot establish an approved manufacturer kit selection. */
+  selectionStatus?: 'layout-only';
+  notes?: string[];
+  levelPlan?: NetworkPipeLevelPlan;
+  /** Exact selected guide, shared by the ghost preview and atomic insertion. */
+  connectionRoute?: Point2D[];
+  /** Explicit auto-route radius policy; absent for existing manual workflows. */
+  bendRadiusFactor?: number;
+  /** Geometric drafting issues may be solved by another level/station. */
+  failureReason?: 'approach' | 'interference' | 'levels' | 'station';
 }
 
 export interface ProposeBranchKitOptions {
@@ -153,6 +170,10 @@ export interface ProposeBranchKitOptions {
   /** Force the branch outlets to the flipped side (user pressed "Flip"). */
   flip?: boolean;
   settings?: PipeRoutingSettings;
+  authoredRoute?: readonly Point2D[];
+  bendRadiusFactor?: number;
+  /** Bounded background network searches already evaluate several stations. */
+  maxRecoveryStations?: number;
 }
 
 /** The concrete element additions produced when a proposal is accepted. */
@@ -160,13 +181,12 @@ export interface BranchKitInsertion {
   /** Kit pair + the gas/liquid branch drop, each with a fresh id. */
   elementsToAdd: HvacElement[];
   /**
-   * Element ids to delete. Empty for this engine — the run stays intact and the
-   * renderer overlays the kit fitting (the trim path is disabled, see
-   * HvacPlanRenderer). Kept in the shape for forward compatibility.
+   * Original host runs replaced by the fitting and connected inlet/outlet halves.
    */
   removeElementIds: string[];
   /** Ids of the two created kit elements (gas, liquid) for selection. */
   kitElementIds: string[];
+  updates?: HvacElement[];
 }
 
 // ---------------------------------------------------------------------------
@@ -198,47 +218,12 @@ function normalize(p: Point2D): Point2D {
 function midpoint(a: Point2D, b: Point2D): Point2D {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
-/** Nearest unit axis (±x or ±y) to a direction. */
-function snapToAxis(d: Point2D): Point2D {
-  return Math.abs(d.x) >= Math.abs(d.y)
-    ? { x: Math.sign(d.x) || 1, y: 0 }
-    : { x: 0, y: Math.sign(d.y) || 1 };
-}
 /** Drop consecutive duplicate points. */
 function dedupeConsecutive(points: Point2D[]): Point2D[] {
   return points.filter((point, index) => {
     const previous = points[index - 1];
     return !previous || distance(previous, point) > 1e-3;
   });
-}
-/**
- * Practical orthogonal (right-angle) route from a connection port to a joint
- * outlet: leave the port along its axis and arrive at the outlet along the
- * OUTLET axis (so the pair builder anchors the ends cleanly, not diagonally).
- * Perpendicular port/outlet axes give an L; parallel axes give a Z.
- */
-function buildOrthogonalConnectionRoute(
-  port: Point2D,
-  portDirection: Point2D,
-  outlet: Point2D,
-  outletDirection: Point2D,
-): Point2D[] {
-  const portAxis = snapToAxis(portDirection);
-  const outletAxis = snapToAxis(outletDirection);
-  const parallel = Math.abs(portAxis.x * outletAxis.x + portAxis.y * outletAxis.y) >= 0.5;
-  if (!parallel) {
-    // L: meet at the right-angle corner of the two axis lines, so the final leg
-    // runs along the outlet axis.
-    const corner =
-      Math.abs(portAxis.x) > 0 ? { x: outlet.x, y: port.y } : { x: port.x, y: outlet.y };
-    return dedupeConsecutive([port, corner, outlet]);
-  }
-  // Z: leave the port along its axis, jog across, then run along the outlet axis.
-  const stubMm = Math.min(150, Math.max(40, distance(port, outlet) * 0.3));
-  const leg = add(port, scale(portAxis, stubMm));
-  const corner =
-    Math.abs(portAxis.x) > 0 ? { x: leg.x, y: outlet.y } : { x: outlet.x, y: leg.y };
-  return dedupeConsecutive([port, leg, corner, outlet]);
 }
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -330,91 +315,99 @@ interface PlaceKitParams {
 function placeKitOnLineSegment(params: PlaceKitParams): BranchKitGhost | null {
   const { lineKind, segment, faceToward, clearanceMm } = params;
   const definition = kitDefinitionFor(lineKind);
-  if (!definition) {
-    return null;
-  }
+  if (!definition) return null;
+
   const baseProperties: Record<string, unknown> = {
     definitionId: definition.id,
     ...definition.defaultProperties,
   };
-  const model = buildRefrigerantBranchKitViewModel({
-    type: 'refrigerant-branch-kit',
-    subtype: definition.subtype,
-    modelLabel: definition.modelLabel,
-    properties: baseProperties,
-  });
-  const footprint = resolveLineKitFootprint(model, lineKind);
+  const buildRolledModel = (rollDeg: 0 | 180) => {
+    const properties = { ...baseProperties, branchKitRollDeg: rollDeg };
+    const model = buildRefrigerantBranchKitViewModel({
+      type: 'refrigerant-branch-kit',
+      subtype: definition.subtype,
+      modelLabel: definition.modelLabel,
+      properties,
+    });
+    return { model, properties, rollDeg };
+  };
+  const unrolled = buildRolledModel(0);
+  const footprint = resolveLineKitFootprint(unrolled.model, lineKind);
   const runDirection = normalize(segment.direction);
 
-  const minStation = footprint.requiredBackwardMm + clearanceMm;
-  const maxStation = segment.segmentLengthMm - footprint.requiredForwardMm - clearanceMm;
-  if (maxStation < minStation) {
-    return null; // run too short to host this kit with clearance
-  }
+  // A plan rotation chooses the through-flow direction. A 180-degree physical
+  // roll about the trunk independently chooses which side receives the branch.
+  // Both operations preserve the straight-through station and fitting reach.
+  const halfReachMm = Math.max(footprint.requiredBackwardMm, footprint.requiredForwardMm);
+  const minStation = halfReachMm + clearanceMm;
+  const maxStation = segment.segmentLengthMm - halfReachMm - clearanceMm;
+  if (maxStation < minStation) return null;
   const clampedStation = clamp(segment.projectedDistanceMm, minStation, maxStation);
   const nudged = Math.abs(clampedStation - segment.projectedDistanceMm) > 1;
   const stationPoint = add(segment.segmentStart, scale(runDirection, clampedStation));
-
   const baseRotationDeg = angleDeg(runDirection) - angleDeg(footprint.anchorDirectionLocal);
   const candidateRotations = [baseRotationDeg, baseRotationDeg + 180];
-  const evaluate = (rotationDeg: number) => {
-    const center = subtract(stationPoint, rotateDeg(footprint.anchorLocal, rotationDeg));
+  const rolledModels = [unrolled, buildRolledModel(180)];
+
+  const evaluated = candidateRotations.flatMap((rotationDeg) => rolledModels.map((candidate) => {
+    const candidateFootprint = resolveLineKitFootprint(candidate.model, lineKind);
+    const center = subtract(stationPoint, rotateDeg(candidateFootprint.anchorLocal, rotationDeg));
     const branchIdentity = resolveRefrigerantBranchKitConnectionIdentity({
-      model,
+      model: candidate.model,
       role: 'branch-outlet',
       lineSelection: lineKind,
       worldCenter: center,
       rotationDeg,
     });
     const inletIdentity = resolveRefrigerantBranchKitConnectionIdentity({
-      model,
+      model: candidate.model,
       role: 'inlet',
       lineSelection: lineKind,
       worldCenter: center,
       rotationDeg,
     });
-    if (!branchIdentity || !inletIdentity) {
-      return null;
-    }
+    if (!branchIdentity || !inletIdentity) return null;
     const branchOutletPoint = lineKind === 'gas'
-      ? branchIdentity.gasPoint
-      : branchIdentity.liquidPoint;
+      ? branchIdentity.gasPoint : branchIdentity.liquidPoint;
     const inletPoint = lineKind === 'gas' ? inletIdentity.gasPoint : inletIdentity.liquidPoint;
-    const upstreamScore = params.upstreamDirection
-      ? dot(normalize(subtract(inletPoint, stationPoint)), params.upstreamDirection)
-      : 0;
     return {
+      ...candidate,
+      footprint: candidateFootprint,
       rotationDeg,
       center,
       faceScore: distance(branchOutletPoint, faceToward),
-      upstreamScore,
+      upstreamScore: params.upstreamDirection
+        ? dot(normalize(subtract(inletPoint, stationPoint)), params.upstreamDirection) : 0,
     };
-  };
-  const evaluated = candidateRotations
-    .map(evaluate)
-    .filter((value): value is NonNullable<typeof value> => value !== null);
-  if (evaluated.length === 0) {
-    return null;
+  }).filter((value): value is NonNullable<typeof value> => value !== null));
+  if (evaluated.length === 0) return null;
+
+  const compareBranchSide = (
+    left: (typeof evaluated)[number],
+    right: (typeof evaluated)[number],
+  ) => left.faceScore - right.faceScore || left.rollDeg - right.rollDeg;
+  let chosen: (typeof evaluated)[number];
+  if (params.upstreamDirection) {
+    evaluated.sort((left, right) => {
+      const upstreamDifference = right.upstreamScore - left.upstreamScore;
+      return Math.abs(upstreamDifference) > 1e-6
+        ? upstreamDifference
+        : compareBranchSide(left, right);
+    });
+    chosen = evaluated[0]!;
+  } else {
+    // Reverse inlet direction still selects the opposite through-flow choice;
+    // the joint roll is optimized inside each choice and does not hijack Flip.
+    const flowChoices = candidateRotations.map((rotationDeg) => evaluated
+      .filter((candidate) => Math.abs(candidate.rotationDeg - rotationDeg) < 0.01)
+      .sort(compareBranchSide)[0]!)
+      .sort(compareBranchSide);
+    chosen = params.flip && flowChoices.length > 1 ? flowChoices[1]! : flowChoices[0]!;
   }
-  evaluated.sort((a, b) => {
-    if (params.upstreamDirection) {
-      const flowDifference = b.upstreamScore - a.upstreamScore;
-      if (Math.abs(flowDifference) > 1e-6) return flowDifference;
-    }
-    const faceDifference = a.faceScore - b.faceScore;
-    if (Math.abs(faceDifference) > 1e-6) return faceDifference;
-    return a.rotationDeg - b.rotationDeg;
-  });
-  // When topology identifies upstream, inlet/run roles are fixed and Flip must
-  // not reverse refrigerant flow. With no known source, preserve the legacy
-  // branch-side choice as a deterministic fallback.
-  const chosen = !params.upstreamDirection && params.flip && evaluated.length > 1
-    ? evaluated[1]!
-    : evaluated[0]!;
 
   const terminalIdentity = (role: 'inlet' | 'run-outlet' | 'branch-outlet') =>
     resolveRefrigerantBranchKitConnectionIdentity({
-      model,
+      model: chosen.model,
       role,
       lineSelection: lineKind,
       worldCenter: chosen.center,
@@ -423,9 +416,7 @@ function placeKitOnLineSegment(params: PlaceKitParams): BranchKitGhost | null {
   const inletId = terminalIdentity('inlet');
   const runOutletId = terminalIdentity('run-outlet');
   const branchOutletId = terminalIdentity('branch-outlet');
-  if (!inletId || !runOutletId || !branchOutletId) {
-    return null;
-  }
+  if (!inletId || !runOutletId || !branchOutletId) return null;
   const pick = (id: NonNullable<ReturnType<typeof resolveRefrigerantBranchKitConnectionIdentity>>) =>
     lineKind === 'gas'
       ? { point: id.gasPoint, direction: id.gasDirection }
@@ -433,11 +424,10 @@ function placeKitOnLineSegment(params: PlaceKitParams): BranchKitGhost | null {
   const inlet = pick(inletId);
   const runOutlet = pick(runOutletId);
   const branchOutlet = pick(branchOutletId);
-  const line = lineKind === 'gas' ? model.gas : model.liquid;
-
+  const line = lineKind === 'gas' ? chosen.model.gas : chosen.model.liquid;
   const position: Point2D = {
-    x: chosen.center.x - model.widthMm / 2,
-    y: chosen.center.y - model.depthMm / 2,
+    x: chosen.center.x - chosen.model.widthMm / 2,
+    y: chosen.center.y - chosen.model.depthMm / 2,
   };
   const element: Omit<HvacElement, 'id'> = {
     type: 'refrigerant-branch-kit',
@@ -446,21 +436,18 @@ function placeKitOnLineSegment(params: PlaceKitParams): BranchKitGhost | null {
     modelLabel: definition.modelLabel,
     position,
     rotation: chosen.rotationDeg,
-    width: model.widthMm,
-    depth: model.depthMm,
-    height: model.heightMm,
-    elevation: definition.elevationMm,
+    width: chosen.model.widthMm,
+    depth: chosen.model.depthMm,
+    height: chosen.model.heightMm,
+    elevation: segment.elevationMm - line.centerlineZMm,
     mountType: 'ceiling',
     label: definition.name,
     supplyZoneRatio: definition.supplyZoneRatio ?? 0.5,
     properties: {
-      ...baseProperties,
-      // Full inline-snap metadata — identical shape to the manual placement
-      // tool so HvacPlanRenderer.resolveInlineBranchKitRenderCenter glues the
-      // kit to the run exactly like a hand-placed kit.
-      branchKitPlacementMode: 'inline-pipe-run',
+      ...chosen.properties,
+      branchKitPlacementMode: 'fixed',
       branchKitSnapLineKind: lineKind,
-      branchKitSnapAnchorLocal: footprint.anchorLocal,
+      branchKitSnapAnchorLocal: chosen.footprint.anchorLocal,
       branchKitSnapSourceElementId: segment.sourceElementId ?? null,
       branchKitSnapConnectionKind: 'field-pipe',
       branchKitSnapPoint: stationPoint,
@@ -469,6 +456,7 @@ function placeKitOnLineSegment(params: PlaceKitParams): BranchKitGhost | null {
       branchKitSnapSegmentEnd: segment.segmentEnd,
       branchKitSnapProjectedDistanceMm: clampedStation,
       routeClass: 'branch',
+      branchKitSelectionStatus: 'layout-only',
     },
   };
 
@@ -525,17 +513,51 @@ function elementCenter(element: HvacElement): Point2D {
   };
 }
 
-function isPointInsideExpandedBox(
-  point: Point2D,
-  element: HvacElement,
+function kitOverlapsUnitClearance(
+  ghost: BranchKitGhost,
+  unit: HvacElement,
   marginMm: number,
 ): boolean {
-  return (
-    point.x >= element.position.x - marginMm &&
-    point.x <= element.position.x + element.width + marginMm &&
-    point.y >= element.position.y - marginMm &&
-    point.y <= element.position.y + element.depth + marginMm
-  );
+  // Separating-axis test includes the entire fitting and rotated unit body;
+  // testing only the tee station misses sockets intruding into equipment.
+  const corners = (center: Point2D, width: number, depth: number, rotation: number) =>
+    [
+      { x: -width / 2, y: -depth / 2 }, { x: width / 2, y: -depth / 2 },
+      { x: width / 2, y: depth / 2 }, { x: -width / 2, y: depth / 2 },
+    ].map((point) => add(center, rotateDeg(point, rotation)));
+  const kitCorners = corners(ghost.center, ghost.element.width, ghost.element.depth, ghost.rotationDeg);
+  const unitCorners = corners(elementCenter(unit), unit.width + marginMm * 2, unit.depth + marginMm * 2, unit.rotation);
+  const axes = [ghost.rotationDeg, unit.rotation]
+    .flatMap((rotation) => [rotateDeg({ x: 1, y: 0 }, rotation), rotateDeg({ x: 0, y: 1 }, rotation)]);
+  return axes.every((axis) => {
+    const kitValues = kitCorners.map((point) => dot(point, axis));
+    const unitValues = unitCorners.map((point) => dot(point, axis));
+    return Math.max(...kitValues) >= Math.min(...unitValues) &&
+      Math.max(...unitValues) >= Math.min(...kitValues);
+  });
+}
+
+function branchStationClearanceViolation(
+  gasGhost: BranchKitGhost,
+  liquidGhost: BranchKitGhost,
+  teePoint: Point2D,
+  scene: readonly HvacElement[],
+  settings: PipeRoutingSettings,
+): string | null {
+  const minKitSpacingMm = resolveMinBranchKitSpacingMm(settings);
+  const unitClearanceMm = Math.max(0, settings.defaultUnitClearanceMm);
+  for (const element of scene) {
+    if (element.type === 'refrigerant-branch-kit'
+      && distance(elementCenter(element), teePoint) < minKitSpacingMm) {
+      return 'Too close to an existing branch kit.';
+    }
+    if (isIndoorUnitElement(element)
+      && (kitOverlapsUnitClearance(gasGhost, element, unitClearanceMm)
+        || kitOverlapsUnitClearance(liquidGhost, element, unitClearanceMm))) {
+      return 'Inside an indoor unit clearance zone.';
+    }
+  }
+  return null;
 }
 
 function resolveMinBranchKitSpacingMm(settings: PipeRoutingSettings): number {
@@ -550,6 +572,25 @@ function resolveMinBranchKitSpacingMm(settings: PipeRoutingSettings): number {
 function estimateMinRunLengthMm(): number {
   const gasDefinition = kitDefinitionFor('gas');
   return (gasDefinition?.widthMm ?? 442) + 1;
+}
+
+function resolveBranchFaceToward(
+  startBundle: RefrigerantPipeBundleConnection,
+  targetLinePoint: Point2D,
+  runDirection: Point2D,
+  authoredRoute?: readonly Point2D[],
+): Point2D {
+  const normal = { x: -runDirection.y, y: runDirection.x };
+  if (authoredRoute) {
+    for (let index = authoredRoute.length - 1; index >= 0; index -= 1) {
+      const point = authoredRoute[index];
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+      // A point on the trunk carries no takeoff-side intent. Work backwards to
+      // the last waypoint that clearly establishes the authored approach side.
+      if (Math.abs(dot(subtract(point, targetLinePoint), normal)) > 1) return point;
+    }
+  }
+  return startBundle.point ?? targetLinePoint;
 }
 
 // ---------------------------------------------------------------------------
@@ -809,17 +850,146 @@ function findLineSegmentNear(
   point: Point2D,
   radiusMm: number,
   minSegmentLengthMm: number,
+  sourceElementId?: string,
 ): RefrigerantPipeSegmentConnection | null {
-  return (
-    findNearestRefrigerantPipeSegmentTarget(scene, point, radiusMm, {
-      lineKind,
-      minSegmentLengthMm,
-    }) ??
-    (findNearestVisibleRefrigerantPipeSegmentTarget(scene, point, radiusMm, {
-      lineKind,
-      minSegmentLengthMm,
-    }) as unknown as RefrigerantPipeSegmentConnection | null)
+  const candidates = sourceElementId
+    ? scene.filter((element) => element.id === sourceElementId)
+    : scene;
+  const target = findNearestRefrigerantPipeSegmentTarget(candidates, point, radiusMm, { lineKind, minSegmentLengthMm });
+  return target && sourceElementId ? { ...target, sourceElementId } : target;
+}
+
+function kitStationInterval(
+  lineKind: RefrigerantBranchLineKind,
+  segment: RefrigerantPipeSegmentConnection,
+  direction: Point2D,
+  clearanceMm: number,
+): { minimum: number; maximum: number } {
+  const definition = kitDefinitionFor(lineKind)!;
+  const model = buildRefrigerantBranchKitViewModel({
+    type: 'refrigerant-branch-kit',
+    subtype: definition.subtype,
+    modelLabel: definition.modelLabel,
+    properties: definition.defaultProperties ?? {},
+  });
+  const footprint = resolveLineKitFootprint(model, lineKind);
+  const margin = Math.max(footprint.requiredBackwardMm, footprint.requiredForwardMm) + clearanceMm;
+  const start = dot(segment.segmentStart, direction);
+  const end = dot(segment.segmentEnd, direction);
+  return { minimum: Math.min(start, end) + margin, maximum: Math.max(start, end) - margin };
+}
+
+function segmentAtScalar(
+  segment: RefrigerantPipeSegmentConnection,
+  scalar: number,
+  direction: Point2D,
+): RefrigerantPipeSegmentConnection {
+  const shift = scalar - dot(segment.point, direction);
+  const point = add(segment.point, scale(direction, shift));
+  return {
+    ...segment,
+    point,
+    projectedDistanceMm: dot(subtract(point, segment.segmentStart), normalize(segment.direction)),
+  };
+}
+
+function projectBundleTargetAtPoint(
+  target: RefrigerantPipeBundleSegmentConnection,
+  point: Point2D,
+): RefrigerantPipeBundleSegmentConnection {
+  const direction = normalize(subtract(target.segmentEnd, target.segmentStart));
+  const lengthMm = distance(target.segmentStart, target.segmentEnd);
+  const projectedDistanceMm = clamp(
+    dot(subtract(point, target.segmentStart), direction),
+    0,
+    lengthMm,
   );
+  const scalar = dot(target.segmentStart, direction) + projectedDistanceMm;
+  const moveToScalar = (linePoint: Point2D) =>
+    add(linePoint, scale(direction, scalar - dot(linePoint, direction)));
+  const bundlePoint = add(target.segmentStart, scale(direction, projectedDistanceMm));
+  const gasPoint = moveToScalar(target.gasPoint);
+  const liquidPoint = moveToScalar(target.liquidPoint);
+  return {
+    ...target,
+    point: bundlePoint,
+    gasPoint,
+    liquidPoint,
+    gasFieldPoint: gasPoint,
+    liquidFieldPoint: liquidPoint,
+    direction,
+    segmentLengthMm: lengthMm,
+    projectedDistanceMm,
+  };
+}
+
+interface BranchRecoveryStation {
+  point: Point2D;
+  target: RefrigerantPipeBundleSegmentConnection;
+  movementMm: number;
+}
+
+/**
+ * Build a small, deterministic nearest-first search over every eligible level
+ * straight belonging to the originally selected physical gas/liquid hosts.
+ * Local increments handle common fitting/clearance conflicts; interval ends and
+ * broad span fractions cover long or heavily obstructed mains without a dense
+ * scan on every pointer move. Every returned station still receives the full
+ * topology, level, straight-length, unit-clearance, and pipe-clash validation.
+ */
+function branchRecoveryStations(
+  scene: HvacElement[],
+  first: BranchKitProposal,
+  cursorPoint: Point2D,
+  settings: PipeRoutingSettings,
+): BranchRecoveryStation[] {
+  const gasId = first.gasGhost.element.properties.branchKitSnapSourceElementId;
+  const liquidId = first.liquidGhost.element.properties.branchKitSnapSourceElementId;
+  if (typeof gasId !== 'string' || typeof liquidId !== 'string') return [];
+  const hosts = scene.filter((element) => element.id === gasId || element.id === liquidId);
+  const targets = getRefrigerantPipeBundleSegmentTargets(hosts, {
+    minSegmentLengthMm: estimateMinRunLengthMm(),
+  }).filter((target) => target.gasSourceElementId === gasId
+    && target.liquidSourceElementId === liquidId);
+  const fittingMarginMm = estimateMinRunLengthMm() / 2
+    + Math.max(0, settings.defaultBranchKitClearanceMm);
+  const incrementMm = Math.max(200, Math.min(300, settings.defaultBranchKitClearanceMm || 250));
+  const offsetFactors = [1, 3, 7];
+  const candidates: BranchRecoveryStation[] = [];
+  const seen = new Set<string>();
+
+  for (const target of targets) {
+    const direction = normalize(subtract(target.segmentEnd, target.segmentStart));
+    const lengthMm = distance(target.segmentStart, target.segmentEnd);
+    const minimum = fittingMarginMm;
+    const maximum = lengthMm - fittingMarginMm;
+    if (maximum < minimum) continue;
+    const desired = clamp(dot(subtract(cursorPoint, target.segmentStart), direction), minimum, maximum);
+    const stations = [
+      desired,
+      ...offsetFactors.flatMap((factor) => [
+        desired - incrementMm * factor,
+        desired + incrementMm * factor,
+      ]),
+      minimum,
+      maximum,
+      minimum + (maximum - minimum) * 0.25,
+      minimum + (maximum - minimum) * 0.5,
+      minimum + (maximum - minimum) * 0.75,
+    ];
+    for (const rawStation of stations) {
+      const station = clamp(rawStation, minimum, maximum);
+      const point = add(target.segmentStart, scale(direction, station));
+      const key = `${gasId}\u0000${liquidId}\u0000${point.x.toFixed(3)}\u0000${point.y.toFixed(3)}`;
+      if (seen.has(key) || distance(point, first.teePoint) <= 0.5) continue;
+      seen.add(key);
+      candidates.push({ point, target, movementMm: distance(cursorPoint, point) });
+    }
+  }
+  return candidates
+    .sort((left, right) => left.movementMm - right.movementMm
+      || left.point.x - right.point.x || left.point.y - right.point.y)
+    .slice(0, 16);
 }
 
 export function proposeBranchKit(
@@ -828,29 +998,172 @@ export function proposeBranchKit(
   cursorPoint: Point2D,
   options?: ProposeBranchKitOptions,
 ): BranchKitProposal | null {
+  if (!startBundle) return null;
+  const settings = options?.settings ?? getActivePipeRoutingSettings();
+  // Recovery stations reuse the same immutable level plan. Its three service
+  // fallback variants need rebuilding only once during this proposal search.
+  const riserPlanVariants = new Map<NetworkPipeLevelPlan, NetworkPipeLevelPlan[]>();
+  const recoveryLevelPlans = new Map<string, {
+    plans: NetworkPipeLevelPlan[];
+    excludedLevels: Array<{ gas: number; liquid: number }>;
+    complete: boolean;
+  }>();
+  const levelPlanForTarget = (
+    target: RefrigerantPipeBundleSegmentConnection,
+    requestedIndex: number,
+  ): NetworkPipeLevelPlan | undefined => {
+    const key = [
+      target.gasSourceElementId,
+      target.liquidSourceElementId,
+      target.gasElevationMm,
+      target.liquidElevationMm,
+    ].join('\u0000');
+    const state = recoveryLevelPlans.get(key) ?? {
+      plans: [],
+      excludedLevels: [],
+      complete: false,
+    };
+    recoveryLevelPlans.set(key, state);
+    while (state.plans.length <= requestedIndex && !state.complete && state.plans.length < 4) {
+      const plan = planNetworkPipeLevels(scene, {
+        gasHostId: target.gasSourceElementId ?? '',
+        liquidHostId: target.liquidSourceElementId ?? '',
+        startBundle,
+        gasHostElevationMm: target.gasElevationMm,
+        liquidHostElevationMm: target.liquidElevationMm,
+        settings,
+        excludedLevels: state.excludedLevels,
+      });
+      state.plans.push(plan);
+      state.complete = !plan.feasible || state.plans.length >= 4;
+      if (plan.feasible) {
+        state.excludedLevels.push({ gas: plan.gasElevationMm, liquid: plan.liquidElevationMm });
+      }
+    }
+    return state.plans[requestedIndex];
+  };
+  const evaluateStation = (
+    point: Point2D,
+  ): BranchKitProposal | null => {
+    const failedLevels: Array<{ gas: number; liquid: number }> = [];
+    let candidate = proposeBranchKitAtStation(
+      scene,
+      startBundle,
+      point,
+      options,
+      failedLevels,
+      undefined,
+      undefined,
+      riserPlanVariants,
+    );
+    // A failed takeoff is feedback to the level planner. Try the bounded set of
+    // alternative corridors at this exact station before moving the fitting.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (!candidate || candidate.validity !== 'invalid'
+        || candidate.failureReason === 'station' || !candidate.failureReason
+        || !candidate.levelPlan?.feasible) break;
+      failedLevels.push({
+        gas: candidate.levelPlan.gasElevationMm,
+        liquid: candidate.levelPlan.liquidElevationMm,
+      });
+      candidate = proposeBranchKitAtStation(
+        scene,
+        startBundle,
+        point,
+        options,
+        failedLevels,
+        undefined,
+        undefined,
+        riserPlanVariants,
+      );
+    }
+    return candidate;
+  };
+
+  const first = evaluateStation(cursorPoint);
+  if (!first || first.validity !== 'invalid' || !first.failureReason) return first;
+  const sameHost = (candidate: BranchKitProposal) =>
+    candidate.gasGhost.element.properties.branchKitSnapSourceElementId === first.gasGhost.element.properties.branchKitSnapSourceElementId
+    && candidate.liquidGhost.element.properties.branchKitSnapSourceElementId === first.liquidGhost.element.properties.branchKitSnapSourceElementId;
+
+  // Search all eligible level straights on the selected physical pair and rank
+  // complete, clash-checked insertions by movement from the user's cursor. This
+  // covers long mains and bends without silently switching to a nearby network.
+  const recoveries = branchRecoveryStations(scene, first, cursorPoint, settings)
+    .slice(0, Math.max(0, Math.min(16, options?.maxRecoveryStations ?? 16)));
+  // Prefer the level planner's lowest-cost corridor across the searched main
+  // before considering its next corridor. This minimizes network transitions
+  // and vertical travel while station order minimizes movement within a level.
+  for (let levelIndex = 0; levelIndex < 4; levelIndex += 1) {
+    for (const recovery of recoveries) {
+      const levelPlan = levelPlanForTarget(recovery.target, levelIndex);
+      if (!levelPlan) continue;
+      const candidate = proposeBranchKitAtStation(
+        scene,
+        startBundle,
+        recovery.point,
+        options,
+        undefined,
+        recovery.target,
+        levelPlan,
+        riserPlanVariants,
+      );
+      if (!candidate || !sameHost(candidate) || candidate.validity === 'invalid') continue;
+      candidate.validity = 'needs-nudge';
+      candidate.gasGhost.nudged = true;
+      candidate.liquidGhost.nudged = true;
+      const movementMm = distance(cursorPoint, candidate.teePoint);
+      candidate.score += movementMm;
+      candidate.violations = [
+        `Branch position adjusted for clearance (${Math.round(movementMm)} mm from pointer).`,
+        ...candidate.violations,
+      ];
+      return candidate;
+    }
+  }
+  return first;
+}
+
+function proposeBranchKitAtStation(
+  scene: HvacElement[],
+  startBundle: RefrigerantPipeBundleConnection | null,
+  cursorPoint: Point2D,
+  options?: ProposeBranchKitOptions,
+  excludedLevels?: Array<{ gas: number; liquid: number }>,
+  preferredTarget?: RefrigerantPipeBundleSegmentConnection,
+  preferredLevelPlan?: NetworkPipeLevelPlan,
+  riserPlanVariants = new Map<NetworkPipeLevelPlan, NetworkPipeLevelPlan[]>(),
+): BranchKitProposal | null {
   if (!startBundle) {
     return null;
   }
   const settings = options?.settings ?? getActivePipeRoutingSettings();
   const proposalRadiusMm = options?.proposalRadiusMm ?? Math.max(140, settings.snapRadiusPx * 8);
   const excludeSourceIds = new Set(options?.excludeSourceIds ?? []);
-  if (startBundle.sourceElementId) {
-    excludeSourceIds.add(startBundle.sourceElementId);
-  }
+  [startBundle.sourceElementId, startBundle.gasSourceElementId, startBundle.liquidSourceElementId]
+    .forEach((id) => { if (id) excludeSourceIds.add(id); });
+  // Exclude before ranking: hovering the source must not hide an eligible
+  // nearby run or accidentally join a line back into its own bundle.
+  const candidateScene = scene.filter((element) =>
+    !excludeSourceIds.has(element.id) &&
+    !(typeof element.properties.bundleId === 'string' && excludeSourceIds.has(element.properties.bundleId)));
   const minSegmentLengthMm = estimateMinRunLengthMm();
 
   // The bundle target gives a consistent gas+liquid station + run direction.
-  const modelBundleTarget = findNearestRefrigerantPipeBundleSegmentTarget(
-    scene,
-    cursorPoint,
-    proposalRadiusMm,
-    { minSegmentLengthMm },
-  );
-  const bundleTarget: RefrigerantPipeBundleSegmentConnection | null =
-    modelBundleTarget ??
-    (findNearestVisibleRefrigerantPipeBundleSegmentTarget(scene, cursorPoint, proposalRadiusMm, {
-      minSegmentLengthMm,
-    }) as unknown as RefrigerantPipeBundleSegmentConnection | null);
+  const modelBundleTarget = preferredTarget
+    ? projectBundleTargetAtPoint(preferredTarget, cursorPoint)
+    : findNearestRefrigerantPipeBundleSegmentTarget(
+        candidateScene,
+        cursorPoint,
+        proposalRadiusMm,
+        { minSegmentLengthMm },
+      ) ?? findNearestRefrigerantPipeBundleSegmentTarget(
+        candidateScene,
+        cursorPoint,
+        proposalRadiusMm,
+        { minSegmentLengthMm: 1 },
+      );
+  const bundleTarget = modelBundleTarget;
   if (!bundleTarget) {
     return null;
   }
@@ -888,28 +1201,104 @@ export function proposeBranchKit(
     stationAlong - dot(subtract(target.liquidPoint, target.segmentStart), runDirection);
   const liquidStationPoint = add(target.liquidPoint, scale(runDirection, liquidStationDelta));
 
-  const gasSegment = findLineSegmentNear(scene, 'gas', gasStationPoint, proposalRadiusMm, minSegmentLengthMm);
-  const liquidSegment = findLineSegmentNear(
-    scene,
+  const targetSegmentMinimumMm = Math.min(minSegmentLengthMm, bundleTarget.segmentLengthMm);
+  let gasSegment = findLineSegmentNear(candidateScene, 'gas', gasStationPoint, proposalRadiusMm, targetSegmentMinimumMm, bundleTarget.gasSourceElementId);
+  let liquidSegment = findLineSegmentNear(
+    candidateScene,
     'liquid',
     liquidStationPoint,
     proposalRadiusMm,
-    minSegmentLengthMm,
+    targetSegmentMinimumMm,
+    bundleTarget.liquidSourceElementId,
   );
   if (!gasSegment || !liquidSegment) {
     return null;
   }
 
   const clearanceMm = Math.max(0, settings.defaultBranchKitClearanceMm);
-  const faceToward = startBundle.point ?? cursorPoint;
-  const upstreamDirection = combineUpstreamDirections(
-    resolveHostRunUpstreamDirection(scene, gasSegment, 'gas'),
-    resolveHostRunUpstreamDirection(scene, liquidSegment, 'liquid'),
+  const faceToward = resolveBranchFaceToward(
+    startBundle,
+    midpoint(gasStationPoint, liquidStationPoint),
+    runDirection,
+    options?.authoredRoute,
   );
+  const gasUpstream = resolveHostRunUpstreamDirection(scene, gasSegment, 'gas');
+  const liquidUpstream = resolveHostRunUpstreamDirection(scene, liquidSegment, 'liquid');
+  const conflictingUpstream = Boolean(gasUpstream && liquidUpstream && dot(gasUpstream, liquidUpstream) < 0.5);
+  const upstreamDirection = combineUpstreamDirections(gasUpstream, liquidUpstream);
   // A 180-degree proposal flip swaps inlet/run-outlet. Once the outdoor side is
   // known it is therefore intentionally a no-op; only unconstrained legacy
   // routes keep the old visual flip fallback.
   const flip = upstreamDirection ? false : (options?.flip ?? false);
+  const plannedLevels = preferredLevelPlan ?? planNetworkPipeLevels(scene, {
+    gasHostId: gasSegment.sourceElementId ?? '', liquidHostId: liquidSegment.sourceElementId ?? '',
+    startBundle, gasHostElevationMm: gasSegment.elevationMm, liquidHostElevationMm: liquidSegment.elevationMm, settings,
+    excludedLevels,
+  });
+  // Station-specific checks may mark a corridor unsuitable; never mutate a
+  // cached plan shared by the remaining nearest-station candidates.
+  let levelPlan: NetworkPipeLevelPlan = {
+    ...plannedLevels,
+    issues: [...plannedLevels.issues],
+    notes: [...plannedLevels.notes],
+  };
+  const stationRiserFallbacks: Partial<Record<'gas' | 'liquid', boolean>> = {};
+  if (levelPlan.feasible) {
+    const gasHostSegment = gasSegment; const liquidHostSegment = liquidSegment;
+    const segmentsAtPlannedLevels = (plan: NetworkPipeLevelPlan) => {
+      const overrides = new Map(plan.updates.map(element => [element.id, element]));
+      const plannedScene = scene.map(element => overrides.get(element.id) ?? element);
+      return {
+        gas: findLineSegmentNear(plannedScene, 'gas', gasStationPoint, Math.max(proposalRadiusMm, gasHostSegment.segmentLengthMm), targetSegmentMinimumMm, gasHostSegment.sourceElementId),
+        liquid: findLineSegmentNear(plannedScene, 'liquid', liquidStationPoint, Math.max(proposalRadiusMm, liquidHostSegment.segmentLengthMm), targetSegmentMinimumMm, liquidHostSegment.sourceElementId),
+      };
+    };
+    let { gas: plannedGas, liquid: plannedLiquid } = segmentsAtPlannedLevels(levelPlan);
+    const gasAtCorridor = plannedGas && Math.abs(plannedGas.elevationMm - levelPlan.gasElevationMm) < 0.5;
+    const liquidAtCorridor = plannedLiquid && Math.abs(plannedLiquid.elevationMm - levelPlan.liquidElevationMm) < 0.5;
+    if (!gasAtCorridor || !liquidAtCorridor) {
+      // Moving an outdoor riser to a distant corner must not consume a main
+      // station needed by this branch. Reserve that station by shortening only
+      // the affected service's equipment-level approach, at the same levels.
+      if (!gasAtCorridor) stationRiserFallbacks.gas = false;
+      if (!liquidAtCorridor) stationRiserFallbacks.liquid = false;
+      const restored = replanNetworkPipeRisers(scene, levelPlan, levelPlan.preferCornerRisers ?? true,
+        { ...levelPlan.cornerRisersByService, ...stationRiserFallbacks });
+      if (restored.feasible) {
+        const segments = segmentsAtPlannedLevels(restored);
+        if (segments.gas && segments.liquid
+          && Math.abs(segments.gas.elevationMm - restored.gasElevationMm) < 0.5
+          && Math.abs(segments.liquid.elevationMm - restored.liquidElevationMm) < 0.5) {
+          levelPlan = restored;
+          plannedGas = segments.gas; plannedLiquid = segments.liquid;
+        }
+      }
+    }
+    if (plannedGas && plannedLiquid && Math.abs(plannedGas.elevationMm - levelPlan.gasElevationMm) < 0.5 && Math.abs(plannedLiquid.elevationMm - levelPlan.liquidElevationMm) < 0.5) {
+      gasSegment = plannedGas; liquidSegment = plannedLiquid;
+      target.gasElevationMm = levelPlan.gasElevationMm;
+      target.liquidElevationMm = levelPlan.liquidElevationMm;
+      target.elevationMm = (levelPlan.gasElevationMm + levelPlan.liquidElevationMm) / 2;
+    }
+    else {
+      levelPlan.feasible = false;
+      levelPlan.issues.push('Move the branch along the main, beyond the equipment level transition and fitting straight zones.');
+    }
+  }
+  const gasInterval = kitStationInterval('gas', gasSegment, runDirection, clearanceMm);
+  const liquidInterval = kitStationInterval('liquid', liquidSegment, runDirection, clearanceMm);
+  const minimum = Math.max(gasInterval.minimum, liquidInterval.minimum);
+  const maximum = Math.min(gasInterval.maximum, liquidInterval.maximum);
+  if (maximum < minimum) {
+    const invalid = buildInvalidProposal(target, gasStationPoint, liquidStationPoint, startBundle, flip, upstreamDirection,
+      { gas: gasSegment.sourceElementId, liquid: liquidSegment.sourceElementId });
+    return invalid ? { ...invalid, levelPlan, failureReason: 'station' } : null;
+  }
+  const desiredScalar = dot(gasStationPoint, runDirection);
+  const coordinatedScalar = clamp(desiredScalar, minimum, maximum);
+  const coordinatedNudge = Math.abs(coordinatedScalar - desiredScalar) > 1;
+  gasSegment = segmentAtScalar(gasSegment, coordinatedScalar, runDirection);
+  liquidSegment = segmentAtScalar(liquidSegment, coordinatedScalar, runDirection);
   const gasGhost = placeKitOnLineSegment({
     lineKind: 'gas',
     segment: gasSegment,
@@ -939,34 +1328,37 @@ export function proposeBranchKit(
       startBundle,
       flip,
       upstreamDirection,
+      { gas: gasSegment.sourceElementId, liquid: liquidSegment.sourceElementId },
     );
   }
-  if (gasGhost.nudged || liquidGhost.nudged) {
+  if (coordinatedNudge || gasGhost.nudged || liquidGhost.nudged) {
+    gasGhost.nudged = true;
+    liquidGhost.nudged = true;
     validity = 'needs-nudge';
     violations.push('Kit slid along the run to keep clearance from the run ends.');
   }
+  if (conflictingUpstream) {
+    validity = 'invalid';
+    violations.unshift('Gas and liquid identify opposite outdoor sides. Check the host connections.');
+  }
+  if (!levelPlan.feasible) { validity = 'invalid'; violations.unshift(...levelPlan.issues); }
 
   const teePoint = midpoint(gasGhost.stationPoint, liquidGhost.stationPoint);
+  let stationBlocked = false;
 
-  // Clearance from existing branch kits and indoor-unit bodies.
-  const minKitSpacingMm = resolveMinBranchKitSpacingMm(settings);
-  for (const element of scene) {
-    if (element.type === 'refrigerant-branch-kit') {
-      if (distance(elementCenter(element), teePoint) < minKitSpacingMm) {
-        validity = 'invalid';
-        violations.unshift('Too close to an existing branch kit.');
-        break;
-      }
-    }
-  }
+  // Clearance from existing branch kits and complete indoor-unit bodies.
   if (validity !== 'invalid') {
-    const unitClearanceMm = Math.max(0, settings.defaultUnitClearanceMm);
-    for (const element of scene) {
-      if (isIndoorUnitElement(element) && isPointInsideExpandedBox(teePoint, element, unitClearanceMm)) {
-        validity = 'invalid';
-        violations.unshift('Inside an indoor unit clearance zone.');
-        break;
-      }
+    const clearanceViolation = branchStationClearanceViolation(
+      gasGhost,
+      liquidGhost,
+      teePoint,
+      scene,
+      settings,
+    );
+    if (clearanceViolation) {
+      validity = 'invalid';
+      stationBlocked = true;
+      violations.unshift(clearanceViolation);
     }
   }
 
@@ -976,8 +1368,10 @@ export function proposeBranchKit(
   const invalidPenalty = validity === 'invalid' ? 10000 : 0;
   const score = cursorPenalty + nudgePenalty + invalidPenalty;
 
-  return {
+  const proposal: BranchKitProposal = {
     connectionType,
+    ...(typeof options?.bendRadiusFactor === 'number' && Number.isFinite(options.bendRadiusFactor) && options.bendRadiusFactor > 0
+      ? { bendRadiusFactor: options.bendRadiusFactor } : {}),
     validity,
     violations,
     score,
@@ -987,7 +1381,118 @@ export function proposeBranchKit(
     liquidGhost,
     target,
     flip,
+    orientationLocked: Boolean(upstreamDirection),
+    selectionStatus: 'layout-only',
+    levelPlan,
+    ...(!conflictingUpstream && stationBlocked ? { failureReason: 'station' as const }
+      : !levelPlan.feasible && !conflictingUpstream ? { failureReason: 'levels' as const } : {}),
+    notes: [
+      'Kit sizing and system compatibility need manufacturer verification.',
+      ...(!upstreamDirection ? ['Outdoor-side direction is unresolved; check the inlet orientation.'] : []),
+    ],
   };
+  if (proposal.validity !== 'invalid') {
+    const route = options?.authoredRoute ? [...options.authoredRoute, proposal.teePoint] : undefined;
+    const hostIds = new Set([
+      proposal.gasGhost.element.properties.branchKitSnapSourceElementId,
+      proposal.liquidGhost.element.properties.branchKitSnapSourceElementId,
+    ].filter((id): id is string => typeof id === 'string'));
+    // Rank complete orthogonal guides by bends and length before constructing
+    // the pipes. A simple guide must also fit both services at their real levels;
+    // a blocked short route does not suppress the next buildable alternative.
+    let hadInterference = false;
+    const routes = buildBranchConnectionRouteCandidates(proposal, startBundle, route);
+    // Keep recovery bounded for a completely obstructed main. At the pointer,
+    // check the full small candidate family before moving the user's station;
+    // recovery stations try their two simplest routes before the next station.
+    for (const connectionRoute of preferredTarget ? routes.slice(0, 2) : routes) {
+      proposal.connectionRoute = connectionRoute;
+      const attempts = [proposal];
+      let bestFallback: { proposal: BranchKitProposal; turns: number; length: number } | undefined;
+      let queuedRiserFallbacks = false;
+      const retryStraightRisers = (attempt: BranchKitProposal, elements: HvacElement[]) => {
+        hadInterference = true;
+        if (queuedRiserFallbacks || !attempt.levelPlan || !hasNetworkCornerRiser(elements)) return;
+        queuedRiserFallbacks = true;
+        const variantSource = Object.keys(stationRiserFallbacks).length ? levelPlan : plannedLevels;
+        let variants = riserPlanVariants.get(variantSource);
+        if (!variants) {
+          variants = [
+            { gas: false, liquid: true },
+            { gas: true, liquid: false },
+            { gas: false, liquid: false },
+          ].map(preferences => ({ ...preferences, ...stationRiserFallbacks }))
+            .filter((preferences, index, choices) => choices.findIndex(choice =>
+              choice.gas === preferences.gas && choice.liquid === preferences.liquid) === index)
+            .map(preferences => replanNetworkPipeRisers(scene, attempt.levelPlan!, true, preferences))
+            .filter(candidate => candidate.feasible);
+          riserPlanVariants.set(variantSource, variants);
+        }
+        // Keep the other service's two-elbow turn where possible. All three
+        // bounded variants pass the same complete physical insertion checks;
+        // stable service preferences survive new IDs at preview and commit.
+        attempts.push(...variants.map(candidate => ({ ...proposal, levelPlan: candidate })));
+      };
+      for (const attempt of attempts) {
+        // A safe mixed-service solution always retains at least as many corner
+        // turns as the all-straight fallback. Compare the two mixed solutions
+        // first, then avoid rebuilding an inferior all-straight installation.
+        if (bestFallback && attempt.levelPlan?.cornerRisersByService?.gas === false
+          && attempt.levelPlan.cornerRisersByService.liquid === false) return bestFallback.proposal;
+        const levelOverrides = new Map(attempt.levelPlan?.updates.map(element => [element.id, element]) ?? []);
+        const quickScene = scene.filter(element => !hostIds.has(element.id))
+          .map(element => levelOverrides.get(element.id) ?? element);
+        const quickConnections = buildBranchKitConnectionElements(
+          attempt, startBundle, 'preview-branch-kit-gas', 'preview-branch-kit-liquid',
+          route, (prefix) => `preview-clearance-${prefix}`,
+        );
+        if (quickConnections.length !== 2) continue;
+        if (hasNewNetworkPipeClash(quickScene, quickConnections)) {
+          retryStraightRisers(attempt, [...quickConnections, ...(attempt.levelPlan?.updates ?? [])]);
+          continue;
+        }
+        let previewId = 0;
+        const staged = prepareBranchKitInsertion(attempt, startBundle, scene, route,
+          prefix => `preview-level-${prefix}-${++previewId}`);
+        if (!staged) continue;
+        if (hasNewNetworkPipeClash(scene, [...(staged.updates ?? []), ...staged.elementsToAdd], staged.removeElementIds)) {
+          retryStraightRisers(attempt, [...(staged.updates ?? []), ...staged.elementsToAdd]);
+          continue;
+        }
+        if (attempt === proposal) return attempt;
+        // Accumulated turn angle is independent of arc sampling density, and
+        // keeps a cheaper mixed choice when either service can clear the clash.
+        let turns = 0; let length = 0;
+        for (const element of [...(staged.updates ?? []), ...staged.elementsToAdd]) {
+          if (element.type !== 'refrigerant-pipe') continue;
+          const nodes = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
+          let previousDirection: { x: number; y: number; z: number } | undefined;
+          for (let index = 1; index < nodes.length; index += 1) {
+            const a = nodes[index - 1]!; const b = nodes[index]!;
+            const span = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+            if (span <= 1e-6) continue;
+            const direction = { x: (b.x - a.x) / span, y: (b.y - a.y) / span, z: (b.z - a.z) / span };
+            length += span;
+            if (previousDirection) turns += Math.acos(clamp(previousDirection.x * direction.x
+              + previousDirection.y * direction.y + previousDirection.z * direction.z, -1, 1));
+            previousDirection = direction;
+          }
+        }
+        if (!bestFallback || turns < bestFallback.turns - 1e-6
+          || (Math.abs(turns - bestFallback.turns) <= 1e-6 && length < bestFallback.length - 1e-6)) {
+          bestFallback = { proposal: attempt, turns, length };
+        }
+      }
+      if (bestFallback) return bestFallback.proposal;
+    }
+    delete proposal.connectionRoute;
+    proposal.validity = 'invalid';
+    proposal.failureReason = hadInterference ? 'interference' : 'approach';
+    proposal.violations.unshift(hadInterference
+      ? 'This connection would introduce an insulated pipe clash. Move the branch or adjust the approach route.'
+      : 'The approach needs more straight length for the equipment and branch levels. Move the branch or extend the route.');
+  }
+  return proposal;
 }
 
 /** Best-effort invalid proposal (run too short) so the card can warn the user. */
@@ -998,24 +1503,33 @@ function buildInvalidProposal(
   startBundle: RefrigerantPipeBundleConnection,
   flip: boolean,
   upstreamDirection: Point2D | null,
+  sourceElementIds: { gas?: string; liquid?: string },
 ): BranchKitProposal | null {
   const faceToward = startBundle.point ?? gasStationPoint;
-  // Place with zero clearance just to produce a ghost; mark invalid.
+  // Place on a synthetic display span when the physical straight is shorter
+  // than the fitting. The invalid ghost preserves the selected host identity,
+  // allowing recovery to search later eligible straights on the same pair.
   const makeSegment = (
     lineKind: RefrigerantBranchLineKind,
     stationPoint: Point2D,
-  ): RefrigerantPipeSegmentConnection => ({
-    point: stationPoint,
-    direction: target.direction,
-    segmentStart: target.segmentStart,
-    segmentEnd: target.segmentEnd,
-    segmentLengthMm: target.segmentLengthMm,
-    projectedDistanceMm: dot(subtract(stationPoint, target.segmentStart), target.direction),
-    lineKind,
-    elevationMm: lineKind === 'gas' ? target.gasElevationMm : target.liquidElevationMm,
-    outerDiameterMm: lineKind === 'gas' ? target.gasOuterDiameterMm : target.liquidOuterDiameterMm,
-    sourceElementId: undefined,
-  });
+  ): RefrigerantPipeSegmentConnection => {
+    const displayLengthMm = Math.max(target.segmentLengthMm, estimateMinRunLengthMm());
+    const displayStart = add(stationPoint, scale(target.direction, -displayLengthMm / 2));
+    return {
+      point: stationPoint,
+      direction: target.direction,
+      segmentStart: displayStart,
+      segmentEnd: add(displayStart, scale(target.direction, displayLengthMm)),
+      segmentLengthMm: displayLengthMm,
+      projectedDistanceMm: displayLengthMm / 2,
+      lineKind,
+      elevationMm: lineKind === 'gas' ? target.gasElevationMm : target.liquidElevationMm,
+      outerDiameterMm: lineKind === 'gas' ? target.gasOuterDiameterMm : target.liquidOuterDiameterMm,
+      // A nearby station retry must stay on these same physical hosts even
+      // when the current interval cannot accommodate the fitting clearances.
+      sourceElementId: sourceElementIds[lineKind],
+    };
+  };
   const gasGhost = placeKitOnLineSegment({
     lineKind: 'gas',
     segment: makeSegment('gas', gasStationPoint),
@@ -1046,6 +1560,8 @@ function buildInvalidProposal(
     liquidGhost,
     target,
     flip,
+    orientationLocked: Boolean(upstreamDirection),
+    selectionStatus: 'layout-only',
   };
 }
 
@@ -1070,27 +1586,6 @@ function readRoutePoints(element: HvacElement): Point2D[] {
   return result;
 }
 
-/** True only when two polylines genuinely intersect (not merely run close). */
-function polylinesIntersect(p: Point2D[], q: Point2D[]): boolean {
-  const orientation = (a: Point2D, b: Point2D, c: Point2D): number =>
-    Math.sign((b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y));
-  for (let i = 0; i < p.length - 1; i += 1) {
-    for (let j = 0; j < q.length - 1; j += 1) {
-      const a = p[i]!;
-      const b = p[i + 1]!;
-      const c = q[j]!;
-      const d = q[j + 1]!;
-      if (
-        orientation(a, b, c) !== orientation(a, b, d) &&
-        orientation(c, d, a) !== orientation(c, d, b)
-      ) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 /**
  * Turns an accepted proposal into the concrete element additions: the two branch
  * joints (gas + liquid) placed on the intact run, plus the connecting pipes from
@@ -1099,9 +1594,8 @@ function polylinesIntersect(p: Point2D[], q: Point2D[]): boolean {
  * The connection is routed as a gas/liquid PAIR along a single ORTHOGONAL
  * (right-angle) centerline — the pair builder offsets the two lines
  * concentrically around the bends so they stay parallel (the gap never
- * collapses), how field pipes actually run. A genuine gas↔liquid crossing
- * (when the unit's gas/liquid order is opposed to the run's) is resolved as a
- * clean over/under. No run elements are removed.
+ * collapses). Shared service levels resolve crossovers across the network;
+ * individual crossings do not silently add rise-and-return offsets.
  */
 function readSnapSourceElementId(element: Omit<HvacElement, 'id'>): string | null {
   const value = (element.properties as { branchKitSnapSourceElementId?: unknown })
@@ -1129,7 +1623,7 @@ function findSnapSourceRun(
  * connection at the cut (tee) end, takes a side-specific bundleId so the
  * gas/liquid halves of the same sub-run pair up, and carries the `teeId`
  * linkage. Returns null if the polyline can't be cleanly split (e.g. the
- * station resolves to an endpoint) so the caller can fall back to the overlay.
+ * station resolves to an endpoint), preventing an incomplete connection.
  */
 export interface TeeRunSplitOptions {
   inletPoint?: Point2D;
@@ -1172,6 +1666,15 @@ function materialsForSubroute(
   materials: readonly RefrigerantPipeMaterial[],
   subroute: readonly Point2D[],
 ): RefrigerantPipeMaterial[] {
+  // A uniform host has the same material at every possible nearest segment.
+  // Avoid projecting every sampled elbow point onto that entire host again.
+  // Include the same missing-entry fallback as the general projection path.
+  const firstMaterial = materials[0] ?? 'hard';
+  let uniform = true;
+  for (let index = 1; index < originalRoute.length - 1; index += 1) {
+    if ((materials[index] ?? 'hard') !== firstMaterial) { uniform = false; break; }
+  }
+  if (uniform) return subroute.slice(1).map(() => firstMaterial);
   return subroute.slice(1).map((point, index) => {
     const start = subroute[index]!;
     const midpoint = { x: (start.x + point.x) / 2, y: (start.y + point.y) / 2 };
@@ -1205,15 +1708,43 @@ function bypassesForStationRange(
   });
 }
 
+/** A split service lane owns only its matching logical guide interval. The
+ * fitting faces lie on the offset physical lane, so project them onto the
+ * original guide without moving the remaining orthogonal guide vertices. */
+function authoredGuideForHalf(value: unknown, physicalHalf: Point2D[], keepStart: boolean, keepEnd: boolean): Point2D[] {
+  const fallback = () => physicalHalf.map(point => ({ ...point }));
+  if (!Array.isArray(value) || value.length < 2 || !value.every(point => point && typeof point === 'object'
+    && isFiniteNumber(point.x) && isFiniteNumber(point.y))) return fallback();
+  let guide = dedupeConsecutive(value.map(point => ({ x: point.x as number, y: point.y as number })));
+  if (guide.length < 2) return fallback();
+  if (!keepStart) {
+    const split = splitPolylineAtStation(guide, physicalHalf[0]!);
+    if (!split) return fallback();
+    guide = split.after;
+  }
+  if (!keepEnd) {
+    const split = splitPolylineAtStation(guide, physicalHalf.at(-1)!);
+    if (!split) return fallback();
+    guide = split.before;
+  }
+  return guide.length >= 2 ? guide : fallback();
+}
+
 export function buildTeeRunHalves(
   run: HvacElement,
   station: Point2D,
   teeId: string,
   options: TeeRunSplitOptions = {},
+  makeId = createBranchKitElementId,
 ): [HvacElement, HvacElement] | null {
   const route = readRoutePoints(run);
   const inletPoint = options.inletPoint ?? station;
   const runOutletPoint = options.runOutletPoint ?? station;
+  // Polyline splitting projects arbitrary points onto the nearest segment.
+  // A stale preview must not use that behavior to bend a moved host back to
+  // the old fitting position or silently bridge a physical connection gap.
+  if (pointToPolylineDistance(inletPoint, route) > 0.5 ||
+    pointToPolylineDistance(runOutletPoint, route) > 0.5) return null;
   const inletSplit = splitPolylineAtStation(route, inletPoint);
   const outletSplit = splitPolylineAtStation(route, runOutletPoint);
   if (!inletSplit || !outletSplit) return null;
@@ -1274,12 +1805,18 @@ export function buildTeeRunHalves(
         params.maximumStationMm,
       ),
     };
+    if (Object.prototype.hasOwnProperty.call(baseProps, 'authoredCenterlineRoute')) {
+      // Preserve the derived-lane marker used by rendering, including imports
+      // whose logical guide is malformed. Physical route geometry is unchanged.
+      properties.authoredCenterlineRoute = authoredGuideForHalf(baseProps.authoredCenterlineRoute,
+        params.routePoints, params.minimumStationMm <= 1e-6, params.maximumStationMm >= totalLengthMm - 1e-6);
+    }
     if (params.routeNodes3d.length >= 2) properties.routeNodes3d = params.routeNodes3d;
     else delete properties.routeNodes3d;
     return {
       ...run,
       ...built,
-      id: createBranchKitElementId(
+      id: makeId(
         params.teeRole === 'run-in' ? 'refrigerant-run-in' : 'refrigerant-run-out',
       ),
       properties,
@@ -1367,35 +1904,91 @@ function branchTerminalConnection(
   };
 }
 
-export function buildBranchKitInsertion(
+/** Shared socket constraints for fitting-station selection and the final
+ * branch guide. Reads the proposal's resolved settings without changing the
+ * proposal, service sockets, or scene. */
+export function getBranchKitApproachRouteOptions(
   proposal: BranchKitProposal,
   startBundle: RefrigerantPipeBundleConnection,
-  sceneElements: HvacElement[] = [],
-): BranchKitInsertion | null {
-  if (proposal.validity === 'invalid') {
-    return null;
-  }
-  const gasKitId = createBranchKitElementId('refrigerant-branch-kit-gas');
-  const liquidKitId = createBranchKitElementId('refrigerant-branch-kit-liquid');
-  const gasKitElement: HvacElement = { ...proposal.gasGhost.element, id: gasKitId };
-  const liquidKitElement: HvacElement = { ...proposal.liquidGhost.element, id: liquidKitId };
+  settingsOverride?: PipeRoutingSettings,
+): OrthogonalConnectionRouteOptions {
+  const gasOutlet = proposal.gasGhost.branchOutletPoint;
+  const liquidOutlet = proposal.liquidGhost.branchOutletPoint;
+  const settings = settingsOverride ?? proposal.levelPlan?.settings ?? getActivePipeRoutingSettings();
+  const physicalRadius = Math.max(proposal.target.gasOuterDiameterMm, proposal.target.liquidOuterDiameterMm,
+    startBundle.gasOuterDiameterMm ?? 0, startBundle.liquidOuterDiameterMm ?? 0) * Math.max(1, settings.bendRadiusFactor, proposal.bendRadiusFactor ?? 0);
+  // The shared guide is filleted before the two service lines are offset.
+  // Reserve the outermost offset too, so the inner line retains its specified
+  // physical radius without consuming the protected socket straight.
+  const approachSpacing = Math.max(
+    Math.hypot(proposal.target.gasPoint.x - proposal.target.liquidPoint.x,
+      proposal.target.gasPoint.y - proposal.target.liquidPoint.y),
+    Math.hypot(startBundle.gasFieldPoint.x - startBundle.liquidFieldPoint.x,
+      startBundle.gasFieldPoint.y - startBundle.liquidFieldPoint.y),
+    settings.defaultPipeGapMm + (proposal.target.gasOuterDiameterMm + proposal.target.liquidOuterDiameterMm) / 2,
+  );
+  const approachRadius = physicalRadius + (proposal.bendRadiusFactor === undefined ? 0 : approachSpacing / 2);
+  const startStraight = startBundle.connectionKind === 'unit-port'
+    ? getUnitPortApproachStraightMm(startBundle, approachSpacing, physicalRadius, settings.minimumPortStubMm)
+    : settings.defaultBranchKitClearanceMm;
+  const endStraight = settings.defaultBranchKitClearanceMm;
+  const outletDirection = normalize(
+    add(proposal.gasGhost.branchOutletDirection, proposal.liquidGhost.branchOutletDirection),
+  );
+  const end = midpoint(gasOutlet, liquidOutlet);
+  return {
+    start: startBundle.point,
+    end,
+    startDirection: startBundle.direction,
+    endDirection: outletDirection,
+    startStraightMm: startStraight,
+    endStraightMm: endStraight,
+    bendRadiusMm: approachRadius,
+  };
+}
 
+function buildBranchConnectionRouteCandidates(
+  proposal: BranchKitProposal,
+  startBundle: RefrigerantPipeBundleConnection,
+  authoredRoute?: readonly Point2D[],
+): Point2D[][] {
+  const options = getBranchKitApproachRouteOptions(proposal, startBundle);
+  if (authoredRoute && authoredRoute.length > 2 &&
+    authoredRoute.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+    const waypoints = dedupeConsecutive([startBundle.point, ...authoredRoute.slice(1, -1)]);
+    const previous = waypoints.at(-1)!;
+    if (waypoints.length > 1) {
+      const previousDirection = normalize(subtract(previous, waypoints.at(-2)!));
+      // A clicked waypoint can be the next bend. Only a physical socket fixes
+      // the departure axis and straight length; imposing those on a waypoint
+      // creates a needless escape leg and a return bend.
+      return buildOrthogonalConnectionRouteCandidates({
+        ...options,
+        start: previous,
+        startDirection: undefined,
+        incomingDirection: previousDirection,
+        startStraightMm: 0,
+      }).map((tail) => dedupeConsecutive([...waypoints, ...tail.slice(1)]));
+    }
+  }
+  return buildOrthogonalConnectionRouteCandidates(options);
+}
+
+function buildBranchKitConnectionElements(
+  proposal: BranchKitProposal,
+  startBundle: RefrigerantPipeBundleConnection,
+  gasKitId: string,
+  liquidKitId: string,
+  authoredRoute?: readonly Point2D[],
+  makeId = createBranchKitElementId,
+): HvacElement[] {
   const routeClass =
     startBundle.connectionKind === 'unit-port' ? 'indoor-connection' : 'sub-branch';
   const gasOutlet = proposal.gasGhost.branchOutletPoint;
   const liquidOutlet = proposal.liquidGhost.branchOutletPoint;
-
-  // Orthogonal bundle centerline from the unit/branch to the joint outlets,
-  // arriving along the outlet axis so the ends anchor cleanly (not diagonally).
-  const outletDirection = normalize(
-    add(proposal.gasGhost.branchOutletDirection, proposal.liquidGhost.branchOutletDirection),
-  );
-  const centerline = buildOrthogonalConnectionRoute(
-    startBundle.point,
-    startBundle.direction,
-    midpoint(gasOutlet, liquidOutlet),
-    outletDirection,
-  );
+  const centerline = proposal.connectionRoute
+    ?? buildBranchConnectionRouteCandidates(proposal, startBundle, authoredRoute)[0];
+  if (!centerline) return [];
   const gasBranchConnection = branchTerminalConnection(
     gasKitId,
     'gas',
@@ -1439,81 +2032,118 @@ export function buildBranchKitInsertion(
     terminalRole: 'branch-outlet',
   };
 
-  // Distinct bundle ids per line so the clash engine can see them as separate
-  // pipes and detect the (occasional) gas↔liquid crossing at the outlet splay.
-  const connBundleIds = {
-    gas: createBranchKitElementId('refrigerant-bundle-conn-gas'),
-    liquid: createBranchKitElementId('refrigerant-bundle-conn-liquid'),
-  };
+  // Preserve one logical pair for selection, continuation, and later branching.
+  const connectionBundleId = makeId('refrigerant-bundle-connection');
+  const plannedStart = { ...startBundle };
+  if (proposal.levelPlan && startBundle.connectionKind === 'field-pipe') {
+    for (const service of ['gas', 'liquid'] as const) {
+      const level = networkFieldConnectionLevel({
+        connectionKind: 'field-pipe',
+        portPoint: service === 'gas' ? startBundle.gasPoint : startBundle.liquidPoint,
+        direction: startBundle.direction,
+        sourceElementId: (service === 'gas' ? startBundle.gasSourceElementId : startBundle.liquidSourceElementId) ?? startBundle.sourceElementId,
+        elevationMm: service === 'gas' ? startBundle.gasElevationMm : startBundle.liquidElevationMm,
+      }, service, proposal.levelPlan);
+      if (service === 'gas') plannedStart.gasElevationMm = level;
+      else plannedStart.liquidElevationMm = level;
+    }
+    plannedStart.elevationMm = (plannedStart.gasElevationMm + plannedStart.liquidElevationMm) / 2;
+  }
   const connElements = buildRefrigerantPipeElements(centerline, {
-    startBundleConnection: startBundle,
+    startBundleConnection: plannedStart,
     endBundleConnection: endConnection,
+    bendRadiusFactor: proposal.bendRadiusFactor,
   }).map((built) => {
     const lineKind =
       (built.properties as { lineKind?: string }).lineKind === 'liquid' ? 'liquid' : 'gas';
     return {
       ...built,
-      id: createBranchKitElementId(`refrigerant-pipe-conn-${lineKind}`),
+      id: makeId(`refrigerant-pipe-conn-${lineKind}`),
       properties: {
         ...(built.properties ?? {}),
-        bundleId: connBundleIds[lineKind],
+        bundleId: connectionBundleId,
         routeClass,
       },
     } as HvacElement;
   });
-  let gasConnection = connElements.find(
-    (e) => (e.properties as { lineKind?: string }).lineKind === 'gas',
-  );
-  const liquidConnection = connElements.find(
-    (e) => (e.properties as { lineKind?: string }).lineKind === 'liquid',
-  );
+  if (!proposal.levelPlan) return connElements;
+  const coordinated = applyNetworkPipeLevels(connElements, proposal.levelPlan);
+  return coordinated.issues.length ? [] : coordinated.elements;
+}
 
-  // Resolve a genuine gas↔liquid crossing as a clean over/under (lift gas over
-  // liquid at that single point). Gated on a true intersection so the parallel
-  // run — which is always within clearance — is never flagged.
-  if (
-    gasConnection &&
-    liquidConnection &&
-    polylinesIntersect(readRoutePoints(gasConnection), readRoutePoints(liquidConnection))
-  ) {
-    try {
-      const plan = planBundleBypasses([gasConnection, liquidConnection], [gasConnection.id], {
-        mode: 'auto',
-      });
-      const bypasses = plan.byElementId.get(gasConnection.id);
-      if (bypasses && bypasses.length > 0) {
-        gasConnection = {
-          ...gasConnection,
-          properties: { ...gasConnection.properties, bypasses },
-        };
-      }
-    } catch {
-      // Best effort — never block placing the connection over a bypass failure.
-    }
-  }
+/** Identical branch geometry to commit, without host mutations or generated IDs. */
+export function buildBranchKitRoutePreview(
+  proposal: BranchKitProposal,
+  startBundle: RefrigerantPipeBundleConnection,
+  authoredRoute?: readonly Point2D[],
+): HvacElement[] {
+  if (proposal.validity === 'invalid') return [];
+  return buildBranchKitConnectionElements(
+    proposal, startBundle, 'preview-branch-kit-gas', 'preview-branch-kit-liquid',
+    authoredRoute, (prefix) => `preview-${prefix}`,
+  );
+}
 
-  const elementsToAdd: HvacElement[] = [gasKitElement, liquidKitElement];
-  if (gasConnection) {
-    elementsToAdd.push(gasConnection);
-  }
-  if (liquidConnection) {
-    elementsToAdd.push(liquidConnection);
-  }
+export function buildBranchKitInsertion(
+  proposal: BranchKitProposal,
+  startBundle: RefrigerantPipeBundleConnection,
+  sceneElements: HvacElement[] = [],
+  authoredRoute?: readonly Point2D[],
+): BranchKitInsertion | null {
+  const insertion = prepareBranchKitInsertion(proposal, startBundle, sceneElements, authoredRoute);
+  if (!insertion) return null;
+  // Recheck against the complete current scene, including unrelated runs that
+  // may have moved since the proposal. Preview checks the same split geometry.
+  if (hasNewNetworkPipeClash(sceneElements,
+    [...(insertion.updates ?? []), ...insertion.elementsToAdd], insertion.removeElementIds)) return null;
+  return insertion;
+}
+
+function prepareBranchKitInsertion(
+  proposal: BranchKitProposal,
+  startBundle: RefrigerantPipeBundleConnection,
+  sceneElements: HvacElement[],
+  authoredRoute?: readonly Point2D[],
+  makeId = createBranchKitElementId,
+): BranchKitInsertion | null {
+  if (proposal.validity === 'invalid') return null;
+  if (proposal.levelPlan && (!proposal.levelPlan.feasible || !isNetworkLevelPlanCurrent(proposal.levelPlan, sceneElements))) return null;
+  const levelOverrides = new Map(proposal.levelPlan?.updates.map(element => [element.id, element]) ?? []);
+  const plannedScene = sceneElements.map(element => levelOverrides.get(element.id) ?? element);
+  const currentSettings = proposal.levelPlan?.settings ?? getActivePipeRoutingSettings();
+  // The scene can change while the preview card is open. Recheck equipment and
+  // fitting spacing at acceptance so a stale, now-obstructed ghost is never
+  // committed as a decorative or physically inaccessible joint.
+  if (branchStationClearanceViolation(
+    proposal.gasGhost,
+    proposal.liquidGhost,
+    proposal.teePoint,
+    plannedScene,
+    currentSettings,
+  )) return null;
+  const gasKitId = makeId('refrigerant-branch-kit-gas');
+  const liquidKitId = makeId('refrigerant-branch-kit-liquid');
+  const gasKitElement: HvacElement = { ...proposal.gasGhost.element, id: gasKitId };
+  const liquidKitElement: HvacElement = { ...proposal.liquidGhost.element, id: liquidKitId };
+  const connections = buildBranchKitConnectionElements(
+    proposal, startBundle, gasKitId, liquidKitId, authoredRoute, makeId,
+  );
+  if (connections.length !== 2) return null;
+  const elementsToAdd: HvacElement[] = [gasKitElement, liquidKitElement, ...connections];
 
   // Real flow-connected tee (W3b, enabled by default): split the
   // tapped gas + liquid runs at the kit station into run-in/run-out halves and
   // remove the originals, so the network is genuinely connected through the kit
   // rather than overlaid on an intact run. The kit elements switch to fixed
   // (absolute) placement so they no longer depend on the now-deleted run element
-  // for positioning. If either run can't be cleanly split (station at an end,
-  // run not in scene) we leave the run intact and fall back to the overlay.
+  // for positioning. Both replacements must succeed before anything is added.
   let removeElementIds: string[] = [];
-  if (getActivePipeRoutingSettings().enableRealTeeTopology && sceneElements.length > 0) {
-    const teeId = createBranchKitElementId('refrigerant-tee');
+  { // New connections always replace the physical hosts, including legacy documents.
+    const teeId = makeId('refrigerant-tee');
     const gasRunId = readSnapSourceElementId(proposal.gasGhost.element);
     const liquidRunId = readSnapSourceElementId(proposal.liquidGhost.element);
-    const gasRun = findSnapSourceRun(sceneElements, gasRunId, 'gas');
-    const liquidRun = findSnapSourceRun(sceneElements, liquidRunId, 'liquid');
+    const gasRun = findSnapSourceRun(plannedScene, gasRunId, 'gas');
+    const liquidRun = findSnapSourceRun(plannedScene, liquidRunId, 'liquid');
     if (gasRun && liquidRun) {
       const gasTrunkDirection = normalize(
         subtract(proposal.gasGhost.runOutletPoint, proposal.gasGhost.inletPoint),
@@ -1545,6 +2175,7 @@ export function buildBranchKitInsertion(
             proposal.target.gasElevationMm,
           ),
         },
+        makeId,
       );
       const liquidHalves = buildTeeRunHalves(
         liquidRun,
@@ -1570,6 +2201,7 @@ export function buildBranchKitInsertion(
             proposal.target.liquidElevationMm,
           ),
         },
+        makeId,
       );
       if (gasHalves && liquidHalves) {
         elementsToAdd.push(...gasHalves, ...liquidHalves);
@@ -1588,12 +2220,97 @@ export function buildBranchKitInsertion(
         };
       }
     }
+    if (removeElementIds.length !== 2) return null;
   }
+
+  // Existing continuations may identify their host only by its old pipe or
+  // bundle id. Retarget that identity to the half retaining the same physical
+  // terminal; otherwise deleting the host silently disconnects later network
+  // analysis even though the tubes still touch. Locks protect geometry, not an
+  // obsolete source id, so these metadata updates include locked continuations.
+  const removed = new Set(removeElementIds);
+  const survivingScene = plannedScene.filter(element => !removed.has(element.id));
+  const bindings: Array<{
+    sources: string[];
+    service: RefrigerantBranchLineKind;
+    point: Point2D;
+    replacementId: string;
+    replacementBundleId: string;
+  }> = [];
+  for (const host of plannedScene.filter(element => removed.has(element.id))) {
+    const spec = resolveRefrigerantPipeSpec(host.properties);
+    const sourceIds = [host.id, spec.bundleId].filter((id): id is string => Boolean(id));
+    for (const endpoint of [spec.routePoints[0], spec.routePoints.at(-1)]) {
+      if (!endpoint) continue;
+      const replacement = elementsToAdd.find(element => {
+        if (element.type !== 'refrigerant-pipe' || !element.properties.teeRole) return false;
+        const half = resolveRefrigerantPipeSpec(element.properties);
+        return half.lineKind === spec.lineKind && [half.routePoints[0], half.routePoints.at(-1)]
+          .some(point => point && distance(point, endpoint) <= 0.5);
+      });
+      if (replacement) bindings.push({
+        sources: sourceIds, service: spec.lineKind, point: endpoint,
+        replacementId: replacement.id,
+        replacementBundleId: replacement.properties.bundleId as string,
+      });
+    }
+  }
+  const oldSources = new Set(bindings.flatMap(binding => binding.sources));
+  const survivingSources = new Set(survivingScene.flatMap(element => [element.id,
+    typeof element.properties.bundleId === 'string' ? element.properties.bundleId : ''].filter(Boolean)));
+  let orphanedSource = false;
+  const rebind = (element: HvacElement): HvacElement => {
+    let properties = element.properties;
+    for (const key of ['startConnection', 'endConnection', 'startBundleConnection', 'endBundleConnection']) {
+      const raw = properties[key];
+      if (!raw || typeof raw !== 'object') continue;
+      const connection = raw as Record<string, unknown>;
+      if (connection.connectionKind !== 'field-pipe') continue;
+      const bundleConnection = key.includes('Bundle');
+      const services: RefrigerantBranchLineKind[] = bundleConnection ? ['gas', 'liquid']
+        : element.properties.lineKind === 'gas' || element.properties.lineKind === 'liquid'
+          ? [element.properties.lineKind] : [];
+      let next = connection;
+      const matched: typeof bindings = [];
+      for (const service of services) {
+        const serviceSource = bundleConnection ? connection[`${service}SourceElementId`] : undefined;
+        const source = typeof serviceSource === 'string' ? serviceSource : connection.sourceElementId;
+        if (typeof source !== 'string' || !oldSources.has(source)) continue;
+        const rawPoint = bundleConnection ? connection[`${service}Point`] : connection.portPoint;
+        const point = rawPoint as Point2D | undefined;
+        const binding = point && Number.isFinite(point.x) && Number.isFinite(point.y)
+          ? bindings.find(candidate => candidate.service === service && candidate.sources.includes(source)
+            && distance(candidate.point, point) <= 0.5) : undefined;
+        if (!binding) {
+          if (!survivingSources.has(source)) orphanedSource = true;
+          continue;
+        }
+        matched.push(binding);
+        next = { ...next, [bundleConnection ? `${service}SourceElementId` : 'sourceElementId']: binding.replacementId };
+      }
+      if (bundleConnection && matched.length && typeof connection.sourceElementId === 'string'
+        && oldSources.has(connection.sourceElementId)) {
+        next = { ...next, sourceElementId: matched.every(binding => binding.replacementBundleId === matched[0]!.replacementBundleId)
+          ? matched[0]!.replacementBundleId : matched[0]!.replacementId };
+      }
+      if (next !== connection) properties = { ...properties, [key]: next };
+    }
+    return properties === element.properties ? element : { ...element, properties };
+  };
+  const updateById = new Map((proposal.levelPlan?.updates ?? [])
+    .filter(element => !removed.has(element.id)).map(element => [element.id, element]));
+  for (const element of survivingScene) {
+    const rebound = rebind(element);
+    if (rebound !== element) updateById.set(element.id, rebound);
+  }
+  for (let index = 0; index < elementsToAdd.length; index += 1) elementsToAdd[index] = rebind(elementsToAdd[index]!);
+  if (orphanedSource) return null;
 
   return {
     elementsToAdd,
     removeElementIds,
     kitElementIds: [gasKitId, liquidKitId],
+    updates: [...updateById.values()],
   };
 }
 
@@ -1614,6 +2331,6 @@ export function describeBranchKitConnectionType(type: BranchKitConnectionType): 
 }
 
 /** Default min branch-kit spacing if not configured (exported for settings UI). */
-export function defaultMinBranchKitSpacingMm(): number {
-  return resolveMinBranchKitSpacingMm(DEFAULT_PIPE_ROUTING_SETTINGS);
+export function defaultMinBranchKitSpacingMm(settings = DEFAULT_PIPE_ROUTING_SETTINGS): number {
+  return resolveMinBranchKitSpacingMm(settings);
 }

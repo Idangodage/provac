@@ -14,8 +14,10 @@ import {
 import type { Point2D, Wall, WallMaterial } from '../../../types';
 import { MM_TO_PX } from '../scale';
 
-import { buildTemporaryWall } from './WallJoinNetwork';
 import { computeWallBodyPolygon } from './WallGeometry';
+import { buildTemporaryWall } from './WallJoinNetwork';
+import { createWallPatternCanvas } from './wallPatternCanvas';
+import { anchorWallPatternToModel, wallPatternTransform } from './wallPatternPlacement';
 
 // =============================================================================
 // WallPreview Class
@@ -29,6 +31,7 @@ export class WallPreview {
   private thickness: number = 150;
   private material: WallMaterial = 'brick';
   private materialId: string | undefined;
+  private patternCache: { key: string; pattern: fabric.Pattern | null } | null = null;
   private queuedEndPoint: Point2D | null = null;
   private lastEndPoint: Point2D | null = null;
   private walls: Wall[] = [];
@@ -125,6 +128,17 @@ export class WallPreview {
       this.material
     );
     const visualStyle = resolveWallVisualStyleForMaterial(this.material, this.materialId);
+    if (this.patternCache?.key !== visualStyle.key) {
+      const tile = createWallPatternCanvas(visualStyle, 'plan-cut');
+      this.patternCache = {
+        key: visualStyle.key,
+        pattern: tile ? new fabric.Pattern({
+          source: tile,
+          repeat: 'repeat',
+          patternTransform: wallPatternTransform(visualStyle.plan.repeatMm, tile.width),
+        }) : null,
+      };
+    }
     // Live preview should preserve the wall's nominal thickness even when the
     // eventual committed join may be mitered or beveled against nearby walls.
     // Showing the raw body here keeps the preview stable and predictable.
@@ -140,6 +154,9 @@ export class WallPreview {
       evented: false,
       objectCaching: false,
     });
+    mergedPreviewPath.set('fill', anchorWallPatternToModel(
+      this.patternCache.pattern ?? visualStyle.plan.fillColor, mergedPreviewPath,
+    ));
 
     const centerPreviewLine = new fabric.Line(
       [
