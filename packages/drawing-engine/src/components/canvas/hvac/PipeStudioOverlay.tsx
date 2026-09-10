@@ -56,9 +56,12 @@ import {
 import { branchKitSpriteTransform } from './branchKitSpriteTransform';
 import type { CopperSocketElbowPlacement } from './copperSocketElbowRoute';
 import type { PipeSnapIndicator } from './pipeDraftingPolicy';
+import { resolvePipeEditFrame } from './pipeEditGeometry';
+import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeEditControlIndices, validatePipeModelReplacement } from './pipeEditModel';
 import { resolveEditablePipeVertexIndex } from './pipeInteractionCore';
 import { buildPipeKitConnectionTargets } from './pipeKitConnectionTargets';
 import { buildPipePlanTubes, pipePolylinePath } from './pipePlanPresentation';
+import { createPipePresentationCache } from './pipePresentationCache';
 import { withCanonicalPipeRoute } from './pipeRoute3d';
 import { getActivePipeRoutingSettings } from './pipeRoutingSettings';
 import {
@@ -193,6 +196,10 @@ interface PipeStudioOverlayProps {
   viewportZoom: number;
   panOffset: Point2D;
   selectionHitTesting: boolean;
+  /** The shared 3D gizmo supplies route handles in DrawingCanvas. */
+  showRouteHandles?: boolean;
+  showRoutingToolbar?: boolean;
+  directSegmentEditing?: boolean;
   pipeToolActive: boolean;
   /** Global Lines selector — decides pair vs single gas/liquid when pulling from a kit port. */
   pipeLineMode: RefrigerantPipeLineMode;
@@ -466,6 +473,7 @@ function withPipeRoute(element: HvacElement, route: Point2D[]): HvacElement {
 }
 
 export interface PipeStudioOverlayHandle {
+  beginPlaceKit: () => void;
   /**
    * Feed the live pipe-draw route (world mm centreline) so the overlay renders
    * the studio pair AS the draw preview — identical to how a committed pipe looks.
@@ -504,6 +512,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       viewportZoom,
       panOffset,
       selectionHitTesting,
+      showRouteHandles = true,
+      showRoutingToolbar = true,
+      directSegmentEditing = false,
       pipeToolActive,
       ruleProfile,
       pipeLineMode,
@@ -527,9 +538,10 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   // Kits additionally heal every pipe bound to one of their ports so it follows.
   const moveDragRef = useRef<{
     startWorld: Point2D;
+    baseline: HvacElement[];
     moved: boolean;
     items: (
-      | { kind: 'pipe'; id: string; route: Point2D[] }
+      | { kind: 'pipe'; id: string; route: Point2D[]; segmentIndex?: number }
       | { kind: 'kit'; id: string; position: Point2D }
     )[];
   } | null>(null);
@@ -537,7 +549,30 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const movePreviewFrameRef = useRef<number | null>(null);
   const queuedMovePreviewRef = useRef<HvacElement[] | null>(null);
   const lastMovePreviewRef = useRef<HvacElement[] | null>(null);
+  const dragConflictRef = useRef<string | null>(null);
   const editedIdsRef = useRef<Set<string>>(new Set());
+  const pipeViewsRef = useRef(new WeakMap<HvacElement, { edited: boolean; view: PipeView | null }>());
+  const beginPlaceKitRef = useRef<(() => void) | null>(null);
+  const presentationCacheRef = useRef(createPipePresentationCache((element, context) =>
+    buildPipePlanTubes(element, context).map(tube => ({
+      d: pipePolylinePath(tube.points),
+      insulationD: tube.insulationSegments?.map(pipePolylinePath).join(' '),
+      copperD: tube.copperSegments?.map(pipePolylinePath).join(' '),
+      fittings: tube.fittings, points: tube.points,
+      unresolvedPaths: tube.unresolvedSegments?.map(pipePolylinePath),
+      insW: tube.outerDiameterMm, coreW: tube.copperDiameterMm,
+      sheenW: Math.max(tube.copperDiameterMm * 0.3, 1),
+      ...(tube.lineKind === 'liquid' ? LIQUID_COLORS : GAS_COLORS),
+    })),
+  ));
+  const readPipeView = useCallback((element: HvacElement) => {
+    const edited = editedIdsRef.current.has(element.id);
+    const cached = pipeViewsRef.current.get(element);
+    if (cached && cached.edited === edited) return cached.view;
+    const view = toPipeView(element, edited);
+    pipeViewsRef.current.set(element, { edited, view });
+    return view;
+  }, []);
   // Each single line's bundle side, determined once and kept stable so editing a
   // vertex can't make the inferred side flip and drop the gap offset.
   const [ghost, setGhost] = useState<{ id: string; route: Point2D[] } | null>(null);
@@ -593,7 +628,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   });
   useImperativeHandle(
     ref,
-    () => ({ setDraftRoute, setDraftPipes, setSnapIndicator, syncViewTransform }),
+    () => ({ setDraftRoute, setDraftPipes, setSnapIndicator, syncViewTransform,
+      beginPlaceKit: () => beginPlaceKitRef.current?.() }),
     [syncViewTransform],
   );
   // Extension is unified with the draw tool: grabbing a pipe-end / bundle /
@@ -640,6 +676,13 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     setMovePreviewElements(null);
   }, []);
 
+  const cancelOverlayDrag = useCallback(() => {
+    dragRef.current = null;
+    moveDragRef.current = null;
+    clearMovePreview();
+    setGhost(null);
+  }, [clearMovePreview]);
+
   useEffect(
     () => () => {
       if (movePreviewFrameRef.current !== null) {
@@ -656,6 +699,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     const overrides = new Map(movePreviewElements.map((element) => [element.id, element]));
     return hvacElements.map((element) => overrides.get(element.id) ?? element);
   }, [hvacElements, movePreviewElements]);
+  const previewElementsById = useMemo(() => new Map(previewElements.map(element => [element.id, element])), [previewElements]);
 
   useEffect(() => {
     if (canInteract) return;
@@ -680,6 +724,12 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.key === 'Shift') orthoRef.current = true;
       if (e.key === 'Escape' || e.key === 'Enter') {
+        if (e.key === 'Escape') {
+          dragRef.current = null;
+          moveDragRef.current = null;
+          clearMovePreview();
+          setGhost(null);
+        }
         // Extension now runs on the draw tool, which owns its own Enter/Escape;
         // here we only clear the overlay-owned kit placement hints. The flip
         // suggestion is tied to selection, so it clears when the kit deselects.
@@ -693,6 +743,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     };
     const blur = () => {
       orthoRef.current = false;
+      cancelOverlayDrag();
     };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
@@ -702,7 +753,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       window.removeEventListener('keyup', up);
       window.removeEventListener('blur', blur);
     };
-  }, [canInteract]);
+  }, [canInteract, cancelOverlayDrag, clearMovePreview]);
 
   const view = getCanvasTransform(viewportZoom, panOffset);
   const k = MM_TO_PX * view.zoom;
@@ -714,18 +765,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   // preview is the exact pipe the commit will produce, minus opacity.
   const pipeTubes = (p: PipeView, route: Point2D[]) => {
     const element = route === p.route ? p.element : withPipeRoute(p.element, route);
-    const tubes = buildPipePlanTubes(element, previewElements).map((tube) => ({
-      d: pipePolylinePath(tube.points),
-      insulationD: tube.insulationSegments?.map(pipePolylinePath).join(' '),
-      copperD: tube.copperSegments?.map(pipePolylinePath).join(' '),
-      fittings: tube.fittings,
-      points: tube.points,
-      unresolvedPaths: tube.unresolvedSegments?.map(pipePolylinePath),
-      insW: tube.outerDiameterMm,
-      coreW: tube.copperDiameterMm,
-      sheenW: Math.max(tube.copperDiameterMm * 0.3, 1),
-      ...(tube.lineKind === 'liquid' ? LIQUID_COLORS : GAS_COLORS),
-    }));
+    const tubes = presentationCacheRef.current.read(element, previewElements, previewElementsById);
     const insW = Math.max(...tubes.map((tube) => tube.insW), p.outerMm);
     const coreW = Math.max(...tubes.map((tube) => tube.coreW), 1);
     const sheenW = Math.max(coreW * 0.3, 1);
@@ -769,11 +809,11 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     if (!draftPipes || draftPipes.length === 0) return [] as PipeView[];
     const out: PipeView[] = [];
     for (const el of draftPipes) {
-      const v = toPipeView(el, editedIdsRef.current.has(el.id));
+      const v = readPipeView(el);
       if (v) out.push(v);
     }
     return out;
-  }, [draftPipes]);
+  }, [draftPipes, readPipeView]);
 
   const pipes = useMemo(() => {
     // A draft pipe carrying a REAL element id is an extension-merge preview: it
@@ -788,11 +828,11 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     const list: PipeView[] = [];
     for (const el of previewElements) {
       if (draftOverrideIds.has(el.id)) continue;
-      const v = toPipeView(el, editedIdsRef.current.has(el.id));
+      const v = readPipeView(el);
       if (v) list.push(v);
     }
     return list;
-  }, [draftPipes, previewElements]);
+  }, [draftPipes, previewElements, readPipeView]);
 
   // When exactly the two lines of one bundle are selected, expose a single
   // shared-center "extend" grip per bundle end (the common + the user asked for).
@@ -990,6 +1030,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     (id: string, route: Point2D[], label: string) => {
       const nextElement = writeRoute(id, route);
       if (!nextElement) return;
+      const before = elementById(id);
+      const conflict = before ? validatePipeModelReplacement(before, nextElement, hvacElements) : 'The pipe is no longer available.';
+      if (conflict) { useSmartDrawingStore.getState().setProcessingStatus(conflict, false); return; }
       commitHvacElementCommand(label, {
         updates: [{
           id,
@@ -1002,7 +1045,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         }],
       });
     },
-    [commitHvacElementCommand, writeRoute],
+    [commitHvacElementCommand, writeRoute, elementById, hvacElements],
   );
 
   const buildMovePreview = useCallback(
@@ -1043,6 +1086,17 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         if (item.kind !== 'pipe') continue;
         const base = overrides.get(item.id) ?? baseById.get(item.id);
         if (!base) continue;
+        if (item.segmentIndex !== undefined) {
+          const frame = resolvePipeEditFrame({ mode: 'world', nodes: editablePipeNodes(base), selection: { kind: 'segment', index: item.segmentIndex } });
+          if (!frame) { dragConflictRef.current = 'Select a valid straight segment.'; continue; }
+          const result = buildPipeModelEdit({ elementId: item.id, elements: hvacElements,
+            frame,
+            selection: { kind: 'segment', index: item.segmentIndex }, operation: { kind: 'translate', offset: { x: dx, y: dy, z: 0 } } });
+          if (result.ok) for (const element of result.elements) overrides.set(element.id, element);
+          // Keep invalid movement transient; the release reports the conflict.
+          else dragConflictRef.current = result.message;
+          continue;
+        }
         overrides.set(
           item.id,
           withPipeRoute(
@@ -1078,7 +1132,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [toWorld],
   );
 
-  // Press on a pipe body or a branch-kit sprite to begin a whole-element move.
+  // The main canvas directly edits the pressed straight segment. Standalone
+  // studios retain their selection/group move behavior.
   // Selection-aware, like a modern design tool: Shift/Ctrl toggles selection only
   // (no move); a plain press on an already-selected item drags the WHOLE current
   // selection; a plain press on anything else selects just it and drags it alone.
@@ -1104,6 +1159,26 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
 
       const dragWholeSelection = selectedSet.has(pressedId) && selectedIds.length > 0;
       const pressedPipe = pipes.find((pipe) => pipe.id === pressedId);
+      if (directSegmentEditing && pressedPipe) {
+        const nodes = editablePipeNodes(pressedPipe.element);
+        const candidates = pipeEditControlIndices(pressedPipe.element).segments;
+        let bestIndex = -1; let bestDistance = Infinity;
+        for (const index of candidates) {
+          const a = nodes[index]!; const b = nodes[index + 1]!;
+          const dx = b.x - a.x; const dy = b.y - a.y; const squared = dx * dx + dy * dy;
+          if (squared < 1e-8) continue;
+          const t = Math.max(0, Math.min(1, ((w.x - a.x) * dx + (w.y - a.y) * dy) / squared));
+          const distance = Math.hypot(w.x - a.x - t * dx, w.y - a.y - t * dy);
+          if (distance < bestDistance) { bestDistance = distance; bestIndex = index; }
+        }
+        setSelectedIds([pressedId]);
+        if (bestIndex < 0) return;
+        clearMovePreview(); dragConflictRef.current = null;
+        moveDragRef.current = { startWorld: w, baseline: hvacElements, moved: false,
+          items: [{ kind: 'pipe', id: pressedId, route: pressedPipe.route, segmentIndex: bestIndex }] };
+        (e.target as Element).setPointerCapture?.(e.pointerId);
+        return;
+      }
       const bundleIds = pressedPipe?.bundleId
         ? pipes.filter((pipe) => pipe.bundleId === pressedPipe.bundleId).map((pipe) => pipe.id)
         : [pressedId];
@@ -1127,10 +1202,10 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       if (items.length === 0) return;
 
       clearMovePreview();
-      moveDragRef.current = { startWorld: w, moved: false, items };
+      moveDragRef.current = { startWorld: w, baseline: hvacElements, moved: false, items };
       (e.target as Element).setPointerCapture?.(e.pointerId);
     },
-    [selectedIds, selectedSet, setSelectedIds, toWorld, pipes, hvacElements, clearMovePreview],
+    [selectedIds, selectedSet, setSelectedIds, toWorld, pipes, hvacElements, clearMovePreview, directSegmentEditing],
   );
 
   const onPointerMove = useCallback(
@@ -1143,12 +1218,14 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       // their route; kits reposition + heal every pipe bound to one of their ports.
       const md = moveDragRef.current;
       if (md) {
+        if (md.baseline !== hvacElements) { cancelOverlayDrag(); return; }
         const w = toWorld(e.clientX, e.clientY);
         if (!w) return;
         const dx = w.x - md.startWorld.x;
         const dy = w.y - md.startWorld.y;
         if (!md.moved && Math.hypot(dx, dy) * k > 3) md.moved = true;
         if (!md.moved) return;
+        dragConflictRef.current = null;
         scheduleMovePreview(buildMovePreview(md, dx, dy));
         return;
       }
@@ -1167,16 +1244,29 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         ),
       });
     },
-    [toWorld, k, buildMovePreview, scheduleMovePreview, updateNearbyBranchKitPort],
+    [toWorld, k, buildMovePreview, scheduleMovePreview, updateNearbyBranchKitPort, hvacElements, cancelOverlayDrag],
   );
 
   const endDrag = useCallback(() => {
     const md = moveDragRef.current;
     if (md) {
+      if (md.baseline !== hvacElements) { cancelOverlayDrag(); return; }
       moveDragRef.current = null;
       setNearBranchKitPortKey(null);
       if (md.moved) {
+        if (dragConflictRef.current) {
+          useSmartDrawingStore.getState().setProcessingStatus(dragConflictRef.current, false);
+          clearMovePreview(); return;
+        }
         const finalElements = lastMovePreviewRef.current ?? [];
+        const movingIds = finalElements.map(element => element.id);
+        for (const candidate of finalElements) {
+          const original = hvacElements.find(element => element.id === candidate.id);
+          if (!original) continue;
+          const conflict = isEditablePipe(original) ? validatePipeModelReplacement(original, candidate, hvacElements, movingIds)
+            : ['routeLocked', 'routingLocked', 'locked', 'isLocked'].some(key => original.properties[key] === true) ? 'The selected fitting is locked.' : null;
+          if (conflict) { useSmartDrawingStore.getState().setProcessingStatus(conflict, false); clearMovePreview(); return; }
+        }
         const movedPipeIds = new Set(
           md.items.filter((item) => item.kind === 'pipe')
             .map((item) => item.id),
@@ -1225,7 +1315,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     }
     setGhost(null);
     setNearBranchKitPortKey(null);
-  }, [clearMovePreview, commitHvacElementCommand, commitRoute, ghost]);
+  }, [clearMovePreview, commitHvacElementCommand, commitRoute, ghost, hvacElements, cancelOverlayDrag]);
 
   const onInsert = useCallback(
     (e: ReactPointerEvent, id: string, si: number, route: Point2D[]) => {
@@ -1355,6 +1445,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     setKitGhost(null);
     setPlacingKit(true);
   }, []);
+  beginPlaceKitRef.current = startPlaceKit;
 
   const onKitMove = useCallback(
     (e: ReactPointerEvent) => {
@@ -1552,7 +1643,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
 
   return (
     <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
-      {canInteract && (pipeToolActive || placingKit || pipes.some((pipe) => selectedSet.has(pipe.id))
+      {(showRoutingToolbar || placingKit) && canInteract && (pipeToolActive || placingKit || pipes.some((pipe) => selectedSet.has(pipe.id))
         || (selectionHitTesting && hvacElements.some(element => element.type === 'outdoor-unit'))) ? (
         <PipeRoutingToolbar
           ruleProfile={ruleProfile}
@@ -1594,6 +1685,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         style={{ display: 'block', touchAction: 'none', pointerEvents: 'none' }}
         onPointerMove={canInteract ? onPointerMove : undefined}
         onPointerUp={canInteract ? endDrag : undefined}
+        onPointerCancel={cancelOverlayDrag}
+        onLostPointerCapture={cancelOverlayDrag}
         onPointerLeave={() => {
           if (!canInteract) return;
           setNearBranchKitPortKey(null);
@@ -1663,7 +1756,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                     preview so widths always match. Butt caps: a real cut pipe ends
                     in a flat perpendicular face; bends stay smooth via round joins. */}
                 {renderTubeBody(tubes, insW, coreW, sheenW, `c-${p.id}`)}
-                {selected
+                {selected && showRouteHandles
                   ? hRoute.slice(0, -1).map((_, si) => {
                       const mid = { x: (hRoute[si]!.x + hRoute[si + 1]!.x) / 2, y: (hRoute[si]!.y + hRoute[si + 1]!.y) / 2 };
                       const m = nearestOnPolyline(mid, bodyPoly);
@@ -1681,7 +1774,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                       );
                     })
                   : null}
-                {selected
+                {selected && showRouteHandles
                   ? hRoute.map((rawPt, vi) => {
                       const ep = vi === 0 || vi === hRoute.length - 1;
                       const pt = ep ? rawPt : nearestOnPolyline(rawPt, bodyPoly);

@@ -10,11 +10,13 @@ import {
   intersectRayWithDrawingTarget,
   intersectPointerRayWithAxis,
   pointSatisfiesPipeAxisConstraint,
+  pointSatisfiesPipeDrawingPlane,
   planeLocalToWorld,
   projectPointerToDrawingPlane,
   resolveActiveDrawingPlane,
   resolveSnappedPipePoint,
   worldToPlaneLocal,
+  worldPointScreenDistance,
 } from './pipePointerProjection';
 
 function topOrtho(width = 800, height = 600): THREE.OrthographicCamera {
@@ -125,6 +127,22 @@ describe('drawing planes and intersections', () => {
     }
   });
 
+  it('projects a translated sloping workplane in plan, elevation and perspective views', () => {
+    const plane = createDrawingPlane('slope', 'work-plane', new THREE.Vector3(120, -60, 200), new THREE.Vector3(1, 2, 3));
+    const intended = planeLocalToWorld(new THREE.Vector3(55, 25, 0), plane);
+    const front = topOrtho();
+    front.position.set(0, -2000, 0);
+    front.up.set(0, 0, 1);
+    front.lookAt(0, 0, 0);
+    front.updateMatrixWorld(true);
+    for (const camera of [topOrtho(), front, perspective()]) {
+      const projected = intended.clone().project(camera);
+      const result = projectPointerToDrawingPlane((projected.x + 1) * 400, (1 - projected.y) * 300,
+        { left: 0, top: 0, width: 800, height: 600 }, camera, plane);
+      expect(result?.rawWorldPoint.distanceTo(intended)).toBeLessThan(1e-6);
+    }
+  });
+
   it('keeps the first-click locked plane when the camera/context changes', () => {
     const locked = createDrawingPlane('wall-a', 'wall', new THREE.Vector3(10, 0, 0), new THREE.Vector3(1, 0, 0));
     const resolved = resolveActiveDrawingPlane({
@@ -206,5 +224,14 @@ describe('constraints and snap priority', () => {
     expect(resolved.candidate).toBeNull();
     expect(resolved.point).not.toBe(raw);
     expect(resolved.point.toArray()).toEqual(raw.toArray());
+  });
+
+  it('rejects candidates on another workplane depth and behind the camera', () => {
+    const slope = createDrawingPlane('slope', 'work-plane', new THREE.Vector3(10, 20, 100), new THREE.Vector3(1, 2, 3));
+    const onPlane = planeLocalToWorld(new THREE.Vector3(50, 20, 0), slope);
+    expect(pointSatisfiesPipeDrawingPlane(onPlane, slope)).toBe(true);
+    expect(pointSatisfiesPipeDrawingPlane(onPlane.clone().addScaledVector(slope.normal, 100), slope)).toBe(false);
+    expect(worldPointScreenDistance(new THREE.Vector3(0, 0, 2000), new THREE.Vector2(400, 300), topOrtho(), { width: 800, height: 600 }))
+      .toBe(Number.POSITIVE_INFINITY);
   });
 });

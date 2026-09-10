@@ -45,13 +45,15 @@ import type { InteractionViewMode } from "../../../vrf/interaction/view-manipula
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
+import { constrainPipeDraftDelta, resolvePipeDraftAngleMode } from "../hvac/pipeDraftingPolicy";
+import { editablePipeNodes } from "../hvac/pipeEditModel";
 import {
-  applyPipeAxisConstraint,
   createDrawingPlane,
   createPointerRay,
   getPointerNDC,
   intersectPointerRayWithAxis,
   pointSatisfiesPipeAxisConstraint,
+  pointSatisfiesPipeDrawingPlane,
   projectPointerToDrawingPlane,
   resolveActiveDrawingPlane,
   worldPointScreenDistance,
@@ -60,6 +62,7 @@ import {
   type PipeDrawingPlane,
   type PipeSnapCandidate,
 } from "../hvac/pipePointerProjection";
+import { createPipeRenderStateCache } from "../hvac/pipeRenderStateCache";
 import {
   readPipeRouteNodes3d,
   withCanonicalPipeRoute,
@@ -67,8 +70,6 @@ import {
   type PipeRouteNode3D,
 } from "../hvac/pipeRoute3d";
 import {
-  buildRefrigerantPipePairVisual,
-  buildRefrigerantPipeVisual,
   getRefrigerantPipeBundleSnapTargets,
   isRefrigerantPipeElementType,
   resolveRefrigerantPipePairSpec,
@@ -76,8 +77,6 @@ import {
   type RefrigerantPipeBundleConnection,
 } from "../hvac/refrigerantPipePairModel";
 import {
-  buildRefrigerantPipeEndpointRenderStateMap,
-  buildRefrigerantPipeRenderChainStateMap,
   getVisibleRefrigerantPipeStraightSegmentTargets,
 } from "../hvac/refrigerantPipeRenderState";
 import { buildSmartDraftingFeedback } from "../hvac/smartDraftingFeedback";
@@ -106,12 +105,14 @@ import { createWallOutline } from "../wall/wallThreeVisual";
 import { buildWallChunkGeometry } from "../wallview/wallMeshBuilder";
 
 import { HandleLayer3D, type HandleDef3D } from "./handleLayer3D";
+import { createHybridHvacScene } from "./hybridHvacScene";
 import {
   getProtectedPipeNodeIndexes,
   moveEditablePipeNode,
   resolveHybridPipeConstraintKey,
   type HybridPipeConstraintKey,
 } from "./hybridPipeEditing";
+import { composeHybridPipePreviewScene } from "./hybridPipePreviewScene";
 import { measureUnrevealedContentBounds } from "./hybridScenePresentation";
 import {
   HybridViewportController,
@@ -173,6 +174,8 @@ export interface HybridProjectionLayerProps {
   onPolarChange?: (polar: number) => void;
   /** Active view policy shared by 3D pipe drawing and vertex manipulation. */
   interactionViewMode?: InteractionViewMode;
+  /** Explicit construction frame in Three world coordinates, independent of the camera. */
+  activePipeWorkplane?: PipeDrawingPlane | null;
   /** Classifies toolbar poses and arbitrary RMB orbit for host button state. */
   onCameraViewChange?: (view: HybridCameraView) => void;
   /**
@@ -204,6 +207,8 @@ export interface HybridProjectionLayerProps {
   symbols: SymbolInstance2D[];
   objectDefinitions: ArchitecturalObjectDefinition[];
   hvacElements: HvacElement[];
+  /** Transient replacements. Keep hvacElements committed so pointer moves never rebuild the main scene. */
+  pipeEditPreviewElements?: HvacElement[] | null;
   onWebglUnavailable?: () => void;
   /** Wall selection (edge ids) + hover for 3D outlines/handles. */
   selectedIds?: string[];
@@ -230,6 +235,7 @@ export interface HybridProjectionLayerProps {
 }
 
 export interface HybridPipeInteractionHandle {
+  setDraftAnchor: (point: PipePlacementPoint | null) => void;
   setDraftPipes: (elements: HvacElement[] | null) => void;
   setRouteActive: (active: boolean) => void;
 }
@@ -245,8 +251,11 @@ type SceneState = {
   /** Page and floor surfaces retain their actual depth throughout the reveal. */
   surfaceLayer: THREE.Group;
   root: THREE.Group;
+  architectureLayer: THREE.Group;
+  hvacScene: ReturnType<typeof createHybridHvacScene<THREE.Group>>;
   /** Tight world-space bounds for camera depth clipping (ground grid excluded). */
   contentBounds: THREE.Box3;
+  committedContentBounds: THREE.Box3;
   groundGridMaterial: THREE.ShaderMaterial;
   /** Outline proxy meshes (survives content clears; rise-synced in the pump). */
   proxyLayer: THREE.Group;
@@ -266,29 +275,6 @@ const MAX_CAMERA_DISTANCE_MM = 220000;
 const FLAT_SHEET_POLAR = THREE.MathUtils.degToRad(0.03);
 /** Coarser threshold for the rotated-plan STATE (avoids flicker in damping tails). */
 const ROTATED_PLAN_EPSILON = THREE.MathUtils.degToRad(0.5);
-
-function resolvePipeEditRouteNodes(
-  element: HvacElement,
-  contextElements: readonly HvacElement[],
-): PipeRouteNode3D[] {
-  const authored = readPipeRouteNodes3d(element);
-  if (authored.length >= 2) return authored;
-  if (element.type === "refrigerant-pipe-pair") {
-    const context = [...contextElements];
-    const spec = resolveRefrigerantPipePairSpec(element.properties, context);
-    const visual = buildRefrigerantPipePairVisual(element, context);
-    const z = element.elevation + (visual.gasLocalZMm + visual.liquidLocalZMm) / 2;
-    return spec.routePoints.map((point) => ({ ...point, z }));
-  }
-  if (element.type === "refrigerant-pipe") {
-    const context = [...contextElements];
-    const spec = resolveRefrigerantPipeSpec(element.properties, context);
-    const visual = buildRefrigerantPipeVisual(element, context);
-    const z = element.elevation + visual.localZMm;
-    return spec.routePoints.map((point) => ({ ...point, z }));
-  }
-  return [];
-}
 
 function resolvePipeEndpointProtection(
   element: HvacElement,
@@ -710,12 +696,17 @@ function clearGroup(group: THREE.Group): void {
   });
 }
 
-function refreshSceneContentBounds(sceneState: SceneState): void {
-  measureUnrevealedContentBounds(
-    sceneState.revealLayer,
-    [sceneState.root, sceneState.surfaceLayer, sceneState.pipePreviewLayer],
-    sceneState.contentBounds,
-  );
+function refreshSceneContentBounds(sceneState: SceneState, committedChanged = false): void {
+  if (committedChanged) {
+    measureUnrevealedContentBounds(sceneState.revealLayer,
+      [sceneState.root, sceneState.surfaceLayer], sceneState.committedContentBounds);
+  }
+  sceneState.contentBounds.copy(sceneState.committedContentBounds);
+  if (sceneState.pipePreviewLayer.children.length > 0) {
+    const previewBounds = new THREE.Box3();
+    measureUnrevealedContentBounds(sceneState.revealLayer, [sceneState.pipePreviewLayer], previewBounds);
+    sceneState.contentBounds.union(previewBounds);
+  }
 }
 
 /**
@@ -856,6 +847,23 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   const root = new THREE.Group();
   root.name = "hybrid-model-root";
   revealLayer.add(root);
+  const architectureLayer = new THREE.Group();
+  architectureLayer.name = "hybrid-architecture";
+  root.add(architectureLayer);
+  const hvacScene = createHybridHvacScene<THREE.Group>({
+    build: (element, context) => {
+      const mesh = buildHvacElementMesh(element, context);
+      if (!mesh) return null;
+      if (mesh.children.length === 0) {
+        disposeObject(mesh);
+        return null;
+      }
+      tuneHvacMesh(mesh);
+      return mesh;
+    },
+    attach: mesh => { root.add(mesh); },
+    dispose: mesh => { root.remove(mesh); disposeObject(mesh); },
+  });
 
   // Persistent adaptive ground grid (survives content clears — never in `root`).
   const groundGridMaterial = createGroundGridMaterial();
@@ -888,7 +896,10 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
     revealLayer,
     surfaceLayer,
     root,
+    architectureLayer,
+    hvacScene,
     contentBounds: new THREE.Box3(),
+    committedContentBounds: new THREE.Box3(),
     groundGridMaterial,
     proxyLayer,
     handleLayer,
@@ -971,30 +982,43 @@ function rebuildPipePreviewLayer(
   draftPipes: readonly HvacElement[] | null,
   editPipe: HvacElement | null,
   committedElements: readonly HvacElement[],
+  externalEdits: readonly HvacElement[] | null,
+  buildRenderContext: ReturnType<typeof createPipeRenderStateCache>,
 ): void {
   clearGroup(sceneState.pipePreviewLayer);
+  const { previews, allElements, hiddenIds } = composeHybridPipePreviewScene(
+    committedElements, draftPipes, [...(externalEdits ?? []), ...(editPipe ? [editPipe] : [])],
+  );
   sceneState.root.children.forEach((child) => {
     const elementId = child.userData.hvacElementId as string | undefined;
     const elementType = child.userData.hvacElementType as HvacElement["type"] | undefined;
-    if (elementId && elementType && isRefrigerantPipeElementType(elementType)) {
-      child.visible = elementId !== editPipe?.id;
+    if (elementId && elementType && (isRefrigerantPipeElementType(elementType)
+      || elementType === "refrigerant-branch-kit")) {
+      child.visible = !hiddenIds.has(elementId);
     }
   });
-  const previews = [...(draftPipes ?? []), ...(editPipe ? [editPipe] : [])];
   if (previews.length === 0) {
     refreshSceneContentBounds(sceneState);
     return;
   }
-  const committedContext = editPipe
-    ? committedElements.map((element) => element.id === editPipe.id ? editPipe : element)
-    : [...committedElements];
-  const allElements = [...committedContext, ...(draftPipes ?? [])];
-  const endpointState = buildRefrigerantPipeEndpointRenderStateMap(allElements);
+  const renderState = buildRenderContext(allElements);
+  const previewIds = new Set(previews.map(element => element.id));
+  for (const element of sceneState.hvacScene.changedElements(renderState)) {
+    if (previewIds.has(element.id) || (!isRefrigerantPipeElementType(element.type)
+      && element.type !== "refrigerant-branch-kit")) continue;
+    previews.push(element);
+    previewIds.add(element.id);
+    hiddenIds.add(element.id);
+  }
+  sceneState.root.children.forEach(child => {
+    if (hiddenIds.has(child.userData.hvacElementId as string)) child.visible = false;
+  });
   const context = {
-    allElements,
-    pipeEndpointStateMap: endpointState,
-    pipeRenderChainStateMap: buildRefrigerantPipeRenderChainStateMap(allElements, endpointState),
-    pipeTargets: getVisibleRefrigerantPipeStraightSegmentTargets(allElements),
+    ...renderState,
+    // Straight targets orient branch-kit bodies. Pipe meshes do not consume
+    // them, so local pipe previews avoid compiling the entire network twice.
+    ...(previews.some(element => element.type === "refrigerant-branch-kit")
+      ? { pipeTargets: getVisibleRefrigerantPipeStraightSegmentTargets(allElements) } : {}),
   };
   for (const element of previews) {
     const mesh = buildHvacElementMesh(element, context);
@@ -1033,6 +1057,7 @@ export function HybridProjectionLayer({
   applyDerivedView,
   onPolarChange,
   interactionViewMode = "isometric",
+  activePipeWorkplane,
   onCameraViewChange,
   onViewRotatedChange,
   onDebug,
@@ -1043,6 +1068,7 @@ export function HybridProjectionLayer({
   symbols,
   objectDefinitions,
   hvacElements,
+  pipeEditPreviewElements = null,
   onWebglUnavailable,
   selectedIds,
   hoveredElementId,
@@ -1059,7 +1085,7 @@ export function HybridProjectionLayer({
   onPipePointerCancel,
   pipeInteractionRef,
 }: HybridProjectionLayerProps) {
-  const fittingDisplay = useSmartDrawingStore(state => state.pipeRoutingSettings.fittingDisplay);
+  const routingSettings = useSmartDrawingStore(state => state.pipeRoutingSettings);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pipeDiagnosticRef = useRef<HTMLPreElement | null>(null);
   const smartDraftingHudRef = useRef<HTMLDivElement | null>(null);
@@ -1067,6 +1093,7 @@ export function HybridProjectionLayer({
   const smartDraftingMetricsRef = useRef<HTMLDivElement | null>(null);
   const smartDraftingHintRef = useRef<HTMLDivElement | null>(null);
   const smartDraftingStatusRef = useRef<HTMLDivElement | null>(null);
+  const workplaneGuideRef = useRef<SVGSVGElement | null>(null);
   const sceneStateRef = useRef<SceneState | null>(null);
   const controllerRef = useRef<HybridViewportController | null>(null);
   const requestFrameRef = useRef<(() => void) | null>(null);
@@ -1074,8 +1101,12 @@ export function HybridProjectionLayer({
   const [rendererRevision, setRendererRevision] = useState(0);
   const draftPipesRef = useRef<HvacElement[] | null>(null);
   const editPipePreviewRef = useRef<HvacElement | null>(null);
+  const externalPipeEditsRef = useRef(pipeEditPreviewElements);
+  externalPipeEditsRef.current = pipeEditPreviewElements;
+  const [buildPreviewRenderContext] = useState(() => createPipeRenderStateCache());
   const routeActiveRef = useRef(false);
   const resetPipePlacementRef = useRef<(() => void) | null>(null);
+  const setPipeAnchorRef = useRef<((point: PipePlacementPoint | null) => void) | null>(null);
   const previewRebuildFrameRef = useRef<number | null>(null);
   const hvacElementsRef = useRef(hvacElements);
   hvacElementsRef.current = hvacElements;
@@ -1090,14 +1121,18 @@ export function HybridProjectionLayer({
         draftPipesRef.current,
         editPipePreviewRef.current,
         hvacElementsRef.current,
+        externalPipeEditsRef.current,
+        buildPreviewRenderContext,
       );
       controllerRef.current?.setContentBounds(sceneState.contentBounds);
       requestFrameRef.current?.();
     });
-  }, []);
+  }, [buildPreviewRenderContext]);
+  useEffect(() => { schedulePreviewRebuild(); }, [pipeEditPreviewElements, schedulePreviewRebuild]);
   const interactionHandleRef = useRef<HybridPipeInteractionHandle | null>(null);
   if (!interactionHandleRef.current) {
     interactionHandleRef.current = {
+      setDraftAnchor: (point) => setPipeAnchorRef.current?.(point),
       setDraftPipes: (elements) => {
         draftPipesRef.current = elements;
         schedulePreviewRebuild();
@@ -1124,6 +1159,8 @@ export function HybridProjectionLayer({
   onPolarChangeRef.current = onPolarChange;
   const interactionViewModeRef = useRef(interactionViewMode);
   interactionViewModeRef.current = interactionViewMode;
+  const activePipeWorkplaneRef = useRef(activePipeWorkplane);
+  activePipeWorkplaneRef.current = activePipeWorkplane;
   const onCameraViewChangeRef = useRef(onCameraViewChange);
   onCameraViewChangeRef.current = onCameraViewChange;
   const lastCameraViewRef = useRef<HybridCameraView>("plan");
@@ -1345,6 +1382,45 @@ export function HybridProjectionLayer({
     };
     const modelToWorldPoint = (p: readonly [number, number, number]): THREE.Vector3 =>
       modelPointToWorld({ x: p[0], y: p[1] }, p[2]);
+    const isPipeEditorTarget = (target: EventTarget | null): boolean => target instanceof Element
+      && Boolean(target.closest('[data-pipe-edit-gizmo], [data-testid="pipe-editing-tools"]'));
+    const paintWorkplaneGuide = (): void => {
+      const guide = workplaneGuideRef.current;
+      const plane = activePipeWorkplaneRef.current;
+      if (!guide) return;
+      if (!plane || !pipeToolActiveRef.current || controller.isTransitioning) {
+        guide.style.display = "none";
+        return;
+      }
+      const worldPerPixel = (controller.camera.right - controller.camera.left)
+        / Math.max(1, boardRef.current.width) / Math.max(1e-9, controller.camera.zoom);
+      const extent = 80 * worldPerPixel;
+      const project = (u: number, v: number, n = 0) => worldToHostScreen(plane.origin.clone()
+        .addScaledVector(plane.xAxis, u * extent)
+        .addScaledVector(plane.yAxis, v * extent)
+        .addScaledVector(plane.normal, n * extent));
+      const origin = project(0, 0);
+      const corners = [project(-1, -1), project(1, -1), project(1, 1), project(-1, 1)];
+      if (![origin, ...corners].every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+        guide.style.display = "none";
+        return;
+      }
+      guide.querySelector("polygon")?.setAttribute("points", corners.map((point) => `${point.x},${point.y}`).join(" "));
+      const axes = { u: project(1.25, 0), v: project(0, 1.25), n: project(0, 0, 0.9) };
+      for (const [axis, tip] of Object.entries(axes)) {
+        const line = guide.querySelector(`[data-guide-axis="${axis}"]`);
+        line?.setAttribute("x1", String(origin.x));
+        line?.setAttribute("y1", String(origin.y));
+        line?.setAttribute("x2", String(tip.x));
+        line?.setAttribute("y2", String(tip.y));
+        const label = guide.querySelector(`[data-guide-label="${axis}"]`);
+        label?.setAttribute("x", String(tip.x + 6));
+        label?.setAttribute("y", String(tip.y - 6));
+        if (label) label.textContent = axis === "n" && Math.hypot(tip.x - origin.x, tip.y - origin.y) < 8
+          ? "N (depth)" : axis.toUpperCase();
+      }
+      guide.style.display = "block";
+    };
 
     const pipePlacementState: {
       lockedPlane: PipeDrawingPlane | null;
@@ -1354,6 +1430,9 @@ export function HybridProjectionLayer({
       lockedPlane: null,
       lastCommittedWorld: null,
       pointerId: null,
+    };
+    setPipeAnchorRef.current = (point) => {
+      pipePlacementState.lastCommittedWorld = point ? modelPointToWorld(point, point.z ?? useSmartDrawingStore.getState().pipeRoutingSettings.defaultPipeElevationMm) : null;
     };
     const pipeSnapManager = new SnapManager();
     const draftingAnnouncementIntervalMs = 1_000;
@@ -1727,6 +1806,19 @@ export function HybridProjectionLayer({
       hud.style.display = "block";
     };
 
+    const showPipeProjectionUnavailable = (e: PointerEvent): void => {
+      const hud = smartDraftingHudRef.current;
+      if (!hud) return;
+      if (smartDraftingLabelRef.current) smartDraftingLabelRef.current.textContent = "Projection unavailable";
+      if (smartDraftingMetricsRef.current) smartDraftingMetricsRef.current.textContent = "Plane or axis is nearly edge-on";
+      if (smartDraftingHintRef.current) smartDraftingHintRef.current.textContent = "Change the view or use numeric coordinates";
+      const rect = canvas.getBoundingClientRect();
+      hud.style.left = `${Math.max(12, Math.min(e.clientX - rect.left + 18, rect.width - 300))}px`;
+      hud.style.top = `${Math.max(12, Math.min(e.clientY - rect.top + 18, rect.height - 90))}px`;
+      hud.style.display = "block";
+      queueDraftingAnnouncement("Plane or axis is nearly edge-on. Change the view or use numeric coordinates.", "Projection unavailable");
+    };
+
     const resolvePipePointer = (
       e: PointerEvent,
       lockPlane: boolean,
@@ -1738,13 +1830,22 @@ export function HybridProjectionLayer({
       const fallbackZ = pipePlacementState.lastCommittedWorld?.z ?? 0;
       const plane = resolveActiveDrawingPlane({
         camera: controller.camera,
+        explicitPlane: activePipeWorkplaneRef.current,
         lockedPlane: pipePlacementState.lockedPlane,
         surfaceHit,
         viewMode: interactionViewModeRef.current,
         anchor: pipePlacementState.lastCommittedWorld,
         fallbackOrigin: new THREE.Vector3(0, 0, fallbackZ),
       });
-      const projection = projectPointerToDrawingPlane(
+      const axisRequested = Boolean(pipePlacementState.lastCommittedWorld && (e.ctrlKey || e.metaKey));
+      const axisHit = axisRequested ? intersectPointerRayWithAxis(
+        ray,
+        pipePlacementState.lastCommittedWorld!,
+        new THREE.Vector3(0, 0, 1),
+      ) : null;
+      const projection = axisRequested
+        ? axisHit ? { ray, rawWorldPoint: axisHit } : null
+        : projectPointerToDrawingPlane(
         e.clientX,
         e.clientY,
         rect,
@@ -1753,33 +1854,37 @@ export function HybridProjectionLayer({
       );
       if (!projection) {
         pipeSnapManager.reset();
-        hideSmartDraftingHud();
+        showPipeProjectionUnavailable(e);
         return null;
       }
       let constrained = projection.rawWorldPoint;
       let constraint: PipeAxisConstraint = "none";
-      if (pipePlacementState.lastCommittedWorld && (e.ctrlKey || e.metaKey)) {
-        const axisHit = intersectPointerRayWithAxis(
-          projection.ray,
-          pipePlacementState.lastCommittedWorld,
-          new THREE.Vector3(0, 0, 1),
-        );
-        if (axisHit) {
-          constrained = axisHit;
-          constraint = "world-z";
-        }
-      } else if (pipePlacementState.lastCommittedWorld && e.shiftKey) {
+      const drawingSettings = useSmartDrawingStore.getState();
+      const constrainInPlane = (point: THREE.Vector3): THREE.Vector3 => {
+        const anchor = pipePlacementState.lastCommittedWorld;
+        if (!anchor) return point;
+        const delta = point.clone().sub(anchor);
+        const local = constrainPipeDraftDelta({ x: delta.dot(plane.xAxis), y: delta.dot(plane.yAxis) }, {
+          angleMode: drawingSettings.refrigerantPipeAngleMode,
+          material: drawingSettings.refrigerantPipeDrawMode,
+          shift: e.shiftKey, alt: e.altKey,
+        });
+        if (!local) return point;
+        return anchor.clone().addScaledVector(plane.xAxis, local.x).addScaledVector(plane.yAxis, local.y)
+          .addScaledVector(plane.normal, delta.dot(plane.normal));
+      };
+      if (axisRequested) {
+        constraint = "world-z";
+      } else if (pipePlacementState.lastCommittedWorld) {
+        constrained = constrainInPlane(constrained);
         const delta = constrained.clone().sub(pipePlacementState.lastCommittedWorld);
-        const axis = Math.abs(delta.dot(plane.xAxis)) >= Math.abs(delta.dot(plane.yAxis))
-          ? "local-x"
-          : "local-y";
-        constrained = applyPipeAxisConstraint(
-          pipePlacementState.lastCommittedWorld,
-          constrained,
-          axis,
-          plane,
-        );
-        constraint = axis;
+        const angleConstrained = !e.altKey && (e.shiftKey || resolvePipeDraftAngleMode(
+          drawingSettings.refrigerantPipeAngleMode, drawingSettings.refrigerantPipeDrawMode,
+        ) !== "free");
+        if (angleConstrained && Math.abs(delta.dot(plane.normal)) <= 0.25 && delta.lengthSq() > 1e-6) {
+          if (Math.abs(delta.dot(plane.yAxis)) <= 1e-6) constraint = "local-x";
+          else if (Math.abs(delta.dot(plane.xAxis)) <= 1e-6) constraint = "local-y";
+        }
       }
       const rawSnapCandidates = pipeSnapCandidates(coordinates.canvas);
       const rawCandidateById = new Map(
@@ -1796,13 +1901,16 @@ export function HybridProjectionLayer({
             constrained,
             rawSnapCandidates.map((candidate) => toManagedSnapCandidate(
               candidate,
-              !pipePlacementState.lastCommittedWorld
+              (!activePipeWorkplaneRef.current && !pipePlacementState.lockedPlane
+                || pointSatisfiesPipeDrawingPlane(candidate.point, plane))
+              && constrainInPlane(candidate.point).distanceTo(candidate.point) <= 0.25
+              && (!pipePlacementState.lastCommittedWorld
               || pointSatisfiesPipeAxisConstraint(
                 pipePlacementState.lastCommittedWorld,
                 candidate.point,
                 constraint,
                 plane,
-              ),
+              )),
             )),
           );
       const snappedCandidate = snapResolution.candidate
@@ -2012,6 +2120,7 @@ export function HybridProjectionLayer({
             height: rect.height,
           },
           viewMode: interactionViewModeRef.current,
+          activeWorkplane: activePipeWorkplaneRef.current,
         },
         {
           anchorWorld,
@@ -2025,7 +2134,9 @@ export function HybridProjectionLayer({
       if (!onCommitPipeRouteEditRef.current) return false;
       const element = hvacElementsRef.current.find((candidate) => candidate.id === handle.entityId);
       if (!element || !isRefrigerantPipeElementType(element.type)) return false;
-      const nodes = resolvePipeEditRouteNodes(element, hvacElementsRef.current);
+      // Handles, previews and final validation must share one canonical route
+      // resolver, including the legacy route's elevation fallback.
+      const nodes = editablePipeNodes(element);
       const nodeIndex = handle.editTarget.nodeIndex;
       const anchor = nodes[nodeIndex];
       if (!anchor) return false;
@@ -2077,7 +2188,11 @@ export function HybridProjectionLayer({
         pointerId: e.pointerId,
       };
       const update = updateDrag(current.drag, current.lastPointer);
-      if (!update) return true;
+      if (!update) {
+        showPipeProjectionUnavailable(e);
+        return true;
+      }
+      hideSmartDraftingHud();
       const modelPoint = worldPointToModel(update.worldPoint);
       current.currentNodes = moveEditablePipeNode(
         current.currentNodes,
@@ -2106,10 +2221,24 @@ export function HybridProjectionLayer({
       return true;
     };
 
+    const restorePipeDragHandle = (drag: NonNullable<typeof pickState.pipeDrag>): void => {
+      const original = drag.originalNodes[drag.nodeIndex];
+      const sceneState = sceneStateRef.current;
+      if (!original || !sceneState) return;
+      sceneState.handleLayer.setDefs(sceneState.handleLayer.getDefs().map((definition) =>
+        definition.id === drag.handleId
+          ? { ...definition, p: [original.x, original.y, original.z] }
+          : definition,
+      ));
+    };
+
     const handlePointerMove3D = (ev: Event): void => {
       const e = ev as PointerEvent;
+      if (isPipeEditorTarget(e.target)) return;
       const s = sceneStateRef.current;
-      if (!s || controller.isTransitioning || controller.isFlatView(FLAT_SHEET_POLAR)) {
+      if (!s || controller.isTransitioning
+        || (controller.isFlatView(FLAT_SHEET_POLAR)
+          && !(activePipeWorkplaneRef.current && pipeToolActiveRef.current))) {
         hideSmartDraftingHud();
         return;
       }
@@ -2177,20 +2306,26 @@ export function HybridProjectionLayer({
 
     const handlePointerDown3D = (ev: Event): void => {
       const e = ev as PointerEvent;
+      if (isPipeEditorTarget(e.target)) return;
       if (e.button !== 0) {
         if (pipeToolActiveRef.current) hideSmartDraftingHud();
         return;
       }
       const s = sceneStateRef.current;
-      if (!s || controller.isTransitioning || controller.isFlatView(FLAT_SHEET_POLAR)) {
+      if (!s || controller.isTransitioning
+        || (controller.isFlatView(FLAT_SHEET_POLAR)
+          && !(activePipeWorkplaneRef.current && pipeToolActiveRef.current))) {
         hideSmartDraftingHud();
         return;
       }
       if (pipeToolActiveRef.current) {
-        const resolved = resolvePipePointer(e, true);
-        if (!resolved) return;
         e.preventDefault();
         e.stopPropagation();
+        const resolved = resolvePipePointer(e, true);
+        if (!resolved) return;
+        // preventDefault retains focus on the last numeric field or toolbar
+        // button. Return keyboard commands to the drawing after a canvas click.
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
         pipePlacementState.lastCommittedWorld = resolved.world.clone();
         pipePlacementState.pointerId = e.pointerId;
         interactionElement.setPointerCapture?.(e.pointerId);
@@ -2284,6 +2419,7 @@ export function HybridProjectionLayer({
 
     const handlePointerUp3D = (ev: Event): void => {
       const e = ev as PointerEvent;
+      if (isPipeEditorTarget(e.target)) return;
       const s = sceneStateRef.current;
       const releaseCapture = (): void => {
         try {
@@ -2298,9 +2434,15 @@ export function HybridProjectionLayer({
         return;
       }
       if (pickState.pipeDrag) {
+        if (pickState.pipeDrag.drag.pointerId !== null
+          && pickState.pipeDrag.drag.pointerId !== e.pointerId) return;
+        updatePipeVertexDrag(e);
         const pipeDrag = pickState.pipeDrag;
         pickState.pipeDrag = null;
         editPipePreviewRef.current = null;
+        // If final validation rejects the edit, keep the original handle in
+        // place. A successful model update supplies the committed position.
+        restorePipeDragHandle(pipeDrag);
         s?.handleLayer.setState("", "idle");
         releaseCapture();
         const changed = pipeDrag.currentNodes.some((node, index) => {
@@ -2370,10 +2512,24 @@ export function HybridProjectionLayer({
       selectWall(raycastWallId(point), e.shiftKey);
     };
 
-    interactionElement.addEventListener("pointermove", handlePointerMove3D);
-    interactionElement.addEventListener("pointerdown", handlePointerDown3D);
-    interactionElement.addEventListener("pointerup", handlePointerUp3D);
+    // Capture makes the explicit workplane own placement even in a flat view,
+    // before the Fabric canvas can also interpret the same pointer event.
+    interactionElement.addEventListener("pointermove", handlePointerMove3D, true);
+    interactionElement.addEventListener("pointerdown", handlePointerDown3D, true);
+    interactionElement.addEventListener("pointerup", handlePointerUp3D, true);
     const handlePipeConstraintKeyDown = (e: KeyboardEvent): void => {
+      if (isPipeEditorTarget(e.target)) return;
+      if (e.key === "Escape" && pickState.pipeDrag) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        cancelPipeVertexDrag();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !["Control", "Meta"].includes(e.key)) {
+        // Let undo/redo and application shortcuts retain their meaning.
+        if (pickState.pipeDrag && ["z", "y"].includes(e.key.toLowerCase())) cancelPipeVertexDrag();
+        return;
+      }
       const target = e.target;
       if (
         !pickState.pipeDrag
@@ -2393,32 +2549,35 @@ export function HybridProjectionLayer({
     const handlePipeConstraintKeyUp = (e: KeyboardEvent): void => {
       if (["x", "y", "z", "control", "meta"].includes(e.key.toLowerCase())) {
         activePipeConstraintKey = "free";
+        rebasePipeVertexDrag("free");
       }
     };
-    window.addEventListener("keydown", handlePipeConstraintKeyDown);
+    window.addEventListener("keydown", handlePipeConstraintKeyDown, true);
     window.addEventListener("keyup", handlePipeConstraintKeyUp);
-    const handlePointerCancel3D = (ev: Event): void => {
-      const e = ev as PointerEvent;
+    const cancelPipeVertexDrag = (): void => {
       if (pickState.pipeDrag || pickState.pipePressedId) {
         const cancelledDrag = pickState.pipeDrag;
-        const originalNode = cancelledDrag?.originalNodes[cancelledDrag.nodeIndex];
-        const sceneState = sceneStateRef.current;
-        if (cancelledDrag && originalNode && sceneState) {
-          sceneState.handleLayer.setDefs(
-            sceneState.handleLayer.getDefs().map((definition) =>
-              definition.id === cancelledDrag.handleId
-                ? { ...definition, p: [originalNode.x, originalNode.y, originalNode.z] }
-                : definition,
-            ),
-          );
-        }
+        if (cancelledDrag) restorePipeDragHandle(cancelledDrag);
         pickState.pipeDrag = null;
         pickState.pipePressedId = null;
+        activePipeConstraintKey = "free";
         editPipePreviewRef.current = null;
         sceneStateRef.current?.handleLayer.setState("", "idle");
         schedulePreviewRebuild();
         request();
+        if (cancelledDrag?.drag.pointerId != null) {
+          try {
+            interactionElement.releasePointerCapture?.(cancelledDrag.drag.pointerId);
+          } catch { /* pointer already released */ }
+        }
       }
+      hideSmartDraftingHud();
+    };
+    const handlePointerCancel3D = (ev: Event): void => {
+      const e = ev as PointerEvent;
+      if (pickState.pipeDrag?.drag.pointerId != null
+        && pickState.pipeDrag.drag.pointerId !== e.pointerId) return;
+      cancelPipeVertexDrag();
       try {
         interactionElement.releasePointerCapture?.(e.pointerId);
       } catch {
@@ -2430,11 +2589,17 @@ export function HybridProjectionLayer({
       onPipePointerCancelRef.current?.();
     };
     interactionElement.addEventListener("pointercancel", handlePointerCancel3D);
+    const handleLostPointerCapture = (event: PointerEvent): void => {
+      if (pickState.pipeDrag?.drag.pointerId === event.pointerId) cancelPipeVertexDrag();
+    };
+    interactionElement.addEventListener("lostpointercapture", handleLostPointerCapture);
+    window.addEventListener("blur", cancelPipeVertexDrag);
 
     // Continue a live multi-click route even if the pointer briefly leaves the
     // host. Avoid duplicating events that already bubbled from the host.
     const handleWindowPipeMove = (ev: Event): void => {
       const e = ev as PointerEvent;
+      if (isPipeEditorTarget(e.target)) return;
       if (!pipeToolActiveRef.current || !routeActiveRef.current) return;
       if (e.target instanceof Node && interactionElement.contains(e.target)) return;
       if ((e.buttons & 6) !== 0 || controller.isTransitioning || controller.isFlatView(FLAT_SHEET_POLAR)) {
@@ -2550,7 +2715,8 @@ export function HybridProjectionLayer({
       }
       // "Flat" means polar AND azimuth are home — an azimuth-only rotation
       // still needs the sheet matrix (the Fabric board cannot rotate).
-      if (isFlat || controller.isTransitioning || !pipeToolActiveRef.current || !routeActiveRef.current) {
+      if ((isFlat && !activePipeWorkplaneRef.current) || controller.isTransitioning
+        || (!pipeToolActiveRef.current && !pickState.pipeDrag)) {
         hideSmartDraftingHud();
       }
       // The 3D content is live the moment any tilt begins; while flat only the
@@ -2566,6 +2732,7 @@ export function HybridProjectionLayer({
       // Handles stay ~10px on screen at any zoom (reference practice).
       s.handleLayer.updateScale(1 / Math.max(controller.camera.zoom, 1e-9));
       s.handleLayer.group.visible = !isFlat && rise === 1 && !controller.isTransitioning;
+      paintWorkplaneGuide();
       // Paper bond through the transition: tilt the ENTIRE 2D sheet (Fabric +
       // overlays) with the exact affine projection of the model plane, so the
       // drawing stays glued to the paper while the sheet cross-fades into the
@@ -2663,12 +2830,14 @@ export function HybridProjectionLayer({
       canvas.removeEventListener("webglcontextlost", handleContextLost, false);
       canvas.removeEventListener("webglcontextrestored", handleContextRestored, false);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      interactionElement.removeEventListener("pointermove", handlePointerMove3D);
-      interactionElement.removeEventListener("pointerdown", handlePointerDown3D);
-      interactionElement.removeEventListener("pointerup", handlePointerUp3D);
+      interactionElement.removeEventListener("pointermove", handlePointerMove3D, true);
+      interactionElement.removeEventListener("pointerdown", handlePointerDown3D, true);
+      interactionElement.removeEventListener("pointerup", handlePointerUp3D, true);
       interactionElement.removeEventListener("pointercancel", handlePointerCancel3D);
+      interactionElement.removeEventListener("lostpointercapture", handleLostPointerCapture);
+      window.removeEventListener("blur", cancelPipeVertexDrag);
       window.removeEventListener("pointermove", handleWindowPipeMove);
-      window.removeEventListener("keydown", handlePipeConstraintKeyDown);
+      window.removeEventListener("keydown", handlePipeConstraintKeyDown, true);
       window.removeEventListener("keyup", handlePipeConstraintKeyUp);
       if (draftingAnnouncementTimer !== null) {
         window.clearTimeout(draftingAnnouncementTimer);
@@ -2676,6 +2845,7 @@ export function HybridProjectionLayer({
       }
       editPipePreviewRef.current = null;
       resetPipePlacementRef.current = null;
+      setPipeAnchorRef.current = null;
       removeGhost();
       removeBodyGhost();
       if (raf != null && typeof window !== "undefined") window.cancelAnimationFrame(raf);
@@ -2688,11 +2858,13 @@ export function HybridProjectionLayer({
       controller.dispose();
       controllerRef.current = null;
       resetPlanSheet();
+      if (workplaneGuideRef.current) workplaneGuideRef.current.style.display = "none";
       canvas.style.visibility = "";
       sceneState.postfx?.dispose();
       sceneState.postfx = null;
       sceneState.handleLayer.dispose();
       sceneState.wallChunk = null;
+      sceneState.hvacScene.clear();
       clearGroup(sceneState.root);
       clearGroup(sceneState.surfaceLayer);
       clearGroup(sceneState.pipePreviewLayer);
@@ -2714,7 +2886,7 @@ export function HybridProjectionLayer({
     const sceneState = sceneStateRef.current;
     if (!sceneState) return;
 
-    clearGroup(sceneState.root);
+    clearGroup(sceneState.architectureLayer);
     clearGroup(sceneState.surfaceLayer);
     sceneState.surfaceLayer.add(createPagePlane(pageWidthMm, pageHeightMm));
 
@@ -2725,7 +2897,7 @@ export function HybridProjectionLayer({
 
     const wallChunkData = createWallChunkGroup(walls, wallColorMode);
     sceneState.wallChunk = wallChunkData;
-    if (wallChunkData) sceneState.root.add(wallChunkData.group);
+    if (wallChunkData) sceneState.architectureLayer.add(wallChunkData.group);
 
     walls.forEach((wall) => {
       const openings = createWallOpenings3D(wall);
@@ -2733,7 +2905,7 @@ export function HybridProjectionLayer({
         openings.name = `hybrid-openings-${wall.id}`;
         // Wall body, linework and hosted openings rise as one architectural
         // system during the 2D -> 3D handoff.
-        (wallChunkData?.group ?? sceneState.root).add(openings);
+        (wallChunkData?.group ?? sceneState.architectureLayer).add(openings);
       }
     });
 
@@ -2741,27 +2913,10 @@ export function HybridProjectionLayer({
       const definition = objectDefinitionsById.get(symbol.symbolId);
       if (!definition) return;
       const mesh = createSymbolMesh(symbol, definition);
-      if (mesh) sceneState.root.add(mesh);
+      if (mesh) sceneState.architectureLayer.add(mesh);
     });
 
-    const pipeEndpointStateMap = buildRefrigerantPipeEndpointRenderStateMap(hvacElements);
-    const pipeRenderChainStateMap = buildRefrigerantPipeRenderChainStateMap(
-      hvacElements,
-      pipeEndpointStateMap,
-    );
-    const sceneContext = {
-      allElements: hvacElements,
-      pipeEndpointStateMap,
-      pipeRenderChainStateMap,
-      pipeTargets: getVisibleRefrigerantPipeStraightSegmentTargets(hvacElements),
-    };
-    hvacElements.forEach((element) => {
-      const mesh = buildHvacElementMesh(element, sceneContext);
-      if (!mesh || mesh.children.length === 0) return;
-      tuneHvacMesh(mesh);
-      sceneState.root.add(mesh);
-    });
-    refreshSceneContentBounds(sceneState);
+    refreshSceneContentBounds(sceneState, true);
     controllerRef.current?.setContentBounds(sceneState.contentBounds);
     // Content changed → re-apply the view style and rebuild outline proxies
     // against the fresh chunk (selection may reference rebuilt geometry).
@@ -2770,9 +2925,8 @@ export function HybridProjectionLayer({
     requestFrameRef.current?.();
     schedulePreviewRebuild();
   }, [
-    glbLoadRevision,
-    fittingDisplay,
-    hvacElements,
+    interactionElement,
+    rendererRevision,
     objectDefinitionsById,
     pageHeightMm,
     pageWidthMm,
@@ -2782,6 +2936,22 @@ export function HybridProjectionLayer({
     walls,
     schedulePreviewRebuild,
   ]);
+
+  useEffect(() => {
+    const sceneState = sceneStateRef.current;
+    if (!sceneState) return;
+    const sceneContext = {
+      ...buildPreviewRenderContext(hvacElements),
+      pipeTargets: hvacElements.some(element => element.type === "refrigerant-branch-kit")
+        ? getVisibleRefrigerantPipeStraightSegmentTargets(hvacElements) : [],
+    };
+    sceneState.hvacScene.update(sceneContext, glbLoadRevision);
+    refreshSceneContentBounds(sceneState, true);
+    controllerRef.current?.setContentBounds(sceneState.contentBounds);
+    requestFrameRef.current?.();
+    schedulePreviewRebuild();
+  }, [interactionElement, rendererRevision, glbLoadRevision, routingSettings,
+    hvacElements, buildPreviewRenderContext, schedulePreviewRebuild]);
 
   // Hover / selection → outline proxies (reference refreshProxies wiring).
   useEffect(() => {
@@ -2802,7 +2972,7 @@ export function HybridProjectionLayer({
         (candidate) => candidate.id === id && isRefrigerantPipeElementType(candidate.type),
       );
       if (pipe) {
-        const routeNodes = resolvePipeEditRouteNodes(pipe, hvacElements);
+        const routeNodes = editablePipeNodes(pipe);
         const protection = resolvePipeEndpointProtection(pipe, hvacElements);
         const protectedIndexes = getProtectedPipeNodeIndexes(
           routeNodes.length,
@@ -2882,6 +3052,8 @@ export function HybridProjectionLayer({
     walls,
     symbols,
     hvacElements,
+    activePipeWorkplane,
+    pipeToolActive,
   ]);
 
   // Always visible, at the BOTTOM (z-0): this canvas is the single grid — the 3D
@@ -2904,6 +3076,20 @@ export function HybridProjectionLayer({
         aria-hidden="true"
         className="pointer-events-none absolute bottom-3 left-3 z-[25] hidden rounded bg-slate-950/90 p-2 text-[10px] leading-4 text-emerald-300 shadow-lg"
       />
+      <svg
+        ref={workplaneGuideRef}
+        className="pointer-events-none absolute inset-0 z-[20] hidden h-full w-full overflow-visible"
+        role="img"
+        aria-label="Active workplane: U and V in the plane, N normal to the plane"
+      >
+        <polygon fill="#0891b2" fillOpacity="0.06" stroke="#0891b2" strokeOpacity="0.45" strokeDasharray="4 4" />
+        <line data-guide-axis="u" stroke="#dc2626" strokeWidth="1.5" />
+        <line data-guide-axis="v" stroke="#059669" strokeWidth="1.5" />
+        <line data-guide-axis="n" stroke="#2563eb" strokeWidth="1.5" strokeDasharray="3 3" />
+        <text data-guide-label="u" fill="#dc2626" fontSize="11" fontWeight="600">U</text>
+        <text data-guide-label="v" fill="#059669" fontSize="11" fontWeight="600">V</text>
+        <text data-guide-label="n" fill="#2563eb" fontSize="11" fontWeight="600">N</text>
+      </svg>
       <div
         ref={smartDraftingHudRef}
         aria-hidden="true"

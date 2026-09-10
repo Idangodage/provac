@@ -61,6 +61,8 @@ export function buildRefrigerantBundleSnapCandidates(options: {
   pointer: Point2D;
   lineMode: RefrigerantPipeLineMode;
   screenPxPerMm: number;
+  /** Include the snap manager's break-away distance so hysteresis remains stable. */
+  captureRadiusPx?: number;
   sourceTypeById?: ReadonlyMap<string, HvacElement['type']>;
   isTargetValid?: (target: RefrigerantPipeBundleConnection) => boolean;
   messageForTarget?: (target: RefrigerantPipeBundleConnection) => string;
@@ -68,7 +70,7 @@ export function buildRefrigerantBundleSnapCandidates(options: {
   const screenPxPerMm = Number.isFinite(options.screenPxPerMm)
     ? Math.max(0, options.screenPxPerMm)
     : 0;
-  return options.targets.map((target, index) => {
+  return options.targets.flatMap((target, index) => {
     const gasDistanceMm = Math.hypot(
       target.gasPoint.x - options.pointer.x,
       target.gasPoint.y - options.pointer.y,
@@ -82,10 +84,12 @@ export function buildRefrigerantBundleSnapCandidates(options: {
       : options.lineMode === 'liquid'
         ? liquidDistanceMm
         : Math.min(gasDistanceMm, liquidDistanceMm);
+    const distancePx = distanceMm * screenPxPerMm;
+    if (Number.isFinite(options.captureRadiusPx) && distancePx > Math.max(0, options.captureRadiusPx!)) return [];
     const sourceType = target.sourceElementId
       ? options.sourceTypeById?.get(target.sourceElementId)
       : undefined;
-    return {
+    return [{
       bundle: target,
       candidate: {
         id: candidateIdentity(target, index),
@@ -95,11 +99,11 @@ export function buildRefrigerantBundleSnapCandidates(options: {
           target.point.y,
           target.elevationMm,
         ),
-        screenDistancePx: distanceMm * screenPxPerMm,
+        screenDistancePx: distancePx,
         targetEntityId: target.sourceElementId,
         message: options.messageForTarget?.(target) ?? 'Pipe connection',
         isValid: options.isTargetValid?.(target) ?? true,
       },
-    };
+    }];
   });
 }

@@ -6,6 +6,7 @@ import { buildVrfDocumentFromHvacElements } from '../../../vrf/domain';
 import { autoRouteElementSignature, planAutoRouteNetwork, type AutoRouteNetworkOptions } from './autoRouteNetwork';
 import { findNewNetworkPipeClashes } from './networkPipeClearance';
 import { applyNetworkPipeLevels, planNetworkPipeLevels } from './networkPipeLevels';
+import { withPipeRegenerationPolicy } from './pipeEditRetention';
 import { normalizePipeRouteNodes3d } from './pipeRoute3d';
 import { DEFAULT_PIPE_ROUTING_SETTINGS, setActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { buildRefrigerantPipeElements, getRefrigerantPipeBundleSnapTargets } from './refrigerantPipePairModel';
@@ -84,15 +85,43 @@ describe('planAutoRouteNetwork', () => {
     expect(second.updates).toEqual([]);
   });
 
-  it('preserves an edited generated tree instead of replacing only its unchanged fragments', async () => {
+  it.each([false, true])('preserves an edited generated tree with rebuildExisting=%s', async rebuildExisting => {
     const scene = [outdoor(), indoor('indoor-a', 500)];
     const first = await planAutoRouteNetwork(scene, options);
     expect(first.complete, first.issues.join(' ')).toBe(true);
     const edited = first.elementsToAdd.map((element, index) => index === 0 ? { ...element, label: 'Reviewed pipe' } : element);
-    const result = await planAutoRouteNetwork([...scene, ...edited], options);
+    const result = await planAutoRouteNetwork([...scene, ...edited], { ...options, rebuildExisting });
     expect(result.elementsToAdd).toEqual([]);
     expect(result.removeElementIds).toEqual([]);
     expect(result.issues.join(' ')).toContain('preserved');
+    expect(result.evaluatedCandidates).toBe(0);
+  });
+
+  it('reconsiders an edited generated circuit only after its exact layout is explicitly released', async () => {
+    const equipment = [outdoor(), indoor('indoor-a', 500)];
+    const from = getRefrigerantPipeBundleSnapTargets([equipment[0]!])[0]!;
+    const to = getRefrigerantPipeBundleSnapTargets([equipment[1]!])[0]!;
+    const drawn = buildRefrigerantPipeElements([from.point, { x: 6000, y: from.point.y }, { x: 6000, y: 8000 },
+      { x: 1800, y: 8000 }, { x: 1800, y: to.point.y }, to.point], { startBundleConnection: from, endBundleConnection: to })
+      .map((element, index) => ({ ...element, id: `edited-${index}`, rotation: 0 } as HvacElement));
+    const levelPlan = planNetworkPipeLevels([...equipment, ...drawn], { gasHostId: drawn[0]!.id, liquidHostId: drawn[1]!.id,
+      gasHostElevationMm: to.gasElevationMm, liquidHostElevationMm: to.liquidElevationMm, startBundle: to, settings: options.settings });
+    const edited = applyNetworkPipeLevels(drawn, levelPlan).elements.map(element => ({ ...element,
+      properties: { ...element.properties, autoRouteNetwork: { version: 1, networkId: 'existing-network',
+        outdoorUnitId: 'outdoor', indoorUnitIds: ['indoor-a'], signature: 'geometry-before-field-edit' } } }));
+    const snapshot = structuredClone(edited);
+    const retained = await planAutoRouteNetwork([...equipment, ...edited], { ...options, rebuildExisting: true });
+    expect(retained.removeElementIds).toEqual([]);
+    expect(retained.elementsToAdd).toEqual([]);
+    expect(retained.evaluatedCandidates).toBe(0);
+    expect(edited).toEqual(snapshot);
+
+    const released = edited.map(element => withPipeRegenerationPolicy(element, 'reconsider'));
+    const rerouted = await planAutoRouteNetwork([...equipment, ...released], { ...options, rebuildExisting: true });
+    expect(rerouted.complete, rerouted.issues.join(' ')).toBe(true);
+    expect(rerouted.removeElementIds.sort()).toEqual(edited.map(element => element.id).sort());
+    expect(rerouted.elementsToAdd).toHaveLength(2);
+    verifyPhysicalNetwork(equipment, rerouted.elementsToAdd, ['indoor-a']);
   });
 
   it('preserves manually occupied ports and does not join ambiguous outdoor circuits', async () => {

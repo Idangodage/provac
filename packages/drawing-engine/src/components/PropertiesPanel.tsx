@@ -5,7 +5,7 @@
 "use client";
 
 import { ChevronDown, ChevronUp, X } from "lucide-react";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { shallow } from "zustand/shallow";
 
 import {
@@ -40,17 +40,14 @@ import {
 
 import { NetworkRiserUpgradeAction } from "./canvas/hvac/NetworkRiserUpgradeAction";
 import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
-import {
-  readPipeRouteNodes3d,
-  withCanonicalPipeRoute,
-} from "./canvas/hvac/pipeRoute3d";
+import { editablePipeMaterials, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
+import { buildPipePropertyEdit, type PipePropertyEdit } from "./canvas/hvac/pipePropertyEdits";
 import {
   DEFAULT_PIPE_ROUTING_SETTINGS,
   type PipeRoutingSettings,
 } from "./canvas/hvac/pipeRoutingSettings";
 import {
   buildRefrigerantPipeVisual,
-  constrainRefrigerantPipeRouteForConnections,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeLineMode,
   type RefrigerantPipeMaterial,
@@ -1414,6 +1411,28 @@ function ObjectSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   );
 }
 
+function PipeCoordinateInput({ valueMm, unit, disabled, label, onCommit }: {
+  valueMm: number;
+  unit: PropertyUnit;
+  disabled: boolean;
+  label: string;
+  onCommit: (valueMm: number) => void;
+}) {
+  const formatted = fromMm(valueMm, unit).toFixed(2);
+  const [draft, setDraft] = useState(formatted);
+  useEffect(() => setDraft(formatted), [formatted]);
+  return <input type="number" step={unit === "mm" ? 1 : 0.01} value={draft} disabled={disabled} aria-label={label}
+    onChange={event => setDraft(event.target.value)}
+    onBlur={() => {
+      if (draft !== formatted) onCommit(toMm(draft.trim() ? Number(draft) : Number.NaN, unit));
+    }}
+    onKeyDown={event => {
+      if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); event.currentTarget.blur(); }
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setDraft(formatted); }
+    }}
+    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-400" />;
+}
+
 function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   const {
     selectedElementIds,
@@ -1421,6 +1440,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     rooms,
     commitHvacElementCommand,
     updateHvacElement,
+    setProcessingStatus,
   } =
     useSmartDrawingStore(
       (state) => ({
@@ -1429,6 +1449,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         rooms: state.rooms,
         commitHvacElementCommand: state.commitHvacElementCommand,
         updateHvacElement: state.updateHvacElement,
+        setProcessingStatus: state.setProcessingStatus,
       }),
       shallow,
     );
@@ -1496,7 +1517,10 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       (total, segment) => total + segment.lengthMm,
       0,
     );
-    const routeNodes3d = readPipeRouteNodes3d(selectedEquipment);
+    const routeNodes3d = editablePipeNodes(selectedEquipment);
+    const segmentMaterials = editablePipeMaterials(selectedEquipment, routeNodes3d);
+    const geometryLocked = ["routeLocked", "routingLocked", "locked", "isLocked", "reviewed", "installationReviewed"]
+      .some(key => selectedEquipment.properties[key] === true);
     const horizontalLengthMm = routeNodes3d.slice(1).reduce(
       (total, node, index) => total + Math.hypot(
         node.x - routeNodes3d[index]!.x,
@@ -1523,7 +1547,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       },
     };
     const protectedPlanNodeIndexes = getProtectedPipeNodeIndexes(
-      pipeSpec.routePoints.length,
+      routeNodes3d.length,
       endpointProtection.start,
       endpointProtection.end,
     );
@@ -1533,147 +1557,27 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       endpointProtection.end,
     );
 
-    const applyPipeRouteUpdate = (
-      nextRoutePoints: { x: number; y: number }[],
-      nextMaterials: RefrigerantPipeMaterial[],
-    ) => {
-      const constrainedRoutePoints = constrainRefrigerantPipeRouteForConnections(
-        selectedEquipment.type,
-        selectedEquipment.properties,
-        nextRoutePoints,
-      );
-      const segmentCount = Math.max(0, constrainedRoutePoints.length - 1);
-      const normalizedMaterials = Array.from(
-        { length: segmentCount },
-        (_, index) =>
-          nextMaterials[index] === "hard" ? "hard" : "flexible",
-      );
-      const routedElement = withCanonicalPipeRoute(
-        selectedEquipment,
-        constrainedRoutePoints,
-        { segmentMaterials: normalizedMaterials },
-      );
-      const nextVisual = buildRefrigerantPipeVisual(routedElement);
-
-      commitHvacElementCommand("Edit refrigerant pipe route", {
-        updates: [{
-          id: selectedEquipment.id,
-          updates: {
-            position: {
-              x: nextVisual.bounds.minX,
-              y: nextVisual.bounds.minY,
-            },
-            width: nextVisual.bounds.width,
-            depth: nextVisual.bounds.height,
-            height: Math.max(1, nextVisual.outerRadiusMm * 2),
-            properties: routedElement.properties,
-          },
-        }],
+    const commitPipePropertyEdit = (edit: PipePropertyEdit) => {
+      const current = useSmartDrawingStore.getState();
+      const result = buildPipePropertyEdit(current.hvacElements, selectedEquipment.id, edit);
+      if (!result.ok) {
+        setProcessingStatus(result.message, false);
+        return;
+      }
+      commitHvacElementCommand("Edit refrigerant pipe properties", {
+        updates: result.elements.map(element => ({ id: element.id, updates: element })),
       });
+      setProcessingStatus('', false);
     };
 
-    const updateSegmentMaterial = (
-      segmentIndex: number,
-      material: RefrigerantPipeMaterial,
-    ) => {
-      if (
-        segmentIndex < 0 ||
-        segmentIndex >= pipeSpec.segmentMaterials.length
-      ) {
-        return;
-      }
-      const nextMaterials = [...pipeSpec.segmentMaterials];
-      nextMaterials[segmentIndex] = material;
-      applyPipeRouteUpdate(pipeSpec.routePoints, nextMaterials);
-    };
-
-    const insertVertexAtSegment = (segmentIndex: number) => {
-      if (
-        segmentIndex < 0 ||
-        segmentIndex >= pipeSpec.routePoints.length - 1
-      ) {
-        return;
-      }
-      const start = pipeSpec.routePoints[segmentIndex]!;
-      const end = pipeSpec.routePoints[segmentIndex + 1]!;
-      const midpoint = {
-        x: (start.x + end.x) / 2,
-        y: (start.y + end.y) / 2,
-      };
-      const nextRoutePoints = [...pipeSpec.routePoints];
-      nextRoutePoints.splice(segmentIndex + 1, 0, midpoint);
-      const inheritedMaterial =
-        pipeSpec.segmentMaterials[segmentIndex] ?? "flexible";
-      const nextMaterials = [...pipeSpec.segmentMaterials];
-      nextMaterials.splice(segmentIndex + 1, 0, inheritedMaterial);
-      applyPipeRouteUpdate(nextRoutePoints, nextMaterials);
-    };
-
-    const removeVertex = (vertexIndex: number) => {
-      if (
-        vertexIndex <= 0 ||
-        vertexIndex >= pipeSpec.routePoints.length - 1 ||
-        pipeSpec.routePoints.length <= 2 ||
-        protectedPlanNodeIndexes.has(vertexIndex)
-      ) {
-        return;
-      }
-      const nextRoutePoints = pipeSpec.routePoints.filter(
-        (_, index) => index !== vertexIndex,
-      );
-      const nextMaterials: RefrigerantPipeMaterial[] = [];
-      for (let index = 0; index < pipeSpec.segmentMaterials.length; index += 1) {
-        if (index === vertexIndex - 1) {
-          const left = pipeSpec.segmentMaterials[index] ?? "flexible";
-          const right = pipeSpec.segmentMaterials[index + 1] ?? left;
-          nextMaterials.push(left === right ? left : "flexible");
-          index += 1;
-          continue;
-        }
-        if (index === vertexIndex) {
-          continue;
-        }
-        nextMaterials.push(pipeSpec.segmentMaterials[index] ?? "flexible");
-      }
-      applyPipeRouteUpdate(nextRoutePoints, nextMaterials);
-    };
-
-    const updateVertexCoordinate = (
-      vertexIndex: number,
-      axis: "x" | "y",
-      nextValueMm: number,
-    ) => {
-      if (!Number.isFinite(nextValueMm) || protectedPlanNodeIndexes.has(vertexIndex)) {
-        return;
-      }
-      const nextRoutePoints = pipeSpec.routePoints.map((point, index) =>
-        index === vertexIndex ? { ...point, [axis]: nextValueMm } : point,
-      );
-      applyPipeRouteUpdate(nextRoutePoints, pipeSpec.segmentMaterials);
-    };
-
-    const updateRouteNodeElevation = (nodeIndex: number, nextValueMm: number) => {
-      if (
-        !Number.isFinite(nextValueMm)
-        || !routeNodes3d[nodeIndex]
-        || protectedElevationNodeIndexes.has(nodeIndex)
-      ) return;
-      const nextNodes = routeNodes3d.map((node, index) =>
-        index === nodeIndex ? { ...node, z: nextValueMm } : node);
-      commitHvacElementCommand("Edit refrigerant pipe elevation", {
-        updates: [{
-          id: selectedEquipment.id,
-          updates: {
-            properties: {
-              ...selectedEquipment.properties,
-              routeNodes3d: nextNodes,
-              networkLevelLocked: true,
-              networkLevelPlan: undefined,
-            },
-          },
-        }],
-      });
-    };
+    const updateSegmentMaterial = (index: number, material: RefrigerantPipeMaterial) =>
+      commitPipePropertyEdit({ kind: "material", index, material });
+    const insertVertexAtSegment = (index: number) => commitPipePropertyEdit({ kind: "insert", index });
+    const removeVertex = (index: number) => commitPipePropertyEdit({ kind: "remove", index });
+    const updateVertexCoordinate = (index: number, axis: "x" | "y", valueMm: number) =>
+      commitPipePropertyEdit({ kind: "coordinate", index, axis, valueMm });
+    const updateRouteNodeElevation = (index: number, valueMm: number) =>
+      commitPipePropertyEdit({ kind: "coordinate", index, axis: "z", valueMm });
 
     return (
       <div className="space-y-2">
@@ -1725,16 +1629,19 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
             {pipeVisual.invalidHardSegmentCount}
           </span>
         </PropertyRow>
+        {geometryLocked && <p role="status" className="rounded bg-amber-50 p-2 text-xs text-amber-800">
+          This route is locked. Release its geometry lock before changing points or materials.
+        </p>}
 
         <div className="rounded border border-amber-200/80 bg-white/90 p-2">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
             Segment Materials
           </div>
-          {pipeSpec.segmentMaterials.length === 0 ? (
+          {segmentMaterials.length === 0 ? (
             <p className="text-xs text-slate-500">No editable segments.</p>
           ) : (
             <div className="space-y-2">
-              {pipeSpec.segmentMaterials.map((material, index) => (
+              {segmentMaterials.map((material, index) => (
                 <div
                   key={`pipe-segment-${index}`}
                   className="flex items-center gap-2"
@@ -1744,6 +1651,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                   </span>
                   <select
                     value={material}
+                    disabled={geometryLocked}
                     onChange={(e) =>
                       updateSegmentMaterial(
                         index,
@@ -1757,6 +1665,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                   </select>
                   <button
                     type="button"
+                    disabled={geometryLocked}
                     onClick={() => insertVertexAtSegment(index)}
                     className="rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-amber-50"
                   >
@@ -1770,13 +1679,13 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 
         <div className="rounded border border-amber-200/80 bg-white/90 p-2">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Vertices
+            Route points · world X / Y
           </div>
           <div className="space-y-2">
-            {pipeSpec.routePoints.map((point, index) => {
+            {routeNodes3d.map((point, index) => {
               const endpoint =
-                index === 0 || index === pipeSpec.routePoints.length - 1;
-              const protectedNode = protectedPlanNodeIndexes.has(index);
+                index === 0 || index === routeNodes3d.length - 1;
+              const protectedNode = geometryLocked || protectedPlanNodeIndexes.has(index);
               return (
                 <div
                   key={`pipe-vertex-${index}`}
@@ -1785,33 +1694,19 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
                   <span className="w-10 text-xs text-slate-500">
                     V{index + 1}
                   </span>
-                  <input
-                    type="number"
-                    step={propertyUnit === "mm" ? 1 : 0.01}
-                    value={fromMm(point.x, propertyUnit).toFixed(2)}
+                  <PipeCoordinateInput
+                    valueMm={point.x}
+                    unit={propertyUnit}
                     disabled={protectedNode}
-                    onChange={(e) =>
-                      updateVertexCoordinate(
-                        index,
-                        "x",
-                        toMm(Number.parseFloat(e.target.value), propertyUnit),
-                      )
-                    }
-                    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    label={`Route point ${index + 1} world X`}
+                    onCommit={value => updateVertexCoordinate(index, "x", value)}
                   />
-                  <input
-                    type="number"
-                    step={propertyUnit === "mm" ? 1 : 0.01}
-                    value={fromMm(point.y, propertyUnit).toFixed(2)}
+                  <PipeCoordinateInput
+                    valueMm={point.y}
+                    unit={propertyUnit}
                     disabled={protectedNode}
-                    onChange={(e) =>
-                      updateVertexCoordinate(
-                        index,
-                        "y",
-                        toMm(Number.parseFloat(e.target.value), propertyUnit),
-                      )
-                    }
-                    className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    label={`Route point ${index + 1} world Y`}
+                    onCommit={value => updateVertexCoordinate(index, "y", value)}
                   />
                   <button
                     type="button"
@@ -1836,24 +1731,19 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
               Elevation nodes
             </div>
             <p className="mb-2 text-[11px] leading-4 text-slate-500">
-              Exact Z remains editable even when the plan view locks elevation.
+              World Z is independent of the camera. Enter commits a value; Escape restores it. Connections and bend space remain constrained.
             </p>
             <div className="space-y-1.5">
               {routeNodes3d.map((node, index) => (
                 <div key={`pipe-node-z-${index}`} className="flex items-center gap-2">
                   <span className="w-10 text-xs text-slate-500">N{index + 1}</span>
                   <span className="text-[11px] text-slate-400">Z</span>
-                  <input
-                    type="number"
-                    step={propertyUnit === "mm" ? 1 : 0.01}
-                    value={fromMm(node.z, propertyUnit).toFixed(2)}
-                    disabled={protectedElevationNodeIndexes.has(index)}
-                    onChange={(event) => updateRouteNodeElevation(
-                      index,
-                      toMm(Number.parseFloat(event.target.value), propertyUnit),
-                    )}
-                    className="w-24 rounded border border-sky-200 bg-white px-2 py-1 text-xs text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
-                    aria-label={`Route node ${index + 1} elevation`}
+                  <PipeCoordinateInput
+                    valueMm={node.z}
+                    unit={propertyUnit}
+                    disabled={geometryLocked || protectedElevationNodeIndexes.has(index)}
+                    label={`Route node ${index + 1} world Z`}
+                    onCommit={value => updateRouteNodeElevation(index, value)}
                   />
                   <span className="text-[11px] text-slate-400">{formatUnit(propertyUnit)}</span>
                 </div>

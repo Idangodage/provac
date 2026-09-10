@@ -94,6 +94,14 @@ describe('camera-aware pointer projection', () => {
     );
     expect(intersectRayWithWorkplane(ray, primary, fallback)?.toArray()).toEqual([10, 2, 3]);
   });
+
+  it('rejects near-parallel plane and axis hits instead of producing distant geometry', () => {
+    const ray = new THREE.Ray(new THREE.Vector3(0, 0, 1000), new THREE.Vector3(1, 0, -0.00001).normalize());
+    expect(intersectRayWithWorkplane(ray, createWorkplane('level', new THREE.Vector3(), new THREE.Vector3(0, 0, 1))))
+      .toBeNull();
+    expect(closestPointBetweenRayAndAxis(ray, new THREE.Vector3(), new THREE.Vector3(1, 0, 0)))
+      .toBeNull();
+  });
 });
 
 describe('axis and plane drag solvers', () => {
@@ -222,6 +230,56 @@ describe('axis and plane drag solvers', () => {
     );
     expect(drag?.plane?.id).toBe('explicit-slope');
     expect(drag?.plane?.normal.distanceTo(explicit.normal.clone().normalize())).toBeLessThan(1e-9);
+  });
+
+  it('keeps edge-on fallback movement on the translated and rotated selected plane', () => {
+    const camera = orthoCamera();
+    const origin = new THREE.Vector3(50, -25, 200);
+    const normal = new THREE.Vector3(1, 1, 0).normalize();
+    const plane = createWorkplane('edge-on', origin, normal);
+    const pointer = pointerForWorld(origin, camera);
+    const drag = beginDrag(pointer, { camera, viewport, viewMode: 'plan-2d', activeWorkplane: plane }, { anchorWorld: origin });
+    const update = drag && updateDrag(drag, { clientX: pointer.clientX + 80, clientY: pointer.clientY + 40 });
+    expect(update?.usedFallback).toBe(true);
+    expect(Math.abs(update!.worldPoint.clone().sub(origin).dot(normal))).toBeLessThan(1e-8);
+    expect(update!.deltaWorld.length()).toBeLessThanOrEqual(Math.hypot(80, 40));
+    expect(update!.deltaWorld.length()).toBeGreaterThan(1);
+  });
+
+  it('does not switch an axis fallback when a perspective pointer leaves its singularity', () => {
+    const start = new THREE.Ray(new THREE.Vector3(0, 0, 1000), new THREE.Vector3(0, 0, -1));
+    const current = new THREE.Ray(start.origin.clone(), new THREE.Vector3(0.1, 0, -1).normalize());
+    const fallback = createWorkplane('screen', new THREE.Vector3(), new THREE.Vector3(0, 0, 1));
+    const result = projectPointerDeltaToAxis(start, current, new THREE.Vector3(), new THREE.Vector3(0, 0, 1), fallback);
+    expect(result?.usedFallback).toBe(true);
+    expect(result?.delta.length()).toBeLessThan(1e-8);
+  });
+
+  it('rejects an unstable current ray instead of mixing fallback and primary plane points', () => {
+    const plane = createWorkplane('level', new THREE.Vector3(), new THREE.Vector3(0, 0, 1));
+    const fallback = createWorkplane('screen', new THREE.Vector3(), new THREE.Vector3(1, 0, 0));
+    const start = new THREE.Ray(new THREE.Vector3(-100, 0, 10), new THREE.Vector3(1, 0, -0.1).normalize());
+    const current = new THREE.Ray(start.origin.clone(), new THREE.Vector3(1, 0, -0.001).normalize());
+    expect(projectPointerDeltaToPlane(start, current, plane, fallback)).toBeNull();
+  });
+
+  it('freezes a parented camera in world coordinates without a pointer-down jump', () => {
+    const camera = orthoCamera();
+    const parent = new THREE.Group();
+    parent.position.set(350, -120, 500);
+    parent.rotation.z = 0.4;
+    parent.add(camera);
+    parent.updateMatrixWorld(true);
+    const origin = new THREE.Vector3(350, -120, 200);
+    const pointer = pointerForWorld(origin, camera);
+    const drag = beginDrag(pointer, { camera, viewport, viewMode: 'plan-2d' }, { anchorWorld: origin });
+    expect(drag).not.toBeNull();
+    expect(drag!.camera.matrixWorld.elements).toEqual(camera.matrixWorld.elements);
+    parent.position.x += 900;
+    parent.updateMatrixWorld(true);
+    expect(updateDrag(drag!, pointer)?.deltaWorld.length()).toBeLessThan(1e-8);
+    expect(updateDrag(drag!, { clientX: pointer.clientX + 60, clientY: pointer.clientY })?.deltaWorld.length())
+      .toBeCloseTo(60, 7);
   });
 });
 

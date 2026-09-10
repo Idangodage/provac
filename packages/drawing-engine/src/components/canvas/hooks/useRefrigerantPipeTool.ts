@@ -16,13 +16,13 @@ import {
 import { isNetworkLevelPlanCurrent, type NetworkLevelSummary } from '../hvac/networkPipeLevels';
 import { planBundleBypasses } from '../hvac/pipeClashRouting';
 import { resolvePipeCommandKeyAction } from '../hvac/pipeCommandKeyPolicy';
-import { canOfferPipeBranch, describePipeConnection, resolvePipeFinishAction, resolvePipeStartMode, type PipeSnapIndicator } from '../hvac/pipeDraftingPolicy';
+import { canOfferPipeBranch, describePipeConnection, resolvePipeDraftAngleMode, resolvePipeFinishAction, resolvePipeStartMode, type PipeSnapIndicator } from '../hvac/pipeDraftingPolicy';
 import {
   attachPipeRoute3dToElements,
   hasExplicitPipeRoute3d,
   type PipePlacementPoint,
 } from '../hvac/pipeRoute3d';
-import { getActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
+import { getActivePipeRoutingSettings, type PipeRoutingSettings } from '../hvac/pipeRoutingSettings';
 import {
   buildRefrigerantPipeElements,
   buildRefrigerantPipeExtensionMerge,
@@ -90,6 +90,7 @@ export interface UseRefrigerantPipeToolOptions {
    * render on Fabric). null clears the overlay preview.
    */
   onDraftRouteChange?: (route: Point2D[] | null) => void;
+  onDraftAnchorChange?: (point: PipePlacementPoint | null) => void;
   /**
    * Push the live pipe-draw preview elements (real gas/liquid diameters + baked
    * gap — the exact elements the commit will build) so the overlay renders the
@@ -120,6 +121,10 @@ export interface RefrigerantPipeBranchKitProposalState {
 
 export interface UseRefrigerantPipeToolResult {
   isDrawing: boolean;
+  /** A continued single line keeps its real service even when the default tool draws a pair. */
+  draftLineMode: RefrigerantPipeLineMode;
+  /** Absolute elevation of the committed draft anchor, published only on draft steps. */
+  draftElevationMm: number | null;
   /**
    * Start a routing session seeded from an existing bundle connection (an open
    * pipe end or a branch-kit port) — used to extend a run through the full draw
@@ -135,6 +140,10 @@ export interface UseRefrigerantPipeToolResult {
   handleKeyDown: (event: KeyboardEvent) => boolean;
   handleKeyUp: (event: KeyboardEvent) => void;
   cancelDrawing: () => void;
+  undoDrawingStep: () => void;
+  appendSegmentLength: (lengthMm: number) => boolean;
+  /** Append a deliberate vertical step; with no draft, the canvas can establish its first plane. */
+  setDrawingElevation: (elevationMm: number) => boolean;
   /** Live branch-kit proposal (or null) for the anchored insertion card. */
   branchKitProposal: RefrigerantPipeBranchKitProposalState | null;
   acceptBranchKitProposal: () => void;
@@ -169,20 +178,6 @@ function distance(a: PipePlacementPoint, b: PipePlacementPoint): number {
 }
 
 /**
- * Resolves the effective angle constraint. `auto` keeps the legacy,
- * material-driven behaviour (hard ⇒ 45°, flexible ⇒ free); the explicit modes
- * give the user direct control over clean L / 45° / free-angle routing.
- */
-function resolveEffectiveAngleMode(
-  pipeAngleMode: RefrigerantPipeAngleMode,
-  pipeMaterialMode: RefrigerantPipeMaterial,
-): Exclude<RefrigerantPipeAngleMode, 'auto'> {
-  return pipeAngleMode === 'auto'
-    ? (pipeMaterialMode === 'hard' ? 'diagonal' : 'free')
-    : pipeAngleMode;
-}
-
-/**
  * Snaps `target` toward the grid while keeping it exactly on the ray from
  * `from` through `target`. This lets an angle-constrained segment (ortho / 45°)
  * land near the grid without a full two-axis round knocking it off its bearing —
@@ -212,10 +207,12 @@ function snapAlongRayToGrid(from: Point2D, target: Point2D, gridSize: number): P
  * canvas y-axis increases downward, so we negate dy to make 0° = right and
  * 90° = up, matching what a draughtsman expects to read.
  */
-function formatSegmentReadout(from: Point2D, to: Point2D): string {
+function formatSegmentReadout(from: PipePlacementPoint, to: PipePlacementPoint): string {
   const dxMm = to.x - from.x;
   const dyMm = to.y - from.y;
-  const lengthMm = Math.hypot(dxMm, dyMm);
+  const dzMm = typeof from.z === 'number' && typeof to.z === 'number' ? to.z - from.z : 0;
+  const lengthMm = Math.hypot(dxMm, dyMm, dzMm);
+  if (Math.abs(dzMm) > 0.01) return `L ${Math.round(lengthMm)} mm · ${dzMm > 0 ? 'Rise' : 'Drop'} ${Math.round(Math.abs(dzMm))} mm`;
   let angleDeg = (Math.atan2(-dyMm, dxMm) * 180) / Math.PI;
   if (angleDeg < 0) {
     angleDeg += 360;
@@ -299,6 +296,7 @@ export function useRefrigerantPipeTool(
     setSelectedIds,
     setProcessingStatus,
     onDraftRouteChange,
+    onDraftAnchorChange,
     onDraftPipesChange,
     onSnapIndicatorChange,
     overlayOwnsPipePreview,
@@ -313,10 +311,47 @@ export function useRefrigerantPipeTool(
   // global `pipeLineMode` selector; cleared on reset so plain drawing falls back
   // to the selector.
   const sessionLineModeRef = useRef<RefrigerantPipeLineMode | null>(null);
+  const draftPublicationRef = useRef({ pipeLineMode, onDraftAnchorChange });
+  draftPublicationRef.current = { pipeLineMode, onDraftAnchorChange };
+  const [draftState, setDraftState] = useState({ isDrawing: false, lineMode: pipeLineMode, elevationMm: null as number | null });
+  // Only a level step which canonicalizes legacy XY nodes needs a special undo
+  // prefix. Normal drawing steps retain the existing one-point undo behavior.
+  const levelStepUndoRef = useRef(new Map<number, PipePlacementPoint[]>());
+  const resolveDraftElevation = useCallback((): number | null => {
+    const anchor = routePointsRef.current.at(-1);
+    if (!anchor) return null;
+    if (typeof anchor.z === 'number' && Number.isFinite(anchor.z)) return anchor.z;
+    const bundle = startBundleRef.current;
+    const mode = sessionLineModeRef.current ?? draftPublicationRef.current.pipeLineMode;
+    const portLevel = mode === 'gas' ? bundle?.gasElevationMm : mode === 'liquid' ? bundle?.liquidElevationMm : bundle?.elevationMm;
+    return typeof portLevel === 'number' && Number.isFinite(portLevel) ? portLevel : getActivePipeRoutingSettings().defaultPipeElevationMm;
+  }, []);
+  const publishDraftState = useCallback(() => {
+    const isDrawing = routePointsRef.current.length > 0;
+    const lineMode = sessionLineModeRef.current ?? draftPublicationRef.current.pipeLineMode;
+    const elevationMm = resolveDraftElevation();
+    setDraftState(previous => previous.isDrawing === isDrawing && previous.lineMode === lineMode && previous.elevationMm === elevationMm
+      ? previous : { isDrawing, lineMode, elevationMm });
+    draftPublicationRef.current.onDraftAnchorChange?.(routePointsRef.current.at(-1) ?? null);
+  }, [resolveDraftElevation]);
   const shiftPressedRef = useRef(false);
   // Alt = momentary free-angle override (bypasses angle + grid snapping).
   const altPressedRef = useRef(false);
   const planSnapManagerRef = useRef(new SnapManager());
+  const snapSceneCacheRef = useRef<{
+    scene: HvacElement[];
+    size: number;
+    settings: PipeRoutingSettings;
+    targets: RefrigerantPipeBundleConnection[];
+    sourceTypes: Map<string, HvacElement['type']>;
+  } | null>(null);
+  const lastRoutePreviewRef = useRef<{
+    scene: HvacElement[];
+    key: string;
+    renderer: HvacPlanRenderer | null;
+    onRoute: typeof onDraftRouteChange;
+    onPipes: typeof onDraftPipesChange;
+  } | null>(null);
   // --- Branch-kit proposal state (real-time) ---
   const branchKitProposalRef = useRef<BranchKitProposal | null>(null);
   // A rejected/stale branch cannot silently become an ordinary pipe on the
@@ -462,6 +497,7 @@ export function useRefrigerantPipeTool(
   }, [onSnapIndicatorChange, pipeLineMode]);
 
   const clearPreview = useCallback(() => {
+    lastRoutePreviewRef.current = null;
     hvacRendererRef.current?.clearPlacementPreview();
     onDraftRouteChange?.(null);
     onDraftPipesChange?.(null);
@@ -496,6 +532,8 @@ export function useRefrigerantPipeTool(
     endBundleRef.current = null;
     previewPointRef.current = null;
     sessionLineModeRef.current = null;
+    levelStepUndoRef.current.clear();
+    publishDraftState();
     planSnapManagerRef.current.reset();
     proposalFlipRef.current = false;
     proposalSuppressRef.current = { active: false, at: null };
@@ -504,7 +542,7 @@ export function useRefrigerantPipeTool(
     clearPreview();
     clearSnapMarkers();
     clearDebugOverlays();
-  }, [clearBranchKitProposal, clearDebugOverlays, clearPreview, clearSnapMarkers]);
+  }, [clearBranchKitProposal, clearDebugOverlays, clearPreview, clearSnapMarkers, publishDraftState]);
 
   // Cursor→world snap radius (mm), zoom-compensated from the configured pixel
   // radius. Shared by the generic snap resolver and the extension-detection engine
@@ -599,15 +637,23 @@ export function useRefrigerantPipeTool(
         const settings = getActivePipeRoutingSettings();
         const screenPxPerMm = settings.snapRadiusPx / Math.max(thresholdMm, 1e-6);
         const activeLineMode = sessionLineModeRef.current ?? pipeLineMode;
-        const typeByElementId = new Map(
-          hvacElements.map((element) => [element.id, element.type]),
-        );
+        // Store geometry is immutable; pointer movement never changes the source
+        // graph. Rebuild port geometry only after a scene or rule change.
+        let cached = snapSceneCacheRef.current;
+        if (!cached || cached.scene !== hvacElements || cached.size !== hvacElements.length || cached.settings !== settings) {
+          cached = { scene: hvacElements, size: hvacElements.length, settings,
+            targets: getRefrigerantPipeBundleSnapTargets(hvacElements),
+            sourceTypes: new Map(hvacElements.map(element => [element.id, element.type])) };
+          snapSceneCacheRef.current = cached;
+        }
+        const breakAwayPx = Math.max(settings.snapRadiusPx + 6, settings.snapRadiusPx * 1.55);
         const snapEntries = buildRefrigerantBundleSnapCandidates({
-          targets: getRefrigerantPipeBundleSnapTargets(hvacElements),
+          targets: cached.targets,
           pointer: point,
           lineMode: activeLineMode,
           screenPxPerMm,
-          sourceTypeById: typeByElementId,
+          captureRadiusPx: breakAwayPx,
+          sourceTypeById: cached.sourceTypes,
           isTargetValid: (target) => !shouldExcludeBundle(target),
           messageForTarget: (target) => formatPortTooltip(
             target,
@@ -625,10 +671,7 @@ export function useRefrigerantPipeTool(
           snapEntries.map(({ candidate }) => candidate),
           {
             tolerancePx: settings.snapRadiusPx,
-            breakAwayPx: Math.max(
-              settings.snapRadiusPx + 6,
-              settings.snapRadiusPx * 1.55,
-            ),
+            breakAwayPx,
           },
         );
         if (resolution.candidate) {
@@ -693,7 +736,7 @@ export function useRefrigerantPipeTool(
     // can be placed exactly under the cursor.
     const freeAngleOverride = altPressedRef.current;
     const viewAdaptive3d = !planRouting && typeof nextPoint.z === 'number' && Number.isFinite(nextPoint.z);
-    const effectiveAngleMode = resolveEffectiveAngleMode(pipeAngleMode, pipeMaterialMode);
+    const effectiveAngleMode = resolvePipeDraftAngleMode(pipeAngleMode, pipeMaterialMode);
     // Free/flexible routing should track the cursor continuously. Grid snapping
     // is reserved for constrained hard-angle runs; otherwise the preview jumps
     // from grid point to grid point instead of feeling like laid copper.
@@ -746,6 +789,17 @@ export function useRefrigerantPipeTool(
     branchReviewMessageRef.current = proposalSuppressRef.current.active
       ? proposalSuppressRef.current.reviewMessage ?? branchReviewMessageRef.current
       : null;
+    // Grid/polar snapping often yields the same route for many pointer events.
+    // Keep the rendered preview and avoid rebuilding copper geometry and React
+    // payloads until a real route, connection, material, or rule value changes.
+    const key = JSON.stringify([routePoints.map(({ x, y, z }) => [x, y, z]),
+      startBundleConnectionOverride ?? startBundleRef.current, endBundleConnection,
+      pipeMaterialMode, sessionLineModeRef.current ?? pipeLineMode, getActivePipeRoutingSettings(),
+      overlayOwnsPipePreview, ghostElements]);
+    const previous = lastRoutePreviewRef.current;
+    if (previous?.scene === hvacElements && previous.key === key && previous.renderer === hvacRendererRef.current
+      && previous.onRoute === onDraftRouteChange && previous.onPipes === onDraftPipesChange) return;
+    lastRoutePreviewRef.current = { scene: hvacElements, key, renderer: hvacRendererRef.current, onRoute: onDraftRouteChange, onPipes: onDraftPipesChange };
     const rawBuiltElements = routePoints.length >= 2
       ? buildRefrigerantPipeElements(routePoints, {
           segmentMaterialMode: pipeMaterialMode,
@@ -822,7 +876,22 @@ export function useRefrigerantPipeTool(
     hvacRendererRef.current?.renderElementPreviews(previewElements, true);
   }, [hvacElements, hvacRendererRef, onDraftRouteChange, onDraftPipesChange, overlayOwnsPipePreview, pipeLineMode, pipeMaterialMode]);
 
+  const appendDraftPoint = useCallback((next: PipePlacementPoint, prefix = routePointsRef.current): boolean => {
+    const anchor = prefix.at(-1);
+    if (!anchor || ![next.x, next.y, next.z ?? 0].every(Number.isFinite) || distance(anchor, next) <= 0.01) return false;
+    routePointsRef.current = [...prefix, next];
+    branchReviewMessageRef.current = null;
+    previewPointRef.current = null;
+    endBundleRef.current = null;
+    publishDraftState();
+    clearBranchKitProposal();
+    clearSnapMarkers();
+    renderRoutePreview(routePointsRef.current);
+    return true;
+  }, [clearBranchKitProposal, clearSnapMarkers, publishDraftState, renderRoutePreview]);
+
   const renderBranchPreview = useCallback((proposal: BranchKitProposal) => {
+    lastRoutePreviewRef.current = null;
     const start = startBundleRef.current;
     if (!start) return;
     const plan = proposal.levelPlan;
@@ -1188,12 +1257,13 @@ export function useRefrigerantPipeTool(
     // Suggestions cannot consume an ordinary waypoint click. This remains an
     // editable draft; no tee is inserted and the main is never changed here.
     routePointsRef.current = [...routePointsRef.current, point];
+    publishDraftState();
     previewPointRef.current = null;
     const message = suppressBranchProposal(proposal, point);
     clearBranchKitProposal();
     renderRoutePreview(routePointsRef.current);
     setProcessingStatus(`Waypoint added. ${message}`, false);
-  }, [clearBranchKitProposal, renderRoutePreview, setProcessingStatus, suppressBranchProposal]);
+  }, [clearBranchKitProposal, renderRoutePreview, setProcessingStatus, suppressBranchProposal, publishDraftState]);
 
   /**
    * Seed a fresh routing session from an existing bundle connection — an open
@@ -1209,14 +1279,17 @@ export function useRefrigerantPipeTool(
   ) => {
     resetDrawing();
     sessionLineModeRef.current = opts?.lineMode ?? null;
-    const startPoint: PipePlacementPoint = { ...bundle.point, z: bundle.elevationMm };
+    const mode = opts?.lineMode ?? pipeLineMode;
+    const serviceElevation = mode === 'gas' ? bundle.gasElevationMm : mode === 'liquid' ? bundle.liquidElevationMm : bundle.elevationMm;
+    const startPoint: PipePlacementPoint = { ...bundle.point, z: serviceElevation };
     const routeStart = seedRefrigerantPipeRouteStart(
       startPoint,
       bundle,
-      opts?.lineMode ?? pipeLineMode,
+      mode,
     );
     routePointsRef.current = routeStart;
     startBundleRef.current = bundle;
+    publishDraftState();
     previewPointRef.current = null;
     renderSnapMarkers(bundle);
     renderDebugOverlays(bundle, routeStart[0] ?? startPoint, 'model');
@@ -1229,6 +1302,7 @@ export function useRefrigerantPipeTool(
   }, [
     clearPreview,
     onDraftRouteChange,
+    publishDraftState,
     pipeLineMode,
     renderDebugOverlays,
     renderRoutePreview,
@@ -1273,6 +1347,7 @@ export function useRefrigerantPipeTool(
       );
       routePointsRef.current = routeStart;
       startBundleRef.current = bundle;
+      publishDraftState();
       previewPointRef.current = null;
       renderSnapMarkers(bundle);
       renderDebugOverlays(bundle, routeStart[0] ?? snappedPoint, source);
@@ -1359,12 +1434,10 @@ export function useRefrigerantPipeTool(
       }
       return;
     }
-    routePointsRef.current = [...routePointsRef.current, snappedPoint];
-    previewPointRef.current = null;
-    clearBranchKitProposal();
-    renderRoutePreview(routePointsRef.current);
+    appendDraftPoint(snappedPoint);
   }, [
     acceptBranchKitProposal,
+    appendDraftPoint,
     beginRouteFromBundle,
     clearBranchKitProposal,
     clearPreview,
@@ -1373,6 +1446,7 @@ export function useRefrigerantPipeTool(
     hvacElements,
     logDebug,
     onDraftRouteChange,
+    publishDraftState,
     pipeLineMode,
     planRouting,
     refreshBranchKitProposal,
@@ -1539,6 +1613,65 @@ export function useRefrigerantPipeTool(
 
   const handleDoubleClick = useCallback(() => { void finishRoute(); }, [finishRoute]);
 
+  const undoDrawingStep = useCallback(() => {
+    branchReviewMessageRef.current = null;
+    const minimum = startBundleRef.current?.connectionKind === 'unit-port' ? 2 : 1;
+    if (routePointsRef.current.length <= minimum) {
+      resetDrawing();
+    } else {
+      const count = routePointsRef.current.length;
+      routePointsRef.current = levelStepUndoRef.current.get(count) ?? routePointsRef.current.slice(0, -1);
+      levelStepUndoRef.current.delete(count);
+      publishDraftState();
+      previewPointRef.current = null;
+      endBundleRef.current = null;
+      clearBranchKitProposal();
+      if (routePointsRef.current.length >= 2) renderRoutePreview(routePointsRef.current);
+      else { clearPreview(); onDraftRouteChange?.(routePointsRef.current); }
+    }
+    setProcessingStatus('Last drawing step removed. Continue from the remaining endpoint.', false);
+  }, [resetDrawing, clearBranchKitProposal, renderRoutePreview, clearPreview, onDraftRouteChange, publishDraftState, setProcessingStatus]);
+
+  const appendSegmentLength = useCallback((lengthMm: number): boolean => {
+    const anchor = routePointsRef.current.at(-1); const target = previewPointRef.current;
+    if (!Number.isFinite(lengthMm) || lengthMm <= 0.01 || !anchor || !target) {
+      setProcessingStatus('Place a starting point, point along the desired direction, and enter a positive segment length.', false);
+      return false;
+    }
+    const dx = target.x - anchor.x; const dy = target.y - anchor.y;
+    const dz = (target.z ?? anchor.z ?? 0) - (anchor.z ?? target.z ?? 0);
+    const magnitude = Math.hypot(dx, dy, dz);
+    if (magnitude <= 0.01) return false;
+    const next: PipePlacementPoint = { x: anchor.x + dx / magnitude * lengthMm, y: anchor.y + dy / magnitude * lengthMm,
+      ...(typeof anchor.z === 'number' ? { z: anchor.z + dz / magnitude * lengthMm } : {}) };
+    if (!appendDraftPoint(next)) return false;
+    setProcessingStatus(`Added a ${lengthMm.toFixed(2)} mm segment. Continue drawing or press Enter to finish.`, false);
+    return true;
+  }, [appendDraftPoint, setProcessingStatus]);
+
+  const setDrawingElevation = useCallback((elevationMm: number): boolean => {
+    if (!Number.isFinite(elevationMm)) {
+      setProcessingStatus('Enter a finite drawing level.', false);
+      return false;
+    }
+    const previous = routePointsRef.current;
+    const anchor = previous.at(-1);
+    if (!anchor) return true;
+    const currentLevel = resolveDraftElevation();
+    if (currentLevel === null || !Number.isFinite(currentLevel)) return false;
+    if (Math.abs(elevationMm - currentLevel) <= 0.01) return true;
+    // Never move existing points when changing level. Legacy XY-only vertices
+    // acquire the route's actual service level before adding a vertical step.
+    const prefix = previous.map(point => ({ ...point, z: typeof point.z === 'number' && Number.isFinite(point.z) ? point.z : currentLevel }));
+    const next = { x: anchor.x, y: anchor.y, z: elevationMm };
+    if (!appendDraftPoint(next, prefix)) return false;
+    levelStepUndoRef.current.set(routePointsRef.current.length, previous);
+    proposalSuppressRef.current = { active: false, at: null };
+    branchReviewMessageRef.current = null;
+    setProcessingStatus(`${elevationMm > currentLevel ? 'Riser' : 'Drop'} added: ${Math.abs(elevationMm - currentLevel).toFixed(2)} mm. Continue at the new level.`, false);
+    return true;
+  }, [appendDraftPoint, resolveDraftElevation, setProcessingStatus]);
+
   const cancelDrawing = useCallback(() => {
     const hadActiveRoute = routePointsRef.current.length > 0;
     resetDrawing();
@@ -1548,6 +1681,7 @@ export function useRefrigerantPipeTool(
   }, [resetDrawing, setProcessingStatus]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
+    if (event.key === 'Backspace' && routePointsRef.current.length > 0) { undoDrawingStep(); return true; }
     if (event.key === 'Shift') {
       shiftPressedRef.current = true;
       return false;
@@ -1568,7 +1702,7 @@ export function useRefrigerantPipeTool(
       return finishRoute();
     }
     return false;
-  }, [cancelDrawing, finishRoute]);
+  }, [cancelDrawing, finishRoute, undoDrawingStep]);
 
   const handleKeyUp = useCallback((event: KeyboardEvent) => {
     if (event.key === 'Shift') {
@@ -1593,7 +1727,9 @@ export function useRefrigerantPipeTool(
   }, [resetDrawing]);
 
   return {
-    isDrawing: routePointsRef.current.length > 0,
+    isDrawing: draftState.isDrawing,
+    draftLineMode: draftState.isDrawing ? draftState.lineMode : pipeLineMode,
+    draftElevationMm: draftState.elevationMm,
     beginRouteFromBundle,
     handleMouseDown,
     handleMouseMove,
@@ -1601,6 +1737,9 @@ export function useRefrigerantPipeTool(
     handleKeyDown,
     handleKeyUp,
     cancelDrawing,
+    undoDrawingStep,
+    appendSegmentLength,
+    setDrawingElevation,
     branchKitProposal: branchKitProposalState,
     acceptBranchKitProposal,
     flipBranchKitProposal,

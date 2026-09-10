@@ -236,6 +236,7 @@ function canJoinPipeRenderChain(
 
 export function buildRefrigerantPipeEndpointRenderStateMap(
   elements: HvacElement[],
+  resolveVisual: (element: HvacElement, context: HvacElement[]) => ReturnType<typeof buildRefrigerantPipeVisual> = buildRefrigerantPipeVisual,
 ): Map<string, RefrigerantPipeEndpointRenderState> {
   const states = new Map<string, RefrigerantPipeEndpointRenderState>();
   const ownership = new Map<string, string>();
@@ -245,7 +246,7 @@ export function buildRefrigerantPipeEndpointRenderStateMap(
     if (element.type !== "refrigerant-pipe") {
       return;
     }
-    const visual = buildRefrigerantPipeVisual(element, elements);
+    const visual = resolveVisual(element, elements);
     visuals.set(element.id, visual);
     states.set(element.id, {
       openStart: visual.startConnection?.connectionKind === "field-pipe",
@@ -283,6 +284,7 @@ export function buildRefrigerantPipeEndpointRenderStateMap(
 export function buildRefrigerantPipeRenderChainStateMap(
   elements: HvacElement[],
   endpointStates: Map<string, RefrigerantPipeEndpointRenderState>,
+  resolveVisual: (element: HvacElement, context: HvacElement[]) => ReturnType<typeof buildRefrigerantPipeVisual> = buildRefrigerantPipeVisual,
 ): Map<string, RefrigerantPipeRenderChainState> {
   const visuals = new Map<string, ReturnType<typeof buildRefrigerantPipeVisual>>();
   const elementsById = new Map<string, HvacElement>();
@@ -298,7 +300,7 @@ export function buildRefrigerantPipeRenderChainStateMap(
     if (element.type !== "refrigerant-pipe" || readPipeRouteNodes3d(element).length >= 2) {
       return;
     }
-    const visual = buildRefrigerantPipeVisual(element, elements);
+    const visual = resolveVisual(element, elements);
     visuals.set(element.id, visual);
     ownership.set(`${visual.bundleId ?? element.id}|${visual.lineKind}`, element.id);
   });

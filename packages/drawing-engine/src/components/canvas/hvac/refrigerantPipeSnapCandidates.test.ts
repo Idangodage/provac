@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { RefrigerantPipeBundleConnection } from './refrigerantPipePairModel';
 import {
@@ -85,5 +85,18 @@ describe('buildRefrigerantBundleSnapCandidates', () => {
       connection({ terminalRole: 'branch-outlet' }),
     )).toBe('branch-outlet');
     expect(resolveRefrigerantBundleSnapType(connection())).toBe('pipe-endpoint');
+  });
+
+  it('keeps the break-away boundary while skipping allocation and labels for distant targets', () => {
+    const targets = [connection(), connection({ sourceElementId: 'far', gasPoint: { x: 10000, y: 0 }, liquidPoint: { x: 10010, y: 0 } })];
+    const messageForTarget = vi.fn(() => 'Visible target');
+    const options = { targets, pointer: { x: 0, y: 0 }, lineMode: 'gas' as const, screenPxPerMm: 2, messageForTarget };
+    const filtered = buildRefrigerantBundleSnapCandidates({ ...options, captureRadiusPx: 20 });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]!.candidate.screenDistancePx).toBe(20);
+    expect(messageForTarget).toHaveBeenCalledOnce();
+    const unfiltered = buildRefrigerantBundleSnapCandidates(options);
+    expect(filtered[0]!.candidate.id).toBe(unfiltered[0]!.candidate.id);
+    expect(buildRefrigerantBundleSnapCandidates({ ...options, captureRadiusPx: 19.9 })).toEqual([]);
   });
 });

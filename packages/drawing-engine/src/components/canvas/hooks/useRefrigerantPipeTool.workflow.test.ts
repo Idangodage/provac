@@ -12,6 +12,7 @@ vi.mock('react', () => ({
 import type { HvacElement } from '../../../types';
 import * as branchKit from '../hvac/branchKitProposal';
 import { DEFAULT_PIPE_ROUTING_SETTINGS, getActivePipeRoutingSettings, setActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
+import * as pipeModel from '../hvac/refrigerantPipePairModel';
 import { buildRefrigerantPipeElements, getRefrigerantPipeBundleSnapTargets, type RefrigerantPipeBundleConnection } from '../hvac/refrigerantPipePairModel';
 
 import { useRefrigerantPipeTool, type UseRefrigerantPipeToolOptions } from './useRefrigerantPipeTool';
@@ -34,6 +35,7 @@ function setup(scene: HvacElement[] = [], planRouting = true, overrides: Partial
     updateHvacElement: vi.fn(), saveToHistory: vi.fn(),
     setSelectedIds: vi.fn(), setProcessingStatus: vi.fn(),
     onDraftPipesChange: vi.fn(), onDraftRouteChange: vi.fn(), overlayOwnsPipePreview: true,
+    onDraftAnchorChange: vi.fn(),
     ...overrides,
   };
   return { tool: useRefrigerantPipeTool(options), options };
@@ -50,6 +52,146 @@ function connectedMain() {
 }
 
 describe('refrigerant drawing workflow', () => {
+  it('adds a deliberate riser then a true horizontal length and undoes each step exactly', () => {
+    const { tool, options } = setup([], false, { pipeLineMode: 'gas', pipeMaterialMode: 'hard', pipeAngleMode: 'ortho' });
+    const start = { x: 100, y: 200, z: 1800 }; const corner = { x: 2100, y: 200, z: 1800 };
+    tool.handleMouseDown(start); tool.handleMouseDown(corner);
+    const original = [start, corner];
+    expect(tool.setDrawingElevation(2600)).toBe(true);
+    const riser = { x: 2100, y: 200, z: 2600 };
+    expect(options.onDraftAnchorChange).toHaveBeenLastCalledWith(riser);
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]).toEqual([...original, riser]);
+    tool.handleMouseMove({ x: 3100, y: 200, z: 2600 });
+    expect(tool.appendSegmentLength(1500)).toBe(true);
+    const next = { x: 3600, y: 200, z: 2600 };
+    expect(options.onDraftAnchorChange).toHaveBeenLastCalledWith(next);
+    expect(Math.hypot(next.x - riser.x, next.y - riser.y, next.z - riser.z)).toBe(1500);
+    tool.undoDrawingStep();
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]).toEqual([...original, riser]);
+    tool.undoDrawingStep();
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]).toEqual(original);
+    expect(options.onDraftAnchorChange).toHaveBeenLastCalledWith(corner);
+    expect(options.addHvacElements).not.toHaveBeenCalled();
+    expect(options.commitHvacElementCommand).not.toHaveBeenCalled();
+    expect(tool.setDrawingElevation(2600)).toBe(true);
+    tool.handleMouseMove(next); tool.handleDoubleClick();
+    const built = vi.mocked(options.addHvacElements).mock.calls[0]![0];
+    expect(built).toHaveLength(1);
+    expect(built[0]!.properties!.lineKind).toBe('gas');
+    expect((built[0]!.properties!.segmentMaterials as string[]).every(material => material === 'hard')).toBe(true);
+    expect((built[0]!.properties!.routeNodes3d as Array<{ z: number }>).some(node => node.z === 1800)).toBe(true);
+    expect((built[0]!.properties!.routeNodes3d as Array<{ z: number }>).at(-1)!.z).toBe(2600);
+  });
+
+  it('canonicalizes a legacy XY draft from its default level and restores the exact prefix on undo', () => {
+    const { tool, options } = setup([], true, { pipeLineMode: 'gas', pipeMaterialMode: 'flexible', pipeAngleMode: 'free' });
+    const defaultLevel = getActivePipeRoutingSettings().defaultPipeElevationMm;
+    expect(tool.setDrawingElevation(4000)).toBe(true);
+    expect(options.onDraftAnchorChange).not.toHaveBeenCalled();
+    const first = { x: 10, y: 20 }; const second = { x: 2010, y: 20 };
+    tool.handleMouseDown(first); tool.handleMouseDown(second);
+    const before = structuredClone(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]);
+    const count = vi.mocked(options.onDraftAnchorChange!).mock.calls.length;
+    expect(tool.setDrawingElevation(defaultLevel)).toBe(true);
+    expect(tool.setDrawingElevation(NaN)).toBe(false);
+    expect(tool.setDrawingElevation(Infinity)).toBe(false);
+    expect(vi.mocked(options.onDraftAnchorChange!).mock.calls).toHaveLength(count);
+    expect(tool.setDrawingElevation(defaultLevel + 800)).toBe(true);
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]).toEqual([
+      { ...first, z: defaultLevel }, { ...second, z: defaultLevel }, { ...second, z: defaultLevel + 800 },
+    ]);
+    tool.undoDrawingStep();
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]).toEqual(before);
+    expect(options.onDraftAnchorChange).toHaveBeenLastCalledWith(before!.at(-1));
+  });
+
+  it('keeps the selected equipment service level and its fixed port when adding a riser', () => {
+    const { tool, options } = setup([], false, { pipeLineMode: 'pair' });
+    const source = { ...port, elevationMm: 2550, gasElevationMm: 2600, liquidElevationMm: 2500 };
+    tool.beginRouteFromBundle(source, { lineMode: 'liquid' });
+    const seeded = structuredClone(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]!) as Array<{ x: number; y: number; z?: number }>;
+    expect(seeded.every(point => point.z === 2500)).toBe(true);
+    expect(tool.setDrawingElevation(3300)).toBe(true);
+    const drafted = vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]! as Array<{ x: number; y: number; z?: number }>;
+    expect(drafted.slice(0, -1)).toEqual(seeded);
+    expect(drafted.at(-1)).toEqual({ ...seeded.at(-1), z: 3300 });
+    expect(options.onDraftAnchorChange).toHaveBeenLastCalledWith(drafted.at(-1));
+    tool.undoDrawingStep();
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]).toEqual(seeded);
+  });
+
+  it('reuses model snap targets during a drawing session and invalidates them when routing settings change', () => {
+    const targets = vi.spyOn(pipeModel, 'getRefrigerantPipeBundleSnapTargets');
+    const { tool } = setup([], true, { pipeLineMode: 'gas', pipeMaterialMode: 'flexible', pipeAngleMode: 'free' });
+    tool.handleMouseDown({ x: 0, y: 0 });
+    for (let index = 0; index < 12; index++) tool.handleMouseMove({ x: 1000 + index * 10, y: 500 });
+    expect(targets).toHaveBeenCalledOnce();
+    setActivePipeRoutingSettings({ ...getActivePipeRoutingSettings(), minimumPortStubMm: 150 });
+    tool.handleMouseMove({ x: 1300, y: 500 });
+    expect(targets).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses unchanged snapped preview geometry and rebuilds for rules, movement and cancellation', () => {
+    const build = vi.spyOn(pipeModel, 'buildRefrigerantPipeElements');
+    const { tool, options } = setup([], false, { pipeLineMode: 'gas', pipeMaterialMode: 'flexible', pipeAngleMode: 'free' });
+    tool.handleMouseDown({ x: 10, y: 20, z: 1000 });
+    const pointer = { x: 310, y: 420, z: 1000 };
+    tool.handleMouseMove(pointer);
+    expect(build).toHaveBeenCalledOnce();
+    const previewCount = vi.mocked(options.onDraftPipesChange!).mock.calls.length;
+    for (let index = 0; index < 20; index++) tool.handleMouseMove({ ...pointer });
+    expect(build).toHaveBeenCalledOnce();
+    expect(vi.mocked(options.onDraftPipesChange!).mock.calls).toHaveLength(previewCount);
+    setActivePipeRoutingSettings({ ...getActivePipeRoutingSettings(), defaultPipeGapMm: 70 });
+    tool.handleMouseMove(pointer);
+    expect(build).toHaveBeenCalledTimes(2);
+    tool.handleMouseMove({ ...pointer, x: 320 });
+    expect(build).toHaveBeenCalledTimes(3);
+    tool.cancelDrawing();
+    tool.handleMouseDown({ x: 10, y: 20, z: 1000 });
+    tool.handleMouseMove(pointer);
+    expect(build).toHaveBeenCalledTimes(4);
+    expect(options.addHvacElements).not.toHaveBeenCalled();
+  });
+
+  it('reports the true length and rise of a vertical drawing segment', () => {
+    const { tool, options } = setup([], false, { pipeLineMode: 'gas', pipeMaterialMode: 'flexible', pipeAngleMode: 'free' });
+    tool.handleMouseDown({ x: 10, y: 20, z: 1000 });
+    tool.handleMouseMove({ x: 10, y: 20, z: 1700 });
+    expect(options.setProcessingStatus).toHaveBeenLastCalledWith('L 700 mm · Rise 700 mm', false);
+  });
+
+  it('adds an exact 3D segment length and undoes that draft step without document history writes', () => {
+    const { tool, options } = setup([], false, { pipeLineMode: 'gas', pipeMaterialMode: 'flexible', pipeAngleMode: 'free' });
+    tool.handleMouseDown({ x: 10, y: 20, z: 1000 });
+    tool.handleMouseMove({ x: 310, y: 420, z: 1000 });
+    expect(tool.appendSegmentLength(1000)).toBe(true);
+    expect(options.onDraftAnchorChange).toHaveBeenLastCalledWith({ x: 610, y: 820, z: 1000 });
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]).toEqual([{ x: 10, y: 20, z: 1000 }, { x: 610, y: 820, z: 1000 }]);
+    expect(options.addHvacElements).not.toHaveBeenCalled();
+    expect(options.saveToHistory).not.toHaveBeenCalled();
+    expect(tool.handleKeyDown({ key: 'Backspace' } as KeyboardEvent)).toBe(true);
+    expect(options.onDraftAnchorChange).toHaveBeenLastCalledWith({ x: 10, y: 20, z: 1000 });
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]).toEqual([{ x: 10, y: 20, z: 1000 }]);
+    tool.handleMouseMove({ x: 10, y: 20, z: 2000 });
+    expect(tool.appendSegmentLength(700)).toBe(true);
+    expect(vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]?.at(-1)).toEqual({ x: 10, y: 20, z: 1700 });
+    tool.handleKeyDown({ key: 'Enter' } as KeyboardEvent);
+    expect(options.addHvacElements).toHaveBeenCalledOnce();
+  });
+
+  it('rejects invalid length input and cancels the complete seeded equipment approach on its first undo', () => {
+    const { tool, options } = setup([], false);
+    expect(tool.appendSegmentLength(1000)).toBe(false);
+    tool.beginRouteFromBundle(port, { lineMode: 'pair' });
+    tool.handleMouseMove({ x: 3000, y: -1000, z: 2600 });
+    for (const length of [0, -10, NaN, Infinity]) expect(tool.appendSegmentLength(length)).toBe(false);
+    tool.undoDrawingStep();
+    tool.handleKeyDown({ key: 'Enter' } as KeyboardEvent);
+    expect(options.addHvacElements).not.toHaveBeenCalled();
+    expect(options.commitHvacElementCommand).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     setActivePipeRoutingSettings(DEFAULT_PIPE_ROUTING_SETTINGS);

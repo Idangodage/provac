@@ -210,7 +210,7 @@ export function AutoRouteNetworkAction({ profile, disabled = false }: {
               </label>
               <label className="flex items-start gap-2 text-slate-600">
                 <input type="checkbox" checked={rebuildExisting} onChange={event => setRebuildExisting(event.target.checked)} className="mt-0.5" />
-                <span>Optimize complete unlocked layouts<span className="mt-1 block text-[11px] leading-4 text-slate-400">Equipment positions stay fixed. One undo restores the previous layout.</span></span>
+                <span>Optimize eligible complete layouts<span className="mt-1 block text-[11px] leading-4 text-slate-400">Equipment positions stay fixed. Manual edits to generated routes and route locks are retained. Use Allow auto rerouting in the pipe editor to reconsider retained edits. One undo restores the previous layout.</span></span>
               </label>
               <p className="leading-4 text-slate-500">Rules: {profile?.family ?? 'Current project defaults'}. Multiple outdoor systems use assigned units.</p>
               <label className="flex items-center gap-2 text-slate-600">

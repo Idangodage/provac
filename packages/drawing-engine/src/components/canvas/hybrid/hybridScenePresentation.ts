@@ -13,7 +13,10 @@ export function measureUnrevealedContentBounds(
   const heightScale = revealLayer.scale.z;
   revealLayer.scale.z = 1;
   try {
-    revealLayer.updateWorldMatrix(true, true);
+    // Only the measured roots need their children updated. During a pipe
+    // preview the unchanged architecture/equipment may contain thousands of
+    // descendants and must not be traversed twice per pointer frame.
+    revealLayer.updateWorldMatrix(true, false);
     bounds.makeEmpty();
     for (const root of roots) {
       root.updateWorldMatrix(true, true);
@@ -21,6 +24,7 @@ export function measureUnrevealedContentBounds(
     }
   } finally {
     revealLayer.scale.z = heightScale;
-    revealLayer.updateWorldMatrix(true, true);
+    revealLayer.updateWorldMatrix(true, false);
+    for (const root of roots) root.updateWorldMatrix(true, true);
   }
 }

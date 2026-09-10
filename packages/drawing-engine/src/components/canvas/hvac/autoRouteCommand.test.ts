@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { HvacElement } from '../../../types';
 
 import { autoRouteSourceSignature, prepareAutoRouteCommand, type AutoRouteSource } from './autoRouteCommand';
+import { autoRouteElementSignature, withPipeRegenerationPolicy } from './pipeEditRetention';
 import { DEFAULT_PIPE_ROUTING_SETTINGS } from './pipeRoutingSettings';
 
 function element(id: string, type: HvacElement['type']): HvacElement {
@@ -65,6 +66,33 @@ describe('automatic network command acceptance', () => {
     const { source, signature, result } = fixture();
     result.elementsToAdd[1]!.id = 'gas';
     expect(prepareAutoRouteCommand(signature, source, result).command).toBeUndefined();
+  });
+
+  it('rejects a worker replacement of a retained network and accepts explicit reconsideration', () => {
+    const { source, result } = fixture();
+    const pipe = source.scene[1]!;
+    pipe.properties.autoRouteNetwork = { version: 1, networkId: 'network', outdoorUnitId: 'outdoor',
+      indoorUnitIds: ['indoor'], signature: autoRouteElementSignature(pipe) };
+    pipe.label = 'Field adjustment';
+    const blocked = prepareAutoRouteCommand(autoRouteSourceSignature(source), source, result);
+    expect(blocked.command).toBeUndefined();
+    expect(blocked.issue).toContain('Manual edits');
+    source.scene[1] = withPipeRegenerationPolicy(pipe, 'reconsider');
+    expect(prepareAutoRouteCommand(autoRouteSourceSignature(source), source, result).command).toBeDefined();
+    source.scene[1]!.properties.routeLocked = true;
+    expect(prepareAutoRouteCommand(autoRouteSourceSignature(source), source, result).command).toBeUndefined();
+  });
+
+  it('rejects updates to the unchanged service of a retained generated pair', () => {
+    const { source, result } = fixture();
+    const gas = source.scene[1]!;
+    const liquid = element('old-liquid', 'refrigerant-pipe');
+    for (const pipe of [gas, liquid]) pipe.properties.autoRouteNetwork = { version: 1, networkId: 'network',
+      outdoorUnitId: 'outdoor', indoorUnitIds: ['indoor'], signature: autoRouteElementSignature(pipe) };
+    gas.label = 'Field adjustment';
+    source.scene.push(liquid);
+    const proposed = { ...result, elementsToAdd: [], removeElementIds: [], updates: [{ ...liquid, elevation: 2800 }] };
+    expect(prepareAutoRouteCommand(autoRouteSourceSignature(source), source, proposed).command).toBeUndefined();
   });
 
   it('never removes equipment as part of an automatic network replacement', () => {

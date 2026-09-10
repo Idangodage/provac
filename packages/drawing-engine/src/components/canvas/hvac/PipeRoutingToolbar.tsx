@@ -4,9 +4,11 @@ import { useEffect, useState } from 'react';
 
 import { useSmartDrawingStore } from '../../../store';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
+import { fromMillimeters, getUnitLabel, toMillimeters, type LinearUnit } from '../scale';
 
 import { AutoRouteNetworkAction } from './AutoRouteNetworkAction';
 import type { PipeRoutingSettings } from './pipeRoutingSettings';
+import type { RefrigerantPipeAngleMode, RefrigerantPipeLineMode, RefrigerantPipeMaterial } from './refrigerantPipePairModel';
 
 interface PipeRoutingToolbarProps {
   ruleProfile?: ManufacturerRuleProfile;
@@ -15,6 +17,63 @@ interface PipeRoutingToolbarProps {
   kitKind: 'gas' | 'liquid' | 'both';
   onKitKindChange: (kind: 'gas' | 'liquid' | 'both') => void;
   onPlaceKit: () => void;
+}
+
+export interface PipeDrawingControlsProps {
+  unit?: LinearUnit;
+  /** Continuations inherit their host service; changing it would replace the draft's identity. */
+  serviceLocked?: boolean;
+  serviceMode?: RefrigerantPipeLineMode;
+  elevationMm?: number;
+  /** The owning canvas must update the actual drawing plane, not only a route default. */
+  onElevationChange?: (elevationMm: number) => void;
+  elevationDisabled?: boolean;
+}
+
+/** Unpositioned controls for the single contextual drawing bar. */
+export function PipeDrawingControls({ unit = 'mm', serviceLocked = false, serviceMode, elevationMm, onElevationChange, elevationDisabled }: PipeDrawingControlsProps) {
+  const lineMode = useSmartDrawingStore(state => state.refrigerantPipeLineMode);
+  const setLineMode = useSmartDrawingStore(state => state.setRefrigerantPipeLineMode);
+  const material = useSmartDrawingStore(state => state.refrigerantPipeDrawMode);
+  const setMaterial = useSmartDrawingStore(state => state.setRefrigerantPipeDrawMode);
+  const direction = useSmartDrawingStore(state => state.refrigerantPipeAngleMode);
+  const setDirection = useSmartDrawingStore(state => state.setRefrigerantPipeAngleMode);
+  const level = elevationMm === undefined ? '' : String(Number(fromMillimeters(elevationMm, unit).toFixed(3)));
+  const [levelDraft, setLevelDraft] = useState(level);
+  useEffect(() => setLevelDraft(level), [level]);
+  const selectClass = 'rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 outline-none focus:border-teal-500 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400';
+  return <div className="flex flex-wrap items-center gap-1.5" data-testid="pipe-drawing-controls">
+    <select aria-label="Pipes to draw" value={serviceMode ?? lineMode} disabled={serviceLocked}
+      title={serviceLocked ? 'The active route keeps its selected service. Finish or cancel to change it.' : 'Pipe services'}
+      onChange={event => setLineMode(event.target.value as 'pair' | 'gas' | 'liquid')} className={selectClass}>
+      <option value="pair">Gas + liquid</option><option value="gas">Gas only</option><option value="liquid">Liquid only</option>
+    </select>
+    <select aria-label="Pipe material" value={material} onChange={event => setMaterial(event.target.value as RefrigerantPipeMaterial)} className={selectClass}>
+      <option value="hard">Hard copper</option><option value="flexible">Flexible copper</option>
+    </select>
+    <select aria-label="Drawing direction" value={direction} title="Direction in the drawing plane. Hold Shift for 90° or Alt for free placement."
+      onChange={event => setDirection(event.target.value as RefrigerantPipeAngleMode)} className={selectClass}>
+      <option value="auto">Auto direction</option><option value="ortho">90° turns</option><option value="diagonal">45° turns</option><option value="free">Free direction</option>
+    </select>
+    {onElevationChange && elevationMm !== undefined ? <label className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500">
+      Level
+      <input aria-label={`Drawing level ${getUnitLabel(unit)}`} type="number" step="any" value={levelDraft} disabled={elevationDisabled}
+        title={elevationDisabled ? 'Use the workplane controls to change a tilted plane.' : 'Change the active horizontal drawing plane'}
+        onChange={event => setLevelDraft(event.target.value)}
+        onBlur={() => {
+          const value = levelDraft.trim() ? toMillimeters(Number(levelDraft), unit) : NaN;
+          if (!Number.isFinite(value)) { setLevelDraft(level); return; }
+          if (levelDraft !== level && value !== elevationMm) onElevationChange(value);
+        }}
+        onKeyDown={event => {
+          event.stopPropagation();
+          if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
+          if (event.key === 'Escape') { event.preventDefault(); setLevelDraft(level); }
+        }}
+        className="w-16 bg-transparent py-0.5 text-right text-slate-700 outline-none disabled:text-slate-400" />
+      <span className="text-[10px]">{getUnitLabel(unit)}</span>
+    </label> : null}
+  </div>;
 }
 
 function DefaultDistance({ label, value, min, max, onCommit }: {
@@ -60,8 +119,6 @@ function DefaultDistance({ label, value, min, max, onCommit }: {
 export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
   const settings = useSmartDrawingStore((state) => state.pipeRoutingSettings);
   const setSettings = useSmartDrawingStore((state) => state.setPipeRoutingSettings);
-  const lineMode = useSmartDrawingStore((state) => state.refrigerantPipeLineMode);
-  const setLineMode = useSmartDrawingStore((state) => state.setRefrigerantPipeLineMode);
   const [showDefaults, setShowDefaults] = useState(false);
   const update = (key: keyof PipeRoutingSettings) => (value: number) => setSettings({ [key]: value });
 
@@ -76,19 +133,11 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
       <div role="toolbar" aria-label="Refrigerant routing" className="flex flex-wrap items-center gap-2 p-2">
         <span className="px-1 text-xs font-semibold">Refrigerant</span>
         {props.drawing ? (
-          <select
-            aria-label="Pipes to draw" value={lineMode}
-            onChange={(event) => setLineMode(event.target.value as 'pair' | 'gas' | 'liquid')}
-            className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs"
-          >
-            <option value="pair">Gas + liquid</option>
-            <option value="gas">Gas only</option>
-            <option value="liquid">Liquid only</option>
-          </select>
+          <PipeDrawingControls />
         ) : (
           <span className="flex gap-3 px-1 text-xs">
-            <span><span className="mr-1 text-blue-600">●</span>Gas</span>
-            <span><span className="mr-1 text-amber-600">●</span>Liquid</span>
+            <span><span className="mr-1 text-orange-600">●</span>Gas</span>
+            <span><span className="mr-1 text-blue-600">●</span>Liquid</span>
           </span>
         )}
         <button type="button" aria-expanded={showDefaults} onClick={() => setShowDefaults(!showDefaults)}

@@ -75,16 +75,20 @@ import { worldToScreenFromFabricViewport } from "./canvas/coordinateTransform";
 import { useVrfLiveValidation } from "./canvas/hooks/useVrfLiveValidation";
 import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
+import { PipeEditingTools } from "./canvas/hvac/PipeEditingTools";
 import { PipeKonvaInteractionLayer } from "./canvas/hvac/PipeKonvaInteractionLayer";
 import {
   PipeStudioOverlay,
   type PipeStudioOverlayHandle,
 } from "./canvas/hvac/PipeStudioOverlay";
 import { VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
+import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
+import { buildPipeModelEdit, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
+import type { PipeDrawingPlane } from "./canvas/hvac/pipePointerProjection";
 import {
   readPipeRouteNodes3d,
-  withCanonicalPipeRoute,
   type PipeRouteNode3D,
+  type PipePlacementPoint,
 } from "./canvas/hvac/pipeRoute3d";
 import { routingSettingsFromRuleProfile } from "./canvas/hvac/pipeRoutingSettings";
 import {
@@ -1454,6 +1458,13 @@ export function DrawingCanvas({
   // live camera-controls tilt controller (for the explicit 2D/3D toggle).
   const planSheetRef = useRef<HTMLDivElement | null>(null);
   const hybridControllerRef = useRef<HybridViewportController | null>(null);
+  const [pipeEditPreview, setPipeEditPreview] = useState<HvacElement[] | null>(null);
+  const [activePipeWorkplane, setActivePipeWorkplane] = useState<PipeDrawingPlane | null>(null);
+  const pipeDisplayElements = useMemo(() => {
+    if (!pipeEditPreview) return hvacElements;
+    const replacements = new Map(pipeEditPreview.map(element => [element.id, element]));
+    return hvacElements.map(element => replacements.get(element.id) ?? element);
+  }, [hvacElements, pipeEditPreview]);
   const handleHybridControllerReady = useCallback(
     (controller: HybridViewportController | null) => {
       hybridControllerRef.current = controller;
@@ -1476,39 +1487,27 @@ export function DrawingCanvas({
       if (!element || !isRefrigerantPipeElementType(element.type) || routeNodes3d.length < 2) {
         return;
       }
-      const routePoints = routeNodes3d.map(({ x, y }) => ({ x, y }));
-      const routed = withCanonicalPipeRoute(element, routePoints);
-      const properties: Record<string, unknown> = {
-        ...routed.properties,
-        routeNodes3d: routeNodes3d.map((node) => ({ ...node })),
-        // An explicit 3D edit becomes an authored constraint for later plans.
-        networkLevelLocked: true,
-        networkLevelPlan: undefined,
-      };
-      if (element.type === "refrigerant-pipe") {
-        properties.centerline_start = routePoints[0];
-        properties.centerline_end = routePoints.at(-1);
+      const baselineNodes = editablePipeNodes(element);
+      const changed = baselineNodes.map((node, index) => {
+        const next = routeNodes3d[index];
+        return !next || Math.hypot(node.x - next.x, node.y - next.y, node.z - next.z) > 1e-6 ? index : -1;
+      }).filter(index => index >= 0);
+      if (changed.length === 0) return;
+      if (changed.length !== 1 || baselineNodes.length !== routeNodes3d.length) {
+        setProcessingStatus("The pipe changed during this drag. Start a new edit.", false);
+        return;
       }
-      const nextElement: HvacElement = { ...routed, properties };
-      const contextElements = hvacElements.map((candidate) =>
-        candidate.id === elementId ? nextElement : candidate,
-      );
-      const visual = element.type === "refrigerant-pipe-pair"
-        ? buildRefrigerantPipePairVisual(nextElement, contextElements)
-        : buildRefrigerantPipeVisual(nextElement, contextElements);
+      const selection = { kind: "node" as const, index: changed[0]! };
+      const frame = resolvePipeEditFrame({ mode: "world", nodes: baselineNodes, selection });
+      if (!frame) return;
+      const result = buildPipeModelEdit({ elementId, elements: hvacElements, selection, frame,
+        operation: { kind: "set-node", position: routeNodes3d[selection.index]! } });
+      if (!result.ok) { setProcessingStatus(result.message, false); return; }
       commitHvacElementCommand("Edit refrigerant pipe vertex", {
-        updates: [{
-          id: elementId,
-          updates: {
-            position: { x: visual.bounds.minX, y: visual.bounds.minY },
-            width: visual.bounds.width,
-            depth: visual.bounds.height,
-            properties,
-          },
-        }],
+        updates: result.elements.map(next => ({ id: next.id, updates: next })),
       });
     },
-    [commitHvacElementCommand, hvacElements],
+    [commitHvacElementCommand, hvacElements, setProcessingStatus],
   );
   // Last view the CAMERA wrote to the board — the store→camera bridge uses it
   // to tell camera echoes apart from external (toolbar/fit) view changes.
@@ -1647,6 +1646,9 @@ export function DrawingCanvas({
       return { x: anchor.x, y: anchor.y };
     });
   }, []);
+  const handleDraftPipeAnchor = useCallback((point: PipePlacementPoint | null) => {
+    hybridPipeInteractionRef.current?.setDraftAnchor(point);
+  }, []);
   // Real-diameter preview elements for the in-progress pipe — rendered by the
   // overlay exactly like a committed pipe so the preview never changes size on
   // Enter (imperative: only the overlay re-renders).
@@ -1667,6 +1669,12 @@ export function DrawingCanvas({
     handleKeyDown: handleRefrigerantPipeKeyDown,
     handleKeyUp: handleRefrigerantPipeKeyUp,
     cancelDrawing: _cancelRefrigerantPipeDrawing,
+    undoDrawingStep: undoPipeDrawingStep,
+    appendSegmentLength: appendPipeSegmentLength,
+    isDrawing: pipeDrawingStarted,
+    draftLineMode: pipeDraftLineMode,
+    draftElevationMm: pipeDraftElevationMm,
+    setDrawingElevation: setPipeDrawingElevation,
     beginRouteFromBundle: beginRefrigerantRouteFromBundle,
     branchKitProposal: refrigerantBranchKitProposal,
     acceptBranchKitProposal: acceptRefrigerantBranchKit,
@@ -1679,7 +1687,7 @@ export function DrawingCanvas({
     pipeMaterialMode: refrigerantPipeDrawMode,
     pipeAngleMode: refrigerantPipeAngleMode,
     pipeLineMode: refrigerantPipeLineMode,
-    planRouting: !projectionViewOnly,
+    planRouting: !projectionViewOnly && !activePipeWorkplane,
     hvacElements,
     zoom: viewportZoom,
     snapToGrid: resolvedSnapToGrid,
@@ -1694,6 +1702,7 @@ export function DrawingCanvas({
     setSelectedIds,
     setProcessingStatus,
     onDraftRouteChange: handleDraftPipeRoute,
+    onDraftAnchorChange: handleDraftPipeAnchor,
     onDraftPipesChange: handleDraftPipes,
     onSnapIndicatorChange: handleSnapIndicator,
     // Both the flat SVG overlay and the tilted Three preview consume the same
@@ -2658,8 +2667,8 @@ export function DrawingCanvas({
       handleDimensionSelectMouseUp,
       handleDuctMouseDown,
       handleDuctMouseMove,
-      handleRefrigerantPipeMouseDown,
-      handleRefrigerantPipeMouseMove,
+      handleRefrigerantPipeMouseDown: activePipeWorkplane ? () => undefined : handleRefrigerantPipeMouseDown,
+      handleRefrigerantPipeMouseMove: activePipeWorkplane ? () => undefined : handleRefrigerantPipeMouseMove,
       handleSelectMouseMove,
       handleSelectMouseUp,
       findOpeningAtPoint,
@@ -2788,7 +2797,7 @@ export function DrawingCanvas({
     handleDuctDoubleClick,
     handleDuctKeyDown,
     handleDuctKeyUp,
-    handleRefrigerantPipeDoubleClick,
+    handleRefrigerantPipeDoubleClick: activePipeWorkplane ? () => undefined : handleRefrigerantPipeDoubleClick,
     handleRefrigerantPipeKeyDown,
     handleRefrigerantPipeKeyUp,
     // Dimension tool handlers
@@ -2896,15 +2905,19 @@ export function DrawingCanvas({
             ref={pipeStudioOverlayRef}
             ruleProfile={vrfRuleProfile}
             enabled
-            interactive={!projectionViewOnly}
+            interactive={!projectionViewOnly && !pipeEditPreview
+              && (tool === "select" || !activePipeWorkplane)}
             width={hostWidth}
             height={hostHeight}
             viewportZoom={viewportZoom}
             panOffset={panOffset}
             selectionHitTesting={tool === "select"}
+            showRouteHandles={false}
+            directSegmentEditing
+            showRoutingToolbar={tool !== "refrigerant-pipe" && !hvacElements.some(element => selectedIds.includes(element.id) && isRefrigerantPipeElementType(element.type))}
             pipeToolActive={tool === "refrigerant-pipe"}
             pipeLineMode={refrigerantPipeLineMode}
-            hvacElements={hvacElements}
+            hvacElements={pipeDisplayElements}
             selectedIds={selectedIds}
             setSelectedIds={setSelectedIds}
             commitHvacElementCommand={commitHvacElementCommand}
@@ -3024,6 +3037,8 @@ export function DrawingCanvas({
           symbols={symbols}
           objectDefinitions={objectDefinitions}
           hvacElements={hvacElements}
+          pipeEditPreviewElements={pipeEditPreview}
+          activePipeWorkplane={activePipeWorkplane}
           onWebglUnavailable={handleHybridWebglUnavailable}
           selectedIds={selectedIds}
           hoveredElementId={hoveredElementId}
@@ -3040,6 +3055,14 @@ export function DrawingCanvas({
           onPipePointerCancel={_cancelRefrigerantPipeDrawing}
           pipeInteractionRef={hybridPipeInteractionRef}
         />
+        <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
+          drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}
+          drawingStarted={pipeDrawingStarted} drawingService={pipeDraftLineMode}
+          drawingElevationMm={pipeDraftElevationMm} onSetDrawingElevation={setPipeDrawingElevation}
+          onPlaceBranchKit={() => pipeStudioOverlayRef.current?.beginPlaceKit()}
+          width={hostWidth} height={hostHeight} onPreviewChange={setPipeEditPreview} onWorkplaneChange={setActivePipeWorkplane}
+          onUndoDrawingStep={undoPipeDrawingStep} onAppendDrawingLength={appendPipeSegmentLength}
+          onFinishDrawing={handleRefrigerantPipeDoubleClick} onCancelDrawing={_cancelRefrigerantPipeDrawing} />
         <WallDimensionChip
           wall={singleSelectedWall}
           controllerRef={hybridControllerRef}

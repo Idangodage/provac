@@ -1,7 +1,29 @@
-import type { HvacElement } from '../../../types';
+import type { HvacElement, Point2D } from '../../../types';
 
 import type { BranchKitProposalValidity } from './branchKitProposal';
-import type { RefrigerantPipeBundleConnection, RefrigerantPipeLineMode } from './refrigerantPipePairModel';
+import type { RefrigerantPipeAngleMode, RefrigerantPipeBundleConnection, RefrigerantPipeLineMode, RefrigerantPipeMaterial } from './refrigerantPipePairModel';
+
+export function resolvePipeDraftAngleMode(
+  mode: RefrigerantPipeAngleMode, material: RefrigerantPipeMaterial,
+): Exclude<RefrigerantPipeAngleMode, 'auto'> {
+  return mode === 'auto' ? material === 'hard' ? 'diagonal' : 'free' : mode;
+}
+
+/** The same rule applies to world XY or a workplane's U/V coordinates. */
+export function constrainPipeDraftDelta(delta: Point2D, options: {
+  angleMode: RefrigerantPipeAngleMode;
+  material: RefrigerantPipeMaterial;
+  shift?: boolean;
+  alt?: boolean;
+}): Point2D | null {
+  if (![delta.x, delta.y].every(Number.isFinite)) return null;
+  const mode = options.alt ? 'free' : options.shift ? 'ortho' : resolvePipeDraftAngleMode(options.angleMode, options.material);
+  if (mode === 'free') return { ...delta };
+  if (mode === 'ortho') return Math.abs(delta.x) >= Math.abs(delta.y) ? { x: delta.x, y: 0 } : { x: 0, y: delta.y };
+  const length = Math.hypot(delta.x, delta.y);
+  const angle = Math.round(Math.atan2(delta.y, delta.x) / (Math.PI / 4)) * Math.PI / 4;
+  return { x: length * Math.cos(angle), y: length * Math.sin(angle) };
+}
 
 export interface PipeSnapIndicator {
   x: number;

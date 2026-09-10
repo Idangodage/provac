@@ -15,9 +15,9 @@ export interface HybridPipeEndpointProtection {
 }
 
 /**
- * Connected terminals remain graph-owned. A unit-port terminal also protects
- * the neighbouring mandatory straight stub node, so a vertex edit cannot bend
- * the copper at the flare/braze connection.
+ * Connected terminals and their adjacent tangent remain graph-owned. Protect
+ * the neighboring straight node for field joints as well as unit ports, so a
+ * vertex edit cannot silently rotate an attached connector's direction.
  */
 export function getProtectedPipeNodeIndexes(
   nodeCount: number,
@@ -27,9 +27,9 @@ export function getProtectedPipeNodeIndexes(
   const protectedIndexes = new Set<number>();
   if (nodeCount <= 0) return protectedIndexes;
   if (start.connected) protectedIndexes.add(0);
-  if (start.unitPort && nodeCount > 1) protectedIndexes.add(1);
+  if ((start.connected || start.unitPort) && nodeCount > 1) protectedIndexes.add(1);
   if (end.connected) protectedIndexes.add(nodeCount - 1);
-  if (end.unitPort && nodeCount > 1) protectedIndexes.add(nodeCount - 2);
+  if ((end.connected || end.unitPort) && nodeCount > 1) protectedIndexes.add(nodeCount - 2);
   return protectedIndexes;
 }
 
@@ -44,6 +44,8 @@ export function moveEditablePipeNode(
     || nodeIndex >= nodes.length
     || protectedIndexes.has(nodeIndex)
     || ![point.x, point.y, point.z].every(Number.isFinite)
+    || [nodes[nodeIndex - 1], nodes[nodeIndex + 1]].some((neighbor) => neighbor
+      && Math.hypot(point.x - neighbor.x, point.y - neighbor.y, point.z - neighbor.z) < 0.25)
   ) {
     return nodes.map((node) => ({ ...node }));
   }

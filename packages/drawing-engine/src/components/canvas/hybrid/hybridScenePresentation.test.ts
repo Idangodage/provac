@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { applyModelToWorldBasis, assertCanonicalModelRoot } from '../modelSpace';
 
@@ -57,5 +57,24 @@ describe('shared scene height reveal', () => {
       expect(reveal.scale.z).toBe(heightScale);
       expect(unit.getWorldPosition(new THREE.Vector3()).z).toBeCloseTo(2600 * heightScale);
     }
+  });
+
+  it('measures a transient pipe without traversing unchanged scene siblings', () => {
+    const { reveal, root, unit } = scene();
+    const preview = new THREE.Group();
+    const pipe = new THREE.Mesh(new THREE.BoxGeometry(100, 20, 20));
+    pipe.position.z = 3000;
+    preview.add(pipe); reveal.add(preview);
+    reveal.scale.z = 0.4;
+    reveal.updateWorldMatrix(true, true);
+    const originalMatrix = unit.matrixWorld.clone();
+    const updateUnchanged = vi.spyOn(root, 'updateWorldMatrix');
+    const bounds = new THREE.Box3();
+    measureUnrevealedContentBounds(reveal, [preview], bounds);
+    expect(bounds.max.z).toBe(3010);
+    expect(updateUnchanged).not.toHaveBeenCalled();
+    expect(unit.matrixWorld.equals(originalMatrix)).toBe(true);
+    expect(pipe.getWorldPosition(new THREE.Vector3()).z).toBe(1200);
+    pipe.geometry.dispose();
   });
 });

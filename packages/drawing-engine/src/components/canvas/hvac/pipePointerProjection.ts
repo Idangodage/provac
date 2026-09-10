@@ -141,24 +141,6 @@ export function createPointerRay(ndc: THREE.Vector2, camera: THREE.Camera): THRE
   return ndcPointToRay(ndc, camera);
 }
 
-function choosePlaneXAxis(normal: THREE.Vector3, hint?: THREE.Vector3): THREE.Vector3 {
-  const n = normal.clone().normalize();
-  const candidates = [
-    hint,
-    new THREE.Vector3(1, 0, 0),
-    new THREE.Vector3(0, 1, 0),
-    new THREE.Vector3(0, 0, 1),
-  ].filter((candidate): candidate is THREE.Vector3 => Boolean(candidate));
-
-  for (const candidate of candidates) {
-    const projected = candidate.clone().addScaledVector(n, -candidate.dot(n));
-    if (projected.lengthSq() > EPSILON) {
-      return projected.normalize();
-    }
-  }
-  return new THREE.Vector3(1, 0, 0);
-}
-
 export function createDrawingPlane(
   id: string,
   kind: PipeDrawingPlaneKind,
@@ -166,11 +148,10 @@ export function createDrawingPlane(
   normal: THREE.Vector3,
   xAxisHint?: THREE.Vector3,
 ): PipeDrawingPlane {
-  const safeNormal = normal.lengthSq() > EPSILON
-    ? normal.clone().normalize()
-    : new THREE.Vector3(0, 0, 1);
-  const xAxis = choosePlaneXAxis(safeNormal, xAxisHint);
-  const yAxis = safeNormal.clone().cross(xAxis).normalize();
+  const workplane = createWorkplane(id, origin, normal, xAxisHint);
+  const safeNormal = workplane.normal;
+  const xAxis = workplane.xAxis!;
+  const yAxis = workplane.yAxis!;
   const localToWorld = new THREE.Matrix4().makeBasis(xAxis, yAxis, safeNormal);
   localToWorld.setPosition(origin);
   return {
@@ -332,6 +313,15 @@ export function pointSatisfiesPipeAxisConstraint(
   return constrained.distanceTo(candidate) <= Math.max(0, toleranceMm);
 }
 
+/** A screen-space coincidence at another depth is not a workplane snap. */
+export function pointSatisfiesPipeDrawingPlane(
+  candidate: THREE.Vector3,
+  plane: PipeDrawingPlane,
+  toleranceMm = 0.25,
+): boolean {
+  return Math.abs(candidate.clone().sub(plane.origin).dot(plane.normal)) <= Math.max(0, toleranceMm);
+}
+
 /**
  * Closest point on an infinite world axis to the current pointer ray. This is
  * the correct way to drive a Z riser (or an explicit axis handle) from any
@@ -355,6 +345,7 @@ export function resolveSnappedPipePoint(
   const eligible = candidates
     .filter((candidate) => (
       Number.isFinite(candidate.screenDistancePx)
+      && candidate.point.toArray().every(Number.isFinite)
       && candidate.screenDistancePx >= 0
       && candidate.screenDistancePx <= Math.max(0, tolerancePx)
     ))
@@ -378,6 +369,9 @@ export function worldPointScreenDistance(
 ): number {
   camera.updateMatrixWorld(true);
   const projected = worldPoint.clone().project(camera);
+  if (!projected.toArray().every(Number.isFinite) || projected.z < -1 || projected.z > 1) {
+    return Number.POSITIVE_INFINITY;
+  }
   const x = (projected.x + 1) * 0.5 * finitePositive(viewport.width);
   const y = (1 - projected.y) * 0.5 * finitePositive(viewport.height);
   return Math.hypot(x - canvasPoint.x, y - canvasPoint.y);

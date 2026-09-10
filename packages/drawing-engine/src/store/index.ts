@@ -31,6 +31,12 @@ import {
 } from '../components/canvas/elevation';
 import type { FurnitureProjectionInput } from '../components/canvas/elevation';
 import {
+  getAutoRouteOwnership,
+  retainGeneratedPipeEdit,
+  withPipeRegenerationPolicy,
+  type PipeRegenerationPolicy,
+} from '../components/canvas/hvac/pipeEditRetention';
+import {
   DEFAULT_PIPE_ROUTING_SETTINGS,
   resolvePipeRoutingSettings,
   setActivePipeRoutingSettings,
@@ -2073,6 +2079,7 @@ export interface DrawingState {
   addHvacElement: (element: Omit<Partial<HvacElement>, 'id'> & Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>) => string;
   addHvacElements: (elements: Array<Omit<Partial<HvacElement>, 'id'> & Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>>) => string[];
   commitHvacElementCommand: (action: string, command: HvacElementCommand) => string[];
+  setPipeRegenerationPolicy: (ids: string[], policy: PipeRegenerationPolicy) => void;
   updateHvacElement: (id: string, updates: Partial<HvacElement>, options?: { skipHistory?: boolean }) => void;
   deleteHvacElement: (id: string, options?: { skipHistory?: boolean }) => void;
   duplicateHvacElement: (id: string) => string | null;
@@ -4288,22 +4295,24 @@ export const useDrawingStore = create<DrawingState>()(
         const updatesById = new Map(
           (command.updates ?? []).map((entry) => [entry.id, entry.updates]),
         );
+        let changed = false;
         set((state) => {
           const nextElements = state.hvacElements
             .filter((element) => !removeIds.has(element.id) && !additionIds.has(element.id))
             .map((element) => {
               const updates = updatesById.get(element.id);
               if (!updates) return element;
-              return normalizeHvacElement({
+              return retainGeneratedPipeEdit(element, normalizeHvacElement({
                 ...element,
                 ...updates,
                 id: element.id,
                 properties: updates.properties
                   ? { ...element.properties, ...updates.properties }
                   : element.properties,
-              });
+              }));
             });
           nextElements.push(...additions);
+          changed = JSON.stringify(nextElements) !== JSON.stringify(state.hvacElements);
           const availableIds = new Set(nextElements.map((element) => element.id));
           const selected = command.selectedIds
             ? command.selectedIds.filter((id) => availableIds.has(id))
@@ -4317,9 +4326,24 @@ export const useDrawingStore = create<DrawingState>()(
               : null,
           };
         });
+        if (!changed) return [];
         get().regenerateElevations({ debounce: true });
         get().saveToHistory(action);
         return additions.map((element) => element.id);
+      },
+
+      setPipeRegenerationPolicy: (ids, policy) => {
+        // Replacement is circuit-wide. Release or retain both services and fittings
+        // together, preserving every component until an actual reroute is accepted.
+        const selected = new Set(ids);
+        const scene = get().hvacElements;
+        const networks = new Set(scene.filter(element => selected.has(element.id))
+          .map(element => getAutoRouteOwnership(element)?.networkId)
+          .filter((id): id is string => typeof id === 'string'));
+        const updates = scene.filter(element => networks.has(getAutoRouteOwnership(element)?.networkId ?? ''))
+          .map(element => ({ id: element.id, updates: withPipeRegenerationPolicy(element, policy) }));
+        if (!updates.length) return;
+        get().commitHvacElementCommand(policy === 'retain' ? 'Retain generated pipe edits' : 'Allow automatic pipe rerouting', { updates });
       },
 
       updateHvacElement: (id, updates, options) => {
@@ -4329,7 +4353,7 @@ export const useDrawingStore = create<DrawingState>()(
             if (element.id !== id) {
               return element;
             }
-            const nextElement = normalizeHvacElement({
+            const nextElement = retainGeneratedPipeEdit(element, normalizeHvacElement({
               ...element,
               ...updates,
               id: element.id,
@@ -4344,7 +4368,7 @@ export const useDrawingStore = create<DrawingState>()(
               properties: updates.properties
                 ? { ...element.properties, ...updates.properties }
                 : element.properties,
-            });
+            }));
             changed =
               changed ||
               JSON.stringify(nextElement) !== JSON.stringify(element);

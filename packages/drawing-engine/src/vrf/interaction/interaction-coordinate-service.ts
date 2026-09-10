@@ -17,7 +17,10 @@ export {
 } from './view-manipulation-policy';
 
 const EPSILON = 1e-9;
-const PARALLEL_EPSILON = 1e-7;
+// Below one degree, pointer projection magnifies screen noise by more than
+// 57x. Use a stable constrained fallback (or numeric input), not a distant hit.
+const PARALLEL_EPSILON = Math.sin(THREE.MathUtils.degToRad(1));
+const AXIS_PARALLEL_EPSILON = PARALLEL_EPSILON * PARALLEL_EPSILON;
 
 export interface InteractionViewport {
   left: number;
@@ -187,11 +190,13 @@ function cloneViewport(viewport: InteractionViewport): InteractionViewport {
 }
 
 function cloneCamera(camera: THREE.Camera): THREE.Camera {
+  camera.updateWorldMatrix(true, false);
   const cloned = camera.clone();
-  cloned.position.copy(camera.position);
-  cloned.quaternion.copy(camera.quaternion);
-  cloned.scale.copy(camera.scale);
-  cloned.matrix.copy(camera.matrix);
+  // The snapshot is detached from its parent. Preserve the complete world
+  // transform instead of recomposing the former parent-relative transform.
+  camera.matrixWorld.decompose(cloned.position, cloned.quaternion, cloned.scale);
+  cloned.matrixAutoUpdate = false;
+  cloned.matrix.copy(camera.matrixWorld);
   cloned.matrixWorld.copy(camera.matrixWorld);
   cloned.matrixWorldInverse.copy(camera.matrixWorldInverse);
   cloned.projectionMatrix.copy(camera.projectionMatrix);
@@ -207,7 +212,7 @@ export function createCoordinateFrame(
   yAxisHint: THREE.Vector3,
 ): CoordinateFrame {
   const x = safeUnit(xAxis, new THREE.Vector3(1, 0, 0));
-  let y = projectPerpendicular(yAxisHint, x);
+  let y = projectPerpendicular(safeUnit(yAxisHint, leastParallelAxis(x)), x);
   if (y.lengthSq() <= EPSILON) y = projectPerpendicular(leastParallelAxis(x), x);
   y.normalize();
   const z = x.clone().cross(y).normalize();
@@ -232,7 +237,7 @@ export function createWorkplane(
   xAxisHint?: THREE.Vector3,
 ): Workplane {
   const n = safeUnit(normal, new THREE.Vector3(0, 0, 1));
-  let x = projectPerpendicular(xAxisHint ?? new THREE.Vector3(1, 0, 0), n);
+  let x = projectPerpendicular(safeUnit(xAxisHint ?? new THREE.Vector3(1, 0, 0), leastParallelAxis(n)), n);
   if (x.lengthSq() <= EPSILON) x = projectPerpendicular(leastParallelAxis(n), n);
   x.normalize();
   return {
@@ -274,6 +279,8 @@ export function intersectRayWithWorkplane(
   parallelEpsilon = PARALLEL_EPSILON,
 ): THREE.Vector3 | null {
   const intersect = (candidate: Workplane): THREE.Vector3 | null => {
+    if (![...ray.origin.toArray(), ...ray.direction.toArray(), ...candidate.origin.toArray()]
+      .every(Number.isFinite)) return null;
     const normal = safeUnit(candidate.normal, new THREE.Vector3(0, 0, 1));
     if (Math.abs(ray.direction.dot(normal)) <= parallelEpsilon) return null;
     return ray.intersectPlane(
@@ -316,12 +323,30 @@ export function createCameraFacingWorkplane(
   return createWorkplane(id, origin, basis.forward.clone().negate(), basis.right);
 }
 
+function projectRayToAxisOnPlane(
+  ray: THREE.Ray,
+  axisOrigin: THREE.Vector3,
+  axisDirection: THREE.Vector3,
+  fallbackPlane: Workplane,
+): ClosestAxisPoint | null {
+  const hit = intersectRayWithWorkplane(ray, fallbackPlane);
+  if (!hit) return null;
+  const axis = safeUnit(axisDirection, new THREE.Vector3(1, 0, 0));
+  const scalar = hit.clone().sub(axisOrigin).dot(axis);
+  return {
+    point: axisOrigin.clone().addScaledVector(axis, scalar),
+    scalar,
+    rayScalar: hit.clone().sub(ray.origin).dot(safeUnit(ray.direction, new THREE.Vector3(0, 0, -1))),
+    usedFallback: true,
+  };
+}
+
 export function closestPointBetweenRayAndAxis(
   ray: THREE.Ray,
   axisOrigin: THREE.Vector3,
   axisDirection: THREE.Vector3,
   fallbackPlane?: Workplane | null,
-  parallelEpsilon = PARALLEL_EPSILON,
+  parallelEpsilon = AXIS_PARALLEL_EPSILON,
 ): ClosestAxisPoint | null {
   const rayDirection = safeUnit(ray.direction, new THREE.Vector3(0, 0, -1));
   const axis = safeUnit(axisDirection, new THREE.Vector3(1, 0, 0));
@@ -334,7 +359,7 @@ export function closestPointBetweenRayAndAxis(
     const axisOriginDot = axis.dot(relativeOrigin);
     const rayScalar = (parallel * axisOriginDot - rayOriginDot) / denominator;
     const scalar = axisOriginDot + parallel * rayScalar;
-    if (Number.isFinite(scalar) && Number.isFinite(rayScalar)) {
+    if (Number.isFinite(scalar) && Number.isFinite(rayScalar) && rayScalar >= 0) {
       return {
         point: axisOrigin.clone().addScaledVector(axis, scalar),
         scalar,
@@ -345,15 +370,7 @@ export function closestPointBetweenRayAndAxis(
   }
 
   if (!fallbackPlane) return null;
-  const hit = intersectRayWithWorkplane(ray, fallbackPlane, null, parallelEpsilon);
-  if (!hit) return null;
-  const scalar = hit.clone().sub(axisOrigin).dot(axis);
-  return {
-    point: axisOrigin.clone().addScaledVector(axis, scalar),
-    scalar,
-    rayScalar: hit.clone().sub(ray.origin).dot(rayDirection),
-    usedFallback: true,
-  };
+  return projectRayToAxisOnPlane(ray, axisOrigin, axis, fallbackPlane);
 }
 
 export function projectPointerDeltaToAxis(
@@ -364,8 +381,13 @@ export function projectPointerDeltaToAxis(
   fallbackPlane: Workplane,
 ): PointerDeltaProjection | null {
   const start = closestPointBetweenRayAndAxis(startRay, axisOrigin, axisDirection, fallbackPlane);
-  const current = closestPointBetweenRayAndAxis(currentRay, axisOrigin, axisDirection, fallbackPlane);
-  if (!start || !current) return null;
+  if (!start) return null;
+  // Choose the projection at pointer-down and keep it for this gesture. A
+  // perspective ray entering/leaving a singularity must not switch solvers.
+  const current = start.usedFallback
+    ? projectRayToAxisOnPlane(currentRay, axisOrigin, axisDirection, fallbackPlane)
+    : closestPointBetweenRayAndAxis(currentRay, axisOrigin, axisDirection);
+  if (!current) return null;
   return {
     point: current.point,
     delta: current.point.clone().sub(start.point),
@@ -380,18 +402,21 @@ export function projectPointerDeltaToPlane(
   workplane: Workplane,
   fallbackPlane?: Workplane | null,
 ): PointerDeltaProjection | null {
-  const start = intersectRayWithWorkplane(startRay, workplane, fallbackPlane);
-  const current = intersectRayWithWorkplane(currentRay, workplane, fallbackPlane);
+  const primaryStart = intersectRayWithWorkplane(startRay, workplane);
+  const usedFallback = !primaryStart;
+  const projectionPlane = usedFallback ? fallbackPlane : workplane;
+  if (!projectionPlane) return null;
+  const start = primaryStart ?? intersectRayWithWorkplane(startRay, projectionPlane);
+  const current = intersectRayWithWorkplane(currentRay, projectionPlane);
   if (!start || !current) return null;
   const normal = safeUnit(workplane.normal, new THREE.Vector3(0, 0, 1));
-  const delta = current.clone().sub(start);
+  const delta = projectPerpendicular(current.clone().sub(start), normal);
   return {
-    point: current,
+    point: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, workplane.origin)
+      .projectPoint(start, new THREE.Vector3()).add(delta),
     delta,
     scalar: delta.length(),
-    usedFallback:
-      Math.abs(startRay.direction.dot(normal)) <= PARALLEL_EPSILON ||
-      Math.abs(currentRay.direction.dot(normal)) <= PARALLEL_EPSILON,
+    usedFallback,
   };
 }
 
@@ -635,21 +660,21 @@ export function updateDrag(
   let deltaWorld: THREE.Vector3;
   let usedFallback = false;
   if (drag.axisOrigin && drag.axisDirection) {
-    const current = closestPointBetweenRayAndAxis(
+    const projection = projectPointerDeltaToAxis(
+      drag.startRay,
       ray,
       drag.axisOrigin,
       drag.axisDirection,
       drag.fallbackPlane,
     );
-    if (!current || drag.startAxisScalar === null) return null;
-    const scalar = current.scalar - drag.startAxisScalar;
-    deltaWorld = drag.axisDirection.clone().multiplyScalar(scalar);
-    usedFallback = current.usedFallback;
+    if (!projection) return null;
+    deltaWorld = projection.delta;
+    usedFallback = projection.usedFallback;
   } else if (drag.plane) {
-    const current = intersectRayWithWorkplane(ray, drag.plane, drag.fallbackPlane);
-    if (!current) return null;
-    deltaWorld = current.sub(drag.startPoint);
-    usedFallback = Math.abs(ray.direction.dot(drag.plane.normal)) <= PARALLEL_EPSILON;
+    const projection = projectPointerDeltaToPlane(drag.startRay, ray, drag.plane, drag.fallbackPlane);
+    if (!projection) return null;
+    deltaWorld = projection.delta;
+    usedFallback = projection.usedFallback;
   } else {
     return null;
   }

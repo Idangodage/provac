@@ -3,6 +3,7 @@ import type { HvacElement, Wall } from '../../../types';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 
 import type { AutoRouteNetworkResult } from './autoRouteWorkerProtocol';
+import { protectedPipeNetworkElementIds } from './pipeEditRetention';
 import type { PipeRoutingSettings } from './pipeRoutingSettings';
 
 export interface AutoRouteSource {
@@ -43,6 +44,10 @@ export function prepareAutoRouteCommand(
   if (!result.elementsToAdd.length && !result.updates?.length) return {};
   const existing = new Map(source.scene.map(element => [element.id, element]));
   const removed = new Set(result.removeElementIds);
+  const protectedIds = protectedPipeNetworkElementIds(source.scene);
+  if ([...removed, ...(result.updates ?? []).map(element => element.id)].some(id => protectedIds.has(id))) {
+    return { issue: 'Manual edits or route locks protect this network. Allow auto rerouting for retained edits before calculating a replacement; locked routes remain protected.' };
+  }
   const generatedIds = new Set<string>();
   const isNetworkPart = (element: HvacElement) =>
     element.type === 'refrigerant-pipe' || element.type === 'refrigerant-branch-kit';

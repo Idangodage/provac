@@ -11,6 +11,7 @@ import { applyNetworkPipeLevels, hasNetworkCornerRiser, planNetworkPipeLevels } 
 import { buildNetworkRiserRefinements } from './networkRiserRefinement';
 import { findObstacleAwareOrthogonalRoute, type ObstacleAwareOrthogonalRoute,
   type ObstacleAwareOrthogonalRouteOptions, type OrthogonalRouteObstacle } from './obstacleAwareOrthogonalRoute';
+import { autoRouteElementSignature, getAutoRouteOwnership as ownership, protectedPipeNetworkElementIds } from './pipeEditRetention';
 import { normalizePipeRouteNodes3d } from './pipeRoute3d';
 import { getActivePipeRoutingSettings, setActivePipeRoutingSettings, type PipeRoutingSettings } from './pipeRoutingSettings';
 import { buildRefrigerantBranchKitViewModel } from './refrigerantBranchKitModel';
@@ -58,7 +59,6 @@ interface Candidate {
   attachment?: { parent: Candidate; unit: Unit; proposal: BranchKitProposal; station: BranchStation; kitElementIds: string[] };
 }
 interface SearchStats { evaluatedCandidates: number; rejectedReasons: string[] }
-interface Ownership { version: number; networkId: string; outdoorUnitId: string; indoorUnitIds: string[]; signature: string }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
 const distance = (a: Point2D, b: Point2D) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 const isOutdoor = (element: HvacElement) => element.type === 'outdoor-unit' || element.category === 'outdoor-unit';
@@ -68,30 +68,7 @@ function recordRejections(stats: SearchStats, reasons: string[]): void {
 
 export function isAutoRouteEquipment(element: HvacElement): boolean { return ALL_PIPE_PORT_TYPES.has(element.type); }
 
-/** Fingerprint excludes ownership only; hand edits of any persisted geometry keep the entire tree. */
-export function autoRouteElementSignature(element: HvacElement): string {
-  const properties = { ...element.properties };
-  delete properties.autoRouteNetwork;
-  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
-    : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value)
-      .filter(([, entry]) => entry !== undefined).sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, entry]) => [key, canonical(entry)])) : value;
-  const serialized = JSON.stringify(canonical({ ...element, category: element.category ?? 'accessory',
-    modelLabel: element.modelLabel ?? element.label, supplyZoneRatio: element.supplyZoneRatio ?? 0.5, properties }));
-  let hash = 2166136261;
-  for (let index = 0; index < serialized.length; index += 1) hash = Math.imul(hash ^ serialized.charCodeAt(index), 16777619);
-  return (hash >>> 0).toString(36);
-}
-function ownership(element: HvacElement): Ownership | null {
-  const value = record(element.properties.autoRouteNetwork);
-  return value.version === 1 && typeof value.networkId === 'string' && typeof value.outdoorUnitId === 'string'
-    && Array.isArray(value.indoorUnitIds) && typeof value.signature === 'string' ? value as unknown as Ownership : null;
-}
-function protectedRoute(element: HvacElement): boolean {
-  return ['networkLevelLocked', 'routeLocked', 'routingLocked', 'locked', 'isLocked', 'reviewed', 'installationReviewed']
-    .some(key => element.properties[key] === true)
-    || (Array.isArray(element.properties.bypasses) && element.properties.bypasses.length > 0);
-}
+export { autoRouteElementSignature } from './pipeEditRetention';
 function occupiedUnitIds(scene: HvacElement[]): Set<string> {
   const result = new Set<string>();
   for (const pipe of scene) for (const key of ['startConnection', 'endConnection', 'startBundleConnection', 'endBundleConnection']) {
@@ -149,6 +126,7 @@ function resolveSystems(scene: HvacElement[], selectedIds: string[] | undefined,
   return { systems: systems.filter(system => system.indoors.length), requested };
 }
 function replaceableNetworkIds(scene: HvacElement[], system: System): string[] {
+  const protectedIds = protectedPipeNetworkElementIds(scene);
   const intended = new Set(system.indoors.map(unit => unit.element.id));
   const groups = new Map<string, HvacElement[]>();
   for (const element of scene) {
@@ -159,7 +137,7 @@ function replaceableNetworkIds(scene: HvacElement[], system: System): string[] {
   const removable: string[] = [];
   for (const group of groups.values()) {
     const ids = new Set(group.map(element => element.id));
-    if (group.some(element => protectedRoute(element) || ownership(element)!.signature !== autoRouteElementSignature(element))) continue;
+    if (group.some(element => protectedIds.has(element.id))) continue;
     const externallyReferenced = scene.filter(element => !ids.has(element.id)).some(element =>
       ['startConnection', 'endConnection', 'startBundleConnection', 'endBundleConnection'].some(key =>
         ids.has(String(record(element.properties[key]).sourceElementId ?? ''))));
@@ -184,7 +162,8 @@ function replaceableExistingCircuit(scene: HvacElement[], system: System, option
   const ids = new Set(existing.paths.flatMap(path => [...path.runIds.map(id => document.pipeRuns[id]?.metadata?.sourceElementId),
     ...path.branchIds.map(id => document.branchKits[id]?.metadata?.sourceElementId)]).filter((id): id is string => typeof id === 'string'));
   const members = scene.filter(element => ids.has(element.id));
-  if (!members.length || members.length !== ids.size || members.some(protectedRoute)) return none;
+  const protectedIds = protectedPipeNetworkElementIds(scene);
+  if (!members.length || members.length !== ids.size || members.some(element => protectedIds.has(element.id))) return none;
   const references = (value: unknown): boolean => {
     if (Array.isArray(value)) return value.some(references);
     if (!value || typeof value !== 'object') return false;
@@ -771,6 +750,10 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
       const occupied = occupiedUnitIds(baseline);
       if (occupied.has(system.outdoor.element.id)) {
         const preservedIndoorCount = reportPreservedNetwork(baseline, system, options, result);
+        const retained = protectedPipeNetworkElementIds(baseline);
+        if (baseline.some(element => retained.has(element.id) && ownership(element)?.outdoorUnitId === system.outdoor.element.id)) {
+          issues.push(`${system.outdoor.element.label || system.outdoor.element.id}: manual edits or route locks protect its generated network. Allow auto rerouting in the pipe editor to reconsider retained edits; locked routes remain protected.`);
+        }
         issues.push(preservedIndoorCount === system.indoors.length
           ? `${system.outdoor.element.label || system.outdoor.element.id}: its existing connected network was preserved.`
           : `${system.outdoor.element.label || system.outdoor.element.id}: its existing or edited network was preserved. New connections need an extension of that network or a free outdoor connection.`);

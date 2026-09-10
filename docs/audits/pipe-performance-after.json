@@ -1,0 +1,15 @@
+{
+  "reactUpdates": 80,
+  "reactTotalMs": 1238.200000166893,
+  "frameP50Ms": 16.700000000000728,
+  "frameP95Ms": 50.399999999999636,
+  "longTasks": 6,
+  "longTaskMs": 407,
+  "history": 1,
+  "elapsedMs": 4044,
+  "scriptMs": 3100.23,
+  "taskMs": 3422.033,
+  "scenePipes": 100,
+  "pointerMoves": 45,
+  "modelChanged": true
+}

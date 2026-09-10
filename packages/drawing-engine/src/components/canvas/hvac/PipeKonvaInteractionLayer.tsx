@@ -10,6 +10,7 @@ import { MM_TO_PX } from '../scale';
 import { viewTransformToKonvaLayer } from '../viewTransform';
 
 import { beginPipeDrag, type PipeDragSession } from './pipeDragSession';
+import { validatePipeModelReplacement } from './pipeEditModel';
 import { withCanonicalPipeRoute } from './pipeRoute3d';
 import {
   buildRefrigerantPipeVisual,
@@ -356,6 +357,8 @@ export function PipeKonvaInteractionLayer({
       nextPipeElement,
       hvacElements,
     );
+    const conflict = validatePipeModelReplacement(pipeElement, nextPipeElement, hvacElements);
+    if (conflict) { setProcessingStatus(conflict, false); return null; }
     if (nextVisual.invalidHardSegmentCount > 0) {
       return null;
     }
