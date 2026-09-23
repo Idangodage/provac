@@ -13,6 +13,10 @@ import {
   type BranchKitProposal,
   type BranchKitProposalValidity,
 } from '../hvac/branchKitProposal';
+import {
+  createBranchProposalScheduler, createProposalCostEstimator,
+  type BranchProposalScheduler, type ProposalCostEstimator,
+} from '../hvac/branchProposalScheduler';
 import { isNetworkLevelPlanCurrent, type NetworkLevelSummary } from '../hvac/networkPipeLevels';
 import { planBundleBypasses } from '../hvac/pipeClashRouting';
 import { resolvePipeCommandKeyAction } from '../hvac/pipeCommandKeyPolicy';
@@ -153,6 +157,12 @@ export interface UseRefrigerantPipeToolResult {
 
 const PIPE_ROUTE_ANGLE_SNAP_DEG = 45;
 const PIPE_CENTERLINE_CONTINUITY_TOLERANCE_MM = 0.25;
+/**
+ * Longest `proposeBranchKit` run that may stay on the pointer path. One 120 Hz
+ * frame is 8.3 ms; 12 ms keeps a small document's continuously-sliding ghost kit
+ * exactly as it was while pushing an expensive document onto the idle scheduler.
+ */
+const INLINE_BRANCH_PROPOSAL_BUDGET_MS = 12;
 type RefrigerantPipeHoverSelection = 'gas' | 'liquid' | null;
 type RefrigerantPipeSnapSource = 'projected' | 'model' | 'rendered' | 'visible' | null;
 
@@ -369,6 +379,27 @@ export function useRefrigerantPipeTool(
     at: null,
   });
   const lastProposalCursorRef = useRef<Point2D | null>(null);
+  // Whether the proposal still fits on the pointer path for *this* document,
+  // measured rather than inferred from an element count.
+  const proposalCostRef = useRef<ProposalCostEstimator<HvacElement[]> | null>(null);
+  if (!proposalCostRef.current) {
+    proposalCostRef.current = createProposalCostEstimator<HvacElement[]>(INLINE_BRANCH_PROPOSAL_BUDGET_MS);
+  }
+  const proposalCost = proposalCostRef.current;
+  // Deferred proposal, run once the pointer settles. The consumer lives in a ref
+  // and is (re)assigned below, once `refreshBranchKitProposal` is in scope, so the
+  // scheduler is created once and never re-armed by a render.
+  const deferredProposalRef = useRef<(cursor: Point2D) => void>(() => {});
+  // A timer owner, not render state: nothing re-renders when it arms or fires, so
+  // it is constructed once into a ref rather than held by useState.
+  const branchProposalSchedulerRef = useRef<BranchProposalScheduler<Point2D> | null>(null);
+  if (!branchProposalSchedulerRef.current) {
+    branchProposalSchedulerRef.current = createBranchProposalScheduler<Point2D>(
+      cursor => deferredProposalRef.current(cursor),
+    );
+  }
+  const branchProposalScheduler = branchProposalSchedulerRef.current;
+  useEffect(() => () => branchProposalSchedulerRef.current?.cancel(), []);
   const [branchKitProposalState, setBranchKitProposalState] =
     useState<RefrigerantPipeBranchKitProposalState | null>(null);
   const debugOverlaysRef = useRef<fabric.FabricObject[]>([]);
@@ -538,11 +569,12 @@ export function useRefrigerantPipeTool(
     proposalFlipRef.current = false;
     proposalSuppressRef.current = { active: false, at: null };
     lastProposalCursorRef.current = null;
+    branchProposalScheduler.cancel();
     clearBranchKitProposal();
     clearPreview();
     clearSnapMarkers();
     clearDebugOverlays();
-  }, [clearBranchKitProposal, clearDebugOverlays, clearPreview, clearSnapMarkers, publishDraftState]);
+  }, [branchProposalScheduler, clearBranchKitProposal, clearDebugOverlays, clearPreview, clearSnapMarkers, publishDraftState]);
 
   // Cursor→world snap radius (mm), zoom-compensated from the configured pixel
   // radius. Shared by the generic snap resolver and the extension-detection engine
@@ -939,11 +971,13 @@ export function useRefrigerantPipeTool(
       clearBranchKitProposal();
       return null;
     }
+    const startedAt = performance.now();
     const proposal = proposeBranchKit(hvacElements, startBundle, cursorPoint, {
       flip: proposalFlipRef.current,
       proposalRadiusMm: resolveExtensionThresholdMm(),
       authoredRoute: routePointsRef.current,
     });
+    proposalCost.record(hvacElements, performance.now() - startedAt);
     if (!proposal) {
       clearBranchKitProposal();
       return null;
@@ -971,13 +1005,27 @@ export function useRefrigerantPipeTool(
       } : undefined,
     });
     return proposal;
-  }, [clearBranchKitProposal, hvacElements, isBranchProposalSuppressed, resolveExtensionThresholdMm]);
+  }, [clearBranchKitProposal, hvacElements, isBranchProposalSuppressed, proposalCost, resolveExtensionThresholdMm]);
 
   useEffect(() => {
     const plan = branchKitProposalRef.current?.levelPlan;
     if (!plan || isNetworkLevelPlanCurrent(plan, hvacElements)) return;
     requireBranchReview('Network changed. Move the pointer to review updated levels.', true);
   }, [hvacElements, requireBranchReview]);
+
+  deferredProposalRef.current = (cursor: Point2D) => {
+    const proposal = refreshBranchKitProposal(cursor);
+    // `refreshBranchKitProposal` already cleared the proposal when it declined,
+    // and the ordinary route preview from the move that scheduled this is still
+    // the current one, so a decline needs no further work.
+    if (!proposal) return;
+    previewPointRef.current = proposal.teePoint;
+    renderBranchPreview(proposal);
+    setProcessingStatus(
+      `Branch kit · ${describeBranchKitConnectionType(proposal.connectionType)}`,
+      false,
+    );
+  };
 
   const commitRoute = useCallback((candidateFinalPoint?: PipePlacementPoint) => {
     const routePoints = [...routePointsRef.current];
@@ -1412,7 +1460,9 @@ export function useRefrigerantPipeTool(
     // A live, valid branch-kit proposal: clicking accepts it (inserts the
     // coordinated gas/liquid kits + inline-splits the tapped run). Only for a
     // pair route or continuation. Refresh at the click so acceptance uses the
-    // same physical fitting proposal shown for that location.
+    // same physical fitting proposal shown for that location — which also makes
+    // any deferred run redundant, so it is dropped rather than left to fire.
+    branchProposalScheduler.cancel();
     const proposal = canOfferPipeBranch({
       planRouting,
       lineMode: sessionLineModeRef.current ?? pipeLineMode,
@@ -1439,6 +1489,7 @@ export function useRefrigerantPipeTool(
     acceptBranchKitProposal,
     appendDraftPoint,
     beginRouteFromBundle,
+    branchProposalScheduler,
     clearBranchKitProposal,
     clearPreview,
     commitRoute,
@@ -1542,14 +1593,23 @@ export function useRefrigerantPipeTool(
     // A branch kit is inherently a coordinated gas+liquid insertion, so it is
     // offered for a pair route or continuation. Endpoint snaps take priority;
     // Alt gives the user an uninterrupted free-drawing override.
-    const proposal = canOfferPipeBranch({
+    const offerable = canOfferPipeBranch({
       planRouting,
       lineMode: sessionLineModeRef.current ?? pipeLineMode,
       hasStart: Boolean(startBundleRef.current),
       hasEndpointSnap: Boolean(bundle),
       freePointer: altPressedRef.current,
-    }) ? refreshBranchKitProposal(snappedPoint) : null;
+    });
+    // The proposal runs a whole-network level re-plan, so it stays on the pointer
+    // path only while it actually fits in a frame. The estimator measures the real
+    // duration per document, so this self-tunes: a small scene keeps the kit sliding
+    // continuously under the cursor exactly as before, and a scene where the plan
+    // costs hundreds of milliseconds shows the ordinary route immediately and
+    // offers the kit once the pointer settles, instead of stalling every sample.
+    const ranInline = offerable && proposalCost.canRunInline(hvacElements);
+    const proposal = ranInline ? refreshBranchKitProposal(snappedPoint) : null;
     if (proposal) {
+      branchProposalScheduler.cancel();
       previewPointRef.current = proposal.teePoint;
       renderBranchPreview(proposal);
       setProcessingStatus(
@@ -1557,6 +1617,16 @@ export function useRefrigerantPipeTool(
         false,
       );
     } else {
+      if (offerable && !ranInline) {
+        // Deferred: the route the user is steering is drawn now; the suggestion
+        // catches up on stillness. Nothing stale is left on screen meanwhile —
+        // a frozen ghost at an old station would misreport where the tee lands.
+        branchProposalScheduler.schedule(snappedPoint);
+      } else {
+        // Either nothing is offerable, or this point was already resolved
+        // synchronously — deferring it again would just repeat the same search.
+        branchProposalScheduler.cancel();
+      }
       clearBranchKitProposal();
       renderRoutePreview(
         [...routePointsRef.current, snappedPoint],
@@ -1577,6 +1647,7 @@ export function useRefrigerantPipeTool(
       );
     }
   }, [
+    branchProposalScheduler,
     clearBranchKitProposal,
     clearPreview,
     hvacElements,
@@ -1584,6 +1655,7 @@ export function useRefrigerantPipeTool(
     logDebug,
     pipeLineMode,
     planRouting,
+    proposalCost,
     refreshBranchKitProposal,
     renderBranchPreview,
     renderDebugOverlays,
@@ -1595,6 +1667,11 @@ export function useRefrigerantPipeTool(
   ]);
 
   const finishRoute = useCallback((): boolean => {
+    // A deferred proposal still owns completion: Enter must choose against the
+    // suggestion the pointer had earned, not silently save a plain crossing
+    // because the scheduler had not fired yet. One synchronous run on a discrete
+    // action is affordable in a way that one per pointer sample is not.
+    branchProposalScheduler.flush();
     if (branchReviewMessageRef.current) {
       setProcessingStatus(branchReviewMessageRef.current, false);
       return true;
@@ -1609,7 +1686,7 @@ export function useRefrigerantPipeTool(
       return true;
     }
     return commitRoute(previewPointRef.current ?? undefined);
-  }, [acceptBranchKitProposal, commitRoute, setProcessingStatus]);
+  }, [acceptBranchKitProposal, branchProposalScheduler, commitRoute, setProcessingStatus]);
 
   const handleDoubleClick = useCallback(() => { void finishRoute(); }, [finishRoute]);
 

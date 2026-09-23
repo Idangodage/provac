@@ -46,7 +46,7 @@ import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
 import { constrainPipeDraftDelta, resolvePipeDraftAngleMode } from "../hvac/pipeDraftingPolicy";
-import { editablePipeNodes } from "../hvac/pipeEditModel";
+import { editablePipeNodes, pipeEditControlIndices } from "../hvac/pipeEditModel";
 import {
   createDrawingPlane,
   createPointerRay,
@@ -209,6 +209,8 @@ export interface HybridProjectionLayerProps {
   hvacElements: HvacElement[];
   /** Transient replacements. Keep hvacElements committed so pointer moves never rebuild the main scene. */
   pipeEditPreviewElements?: HvacElement[] | null;
+  /** Disable legacy mesh grips when the shared pipe gizmo owns editing. */
+  showPipeEditHandles?: boolean;
   onWebglUnavailable?: () => void;
   /** Wall selection (edge ids) + hover for 3D outlines/handles. */
   selectedIds?: string[];
@@ -1069,6 +1071,7 @@ export function HybridProjectionLayer({
   objectDefinitions,
   hvacElements,
   pipeEditPreviewElements = null,
+  showPipeEditHandles = true,
   onWebglUnavailable,
   selectedIds,
   hoveredElementId,
@@ -2972,6 +2975,9 @@ export function HybridProjectionLayer({
         (candidate) => candidate.id === id && isRefrigerantPipeElementType(candidate.type),
       );
       if (pipe) {
+        // One editor owns pipe grips. Hidden mesh grips must also be absent
+        // from hit testing, while the architectural handles remain available.
+        if (!showPipeEditHandles) continue;
         const routeNodes = editablePipeNodes(pipe);
         const protection = resolvePipeEndpointProtection(pipe, hvacElements);
         const protectedIndexes = getProtectedPipeNodeIndexes(
@@ -2979,7 +2985,9 @@ export function HybridProjectionLayer({
           protection.start,
           protection.end,
         );
-        routeNodes.forEach((node, nodeIndex) => {
+        pipeEditControlIndices(pipe).nodes.forEach((nodeIndex) => {
+          const node = routeNodes[nodeIndex];
+          if (!node) return;
           if (protectedIndexes.has(nodeIndex)) return;
           defs.push({
             id: `pipe:${pipe.id}:${nodeIndex}`,
@@ -3027,7 +3035,7 @@ export function HybridProjectionLayer({
     }
     sceneState.handleLayer.setDefs(defs);
     requestFrameRef.current?.();
-  }, [hvacElements, selectedIds, walls]);
+  }, [hvacElements, selectedIds, walls, showPipeEditHandles, interactionElement, rendererRevision]);
 
   // View style: Solid → X-ray → Wire (reference applyStyles).
   useEffect(() => {

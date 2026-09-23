@@ -339,8 +339,16 @@ function singlePhysicalLane(element: HvacElement, elements: HvacElement[], autho
     start: { point: geometry.startPoint, connection: spec.startConnection }, end: { point: geometry.endPoint, connection: spec.endConnection } };
 }
 
-function physicalLanes(elements: HvacElement[]): PipeLane[] {
-  return elements.flatMap(element => {
+/**
+ * Lanes for one element.
+ *
+ * Not safely cacheable on element identity plus connection sources: the context
+ * also reaches `buildRefrigerantPipePhysicalPath`, which an inline branch kit
+ * resolves against nearby runs. That memo was tried and reverted — it broke 20
+ * cases in `networkPipeClearanceReuse.test.ts`.
+ */
+function elementLanes(element: HvacElement, elements: HvacElement[]): PipeLane[] {
+
     const authored = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
     if (element.type === 'refrigerant-pipe') {
       const lane = singlePhysicalLane(element, elements, authored);
@@ -365,7 +373,10 @@ function physicalLanes(elements: HvacElement[]): PipeLane[] {
       const lane = fittedLane(element, service, radius, gas ? visual.gasPipeDiameterMm : visual.liquidPipeDiameterMm, nodes, start, end);
       return lane ? [lane] : [];
     });
-  });
+}
+
+function physicalLanes(elements: HvacElement[]): PipeLane[] {
+  return elements.flatMap(element => elementLanes(element, elements));
 }
 
 const baselineCache = new WeakMap<HvacElement[], { signature: string; lanes: PipeLane[] }>();
@@ -373,6 +384,13 @@ function baselineLanes(scene: HvacElement[]): PipeLane[] {
   // Keep one baseline per scene array. The signature also detects legacy
   // in-place mutations and equipment/profile changes that affect healed ports;
   // reference equality alone is insufficient at the public API boundary.
+  //
+  // This serialization is expensive (4.97 ms per call at 24 elements, against
+  // 288 calls in one branch-kit proposal) and an identity-based key was tried
+  // and reverted: `networkPipeClearance.test.ts` > "rechecks an in-place changed
+  // scene" fails, because a caller may mutate an element through `Object.assign`
+  // and still expect a fresh classification. Cutting this cost means calling
+  // `baselineLanes` fewer times, not weakening what it detects.
   const signature = JSON.stringify([getActivePipeRoutingSettings(), scene]);
   const cached = baselineCache.get(scene);
   if (cached?.signature === signature) return cached.lanes;

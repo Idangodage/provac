@@ -16,7 +16,7 @@ import {
   getPipeEditSelectionIndices, pipeEditPointFromWorld, resolvePipeEditFrame,
   type PipeEditCoordinateMode, type PipeEditSelection, type PipeEditWorkplane, type PipeRouteEditOperation,
 } from './pipeEditGeometry';
-import { buildPipeModelEdit, connectedPipeIds, editablePipeNodes, isEditablePipe, pipeEditControlIndices } from './pipeEditModel';
+import { buildPipeModelEdit, connectedPipeIds, editablePipeNodes, isEditablePipe, pipeEditControlIndices, summarizePipeAdaptations } from './pipeEditModel';
 import { isPipeRouteLocked, pipeRegenerationPolicy } from './pipeEditRetention';
 import { createDrawingPlane, type PipeDrawingPlane } from './pipePointerProjection';
 import { createPipePreviewScheduler } from './pipePreviewScheduler';
@@ -37,6 +37,7 @@ interface Props {
   controllerRef: RefObject<HybridViewportController | null>;
   width: number;
   height: number;
+  showInteriorNodeHandles?: boolean;
   onPreviewChange: (elements: HvacElement[] | null) => void;
   onWorkplaneChange: (plane: PipeDrawingPlane | null) => void;
   onUndoDrawingStep: () => void;
@@ -164,16 +165,19 @@ export function PipeEditingTools(props: Props) {
     if (!directSelection && bendIndex !== null && !bend) { pendingEdit.current = null; setInvalid(true); setFeedback('Select a bend with sufficient straight length for its fittings.'); return; }
     const appliedOperation = !directSelection && bend && operation.kind === 'rotate' ? { ...operation, axis: 'x' as const, pivot: bend.pivotPoint } : operation;
     const result = buildPipeModelEdit({ elementId: selected.id, elements: props.elements, selection: directSelection ?? effectiveSelection, operation: appliedOperation, frame: editFrame, connected: !directSelection && connected,
-      selectedIds: !directSelection && !connected && !bend && selection.kind === 'run' ? selectedPipes.map(element => element.id) : undefined });
+      selectedIds: !directSelection && !connected && !bend && selection.kind === 'run' ? selectedPipes.map(element => element.id) : undefined,
+      // Moving a whole run re-makes what it is welded to rather than refusing.
+      mode: 'adaptive' });
     setBaseline(props.elements);
     if (!result.ok) {
       pendingEdit.current = null; setInvalid(true); setFeedback(result.message); setPreview(null); props.onPreviewChange(null); return;
     }
     pendingEdit.current = { elements: result.elements, baseline: props.elements };
     setInvalid(false); setPreview(result.elements); props.onPreviewChange(result.elements);
+    const adapted = summarizePipeAdaptations(result.adaptations ?? [], result.clampedTo);
     setFeedback(operation.kind === 'rotate'
       ? `${operation.angleDegrees.toFixed(2)}° around ${editFrame.labels[['x', 'y', 'z'].indexOf(operation.axis)]} · fixed ${pivot} endpoint`
-      : `${result.elements.length} pipe${result.elements.length === 1 ? '' : 's'} · preview ready`);
+      : adapted ?? `${result.elements.length} pipe${result.elements.length === 1 ? '' : 's'} · preview ready`);
   }, [selected, frame, props.elements, props.onPreviewChange, effectiveSelection, connected, pivot, bend, bendIndex, selectedPipes, selection.kind, coordinateMode, nodes, workplane]);
   previewConsumer.current = ({ operation, selection: directSelection }) => makePreview(operation, directSelection);
 
@@ -262,7 +266,7 @@ export function PipeEditingTools(props: Props) {
     ? Math.hypot(nodes[selection.index + 1]!.x - nodes[selection.index]!.x, nodes[selection.index + 1]!.y - nodes[selection.index]!.y, nodes[selection.index + 1]!.z - nodes[selection.index]!.z) : null;
   return <>
     {active && frame && pivotPoint && <PipeEditGizmo key={selected.id} controllerRef={props.controllerRef} width={props.width} height={props.height}
-      nodes={nodes} controlIndices={controlIndices} coordinateMode={coordinateMode} previewNodes={preview?.find(element => element.id === selected.id) ? editablePipeNodes(preview.find(element => element.id === selected.id)!) : null}
+      nodes={nodes} controlIndices={controlIndices} showInteriorNodeHandles={props.showInteriorNodeHandles} coordinateMode={coordinateMode} previewNodes={preview?.find(element => element.id === selected.id) ? editablePipeNodes(preview.find(element => element.id === selected.id)!) : null}
       frame={frame} pivot={pivotPoint} pivotEnd={pivot} mode={operationMode === 'rotate' ? 'rotate' : 'translate'}
       movingPort={bendIndex !== null && bend ? resolvePipeBendEdit(preview?.find(element => element.id === selected.id) ?? selected, bendIndex, pivot)?.movingPort : undefined}
       disabled={lock || (bendIndex !== null && !bend)} invalid={invalid} onPreview={(operation, directSelection) => previewScheduler.schedule({ operation, selection: directSelection })} onCommit={apply} onCancel={cancel} rotationAxisOnly={bend ? 'x' : undefined}
@@ -287,7 +291,10 @@ export function PipeEditingTools(props: Props) {
           onClick={() => { cancel(); setOperationMode('translate'); setShowTransform(operationMode !== 'translate' || !showTransform); }}>Move</button>
           <button type="button" className={`${buttonClass} ${showTransform && operationMode === 'rotate' ? 'bg-teal-50 text-teal-800' : ''}`} aria-label="Rotate pipe selection" aria-pressed={showTransform && operationMode === 'rotate'} disabled={lock || selection.kind === 'node'}
             onClick={() => { cancel(); setOperationMode('rotate'); setShowTransform(operationMode !== 'rotate' || !showTransform); }}>Rotate</button>
-          {selection.kind === 'segment' && <button type="button" className={buttonClass} disabled={lock} title="Add a route point at this segment's midpoint" onClick={() => { makePreview({ kind: 'insert' }); apply(); }}>Split</button>}
+          {selection.kind === 'segment' && <button type="button" className={buttonClass} disabled={lock} title="Add a route point at this segment's midpoint" onClick={() => {
+            makePreview({ kind: 'insert' });
+            if (pendingEdit.current) { apply(); changeSelection({ kind: 'node', index: selection.index + 1 }); }
+          }}>Split</button>}
           {selection.kind === 'node' && selection.index > 0 && selection.index < nodes.length - 1 && <button type="button" className={buttonClass} disabled={lock} onClick={() => { makePreview({ kind: 'remove' }); apply(); }}>Remove point</button>}
           <button type="button" className={buttonClass} onClick={props.onPlaceBranchKit}>Branch kit</button></>}
         {props.drawing && <><PipeDrawingControls unit={props.unit} serviceLocked={props.drawingStarted} serviceMode={props.drawingService}

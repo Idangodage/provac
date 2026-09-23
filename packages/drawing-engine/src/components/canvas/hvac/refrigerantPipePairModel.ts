@@ -37,6 +37,7 @@ import {
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
   INCH_MM,
 } from './refrigerantPipeDimensions';
+import { createSceneDerivedCache } from './sceneDerivedCache';
 import {
   getUnitPipePortEndpointLocal,
   getUnitPipePortSpec,
@@ -4785,7 +4786,7 @@ function createPipeEndpointTarget(
   };
 }
 
-function getRefrigerantPipeEndpointTargets(
+function computeRefrigerantPipeEndpointTargets(
   elements: HvacPipeSnapSource[],
 ): RefrigerantPipeEndpointTarget[] {
   const targets: RefrigerantPipeEndpointTarget[] = [];
@@ -4969,6 +4970,11 @@ function getRefrigerantPipeStraightSegmentTargets(
 
   return targets;
 }
+
+const endpointTargetsForScene = createSceneDerivedCache(computeRefrigerantPipeEndpointTargets);
+const getRefrigerantPipeEndpointTargets = (
+  elements: HvacPipeSnapSource[],
+): RefrigerantPipeEndpointTarget[] => endpointTargetsForScene(elements);
 
 function buildFieldPipeBundleSnapTargets(
   elements: HvacPipeSnapSource[],
@@ -5551,7 +5557,7 @@ export function getRefrigerantPipeBundleSegmentTargets(
   );
 }
 
-export function getRefrigerantPipeBundleSnapTargets(
+function computeRefrigerantPipeBundleSnapTargets(
   elements: HvacPipeSnapSource[],
 ): RefrigerantPipeBundleConnection[] {
   const targets: RefrigerantPipeBundleConnection[] = [];
@@ -5574,6 +5580,20 @@ export function getRefrigerantPipeBundleSnapTargets(
     ...buildPairedBranchKitBundleTargets(elements),
     ...buildFieldPipeBundleSnapTargets(elements),
   ];
+}
+
+/**
+ * Snap/extension targets are pure derivations of the stored model, so they are
+ * memoized on the scene array's identity. The pointer path resolves them many
+ * times per mouse move (`snapPoint`, the idle-hover extension probe, the
+ * single-line weld probe, the overlay's own grips); without this each of those
+ * rebuilt every port and open end in the document.
+ */
+const bundleSnapTargetsForScene = createSceneDerivedCache(computeRefrigerantPipeBundleSnapTargets);
+export function getRefrigerantPipeBundleSnapTargets(
+  elements: HvacPipeSnapSource[],
+): RefrigerantPipeBundleConnection[] {
+  return bundleSnapTargetsForScene(elements);
 }
 
 export function findNearestRefrigerantPipeBundleTarget(

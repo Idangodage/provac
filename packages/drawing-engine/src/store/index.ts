@@ -4312,7 +4312,18 @@ export const useDrawingStore = create<DrawingState>()(
               }));
             });
           nextElements.push(...additions);
-          changed = JSON.stringify(nextElements) !== JSON.stringify(state.hvacElements);
+          // Same comparison as serializing both arrays, short-circuited on
+          // reference equality: an element with no update is returned by the map
+          // above as the SAME object, so a typical commit only has to serialize
+          // the one or two elements it actually touched instead of the whole
+          // document twice. Identical references are trivially value-equal, and
+          // the per-index walk keeps order part of the comparison exactly as the
+          // full serialization did.
+          changed = nextElements.length !== state.hvacElements.length
+            || nextElements.some((element, index) => {
+              const previous = state.hvacElements[index];
+              return element !== previous && JSON.stringify(element) !== JSON.stringify(previous);
+            });
           const availableIds = new Set(nextElements.map((element) => element.id));
           const selected = command.selectedIds
             ? command.selectedIds.filter((id) => availableIds.has(id))

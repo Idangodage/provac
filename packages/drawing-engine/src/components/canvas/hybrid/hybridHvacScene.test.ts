@@ -97,3 +97,59 @@ describe('incremental committed HVAC scene', () => {
     expect(build).toHaveBeenCalledTimes(3);
   });
 });
+
+function branchKit(id: string, mode: 'fixed' | 'inline-pipe-run'): HvacElement {
+  return { id, type: 'refrigerant-branch-kit', label: id, position: { x: 5000, y: 0 },
+    width: 300, depth: 200, height: 120, elevation: 2500, rotation: 0, mountType: 'ceiling',
+    supplyZoneRatio: 0, properties: { branchKitLineKind: 'both', branchKitPlacementMode: mode } };
+}
+
+describe('branch-kit scene dependency', () => {
+  it('keeps a fixed kit while an unrelated pipe changes', () => {
+    // A fixed kit is positioned entirely by its own record, so an edit elsewhere
+    // must not invalidate it. One kit rebuild is a three-bvh-csg union measured
+    // at 70.8 ms, so depending on the whole scene froze the main thread for
+    // roughly half a second per commit on a drawing with several kits.
+    const { scene, build, dispose } = harness();
+    const context = createPipeRenderStateCache();
+    const kit = branchKit('kit-1', 'fixed');
+    const original = [pipe('pipe-0'), pipe('pipe-1', 4000), kit];
+    scene.update(context(original), 0);
+    expect(build).toHaveBeenCalledTimes(3);
+
+    // Only pipe-1 is replaced; every other member keeps its identity.
+    const edited = original.map(element => element.id === 'pipe-1' ? pipe('pipe-1', 9000) : element);
+    scene.update(context(edited), 0);
+    expect(build).toHaveBeenCalledTimes(4);
+    expect(build.mock.calls.at(-1)![0].id).toBe('pipe-1');
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds an inline kit when the scene changes, because it resolves against a run', () => {
+    const { scene, build } = harness();
+    const context = createPipeRenderStateCache();
+    const kit = branchKit('kit-1', 'inline-pipe-run');
+    const original = [pipe('pipe-0'), pipe('pipe-1', 4000), kit];
+    scene.update(context(original), 0);
+    expect(build).toHaveBeenCalledTimes(3);
+
+    const edited = original.map(element => element.id === 'pipe-1' ? pipe('pipe-1', 9000) : element);
+    scene.update(context(edited), 0);
+    // The moved pipe AND the inline kit, whose render centre tracks the run.
+    expect(build).toHaveBeenCalledTimes(5);
+    expect(build.mock.calls.slice(-2).map(call => call[0].id).sort()).toEqual(['kit-1', 'pipe-1']);
+  });
+
+  it('rebuilds a fixed kit when its own record changes', () => {
+    const { scene, build } = harness();
+    const context = createPipeRenderStateCache();
+    const original = [pipe('pipe-0'), branchKit('kit-1', 'fixed')];
+    scene.update(context(original), 0);
+    expect(build).toHaveBeenCalledTimes(2);
+
+    const moved = { ...original[1]!, position: { x: 7000, y: 0 } };
+    scene.update(context([original[0]!, moved]), 0);
+    expect(build).toHaveBeenCalledTimes(3);
+    expect(build.mock.calls.at(-1)![0].id).toBe('kit-1');
+  });
+});

@@ -1,0 +1,212 @@
+{
+    "pass":  true,
+    "checks":  [
+                   {
+                       "name":  "Viewing and selecting preserve model",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "gas-plan no duplicate legacy 3D pipe markers",
+                       "pass":  true,
+                       "count":  0
+                   },
+                   {
+                       "name":  "gas-plan no visible grip overlap",
+                       "pass":  true,
+                       "overlaps":  [
+
+                                    ]
+                   },
+                   {
+                       "name":  "gas-plan compact generated controls",
+                       "pass":  true,
+                       "count":  2,
+                       "routePoints":  54
+                   },
+                   {
+                       "name":  "gas-iso no duplicate legacy 3D pipe markers",
+                       "pass":  true,
+                       "count":  0
+                   },
+                   {
+                       "name":  "gas-iso no visible grip overlap",
+                       "pass":  true,
+                       "overlaps":  [
+
+                                    ]
+                   },
+                   {
+                       "name":  "gas-iso compact generated controls",
+                       "pass":  true,
+                       "count":  3,
+                       "routePoints":  54
+                   },
+                   {
+                       "name":  "gas-front no duplicate legacy 3D pipe markers",
+                       "pass":  true,
+                       "count":  0
+                   },
+                   {
+                       "name":  "gas-front no visible grip overlap",
+                       "pass":  true,
+                       "overlaps":  [
+
+                                    ]
+                   },
+                   {
+                       "name":  "gas-front compact generated controls",
+                       "pass":  true,
+                       "count":  4,
+                       "routePoints":  54
+                   },
+                   {
+                       "name":  "gas-side no duplicate legacy 3D pipe markers",
+                       "pass":  true,
+                       "count":  0
+                   },
+                   {
+                       "name":  "gas-side no visible grip overlap",
+                       "pass":  true,
+                       "overlaps":  [
+
+                                    ]
+                   },
+                   {
+                       "name":  "gas-side compact generated controls",
+                       "pass":  true,
+                       "count":  4,
+                       "routePoints":  54
+                   },
+                   {
+                       "name":  "liquid-plan no duplicate legacy 3D pipe markers",
+                       "pass":  true,
+                       "count":  0
+                   },
+                   {
+                       "name":  "liquid-plan no visible grip overlap",
+                       "pass":  true,
+                       "overlaps":  [
+
+                                    ]
+                   },
+                   {
+                       "name":  "liquid-plan compact generated controls",
+                       "pass":  true,
+                       "count":  2,
+                       "routePoints":  54
+                   },
+                   {
+                       "name":  "liquid-iso no duplicate legacy 3D pipe markers",
+                       "pass":  true,
+                       "count":  0
+                   },
+                   {
+                       "name":  "liquid-iso no visible grip overlap",
+                       "pass":  true,
+                       "overlaps":  [
+
+                                    ]
+                   },
+                   {
+                       "name":  "liquid-iso compact generated controls",
+                       "pass":  true,
+                       "count":  3,
+                       "routePoints":  54
+                   },
+                   {
+                       "name":  "liquid-front no duplicate legacy 3D pipe markers",
+                       "pass":  true,
+                       "count":  0
+                   },
+                   {
+                       "name":  "liquid-front no visible grip overlap",
+                       "pass":  true,
+                       "overlaps":  [
+
+                                    ]
+                   },
+                   {
+                       "name":  "liquid-front compact generated controls",
+                       "pass":  true,
+                       "count":  3,
+                       "routePoints":  54
+                   },
+                   {
+                       "name":  "liquid-side no duplicate legacy 3D pipe markers",
+                       "pass":  true,
+                       "count":  0
+                   },
+                   {
+                       "name":  "liquid-side no visible grip overlap",
+                       "pass":  true,
+                       "overlaps":  [
+
+                                    ]
+                   },
+                   {
+                       "name":  "liquid-side compact generated controls",
+                       "pass":  true,
+                       "count":  2,
+                       "routePoints":  54
+                   },
+                   {
+                       "name":  "Zoomed-out selection no visible grip overlap",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "Direct segment drag changes geometry in one history command",
+                       "pass":  true,
+                       "beforeHistory":  0,
+                       "afterHistory":  1
+                   },
+                   {
+                       "name":  "Undo restores exact pipe data",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "Redo restores exact dragged pipe data",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "Plan bend hit target reaches the Studio corner",
+                       "pass":  true,
+                       "corner":  {
+                                      "x":  619.5355269297152,
+                                      "y":  333.1750535980672,
+                                      "hitVertex":  "1",
+                                      "hitTag":  "circle"
+                                  }
+                   },
+                   {
+                       "name":  "Plan corner drag changes geometry in one history command",
+                       "pass":  true,
+                       "beforeHistory":  0,
+                       "afterHistory":  1
+                   },
+                   {
+                       "name":  "Corner undo restores exact pipe data",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "Split inserts and selects a visible route-point grip",
+                       "pass":  true,
+                       "split":  {
+                                     "count":  5,
+                                     "selectedGrip":  true,
+                                     "scope":  "node",
+                                     "history":  1
+                                 }
+                   },
+                   {
+                       "name":  "Split undo restores exact pipe data",
+                       "pass":  true
+                   },
+                   {
+                       "name":  "No browser JavaScript errors",
+                       "pass":  true
+                   }
+               ],
+    "errors":  [
+
+               ]
+}

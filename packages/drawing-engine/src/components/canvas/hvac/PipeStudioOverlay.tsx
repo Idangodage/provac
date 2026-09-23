@@ -56,13 +56,17 @@ import {
 import { branchKitSpriteTransform } from './branchKitSpriteTransform';
 import type { CopperSocketElbowPlacement } from './copperSocketElbowRoute';
 import type { PipeSnapIndicator } from './pipeDraftingPolicy';
-import { resolvePipeEditFrame } from './pipeEditGeometry';
-import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeEditControlIndices, validatePipeModelReplacement } from './pipeEditModel';
+import {
+  buildAdaptivePipeEdit, buildPipeTopologyEdit, editablePipeNodes, isEditablePipe, nearestSkeletonLegIndex,
+  nearestSkeletonNodeIndex, pipeDesignSkeleton, pipeEditControlIndices, summarizePipeAdaptations,
+  validatePipeModelReplacement,
+} from './pipeEditModel';
+import { selectPipeHandleCandidates } from './pipeHandleLayout';
 import { resolveEditablePipeVertexIndex } from './pipeInteractionCore';
 import { buildPipeKitConnectionTargets } from './pipeKitConnectionTargets';
 import { buildPipePlanTubes, pipePolylinePath } from './pipePlanPresentation';
 import { createPipePresentationCache } from './pipePresentationCache';
-import { withCanonicalPipeRoute } from './pipeRoute3d';
+import { withCanonicalPipeRoute, type PipeRouteNode3D } from './pipeRoute3d';
 import { getActivePipeRoutingSettings } from './pipeRoutingSettings';
 import {
   buildRefrigerantBranchKitViewModel,
@@ -196,8 +200,10 @@ interface PipeStudioOverlayProps {
   viewportZoom: number;
   panOffset: Point2D;
   selectionHitTesting: boolean;
-  /** The shared 3D gizmo supplies route handles in DrawingCanvas. */
+  /** Plan corners retain adaptive fitting edits; the shared gizmo owns other grips. */
   showRouteHandles?: boolean;
+  showEndpointHandles?: boolean;
+  showInsertHandles?: boolean;
   showRoutingToolbar?: boolean;
   directSegmentEditing?: boolean;
   pipeToolActive: boolean;
@@ -513,6 +519,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       panOffset,
       selectionHitTesting,
       showRouteHandles = true,
+      showEndpointHandles = true,
+      showInsertHandles = true,
       showRoutingToolbar = true,
       directSegmentEditing = false,
       pipeToolActive,
@@ -529,7 +537,27 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const fittingDisplay = useSmartDrawingStore(state => state.pipeRoutingSettings.fittingDisplay);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const gRef = useRef<SVGGElement | null>(null);
-  const dragRef = useRef<{ id: string; vi: number; startWorld: Point2D; startRoute: Point2D[] } | null>(null);
+  const dragRef = useRef<{
+    id: string; vi: number; startWorld: Point2D; startRoute: Point2D[];
+    /** Design corner this handle drives, resolved once at press time. */
+    skeletonIndex: number; skeletonPoint: PipeRouteNode3D;
+  } | null>(null);
+  /**
+   * Result of the live adaptive solve. The drag re-solves the route every frame
+   * (bends re-angle, roll, and neighbouring straights resize) so the commit only
+   * has to write what the user already saw.
+   */
+  const adaptiveRef = useRef<{ element: HvacElement; summary: string | null } | null>(null);
+  const adaptiveConflictRef = useRef<string | null>(null);
+  /** What the last segment-slide preview had to change, reported on release. */
+  const moveSummaryRef = useRef<string | null>(null);
+  /**
+   * Pipes in the current preview that the adaptive solver produced. Those were
+   * already validated against their own baseline; re-checking them through the
+   * legacy replacement validator would compare the new route against the STORED
+   * one, whose terminal elevation a plan-only legacy route never reached.
+   */
+  const adaptiveIdsRef = useRef<Set<string>>(new Set());
   // Whole-element move (the overlay owns pipes AND kits now that neither has a
   // Fabric body). One press-drag translates the pressed item — or, if it was
   // already part of the selection, the WHOLE selection — rigidly by the cursor
@@ -548,6 +576,11 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const [movePreviewElements, setMovePreviewElements] = useState<HvacElement[] | null>(null);
   const movePreviewFrameRef = useRef<number | null>(null);
   const queuedMovePreviewRef = useRef<HvacElement[] | null>(null);
+  /** Newest un-solved pointer delta for the whole-element move. */
+  const queuedMoveDeltaRef = useRef<{ dx: number; dy: number } | null>(null);
+  /** Newest un-solved pointer delta for a corner (vertex) drag. */
+  const queuedVertexDeltaRef = useRef<{ dx: number; dy: number } | null>(null);
+  const vertexFrameRef = useRef<number | null>(null);
   const lastMovePreviewRef = useRef<HvacElement[] | null>(null);
   const dragConflictRef = useRef<string | null>(null);
   const editedIdsRef = useRef<Set<string>>(new Set());
@@ -654,23 +687,12 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const canInteract = enabled && interactive;
 
-  const scheduleMovePreview = useCallback((elements: HvacElement[]): void => {
-    lastMovePreviewRef.current = elements;
-    queuedMovePreviewRef.current = elements;
-    if (movePreviewFrameRef.current !== null) {
-      return;
-    }
-    movePreviewFrameRef.current = window.requestAnimationFrame(() => {
-      movePreviewFrameRef.current = null;
-      setMovePreviewElements(queuedMovePreviewRef.current);
-    });
-  }, []);
-
   const clearMovePreview = useCallback((): void => {
     if (movePreviewFrameRef.current !== null) {
       window.cancelAnimationFrame(movePreviewFrameRef.current);
       movePreviewFrameRef.current = null;
     }
+    queuedMoveDeltaRef.current = null;
     queuedMovePreviewRef.current = null;
     lastMovePreviewRef.current = null;
     setMovePreviewElements(null);
@@ -679,6 +701,11 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const cancelOverlayDrag = useCallback(() => {
     dragRef.current = null;
     moveDragRef.current = null;
+    if (vertexFrameRef.current !== null) {
+      window.cancelAnimationFrame(vertexFrameRef.current);
+      vertexFrameRef.current = null;
+    }
+    queuedVertexDeltaRef.current = null;
     clearMovePreview();
     setGhost(null);
   }, [clearMovePreview]);
@@ -687,6 +714,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     () => () => {
       if (movePreviewFrameRef.current !== null) {
         window.cancelAnimationFrame(movePreviewFrameRef.current);
+      }
+      if (vertexFrameRef.current !== null) {
+        window.cancelAnimationFrame(vertexFrameRef.current);
       }
     },
     [],
@@ -834,6 +864,13 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     return list;
   }, [draftPipes, previewElements, readPipeView]);
 
+  // Display one control per design corner, regardless of the number of stored
+  // arc samples. Keep this separate from the authoritative pipe artwork.
+  const selectedHandleRoutes = useMemo(() => new Map(pipes
+    .filter(pipe => selectedSet.has(pipe.id))
+    .map(pipe => [pipe.id, pipeDesignSkeleton(pipe.element).nodes.map(node => ({ x: node.x, y: node.y }))])),
+  [pipes, selectedSet]);
+
   // When exactly the two lines of one bundle are selected, expose a single
   // shared-center "extend" grip per bundle end (the common + the user asked for).
   // The bundle's centerline endpoint is the midpoint of the two matching ends.
@@ -871,7 +908,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       const maxPair = Math.max(d(pairs[0][0].pt, pairs[0][1].pt), d(pairs[1][0].pt, pairs[1][1].pt));
       if (maxPair > 600) return null;
     }
-    const ends = pairs.map(([ae, be], i) => {
+    const ends = pairs.filter(([ae, be]) =>
+      !(ae.end === 'start' ? a.startConnected : a.endConnected)
+      && !(be.end === 'start' ? b.startConnected : b.endConnected)).map(([ae, be], i) => {
       const aPrev = ae.end === 'end' ? a.route[a.route.length - 2]! : a.route[1]!;
       const out = unit(ae.pt.x - aPrev.x, ae.pt.y - aPrev.y);
       // Bundle gap = the perpendicular spacing across the run heading, NOT the
@@ -1026,6 +1065,39 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [elementById],
   );
 
+  /**
+   * Insert or remove a bend through the canonical design model.
+   *
+   * The handle the user pressed belongs to the reconstructed VIEW route, whose
+   * indices do not match the stored polyline on a generated pipe — so the target
+   * is given as a point and resolved against the design by geometry.
+   */
+  const commitTopology = useCallback(
+    (id: string, kind: 'insert' | 'remove', nearPoint: Point2D, label: string) => {
+      const outcome = buildPipeTopologyEdit({
+        elementId: id, elements: hvacElements, action: { kind, nearPoint },
+      });
+      if (!outcome.ok) {
+        useSmartDrawingStore.getState().setProcessingStatus(outcome.message, false);
+        return;
+      }
+      editedIdsRef.current.add(id);
+      commitHvacElementCommand(label, {
+        updates: [{
+          id,
+          updates: {
+            position: outcome.element.position,
+            width: outcome.element.width,
+            depth: outcome.element.depth,
+            height: outcome.element.height,
+            properties: outcome.element.properties,
+          },
+        }],
+      });
+    },
+    [commitHvacElementCommand, hvacElements],
+  );
+
   const commitRoute = useCallback(
     (id: string, route: Point2D[], label: string) => {
       const nextElement = writeRoute(id, route);
@@ -1087,15 +1159,48 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         const base = overrides.get(item.id) ?? baseById.get(item.id);
         if (!base) continue;
         if (item.segmentIndex !== undefined) {
-          const frame = resolvePipeEditFrame({ mode: 'world', nodes: editablePipeNodes(base), selection: { kind: 'segment', index: item.segmentIndex } });
-          if (!frame) { dragConflictRef.current = 'Select a valid straight segment.'; continue; }
-          const result = buildPipeModelEdit({ elementId: item.id, elements: hvacElements,
-            frame,
-            selection: { kind: 'segment', index: item.segmentIndex }, operation: { kind: 'translate', offset: { x: dx, y: dy, z: 0 } } });
-          if (result.ok) for (const element of result.elements) overrides.set(element.id, element);
+          // Slide the DESIGN leg the pressed segment belongs to. On a generated
+          // route the pressed vertex pair is usually arc tessellation, so the
+          // leg is resolved by geometry rather than by polyline index.
+          // `segmentIndex` was chosen against editablePipeNodes in beginMove,
+          // NOT against the reconstructed view route — index the same array.
+          const sourceNodes = editablePipeNodes(base);
+          const start = sourceNodes[item.segmentIndex];
+          const end = sourceNodes[item.segmentIndex + 1];
+          if (!start || !end) { dragConflictRef.current = 'Select a valid straight segment.'; continue; }
+          const skeleton = pipeDesignSkeleton(base);
+          const legIndex = nearestSkeletonLegIndex(skeleton, { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 });
+          const solved = buildAdaptivePipeEdit({ elementId: item.id, elements: hvacElements,
+            goal: { kind: 'move-leg', legIndex, offset: { x: dx, y: dy, z: 0 } } });
+          if (solved.ok) {
+            overrides.set(item.id, solved.element);
+            adaptiveIdsRef.current.add(item.id);
+            moveSummaryRef.current = summarizePipeAdaptations(solved.adaptations, solved.clampedTo);
           // Keep invalid movement transient; the release reports the conflict.
-          else dragConflictRef.current = result.message;
+          } else dragConflictRef.current = solved.message;
           continue;
+        }
+        // Whole-run move. Anything the pipe stays tied to is re-made around it:
+        // a fixed port keeps its straight approach and the gap is closed with a
+        // generated offset (or riser), and a branch kit with nothing else on it
+        // swivels about its joint to keep facing the run.
+        const run = buildAdaptivePipeEdit({ elementId: item.id, elements: hvacElements,
+          goal: { kind: 'move-run', offset: { x: dx, y: dy, z: 0 } } });
+        if (run.ok) {
+          overrides.set(item.id, run.element);
+          adaptiveIdsRef.current.add(item.id);
+          for (const update of run.elementUpdates) {
+            overrides.set(update.id, update);
+            adaptiveIdsRef.current.add(update.id);
+          }
+          moveSummaryRef.current = summarizePipeAdaptations(run.adaptations, run.clampedTo);
+          continue;
+        }
+        // Keep the preview following the cursor; the release reports why the
+        // reconnection could not be made and discards the move.
+        if (base.properties.startConnection || base.properties.endConnection
+          || base.properties.startBundleConnection || base.properties.endBundleConnection) {
+          dragConflictRef.current = run.message;
         }
         overrides.set(
           item.id,
@@ -1111,6 +1216,37 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [hvacElements],
   );
 
+  /**
+   * Solve the newest queued pointer delta, if any, and return the preview.
+   *
+   * The solve lives here rather than in the pointer handler because it is the
+   * expensive half: `buildMovePreview` runs the adaptive solver per dragged pipe
+   * plus a branch-kit reconnection pass. Only one solve per displayed frame is
+   * useful, and only the newest pointer sample is.
+   */
+  const solveQueuedMovePreview = useCallback((): HvacElement[] | null => {
+    const delta = queuedMoveDeltaRef.current;
+    const drag = moveDragRef.current;
+    queuedMoveDeltaRef.current = null;
+    if (!delta || !drag) return null;
+    dragConflictRef.current = null;
+    const elements = buildMovePreview(drag, delta.dx, delta.dy);
+    lastMovePreviewRef.current = elements;
+    return elements;
+  }, [buildMovePreview]);
+
+  const scheduleMovePreview = useCallback((dx: number, dy: number): void => {
+    queuedMoveDeltaRef.current = { dx, dy };
+    if (movePreviewFrameRef.current !== null) {
+      return;
+    }
+    movePreviewFrameRef.current = window.requestAnimationFrame(() => {
+      movePreviewFrameRef.current = null;
+      const elements = solveQueuedMovePreview();
+      if (elements) setMovePreviewElements(elements);
+    });
+  }, [solveQueuedMovePreview]);
+
   const onVertexDown = useCallback(
     (e: ReactPointerEvent, pipe: PipeView, vi: number, route: Point2D[]) => {
       e.stopPropagation();
@@ -1125,7 +1261,17 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       if (editableIndex === null) return;
       const startWorld = toWorld(e.clientX, e.clientY) ?? route[vi]!;
       const startRoute = route.map((p) => ({ ...p }));
-      dragRef.current = { id: pipe.id, vi: editableIndex, startWorld, startRoute };
+      // Bind the handle to a DESIGN corner, not to a polyline index. A generated
+      // route's vertices are mostly arc tessellation, so the index the renderer
+      // hands us and the index the solver reasons about are different arrays.
+      const skeleton = pipeDesignSkeleton(pipe.element);
+      const skeletonIndex = nearestSkeletonNodeIndex(skeleton, startRoute[vi] ?? startWorld);
+      adaptiveRef.current = null;
+      adaptiveConflictRef.current = null;
+      dragRef.current = {
+        id: pipe.id, vi: editableIndex, startWorld, startRoute,
+        skeletonIndex, skeletonPoint: skeleton.nodes[skeletonIndex] ?? { ...startWorld, z: 0 },
+      };
       setGhost({ id: pipe.id, route: startRoute.map((p) => ({ ...p })) });
       (e.target as Element).setPointerCapture?.(e.pointerId);
     },
@@ -1174,6 +1320,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         setSelectedIds([pressedId]);
         if (bestIndex < 0) return;
         clearMovePreview(); dragConflictRef.current = null;
+        adaptiveIdsRef.current.clear(); moveSummaryRef.current = null;
         moveDragRef.current = { startWorld: w, baseline: hvacElements, moved: false,
           items: [{ kind: 'pipe', id: pressedId, route: pressedPipe.route, segmentIndex: bestIndex }] };
         (e.target as Element).setPointerCapture?.(e.pointerId);
@@ -1208,6 +1355,55 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     [selectedIds, selectedSet, setSelectedIds, toWorld, pipes, hvacElements, clearMovePreview, directSegmentEditing],
   );
 
+  /**
+   * Re-solve the design skeleton against the newest queued pointer delta:
+   * adjoining straights resize, and the bends either side re-angle or roll to
+   * whatever the new position needs. A refusal keeps the last good preview on
+   * screen and is reported on release, so the drag itself never stutters.
+   */
+  const solveQueuedVertexPreview = useCallback((): void => {
+    const delta = queuedVertexDeltaRef.current;
+    const drag = dragRef.current;
+    queuedVertexDeltaRef.current = null;
+    if (!delta || !drag) return;
+    const { dx, dy } = delta;
+    const solved = buildAdaptivePipeEdit({
+      elementId: drag.id,
+      elements: hvacElements,
+      goal: {
+        kind: 'move-node',
+        nodeIndex: drag.skeletonIndex,
+        target: { x: drag.skeletonPoint.x + dx, y: drag.skeletonPoint.y + dy, z: drag.skeletonPoint.z },
+      },
+    });
+    if (solved.ok) {
+      adaptiveConflictRef.current = null;
+      adaptiveRef.current = {
+        element: solved.element,
+        summary: summarizePipeAdaptations(solved.adaptations, solved.clampedTo),
+      };
+      setGhost({ id: drag.id, route: solved.nodes.map((node) => ({ x: node.x, y: node.y })) });
+      return;
+    }
+    adaptiveConflictRef.current = solved.message;
+    if (adaptiveRef.current) return;
+    setGhost({
+      id: drag.id,
+      route: drag.startRoute.map((p, i) =>
+        i === drag.vi ? { x: p.x + dx, y: p.y + dy } : { x: p.x, y: p.y },
+      ),
+    });
+  }, [hvacElements]);
+
+  const scheduleVertexPreview = useCallback((dx: number, dy: number): void => {
+    queuedVertexDeltaRef.current = { dx, dy };
+    if (vertexFrameRef.current !== null) return;
+    vertexFrameRef.current = window.requestAnimationFrame(() => {
+      vertexFrameRef.current = null;
+      solveQueuedVertexPreview();
+    });
+  }, [solveQueuedVertexPreview]);
+
   const onPointerMove = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
       updateNearbyBranchKitPort(e.clientX, e.clientY);
@@ -1225,8 +1421,10 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         const dy = w.y - md.startWorld.y;
         if (!md.moved && Math.hypot(dx, dy) * k > 3) md.moved = true;
         if (!md.moved) return;
-        dragConflictRef.current = null;
-        scheduleMovePreview(buildMovePreview(md, dx, dy));
+        // Queue the delta; the solve runs once per frame in the rAF. Passing
+        // `buildMovePreview(...)` here instead would evaluate it eagerly on every
+        // pointer event and leave the rAF deferring only the setState.
+        scheduleMovePreview(dx, dy);
         return;
       }
       const drag = dragRef.current;
@@ -1235,19 +1433,26 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       if (!w) return;
       // Move the underlying centerline vertex by the cursor delta, so the handle
       // (rendered on the offset body) tracks the cursor while the route updates.
-      const dx = w.x - drag.startWorld.x;
-      const dy = w.y - drag.startWorld.y;
-      setGhost({
-        id: drag.id,
-        route: drag.startRoute.map((p, i) =>
-          i === drag.vi ? { x: p.x + dx, y: p.y + dy } : { x: p.x, y: p.y },
-        ),
-      });
+      // Queued, not solved here: one adaptive re-solve per displayed frame is
+      // useful, and only for the newest sample.
+      scheduleVertexPreview(w.x - drag.startWorld.x, w.y - drag.startWorld.y);
     },
-    [toWorld, k, buildMovePreview, scheduleMovePreview, updateNearbyBranchKitPort, hvacElements, cancelOverlayDrag],
+    [toWorld, k, scheduleMovePreview, scheduleVertexPreview, updateNearbyBranchKitPort, hvacElements, cancelOverlayDrag],
   );
 
   const endDrag = useCallback(() => {
+    // Flush any delta the next frame would have solved, so the commit is the
+    // position the pointer actually released at rather than one frame behind.
+    if (movePreviewFrameRef.current !== null) {
+      window.cancelAnimationFrame(movePreviewFrameRef.current);
+      movePreviewFrameRef.current = null;
+    }
+    if (vertexFrameRef.current !== null) {
+      window.cancelAnimationFrame(vertexFrameRef.current);
+      vertexFrameRef.current = null;
+    }
+    solveQueuedMovePreview();
+    solveQueuedVertexPreview();
     const md = moveDragRef.current;
     if (md) {
       if (md.baseline !== hvacElements) { cancelOverlayDrag(); return; }
@@ -1261,6 +1466,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         const finalElements = lastMovePreviewRef.current ?? [];
         const movingIds = finalElements.map(element => element.id);
         for (const candidate of finalElements) {
+          if (adaptiveIdsRef.current.has(candidate.id)) continue;
           const original = hvacElements.find(element => element.id === candidate.id);
           if (!original) continue;
           const conflict = isEditablePipe(original) ? validatePipeModelReplacement(original, candidate, hvacElements, movingIds)
@@ -1303,27 +1509,58 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 : 'Move refrigerant pipe';
         if (updates.length > 0) {
           commitHvacElementCommand(label, { updates });
+          if (moveSummaryRef.current) {
+            useSmartDrawingStore.getState().setProcessingStatus(moveSummaryRef.current, false);
+          }
         }
       }
+      moveSummaryRef.current = null;
+      adaptiveIdsRef.current.clear();
       clearMovePreview();
       return;
     }
     const drag = dragRef.current;
     dragRef.current = null;
-    if (drag && ghost && ghost.id === drag.id) {
+    const adaptive = adaptiveRef.current;
+    const adaptiveConflict = adaptiveConflictRef.current;
+    adaptiveRef.current = null;
+    adaptiveConflictRef.current = null;
+    if (drag && adaptive) {
+      // The solver already produced the whole element — route, 3D nodes, per-leg
+      // materials and bounds — so the commit writes exactly what was previewed.
+      editedIdsRef.current.add(drag.id);
+      commitHvacElementCommand('Edit refrigerant pipe', {
+        updates: [{
+          id: drag.id,
+          updates: {
+            position: adaptive.element.position,
+            width: adaptive.element.width,
+            depth: adaptive.element.depth,
+            height: adaptive.element.height,
+            properties: adaptive.element.properties,
+          },
+        }],
+      });
+      if (adaptive.summary) useSmartDrawingStore.getState().setProcessingStatus(adaptive.summary, false);
+    } else if (drag && adaptiveConflict) {
+      useSmartDrawingStore.getState().setProcessingStatus(adaptiveConflict, false);
+    } else if (drag && ghost && ghost.id === drag.id) {
       commitRoute(drag.id, ghost.route, 'Edit refrigerant pipe vertex');
     }
     setGhost(null);
     setNearBranchKitPortKey(null);
-  }, [clearMovePreview, commitHvacElementCommand, commitRoute, ghost, hvacElements, cancelOverlayDrag]);
+  }, [clearMovePreview, commitHvacElementCommand, commitRoute, ghost, hvacElements, cancelOverlayDrag,
+    solveQueuedMovePreview, solveQueuedVertexPreview]);
 
   const onInsert = useCallback(
     (e: ReactPointerEvent, id: string, si: number, route: Point2D[]) => {
       e.stopPropagation();
       const mid = { x: (route[si]!.x + route[si + 1]!.x) / 2, y: (route[si]!.y + route[si + 1]!.y) / 2 };
-      commitRoute(id, [...route.slice(0, si + 1), mid, ...route.slice(si + 1)], 'Insert refrigerant pipe vertex');
+      // Through the design model, so the new corner carries a real fitting and
+      // the per-leg materials stay one-per-leg. A plain route splice does not.
+      commitTopology(id, 'insert', mid, 'Insert refrigerant pipe bend');
     },
-    [commitRoute],
+    [commitTopology],
   );
 
   const onDelete = useCallback(
@@ -1338,9 +1575,11 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         || vi < protectedAtStart
         || vi > lastIndex - protectedAtEnd
       ) return;
-      commitRoute(pipe.id, route.filter((_, i) => i !== vi), 'Delete refrigerant pipe vertex');
+      // The design model owns the material-boundary rule and the locks; a route
+      // filter would drop a bend that separates two materials without a word.
+      commitTopology(pipe.id, 'remove', route[vi]!, 'Remove refrigerant pipe bend');
     },
-    [commitRoute],
+    [commitTopology],
   );
 
   // --- Extension: continue a run from an open end / bundle / kit port --------
@@ -1355,7 +1594,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const beginExtendFromLineEnd = useCallback(
     (p: PipeView, end: 'start' | 'end') => {
       const route = p.route;
-      if (route.length < 2) return;
+      if (route.length < 2 || (end === 'start' ? p.startConnected : p.endConnected)) return;
       const endIdx = end === 'end' ? route.length - 1 : 0;
       const endPt = route[endIdx]!;
       const lineMode: RefrigerantPipeLineMode = p.isPair ? 'pair' : p.lineKind ?? 'gas';
@@ -1693,6 +1932,12 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
           endDrag();
         }}
       >
+        <style>{`
+          .pipe-studio-corner .pipe-studio-corner-marker { opacity: 0; transition: opacity 120ms ease; }
+          .pipe-studio-corner:hover .pipe-studio-corner-marker,
+          .pipe-studio-corner:focus .pipe-studio-corner-marker,
+          .pipe-studio-corner[data-active="true"] .pipe-studio-corner-marker { opacity: 1; }
+        `}</style>
         <defs>
           <linearGradient id="bkCu" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0" stopColor="#4a2610" />
@@ -1728,13 +1973,23 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             // draw preview uses, so a committed pipe and its preview can't differ.
             const { tubes, insW, coreW, sheenW } = pipeTubes(p, route);
             const selected = canInteract && selectedSet.has(p.id);
-            const hRoute = route;
+            const hRoute = ghost?.id === p.id ? ghost.route : selectedHandleRoutes.get(p.id) ?? route;
             // Place the handles on the SAME offset as the visible body, so the
             // dots / + sit on the pipe even when the gap shifts it. Edits still
             // operate on the un-offset centerline (route).
             // The rendered (filleted) body the handles snap onto, so a vertex
             // handle sits on the rounded fitting as the bend radius changes.
             const bodyPoly = p.isPair ? route : tubes[0]?.points ?? route;
+            const handleCandidates = selected && showRouteHandles ? hRoute.map((rawPt, vi) => {
+              const endpoint = vi === 0 || vi === hRoute.length - 1;
+              const point = endpoint ? rawPt : nearestOnPolyline(rawPt, bodyPoly);
+              return { key: `${p.id}:${vi}`, vi, point, endpoint,
+                x: point.x * k, y: point.y * k, priority: endpoint ? 2 : 1 };
+            }) : [];
+            // Reserve endpoint space even when the shared gizmo draws those
+            // grips. Zooming out must not stack plan corners onto its endpoints.
+            const handles = selectPipeHandleCandidates(handleCandidates,
+              dragRef.current?.id === p.id ? `${p.id}:${dragRef.current.vi}` : undefined);
             return (
               <g key={p.id}>
                 {canInteract && selectionHitTesting
@@ -1756,12 +2011,12 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                     preview so widths always match. Butt caps: a real cut pipe ends
                     in a flat perpendicular face; bends stay smooth via round joins. */}
                 {renderTubeBody(tubes, insW, coreW, sheenW, `c-${p.id}`)}
-                {selected && showRouteHandles
+                {selected && showRouteHandles && showInsertHandles
                   ? hRoute.slice(0, -1).map((_, si) => {
                       const mid = { x: (hRoute[si]!.x + hRoute[si + 1]!.x) / 2, y: (hRoute[si]!.y + hRoute[si + 1]!.y) / 2 };
                       const m = nearestOnPolyline(mid, bodyPoly);
                       return (
-                        <g key={`ins-h-${si}`} style={{ cursor: 'copy', pointerEvents: 'auto' }} onPointerDown={(e) => onInsert(e, p.id, si, route)}>
+                        <g key={`ins-h-${si}`} style={{ cursor: 'copy', pointerEvents: 'auto' }} onPointerDown={(e) => onInsert(e, p.id, si, hRoute)}>
                           <circle cx={m.x} cy={m.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
                           <circle cx={m.x} cy={m.y} r={insR} fill="#fff" stroke="#639922" strokeWidth={hpx(1.5)} style={{ pointerEvents: 'none' }} />
                           <path
@@ -1775,19 +2030,27 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                     })
                   : null}
                 {selected && showRouteHandles
-                  ? hRoute.map((rawPt, vi) => {
-                      const ep = vi === 0 || vi === hRoute.length - 1;
-                      const pt = ep ? rawPt : nearestOnPolyline(rawPt, bodyPoly);
+                  ? handles.filter(handle => !handle.endpoint || showEndpointHandles).map(({ vi, point: pt, endpoint: ep, key }) => {
                       return (
                         <g
-                          key={`v-${vi}`}
+                          key={key}
+                          // Handles are drawn on the offset body, not the
+                          // centreline, so automation cannot derive their screen
+                          // position from the route alone.
+                          data-pipe-id={p.id}
+                          data-pipe-vertex={vi}
+                          className={ep ? undefined : 'pipe-studio-corner'}
+                          data-active={dragRef.current?.id === p.id && dragRef.current.vi === vi ? 'true' : undefined}
+                          tabIndex={0}
+                          aria-label={ep ? `Pipe ${vi === 0 ? 'start' : 'end'} point` : `Pipe bend ${vi}`}
                           style={{ cursor: 'grab', pointerEvents: 'auto' }}
-                          onPointerDown={(e) => onVertexDown(e, p, vi, route)}
-                          onContextMenu={(e) => onDelete(e, p, vi, route)}
+                          onPointerDown={(e) => onVertexDown(e, p, vi, hRoute)}
+                          onContextMenu={(e) => onDelete(e, p, vi, hRoute)}
                         >
-                          <circle cx={pt.x} cy={pt.y} r={handleHit} fill="rgba(0,0,0,0.001)" />
-                          <circle cx={pt.x} cy={pt.y} r={handleR} fill="#fff" stroke={ep ? '#0F6E56' : '#185FA5'} strokeWidth={hpx(2)} style={{ pointerEvents: 'none' }} />
-                          <circle cx={pt.x} cy={pt.y} r={hpx(2.6)} fill={ep ? '#0F6E56' : '#185FA5'} style={{ pointerEvents: 'none' }} />
+                          <title>{ep ? 'Drag pipe endpoint' : 'Drag to reshape bend · Right-click to remove'}</title>
+                          <circle cx={pt.x} cy={pt.y} r={hpx(10)} fill="transparent" />
+                          <circle className={ep ? undefined : 'pipe-studio-corner-marker'} cx={pt.x} cy={pt.y} r={hpx(4)}
+                            fill="#fff" stroke={ep ? '#0F766E' : '#185FA5'} strokeWidth={hpx(1.5)} style={{ pointerEvents: 'none' }} />
                         </g>
                       );
                     })
@@ -1795,8 +2058,12 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 {/* Extend grips: a teal "+" just past each open end. Click one to
                     continue the pipe from that end (click to place, right-click /
                     Enter / Esc to finish). */}
-                {selected && !bundleSelection
+                {selected
                   ? (['start', 'end'] as const).map((end) => {
+                      if (end === 'start' ? p.startConnected : p.endConnected) return null;
+                      if (bundleSelection?.ends.some(bundleEnd =>
+                        (bundleSelection.aId === p.id && bundleEnd.aEnd === end)
+                        || (bundleSelection.bId === p.id && bundleEnd.bEnd === end))) return null;
                       const endIdx = end === 'end' ? hRoute.length - 1 : 0;
                       const adjIdx = end === 'end' ? hRoute.length - 2 : 1;
                       const e0 = hRoute[endIdx]!;

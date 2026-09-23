@@ -12,6 +12,7 @@ import type { LinearUnit } from '../scale';
 
 import { PipeDimensionInput } from './PipeDimensionInput';
 import { pipeEditPointFromWorld, resolvePipeEditFrame, type PipeEditCoordinateMode, type PipeEditFrame, type PipeEditSelection, type PipeEditWorkplane, type PipeRouteEditOperation } from './pipeEditGeometry';
+import { selectPipeHandleCandidates } from './pipeHandleLayout';
 import { createPointerRay, getPointerNDC } from './pipePointerProjection';
 import type { PipeRouteNode3D } from './pipeRoute3d';
 
@@ -21,6 +22,8 @@ interface Props {
   height: number;
   nodes: PipeRouteNode3D[];
   controlIndices: { nodes: number[]; segments: number[] };
+  /** The plan overlay owns adaptive corner editing in a plan view. */
+  showInteriorNodeHandles?: boolean;
   coordinateMode: PipeEditCoordinateMode;
   previewNodes: PipeRouteNode3D[] | null;
   frame: PipeEditFrame;
@@ -198,27 +201,55 @@ export function PipeEditGizmo(props: Props) {
   };
 
   if (!projection) return null;
+  const selectedKey = props.selection.kind === 'node' || props.selection.kind === 'segment'
+    ? `${props.selection.kind}-${props.selection.index}` : undefined;
+  const candidates = [
+    ...props.controlIndices.nodes.flatMap(index => {
+      const point = projection.nodes[index];
+      const endpoint = index === 0 || index === props.nodes.length - 1;
+      const selected = props.selection.kind === 'node' && props.selection.index === index;
+      if (!point?.visible || (!endpoint && props.showInteriorNodeHandles === false && !selected)) return [];
+      return [{ ...point, key: `node-${index}`, priority: endpoint ? 2 : 1 }];
+    }),
+    ...props.controlIndices.segments.flatMap(index => {
+      const a = projection.nodes[index]; const b = projection.nodes[index + 1];
+      if (!a?.visible || !b?.visible || Math.hypot(b.x - a.x, b.y - a.y) < 18) return [];
+      return [{ key: `segment-${index}`, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, priority: 0 }];
+    }),
+    ...(props.showTransform && projection.pivot.visible
+      ? [{ ...projection.pivot, key: 'transform-pivot', priority: 3 }] : []),
+  ];
+  const visibleHandles = new Set(selectPipeHandleCandidates(candidates,
+    props.showTransform ? 'transform-pivot' : selectedKey).map(point => point.key));
+  const segmentIndices = new Set(props.controlIndices.segments);
   return <svg ref={svgRef} data-pipe-edit-gizmo="true" className="absolute inset-0 z-[21] overflow-visible" width={props.width} height={props.height}
     style={{ pointerEvents: 'none', touchAction: 'none' }} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancelGesture} onLostPointerCapture={cancelGesture}>
     {projection.preview.length > 1 && projection.preview.every(point => point.visible) && <path d={path(projection.preview)} fill="none" stroke={props.invalid ? '#dc2626' : '#0d9488'} strokeWidth={3} strokeDasharray="6 4" />}
     {projection.nodes.slice(0, -1).map((point, index) => {
       const end = projection.nodes[index + 1]!;
-      if (!props.controlIndices.segments.includes(index) || !point.visible || !end.visible || Math.hypot(end.x - point.x, end.y - point.y) < 18) return null;
+      if (!segmentIndices.has(index) || !point.visible || !end.visible || Math.hypot(end.x - point.x, end.y - point.y) < 18) return null;
       const selected = props.selection.kind === 'segment' && props.selection.index === index;
       const hovered = hoveredSegment === index;
       const x = (point.x + end.x) / 2; const y = (point.y + end.y) / 2;
+      // Leave the ends available to corner grips in the plan overlay below.
+      const span = Math.hypot(end.x - point.x, end.y - point.y);
+      const inset = Math.min(12 / span, 0.25);
+      const hitStart = { ...point, x: point.x + (end.x - point.x) * inset, y: point.y + (end.y - point.y) * inset };
+      const hitEnd = { ...end, x: end.x - (end.x - point.x) * inset, y: end.y - (end.y - point.y) * inset };
       return <g key={`segment-${index}`} data-pipe-segment={index} style={{ pointerEvents: props.disabled ? 'none' : 'auto', cursor: 'move' }}
         onPointerEnter={() => setHoveredSegment(index)} onPointerLeave={() => setHoveredSegment(null)}
         onPointerDown={event => start(event, 'free', { kind: 'segment', index })}>
-        <path d={path([point, end])} fill="none" stroke={selected || hovered ? '#0d9488' : 'transparent'} strokeWidth={selected || hovered ? 3 : 14} strokeOpacity={selected ? 0.7 : 0.4} />
-        {(selected || hovered) && <path d={path([point, end])} fill="none" stroke="transparent" strokeWidth={14} />}
-        <rect x={x - 9} y={y - 9} width={18} height={18} fill="transparent" />
-        <rect x={x - 3.5} y={y - 3.5} width={7} height={7} rx={1} fill={selected ? '#0d9488' : 'white'} stroke="#0f766e" strokeWidth={1.5} />
-        <title>Drag segment {index + 1}</title>
+        {(selected || hovered) && <path d={path([point, end])} fill="none" stroke="#0d9488" strokeWidth={3} strokeOpacity={selected ? 0.7 : 0.4} style={{ pointerEvents: 'none' }} />}
+        <path d={path([hitStart, hitEnd])} fill="none" stroke="transparent" strokeWidth={14} />
+        {(selected || hovered) && visibleHandles.has(`segment-${index}`) && <>
+          <rect x={x - 9} y={y - 9} width={18} height={18} fill="transparent" />
+          <rect data-pipe-segment-grip={index} x={x - 3.5} y={y - 3.5} width={7} height={7} rx={1.5} fill={selected ? '#0d9488' : 'white'} stroke="#0f766e" strokeWidth={1.5} />
+        </>}
+        <title>Drag to move segment</title>
       </g>;
     })}
     {projection.nodes.map((point, index) => {
-      if (!props.controlIndices.nodes.includes(index) || !point.visible) return null;
+      if (!visibleHandles.has(`node-${index}`)) return null;
       const fixed = index === 0 ? props.fixedEndpoints.start : index === props.nodes.length - 1 && props.fixedEndpoints.end;
       return <g key={index} data-pipe-node={index}
       style={{ pointerEvents: props.disabled ? 'none' : 'auto', cursor: fixed ? 'default' : 'move' }} onPointerDown={event => {
@@ -227,7 +258,7 @@ export function PipeEditGizmo(props: Props) {
       }}>
       <circle cx={point.x} cy={point.y} r={10} fill="transparent" />
       <circle cx={point.x} cy={point.y} r={4} stroke={fixed ? '#475569' : '#64748b'} fill={fixed ? '#94a3b8' : props.selection.kind === 'node' && props.selection.index === index ? '#0d9488' : 'white'} strokeWidth={1.5} />
-      <title>{fixed ? 'Connected endpoint · adjust the adjoining segment' : `Drag route point ${index + 1}`}</title></g>;
+      <title>{fixed ? 'Connected endpoint · adjust the adjoining segment' : 'Drag to move point'}</title></g>;
     })}
     {props.selection.kind === 'segment' && props.lengthMm !== null && !active && (() => {
       const a = projection.nodes[props.selection.index]; const b = projection.nodes[props.selection.index + 1];

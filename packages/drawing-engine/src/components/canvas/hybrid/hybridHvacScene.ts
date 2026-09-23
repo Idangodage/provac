@@ -36,7 +36,20 @@ function dependencyReader(context: HvacBuildSceneContext, modelRevision: number)
         if (tail) dependencies.push(...connectorSources(tail, byId));
       }
     } else if (element.type === 'refrigerant-branch-kit') {
-      dependencies.push(settings, ...context.allElements);
+      dependencies.push(settings);
+      // Only an INLINE kit resolves its render centre against the scene:
+      // `resolveInlineBranchKitRenderCenter` early-returns for every other
+      // placement mode, after which the kit is positioned entirely by its own
+      // record. A kit created by the branch proposal engine or the place-kit
+      // tool is `fixed`; only a manual drop onto a run is `inline-pipe-run`.
+      //
+      // Depending on the whole scene here meant that changing ANY element
+      // invalidated EVERY kit, and one kit rebuild is a three-bvh-csg union
+      // measured at 70.8 ms — about 570 ms of frozen main thread on pointer-up
+      // with eight kits, paid even while the board is flat 2D.
+      if (element.properties.branchKitPlacementMode === 'inline-pipe-run') {
+        dependencies.push(...context.allElements);
+      }
     }
     return dependencies;
   };

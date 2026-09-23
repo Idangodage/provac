@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Exercise command transitions without mounting the canvas. Refs persist for
 // the returned handlers; presentation effects intentionally remain outside this test.
@@ -51,7 +51,16 @@ function connectedMain() {
   return [...host, ...tail];
 }
 
+/**
+ * The branch-kit proposal is advisory and runs when the pointer settles, not on
+ * every sample (see `branchProposalScheduler`). A test that wants to observe a
+ * suggestion therefore has to stop moving first, exactly as a user does.
+ */
+const settle = () => { vi.advanceTimersByTime(250); };
+
 describe('refrigerant drawing workflow', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
   it('adds a deliberate riser then a true horizontal length and undoes each step exactly', () => {
     const { tool, options } = setup([], false, { pipeLineMode: 'gas', pipeMaterialMode: 'hard', pipeAngleMode: 'ortho' });
     const start = { x: 100, y: 200, z: 1800 }; const corner = { x: 2100, y: 200, z: 1800 };
@@ -405,18 +414,18 @@ describe('refrigerant drawing workflow', () => {
     const proposalSpy = vi.spyOn(branchKit, 'proposeBranchKit');
     const { tool, options } = setup(connectedMain(), true, { pipeAngleMode: 'free' });
     tool.beginRouteFromBundle(port, { lineMode: 'pair' });
-    tool.handleMouseMove({ x: 1500, y: 0, z: 2600 });
+    tool.handleMouseMove({ x: 1500, y: 0, z: 2600 }); settle();
     expect(proposalSpy.mock.results.at(-1)!.value).not.toBeNull();
     tool.dismissBranchKitProposal();
     const callsBefore = proposalSpy.mock.calls.length;
     // Far beyond the previous 120 mm timeout, but still the same candidate.
-    tool.handleMouseMove({ x: 2500, y: 0, z: 2600 });
+    tool.handleMouseMove({ x: 2500, y: 0, z: 2600 }); settle();
     expect(proposalSpy).toHaveBeenCalledTimes(callsBefore);
     tool.handleKeyDown({ key: 'Enter' } as KeyboardEvent);
     expect(options.addHvacElements).not.toHaveBeenCalled();
     expect(options.commitHvacElementCommand).not.toHaveBeenCalled();
-    tool.handleMouseMove({ x: 2500, y: 500, z: 2600 });
-    tool.handleMouseMove({ x: 2500, y: 0, z: 2600 });
+    tool.handleMouseMove({ x: 2500, y: 500, z: 2600 }); settle();
+    tool.handleMouseMove({ x: 2500, y: 0, z: 2600 }); settle();
     expect(proposalSpy).toHaveBeenCalledTimes(callsBefore + 2);
     expect(proposalSpy.mock.results.at(-1)!.value).not.toBeNull();
   });
@@ -430,7 +439,7 @@ describe('refrigerant drawing workflow', () => {
     const { tool, options } = setup(scene, true, { pipeAngleMode: 'free' });
     const cursor = { x: 400, y: 0, z: 2600 };
     tool.beginRouteFromBundle(port, { lineMode: 'pair' });
-    tool.handleMouseMove(cursor);
+    tool.handleMouseMove(cursor); settle();
     const recovered = proposalSpy.mock.results.at(-1)!.value as branchKit.BranchKitProposal;
     expect(recovered.validity).toBe('needs-nudge');
     expect(recovered.target.segmentStart.y).toBeGreaterThan(100);
@@ -439,7 +448,7 @@ describe('refrigerant drawing workflow', () => {
 
     // The original pointer is outside the recovered straight's snap corridor.
     // Small movement here must not reopen the dismissed suggestion.
-    tool.handleMouseMove({ ...cursor, x: cursor.x + 1 });
+    tool.handleMouseMove({ ...cursor, x: cursor.x + 1 }); settle();
     expect(proposalSpy).toHaveBeenCalledTimes(callsBefore);
     const target = recovered.target;
     tool.handleMouseMove({
@@ -447,14 +456,15 @@ describe('refrigerant drawing workflow', () => {
       y: (target.segmentStart.y + target.segmentEnd.y) / 2,
       z: 2600,
     });
+    settle();
     expect(proposalSpy).toHaveBeenCalledTimes(callsBefore);
     tool.handleKeyDown({ key: 'Enter' } as KeyboardEvent);
     expect(options.commitHvacElementCommand).not.toHaveBeenCalled();
     expect(options.addHvacElements).not.toHaveBeenCalled();
 
     // Leaving both locations restores normal proposals when the user returns.
-    tool.handleMouseMove({ x: 2000, y: 1500, z: 2600 });
-    tool.handleMouseMove(cursor);
+    tool.handleMouseMove({ x: 2000, y: 1500, z: 2600 }); settle();
+    tool.handleMouseMove(cursor); settle();
     expect(proposalSpy.mock.calls.length).toBeGreaterThan(callsBefore);
     expect(proposalSpy.mock.results.at(-1)!.value).not.toBeNull();
   });
@@ -463,14 +473,14 @@ describe('refrigerant drawing workflow', () => {
     const proposalSpy = vi.spyOn(branchKit, 'proposeBranchKit');
     const { tool, options } = setup(connectedMain(), true, { pipeAngleMode: 'free' });
     tool.beginRouteFromBundle(port, { lineMode: 'pair' });
-    tool.handleMouseMove({ x: 1500, y: 0, z: 2600 });
+    tool.handleMouseMove({ x: 1500, y: 0, z: 2600 }); settle();
     tool.dismissBranchKitProposal();
     const callsBefore = proposalSpy.mock.calls.length;
     tool.handleMouseDown({ x: 2000, y: 0, z: 2600 });
     expect(proposalSpy).toHaveBeenCalledTimes(callsBefore);
     const authored = vi.mocked(options.onDraftRouteChange!).mock.calls.at(-1)![0]!;
     expect(authored.at(-1)).toEqual({ x: 2000, y: 0, z: 2600 });
-    tool.handleMouseMove({ x: 2200, y: 0, z: 2600 });
+    tool.handleMouseMove({ x: 2200, y: 0, z: 2600 }); settle();
     expect(proposalSpy).toHaveBeenCalledTimes(callsBefore + 1);
     expect(proposalSpy.mock.calls.at(-1)![3]!.authoredRoute).toEqual(authored);
     expect(options.addHvacElements).not.toHaveBeenCalled();

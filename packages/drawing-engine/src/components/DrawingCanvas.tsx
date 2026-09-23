@@ -83,7 +83,8 @@ import {
 } from "./canvas/hvac/PipeStudioOverlay";
 import { VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
-import { buildPipeModelEdit, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
+import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
+import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
 import type { PipeDrawingPlane } from "./canvas/hvac/pipePointerProjection";
 import {
   readPipeRouteNodes3d,
@@ -91,6 +92,7 @@ import {
   type PipePlacementPoint,
 } from "./canvas/hvac/pipeRoute3d";
 import { routingSettingsFromRuleProfile } from "./canvas/hvac/pipeRoutingSettings";
+import { resolvePipeRuleContext } from "./canvas/hvac/pipeRuleModel";
 import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
@@ -714,6 +716,15 @@ export function DrawingCanvas({
       getPipeVisual: (elementId: string) => {
         const target = hvacElements.find((candidate) => candidate.id === elementId);
         return target ? buildRefrigerantPipeVisual(target, hvacElements) : null;
+      },
+      /** What the pipe is welded to, and what each of its corners is made of. */
+      getPipeEnvironment: (elementId: string) => {
+        const target = hvacElements.find((candidate) => candidate.id === elementId);
+        if (!target || !isEditablePipe(target)) return null;
+        const skeleton = pipeDesignSkeleton(target);
+        const environment = analysePipeEnvironment(target, hvacElements, skeleton, resolvePipeRuleContext(target));
+        return { ...environment, summary: describePipeEnvironment(environment),
+          designNodes: skeleton.nodes, legs: skeleton.legs };
       },
       worldToClient: (point: { x: number; y: number }) => {
         if (!fabricCanvas) return null;
@@ -2912,7 +2923,13 @@ export function DrawingCanvas({
             viewportZoom={viewportZoom}
             panOffset={panOffset}
             selectionHitTesting={tool === "select"}
-            showRouteHandles={false}
+            // Corner handles on a selected pipe. Dragging one re-solves the
+            // route adaptively — the bends either side re-angle or roll and the
+            // adjoining straights resize — so a generated route can be reshaped
+            // at its fittings, not only slid segment by segment.
+            showRouteHandles
+            showEndpointHandles={false}
+            showInsertHandles={false}
             directSegmentEditing
             showRoutingToolbar={tool !== "refrigerant-pipe" && !hvacElements.some(element => selectedIds.includes(element.id) && isRefrigerantPipeElementType(element.type))}
             pipeToolActive={tool === "refrigerant-pipe"}
@@ -3049,6 +3066,7 @@ export function DrawingCanvas({
           onMoveWallNode={wallGraphMoveNode}
           onMoveWallEdges={wallGraphMoveEdges}
           onCommitPipeRouteEdit={handleCommitHybridPipeRouteEdit}
+          showPipeEditHandles={false}
           pipeToolActive={tool === "refrigerant-pipe"}
           onPipePointerDown={handleRefrigerantPipeMouseDown}
           onPipePointerMove={handleRefrigerantPipeMouseMove}
@@ -3056,6 +3074,7 @@ export function DrawingCanvas({
           pipeInteractionRef={hybridPipeInteractionRef}
         />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
+          showInteriorNodeHandles={projectionViewOnly}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}
           drawingStarted={pipeDrawingStarted} drawingService={pipeDraftLineMode}
           drawingElevationMm={pipeDraftElevationMm} onSetDrawingElevation={setPipeDrawingElevation}
