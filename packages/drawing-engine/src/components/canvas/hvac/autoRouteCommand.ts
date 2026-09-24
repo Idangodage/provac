@@ -20,27 +20,35 @@ export function autoRouteSourceSignature(source: AutoRouteSource): string {
   return JSON.stringify([source.scene, routingSettings, source.profile ?? null, source.walls]);
 }
 
+type AutoRouteCommandResult = Pick<AutoRouteNetworkResult, 'elementsToAdd' | 'removeElementIds' | 'updates' | 'complete' | 'unconnectedIndoorIds'>;
+
+/**
+ * An incomplete network may only ADD to the drawing: it never replaces or
+ * edits an existing layout. Returns the reason a result is refused, or null.
+ */
+export function incompleteAutoRouteRefusal(result: AutoRouteCommandResult): string | null {
+  if (!result.elementsToAdd.length && !result.updates?.length && !result.removeElementIds.length) return null;
+  const incomplete = !result.complete || result.unconnectedIndoorIds.length > 0;
+  const additivePartial = incomplete && result.elementsToAdd.length > 0
+    && result.removeElementIds.length === 0 && !result.updates?.length;
+  if (!incomplete || additivePartial) return null;
+  const remaining = new Set(result.unconnectedIndoorIds).size;
+  return remaining > 0
+    ? `${remaining} indoor ${remaining === 1 ? 'unit remains' : 'units remain'} unconnected. The drawing was preserved.`
+    : 'The automatic network could not be completed. The drawing was preserved.';
+}
+
 export function prepareAutoRouteCommand(
   sourceSignature: string,
   source: AutoRouteSource,
-  result: Pick<AutoRouteNetworkResult, 'elementsToAdd' | 'removeElementIds' | 'updates' | 'complete' | 'unconnectedIndoorIds'>,
+  result: AutoRouteCommandResult,
 ): { command?: HvacElementCommand; issue?: string; issueKind?: 'incomplete-network' } {
   if (sourceSignature !== autoRouteSourceSignature(source)) {
     return { issue: 'The drawing or routing rules changed while calculating. Run Auto route again.' };
   }
   if (!result.elementsToAdd.length && !result.updates?.length && !result.removeElementIds.length) return {};
-  const incomplete = !result.complete || result.unconnectedIndoorIds.length > 0;
-  const additivePartial = incomplete && result.elementsToAdd.length > 0
-    && result.removeElementIds.length === 0 && !result.updates?.length;
-  if (incomplete && !additivePartial) {
-    const remaining = new Set(result.unconnectedIndoorIds).size;
-    return {
-      issue: remaining > 0
-        ? `${remaining} indoor ${remaining === 1 ? 'unit remains' : 'units remain'} unconnected. The drawing was preserved.`
-        : 'The automatic network could not be completed. The drawing was preserved.',
-      issueKind: 'incomplete-network',
-    };
-  }
+  const refusal = incompleteAutoRouteRefusal(result);
+  if (refusal) return { issue: refusal, issueKind: 'incomplete-network' };
   if (!result.elementsToAdd.length && !result.updates?.length) return {};
   const existing = new Map(source.scene.map(element => [element.id, element]));
   const removed = new Set(result.removeElementIds);

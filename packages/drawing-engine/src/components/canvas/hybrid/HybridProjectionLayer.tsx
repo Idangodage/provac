@@ -995,7 +995,7 @@ function rebuildPipePreviewLayer(
     const elementId = child.userData.hvacElementId as string | undefined;
     const elementType = child.userData.hvacElementType as HvacElement["type"] | undefined;
     if (elementId && elementType && (isRefrigerantPipeElementType(elementType)
-      || elementType === "refrigerant-branch-kit")) {
+      || elementType === "refrigerant-branch-kit" || elementType === "condensate-pipe")) {
       child.visible = !hiddenIds.has(elementId);
     }
   });
@@ -1525,7 +1525,7 @@ export function HybridProjectionLayer({
         if (names.some((name) => name === "hybrid-wall-pick")) continue;
         const hvacRoot = ancestry.find((object) => object.name.startsWith("hvac-"));
         const hvacType = hvacRoot?.userData.hvacElementType as string | undefined;
-        if (hvacType === "refrigerant-pipe" || hvacType === "refrigerant-pipe-pair") {
+        if (hvacType === "refrigerant-pipe" || hvacType === "refrigerant-pipe-pair" || hvacType === "condensate-pipe") {
           continue;
         }
         const kind: DrawingSurfaceHit["kind"] | null = names.some(

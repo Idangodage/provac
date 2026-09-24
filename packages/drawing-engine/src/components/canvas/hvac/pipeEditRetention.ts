@@ -23,8 +23,13 @@ export function getAutoRouteOwnership(element: HvacElement): AutoRouteOwnership 
 
 /** Preserve the version-one fingerprint so existing saved networks remain recognizable. */
 export function autoRouteElementSignature(element: HvacElement): string {
+  return ownedElementSignature(element, 'autoRouteNetwork');
+}
+
+/** Fingerprint of an element excluding its own ownership record (`ownershipKey`). */
+export function ownedElementSignature(element: HvacElement, ownershipKey: string): string {
   const properties = { ...element.properties };
-  delete properties.autoRouteNetwork;
+  delete properties[ownershipKey];
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
     : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value)
       .filter(([, entry]) => entry !== undefined).sort(([a], [b]) => a.localeCompare(b))
@@ -75,6 +80,13 @@ export function withPipeRegenerationPolicy(element: HvacElement, policy: PipeReg
 
 /** Store edits preserve ownership and identify manual changes without touching IDs or geometry. */
 export function retainGeneratedPipeEdit(previous: HvacElement, next: HvacElement): HvacElement {
+  const condensateOwner = next.properties.condensateNetwork as { version?: unknown; signature?: unknown } | undefined;
+  if (condensateOwner?.version === 1 && typeof condensateOwner.signature === 'string') {
+    // Same rule for generated condensate networks: a field edit is kept on regenerate.
+    const signature = ownedElementSignature(next, 'condensateNetwork');
+    if (signature === ownedElementSignature(previous, 'condensateNetwork') || signature === condensateOwner.signature) return next;
+    return { ...next, properties: { ...next.properties, condensateNetwork: { ...condensateOwner, editPolicy: 'retain' } } };
+  }
   const owner = getAutoRouteOwnership(next);
   if (!owner) return next;
   const signature = autoRouteElementSignature(next);

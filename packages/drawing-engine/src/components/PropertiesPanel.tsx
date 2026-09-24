@@ -39,6 +39,12 @@ import {
 } from "../types/wall";
 
 import { NetworkRiserUpgradeAction } from "./canvas/hvac/NetworkRiserUpgradeAction";
+import { CondensateDrainageSection } from "./canvas/hvac/condensate/CondensateDrainageSection";
+import {
+  CondensateGullyInspector,
+  CondensatePipeInspector,
+  UnitDrainageRows,
+} from "./canvas/hvac/condensate/CondensateInspector";
 import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
 import { editablePipeMaterials, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
 import { buildPipePropertyEdit, type PipePropertyEdit } from "./canvas/hvac/pipePropertyEdits";
@@ -1441,6 +1447,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
     commitHvacElementCommand,
     updateHvacElement,
     setProcessingStatus,
+    condensateSettings,
   } =
     useSmartDrawingStore(
       (state) => ({
@@ -1450,6 +1457,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         commitHvacElementCommand: state.commitHvacElementCommand,
         updateHvacElement: state.updateHvacElement,
         setProcessingStatus: state.setProcessingStatus,
+        condensateSettings: state.condensateSettings,
       }),
       shallow,
     );
@@ -1503,6 +1511,39 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   const updateProperties = (properties: Record<string, unknown>) => {
     updateHvacElement(selectedEquipment.id, { properties });
   };
+
+  if (selectedEquipment.type === "condensate-pipe") {
+    return (
+      <CondensatePipeInspector
+        element={selectedEquipment}
+        onUpdate={(updates) => updateHvacElement(selectedEquipment.id, updates)}
+      />
+    );
+  }
+
+  if (selectedEquipment.type === "condensate-gully") {
+    return (
+      <div className="space-y-1">
+        <PropertyRow label="Label">
+          <input
+            type="text"
+            value={selectedEquipment.label}
+            onChange={(e) =>
+              updateHvacElement(selectedEquipment.id, { label: e.target.value })
+            }
+            className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+          />
+        </PropertyRow>
+        <PropertyRow label="Room">
+          <span className="text-sm text-slate-700">{roomName}</span>
+        </PropertyRow>
+        <CondensateGullyInspector
+          element={selectedEquipment}
+          onUpdate={(updates) => updateHvacElement(selectedEquipment.id, updates)}
+        />
+      </div>
+    );
+  }
 
   if (selectedEquipment.type === "refrigerant-pipe") {
     const pipeSpec = resolveRefrigerantPipeSpec(selectedEquipment.properties);
@@ -2006,6 +2047,11 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
           className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
         />
       </PropertyRow>
+      <UnitDrainageRows
+        element={selectedEquipment}
+        settings={condensateSettings}
+        onUpdateProperties={updateProperties}
+      />
     </div>
   );
 }
@@ -4181,6 +4227,12 @@ export function PropertiesPanel({
         <CollapsibleSection title="AC Equipment" defaultOpen={hasSelectedHvac}>
           <AcEquipmentSection propertyUnit={propertyUnit} />
         </CollapsibleSection>
+
+        {hvacElements.some((element) => element.type === "condensate-gully" || element.type === "condensate-pipe") && (
+          <CollapsibleSection title="Condensate Drainage" defaultOpen>
+            <CondensateDrainageSection />
+          </CollapsibleSection>
+        )}
 
         <CollapsibleSection
           title="Room Properties"

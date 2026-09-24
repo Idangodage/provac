@@ -19,7 +19,9 @@ export type VrfValidationFix =
     }
   | { kind: 'set-branch-model'; model: string }
   | { kind: 'level-branch' }
-  | { kind: 'mark-insulated' };
+  | { kind: 'mark-insulated' }
+  /** Condensate issues: re-run the condensate generator (preview, then apply). */
+  | { kind: 'regenerate-condensate' };
 
 export interface VrfValidationIssue {
   id: string;

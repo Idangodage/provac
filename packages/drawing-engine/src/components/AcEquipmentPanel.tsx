@@ -15,6 +15,7 @@ import {
   Snowflake,
   Wind,
   GitBranch,
+  Droplets,
 } from 'lucide-react';
 import React, { useMemo } from 'react';
 
@@ -54,6 +55,8 @@ function categoryIcon(definition: AcEquipmentDefinition): React.ReactNode {
       return <MonitorSmartphone size={16} />;
     case 'remote-controller':
       return <Radio size={16} />;
+    case 'condensate-gully':
+      return <Droplets size={16} />;
     default:
       return <SlidersHorizontal size={16} />;
   }

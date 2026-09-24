@@ -16,7 +16,7 @@ import {
 } from './refrigerantPipePairModel';
 
 type Vec3 = PipeRouteNode3D;
-type Service = 'gas' | 'liquid';
+type Service = 'gas' | 'liquid' | 'drain';
 const TOLERANCE_MM = 0.5;
 const EPS = 1e-10;
 const clamp = (value: number, minimum = 0, maximum = 1) => Math.max(minimum, Math.min(maximum, value));
@@ -347,9 +347,28 @@ function singlePhysicalLane(element: HvacElement, elements: HvacElement[], autho
  * resolves against nearby runs. That memo was tried and reverted — it broke 20
  * cases in `networkPipeClearanceReuse.test.ts`.
  */
+/**
+ * A condensate drain is coordinated like any other service: its sloped
+ * `routeNodes3d` centreline with the insulated radius. Its unit outlet reads as
+ * a unit port so the drain stub and the refrigerant stubs leaving the SAME unit
+ * get the usual shared-equipment adapter allowance.
+ */
+function condensateLane(element: HvacElement, nodes: Vec3[]): PipeLane[] {
+  const properties = element.properties;
+  const outer = typeof properties.outerDiameterMm === 'number' && Number.isFinite(properties.outerDiameterMm) ? properties.outerDiameterMm : 32;
+  const insulation = typeof properties.insulationThicknessMm === 'number' && Number.isFinite(properties.insulationThicknessMm) ? properties.insulationThicknessMm : 0;
+  const start = properties.drainStart as { kind?: unknown; unitId?: unknown; point?: Point2D; z?: unknown } | undefined;
+  const startConnection: RefrigerantPipeConnection | null = start?.kind === 'unit-drain' && typeof start.unitId === 'string' && start.point && typeof start.z === 'number'
+    ? { connectionKind: 'unit-port', sourceElementId: start.unitId, portPoint: start.point, direction: { x: 0, y: 0 }, elevationMm: start.z }
+    : null;
+  const lane = makeLane(element, 'drain', outer / 2 + insulation, nodes, startConnection, null);
+  return lane ? [lane] : [];
+}
+
 function elementLanes(element: HvacElement, elements: HvacElement[]): PipeLane[] {
 
     const authored = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
+    if (element.type === 'condensate-pipe') return condensateLane(element, authored);
     if (element.type === 'refrigerant-pipe') {
       const lane = singlePhysicalLane(element, elements, authored);
       return lane ? [lane] : [];
@@ -377,6 +396,28 @@ function elementLanes(element: HvacElement, elements: HvacElement[]): PipeLane[]
 
 function physicalLanes(elements: HvacElement[]): PipeLane[] {
   return elements.flatMap(element => elementLanes(element, elements));
+}
+
+export interface NetworkPipeLaneView {
+  elementId: string;
+  service: string;
+  /** Insulated radius used by the clash check (socket cups included). */
+  radiusMm: number;
+  segments: Array<{ a: Vec3; b: Vec3 }>;
+}
+
+/**
+ * Read-only copy of the physical centrelines the clash check measures, for
+ * other services (condensate) that must coordinate with refrigerant runs.
+ * Computed fresh per call; callers compute it once per planning run.
+ */
+export function listNetworkPipeLanes(scene: HvacElement[]): NetworkPipeLaneView[] {
+  return physicalLanes(scene).map(lane => ({
+    elementId: lane.id,
+    service: lane.service,
+    radiusMm: lane.radius,
+    segments: lane.segments.map(segment => ({ a: { ...segment.a }, b: { ...segment.b } })),
+  }));
 }
 
 const baselineCache = new WeakMap<HvacElement[], { signature: string; lanes: PipeLane[] }>();

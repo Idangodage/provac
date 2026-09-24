@@ -19,6 +19,8 @@ import {
 import {
   buildCeilingCassetteModel,
 } from "./ceilingCassetteModel";
+import { pickCondensatePipeAtWorldPoint } from "./condensate/condensateGeometry";
+import { readCondensateGullySpec } from "./condensate/condensateTypes";
 import { copperSocketCoverOutline, copperSocketCupOutline } from "./copperSocketElbowPlanGeometry";
 import { compileCopperSocketElbowRoute } from "./copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "./copperSocketElbows";
@@ -408,6 +410,15 @@ export class HvacPlanRenderer {
           detail: "rgba(15,118,110,0.85)",
           halo: "#0F766E",
           hover: "#14B8A6",
+        };
+      case "condensate-gully":
+      case "condensate-pipe":
+        return {
+          stroke: "#0369A1",
+          fill: "rgba(3,105,161,0.10)",
+          detail: "rgba(3,105,161,0.88)",
+          halo: "#0284C7",
+          hover: "#0EA5E9",
         };
       case "remote-controller":
       case "control-panel":
@@ -1938,6 +1949,44 @@ export class HvacPlanRenderer {
     const hvacContext = this.getRenderSceneElements();
 
     switch (element.type) {
+      case "condensate-gully": {
+        const gully = readCondensateGullySpec(element);
+        const radius = Math.max(4, Math.min(halfW, halfD) * 0.74);
+        const pushDetail = (object: fabric.FabricObject): void => {
+          this.annotate(object, element.id, "hvac-detail");
+          objects.push(object);
+        };
+        const detailLine = (x1: number, y1: number, x2: number, y2: number, width = 0.9): fabric.Line =>
+          new fabric.Line([x1, y1, x2, y2], { stroke: palette.detail, strokeWidth: width, selectable: false, evented: false });
+        if (gully.terminationKind === "floor-gully") {
+          // Round grating with bars, plus the tundish (funnel) the drop discharges into.
+          pushDetail(new fabric.Circle({ left: 0, top: 0, radius, originX: "center", originY: "center",
+            fill: "rgba(255,255,255,0.85)", stroke: palette.stroke, strokeWidth: 1.3, selectable: false, evented: false }));
+          for (let index = -2; index <= 2; index += 1) {
+            const y = (index / 3) * radius;
+            const half = Math.sqrt(Math.max(0, radius * radius - y * y)) * 0.9;
+            pushDetail(detailLine(-half, y, half, y, 0.8));
+          }
+          pushDetail(new fabric.Circle({ left: 0, top: 0, radius: radius * 0.34, originX: "center", originY: "center",
+            fill: "#e0f2fe", stroke: palette.stroke, strokeWidth: 1.1, selectable: false, evented: false }));
+        } else if (gully.terminationKind === "stack-connection") {
+          // Stack in section with the waterless-valve branch socket.
+          pushDetail(new fabric.Circle({ left: 0, top: 0, radius, originX: "center", originY: "center",
+            fill: "rgba(224,242,254,0.9)", stroke: palette.stroke, strokeWidth: 2, selectable: false, evented: false }));
+          pushDetail(new fabric.Circle({ left: 0, top: 0, radius: radius * 0.55, originX: "center", originY: "center",
+            fill: "#ffffff", stroke: palette.detail, strokeWidth: 1, selectable: false, evented: false }));
+          pushDetail(detailLine(-radius * 0.55, 0, radius * 0.55, 0));
+          pushDetail(detailLine(0, -radius * 0.55, 0, radius * 0.55));
+        } else {
+          // Wall sleeve through the wall with an outward discharge arrow.
+          pushDetail(detailLine(-halfW * 0.5, -halfD * 0.8, -halfW * 0.5, halfD * 0.8, 1.2));
+          pushDetail(detailLine(halfW * 0.5, -halfD * 0.8, halfW * 0.5, halfD * 0.8, 1.2));
+          pushDetail(detailLine(-halfW * 0.3, 0, halfW * 0.3, 0, 1.2));
+          pushDetail(detailLine(halfW * 0.3, 0, halfW * 0.12, -halfD * 0.35, 1.2));
+          pushDetail(detailLine(halfW * 0.3, 0, halfW * 0.12, halfD * 0.35, 1.2));
+        }
+        break;
+      }
       case "refrigerant-pipe": {
         const visual = buildRefrigerantPipeVisual(
           element,
@@ -4091,7 +4140,9 @@ export class HvacPlanRenderer {
     if (
       element.type === "refrigerant-pipe" ||
       element.type === "refrigerant-pipe-pair" ||
-      element.type === "refrigerant-branch-kit"
+      element.type === "refrigerant-branch-kit" ||
+      // Condensate pipes are painted by CondensateOverlay and picked geometrically.
+      element.type === "condensate-pipe"
     ) {
       return;
     }
@@ -4297,6 +4348,10 @@ export class HvacPlanRenderer {
    * tie-break by nearest, then topmost (elevation).
    */
   private pickRefrigerantPipeAtWorldPoint(pMm: Point2D): string | null {
+    return this.pickRefrigerantPipeCandidate(pMm)?.id ?? null;
+  }
+
+  private pickRefrigerantPipeCandidate(pMm: Point2D): { id: string; distanceMm: number } | null {
     const viewportZoom = Math.max(this.canvas.getZoom(), 0.01);
     const paddingMm = PIPE_PICK_PADDING_PX / (MM_TO_PX * viewportZoom);
     let bestId: string | null = null;
@@ -4323,14 +4378,23 @@ export class HvacPlanRenderer {
         bestId = seg.elementId;
       }
     }
-    return bestId;
+    return bestId ? { id: bestId, distanceMm: bestDist } : null;
   }
 
   findElementAtWorldPoint(worldPointMm: Point2D): string | null {
     // Pipes: precise geometric pick (deterministic, matches the visible pipe).
-    const pipeId = this.pickRefrigerantPipeAtWorldPoint(worldPointMm);
-    if (pipeId) {
-      return pipeId;
+    // Refrigerant and condensate runs can sit side by side; the nearer
+    // centreline wins so a drain beside a copper run stays selectable.
+    const refrigerantPick = this.pickRefrigerantPipeCandidate(worldPointMm);
+    const condensatePick = pickCondensatePipeAtWorldPoint(
+      worldPointMm,
+      this.hvacData.values(),
+      PIPE_PICK_PADDING_PX / (MM_TO_PX * Math.max(this.canvas.getZoom(), 0.01)),
+    );
+    if (refrigerantPick || condensatePick) {
+      if (!condensatePick) return refrigerantPick!.id;
+      if (!refrigerantPick) return condensatePick.id;
+      return condensatePick.distanceMm < refrigerantPick.distanceMm ? condensatePick.id : refrigerantPick.id;
     }
     const modelBackedId = hitTestModelBackedHvacElement(
       worldPointMm,

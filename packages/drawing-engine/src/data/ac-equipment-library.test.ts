@@ -18,11 +18,14 @@ const REMOVED_PLACEHOLDER_IDS = [
 ];
 
 describe("AC equipment library — real MACO VRF models only", () => {
-  it("contains exactly the 5 GLB units + 2 retained branch kits", () => {
+  it("contains exactly the 5 GLB units + 2 retained branch kits + 3 condensate terminations", () => {
     const ids = DEFAULT_AC_EQUIPMENT_LIBRARY.map((d) => d.id).sort();
     expect(ids).toEqual([
       "ac-branch-kit-dis-22-1g",
       "ac-branch-kit-dis-22-1g-liquid",
+      "condensate-external-discharge",
+      "condensate-floor-gully",
+      "condensate-stack-connection",
       "vrf-fdc140kxzes1-w",
       "vrf-fdc280kxze1",
       "vrf-fdc280kxzpe1",
@@ -52,7 +55,7 @@ describe("AC equipment library — real MACO VRF models only", () => {
     }
   });
 
-  it("palette groups: 2 indoor, 3 outdoor, 2 accessories, 0 controls", () => {
+  it("palette groups: 2 indoor, 3 outdoor, 2 accessories, 0 controls, 3 drainage", () => {
     const g = groupAcEquipmentByCategory(DEFAULT_AC_EQUIPMENT_LIBRARY);
     expect(g["indoor-units"].map((d) => d.id).sort()).toEqual([
       "vrf-fdt28kxze1",
@@ -61,5 +64,10 @@ describe("AC equipment library — real MACO VRF models only", () => {
     expect(g["outdoor-units"]).toHaveLength(3);
     expect(g["accessories"]).toHaveLength(2);
     expect(g["controls"]).toHaveLength(0);
+    expect(g["drainage"].map((d) => d.type)).toEqual([
+      "condensate-gully",
+      "condensate-gully",
+      "condensate-gully",
+    ]);
   });
 });

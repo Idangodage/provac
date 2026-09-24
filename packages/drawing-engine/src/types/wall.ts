@@ -58,7 +58,9 @@ export type HvacElementType =
   | 'control-panel'
   | 'accessory'
   | 'diffuser'
-  | 'return-grille';
+  | 'return-grille'
+  | 'condensate-gully'
+  | 'condensate-pipe';
 export type HvacMountType = 'ceiling' | 'floor' | 'wall';
 export type HvacElementCategory =
   | 'indoor-unit'

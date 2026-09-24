@@ -31,6 +31,11 @@ import {
 } from '../components/canvas/elevation';
 import type { FurnitureProjectionInput } from '../components/canvas/elevation';
 import {
+  DEFAULT_CONDENSATE_SETTINGS,
+  resolveCondensateSettings,
+  type CondensateDesignSettings,
+} from '../components/canvas/hvac/condensate/condensateSettings';
+import {
   getAutoRouteOwnership,
   retainGeneratedPipeEdit,
   withPipeRegenerationPolicy,
@@ -520,6 +525,8 @@ function inferHvacElementCategory(type: HvacElement['type']): HvacElement['categ
     case 'refrigerant-pipe':
     case 'refrigerant-pipe-pair':
     case 'refrigerant-branch-kit':
+    case 'condensate-gully':
+    case 'condensate-pipe':
       return 'accessory';
     case 'diffuser':
     case 'return-grille':
@@ -1841,6 +1848,7 @@ export interface DrawingState {
   materialLibrary: typeof DEFAULT_ARCHITECTURAL_MATERIALS;
   hvacDesignConditions: HvacDesignConditions;
   pipeRoutingSettings: PipeRoutingSettings;
+  condensateSettings: CondensateDesignSettings;
   wallDrawingState: WallDrawingState;
   wallSettings: WallSettings;
   sectionLines: SectionLine[];
@@ -2041,6 +2049,7 @@ export interface DrawingState {
   updateRoom3DAttributes: (id: string, updates: Partial<Room3D>) => void;
   setHvacDesignConditions: (updates: Partial<HvacDesignConditions>) => void;
   setPipeRoutingSettings: (updates: Partial<PipeRoutingSettings>) => void;
+  setCondensateSettings: (updates: Partial<CondensateDesignSettings>) => void;
   applyRoomTemplateToSelectedRooms: (templateId: string) => void;
   deleteRoom: (id: string) => void;
   getRoom: (id: string) => Room | undefined;
@@ -2273,6 +2282,7 @@ export const useDrawingStore = create<DrawingState>()(
       materialLibrary: [...DEFAULT_ARCHITECTURAL_MATERIALS],
       hvacDesignConditions: { ...DEFAULT_HVAC_DESIGN_CONDITIONS },
       pipeRoutingSettings: { ...DEFAULT_PIPE_ROUTING_SETTINGS },
+      condensateSettings: { ...DEFAULT_CONDENSATE_SETTINGS },
       wallDrawingState: { ...DEFAULT_WALL_DRAWING_STATE },
       wallSettings: { ...DEFAULT_WALL_SETTINGS },
       sectionLines: [],
@@ -3853,6 +3863,15 @@ export const useDrawingStore = create<DrawingState>()(
         });
       },
 
+      setCondensateSettings: (updates) => {
+        set((state) => ({
+          condensateSettings: resolveCondensateSettings({
+            ...state.condensateSettings,
+            ...updates,
+          }),
+        }));
+      },
+
       applyRoomTemplateToSelectedRooms: (templateId) => {
         const template = DEFAULT_ROOM_HVAC_TEMPLATES.find((entry) => entry.id === templateId);
         if (!template) return;
@@ -5063,6 +5082,7 @@ export const useDrawingStore = create<DrawingState>()(
           dimensionSettings,
           hvacDesignConditions,
           pipeRoutingSettings,
+          condensateSettings,
           materialLibrary,
           boardSettings,
           pageConfig,
@@ -5093,6 +5113,7 @@ export const useDrawingStore = create<DrawingState>()(
           dimensionSettings,
           hvacDesignConditions,
           pipeRoutingSettings,
+          condensateSettings,
           materialLibrary,
           attributeEnvelope,
           boardSettings,
@@ -5283,6 +5304,11 @@ export const useDrawingStore = create<DrawingState>()(
               ? (data.pipeRoutingSettings as Partial<PipeRoutingSettings>)
               : null,
           );
+          const nextCondensateSettings = resolveCondensateSettings(
+            typeof data.condensateSettings === 'object' && data.condensateSettings
+              ? (data.condensateSettings as Partial<CondensateDesignSettings>)
+              : null,
+          );
 
           // Board/sheet context travels with the document so a drawing reopens
           // at the unit, page and scale it was authored with.
@@ -5369,6 +5395,7 @@ export const useDrawingStore = create<DrawingState>()(
             wallSettings: nextWallSettings,
             hvacDesignConditions: nextHvacDesignConditions,
             pipeRoutingSettings: nextPipeRoutingSettings,
+            condensateSettings: nextCondensateSettings,
             materialLibrary: nextMaterialLibrary,
             boardSettings: nextBoardSettings,
             pageConfig: nextPageConfig,

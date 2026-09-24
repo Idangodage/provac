@@ -20,7 +20,8 @@ export type AcEquipmentLibraryCategory =
   | "indoor-units"
   | "outdoor-units"
   | "controls"
-  | "accessories";
+  | "accessories"
+  | "drainage";
 
 export type AcEquipmentPlacementMode = "room" | "wall" | "outdoor";
 
@@ -60,6 +61,7 @@ export const AC_EQUIPMENT_CATEGORY_LABELS: Record<
   "outdoor-units": "Outdoor Units",
   controls: "Controls",
   accessories: "Accessories",
+  drainage: "Condensate Drainage",
 };
 
 export const DEFAULT_AC_EQUIPMENT_LIBRARY: AcEquipmentDefinition[] = [
@@ -268,6 +270,80 @@ export const DEFAULT_AC_EQUIPMENT_LIBRARY: AcEquipmentDefinition[] = [
       liquidBranchOutletDiameterMm: 9.52,
     },
   }),
+
+  // --- Condensate drainage terminations (targets for the condensate generator) ---
+  equipment({
+    id: "condensate-floor-gully",
+    name: "Floor Gully / Floor Drain",
+    category: "drainage",
+    equipmentCategory: "accessory",
+    type: "condensate-gully",
+    subtype: "floor-gully",
+    modelLabel: "Floor gully + tundish",
+    placementMode: "room",
+    mountType: "floor",
+    widthMm: 200,
+    depthMm: 200,
+    heightMm: 60,
+    elevationMm: 0,
+    description:
+      "Floor gully the condensate network drops into through a tundish air break (indirect discharge). Place it where the vertical drop will run down a wall or column.",
+    tags: ["condensate", "drain", "gully", "floor", "tundish"],
+    defaultProperties: {
+      terminationKind: "floor-gully",
+      inletElevationMm: 50,
+      airBreakMm: 25,
+      terminalTrap: "tundish",
+    },
+  }),
+  equipment({
+    id: "condensate-stack-connection",
+    name: "Waste Stack Connection",
+    category: "drainage",
+    equipmentCategory: "accessory",
+    type: "condensate-gully",
+    subtype: "stack-connection",
+    modelLabel: "Stack branch + HepVO",
+    placementMode: "room",
+    mountType: "ceiling",
+    widthMm: 160,
+    depthMm: 160,
+    heightMm: 1200,
+    elevationMm: 1700,
+    description:
+      "Branch connection into a soil/waste stack at a set level. Condensate enters from the top through a waterless (HepVO) valve so an intermittent flow never dries a trap.",
+    tags: ["condensate", "drain", "stack", "riser", "hepvo"],
+    defaultProperties: {
+      terminationKind: "stack-connection",
+      inletElevationMm: 2300,
+      airBreakMm: 25,
+      terminalTrap: "hepvo",
+    },
+  }),
+  equipment({
+    id: "condensate-external-discharge",
+    name: "External Wall Discharge",
+    category: "drainage",
+    equipmentCategory: "accessory",
+    type: "condensate-gully",
+    subtype: "external-discharge",
+    modelLabel: "Wall sleeve + external terminal",
+    placementMode: "wall",
+    mountType: "wall",
+    widthMm: 150,
+    depthMm: 80,
+    heightMm: 150,
+    elevationMm: 2275,
+    description:
+      "Condensate discharge through an external wall (sleeved penetration) to an external hopper or gully.",
+    tags: ["condensate", "drain", "external", "wall", "penetration"],
+    defaultProperties: {
+      terminationKind: "external-discharge",
+      inletElevationMm: 2350,
+      airBreakMm: 25,
+      terminalTrap: "none",
+    },
+  }),
 ];
 
 export function groupAcEquipmentByCategory(
@@ -285,6 +361,7 @@ export function groupAcEquipmentByCategory(
       "outdoor-units": [],
       controls: [],
       accessories: [],
+      drainage: [],
     },
   );
 }

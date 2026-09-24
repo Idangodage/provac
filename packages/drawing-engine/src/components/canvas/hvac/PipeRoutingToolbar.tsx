@@ -6,7 +6,7 @@ import { useSmartDrawingStore } from '../../../store';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 import { fromMillimeters, getUnitLabel, toMillimeters, type LinearUnit } from '../scale';
 
-import { AutoRouteNetworkAction } from './AutoRouteNetworkAction';
+import { AutoRouteAction } from './AutoRouteAction';
 import type { PipeRoutingSettings } from './pipeRoutingSettings';
 import type { RefrigerantPipeAngleMode, RefrigerantPipeLineMode, RefrigerantPipeMaterial } from './refrigerantPipePairModel';
 
@@ -132,14 +132,7 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
     >
       <div role="toolbar" aria-label="Refrigerant routing" className="flex flex-wrap items-center gap-2 p-2">
         <span className="px-1 text-xs font-semibold">Refrigerant</span>
-        {props.drawing ? (
-          <PipeDrawingControls />
-        ) : (
-          <span className="flex gap-3 px-1 text-xs">
-            <span><span className="mr-1 text-orange-600">●</span>Gas</span>
-            <span><span className="mr-1 text-blue-600">●</span>Liquid</span>
-          </span>
-        )}
+        {props.drawing ? <PipeDrawingControls /> : null}
         <button type="button" aria-expanded={showDefaults} onClick={() => setShowDefaults(!showDefaults)}
           className="rounded-lg px-2 py-1.5 text-xs hover:bg-slate-100">
           Route defaults <span aria-hidden="true">{showDefaults ? '▴' : '▾'}</span>
@@ -158,7 +151,10 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
             <option value="liquid">Liquid kit</option>
           </select>
         ) : null}
-        <AutoRouteNetworkAction profile={props.ruleProfile} disabled={props.placingKit} />
+      </div>
+      {/* One Auto route for every service; the ticks double as the colour legend. */}
+      <div role="toolbar" aria-label="Auto route" className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-2 py-1.5">
+        <AutoRouteAction profile={props.ruleProfile} disabled={props.placingKit} />
       </div>
       {showDefaults ? (
         <div className="space-y-2.5 border-t border-slate-100 p-3">

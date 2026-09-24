@@ -54,6 +54,7 @@ import {
   BRANCH_KIT_SPRITE_LIQUID,
 } from './branchKitSprite';
 import { branchKitSpriteTransform } from './branchKitSpriteTransform';
+import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import type { CopperSocketElbowPlacement } from './copperSocketElbowRoute';
 import type { PipeSnapIndicator } from './pipeDraftingPolicy';
 import {
@@ -686,6 +687,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const orthoRef = useRef(false);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const canInteract = enabled && interactive;
+  // While an Auto route preview is open the pipes are not editable, but its
+  // toolbar (Apply / Discard / clash list) must stay on screen.
+  const autoRoutePreviewOpen = useCondensatePreviewStore((state) => state.unified !== null);
 
   const clearMovePreview = useCallback((): void => {
     if (movePreviewFrameRef.current !== null) {
@@ -1882,8 +1886,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
 
   return (
     <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
-      {(showRoutingToolbar || placingKit) && canInteract && (pipeToolActive || placingKit || pipes.some((pipe) => selectedSet.has(pipe.id))
-        || (selectionHitTesting && hvacElements.some(element => element.type === 'outdoor-unit'))) ? (
+      {(showRoutingToolbar || placingKit) && ((enabled && autoRoutePreviewOpen) || (canInteract && (pipeToolActive || placingKit
+        || pipes.some((pipe) => selectedSet.has(pipe.id))
+        || (selectionHitTesting && hvacElements.some(element => element.type === 'outdoor-unit' || element.type === 'condensate-gully'))))) ? (
         <PipeRoutingToolbar
           ruleProfile={ruleProfile}
           drawing={pipeToolActive}

@@ -37,6 +37,7 @@ import type {
 } from "../refrigerantPipeRenderState";
 import { getUnitPipePortSpec } from "../unitPipePortModel";
 
+import { addCondensateGullyMeshes, addCondensatePipeMeshes } from "./condensateMeshes";
 import { buildCopperSocketElbowMesh } from "./copperSocketElbowMesh";
 import { instantiateGlbModel } from "./glbModelCache";
 import {
@@ -117,7 +118,9 @@ export function isProjectionCoreHvacType(type: HvacElement["type"]): boolean {
     type === "control-panel" ||
     type === "accessory" ||
     type === "diffuser" ||
-    type === "return-grille"
+    type === "return-grille" ||
+    type === "condensate-pipe" ||
+    type === "condensate-gully"
   );
 }
 
@@ -880,6 +883,8 @@ function resolveMinimumProjectionHeight(type: HvacElement["type"]): number {
   switch (type) {
     case "refrigerant-pipe":
     case "refrigerant-pipe-pair":
+    case "condensate-pipe":
+    case "condensate-gully":
       return 10;
     case "diffuser":
     case "return-grille":
@@ -2348,6 +2353,15 @@ export function buildHvacElementMesh(
             end: visual.endBundleConnection === null,
           });
       }
+      break;
+    }
+    case "condensate-pipe":
+    case "condensate-gully": {
+      // World-space geometry: sloped drains and terminations carry absolute Z.
+      group.position.set(0, 0, 0);
+      group.rotation.set(0, 0, 0);
+      if (normalizedType === "condensate-pipe") addCondensatePipeMeshes(group, effectiveElement);
+      else addCondensateGullyMeshes(group, effectiveElement);
       break;
     }
     case "refrigerant-pipe": {

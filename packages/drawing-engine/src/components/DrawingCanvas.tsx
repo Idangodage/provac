@@ -72,6 +72,7 @@ import {
   type BoardUnit,
 } from "./canvas/board";
 import { worldToScreenFromFabricViewport } from "./canvas/coordinateTransform";
+import { useCondensateLiveValidation } from "./canvas/hooks/useCondensateLiveValidation";
 import { useVrfLiveValidation } from "./canvas/hooks/useVrfLiveValidation";
 import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
@@ -82,6 +83,14 @@ import {
   type PipeStudioOverlayHandle,
 } from "./canvas/hvac/PipeStudioOverlay";
 import { VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
+import { applyAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteController";
+import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
+import { generateCondensateNetwork } from "./canvas/hvac/condensate/condensateGenerator";
+import { getIndoorUnitDrainPorts } from "./canvas/hvac/condensate/condensatePorts";
+import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePreviewStore";
+import { translateCondensatePipe } from "./canvas/hvac/condensate/condensateTransforms";
+import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
+import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
@@ -106,6 +115,7 @@ import {
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeLineMode,
 } from "./canvas/hvac/refrigerantPipePairModel";
+import { applyRefrigerantProposal } from "./canvas/hvac/unifiedAutoRoute";
 import {
   buildVrfValidationFixCommand,
   resolveVrfValidationIssueElement,
@@ -564,6 +574,8 @@ export function DrawingCanvas({
     addHvacElements,
     commitHvacElementCommand,
     setPipeRoutingSettings,
+    condensateSettings,
+    pipeRoutingSettings,
     updateHvacElement,
     syncAutoDimensions,
     selectWallSegmentAtPoint,
@@ -645,6 +657,8 @@ export function DrawingCanvas({
       addHvacElements: state.addHvacElements,
       commitHvacElementCommand: state.commitHvacElementCommand,
       setPipeRoutingSettings: state.setPipeRoutingSettings,
+      condensateSettings: state.condensateSettings,
+      pipeRoutingSettings: state.pipeRoutingSettings,
       updateHvacElement: state.updateHvacElement,
       syncAutoDimensions: state.syncAutoDimensions,
       selectWallSegmentAtPoint: state.selectWallSegmentAtPoint,
@@ -702,6 +716,12 @@ export function DrawingCanvas({
   );
   const projectionViewOnly = hybridViewOnly;
   const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile);
+  const condensateValidationReport = useCondensateLiveValidation(hvacElements, condensateSettings, pipeRoutingSettings);
+  // One design-check list: refrigerant (VRF) rules and condensate drainage rules.
+  const designCheckReport = useMemo(
+    () => mergeValidationReports(vrfValidationReport, condensateValidationReport),
+    [vrfValidationReport, condensateValidationReport],
+  );
   // Dev-only scripted-verification handle; the literal NODE_ENV test lets
   // bundlers strip the block from production builds.
   useEffect(() => {
@@ -712,6 +732,7 @@ export function DrawingCanvas({
     root.__PROVACX_DEBUG__ = {
       getHvacElements: () => hvacElements,
       getVrfReport: () => vrfValidationReport,
+      getCondensateReport: () => condensateValidationReport,
       getPipeSnapTargets: () => getRefrigerantPipeBundleSnapTargets(hvacElements),
       getPipeVisual: (elementId: string) => {
         const target = hvacElements.find((candidate) => candidate.id === elementId);
@@ -726,6 +747,32 @@ export function DrawingCanvas({
         return { ...environment, summary: describePipeEnvironment(environment),
           designNodes: skeleton.nodes, legs: skeleton.legs };
       },
+      /** Condensate: unit drain outlets, the open preview, and a scripted generate/apply. */
+      getDrainPorts: () => getIndoorUnitDrainPorts(hvacElements),
+      getCondensatePreview: () => useCondensatePreviewStore.getState().result,
+      getSelectedIds: () => [...useSmartDrawingStore.getState().selectedIds],
+      generateCondensate: (scope: 'drawing' | 'selection' = 'drawing') => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope }),
+      /** One Auto route for the ticked services (preview; apply with applyAutoRoute). */
+      autoRoute: (services: { gas: boolean; liquid: boolean; condensate: boolean }, scope: 'drawing' | 'selection' = 'drawing') =>
+        runAutoRoute({ services, scope, profile: vrfRuleProfile }),
+      getAutoRoutePreview: () => useCondensatePreviewStore.getState().unified,
+      approveAllHops: () => {
+        const store = useCondensatePreviewStore.getState();
+        for (const hop of store.unified?.condensate?.hopProposals ?? []) if (!store.approvedHopKeys.includes(hop.key)) store.toggleHop(hop.key);
+      },
+      applyAutoRoute: () => applyAutoRoutePreview(),
+      planCondensate: () => {
+        const state = useSmartDrawingStore.getState();
+        return generateCondensateNetwork([...state.hvacElements], {
+          settings: state.condensateSettings, routingSettings: state.pipeRoutingSettings,
+          walls: state.walls, rooms: state.rooms,
+        });
+      },
+      applyCondensate: () => applyAutoRoutePreview(),
+      getCondensateProfile: (elementId: string) => {
+        const target = hvacElements.find((candidate) => candidate.id === elementId);
+        return target && isCondensatePipe(target) ? readCondensatePipeSpec(target) : null;
+      },
       worldToClient: (point: { x: number; y: number }) => {
         if (!fabricCanvas) return null;
         const viewport = fabricCanvas.viewportTransform;
@@ -738,7 +785,7 @@ export function DrawingCanvas({
     return () => {
       delete root.__PROVACX_DEBUG__;
     };
-  }, [fabricCanvas, hvacElements, vrfValidationReport]);
+  }, [fabricCanvas, hvacElements, vrfValidationReport, condensateValidationReport]);
   const appliedVrfProfileRoutingKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!vrfRuleProfile) {
@@ -1463,6 +1510,25 @@ export function DrawingCanvas({
   // The studio overlay renders the live draw preview as its own pair, so the
   // draw tool feeds it the route here (imperatively — only the overlay re-renders).
   const pipeStudioOverlayRef = useRef<PipeStudioOverlayHandle | null>(null);
+  const condensateOverlayRef = useRef<CondensateOverlayHandle | null>(null);
+  const condensatePreview = useCondensatePreviewStore((state) => state.result);
+  const refrigerantPreview = useCondensatePreviewStore((state) => state.unified?.refrigerant ?? null);
+  // An Auto route preview renders in 3D through the same transient path as a
+  // pipe edit: new and changed pipes are previews; replaced ones become empty
+  // placeholders so their committed meshes are hidden until Apply.
+  const autoRoutePreviewElements = useMemo(() => {
+    if (!condensatePreview && !refrigerantPreview) return null;
+    const removed = new Set([...(condensatePreview?.removeElementIds ?? []), ...(refrigerantPreview?.removeElementIds ?? [])]);
+    const hidden = hvacElements
+      .filter((element) => removed.has(element.id))
+      .map((element): HvacElement => ({ ...element, type: "condensate-pipe", properties: { routeNodes3d: [], routePoints: [], fittings: [] } }));
+    return [
+      ...(refrigerantPreview?.elementsToAdd ?? []),
+      ...(refrigerantPreview?.updates ?? []),
+      ...(condensatePreview?.elementsToAdd ?? []),
+      ...hidden,
+    ];
+  }, [condensatePreview, refrigerantPreview, hvacElements]);
   const hybridPlanPaintPendingRef = useRef(false);
   const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the
@@ -1472,10 +1538,12 @@ export function DrawingCanvas({
   const [pipeEditPreview, setPipeEditPreview] = useState<HvacElement[] | null>(null);
   const [activePipeWorkplane, setActivePipeWorkplane] = useState<PipeDrawingPlane | null>(null);
   const pipeDisplayElements = useMemo(() => {
-    if (!pipeEditPreview) return hvacElements;
+    // The plan pipe studio paints the refrigerant part of an Auto route preview.
+    const base = refrigerantPreview ? applyRefrigerantProposal(hvacElements, refrigerantPreview) : hvacElements;
+    if (!pipeEditPreview) return base;
     const replacements = new Map(pipeEditPreview.map(element => [element.id, element]));
-    return hvacElements.map(element => replacements.get(element.id) ?? element);
-  }, [hvacElements, pipeEditPreview]);
+    return base.map(element => replacements.get(element.id) ?? element);
+  }, [hvacElements, pipeEditPreview, refrigerantPreview]);
   const handleHybridControllerReady = useCallback(
     (controller: HybridViewportController | null) => {
       hybridControllerRef.current = controller;
@@ -1568,6 +1636,7 @@ export function DrawingCanvas({
         const nextViewport = buildViewportTransform(nextZoom, nextPan);
         canvas.setViewportTransform(nextViewport);
         pipeStudioOverlayRef.current?.syncViewTransform(nextViewport);
+        condensateOverlayRef.current?.syncViewTransform(nextViewport);
         if (synchronousPaint) canvas.renderAll();
         else {
           hybridPlanPaintPendingRef.current = true;
@@ -1744,6 +1813,13 @@ export function DrawingCanvas({
       const updatesById = new Map<string, Partial<HvacElement>>();
 
       for (const element of selectedEquipment) {
+        if (isCondensatePipe(element)) {
+          // A drain moves as one sloped run: plan route, Z profile, fittings
+          // and bounds together. Its end identities are left for the live
+          // validator to flag if the move detaches it.
+          updatesById.set(element.id, translateCondensatePipe(element, { x: dxMm, y: dyMm, z: dzMm }));
+          continue;
+        }
         if (isRefrigerantPipeElementType(element.type)) {
           if (dzMm !== 0) {
             const context = [...hvacElements];
@@ -1917,6 +1993,11 @@ export function DrawingCanvas({
 
   const handleApplyVrfValidationFix = useCallback(
     (issue: VrfValidationIssue) => {
+      if (issue.fix?.kind === "regenerate-condensate") {
+        // Condensate fixes re-run the generator; the user reviews and applies.
+        runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope: "drawing" });
+        return;
+      }
       const command = buildVrfValidationFixCommand(issue, hvacElements);
       if (!command) return;
       const target = resolveVrfValidationIssueElement(issue, hvacElements);
@@ -2407,7 +2488,10 @@ export function DrawingCanvas({
     const syncOverlayViewTransform = () => {
       hybridPlanPaintPendingRef.current = false;
       const vpt = canvas.viewportTransform;
-      if (vpt) pipeStudioOverlayRef.current?.syncViewTransform(vpt);
+      if (vpt) {
+        pipeStudioOverlayRef.current?.syncViewTransform(vpt);
+        condensateOverlayRef.current?.syncViewTransform(vpt);
+      }
     };
     canvas.on("after:render", syncOverlayViewTransform);
     syncOverlayViewTransform();
@@ -2912,11 +2996,22 @@ export function DrawingCanvas({
             setProcessingStatus={setProcessingStatus}
             setSelectedIds={setSelectedIds}
           />
+          <CondensateOverlay
+            ref={condensateOverlayRef}
+            enabled
+            width={hostWidth}
+            height={hostHeight}
+            viewportZoom={viewportZoom}
+            panOffset={panOffset}
+            hvacElements={hvacElements}
+            selectedIds={selectedIds}
+            settings={condensateSettings}
+          />
           <PipeStudioOverlay
             ref={pipeStudioOverlayRef}
             ruleProfile={vrfRuleProfile}
             enabled
-            interactive={!projectionViewOnly && !pipeEditPreview
+            interactive={!projectionViewOnly && !pipeEditPreview && !refrigerantPreview
               && (tool === "select" || !activePipeWorkplane)}
             width={hostWidth}
             height={hostHeight}
@@ -2949,7 +3044,7 @@ export function DrawingCanvas({
             viewportZoom={viewportZoom}
             panOffset={panOffset}
             hvacElements={hvacElements}
-            report={vrfValidationReport}
+            report={designCheckReport}
             onSelectElement={(elementId) => setSelectedIds([elementId])}
             onApplyFix={handleApplyVrfValidationFix}
           />
@@ -3026,7 +3121,7 @@ export function DrawingCanvas({
           viewportZoom={viewportZoom}
           panOffset={panOffset}
           hvacElements={hvacElements}
-          report={vrfValidationReport}
+          report={designCheckReport}
           onSelectElement={(elementId) => setSelectedIds([elementId])}
           onApplyFix={handleApplyVrfValidationFix}
         />
@@ -3054,7 +3149,7 @@ export function DrawingCanvas({
           symbols={symbols}
           objectDefinitions={objectDefinitions}
           hvacElements={hvacElements}
-          pipeEditPreviewElements={pipeEditPreview}
+          pipeEditPreviewElements={autoRoutePreviewElements ? [...(pipeEditPreview ?? []), ...autoRoutePreviewElements] : pipeEditPreview}
           activePipeWorkplane={activePipeWorkplane}
           onWebglUnavailable={handleHybridWebglUnavailable}
           selectedIds={selectedIds}
