@@ -142,7 +142,13 @@ export function pickCondensatePipeAtWorldPoint(
   paddingMm: number,
 ): { id: string; distanceMm: number; elevationMm: number } | null {
   let best: { id: string; distanceMm: number; elevationMm: number } | null = null;
-  for (const element of elements) {
+  const all = [...elements];
+  // Drains end on their gully (the drop and the last run meet at its centre):
+  // a click on the gully itself selects the gully, so it can be moved.
+  if (all.some((element) => element.type === 'condensate-gully'
+    && point.x >= element.position.x && point.x <= element.position.x + element.width
+    && point.y >= element.position.y && point.y <= element.position.y + element.depth)) return null;
+  for (const element of all) {
     if (!isCondensatePipe(element)) continue;
     const spec = readCondensatePipeSpec(element);
     const nodes = spec.routeNodes3d.length >= 2 ? spec.routeNodes3d : spec.routePoints.map((p) => ({ ...p, z: element.elevation }));

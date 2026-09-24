@@ -123,6 +123,11 @@ export interface CondensateEnvironmentOptions {
   rooms?: readonly Room[];
   unitIds?: readonly string[];
   gullyIds?: readonly string[];
+  /**
+   * A network being re-solved by a micro-edit: its own pipes are replaceable
+   * (not protected by the hand-edit / retain policy) and are not obstacles.
+   */
+  editNetworkId?: string;
 }
 
 function median(values: number[]): number | null {
@@ -294,8 +299,12 @@ export function buildCondensateEnvironment(
   const protectedUnitIds = new Set<string>();
   const replaceableElementIds: string[] = [];
   const services: ServiceSegment[] = [];
+  const editedPipeIds = options.editNetworkId
+    ? scene.filter((element) => isCondensatePipe(element) && getCondensateOwnership(element)?.networkId === options.editNetworkId).map((element) => element.id)
+    : [];
+  const edited = new Set(editedPipeIds);
   for (const element of scene) {
-    if (!isCondensatePipe(element)) continue;
+    if (!isCondensatePipe(element) || edited.has(element.id)) continue;
     const spec = readCondensatePipeSpec(element);
     if (isProtectedCondensatePipe(element)) {
       spec.upstreamUnitIds.forEach((id) => protectedUnitIds.add(id));
@@ -323,7 +332,7 @@ export function buildCondensateEnvironment(
   }
   sources.sort((a, b) => a.unitId.localeCompare(b.unitId));
   const sourceIds = new Set(sources.map((source) => source.unitId));
-  replaceableElementIds.push(...replaceableCondensatePipeIdsFor(scene, sourceIds, unitScope, gullyScope));
+  replaceableElementIds.push(...new Set([...replaceableCondensatePipeIdsFor(scene, sourceIds, unitScope, gullyScope), ...editedPipeIds]));
 
   const sinks = scene
     .filter((element) => isCondensateGully(element) && (!gullyScope || gullyScope.has(element.id)))

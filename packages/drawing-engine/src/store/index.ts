@@ -2087,7 +2087,11 @@ export interface DrawingState {
   clearAllWalls: () => void;
   addHvacElement: (element: Omit<Partial<HvacElement>, 'id'> & Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>) => string;
   addHvacElements: (elements: Array<Omit<Partial<HvacElement>, 'id'> & Pick<HvacElement, 'type' | 'position' | 'width' | 'depth' | 'height' | 'elevation' | 'mountType' | 'label'>>) => string[];
-  commitHvacElementCommand: (action: string, command: HvacElementCommand) => string[];
+  /**
+   * One undoable HVAC command. `skipHistory` folds the change into a history
+   * step the caller saves itself (e.g. drains following an equipment move).
+   */
+  commitHvacElementCommand: (action: string, command: HvacElementCommand, options?: { skipHistory?: boolean }) => string[];
   setPipeRegenerationPolicy: (ids: string[], policy: PipeRegenerationPolicy) => void;
   updateHvacElement: (id: string, updates: Partial<HvacElement>, options?: { skipHistory?: boolean }) => void;
   deleteHvacElement: (id: string, options?: { skipHistory?: boolean }) => void;
@@ -4307,7 +4311,7 @@ export const useDrawingStore = create<DrawingState>()(
         return nextElements.map((element) => element.id);
       },
 
-      commitHvacElementCommand: (action, command) => {
+      commitHvacElementCommand: (action, command, options) => {
         const additions = (command.add ?? []).map((element) => normalizeHvacElement(element));
         const additionIds = new Set(additions.map((element) => element.id));
         const removeIds = new Set(command.removeIds ?? []);
@@ -4358,7 +4362,7 @@ export const useDrawingStore = create<DrawingState>()(
         });
         if (!changed) return [];
         get().regenerateElevations({ debounce: true });
-        get().saveToHistory(action);
+        if (!options?.skipHistory) get().saveToHistory(action);
         return additions.map((element) => element.id);
       },
 

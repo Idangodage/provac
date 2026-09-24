@@ -49,6 +49,7 @@ import {
   hideActiveSelectionChrome,
 } from "../../DrawingCanvas.types";
 import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
+import { followDrainsWithoutHistory } from "../hvac/condensate/condensateEditController";
 import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
 import {
   isRefrigerantPipeElementType,
@@ -1999,6 +2000,12 @@ export function useCanvasEventBinding(
             hvacElements,
             movedElement,
             updateHvacElement,
+          );
+          // Drains follow a moved indoor unit or gully (same undo step).
+          followDrainsWithoutHistory(
+            hvacElements,
+            hvacElements.map((element) => (element.id === hvacId ? movedElement : element)),
+            [hvacId],
           );
           saveToHistory("Update AC equipment");
         }

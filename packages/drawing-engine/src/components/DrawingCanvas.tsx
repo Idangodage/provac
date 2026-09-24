@@ -85,10 +85,12 @@ import {
 import { VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
 import { applyAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteController";
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
+import { condensateEditContext, condensateNetworkIdOf, followDrainsForMove } from "./canvas/hvac/condensate/condensateEditController";
+import { createCondensateEditSession, isUnitBranchSpec } from "./canvas/hvac/condensate/condensateEditing";
 import { generateCondensateNetwork } from "./canvas/hvac/condensate/condensateGenerator";
 import { getIndoorUnitDrainPorts } from "./canvas/hvac/condensate/condensatePorts";
 import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePreviewStore";
-import { translateCondensatePipe } from "./canvas/hvac/condensate/condensateTransforms";
+import { fixedPrefixLength, translateRouteInterior } from "./canvas/hvac/condensate/condensateRouteOps";
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
@@ -1516,9 +1518,18 @@ export function DrawingCanvas({
   // An Auto route preview renders in 3D through the same transient path as a
   // pipe edit: new and changed pipes are previews; replaced ones become empty
   // placeholders so their committed meshes are hidden until Apply.
+  // A drain micro-edit being dragged: the re-solved network shows in 3D live.
+  const [condensateEditPreview, setCondensateEditPreview] = useState<{ elements: HvacElement[]; removeIds: string[] } | null>(null);
+  const handleCondensateEditPreview = useCallback((elements: HvacElement[] | null, removeIds: string[]) => {
+    setCondensateEditPreview(elements ? { elements, removeIds } : null);
+  }, []);
   const autoRoutePreviewElements = useMemo(() => {
-    if (!condensatePreview && !refrigerantPreview) return null;
-    const removed = new Set([...(condensatePreview?.removeElementIds ?? []), ...(refrigerantPreview?.removeElementIds ?? [])]);
+    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview) return null;
+    const removed = new Set([
+      ...(condensatePreview?.removeElementIds ?? []),
+      ...(refrigerantPreview?.removeElementIds ?? []),
+      ...(condensateEditPreview?.removeIds ?? []),
+    ]);
     const hidden = hvacElements
       .filter((element) => removed.has(element.id))
       .map((element): HvacElement => ({ ...element, type: "condensate-pipe", properties: { routeNodes3d: [], routePoints: [], fittings: [] } }));
@@ -1526,9 +1537,10 @@ export function DrawingCanvas({
       ...(refrigerantPreview?.elementsToAdd ?? []),
       ...(refrigerantPreview?.updates ?? []),
       ...(condensatePreview?.elementsToAdd ?? []),
+      ...(condensateEditPreview?.elements ?? []),
       ...hidden,
     ];
-  }, [condensatePreview, refrigerantPreview, hvacElements]);
+  }, [condensatePreview, refrigerantPreview, condensateEditPreview, hvacElements]);
   const hybridPlanPaintPendingRef = useRef(false);
   const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the
@@ -1813,13 +1825,8 @@ export function DrawingCanvas({
       const updatesById = new Map<string, Partial<HvacElement>>();
 
       for (const element of selectedEquipment) {
-        if (isCondensatePipe(element)) {
-          // A drain moves as one sloped run: plan route, Z profile, fittings
-          // and bounds together. Its end identities are left for the live
-          // validator to flag if the move detaches it.
-          updatesById.set(element.id, translateCondensatePipe(element, { x: dxMm, y: dyMm, z: dzMm }));
-          continue;
-        }
+        // Drain runs are nudged below: their legs move, the ends stay attached.
+        if (isCondensatePipe(element)) continue;
         if (isRefrigerantPipeElementType(element.type)) {
           if (dzMm !== 0) {
             const context = [...hvacElements];
@@ -1974,12 +1981,57 @@ export function DrawingCanvas({
         });
       }
 
-      if (updatesById.size > 0) {
+      const drainAdd: HvacElement[] = [];
+      const drainRemove = new Set<string>();
+      const mergeDrainChanges = (changes: { add: HvacElement[]; updates: HvacElement[]; removeIds: string[] }) => {
+        drainAdd.push(...changes.add);
+        changes.removeIds.forEach((id) => drainRemove.add(id));
+        changes.updates.forEach((element) => updatesById.set(element.id, element));
+      };
+      // A nudged drain run: its legs move by the nudge, its outlet and joint stay,
+      // and the whole network re-solves (fall, risers, offsets, wyes).
+      const nudgedDrains = selectedEquipment.filter(isCondensatePipe);
+      if (nudgedDrains.length) {
+        if (dzMm !== 0) {
+          setProcessingStatus("Drain levels follow from the fall — move the riser or change the fall instead.", false);
+        } else {
+          const done = new Set<string>();
+          for (const pipe of nudgedDrains) {
+            const networkId = condensateNetworkIdOf(pipe);
+            if (!networkId || done.has(networkId)) continue;
+            done.add(networkId);
+            const session = createCondensateEditSession([...hvacElements], networkId, condensateEditContext());
+            const route = session?.model.routes.get(pipe.id);
+            const spec = session?.model.specs.get(pipe.id);
+            if (!session || !route || !spec) continue;
+            const next = translateRouteInterior(route, { x: dxMm, y: dyMm }, fixedPrefixLength(isUnitBranchSpec(spec)));
+            const result = session.solve({ routes: new Map([[pipe.id, next]]) });
+            if (result.ok) mergeDrainChanges(result);
+            else setProcessingStatus(result.message, false);
+          }
+        }
+      }
+      // Drains follow nudged indoor units and gullies (one undo with the nudge).
+      const movedEquipmentIds = [...updatesById.keys()].filter((id) => {
+        const element = hvacElements.find((candidate) => candidate.id === id);
+        return Boolean(element) && !isCondensatePipe(element!) && !isRefrigerantPipeElementType(element!.type);
+      });
+      if (movedEquipmentIds.length) {
+        const after = hvacElements.map((element) => {
+          const updates = updatesById.get(element.id);
+          return updates && movedEquipmentIds.includes(element.id) ? { ...element, ...updates } as HvacElement : element;
+        });
+        mergeDrainChanges(followDrainsForMove(hvacElements, after, movedEquipmentIds));
+      }
+
+      if (updatesById.size > 0 || drainAdd.length || drainRemove.size) {
         commitHvacElementCommand("Nudge HVAC elements", {
-          updates: [...updatesById].map(([id, updates]) => ({ id, updates })),
+          add: drainAdd,
+          removeIds: [...drainRemove],
+          updates: [...updatesById].filter(([id]) => !drainRemove.has(id)).map(([id, updates]) => ({ id, updates })),
         });
       }
-      return movedObjects || updatesById.size > 0;
+      return movedObjects || updatesById.size > 0 || drainAdd.length > 0;
     },
     [
       computeHvacPlacement,
@@ -3006,6 +3058,8 @@ export function DrawingCanvas({
             hvacElements={hvacElements}
             selectedIds={selectedIds}
             settings={condensateSettings}
+            interactive={!projectionViewOnly && tool === "select"}
+            onEditPreviewChange={handleCondensateEditPreview}
           />
           <PipeStudioOverlay
             ref={pipeStudioOverlayRef}

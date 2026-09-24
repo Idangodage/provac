@@ -33,7 +33,7 @@ import {
   type CondensateSink,
   type ServiceSegment,
 } from './condensateEnvironment';
-import { add, closestOnSegment, distance, dot, normalize, pointToSegmentDistance, scale, sub } from './condensateGeometry';
+import { add, closestOnSegment, distance, dot, normalize, pointToSegmentDistance, scale, segmentIntersection, segmentSegmentDistance, sub } from './condensateGeometry';
 import { selectCondensatePipeSize, type CondensatePipeSize } from './condensatePipeCatalog';
 import type { IndoorDrainPort } from './condensatePorts';
 import { maxFeasibleSlope, solveProfile, type ProfileNode, type ProfileSolution } from './condensateProfileSolver';
@@ -151,6 +151,37 @@ export interface CondensatePlanOptions extends Omit<CondensateEnvironmentOptions
   routingSettings?: Partial<PipeRoutingSettings>;
   idFactory?: (prefix: string) => string;
   onProgress?: (progress: { stage: string; completed: number; total: number }) => void;
+  /** Re-solve one existing network along given plan routes (micro-editing) instead of routing it. */
+  fixedNetwork?: CondensateFixedNetwork;
+  /** A prebuilt environment for this scene and these options (an edit session reuses it per frame). */
+  environment?: CondensateEnvironment;
+}
+
+/** One unit's drain path in a fixed-route re-solve. */
+export interface CondensateFixedRoute {
+  unitId: string;
+  /** Plan route: drain outlet, riser foot / stub end, bends…, end (termination point or wye point). */
+  points: Point2D[];
+  /** The termination, or the point where it joins a route inserted before it. */
+  target: 'sink' | { junction: Point2D };
+  /** Route this unit again with the router (onto the others) instead of along `points`. */
+  reroute?: boolean;
+}
+
+export interface CondensateFixedNetwork {
+  networkId: string;
+  gullyId: string;
+  /** Insertion order: the trunk first, then each branch after the route it joins. */
+  routes: CondensateFixedRoute[];
+  /** Cap on a pumped unit's riser height above its outlet (mm). */
+  liftLimitMm?: Record<string, number>;
+  /** Minimum outer diameter per run, keyed by its upstream units ('a+b'). */
+  sizeFloorsMm?: Record<string, number>;
+}
+
+/** Key of a run by the units draining through it (size floors, id mapping). */
+export function condensateRunKey(unitIds: readonly string[]): string {
+  return [...unitIds].sort().join('+');
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +396,7 @@ function insideObstacle(point: Point2D, environment: CondensateEnvironment, marg
     && point.y > box.minY - margin && point.y < box.maxY + margin);
 }
 
-function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironment, defaultRadius: number): UnitPlan {
+function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironment, defaultRadius: number, searchRiserFoot = true): UnitPlan {
   const { settings, envelope } = environment;
   const voidLower = envelope.voidFloorMm + defaultRadius;
   const voidUpper = envelope.voidTopMm - defaultRadius;
@@ -384,6 +415,10 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
   // Site practice: the drain rises plumb beside the unit to its high point —
   // the pump head or the soffit, and below any service over the riser.
   const headLimit = Math.max(source.z, Math.min(source.z + source.pumpMaxLiftMm, voidUpper));
+  if (!searchRiserFoot) {
+    // The foot is given (a micro-edit): `withRiserFoot` checks that one position.
+    return { source, exposed, pumped, headTopZ: headLimit, stubEnd: gravityFoot, stubLength: distance(source.point, gravityFoot) };
+  }
   let best: { foot: Point2D; top: number } | null = null;
   for (const [along, across] of RISER_FOOT_OFFSETS) {
     if (Math.hypot(along, across) > settings.liftMaxHorizontalMm + 1e-6) continue;
@@ -403,6 +438,66 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
     stubEnd: chosen.foot,
     stubLength: distance(source.point, chosen.foot),
   };
+}
+
+/** The unit plan with its riser foot / stub end where the user put it, and an optional lift cap. */
+function withRiserFoot(
+  plan: UnitPlan,
+  foot: Point2D | undefined,
+  liftLimitMm: number | undefined,
+  environment: CondensateEnvironment,
+  defaultRadius: number,
+  force = false,
+): UnitPlan {
+  const { source } = plan;
+  let next = plan;
+  if (foot && (force || distance(foot, source.point) > 1)) {
+    const snapped = { x: Math.round(foot.x * 2) / 2, y: Math.round(foot.y * 2) / 2 };
+    const voidUpper = environment.envelope.voidTopMm - defaultRadius;
+    const headLimit = Math.max(source.z, Math.min(source.z + source.pumpMaxLiftMm, voidUpper));
+    const top = plan.pumped ? clearRiserTop(snapped, source.z, headLimit, defaultRadius, environment) : null;
+    next = {
+      ...plan,
+      stubEnd: snapped,
+      stubLength: distance(source.point, snapped),
+      headTopZ: plan.pumped ? Math.max(source.z, top ?? source.z) : source.z,
+    };
+  }
+  if (next.pumped && liftLimitMm !== undefined && Number.isFinite(liftLimitMm)) {
+    next = { ...next, headTopZ: Math.max(source.z, Math.min(next.headTopZ, source.z + Math.max(0, liftLimitMm))) };
+  }
+  return next;
+}
+
+function polylineLength(points: readonly Point2D[]): number {
+  let total = 0;
+  for (let index = 1; index < points.length; index += 1) total += distance(points[index - 1]!, points[index]!);
+  return total;
+}
+
+function wallCrossingsAlong(points: readonly Point2D[], walls: CondensateEnvironment['walls']): Array<{ wallId: string; point: Point2D }> {
+  const crossings: Array<{ wallId: string; point: Point2D }> = [];
+  for (let index = 1; index < points.length; index += 1) {
+    for (const wall of walls) {
+      const hit = segmentIntersection(points[index - 1]!, points[index]!, wall.a, wall.b);
+      if (hit) crossings.push({ wallId: wall.id, point: hit.point });
+    }
+  }
+  return crossings;
+}
+
+/** The run edge of a network that passes through `point` (where a branch joins it). */
+function treeTargetAt(net: NetBuilder, point: Point2D): RouteTarget | null {
+  let best: { edgeId: string; distance: number; station: number } | null = null;
+  for (const node of net.nodes.values()) {
+    if (node.edge !== 'run' || !node.down) continue;
+    const down = net.nodes.get(node.down);
+    if (!down) continue;
+    const gap = pointToSegmentDistance(point, node.point, down.point);
+    if (gap > 1 || (best && gap >= best.distance)) continue;
+    best = { edgeId: node.id, distance: gap, station: distance(node.point, point) };
+  }
+  return best ? { kind: 'tree', edgeId: best.edgeId, point: { ...point }, station: best.station } : null;
 }
 
 function classLower(environment: CondensateEnvironment, exposed: boolean, radius: number, routing: PipeRoutingSettings): number {
@@ -652,7 +747,12 @@ function buildProfileNodes(net: NetBuilder, inputs: ProfileInputs): ProfileNode[
 // Sizing
 // ---------------------------------------------------------------------------
 
-function sizeNetwork(net: NetBuilder, settings: CondensateDesignSettings, upstreamUnits: Map<string, string[]>): Map<string, CondensatePipeSize> {
+function sizeNetwork(
+  net: NetBuilder,
+  settings: CondensateDesignSettings,
+  upstreamUnits: Map<string, string[]>,
+  floorsMm: ReadonlyMap<string, number> = new Map(),
+): Map<string, CondensatePipeSize> {
   const unitById = new Map(net.units.map((unit) => [unit.plan.source.unitId, unit.plan.source]));
   const sizes = new Map<string, CondensatePipeSize>();
   // Leaves → root so each pipe knows the largest pipe feeding it.
@@ -666,7 +766,8 @@ function sizeNetwork(net: NetBuilder, settings: CondensateDesignSettings, upstre
       largestOutletOuterDiameterMm: Math.max(0, ...units.map((unit) => unit.outletOuterDiameterMm)),
       upstreamUnitCount: units.length,
       slopePercent: settings.minSlopePercent,
-      minimumOuterDiameterMm: Math.max(0, ...feeding),
+      // A run the user upsized keeps at least that size (never smaller than what feeds it).
+      minimumOuterDiameterMm: Math.max(0, ...feeding, floorsMm.get(condensateRunKey(upstreamUnits.get(id) ?? [])) ?? 0),
     }, settings);
     sizes.set(node.id, selection.size);
   }
@@ -777,6 +878,8 @@ function findCrossingWindows(
       const required = radius + service.radiusMm + settings.refrigerantClearanceMm;
       const c = { x: service.a.x, y: service.a.y };
       const d = { x: service.b.x, y: service.b.y };
+      // Exact early reject: a pair farther apart than the clearance never forms a window.
+      if (segmentSegmentDistance(a, b, c, d) > required) continue;
       // Convex in t: ternary search for the closest station, then bisect the window edges.
       let lo = 0;
       let hi = 1;
@@ -943,8 +1046,9 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
   const settings = options.settings;
   const idFactory = options.idFactory ?? defaultIdFactory();
   const progress = options.onProgress ?? (() => undefined);
-  const environment = buildCondensateEnvironment(scene, { ...options, routingSettings: routing });
+  const environment = options.environment ?? buildCondensateEnvironment(scene, { ...options, routingSettings: routing });
   const issues: string[] = [];
+  let sizeFloors: ReadonlyMap<string, number> = new Map();
   const perUnit: CondensateUnitResult[] = environment.skipped.map((skip) => ({
     unitId: skip.unitId,
     label: scene.find((element) => element.id === skip.unitId)?.label ?? skip.unitId,
@@ -985,7 +1089,15 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
     junctionPenaltyMm: settings.junctionSpacingMm,
   };
   const minSlope = settings.minSlopePercent / 100;
-  const unitPlans = environment.sources.map((source) => makeUnitPlan(source, environment, defaultRadius));
+  // A fixed-route re-solve keeps each unit's riser foot, so it skips the foot search.
+  const unitPlans = environment.sources.map((source) => makeUnitPlan(source, environment, defaultRadius, !options.fixedNetwork));
+
+  if (options.fixedNetwork) {
+    planFixedNetwork(options.fixedNetwork);
+    plan.perUnit.sort((a, b) => a.label.localeCompare(b.label) || a.unitId.localeCompare(b.unitId));
+    progress({ stage: 'Done', completed: 1, total: 1 });
+    return plan;
+  }
 
   // ---- 1. Candidate terminations per unit --------------------------------
   const candidates = new Map<string, CandidateRoute[]>();
@@ -1132,6 +1244,20 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
     const net = new NetBuilder(networkId, sink);
     const failed = new Map<string, { points: Point2D[]; shortfallMm: number | null; reason: string }>();
     for (const unitPlan of unitOrder) {
+      const routed = routeIntoNet(net, unitPlan, sink, exposed);
+      if ('failure' in routed) {
+        failed.set(unitPlan.source.unitId, routed.failure);
+        continue;
+      }
+      insertBranch(net, unitPlan, routed.route, settings, router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), router.services);
+    }
+    return { net, failed };
+  }
+
+  /** Routes one unit onto the network (or to the termination) so it can still fall to it. */
+  function routeIntoNet(net: NetBuilder, unitPlan: UnitPlan, sink: CondensateSink, exposed: boolean):
+    { route: NonNullable<ReturnType<typeof routeCondensateBranch>> } | { failure: { points: Point2D[]; shortfallMm: number | null; reason: string } } {
+    {
       const sizes = new Map<string, CondensatePipeSize>();
       const upstream = upstreamUnitsByNode(net);
       const lower = classLower(environment, exposed, defaultRadius, routing);
@@ -1170,21 +1296,80 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         const shortfall = route
           ? Math.max(0, sinkLowerZ(sink, lower) - (unitPlan.headTopZ - minSlope * (route.lengthMm + unitPlan.stubLength)))
           : null;
-        failed.set(unitPlan.source.unitId, {
-          points: route ? [unitPlan.source.point, ...route.points] : [unitPlan.source.point],
-          shortfallMm: shortfall,
-          reason: route ? `cannot fall into the ${sink.label} network${shortfall ? ` (short by ~${Math.round(shortfall)} mm)` : ''}` : 'no plan route into the network',
-        });
+        return {
+          failure: {
+            points: route ? [unitPlan.source.point, ...route.points] : [unitPlan.source.point],
+            shortfallMm: shortfall,
+            reason: route ? `cannot fall into the ${sink.label} network${shortfall ? ` (short by ~${Math.round(shortfall)} mm)` : ''}` : 'no plan route into the network',
+          },
+        };
+      }
+      return { route };
+    }
+  }
+
+  /** Micro-edit re-solve: the network is rebuilt along the given routes, then finished as usual. */
+  function planFixedNetwork(fixed: CondensateFixedNetwork) {
+    const sink = environment.sinks.find((candidate) => candidate.gullyId === fixed.gullyId);
+    if (!sink) {
+      issues.push('The termination this drain network runs to is no longer in the drawing.');
+      return;
+    }
+    sizeFloors = new Map(Object.entries(fixed.sizeFloorsMm ?? {}));
+    const plansById = new Map(unitPlans.map((unitPlan) => [unitPlan.source.unitId, unitPlan]));
+    const net = new NetBuilder(fixed.networkId, sink);
+    let exposed: boolean | null = null;
+    const fail = (unitId: string, label: string, reason: string, points: Point2D[], shortfallMm: number | null = null) => {
+      plan.perUnit.push({
+        unitId, label, gullyId: sink.gullyId, status: 'infeasible', lengthMm: 0, fallUsedMm: 0, headMarginMm: 0, liftMm: 0,
+        ...(shortfallMm !== null ? { shortfallMm: Math.round(shortfallMm) } : {}), reason,
+      });
+      plan.unresolvedPaths.push({ unitId, points, shortfallMm });
+    };
+    for (const route of fixed.routes) {
+      const base = plansById.get(route.unitId);
+      if (!base) {
+        fail(route.unitId, route.unitId, 'the unit or its drain outlet is not available', route.points);
         continue;
       }
-      insertBranch(net, unitPlan, route, settings, router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), router.services);
+      const unitPlan = route.reroute
+        ? withRiserFoot(makeUnitPlan(base.source, environment, defaultRadius), undefined, fixed.liftLimitMm?.[route.unitId], environment, defaultRadius)
+        : withRiserFoot(base, route.points[1] ?? base.stubEnd, fixed.liftLimitMm?.[route.unitId], environment, defaultRadius, true);
+      if (exposed === null) exposed = unitPlan.exposed;
+      const obstacles = router.obstaclesFor(unitPlan.source.unitId, sink.gullyId);
+      if (route.reroute) {
+        const routed = routeIntoNet(net, unitPlan, sink, exposed);
+        if ('failure' in routed) {
+          fail(route.unitId, unitPlan.source.label, routed.failure.reason, routed.failure.points, routed.failure.shortfallMm);
+          continue;
+        }
+        insertBranch(net, unitPlan, routed.route, settings, obstacles, router.services);
+        continue;
+      }
+      const points = route.points.slice(1).map((point) => ({ ...point }));
+      if (!points.length) points.push({ ...unitPlan.stubEnd });
+      const target: RouteTarget | null = route.target === 'sink'
+        ? { kind: 'sink', point: sink.point }
+        : treeTargetAt(net, route.target.junction);
+      if (!target) {
+        fail(route.unitId, unitPlan.source.label, 'the pipe it drains into is no longer there', [unitPlan.source.point, ...points]);
+        continue;
+      }
+      // The route ends exactly on the termination / wye point.
+      points[points.length - 1] = { ...target.point };
+      const path = [unitPlan.stubEnd, ...points.slice(1)];
+      const lengthMm = polylineLength(path);
+      insertBranch(net, unitPlan, {
+        points, target, wallCrossings: wallCrossingsAlong(path, environment.walls), lengthMm, cost: lengthMm,
+      }, settings, obstacles, router.services);
     }
-    return { net, failed };
+    if (!net.units.length) return;
+    finishNetwork(net, exposed ?? false);
   }
 
   function finishNetwork(net: NetBuilder, exposed: boolean) {
     const upstreamUnits = upstreamUnitsByNode(net);
-    const sizes = sizeNetwork(net, settings, upstreamUnits);
+    const sizes = sizeNetwork(net, settings, upstreamUnits, sizeFloors);
     const base: Omit<ProfileInputs, 'slopes' | 'lifts' | 'defaultSlope'> = { settings, environment, routing, exposed, sizes, upstreamUnits };
     let solved = solveNetwork(net, base);
     if ('failure' in solved && settings.mainBelowPortsMm > 0) {
@@ -1227,7 +1412,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
       removeUnit(net, unitId);
       const refreshed = upstreamUnitsByNode(net);
       base.upstreamUnits = refreshed;
-      base.sizes = sizeNetwork(net, settings, refreshed);
+      base.sizes = sizeNetwork(net, settings, refreshed, sizeFloors);
       solved = solveNetwork(net, base);
     }
     if ('failure' in solved || !net.units.length) return;

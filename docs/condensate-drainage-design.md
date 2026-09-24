@@ -121,6 +121,45 @@ Rules that keep the preview honest:
 - While a preview with refrigerant is open the pipe studio is not interactive, but its toolbar stays.
 - Ticks persist per browser session (`provacx.autoRoute.services`).
 
+## Micro-editing ("edit the plan, the physics follows")
+
+Code: `condensateEditing.ts` (engine), `condensateRouteOps.ts` (pure route operations + snapping),
+`condensateEditController.ts` (store side), `CondensateEditLayer.tsx` (plan handles) and
+`CondensateEditBar.tsx` (contextual bar). Planner support: `CondensatePlanOptions.fixedNetwork`
+re-solves ONE network along given plan routes (the same `insertBranch` + `finishNetwork` as Auto
+route: fall, risers, 45° offsets, wyes, sizes, fittings, crossings, hangers).
+
+- **Model:** each unit's path is rebuilt from the network's pipes (branch → through-junctions →
+  termination; a pipe with a wye arrives as a branch), inserted trunk-first so every branch joins a
+  route already placed. Runs keep their element ids: unit branch = its unit, main / drop = the units
+  draining through it. A micro-edit marks the network `editPolicy: 'retain'` (Auto route keeps it;
+  *Release* hands it back).
+- **Verdicts:** `ok`, `short` (a unit cannot drain: the planner's binding reason), `blocked` (a run
+  crosses an equipment body), `clash` (more unresolved refrigerant crossings than before), `locked`
+  (a locked run would change), `invalid`. Nothing that fails is committed; the reason goes to the
+  status line.
+- **Plan gestures** (selected run, select tool, plan view): bend dots (drag / right-click or
+  Delete removes), leg pills (drag sideways), the run body (drag whole run, ends stay attached),
+  double-click (add bend), riser-foot diamond (≤ 300 mm from the outlet, reach circle shown), wye
+  diamond (slides along its main, the branch lead-in follows). Snapping: square / 45° to neighbours
+  and alignment with the network's points (8 px); Shift = free. One solve per animation frame with
+  a live ghost network, verdict chip and leg dimensions; release = one undo step; Esc cancels.
+- **Edit bar:** Bend, Re-route (router again for this unit onto the rest), Rodding eye (click the
+  run to add, an eye to remove), Fall (network design fall, never below the code minimum), Size
+  (upsize floor per run), Riser (height cap), Lock / Unlock, Release, Delete (a unit branch: the
+  network re-solves without it; a main / drop: the whole network). Overrides persist on the pipes
+  (`designFallPercent`, `minOuterDiameterMm`, `riserLiftLimitMm`, `fittingEdits`) and survive every
+  later re-solve.
+- **Keyboard:** arrow keys nudge a selected run's legs (ends attached, re-solved); Delete / Backspace
+  deletes the selected run smartly (above); z-nudges are refused (levels follow from the fall).
+- **Follow:** moving an indoor unit (drag or arrow keys) or a gully re-fits its drains in the same
+  undo step (`followCondensateDrains`: outlet + riser foot move with the unit, the run reconnects
+  square; runs ending on the termination re-end on it). A network that cannot follow is left as it
+  is and reported (then CD_STALE offers Regenerate).
+- **Picking:** a click inside a gully's footprint selects the gully, not the drains ending on it.
+- **Performance:** a re-solve of the canvas network takes ~25 ms (the crossing scan's exact
+  segment-distance early reject made it ~10× faster, which also speeds up Auto route).
+
 ## Integration points
 
 - Types `condensate-gully` / `condensate-pipe` (`types/wall.ts`), category `accessory`.
@@ -146,6 +185,10 @@ Rules that keep the preview honest:
 - Vitest: `hvac/unifiedAutoRoute.test.ts` (tick combinations on the real engines, single-line
   reduction and circuit protection, drain exclusion, hop folding, clash audit) and
   `unifiedAutoRoute.refusal.test.ts` (incomplete rebuild kept out of the preview).
+- Vitest: `condensateEditing.test.ts` (re-solve fidelity, every gesture, verdicts, delete / re-route,
+  persisted overrides, follow unit / gully) and `condensateRouteOps.test.ts` (operations, snapping,
+  gully-first pick). On canvas: `D:\claude-tmp-vrf-check\micro.mjs` (every gesture with undo,
+  bar actions, nudge, gully follow; screenshots `me-*`).
 - On canvas: `D:\claude-tmp-vrf-check\condensate.mjs` (`all` = single unit; `multi` = four units,
   pumps, refrigerant crossings with approved hops, 2D/Iso screenshots) and `unified.mjs`
   (`setup,gas,condensate` / `setup,all` / `setup,clear-refrigerant,all`: toolbar ticks, preview,
@@ -158,4 +201,5 @@ Rules that keep the preview honest:
 - An infeasible crossing falls back to a hop proposal; re-routing the branch around the crossing
   with a penalty is not yet attempted.
 - Tree improvement is limited to three trunk orders (no detach/re-attach pass yet).
-- Direct geometry editing of condensate runs is limited to whole-pipe nudges; use Regenerate.
+- Micro-edits happen in plan view; the tilted / isometric views show the live preview and the
+  result, but have no 3D gizmo (levels are solved from the fall, not dragged).
