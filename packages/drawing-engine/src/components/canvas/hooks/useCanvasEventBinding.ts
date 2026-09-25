@@ -685,12 +685,8 @@ export function useCanvasEventBinding(
         return;
       }
       if (tool === "duct") {
-        const handled = handleDuctKeyDown(e);
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setTool("select");
-          return;
-        }
+        // Esc is owned by the canvas Esc shortcut (cancel draft, then leave the tool).
+        const handled = e.key === "Escape" ? false : handleDuctKeyDown(e);
         if (handled) {
           e.preventDefault();
         }

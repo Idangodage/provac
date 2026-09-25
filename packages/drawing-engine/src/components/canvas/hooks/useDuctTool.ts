@@ -1,573 +1,262 @@
-import * as fabric from "fabric";
+/**
+ * Duct tool: draw a supply or return run from a ducted unit's real collar.
+ *
+ *  - Hover shows the units' collars; click a free one to start. The first leg
+ *    leaves along the collar's outward normal.
+ *  - Each click adds a leg end; legs go straight on or turn 90° (Tab toggles
+ *    45° mode). Lengths snap to 10 mm.
+ *  - Double-click or Enter finishes (end cap by default); Backspace removes the
+ *    last leg; Esc cancels the draft (a second Esc leaves the tool).
+ *
+ * The live preview is built by the same draft builder as the commit and pushed
+ * to the duct overlay imperatively — no store writes and no React renders per
+ * pointer move. The commit is ONE `commitHvacElementCommand`, so one undo.
+ */
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
+import type { HvacElementCommand } from "../../../store";
 import type { HvacElement, Point2D } from "../../../types";
-import {
-  buildDuctedIndoorUnitModel,
-  getDuctedIndoorUnitOpeningPlanProjection,
-} from "../hvac/ductedIndoorUnitModel";
-import {
-  buildGiDuctVisual,
-  buildStraightGiDuctElement,
-  DEFAULT_GI_DUCT_WALL_THICKNESS_MM,
-  isGiDuctElementType,
-  type GiDuctKind,
-} from "../hvac/giDuctModel";
-import type { DuctedIndoorUnitInlineOpeningSpec } from "../hvac/ductedIndoorUnitModel";
-import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
+import type { DuctOverlayHandle } from "../hvac/duct/DuctOverlay";
+import { listAirPorts, type DuctAirPort } from "../hvac/duct/ductAirPorts";
+import { buildDuctRunDraftElement, constrainDuctLeg, type DuctDraftInput } from "../hvac/duct/ductDraft";
+import { useDuctToolStore } from "../hvac/duct/ductToolStore";
+import { isDuctElement, readDuctRunSpec } from "../hvac/duct/ductTypes";
 import { MM_TO_PX } from "../scale";
 
-interface DuctTarget {
-  element: HvacElement;
-  kind: GiDuctKind;
-  hitStart: Point2D;
-  hitEnd: Point2D;
-  hitCenter: Point2D;
-  origin: Point2D;
-  outwardDirection: Point2D;
-  openingWidthMm: number;
-  outerWidthMm: number;
-  outerHeightMm: number;
-  wallThicknessMm: number;
-  elevationMm: number;
-  existingDuct: HvacElement | null;
-  currentLengthMm: number;
-}
-
 export interface UseDuctToolOptions {
-  fabricRef: React.RefObject<fabric.Canvas | null>;
-  hvacRendererRef: React.RefObject<HvacPlanRenderer | null>;
   activeTool: string;
   hvacElements: HvacElement[];
   zoom: number;
-  addHvacElement: (
-    element: Omit<Partial<HvacElement>, "id"> &
-      Pick<
-        HvacElement,
-        "type" | "position" | "width" | "depth" | "height" | "elevation" | "mountType" | "label"
-      >,
-  ) => string;
-  updateHvacElement: (
-    id: string,
-    updates: Partial<HvacElement>,
-    options?: { skipHistory?: boolean },
-  ) => void;
+  ductOverlayRef: React.RefObject<DuctOverlayHandle | null>;
+  commitHvacElementCommand: (action: string, command: HvacElementCommand) => string[];
   setSelectedIds: (ids: string[]) => void;
   setProcessingStatus: (status: string, isProcessing: boolean) => void;
 }
 
 export interface UseDuctToolResult {
-  isDrawing: boolean;
   handleMouseDown: (point: Point2D) => void;
   handleMouseMove: (point: Point2D) => void;
   handleDoubleClick: () => void;
   handleKeyDown: (event: KeyboardEvent) => boolean;
   handleKeyUp: (event: KeyboardEvent) => void;
-  cancelDrawing: () => void;
+  /** Cancel an active draft; true when there was one. */
+  cancelDrawing: () => boolean;
 }
 
-function rotateVector(point: Point2D, angleDeg: number): Point2D {
-  const radians = (angleDeg * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
-  return {
-    x: point.x * cos - point.y * sin,
-    y: point.x * sin + point.y * cos,
-  };
-}
+/** Legs shorter than this are ignored (the second click of a double-click). */
+const MIN_LEG_MM = 50;
 
-function normalize(point: Point2D): Point2D {
-  const length = Math.hypot(point.x, point.y);
-  if (length < 0.0001) {
-    return { x: 0, y: 1 };
-  }
-  return { x: point.x / length, y: point.y / length };
-}
-
-function distance(a: Point2D, b: Point2D): number {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function distanceToSegment(point: Point2D, start: Point2D, end: Point2D): number {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
+function distanceToSegment(point: Point2D, a: Point2D, b: Point2D): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
   const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared <= 0.0001) {
-    return distance(point, start);
-  }
-  const t = Math.max(
-    0,
-    Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared),
-  );
-  return Math.hypot(
-    point.x - (start.x + dx * t),
-    point.y - (start.y + dy * t),
-  );
+  const t = lengthSquared < 1e-9 ? 0 : Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared));
+  return Math.hypot(point.x - (a.x + dx * t), point.y - (a.y + dy * t));
 }
 
-function projectLength(anchor: Point2D, direction: Point2D, point: Point2D): number {
-  return Math.max(
-    0,
-    (point.x - anchor.x) * direction.x + (point.y - anchor.y) * direction.y,
-  );
+function portKey(port: Pick<DuctAirPort, "unitId" | "portId">): string {
+  return `${port.unitId}:${port.portId}`;
 }
 
-function findExistingDuctElement(
-  hvacElements: HvacElement[],
-  sourceElementId: string,
-  kind: GiDuctKind,
-): HvacElement | null {
-  return (
-    hvacElements.find((element) => {
-      if (!isGiDuctElementType(element.type)) {
-        return false;
-      }
-      const sourceId =
-        typeof element.properties.sourceElementId === "string"
-          ? element.properties.sourceElementId
-          : (element.properties.startConnection as { sourceElementId?: unknown } | undefined)
-              ?.sourceElementId;
-      const sourceKind =
-        element.properties.sourceOpeningKind === "return"
-          ? "return"
-          : element.properties.sourceOpeningKind === "supply"
-            ? "supply"
-            : ((element.properties.startConnection as { sourceOpeningKind?: unknown } | undefined)
-                ?.sourceOpeningKind === "return"
-                ? "return"
-                : "supply");
-      return sourceId === sourceElementId && sourceKind === kind;
-    }) ?? null
-  );
-}
-
-function resolveExistingDuctLengthMm(
-  existingDuct: HvacElement | null,
-  origin: Point2D,
-  outwardDirection: Point2D,
-): number {
-  if (!existingDuct) {
-    return 0;
-  }
-  const visual = buildGiDuctVisual(existingDuct);
-  const endPoint = visual.routePoints[visual.routePoints.length - 1];
-  if (!endPoint) {
-    return 0;
-  }
-  return projectLength(origin, outwardDirection, endPoint);
-}
-
-function buildWorldTarget(
-  element: HvacElement,
-  hvacElements: HvacElement[],
-  opening: DuctedIndoorUnitInlineOpeningSpec,
-): DuctTarget {
-  const model = buildDuctedIndoorUnitModel(element);
-  const projection = getDuctedIndoorUnitOpeningPlanProjection(model, opening);
-  const center = {
-    x: element.position.x + element.width / 2,
-    y: element.position.y + element.depth / 2,
-  };
-  const rotation = element.rotation ?? 0;
-  const rotateLocalPoint = (point: Point2D): Point2D => {
-    const rotated = rotateVector(point, rotation);
-    return {
-      x: center.x + rotated.x,
-      y: center.y + rotated.y,
-    };
-  };
-  const wallThicknessMm = DEFAULT_GI_DUCT_WALL_THICKNESS_MM;
-  const outerWidthMm = opening.openingWidth + wallThicknessMm * 2;
-  const outerHeightMm = opening.openingHeight + wallThicknessMm * 2;
-  const origin = rotateLocalPoint({
-    x: opening.x,
-    y: projection.collarOuterEdgeY,
-  });
-  const outwardDirection = normalize(
-    rotateVector({ x: 0, y: projection.outwardDirectionY }, rotation),
-  );
-  const existingDuct = findExistingDuctElement(hvacElements, element.id, opening.kind);
-
-  return {
-    element,
-    kind: opening.kind,
-    hitStart: rotateLocalPoint({
-      x: opening.x - opening.openingWidth / 2,
-      y: projection.shellFaceY,
-    }),
-    hitEnd: rotateLocalPoint({
-      x: opening.x + opening.openingWidth / 2,
-      y: projection.shellFaceY,
-    }),
-    hitCenter: rotateLocalPoint({
-      x: opening.x,
-      y: projection.shellFaceY,
-    }),
-    origin,
-    outwardDirection,
-    openingWidthMm: opening.openingWidth,
-    outerWidthMm,
-    outerHeightMm,
-    wallThicknessMm,
-    elevationMm: element.elevation + opening.z - outerHeightMm / 2,
-    existingDuct,
-    currentLengthMm: resolveExistingDuctLengthMm(
-      existingDuct,
-      origin,
-      outwardDirection,
-    ),
-  };
+function newRunId(): string {
+  return `duct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
-  const {
-    fabricRef,
-    hvacRendererRef,
-    activeTool,
-    hvacElements,
-    zoom,
-    addHvacElement,
-    updateHvacElement,
-    setSelectedIds,
-    setProcessingStatus,
-  } = options;
+  const { activeTool, hvacElements, zoom, ductOverlayRef, commitHvacElementCommand, setSelectedIds, setProcessingStatus } = options;
 
-  const activeTargetRef = useRef<DuctTarget | null>(null);
-  const previewLengthRef = useRef<number>(0);
-  const snapMarkerRef = useRef<fabric.Rect | null>(null);
+  const portRef = useRef<DuctAirPort | null>(null);
+  const pointsRef = useRef<Point2D[]>([]);
+  const directionRef = useRef<Point2D>({ x: 0, y: -1 });
+  const runIdRef = useRef<string>(newRunId());
+  const lastCursorRef = useRef<Point2D | null>(null);
 
-  const ductTargets = useMemo(
-    () =>
-      hvacElements.flatMap((element) => {
-        if (element.type !== "ducted-ac") {
-          return [];
-        }
-        const model = buildDuctedIndoorUnitModel(element);
-        return model.airOpenings.map((opening) =>
-          buildWorldTarget(element, hvacElements, opening),
-        );
-      }),
-    [hvacElements],
-  );
+  const ports = useMemo(() => listAirPorts(hvacElements), [hvacElements]);
+  const occupiedRuns = useMemo(() => {
+    const byPort = new Map<string, string>();
+    for (const element of hvacElements) {
+      if (!isDuctElement(element)) continue;
+      const start = readDuctRunSpec(element)?.start;
+      if (start?.kind === "unit-port") byPort.set(`${start.unitId}:${start.portId}`, element.id);
+    }
+    return byPort;
+  }, [hvacElements]);
 
-  const clearPreview = useCallback(() => {
-    hvacRendererRef.current?.clearPlacementPreview();
-  }, [hvacRendererRef]);
+  const thresholdMm = Math.max(40, 14 / Math.max(zoom * MM_TO_PX, 1e-3));
 
-  const clearSnapMarker = useCallback(() => {
-    const canvas = fabricRef.current;
-    const marker = snapMarkerRef.current;
-    if (!canvas || !marker) {
-      snapMarkerRef.current = null;
+  const findPort = useCallback((point: Point2D): DuctAirPort | null => {
+    let best: DuctAirPort | null = null;
+    let bestDistance = thresholdMm;
+    for (const port of ports) {
+      const distance = distanceToSegment(point, port.edgeA, port.edgeB);
+      if (distance <= bestDistance) {
+        best = port;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }, [ports, thresholdMm]);
+
+  const draftInput = useCallback((points: Point2D[]): DuctDraftInput | null => {
+    const port = portRef.current;
+    if (!port) return null;
+    const tool = useDuctToolStore.getState();
+    return {
+      port,
+      points,
+      ...(tool.sizeMode === "custom" ? { widthMm: tool.widthMm, heightMm: tool.heightMm } : {}),
+      end: tool.endKind,
+    };
+  }, []);
+
+  const constrained = useCallback((cursor: Point2D) => {
+    const port = portRef.current!;
+    const points = pointsRef.current;
+    const anchor = points[points.length - 1] ?? { x: port.lip.x, y: port.lip.y };
+    return constrainDuctLeg(anchor, cursor, directionRef.current, {
+      first: points.length === 0,
+      mode: useDuctToolStore.getState().angleMode,
+    });
+  }, []);
+
+  const renderPreview = useCallback((cursor: Point2D | null) => {
+    const overlay = ductOverlayRef.current;
+    if (!overlay || !portRef.current) return;
+    const committedPoints = pointsRef.current;
+    const leg = cursor ? constrained(cursor) : null;
+    const points = leg && leg.lengthMm >= MIN_LEG_MM ? [...committedPoints, leg.point] : committedPoints;
+    if (points.length === 0) {
+      overlay.setDraft(null);
       return;
     }
-    canvas.remove(marker);
-    snapMarkerRef.current = null;
-    canvas.requestRenderAll();
-  }, [fabricRef]);
+    const input = draftInput(points);
+    if (!input) return;
+    overlay.setDraft({
+      element: buildDuctRunDraftElement(input, runIdRef.current),
+      label: leg && leg.lengthMm >= MIN_LEG_MM ? { point: leg.point, text: `${leg.lengthMm} mm` } : undefined,
+    });
+  }, [constrained, draftInput, ductOverlayRef]);
 
-  const renderSnapMarker = useCallback(
-    (target: DuctTarget | null) => {
-      const canvas = fabricRef.current;
-      if (!canvas) {
+  const reset = useCallback(() => {
+    portRef.current = null;
+    pointsRef.current = [];
+    lastCursorRef.current = null;
+    runIdRef.current = newRunId();
+    ductOverlayRef.current?.setDraft(null);
+    ductOverlayRef.current?.setHoveredPort(null);
+  }, [ductOverlayRef]);
+
+  const finish = useCallback(() => {
+    const port = portRef.current;
+    if (!port) return;
+    const points = pointsRef.current;
+    if (points.length === 0) {
+      setProcessingStatus("Add at least one leg before finishing the duct.", false);
+      return;
+    }
+    const input = draftInput(points);
+    if (!input) return;
+    const element = buildDuctRunDraftElement(input, runIdRef.current);
+    const ids = commitHvacElementCommand("Draw duct run", { add: [element], selectedIds: [element.id] });
+    setSelectedIds(ids.length > 0 ? ids : [element.id]);
+    setProcessingStatus(`${port.kind === "supply" ? "Supply" : "Return"} duct committed: ${points.length} leg(s).`, false);
+    reset();
+  }, [commitHvacElementCommand, draftInput, reset, setProcessingStatus, setSelectedIds]);
+
+  const handleMouseMove = useCallback((point: Point2D) => {
+    lastCursorRef.current = point;
+    if (portRef.current) {
+      renderPreview(point);
+      return;
+    }
+    const port = findPort(point);
+    ductOverlayRef.current?.setHoveredPort(port ? portKey(port) : null);
+  }, [ductOverlayRef, findPort, renderPreview]);
+
+  const handleMouseDown = useCallback((point: Point2D) => {
+    if (!portRef.current) {
+      const port = findPort(point);
+      if (!port) {
+        setProcessingStatus("Click a ducted unit's supply or return collar to start a duct.", false);
         return;
       }
-      if (!target) {
-        clearSnapMarker();
+      const existing = occupiedRuns.get(portKey(port));
+      if (existing) {
+        setSelectedIds([existing]);
+        setProcessingStatus(`This ${port.kind} collar already has a duct; it is selected.`, false);
         return;
       }
-
-      const thicknessPx = 10;
-      const fill =
-        target.kind === "supply"
-          ? "rgba(96,165,250,0.22)"
-          : "rgba(148,163,184,0.22)";
-      const stroke =
-        target.kind === "supply"
-          ? "rgba(37,99,235,0.95)"
-          : "rgba(71,85,105,0.95)";
-      const angleDeg =
-        (Math.atan2(
-          target.hitEnd.y - target.hitStart.y,
-          target.hitEnd.x - target.hitStart.x,
-        ) *
-          180) /
-        Math.PI;
-      let marker = snapMarkerRef.current;
-
-      if (!marker) {
-        marker = new fabric.Rect({
-          left: target.hitCenter.x * MM_TO_PX,
-          top: target.hitCenter.y * MM_TO_PX,
-          width: Math.max(target.openingWidthMm * MM_TO_PX, thicknessPx * 2),
-          height: thicknessPx,
-          originX: "center",
-          originY: "center",
-          fill,
-          stroke,
-          strokeWidth: 2,
-          angle: angleDeg,
-          selectable: false,
-          evented: false,
-          excludeFromExport: true,
-          rx: thicknessPx * 0.45,
-          ry: thicknessPx * 0.45,
-        });
-        snapMarkerRef.current = marker;
-        canvas.add(marker);
-      } else {
-        marker.set({
-          left: target.hitCenter.x * MM_TO_PX,
-          top: target.hitCenter.y * MM_TO_PX,
-          width: Math.max(target.openingWidthMm * MM_TO_PX, thicknessPx * 2),
-          height: thicknessPx,
-          fill,
-          stroke,
-          angle: angleDeg,
-        });
-      }
-
-      canvas.bringObjectToFront(marker);
-      canvas.requestRenderAll();
-    },
-    [clearSnapMarker, fabricRef],
-  );
-
-  const findNearestTarget = useCallback(
-    (point: Point2D, thresholdMm: number): DuctTarget | null => {
-      let bestTarget: DuctTarget | null = null;
-      let bestDistance = thresholdMm;
-
-      ductTargets.forEach((target) => {
-        const nextDistance = distanceToSegment(point, target.hitStart, target.hitEnd);
-        if (nextDistance <= bestDistance) {
-          bestDistance = nextDistance;
-          bestTarget = target;
-        }
-      });
-
-      return bestTarget;
-    },
-    [ductTargets],
-  );
-
-  const buildPreviewElement = useCallback(
-    (target: DuctTarget, lengthMm: number): HvacElement => {
-      const endPoint = {
-        x: target.origin.x + target.outwardDirection.x * lengthMm,
-        y: target.origin.y + target.outwardDirection.y * lengthMm,
-      };
-      const previewBase = buildStraightGiDuctElement(
-        [target.origin, endPoint],
-        {
-          ductKind: target.kind,
-          outerWidthMm: target.outerWidthMm,
-          outerHeightMm: target.outerHeightMm,
-          wallThicknessMm: target.wallThicknessMm,
-          elevationMm: target.elevationMm,
-          startConnection: {
-            point: target.origin,
-            direction: target.outwardDirection,
-            sourceElementId: target.element.id,
-            sourceOpeningKind: target.kind,
-          },
-        },
-      );
-      return {
-        id: target.existingDuct?.id ?? `__duct-preview__-${target.element.id}-${target.kind}`,
-        type: previewBase.type,
-        category: previewBase.category ?? "accessory",
-        subtype: previewBase.subtype,
-        modelLabel: previewBase.modelLabel,
-        position: previewBase.position,
-        rotation: previewBase.rotation ?? 0,
-        width: previewBase.width,
-        depth: previewBase.depth,
-        height: previewBase.height,
-        elevation: previewBase.elevation,
-        mountType: previewBase.mountType,
-        label: previewBase.label,
-        supplyZoneRatio: previewBase.supplyZoneRatio ?? 0,
-        properties: previewBase.properties ?? {},
-      };
-    },
-    [],
-  );
-
-  const renderPreviewForTarget = useCallback(
-    (target: DuctTarget, lengthMm: number) => {
-      hvacRendererRef.current?.renderElementPreview(
-        buildPreviewElement(target, lengthMm),
-        true,
-      );
-    },
-    [buildPreviewElement, hvacRendererRef],
-  );
-
-  const commitTargetLength = useCallback(
-    (target: DuctTarget, lengthMm: number) => {
-      const roundedLengthMm = Math.max(60, Math.min(2400, Math.round(lengthMm)));
-      const committed = buildPreviewElement(target, roundedLengthMm);
-      if (target.existingDuct) {
-        updateHvacElement(target.existingDuct.id, {
-          position: committed.position,
-          rotation: committed.rotation,
-          width: committed.width,
-          depth: committed.depth,
-          height: committed.height,
-          elevation: committed.elevation,
-          mountType: committed.mountType,
-          label: committed.label,
-          category: committed.category,
-          subtype: committed.subtype,
-          modelLabel: committed.modelLabel,
-          supplyZoneRatio: committed.supplyZoneRatio,
-          properties: committed.properties,
-        });
-        setSelectedIds([target.existingDuct.id]);
-      } else {
-        const nextId = addHvacElement(committed);
-        setSelectedIds([nextId]);
-      }
+      portRef.current = port;
+      pointsRef.current = [];
+      directionRef.current = port.normal;
+      runIdRef.current = newRunId();
+      ductOverlayRef.current?.setHoveredPort(portKey(port));
       setProcessingStatus(
-        `${target.kind === "supply" ? "Supply" : "Return"} duct committed at ${roundedLengthMm} mm.`,
+        `Drawing ${port.kind} duct ${port.widthMm}×${port.heightMm}: click to add bends, double-click or Enter to finish, Backspace to undo a leg, Tab for 45°, Esc to cancel.`,
         false,
       );
-    },
-    [
-      addHvacElement,
-      buildPreviewElement,
-      setProcessingStatus,
-      setSelectedIds,
-      updateHvacElement,
-    ],
-  );
-
-  const resetDrawing = useCallback(() => {
-    activeTargetRef.current = null;
-    previewLengthRef.current = 0;
-    clearPreview();
-    clearSnapMarker();
-  }, [clearPreview, clearSnapMarker]);
-
-  const updatePreviewLength = useCallback(
-    (point: Point2D) => {
-      const target = activeTargetRef.current;
-      if (!target) {
-        return;
-      }
-      const nextLengthMm = Math.max(
-        0,
-        Math.min(2400, projectLength(target.origin, target.outwardDirection, point)),
-      );
-      previewLengthRef.current = nextLengthMm;
-      renderPreviewForTarget(target, nextLengthMm);
-      renderSnapMarker(target);
-    },
-    [renderPreviewForTarget, renderSnapMarker],
-  );
-
-  const handleMouseDown = useCallback(
-    (point: Point2D) => {
-      const thresholdMm = Math.max(36, 120 / Math.max(zoom * MM_TO_PX, 0.01));
-      if (!activeTargetRef.current) {
-        const nearestTarget = findNearestTarget(point, thresholdMm);
-        if (!nearestTarget) {
-          setProcessingStatus(
-            "Click a ducted AC return or supply mouth to start the GI duct.",
-            false,
-          );
-          return;
-        }
-        activeTargetRef.current = nearestTarget;
-        previewLengthRef.current = nearestTarget.currentLengthMm;
-        renderSnapMarker(nearestTarget);
-        renderPreviewForTarget(nearestTarget, nearestTarget.currentLengthMm);
-        return;
-      }
-
-      updatePreviewLength(point);
-      commitTargetLength(activeTargetRef.current, previewLengthRef.current);
-      resetDrawing();
-    },
-    [
-      commitTargetLength,
-      findNearestTarget,
-      renderPreviewForTarget,
-      renderSnapMarker,
-      resetDrawing,
-      setProcessingStatus,
-      updatePreviewLength,
-      zoom,
-    ],
-  );
-
-  const handleMouseMove = useCallback(
-    (point: Point2D) => {
-      if (activeTargetRef.current) {
-        updatePreviewLength(point);
-        return;
-      }
-      const thresholdMm = Math.max(36, 120 / Math.max(zoom * MM_TO_PX, 0.01));
-      renderSnapMarker(findNearestTarget(point, thresholdMm));
-    },
-    [findNearestTarget, renderSnapMarker, updatePreviewLength, zoom],
-  );
-
-  const handleDoubleClick = useCallback(() => {
-    const target = activeTargetRef.current;
-    if (!target) {
+      renderPreview(point);
       return;
     }
-    commitTargetLength(target, previewLengthRef.current);
-    resetDrawing();
-  }, [commitTargetLength, resetDrawing]);
+    const leg = constrained(point);
+    if (leg.lengthMm < MIN_LEG_MM) return;
+    pointsRef.current = [...pointsRef.current, leg.point];
+    directionRef.current = leg.direction;
+    renderPreview(point);
+  }, [constrained, ductOverlayRef, findPort, occupiedRuns, renderPreview, setProcessingStatus, setSelectedIds]);
 
-  const handleKeyDown = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key !== "Enter") {
-        return false;
-      }
-      const target = activeTargetRef.current;
-      if (!target) {
-        return false;
-      }
-      commitTargetLength(target, previewLengthRef.current);
-      resetDrawing();
+  const handleDoubleClick = useCallback(() => {
+    finish();
+  }, [finish]);
+
+  const handleKeyDown = useCallback((event: KeyboardEvent) => {
+    if (!portRef.current) return false;
+    if (event.key === "Enter") {
+      finish();
       return true;
-    },
-    [commitTargetLength, resetDrawing],
-  );
+    }
+    if (event.key === "Backspace") {
+      if (pointsRef.current.length === 0) return true;
+      pointsRef.current = pointsRef.current.slice(0, -1);
+      const port = portRef.current;
+      const points = pointsRef.current;
+      const previous = points.length >= 1 ? points[points.length - 1]! : null;
+      const before = points.length >= 2 ? points[points.length - 2]! : { x: port.lip.x, y: port.lip.y };
+      if (previous) {
+        const dx = previous.x - before.x;
+        const dy = previous.y - before.y;
+        const length = Math.hypot(dx, dy) || 1;
+        directionRef.current = { x: dx / length, y: dy / length };
+      } else {
+        directionRef.current = port.normal;
+      }
+      renderPreview(lastCursorRef.current);
+      return true;
+    }
+    if (event.key === "Tab") {
+      const store = useDuctToolStore.getState();
+      store.setAngleMode(store.angleMode === "90" ? "45" : "90");
+      renderPreview(lastCursorRef.current);
+      return true;
+    }
+    return false;
+  }, [finish, renderPreview]);
 
   const handleKeyUp = useCallback((_event: KeyboardEvent) => {
     // No-op for parity with other tool hooks.
   }, []);
 
   const cancelDrawing = useCallback(() => {
-    resetDrawing();
-  }, [resetDrawing]);
+    const active = portRef.current !== null;
+    reset();
+    return active;
+  }, [reset]);
 
   useEffect(() => {
-    if (activeTool === "duct") {
-      return;
-    }
-    resetDrawing();
-  }, [activeTool, resetDrawing]);
+    if (activeTool !== "duct") reset();
+  }, [activeTool, reset]);
 
-  useEffect(
-    () => () => {
-      resetDrawing();
-    },
-    [resetDrawing],
-  );
+  useEffect(() => () => reset(), [reset]);
 
-  return {
-    isDrawing: activeTargetRef.current !== null,
-    handleMouseDown,
-    handleMouseMove,
-    handleDoubleClick,
-    handleKeyDown,
-    handleKeyUp,
-    cancelDrawing,
-  };
+  return { handleMouseDown, handleMouseMove, handleDoubleClick, handleKeyDown, handleKeyUp, cancelDrawing };
 }

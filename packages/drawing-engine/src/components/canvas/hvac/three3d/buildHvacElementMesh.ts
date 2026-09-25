@@ -7,12 +7,12 @@ import { markMaterialOwned } from "../../threeResourceLifecycle";
 import { buildCeilingCassetteModel } from "../ceilingCassetteModel";
 import { compileCopperSocketElbowRoute } from "../copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "../copperSocketElbows";
+import type { DuctDesignSettings } from "../duct/ductSettings";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
 } from "../ductedIndoorUnitModel";
 import { resolveFieldPipeBendRadiusMm } from "../fieldPipeBends";
-import { buildGiDuctVisual } from "../giDuctModel";
 import type { PipeBypass } from "../pipeBypass";
 import { liftPipePlanRouteTo3d, readPipeRouteNodes3d } from "../pipeRoute3d";
 import { computeFittingRunMm } from "../pipeRoutingRules";
@@ -39,6 +39,7 @@ import { getUnitPipePortSpec } from "../unitPipePortModel";
 
 import { addCondensateGullyMeshes, addCondensatePipeMeshes } from "./condensateMeshes";
 import { buildCopperSocketElbowMesh } from "./copperSocketElbowMesh";
+import { addDuctRunMeshes } from "./ductMeshes";
 import { instantiateGlbModel } from "./glbModelCache";
 import {
   buildCylinderGeometry,
@@ -60,18 +61,6 @@ export const REFRIGERANT_PIPE_3D_COLORS = {
   liquidCopper: "#dca25d",
 } as const;
 
-const MEP_PROJECTION_PALETTE = {
-  ductTop: "#8d99a6",
-  ductSide: "#687482",
-  ductEdge: "#2635a4",
-  ductAccent: "#b026d1",
-  ductCollar: "#2e3a9d",
-  ductSupport: "#334155",
-  pipeSupport: "#16a34a",
-  pipeClamp: "#0f172a",
-  pipeBase: "#475569",
-} as const;
-
 export type HvacProjectionLabelAnchor = {
   key: string;
   position: THREE.Vector3;
@@ -81,6 +70,8 @@ export type HvacProjectionLabelAnchor = {
 
 export type HvacBuildSceneContext = {
   allElements: HvacElement[];
+  /** Project duct settings (resolved defaults when absent). */
+  ductSettings?: DuctDesignSettings;
   pipeEndpointStateMap?: Map<string, RefrigerantPipeEndpointRenderState>;
   pipeRenderChainStateMap?: Map<string, RefrigerantPipeRenderChainState>;
   pipeTargets?: VisibleRefrigerantPipeSegmentTarget[];
@@ -1477,98 +1468,6 @@ function addFrontLouverBank(
   }
 }
 
-function addDuctCollar(
-  group: THREE.Group,
-  options: {
-    x: number;
-    outerWidthMm: number;
-    outerHeightMm: number;
-    color: string;
-    bandLengthMm: number;
-    bandThicknessMm: number;
-  },
-): void {
-  const halfWidth = options.outerWidthMm / 2;
-  const halfHeight = options.outerHeightMm / 2;
-  const thickness = Math.max(5, options.bandThicknessMm);
-  const bandLength = Math.max(6, options.bandLengthMm);
-  group.add(
-    createLocalBoxMesh(
-      bandLength,
-      options.outerWidthMm + thickness * 1.2,
-      thickness,
-      options.color,
-      new THREE.Vector3(options.x, 0, options.outerHeightMm + thickness / 2),
-      { renderOrder: 21 },
-    ),
-  );
-  group.add(
-    createLocalBoxMesh(
-      bandLength,
-      thickness,
-      options.outerHeightMm + thickness * 1.2,
-      options.color,
-      new THREE.Vector3(options.x, -halfWidth - thickness / 2, halfHeight),
-      { renderOrder: 21 },
-    ),
-  );
-  group.add(
-    createLocalBoxMesh(
-      bandLength,
-      thickness,
-      options.outerHeightMm + thickness * 1.2,
-      options.color,
-      new THREE.Vector3(options.x, halfWidth + thickness / 2, halfHeight),
-      { renderOrder: 21 },
-    ),
-  );
-}
-
-function addDuctEdgeBands(
-  group: THREE.Group,
-  options: {
-    lengthMm: number;
-    outerWidthMm: number;
-    outerHeightMm: number;
-    edgeColor: string;
-    accentColor: string;
-  },
-): void {
-  const halfWidth = options.outerWidthMm / 2;
-  const edgeThickness = Math.max(7, Math.min(18, options.outerWidthMm * 0.04));
-  const edgeHeight = Math.max(4, edgeThickness * 0.45);
-  [-1, 1].forEach((side) => {
-    group.add(
-      createLocalBoxMesh(
-        options.lengthMm,
-        edgeThickness,
-        edgeHeight,
-        options.edgeColor,
-        new THREE.Vector3(
-          0,
-          side * (halfWidth - edgeThickness / 2),
-          options.outerHeightMm + edgeHeight / 2,
-        ),
-        { renderOrder: 22 },
-      ),
-    );
-  });
-  group.add(
-    createLocalBoxMesh(
-      options.lengthMm,
-      edgeThickness * 0.72,
-      Math.max(7, edgeThickness * 0.7),
-      options.accentColor,
-      new THREE.Vector3(
-        0,
-        halfWidth + edgeThickness * 0.12,
-        options.outerHeightMm * 0.42,
-      ),
-      { renderOrder: 22 },
-    ),
-  );
-}
-
 function normalizePoint(value: unknown): Point2D | null {
   if (
     typeof value !== "object" ||
@@ -2430,142 +2329,11 @@ export function buildHvacElementMesh(
       break;
     }
     case "duct": {
-      const ductVisual = buildGiDuctVisual(effectiveElement);
-      const halfHeight = ductVisual.outerHeightMm / 2;
-      const halfWidth = ductVisual.outerWidthMm / 2;
-      const wallThickness = ductVisual.wallThicknessMm;
-      const innerWidth = Math.max(12, ductVisual.innerWidthMm);
-      const innerHeight = Math.max(12, ductVisual.innerHeightMm);
-      const ductCollarLength = Math.max(
-        10,
-        Math.min(26, ductVisual.outerWidthMm * 0.08),
-      );
-      const ductBandThickness = Math.max(
-        7,
-        Math.min(18, ductVisual.outerWidthMm * 0.04),
-      );
-
-      ductVisual.segments.forEach((segment, index) => {
-        const segmentGroup = new THREE.Group();
-        segmentGroup.position.set(segment.localCenter.x, segment.localCenter.y, 0);
-        segmentGroup.rotation.z = THREE.MathUtils.degToRad(segment.angleDeg);
-
-        segmentGroup.add(
-          createLocalBoxMesh(
-            segment.lengthMm,
-            ductVisual.outerWidthMm,
-            wallThickness,
-            MEP_PROJECTION_PALETTE.ductTop,
-            new THREE.Vector3(0, 0, ductVisual.outerHeightMm - wallThickness / 2),
-          ),
-        );
-        segmentGroup.add(
-          createLocalBoxMesh(
-            segment.lengthMm,
-            ductVisual.outerWidthMm,
-            wallThickness,
-            MEP_PROJECTION_PALETTE.ductSide,
-            new THREE.Vector3(0, 0, wallThickness / 2),
-          ),
-        );
-        segmentGroup.add(
-          createLocalBoxMesh(
-            segment.lengthMm,
-            wallThickness,
-            ductVisual.outerHeightMm,
-            MEP_PROJECTION_PALETTE.ductSide,
-            new THREE.Vector3(0, -halfWidth + wallThickness / 2, halfHeight),
-          ),
-        );
-        segmentGroup.add(
-          createLocalBoxMesh(
-            segment.lengthMm,
-            wallThickness,
-            ductVisual.outerHeightMm,
-            MEP_PROJECTION_PALETTE.ductSide,
-            new THREE.Vector3(0, halfWidth - wallThickness / 2, halfHeight),
-          ),
-        );
-        addDuctEdgeBands(segmentGroup, {
-          lengthMm: segment.lengthMm,
-          outerWidthMm: ductVisual.outerWidthMm,
-          outerHeightMm: ductVisual.outerHeightMm,
-          edgeColor: MEP_PROJECTION_PALETTE.ductEdge,
-          accentColor: MEP_PROJECTION_PALETTE.ductAccent,
-        });
-
-        segment.seamOffsetsMm.forEach((offsetMm) => {
-          const localX = offsetMm - segment.lengthMm / 2;
-          segmentGroup.add(
-            createLocalBoxMesh(
-              Math.max(2.4, wallThickness * 2.8),
-              ductVisual.outerWidthMm + wallThickness * 0.8,
-              Math.max(1.4, wallThickness * 1.7),
-              MEP_PROJECTION_PALETTE.ductCollar,
-              new THREE.Vector3(localX, 0, ductVisual.outerHeightMm + 1.5),
-              { renderOrder: 19 },
-            ),
-          );
-          addDuctCollar(segmentGroup, {
-            x: localX,
-            outerWidthMm: ductVisual.outerWidthMm,
-            outerHeightMm: ductVisual.outerHeightMm,
-            color: MEP_PROJECTION_PALETTE.ductCollar,
-            bandLengthMm: ductCollarLength * 0.72,
-            bandThicknessMm: ductBandThickness * 0.72,
-          });
-        });
-
-        if (index === 0) {
-          addDuctCollar(segmentGroup, {
-            x: -segment.lengthMm / 2 + ductCollarLength / 2,
-            outerWidthMm: ductVisual.outerWidthMm,
-            outerHeightMm: ductVisual.outerHeightMm,
-            color: MEP_PROJECTION_PALETTE.ductCollar,
-            bandLengthMm: ductCollarLength,
-            bandThicknessMm: ductBandThickness,
-          });
-        }
-
-        addDuctCollar(segmentGroup, {
-          x: segment.lengthMm / 2 - ductCollarLength / 2,
-          outerWidthMm: ductVisual.outerWidthMm,
-          outerHeightMm: ductVisual.outerHeightMm,
-          color: MEP_PROJECTION_PALETTE.ductCollar,
-          bandLengthMm: ductCollarLength,
-          bandThicknessMm: ductBandThickness,
-        });
-
-        if (index === ductVisual.segments.length - 1) {
-          const endFaceX = segment.lengthMm / 2 - wallThickness / 2;
-          segmentGroup.add(
-            createLocalBoxMesh(
-              Math.max(1.2, wallThickness * 0.85),
-              innerWidth,
-              innerHeight,
-              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctInterior,
-              new THREE.Vector3(
-                segment.lengthMm / 2 - wallThickness * 0.7,
-                0,
-                halfHeight,
-              ),
-              { renderOrder: 17 },
-            ),
-          );
-          segmentGroup.add(
-            createLocalBoxMesh(
-              wallThickness,
-              ductVisual.outerWidthMm,
-              wallThickness,
-              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
-              new THREE.Vector3(endFaceX, 0, halfHeight - wallThickness / 2),
-              { renderOrder: 19 },
-            ),
-          );
-        }
-
-        group.add(segmentGroup);
-      });
+      // World-space geometry from the fabrication plan — the same plan the
+      // plan overlay and the BOM read, so what is drawn is what is scheduled.
+      group.position.set(0, 0, 0);
+      group.rotation.set(0, 0, 0);
+      addDuctRunMeshes(group, effectiveElement, context);
       break;
     }
     case "ducted-ac": {

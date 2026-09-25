@@ -1089,6 +1089,7 @@ export function HybridProjectionLayer({
   pipeInteractionRef,
 }: HybridProjectionLayerProps) {
   const routingSettings = useSmartDrawingStore(state => state.pipeRoutingSettings);
+  const ductSettings = useSmartDrawingStore(state => state.ductSettings);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pipeDiagnosticRef = useRef<HTMLPreElement | null>(null);
   const smartDraftingHudRef = useRef<HTMLDivElement | null>(null);
@@ -2947,13 +2948,14 @@ export function HybridProjectionLayer({
       ...buildPreviewRenderContext(hvacElements),
       pipeTargets: hvacElements.some(element => element.type === "refrigerant-branch-kit")
         ? getVisibleRefrigerantPipeStraightSegmentTargets(hvacElements) : [],
+      ductSettings,
     };
     sceneState.hvacScene.update(sceneContext, glbLoadRevision);
     refreshSceneContentBounds(sceneState, true);
     controllerRef.current?.setContentBounds(sceneState.contentBounds);
     requestFrameRef.current?.();
     schedulePreviewRebuild();
-  }, [interactionElement, rendererRevision, glbLoadRevision, routingSettings,
+  }, [interactionElement, rendererRevision, glbLoadRevision, routingSettings, ductSettings,
     hvacElements, buildPreviewRenderContext, schedulePreviewRebuild]);
 
   // Hover / selection → outline proxies (reference refreshProxies wiring).

@@ -24,6 +24,9 @@ import { readCondensateGullySpec } from "./condensate/condensateTypes";
 import { copperSocketCoverOutline, copperSocketCupOutline } from "./copperSocketElbowPlanGeometry";
 import { compileCopperSocketElbowRoute } from "./copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "./copperSocketElbows";
+import { resolveLocalAirPorts } from "./duct/ductAirPorts";
+import { pickDuctAtWorldPoint } from "./duct/ductPick";
+import { resolveDuctSettings, type DuctDesignSettings } from "./duct/ductSettings";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
@@ -330,6 +333,8 @@ export class HvacPlanRenderer {
   >();
   private selectedIds = new Set<string>();
   private hoveredId: string | null = null;
+  /** Duct settings used to pick runs on their drawn pieces. */
+  private ductSettings: DuctDesignSettings = resolveDuctSettings({});
   private placementPreview: HvacGroup[] = [];
   // Cached straight-segment geometry for deterministic pipe hit-testing; rebuilt
   // lazily on the next pick after any element render/override change.
@@ -3439,7 +3444,56 @@ export class HvacPlanRenderer {
             0.9,
           );
         });
-        ducted.airOpenings.forEach((opening) => {
+        // Units with measured collars (catalog GLB) draw the real collars; the
+        // procedural openings are only a placeholder for unknown units.
+        const measuredAirPorts = resolveLocalAirPorts(element);
+        if (measuredAirPorts.source !== "procedural") {
+          measuredAirPorts.ports.forEach((port) => {
+            const alongY = Math.abs(port.normal.y) >= Math.abs(port.normal.x);
+            const collarDepthMm = port.collarDepthMm;
+            const collarCentre = {
+              x: port.lip.x - port.normal.x * collarDepthMm * 0.5,
+              y: port.lip.y - port.normal.y * collarDepthMm * 0.5,
+            };
+            const mouthDepthMm = 36;
+            const mouthCentre = {
+              x: port.lip.x - port.normal.x * (collarDepthMm + mouthDepthMm * 0.5),
+              y: port.lip.y - port.normal.y * (collarDepthMm + mouthDepthMm * 0.5),
+            };
+            const size = (depthMm: number) => (alongY
+              ? { width: port.widthMm, depth: depthMm }
+              : { width: depthMm, depth: port.widthMm });
+            renderRect(
+              { ...mouthCentre, ...size(mouthDepthMm), cornerRadius: 3 },
+              {
+                fill: options.valid
+                  ? port.kind === "return"
+                    ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCavityReturn
+                    : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCavitySupply
+                  : "#1f2a31",
+                stroke: undefined,
+                strokeWidth: 0,
+              },
+            );
+            renderRect(
+              { ...collarCentre, ...size(collarDepthMm), cornerRadius: 2 },
+              {
+                fill: options.valid
+                  ? port.kind === "return"
+                    ? "rgba(108,115,123,0.22)"
+                    : "rgba(188,194,200,0.28)"
+                  : "rgba(255,255,255,0.08)",
+                stroke: options.valid
+                  ? port.kind === "return"
+                    ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthReturn
+                    : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthSupply
+                  : "rgba(185,28,28,0.52)",
+                strokeWidth: 1,
+              },
+            );
+          });
+        }
+        (measuredAirPorts.source === "procedural" ? ducted.airOpenings : []).forEach((opening) => {
           const projection = getDuctedIndoorUnitOpeningPlanProjection(
             ducted,
             opening,
@@ -4142,7 +4196,9 @@ export class HvacPlanRenderer {
       element.type === "refrigerant-pipe-pair" ||
       element.type === "refrigerant-branch-kit" ||
       // Condensate pipes are painted by CondensateOverlay and picked geometrically.
-      element.type === "condensate-pipe"
+      element.type === "condensate-pipe" ||
+      // Duct runs are painted by DuctOverlay from their fabrication plan.
+      element.type === "duct"
     ) {
       return;
     }
@@ -4381,6 +4437,10 @@ export class HvacPlanRenderer {
     return bestId ? { id: bestId, distanceMm: bestDist } : null;
   }
 
+  setDuctSettings(settings: DuctDesignSettings): void {
+    this.ductSettings = settings;
+  }
+
   findElementAtWorldPoint(worldPointMm: Point2D): string | null {
     // Pipes: precise geometric pick (deterministic, matches the visible pipe).
     // Refrigerant and condensate runs can sit side by side; the nearer
@@ -4395,6 +4455,16 @@ export class HvacPlanRenderer {
       if (!condensatePick) return refrigerantPick!.id;
       if (!refrigerantPick) return condensatePick.id;
       return condensatePick.distanceMm < refrigerantPick.distanceMm ? condensatePick.id : refrigerantPick.id;
+    }
+    // Ducts: picked on their drawn pieces, after the pipes that may run over them.
+    const ductPick = pickDuctAtWorldPoint(
+      worldPointMm,
+      this.hvacData.values(),
+      this.ductSettings,
+      PIPE_PICK_PADDING_PX / (MM_TO_PX * Math.max(this.canvas.getZoom(), 0.01)),
+    );
+    if (ductPick) {
+      return ductPick.id;
     }
     const modelBackedId = hitTestModelBackedHvacElement(
       worldPointMm,

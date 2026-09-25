@@ -93,6 +93,12 @@ import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePr
 import { fixedPrefixLength, translateRouteInterior } from "./canvas/hvac/condensate/condensateRouteOps";
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
+import { DuctOverlay, type DuctOverlayHandle } from "./canvas/hvac/duct/DuctOverlay";
+import { listAirPorts } from "./canvas/hvac/duct/ductAirPorts";
+import { buildDuctBom, buildDuctFabricationSchedule } from "./canvas/hvac/duct/ductBom";
+import { buildDuctRunDraftElement } from "./canvas/hvac/duct/ductDraft";
+import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
+import { isDuctElement } from "./canvas/hvac/duct/ductTypes";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
@@ -359,6 +365,7 @@ export function DrawingCanvas({
   const objectRendererRef = useRef<ObjectRenderer | null>(null);
   const sectionLineRendererRef = useRef<SectionLineRenderer | null>(null);
   const hvacRendererRef = useRef<HvacPlanRenderer | null>(null);
+  const ductOverlayRef = useRef<DuctOverlayHandle | null>(null);
   const zoomRef = useRef(1);
   const panOffsetRef = useRef<Point2D>({ x: 0, y: 0 });
   // Smooth view transform sync: one store update per frame for zoom/pan.
@@ -577,6 +584,7 @@ export function DrawingCanvas({
     commitHvacElementCommand,
     setPipeRoutingSettings,
     condensateSettings,
+    ductSettings,
     pipeRoutingSettings,
     updateHvacElement,
     syncAutoDimensions,
@@ -660,6 +668,7 @@ export function DrawingCanvas({
       commitHvacElementCommand: state.commitHvacElementCommand,
       setPipeRoutingSettings: state.setPipeRoutingSettings,
       condensateSettings: state.condensateSettings,
+      ductSettings: state.ductSettings,
       pipeRoutingSettings: state.pipeRoutingSettings,
       updateHvacElement: state.updateHvacElement,
       syncAutoDimensions: state.syncAutoDimensions,
@@ -719,6 +728,9 @@ export function DrawingCanvas({
   const projectionViewOnly = hybridViewOnly;
   const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile);
   const condensateValidationReport = useCondensateLiveValidation(hvacElements, condensateSettings, pipeRoutingSettings);
+  useEffect(() => {
+    hvacRendererRef.current?.setDuctSettings(ductSettings);
+  }, [ductSettings]);
   // One design-check list: refrigerant (VRF) rules and condensate drainage rules.
   const designCheckReport = useMemo(
     () => mergeValidationReports(vrfValidationReport, condensateValidationReport),
@@ -774,6 +786,30 @@ export function DrawingCanvas({
       getCondensateProfile: (elementId: string) => {
         const target = hvacElements.find((candidate) => candidate.id === elementId);
         return target && isCondensatePipe(target) ? readCondensatePipeSpec(target) : null;
+      },
+      /** Ducts: air collars, plans, BOM/schedule, and a scripted run from a collar. */
+      getAirPorts: () => listAirPorts(hvacElements),
+      getDuctPlan: (elementId: string) => {
+        const state = useSmartDrawingStore.getState();
+        const target = state.hvacElements.find((candidate) => candidate.id === elementId);
+        return target && isDuctElement(target) ? getDuctRunPlan(target, state.hvacElements, state.ductSettings) : null;
+      },
+      getDuctBom: () => {
+        const state = useSmartDrawingStore.getState();
+        const plans = state.hvacElements.filter(isDuctElement)
+          .map((element) => getDuctRunPlan(element, state.hvacElements, state.ductSettings))
+          .filter((plan): plan is NonNullable<typeof plan> => plan !== null);
+        return { bom: buildDuctBom(plans), schedule: buildDuctFabricationSchedule(plans) };
+      },
+      getDuctSettings: () => useSmartDrawingStore.getState().ductSettings,
+      setDuctSettings: (updates: Partial<ReturnType<typeof useSmartDrawingStore.getState>['ductSettings']>) =>
+        useSmartDrawingStore.getState().setDuctSettings(updates),
+      drawDuct: (unitId: string, portId: string, points: Array<{ x: number; y: number }>) => {
+        const state = useSmartDrawingStore.getState();
+        const port = listAirPorts(state.hvacElements).find((candidate) => candidate.unitId === unitId && candidate.portId === portId);
+        if (!port) return null;
+        const element = buildDuctRunDraftElement({ port, points }, `duct-debug-${Date.now().toString(36)}`);
+        return state.commitHvacElementCommand("Draw duct run", { add: [element], selectedIds: [element.id] })[0] ?? null;
       },
       worldToClient: (point: { x: number; y: number }) => {
         if (!fabricCanvas) return null;
@@ -1496,15 +1532,13 @@ export function DrawingCanvas({
     handleDoubleClick: handleDuctDoubleClick,
     handleKeyDown: handleDuctKeyDown,
     handleKeyUp: handleDuctKeyUp,
-    cancelDrawing: _cancelDuctDrawing,
+    cancelDrawing: cancelDuctDrawing,
   } = useDuctTool({
-    fabricRef,
-    hvacRendererRef,
     activeTool: tool,
     hvacElements,
     zoom: viewportZoom,
-    addHvacElement,
-    updateHvacElement,
+    ductOverlayRef,
+    commitHvacElementCommand,
     setSelectedIds,
     setProcessingStatus,
   });
@@ -1649,6 +1683,7 @@ export function DrawingCanvas({
         canvas.setViewportTransform(nextViewport);
         pipeStudioOverlayRef.current?.syncViewTransform(nextViewport);
         condensateOverlayRef.current?.syncViewTransform(nextViewport);
+        ductOverlayRef.current?.syncViewTransform(nextViewport);
         if (synchronousPaint) canvas.renderAll();
         else {
           hybridPlanPaintPendingRef.current = true;
@@ -2420,7 +2455,8 @@ export function DrawingCanvas({
       return true;
     }
     if (tool === "duct") {
-      setTool("select");
+      // First Esc cancels a draft run; the next one leaves the tool.
+      if (!cancelDuctDrawing()) setTool("select");
       return true;
     }
     if (tool === "section-line" && sectionLineDrawingState.isDrawing)
@@ -2451,6 +2487,7 @@ export function DrawingCanvas({
     isWallDrawing,
     isRoomDrawing,
     cancelRoomCreation,
+    cancelDuctDrawing,
     setTool,
     sectionLineDrawingState.isDrawing,
     selectedIds.length,
@@ -2505,6 +2542,7 @@ export function DrawingCanvas({
     objectRendererRef.current = new ObjectRenderer(canvas);
     sectionLineRendererRef.current = new SectionLineRenderer(canvas);
     hvacRendererRef.current = new HvacPlanRenderer(canvas);
+    hvacRendererRef.current.setDuctSettings(useSmartDrawingStore.getState().ductSettings);
 
     // Enable section line dragging with store update
     sectionLineRendererRef.current.setDraggable(true);
@@ -2543,6 +2581,7 @@ export function DrawingCanvas({
       if (vpt) {
         pipeStudioOverlayRef.current?.syncViewTransform(vpt);
         condensateOverlayRef.current?.syncViewTransform(vpt);
+        ductOverlayRef.current?.syncViewTransform(vpt);
       }
     };
     canvas.on("after:render", syncOverlayViewTransform);
@@ -3047,6 +3086,18 @@ export function DrawingCanvas({
             saveToHistory={saveToHistory}
             setProcessingStatus={setProcessingStatus}
             setSelectedIds={setSelectedIds}
+          />
+          <DuctOverlay
+            ref={ductOverlayRef}
+            enabled
+            width={hostWidth}
+            height={hostHeight}
+            viewportZoom={viewportZoom}
+            panOffset={panOffset}
+            hvacElements={hvacElements}
+            selectedIds={selectedIds}
+            settings={ductSettings}
+            showPorts={tool === "duct" && !projectionViewOnly}
           />
           <CondensateOverlay
             ref={condensateOverlayRef}

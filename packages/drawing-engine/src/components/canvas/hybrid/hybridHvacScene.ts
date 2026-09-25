@@ -35,6 +35,12 @@ function dependencyReader(context: HvacBuildSceneContext, modelRevision: number)
         dependencies.push(chain.renderAsHead, signature, tail);
         if (tail) dependencies.push(...connectorSources(tail, byId));
       }
+    } else if (element.type === 'duct') {
+      // A run's fabrication depends on the project duct settings and on the
+      // unit collar it starts from — nothing else in the scene.
+      dependencies.push(context.ductSettings, ...connectorSources(element, byId));
+      const start = (element.properties.ductRun as { start?: { unitId?: unknown } } | undefined)?.start;
+      if (typeof start?.unitId === 'string') dependencies.push(byId.get(start.unitId));
     } else if (element.type === 'refrigerant-branch-kit') {
       dependencies.push(settings);
       // Only an INLINE kit resolves its render centre against the scene:

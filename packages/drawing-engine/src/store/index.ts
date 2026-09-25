@@ -36,6 +36,11 @@ import {
   type CondensateDesignSettings,
 } from '../components/canvas/hvac/condensate/condensateSettings';
 import {
+  DEFAULT_DUCT_SETTINGS,
+  resolveDuctSettings,
+  type DuctDesignSettings,
+} from '../components/canvas/hvac/duct/ductSettings';
+import {
   getAutoRouteOwnership,
   retainGeneratedPipeEdit,
   withPipeRegenerationPolicy,
@@ -1849,6 +1854,7 @@ export interface DrawingState {
   hvacDesignConditions: HvacDesignConditions;
   pipeRoutingSettings: PipeRoutingSettings;
   condensateSettings: CondensateDesignSettings;
+  ductSettings: DuctDesignSettings;
   wallDrawingState: WallDrawingState;
   wallSettings: WallSettings;
   sectionLines: SectionLine[];
@@ -2050,6 +2056,7 @@ export interface DrawingState {
   setHvacDesignConditions: (updates: Partial<HvacDesignConditions>) => void;
   setPipeRoutingSettings: (updates: Partial<PipeRoutingSettings>) => void;
   setCondensateSettings: (updates: Partial<CondensateDesignSettings>) => void;
+  setDuctSettings: (updates: Partial<DuctDesignSettings>) => void;
   applyRoomTemplateToSelectedRooms: (templateId: string) => void;
   deleteRoom: (id: string) => void;
   getRoom: (id: string) => Room | undefined;
@@ -2287,6 +2294,7 @@ export const useDrawingStore = create<DrawingState>()(
       hvacDesignConditions: { ...DEFAULT_HVAC_DESIGN_CONDITIONS },
       pipeRoutingSettings: { ...DEFAULT_PIPE_ROUTING_SETTINGS },
       condensateSettings: { ...DEFAULT_CONDENSATE_SETTINGS },
+      ductSettings: resolveDuctSettings(DEFAULT_DUCT_SETTINGS),
       wallDrawingState: { ...DEFAULT_WALL_DRAWING_STATE },
       wallSettings: { ...DEFAULT_WALL_SETTINGS },
       sectionLines: [],
@@ -3876,6 +3884,15 @@ export const useDrawingStore = create<DrawingState>()(
         }));
       },
 
+      setDuctSettings: (updates) => {
+        set((state) => ({
+          ductSettings: resolveDuctSettings({
+            ...state.ductSettings,
+            ...updates,
+          }),
+        }));
+      },
+
       applyRoomTemplateToSelectedRooms: (templateId) => {
         const template = DEFAULT_ROOM_HVAC_TEMPLATES.find((entry) => entry.id === templateId);
         if (!template) return;
@@ -5087,6 +5104,7 @@ export const useDrawingStore = create<DrawingState>()(
           hvacDesignConditions,
           pipeRoutingSettings,
           condensateSettings,
+          ductSettings,
           materialLibrary,
           boardSettings,
           pageConfig,
@@ -5118,6 +5136,7 @@ export const useDrawingStore = create<DrawingState>()(
           hvacDesignConditions,
           pipeRoutingSettings,
           condensateSettings,
+          ductSettings,
           materialLibrary,
           attributeEnvelope,
           boardSettings,
@@ -5313,6 +5332,11 @@ export const useDrawingStore = create<DrawingState>()(
               ? (data.condensateSettings as Partial<CondensateDesignSettings>)
               : null,
           );
+          const nextDuctSettings = resolveDuctSettings(
+            typeof data.ductSettings === 'object' && data.ductSettings
+              ? (data.ductSettings as Partial<DuctDesignSettings>)
+              : null,
+          );
 
           // Board/sheet context travels with the document so a drawing reopens
           // at the unit, page and scale it was authored with.
@@ -5400,6 +5424,7 @@ export const useDrawingStore = create<DrawingState>()(
             hvacDesignConditions: nextHvacDesignConditions,
             pipeRoutingSettings: nextPipeRoutingSettings,
             condensateSettings: nextCondensateSettings,
+            ductSettings: nextDuctSettings,
             materialLibrary: nextMaterialLibrary,
             boardSettings: nextBoardSettings,
             pageConfig: nextPageConfig,
