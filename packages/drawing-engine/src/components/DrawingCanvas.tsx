@@ -73,6 +73,7 @@ import {
 } from "./canvas/board";
 import { worldToScreenFromFabricViewport } from "./canvas/coordinateTransform";
 import { useCondensateLiveValidation } from "./canvas/hooks/useCondensateLiveValidation";
+import { useDuctLiveValidation } from "./canvas/hooks/useDuctLiveValidation";
 import { useVrfLiveValidation } from "./canvas/hooks/useVrfLiveValidation";
 import { PipeBranchKitProposalCard } from "./canvas/hvac/PipeBranchKitProposalCard";
 import { PipeClashOverlay } from "./canvas/hvac/PipeClashOverlay";
@@ -96,9 +97,14 @@ import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValid
 import { DuctOverlay, type DuctOverlayHandle } from "./canvas/hvac/duct/DuctOverlay";
 import { listAirPorts } from "./canvas/hvac/duct/ductAirPorts";
 import { buildDuctBom, buildDuctFabricationSchedule } from "./canvas/hvac/duct/ductBom";
-import { buildDuctRunDraftElement } from "./canvas/hvac/duct/ductDraft";
+import { splitOrigin, tapOrigin } from "./canvas/hvac/duct/ductBranchTargets";
+import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
+import { commitDuctRunEdit, commitDuctRunMove, followDuctsForMove } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
-import { isDuctElement } from "./canvas/hvac/duct/ductTypes";
+import { moveDuctRuns, toElementUpdate } from "./canvas/hvac/duct/ductFollow";
+import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
+import { getDuctSupportPlan } from "./canvas/hvac/duct/ductSupports";
+import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
@@ -728,13 +734,16 @@ export function DrawingCanvas({
   const projectionViewOnly = hybridViewOnly;
   const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile);
   const condensateValidationReport = useCondensateLiveValidation(hvacElements, condensateSettings, pipeRoutingSettings);
+  const ductValidationReport = useDuctLiveValidation(hvacElements, ductSettings);
   useEffect(() => {
     hvacRendererRef.current?.setDuctSettings(ductSettings);
+    // The pipe clash check plans ducts as obstacles with the document's settings.
+    setActiveDuctSettings(ductSettings);
   }, [ductSettings]);
-  // One design-check list: refrigerant (VRF) rules and condensate drainage rules.
+  // One design-check list: refrigerant (VRF) rules, condensate drainage rules and duct (DU_*) checks.
   const designCheckReport = useMemo(
-    () => mergeValidationReports(vrfValidationReport, condensateValidationReport),
-    [vrfValidationReport, condensateValidationReport],
+    () => mergeValidationReports(mergeValidationReports(vrfValidationReport, condensateValidationReport), ductValidationReport),
+    [vrfValidationReport, condensateValidationReport, ductValidationReport],
   );
   // Dev-only scripted-verification handle; the literal NODE_ENV test lets
   // bundlers strip the block from production builds.
@@ -747,6 +756,8 @@ export function DrawingCanvas({
       getHvacElements: () => hvacElements,
       getVrfReport: () => vrfValidationReport,
       getCondensateReport: () => condensateValidationReport,
+      getDuctReport: () => ductValidationReport,
+      getDesignCheckReport: () => designCheckReport,
       getPipeSnapTargets: () => getRefrigerantPipeBundleSnapTargets(hvacElements),
       getPipeVisual: (elementId: string) => {
         const target = hvacElements.find((candidate) => candidate.id === elementId);
@@ -799,17 +810,76 @@ export function DrawingCanvas({
         const plans = state.hvacElements.filter(isDuctElement)
           .map((element) => getDuctRunPlan(element, state.hvacElements, state.ductSettings))
           .filter((plan): plan is NonNullable<typeof plan> => plan !== null);
-        return { bom: buildDuctBom(plans), schedule: buildDuctFabricationSchedule(plans) };
+        return { bom: buildDuctBom(plans, plans.map((plan) => getDuctSupportPlan(plan, state.hvacElements, state.ductSettings))), schedule: buildDuctFabricationSchedule(plans) };
       },
       getDuctSettings: () => useSmartDrawingStore.getState().ductSettings,
+      /** Add elements as one undoable command (scripted checks: e.g. a pipe across a duct). */
+      commitHvacElements: (action: string, add: HvacElement[]) =>
+        useSmartDrawingStore.getState().commitHvacElementCommand(action, { add, selectedIds: [] }),
+      getDuctSupports: (id: string) => {
+        const state = useSmartDrawingStore.getState();
+        const element = state.hvacElements.find((candidate) => candidate.id === id);
+        const plan = element ? getDuctRunPlan(element, state.hvacElements, state.ductSettings) : null;
+        return plan ? getDuctSupportPlan(plan, state.hvacElements, state.ductSettings) : null;
+      },
       setDuctSettings: (updates: Partial<ReturnType<typeof useSmartDrawingStore.getState>['ductSettings']>) =>
         useSmartDrawingStore.getState().setDuctSettings(updates),
-      drawDuct: (unitId: string, portId: string, points: Array<{ x: number; y: number }>) => {
+      /** A run from a collar; a point's `z` (clear bottom) adds a riser or drop where the level changes. */
+      drawDuct: (
+        unitId: string,
+        portId: string,
+        points: Array<{ x: number; y: number; z?: number }>,
+        legSizes?: Array<{ widthMm: number; heightMm: number }>,
+      ) => {
         const state = useSmartDrawingStore.getState();
         const port = listAirPorts(state.hvacElements).find((candidate) => candidate.unitId === unitId && candidate.portId === portId);
         if (!port) return null;
-        const element = buildDuctRunDraftElement({ port, points }, `duct-debug-${Date.now().toString(36)}`);
+        const element = buildDuctRunDraftElement({ port, points, legSizes }, `duct-debug-${Date.now().toString(36)}`);
         return state.commitHvacElementCommand("Draw duct run", { add: [element], selectedIds: [element.id] })[0] ?? null;
+      },
+      /**
+       * A branch exactly as the tool commits it. `offsets` are relative moves
+       * from the branch's start, so a script need not know the wall or outlet point.
+       */
+      drawDuctBranch: (request: {
+        parentId: string;
+        kind: "tap" | "split";
+        legIndex?: number;
+        stationMm?: number;
+        side: 1 | -1;
+        style?: "shoe-45" | "straight" | "spin-in" | "conical" | "y" | "bullhead";
+        vcd?: boolean;
+        widthMm: number;
+        heightMm: number;
+        /** Round branch (take-offs only, with a spin-in or conical collar). */
+        diameterMm?: number;
+        /** Relative moves; `dz` changes the level (a riser or drop at the point before). */
+        offsets: Array<{ x: number; y: number; dz?: number }>;
+        legSizes?: Array<{ widthMm: number; heightMm: number }>;
+      }) => {
+        const state = useSmartDrawingStore.getState();
+        const parent = state.hvacElements.find((candidate) => candidate.id === request.parentId);
+        if (!parent || !isDuctElement(parent)) return null;
+        const section = request.diameterMm ? roundLeg(request.diameterMm) : { widthMm: request.widthMm, heightMm: request.heightMm };
+        const tapStyle = request.style === "straight" || request.style === "spin-in" || request.style === "conical"
+          ? request.style : request.diameterMm ? "spin-in" : "shoe-45";
+        const origin = request.kind === "tap"
+          ? tapOrigin(parent, state.ductSettings, {
+            legIndex: request.legIndex ?? 0, stationMm: request.stationMm ?? 0, side: request.side,
+            style: tapStyle, vcd: request.vcd ?? true,
+          }, request.legSizes?.[0] ?? section)
+          : splitOrigin(parent, state.ductSettings, {
+            side: request.side, style: request.style === "bullhead" ? "bullhead" : "y", vcd: request.vcd ?? false,
+          }, request.legSizes?.[0] ?? section);
+        if (!origin || origin.kind === "port") return null;
+        let cursor = { ...origin.point, z: origin.bottomZ };
+        const points = request.offsets.map((offset) => (cursor = { x: cursor.x + offset.x, y: cursor.y + offset.y, z: cursor.z + (offset.dz ?? 0) }));
+        const draft = buildDuctRunDraft(
+          { origin, points, legSizes: request.legSizes ?? [section] },
+          `duct-debug-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          state.hvacElements,
+        );
+        return state.commitHvacElementCommand("Draw duct branch", ductRunDraftCommand(draft))[0] ?? null;
       },
       worldToClient: (point: { x: number; y: number }) => {
         if (!fabricCanvas) return null;
@@ -823,7 +893,7 @@ export function DrawingCanvas({
     return () => {
       delete root.__PROVACX_DEBUG__;
     };
-  }, [fabricCanvas, hvacElements, vrfValidationReport, condensateValidationReport]);
+  }, [fabricCanvas, hvacElements, vrfValidationReport, condensateValidationReport, ductValidationReport, designCheckReport]);
   const appliedVrfProfileRoutingKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!vrfRuleProfile) {
@@ -1536,6 +1606,8 @@ export function DrawingCanvas({
   } = useDuctTool({
     activeTool: tool,
     hvacElements,
+    ductSettings,
+    onDraftElementsChange: (elements) => hybridPipeInteractionRef.current?.setDraftPipes(elements),
     zoom: viewportZoom,
     ductOverlayRef,
     commitHvacElementCommand,
@@ -1862,6 +1934,8 @@ export function DrawingCanvas({
       for (const element of selectedEquipment) {
         // Drain runs are nudged below: their legs move, the ends stay attached.
         if (isCondensatePipe(element)) continue;
+        // Duct runs move their path (and branches) below, not an envelope.
+        if (isDuctElement(element)) continue;
         if (isRefrigerantPipeElementType(element.type)) {
           if (dzMm !== 0) {
             const context = [...hvacElements];
@@ -2057,6 +2131,24 @@ export function DrawingCanvas({
           return updates && movedEquipmentIds.includes(element.id) ? { ...element, ...updates } as HvacElement : element;
         });
         mergeDrainChanges(followDrainsForMove(hvacElements, after, movedEquipmentIds));
+        // Duct runs on the moved units' collars move with them, and their branches follow.
+        followDuctsForMove(hvacElements, after, movedEquipmentIds).forEach((run) => updatesById.set(run.id, toElementUpdate(run).updates));
+      }
+      // Selected duct runs: a free run translates, a take-off slides along its parent;
+      // runs whose unit moves with them were carried above.
+      const nudgedDucts = selectedEquipment.filter((element) => {
+        if (!isDuctElement(element)) return false;
+        const start = readDuctRunSpec(element)?.start;
+        return !(start?.kind === "unit-port" && selectedSet.has(start.unitId));
+      });
+      if (nudgedDucts.length) {
+        if (dzMm !== 0) {
+          setProcessingStatus("Duct levels are set on the run (bottom of duct), not nudged.", false);
+        } else {
+          const moved = moveDuctRuns(hvacElements, nudgedDucts.map((element) => element.id), { x: dxMm, y: dyMm }, useSmartDrawingStore.getState().ductSettings);
+          moved.moved.forEach((run) => updatesById.set(run.id, toElementUpdate(run).updates));
+          if (moved.refused) setProcessingStatus(moved.refused, false);
+        }
       }
 
       if (updatesById.size > 0 || drainAdd.length || drainRemove.size) {
@@ -3098,6 +3190,9 @@ export function DrawingCanvas({
             selectedIds={selectedIds}
             settings={ductSettings}
             showPorts={tool === "duct" && !projectionViewOnly}
+            moveEnabled={tool === "select" && !projectionViewOnly && !isSpacePressed}
+            onMoveCommit={commitDuctRunMove}
+            onEditCommit={commitDuctRunEdit}
           />
           <CondensateOverlay
             ref={condensateOverlayRef}

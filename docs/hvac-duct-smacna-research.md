@@ -253,36 +253,114 @@ Source: [Ductmate '25'/'35'/'45' systems specification](https://ductmate.com/wp-
 
 The Ductmate schedule is the manufacturer's documented alternative to the generic T-24 clip rule (S1.18 allows proprietary systems on manufacturer ratings). The engine therefore applies the Ductmate schedule to Ductmate joints and the SMACNA T-24 rule to generic TDC/TDF.
 
-### Fittings
+### Fittings (figures read from the scanned PDF)
 
-**Rectangular elbows (Fig. 2-2) and vanes (Figs 2-3, 2-4).** These figures are images, so the values come from institutional specifications that cite SMACNA, and from supplier notes.
+The figures are images in the text edition. They were read from the scanned 2nd-edition PDF (law.resource.org `smacna.duct.1995.pdf`, MD5 `32ef97f9b23a140aca03a587ae0d74e7`, local copy `D:\claude-tmp-vrf-check\research\`). PDF page = book page 2.N + 104 for chapter 2, 1.N + 20 for chapter 1, and 3.N + 136 for chapter 3. Every value below is `verified: true` in the engine (`ductFittingRules.ts`).
 
-| Rule | Value | Source | Verified against SMACNA text |
+**Fig. 2-2 Rectangular elbows (p.2.3–2.4)**
+- RE1 radius elbow: centreline R = 3W/2 unless otherwise specified; θ is not restricted to 90°. A square throat with R/W = 0.5 may be used up to 1000 fpm (5 m/s).
+- RE2 square throat with vanes; RE3 radius with vanes; RE4 square throat without vanes (5 m/s max); RE5 dual radius (R1 = ¾ W1, R2 = R1 + W2); RE6 mitred.
+- RE7–RE10 (45° throats, radius heels): all 45° throats are 100 mm minimum.
+- Bead, cross-break and reinforce flat surfaces as in straight duct.
+
+**Fig. 2-3 Vanes and vane runners (p.2.5)**
+
+| Vane | Radius | Spacing | Minimum sheet |
 |---|---|---|---|
-| Radius elbow centreline R/W | ≥1.0 minimum; 1.5 preferred wherever possible | Texas State 23 31 00; U-Michigan DG 230020 | no (figure) |
-| Square elbow | only with turning vanes | Texas State; Dartmouth 23 31 13 (RE1 square throat not permitted; RE4, 6–10 not permitted) | no |
-| Single-thickness vanes | 4½″ trailing ends, spacing 1½″ (38 mm) | Dartmouth 23 31 13 §2.3 C.2 | no |
-| Double-wall vanes | 2″ vane up to 48″ long, 4″ vane up to 72″ long at 3¼″ (83 mm) spacing; single-thickness 2″ up to 36″ | Conklin Metal (supplier blog) | no |
+| Single, small | 51 mm | 38 mm | 0.70 (24 ga) |
+| Single, large | 114 mm | 83 mm | 0.85 (22 ga) |
+| Double wall, small | 25 / 51 mm | 54 mm | 0.55 (26 ga) |
+| Double wall, large | 57 / 114 mm | 83 mm | 0.70 (24 ga) |
 
-**Transitions (Fig. 2-7).** The figure is an image. Dartmouth 23 31 13 limits "angular tapers to 30° for contracting and 20° for expanding" (stated for conical tees). Several institutional specifications apply the same limits to rectangular transitions. A 1:4 slope (≈14°) is used as the default design taper. Secondary blogs quoting 15°/7° per side are not used.
+Runner 38 mm minimum; runner type 1 is 0.85 mm (22 ga). The free area between double-wall vanes approximates the elbow inlet area. Other sizes are acceptable on designer approval.
 
-**Branch connections (Figs 2-5, 2-6).** Images only. The 45° entry ("shoe") lead-in is commonly drawn as ¼ of the branch width with a 100 mm (4″) minimum; this is unverified.
-- Branches are reinforced like straight duct of the larger fitting dimension (S1.16, text).
-- Branch and sub-branch intersections and collar tap-ins count as joints for sealing (p.1.8).
+**Fig. 2-4 Vane support in elbows (p.2.6):** maximum unsupported vane length 914 mm (single small and large), 1219 mm (small double), 1829 mm (large double). Beyond that, install vanes in sections or use tie rods. Vanes must be fastened to the runners. If W2 ≠ W1, special provisions are needed in vane shape (size-change elbows).
 
-**Volume dampers (§2.3, text)**
-- Every single-blade damper needs a locking quadrant.
-- Damper penetrations are sealed to the seal class, with end bearings at 750 Pa.
-- Blades longer than 1219 mm are sectioned.
-- Opposed-blade dampers are for modulating duty.
-- Dampers at diffusers and grilles should not be relied on for more than ¼–½ closure without noise.
+**Fig. 2-5 Divided flow branches (p.2.7):** Type 1 (Y with curved heels), Type 2 (bullhead tee, main 2W, splitter optional), Type 3, and Types 4A/4B with dampers (W, D2, D3 ≥ 102 mm). Volume control should be by branch dampers. A splitter, if shown, is 1.5 W or 1.5 D3 long.
 
-**Flexible connection at the fan or unit (Fig. 2-17, image).** Texas State 23 31 00 §3.05:
-- fire-resistant, waterproof, mildew-resistant fabric;
-- ≥2½″ (63.5 mm) between the metal edges, plus slack, with 1″ of slack per inch of static pressure;
-- fastened with galvanised flats or draw bands.
+**Fig. 2-6 Branch connections (p.2.8)**
+- Straight tap: butt flange or clinch lock.
+- 45° entry: L = W/4, 4″ (102 mm) minimum; close the opening at the corners.
+- Rectangular main to round branch: 45° lead-in with D1 not less than D2.
+- Round collars: conical, bellmouth, flanged, spin-in (beaded). Cut the opening accurately.
+- Do not use connections with scoops.
 
-The engine's default connector is 100 mm of fabric between two 75 mm metal edges. This is common fabricator practice and marked unverified.
+**Fig. 2-7 Offsets and transitions (p.2.9)**
+- Concentric transition: θ max 45° diverging, 60° converging (θ is the included angle).
+- Eccentric transition: θ max 30° (45° only from round to flat oval).
+- Offsets: Type 1 angled 15° max; Type 2 mitred 60° max; Type 3 radiussed (ogee) with a 150 mm minimum throat radius.
+- Standard bellmouth: C = 76 mm, B = A + 102 mm, R = A/5.
+
+The engine's flat-bottom reducer is concentric in plan (judged on the included angle) and eccentric in elevation (judged on the top slope). The 14° per-side design taper is project practice and sits inside both limits.
+
+**Figs 2-12 / 2-13 Volume dampers (p.2.16–2.17)**
+- Single blade up to 305 mm high:
+  - Fig. A, up to 457 mm wide: 0.85 blade, 10 mm pin and quadrant, 3.2 mm clearance.
+  - Fig. B, 483–1219 mm wide: 1.31 blade minimum, 13 mm continuous rod and quadrant.
+- Over 305 mm high, use multiple blades (Fig. 2-13): 1.31 blades 152–229 mm wide, a 51 mm or 38 × 12.7 × 3.2 channel frame, 9.5 or 12.7 mm shafts, 1219 mm maximum frame width. Opposed or parallel action.
+- Round damper (Fig. C): blade 0.70 minimum but not less than two gauges more than the duct; the rod is continuous at 500 Pa and on dampers over 305 mm diameter.
+- Closed end bearings are required at 750 Pa and over.
+
+**Fig. 2-17 Flexible connections at fan (p.2.21):** fabric (flame retardant) with 76 or 102 mm between the metal edges (254 mm maximum). Metal edges 76 mm each side. Fold, add sealant and staple at 25 mm centres.
+
+**Fig. 1-15 Corner closures, flanges (p.1.81):** this covers T-24a, T-24, T-25a and T-25b tee flanges.
+- Clips are 152 mm long minimum, the first within 152 mm of a corner, then at 381 mm maximum centres up to 750 Pa (305 mm above), 0.85 mm minimum.
+- Corner pieces 1.61 mm minimum with a 9.5 mm minimum bolt; continuous gasket.
+- Formed flanges without corner pieces are allowed to 500 Pa, with a bolt or rivet 25 mm from the end and at 150 mm intervals.
+
+**Chapter 3 Round duct (p.3.1–3.12)**
+- S3.1: fittings are not lighter than longitudinal-seam straight duct of the same diameter.
+- S3.2: collars to rectangular duct per S3.1 and Figs 2-6, 2-15.
+- S3.4: a branch saddle or direct connection is no more than ⅔ of the main diameter; no protrusion into the main; saddles sealed at all pressures.
+- Table 3-1 (mitred or gored elbows):
+
+  | Velocity | R/D | 90° pieces | 60° pieces | 45° pieces |
+  |---|---|---|---|---|
+  | up to 1000 fpm (5.1 m/s) | 0.6 | 3 | 2 | 2 |
+  | 1001–1500 fpm | 1.0 | 4 | 3 | 2 |
+  | above 1500 fpm (7.6 m/s) | 1.5 | 5 | 4 | 3 |
+
+- Table 3-2AM (unreinforced, positive pressure; nominal mm; max diameter → spiral / longitudinal seam at +500 Pa):
+
+  | Max Ø | Spiral | Long seam |
+  |---|---|---|
+  | 150 | 0.48 | 0.48 |
+  | 200 | 0.48 | 0.48 |
+  | 250 | 0.48 | 0.55 |
+  | 300 | 0.48 | 0.55 |
+  | 360 | 0.48 | 0.55 |
+  | 400 | 0.55 | 0.70 |
+  | 460 | 0.55 | 0.70 |
+  | 660 | 0.55 | 0.70 |
+  | 910 | 0.70 | 0.85 |
+  | 1270 | 0.85 | 1.00 |
+  | 1520 | 1.00 | 1.31 |
+  | 2130 | 1.31 | 1.61 |
+
+- Table 3-2BM (negative pressure, −500 Pa column; max diameter → spiral / longitudinal seam):
+
+  | Max Ø | Spiral | Long seam |
+  |---|---|---|
+  | 150–250 | 0.48 | 0.48 |
+  | 280–330 | 0.48 | 0.55 |
+  | 360–380 | 0.48 | 0.70 |
+  | 400–430 | 0.55 | 0.70 |
+  | 460–500 | 0.70 | 0.85 |
+  | 530–580 | 0.70 | 1.00 |
+  | 600–660 | 0.85 | 1.00 |
+  | 740–760 | 0.85 | 1.31 |
+  | 840–860 | 1.00 | 1.31 |
+  | 910–1070 | 1.00 | 1.61 |
+  | 1220 | 1.00 | 1.31 + angle A (25 × 25 × 3.2) at 1.8 m |
+  | 1520 | 1.31 | 1.31 + angle B (32 × 32 × 4.8) at 1.2 m |
+  | 1830 | 1.61 | not designed |
+
+- Fig. 3-1 seams: RL-1 spiral. At +500 Pa all seam types are permitted.
+- Fig. 3-2 transverse joints:
+  - RT-1 beaded sleeve 102 mm min (sleeve at least duct gauge); RT-3 drawband; RT-5 crimp with a 51 mm minimum lap.
+  - Screws on RT-1, 4, 5 and 6 at 381 mm maximum along the circumference, three minimum up to 356 mm diameter.
+  - RT-2 Van Stone flange: 8 mm bolts at 203 mm maximum.
+- Fig. 3-3: pleated, stamped, adjustable and segmented elbows.
 
 ### Flexible duct (§3.6–3.7, text)
 
@@ -380,6 +458,14 @@ Assumes steel yield ≥172.4 MPa and the hanger rod ≤152 mm from the duct side
 | 1830 | — | — | — | — | — | 145 | 281 | 408 | 535 | 744 |
 | 2010 | — | — | — | — | — | 95 | 227 | 358 | 485 | 694 |
 
+**How the engine reads these (Phase 3)**
+- **Wide ducts:** when the widest side exceeds 1520 mm, P/2 is taken as at least 1.25 × that side. This is a conservative reading of the note.
+- **Rods:** sized by the load check. The Table 4-1M minimum per pair is reported alongside for reference.
+- **Elbows:** S4.1 asks for one support within 0.61 m of each elbow. The engine supports both sides of every level elbow (practice).
+- **Spacing:** measured along the straight duct, since an elbow or offset is carried by the supports at its ends.
+- **Joints and rods:** hangers sit 150 mm clear of joints (practice: "between flanges"), and rods leave 30 mm of thread below the bar (practice).
+- **Risers:** supported per §4.2.10 at the interval from the settings. The angle sizes (L40×4 up to 762 mm wide, L50×5 over) are practice.
+
 **Longer bars (2130–3660 mm).** These rows add 76×6.4 and 102×6.4 angles and 76/102 mm channels.
 - At 2130 mm the text gives 454 kg for 51×4.8, which contradicts both its neighbours (227 kg at 2010 mm) and its section modulus. It is treated as an extraction error and not used.
 - The rest of those rows: 2130: 51×6.4 299, 63.5×4.8 426, 63.5×6.4 635, 76×6.4 1048, 102×6.4 2123; 2440: 145, 272, 480, 894, 1969. They are transcribed in the catalog with that cell nulled.
@@ -429,7 +515,7 @@ In this mode the engine does not claim SMACNA reinforcement compliance.
 
 ## Unit air ports: MHI FDUM22KXE6F-W (measured)
 
-The only ducted unit in the catalog is a GLB converted by ifcopenshell and trimesh from the MEPcontent MACO VRF IFC4 file. The conversion kept a single merged mesh and dropped the IFC distribution ports. The collars were measured from the geometry itself: flat collar lips 30 mm proud of the casing faces.
+The only ducted unit in the catalog is a GLB converted by ifcopenshell and trimesh from the MEPcontent MACO VRF IFC4 file. The file holds 7 meshes, but only the last is placed in the node tree (the loader now places the other six itself; see the design doc), and the IFC distribution ports were dropped. The collars were measured from the geometry itself: flat collar lips 30 mm proud of the casing faces.
 
 The GLB is rendered with its bounding-box centre at the element centre and its bottom face at the element's elevation (`glbModelCache.ts:121-126`). The bounding box is 1084 × 697 × 300 mm and runs from x −425 to 659 in the model's own frame. Converted to element-local coordinates (origin at the footprint centre, z up from the unit's bottom face):
 
@@ -455,6 +541,14 @@ The GLB is rendered with its bounding-box centre at the element centre and its b
 - λ ≈ 0.033–0.036 W/m·K at 0 °C.
 - 50 mm self-adhesive tape on seams.
 - Typical specifications use 25 mm on supply and 19 mm on return in conditioned ceiling voids. This is a project setting.
+
+**Engine takeoff (Phase 3, practice unless noted)**
+- **Area:** sheet at the insulation mid-plane (girth + 4t) over each piece's developed centreline length, plus end-cap faces.
+- **Flanges:** each flange is boxed with a band 2 × its projection + 100 mm wide.
+- **Connector:** left bare so it can flex.
+- **Adhesive:** at 8 m²/L (Armacell 520, verified range 7–9).
+- **Tape:** one longitudinal seam per 1 m of girth, plus both edges of every band.
+- **Waste:** 10 %.
 
 **At supports.** Insulation must stay continuous under the trapeze. A load-bearing insert (a high-density block or duct support insert) between the trapeze and the duct avoids crushing the insulation and a cold bridge. The support load includes insulation mass; SMACNA's hanger tables already allow 4.89 kg/m².
 
@@ -608,7 +702,7 @@ The rule IDs are referenced by `DUCT_RULE_SOURCES` in the engine.
 ## Open gaps
 
 1. Tables 1-6M to 1-9M (750 to 2500 Pa): transcribe before enabling those classes.
-2. Figures 1-15, 2-2 to 2-7 and 2-17 are images. TDC cleat spacing, vane geometry, transition and branch geometry come from secondary sources until those figures are read.
+2. ~~Figures 1-15, 2-2 to 2-7 and 2-17 are images.~~ Read from the scanned PDF on 25 September 2026 (see "Fittings (figures read from the scanned PDF)"); these values are now verified.
 3. P3 reinforcement selection graph (handbook p.47).
 4. A single NBR datasheet for λ, sheet sizes and thicknesses (Armaflex or K-Flex, whichever the project uses).
 5. Galvanised sheet weight appendix A.7 (confirm the gauge weights).
@@ -616,4 +710,4 @@ The rule IDs are referenced by `DUCT_RULE_SOURCES` in the engine.
 
 The FDUM22 supply/return face assignment is no longer open; it was confirmed on 24 September 2026.
 
-Items 2 and 3 stay `verified: false` in the engine and are never shown as authoritative defaults (user decision, 24 September 2026). Phase 1 only needs straight GI runs, elbows and joints, so it is not blocked by them.
+Item 3 stays `verified: false` in the engine and is never shown as an authoritative default (user decision, 24 September 2026). Values SMACNA gives no number for (make-up minimum, elbow neck, washers per bolt, collar and damper section lengths, tap-window margin, the 4:1 aspect advisory, the 14° design taper) are labelled "project practice". Pressure classes above 500 Pa stay refused (user decision, 25 September 2026).

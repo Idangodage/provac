@@ -7,7 +7,7 @@ Three constructions are supported: GI bare, GI with nitrile rubber (NBR) insulat
 - Code: `packages/drawing-engine/src/components/canvas/hvac/duct/`
 - Construction rules and their sources: [hvac-duct-smacna-research.md](hvac-duct-smacna-research.md)
 
-Status: **Phase 1 implemented** (GI runs with joints, 2D + 3D on the real FDUM22); P2–P5 below are not yet built. See [Phase 1 status](#phase-1-status).
+Status: **Phases 1–3 complete** (GI runs with joints; branches, transitions, offsets and round branches; levels, supports, NBR, design checks, clash and in-place editing — 2D + 3D on the real FDUM22, see [Phases 1–2 completion](#phases-12-completion) and [Phase 3 status](#phase-3-status)). P4–P5 below are next.
 
 ## Workflow
 
@@ -131,11 +131,14 @@ Invariant: the lengths of the pieces sum to the centreline length (property-test
 
 | Group | Codes |
 |---|---|
-| Geometry and fittings | `DU_TRANSITION_ANGLE`, `DU_ELBOW_RADIUS`, `DU_LEG_TOO_SHORT`, `DU_VANE_SPAN`, `DU_HARD_WAY_ELBOW` (info), `DU_ASPECT_RATIO` (>4:1), `DU_SIZE_OVER_TABLE` (>3000 or class above 500 Pa) |
-| Construction | `DU_GAUGE_JOINT`, `DU_INTERMEDIATE_REINF`, `DU_CROSS_BREAK` (info), `DU_PID_LIMITS`, `DU_PID_REINF_UNVERIFIED` |
-| Connections | `DU_FLEX_LENGTH`, `DU_FLEX_SAG`, `DU_MOUTH_MISMATCH` (transition inserted), `DU_MOUTH_APPROX` (unit without measured ports), `DU_OPEN_END`, `DU_STALE` |
-| Supports | `DU_HANGER_SPECIAL` (P/2 > 4880), `DU_ABOVE_SOFFIT` |
-| Coordination | `DU_CLASH` |
+| Geometry and fittings | `DU_TRANSITION_ANGLE`, `DU_ELBOW_RADIUS`, `DU_LEG_TOO_SHORT`, `DU_VANE_SPAN`, `DU_SLOPED_LEG` (a leg that runs and climbs; a riser that turns back; a riser straight off a collar), `DU_HARD_WAY_ELBOW` (a plan turn at a riser), `DU_ASPECT_RATIO` (>4:1, info), `DU_SIZE_OVER_TABLE` |
+| Construction | `DU_PRESSURE_UNSUPPORTED` (above 500 Pa), `DU_NO_STOCK`, `DU_GAUGE_JOINT`, `DU_GAUGE_OVERRIDE`, `DU_INTERMEDIATE_REINF`, `DU_CROSS_BREAK` (info; not on insulated duct). P5: `DU_PID_LIMITS`, `DU_PID_REINF_UNVERIFIED` |
+| Branches | `DU_TAP_TOO_BIG`, `DU_TAP_CLASH`, `DU_SPLIT_INCOMPLETE`, `DU_SPLIT_SIZE`, `DU_BRANCH_DIRECTION` |
+| Connections | `DU_MOUTH_APPROX` (unit without measured ports), `DU_OPEN_END`, `DU_STALE`. P4: `DU_FLEX_LENGTH`, `DU_FLEX_SAG` |
+| Supports | `DU_SUPPORT_RULE` (no straight within S4.1 reach or the spacing), `DU_SUPPORT_LOAD` (beyond Table 4-3M or an M16 rod), `DU_SOFFIT` (the duct reaches the soffit) |
+| Coordination | `DU_CLASH` (duct body against a pipe or another duct) |
+
+All of them reach the design-check list (`ductValidation.ts`, `useDuctLiveValidation`), merged with the refrigerant and condensate checks; information-level entries are counted but not listed.
 
 A freshly drawn standard run validates clean.
 
@@ -238,16 +241,297 @@ Each phase ends with an on-canvas check against real elements.
   7. 750 Pa gives the explicit error. One undo removes the run and redo restores it.
   8. The project was restored afterwards. No page errors beyond a 404 that is already there on first load.
 
-**Known Phase 1 limits**
-- The FDUM22 GLB renders as a flat slab in iso on both the duct branch and the main checkout (a pre-existing model or shading issue), so the collar joint is not visually distinct in 3D. The numeric tests cover the alignment.
-- The live draft is drawn in 2D only; 3D shows committed runs.
-- A custom W × H that differs from the collar is flagged `DU_MOUTH_MISMATCH` until transitions land (P2).
-- Old Fabric duct code (the `HvacPlanRenderer` duct case and the dead isometric case) is still present but unused. Removal is P5.
+**Phase 1 limits (all resolved)**
+- ~~The FDUM22 GLB renders as a flat slab in iso.~~ Root cause: the IFC → GLB export places only the last of the unit's meshes; the loader now places the unplaced ones (see completion).
+- ~~The live draft is drawn in 2D only.~~ The draft (and any run it re-plans) is shown in 3D too.
+- ~~A custom W × H that differs from the collar is flagged `DU_MOUTH_MISMATCH`.~~ A transition follows the connector (P2).
+- ~~Old Fabric duct code is still present.~~ Removed; the isometric canvas draws ducts from the plan.
+
+## Phase 2 design: branches and transitions
+
+**Transitions (reducers)**
+- Each leg keeps its own clear section.
+- Where the size changes, a transition is fabricated on the downstream leg (downstream = along the drawn path):
+  - at the node itself when the run goes straight on;
+  - right after the elbow when the node turns (the elbow keeps the incoming size);
+  - right after the connector when the first leg differs from the unit collar (this replaces the Phase 1 `DU_MOUTH_MISMATCH` warning).
+- Flat bottom: the clear bottom stays level; the width changes equally on both sides.
+- Length = 50 mm neck + slope + 50 mm neck, with slope = max(|ΔW|/2, |ΔH|) / tan(taper), taper 14° (1:4), rounded up to 10 mm.
+- If the leg is too short, the slope is compressed. `DU_TRANSITION_ANGLE` fires past the SMACNA Fig. 2-7 limits, judged in the flow direction (supply flows along the path, return against it): the plan width is concentric (45° included diverging, 60° converging) and the flat-bottom height change eccentric (30°).
+- A transition takes the construction of its larger end (S1.16).
+
+**Side take-offs (taps)**
+- A branch run starts on the side of an existing run: `start = { kind: 'tap', parentRunId, legIndex, stationMm, side, style, vcd }`.
+- Branch start point: on the parent's outer wall at the station, leaving square to the parent.
+- Its clear bottom is level with the parent's (flat bottom). A branch taller than the parent, or wider than the parent leg can hold, raises `DU_TAP_TOO_BIG`.
+- Branch pieces start with:
+  - a take-off collar, max(100 mm, lead-in + 50 mm) long (project practice); the `shoe-45` style adds a 45° lead-in of W/4, 102 mm minimum (SMACNA Fig. 2-6), on the upstream side (toward the parent's start);
+  - then an optional volume damper (VCD) section, 150 mm, with a locking quadrant;
+  - then the branch's own sections.
+- The collar is screwed to the parent at the S1.40 spacing and sealed.
+- The parent gets a **tap window** (opening + lead-in + 50 mm each side). No transverse joint may fall inside it: the section layout moves the joint to the window edge. A window that overlaps an elbow, transition, connector or another window raises `DU_TAP_CLASH`.
+
+**End splits**
+- A run whose end is `{ kind: 'split', style: 'bullhead' | 'y' }` feeds two branch runs: `start = { kind: 'split-branch', parentRunId, side: ±1 }`.
+- **Bullhead tee:** the parent continues as a box of depth = neck + the wider branch width. The branch openings sit in its side walls, flush with the far (capped) end, and the tee carries turning vanes.
+- **Y (divided flow):** the parent width is shared between the two branches, each turning 90° through its own radius elbow (R = R/W × branch width). The two heels meet on the split line.
+- With only one branch present, the other outlet is capped and `DU_SPLIT_INCOMPLETE` fires.
+
+**Network**
+- Branch runs refer to their parent by id.
+- A plan depends on the run, the project settings, its unit or parent, and its branches. The plan cache and the 3D scene cache key on all of these.
+
+**Delete cascade** (inside `deleteSelectedElements`, one history step)
+- Branches of a deleted run keep their geometry, but their start becomes `open` and flagged `orphaned`, so `DU_OPEN_END` is a warning.
+- A split whose branches are all deleted reverts to an end cap.
+
+**Tool**
+- Hovering a run's side offers a tap; hovering an open or capped run end offers a split side.
+- Branch size, tap style, VCD and split style come from the Duct tool section.
+- Changing W × H while drawing applies to the next legs and produces a transition.
+- Each gesture is one `commitHvacElementCommand`. Starting a split also updates the parent's end in the same command.
+
+**Rendering**
+- 2D: transition trapezoids, shoe outlines, the VCD symbol (blade line + quadrant), the tee body with vanes, and the Y's two elbows.
+- 3D: the sweep takes a section per ring, so transitions and shoes are lofts. The tee is a box with a capped heel; the Y is two radius sweeps.
+
+**BOM:** transitions with both sizes and length, take-off collars by style, VCDs, split fittings, and collar screws and sealant.
+
+**Exit on canvas:** a main run with two taps, a reducer after the first tap and a Y split at its end. Deleting the main flags the branches `DU_OPEN_END`; one undo restores everything.
+
+## Phase 2 status
+
+**Built**
+- `ductTypes.ts`: tap, split-branch and split ends; `ductParentRunId`.
+- `ductBranches.ts`: tap attachment (wall point, direction, lead-in, collar, opening) and split outlets. Y: offset half-sections through radius elbows. Bullhead: tee body with vanes.
+- `ductNetwork.ts`: branch index per scene, parent lookup, `expandDuctDeletion`.
+- Planner:
+  - per-leg sections with flat-bottom transitions (at a straight node, after an elbow, after the connector);
+  - take-off + VCD start pieces, tap windows with joint relocation, split fittings;
+  - issue codes `DU_TRANSITION_ANGLE`, `DU_TAP_TOO_BIG`, `DU_TAP_CLASH`, `DU_SPLIT_INCOMPLETE`, `DU_SPLIT_SIZE`, `DU_BRANCH_DIRECTION` (first leg must leave square to the parent), and `DU_OPEN_END` for orphans;
+  - the plan cache keys on the unit, the parent and the branches.
+- Take-off hardware (screws round the opening, sealed corners); BOM rows for transitions, take-offs, dampers and splits.
+- Rendering:
+  - 2D: transition trapezoids, shoe outlines, damper blade + quadrant, tee and Y outlines, amber markers at warnings such as orphaned open starts;
+  - 3D: lofted transitions and shoes, damper blade and quadrant, tee body and cap, Y elbow sweeps with capped-side plates.
+- `ductBranchTargets.ts`: `tapOrigin`, `splitOrigin`, `findBranchTarget`. Shared by the tool, the debug handle and the tests.
+- `ductDraft.ts`: `buildDuctRunDraft` returns the branch plus the parent it changes (a split end). `ductRunDraftCommand` makes that one command.
+- Tool:
+  - starts from a collar, a run's side wall (take-off) or a run's end (split side);
+  - hover marker; per-leg sizes fixed at each click, so a size change mid-draw becomes a transition;
+  - the live draft re-plans the parent (moved joints, growing split);
+  - the second press of a double-click never adds a leg (a P1 bug: it added a stray turn whenever the click was off the leg axis).
+- Tool section: branch W × H, take-off style, split style, damper. Inspector: start and end, a per-leg section list, a piece summary, and the end style (cap/open/Y/bullhead; cap and open are disabled while split branches exist).
+- Store: `deleteSelectedElements` and `deleteHvacElement` run the cascade in the same history step. 3D scene deps: parent + branches. Debug handle: `drawDuctBranch`, `drawDuct(..., legSizes)`.
+
+**Verified**
+- **Vitest.** `ductBranches.test.ts` (transitions, take-offs, windows, splits, cascade, fast-check window layout), 3D tests for the reducer loft, shoe + damper and Y split, and a store test for delete + one undo. Full drawing-engine suite: 169 files, 1514 of 1515 tests pass. The one failure is the refrigerant `autoRouteNetwork.geometry.test.ts` "four cardinal directions" case, which timed out (65 s against a 60 s limit) under full-suite load. It passes when run alone (8/8) and does not touch duct code.
+- **On canvas** (`D:\claude-tmp-vrf-check\duct-branches.mjs`, all drawn with the real tool and the Duct Tool panel on the real FDUM22):
+  1. **Main run:** 3.5 m at the collar size, then 500 × 164 set in the panel mid-draw → a 450 mm flat-bottom transition at 3.5 m. No issues.
+  2. **Tap 1** (shoe 45° + VCD) at 1.5 m: the main's 1450 joint moves to 1200 / 2400, outside the window. The lead-in faces upstream.
+  3. **Tap 2** after the reducer, on the other wall, with a 90° turn. **Y split** at the end with a 250 × 150 branch each side. Every run: status ok, no issues.
+  4. **Live drafts:** the draft layer holds the branch and its re-planned parent, and only the committed parent is hidden.
+  5. **3D:** iso shows every fitting.
+  6. **BOM:** 1 transition, 2 shoe take-offs, 2 dampers, 1 Y split, 2 take-off connections.
+  7. **Delete:** selecting the main and pressing Delete leaves 4 branches, each open with `DU_OPEN_END` and an amber marker. One undo restores the exact document.
+  8. **Cleanup:** the project was restored exactly afterwards. The only page error is the known first-load 404.
+
+**Phase 2 limits (resolved unless noted)**
+- ~~Take-offs are rectangular only.~~ Round branches with spin-in or conical collars and round dampers (see completion).
+- Taps sit on straight sections only; not on elbows, transitions, offsets or connectors. This is by design, and `DU_TAP_CLASH` guards moved parents.
+- ~~Branches do not follow a moved or resized parent.~~ They re-anchor in the same command.
+- ~~An orphaned branch cannot be re-attached.~~ One click with the Duct tool, or the inspector button.
+
+## Phases 1–2 completion
+
+Done on 25 September 2026 at your request ("complete all the missing things"). The SMACNA figures were read from the scanned PDF; see the research doc.
+
+**Rules (verified from the figures)**
+- R/W 1.5 default (Fig. 2-2), with `DU_ELBOW_RADIUS` below 1.0 (warning) and below 0.5 (error).
+- Vane schedule and span per Figs 2-3 / 2-4: vane-type setting, count along the diagonal runner, and sections with intermediate runners (`DU_VANE_SPAN`); vanes and runners in the BOM.
+- Shoe lead-in W/4, 102 mm minimum (Fig. 2-6).
+- Transitions: concentric in plan and eccentric in elevation (Fig. 2-7).
+- Dampers laid out per Figs 2-12 / 2-13 (single blade to 305 mm high; opposed multi-blade above; round).
+- Connector 102 + 2 × 76 (Fig. 2-17). TDC clips per Fig. 1-15.
+- Round duct: Tables 3-2AM / 3-2BM, Table 3-1, Figs 3-1 / 3-2.
+- Values SMACNA has no number for are labelled "practice" everywhere, never "verified".
+
+**Phase 1 gaps closed**
+- **Offsets** (Fig. 2-7): a 45° jog too short for two elbows becomes one mitred offset (Type 2); a tight 90° Z becomes an ogee with a throat of 150 mm or more (Type 3). Drawn in 2D and 3D and in the BOM.
+- **Seams:** Pittsburgh / snaplock allowance from the SMACNA pockets, seams per section by coil width, seam length in the BOM.
+- **Run inspector:** per-leg W × H, pressure class, sheet override (`DU_GAUGE_OVERRIDE` unless stocked and at least the SMACNA minimum), per-elbow style / R/W / vanes, end, and Re-attach. Every edit is one undo, and branches follow.
+- **Duct Systems:** every setting editable with a verified / practice badge.
+- **3D live draft**, with the preview hiding what it re-draws, and Escape now cancels from any view. Previously a focused view button swallowed Escape.
+- **Tool:** continue a run from its open end (also from an occupied collar); start in free space; a free run finished on a run becomes a take-off.
+- **Ducts follow units** (move and turn) in both the drag and the arrow-nudge paths.
+- **Run move:** drag a selected run, or nudge it. A take-off slides along its parent; runs on a collar or split outlet refuse. Nudging a duct used to move only its envelope.
+- **Legacy code removed:** the Fabric duct case, and `giDuctModel.ts` reduced to the legacy fixture.
+- **FDUM22 in 3D:** the MEPcontent IFC → GLB export placed only the last of each unit's meshes. The loader now places the unplaced meshes, so the whole ducted unit (and the other catalog units) render.
+
+**Phase 2 gaps closed**
+- **Round branches:** `spin-in` / `conical` collars off rectangular runs; Table 3-2AM / 3-2BM gauge; RT-1 sleeve or RT-5 crimp with Fig. 3-2 screws; gored elbows per Table 3-1; round dampers, reducers and caps; cylinders and gores in 3D; "Ø" tags; BOM rows. Round runs carry no take-offs or splits.
+- **Branches follow their parent** (resize, move, unit move), recursively, in one command.
+- **Re-attach orphans:** cast back from the open start to the nearest run wall (≤ 1.5 m) and make it a take-off.
+
+**Verified**
+- **Vitest:** full drawing-engine suite 175 files, 1563 tests, all passing (219 of them duct / store / 3D), including:
+  - `ductFittingRules.test.ts` (figure rules);
+  - `ductOffsets.test.ts`, `ductFollow.test.ts`, `ductDraftContinue.test.ts`, `ductRound.test.ts`;
+  - `store/ductEdits.test.ts` (one undo per edit, slide, re-attach, sheet override);
+  - `glbModelCache.test.ts` (the real FDUM22 file: 7 meshes placed, 1084 × 300 bounds).
+- **On canvas** (`D:\claude-tmp-vrf-check\duct-complete.mjs`, real tool / panel / keyboard / mouse on the real FDUM22, project restored exactly), all passing:
+  1. A 45° jog became a mitred offset and a tight Z an ogee. Continuing the open end added a leg and a cap.
+  2. An inspector leg edit added a reducer.
+  3. Round Ø150 spin-in branch with a 4-piece gored elbow; rectangular take-off.
+  4. An arrow-nudge of the unit carried the main and both branches, with nothing stale.
+  5. Dragging the take-off slid it 400 mm along the main.
+  6. Deleting the main orphaned the branches; after redrawing it, one click re-attached the round branch.
+  7. A free run finished on the new main became a take-off.
+- **On canvas, 3D** (`duct-draft3d.mjs`): the full FDUM22 at the ceiling with the connector on its collar; the live draft rendered translucent; Escape in iso cancelled it.
+
+
+## Phase 3 design: levels, supports, NBR, validation, clash, editing
+
+**Levels (vertical legs)**
+- A path vertex's z is the clear bottom at that vertex. A vertical leg is two consecutive vertices at the same plan point (a riser up or a drop down). A leg that both runs and climbs is refused (`DU_SLOPED_LEG`): ducts are level or vertical.
+- **Vertical-plane elbows:**
+  - An elbow between a horizontal and a vertical leg bends in the vertical plane and is easy-way (W stays horizontal): the in-plane size is H.
+  - Radius R = R/W × H, or square with vanes spanning W.
+  - A riser keeps its heading. Turning in plan on a riser (a compound bend) is refused (`DU_HARD_WAY_ELBOW`): turn on a horizontal leg instead.
+- **Vertical offsets:** a short rise or drop whose two elbows do not fit becomes one offset (Fig. 2-7), mitred ≤ 60° or ogee, in the vertical plane.
+- **Tool:** a Level (clear bottom) field. Changing it mid-draw inserts a riser at the current point before the next leg; `[` / `]` step it by 50 mm. The draft label shows the level.
+- **2D:** a riser is its W × H box at the vertex, with a diagonal and "▲ +600" or "▼ −600". Vertical-plane elbows show their horizontal half.
+- **3D:** sweeps run in 3D with the W axis held horizontal.
+- Take-offs sit on horizontal straights only.
+
+**Supports (`ductSupports.ts`)**, derived from the plan and never stored
+- Rectangular hangers per Table 4-1M:
+  - the row by half-perimeter P/2 (≤ 1.25 × the widest side above 1520 mm);
+  - the column by the pair spacing (default 2.4 m);
+  - rod or strap per pair, with a load check (sheet + joints + 4.89 kg/m² insulation allowance) against the single-hanger loads;
+  - metric rods from the derived stress-area table.
+- Round: Table 4-2 by diameter, 3.7 m maximum.
+- **Positions:**
+  - at the spacing along every horizontal leg;
+  - plus within 610 mm of each elbow and 1220 mm of each branch intersection (S4.1), and 300 mm from the unit (practice);
+  - never on a joint (moved clear of flanges by 150 mm, practice).
+- **Trapeze:** bar length = duct width + 2 × 50 mm rod offset + rod. Member from Table 4-3M by the load per trapeze. Rods run up to the soffit datum (the pipe-routing ceiling setting), each with length and size.
+- **Risers:** angle or channel supports at the floor/level interval 3.66–7.32 m (§4.2.10; default 3.66 m) plus one at the base.
+- **Display:** 2D hanger marks (rod dots and the trapeze line) at mid zoom; 3D rods, trapeze bars and riser angles. BOM: rods by size and length, trapeze members, nuts, washers, anchors, riser angles.
+
+**NBR (`gi-nbr` construction, `ductInsulation.ts`)**
+- Thickness per run (project default: supply 25 mm, return 19 mm).
+- Area at the insulation mid-plane:
+  - straights: (girth + 4t) × L;
+  - elbows and transitions by developed area;
+  - joints boxed with a band.
+- Adhesive at 8 m²/L both faces (ArmaFlex 520); 50 mm tape on seams and joints; sheets with a waste setting (10 %).
+- One load-bearing insert per trapeze. S1.15 cross-breaking is dropped (exempt when externally insulated).
+- 2D: a dashed outline at the insulation's outer face. 3D: a black skin.
+- The inspector gets a construction selector (GI bare / GI + NBR) and the thickness.
+
+**Validation (`ductValidation.ts`, `useDuctLiveValidation`)**
+- Every `DU_*` issue of every run becomes a design-check entry merged with the VRF and condensate reports (`mergeValidationReports`), so it appears in the checks chip and list with a zoom-to point.
+
+**Clash**
+- Duct volumes (per piece: outer box plus insulation, with its z band) join `networkPipeClearance.ts`. `DU_CLASH` is raised for duct against refrigerant or condensate pipe, duct against duct, and duct above the soffit (`DU_ABOVE_SOFFIT`).
+- Refrigerant edits and Auto route see ducts as obstacles.
+
+**Editing handles (plan)**
+- On a selected run:
+  - drag a leg sideways (it stays parallel and both neighbours stretch);
+  - drag the end point;
+  - drag a riser (it moves along its heading);
+  - edit a vertex level from the inspector.
+- Branches follow; one undo per gesture.
+
+**Exit on canvas:**
+- a supply run from the FDUM22 with a 600 mm drop and a 600 → 400 reducer;
+- hangers per Table 4-1M with rods to the soffit; NBR 25 on supply;
+- `DU_*` issues in the design checks;
+- a clash flagged against a crossing refrigerant pipe.
+
+## Phase 3 status
+
+Built and verified on 25 September 2026.
+
+**Levels (D1)**
+- Legs are level or vertical (`ductLegs`: `vertical`, heading, centreline rise). Vertical-plane elbows bend the easy way on H in the riser's plane (local frame `DuctVerticalFrame`), gored when round; square vaned ones span W. A short rise or drop becomes a vertical ogee offset; transitions on a riser are concentric.
+- Refused: a sloped leg, a riser that turns back, a riser straight off a collar or parent wall (`DU_SLOPED_LEG`), a plan turn at a riser (`DU_HARD_WAY_ELBOW`). Take-offs and splits stay on level legs.
+- A leg remainder shorter than the minimum make-up piece is taken up in the elbow neck (practice). A 600 mm drop on a 164 mm high duct leaves 8 mm between its two R = 1.5 H elbows; that was an 8 mm "section" before.
+- **Tool:** a Level field (clear bottom) and `[` / `]` (±50 mm) set the next leg's level. The leg rises or drops where it starts, then goes straight on. At a collar the change waits for the next point. Finishing with a change pending ends the run in that riser. Keys typed in a tool-panel field no longer reach the tool (Backspace in the Level box used to delete a leg).
+- **2D:** the riser box with one diagonal (up) or two (down) and "▼ 600 · BOD 1869"; vertical fittings drawn as their plan band; one size tag per section and level.
+- **3D:** sweeps along 3D centrelines with the width held horizontal and the section mitred at every bend; flanges on a riser lie flat.
+
+**Supports (D2, `ductSupports.ts`, `ductSupportTables.ts`)**
+- Tables 4-1M, 4-2 and 4-3M and the single-hanger loads are in code. Metric rods are derived (6.2 kg per mm² of stress area).
+- Required supports:
+  - within 610 mm of each side of every level elbow (SMACNA asks for one; practice supports both sides);
+  - within 610 mm of the level side of every riser elbow and of each end of an offset;
+  - within 1220 mm of each take-off, on the parent and on the branch;
+  - 300 mm past the unit's connector (practice);
+  - near a free end.
+- Gaps are then filled to the spacing (2.4 m; round 3.7 m max). The gap is measured along the straight duct, since an elbow is held at its ends.
+- Hangers sit on straights and transitions, 150 mm clear of joints.
+- **Sizing:**
+  - load from the run's share: sheet, 4.89 kg/m² insulation allowance, and the bar;
+  - rods by load from M8;
+  - the lightest Table 4-3M angle for the rod span.
+- Rods run to the soffit: the pipe-routing ceiling limit, or a Duct Systems value. Risers get angle pairs at the §4.2.10 interval (members are practice sizes). Round ducts up to 900 mm hang from one rod and a band.
+- **Display and BOM:**
+  - 2D: bar and rod dots.
+  - 3D: rods, L-angle bars, bands and riser angles.
+  - BOM: rods in metres and cut lengths, one anchor per rod, nuts, washers, angles, bands and riser angles.
+  - Inspector: a supports summary.
+
+**NBR (D3, `ductInsulation.ts`)**
+- `gi-nbr` construction per run, set from the inspector or as the project default for new runs; a branch takes its parent's.
+- Thickness: the run's own, else 25 mm supply / 19 mm return (practice).
+- Takeoff at the mid-plane plus flange bands 2 × projection + 100 mm wide. The connector is left free to flex. Adhesive at 8 m²/L (Armacell 520: 7–9); tape and 10 % waste are practice.
+- Supports hang under the insulation with a load-bearing insert per trapeze. Cross-breaking is dropped (S1.15).
+- 2D dashed outline; tag "NBR 25"; BOD is the insulation's underside. 3D black skin.
+
+**Checks and clash (D4, D5)**
+- **Checks:** every `DU_*` issue of every run joins the one design-check list, deduplicated per run.
+- **Clash model (`ductVolumes.ts`):** duct bodies are oriented boxes per piece, insulation included; arcs, offsets and risers are split into short segments.
+  - Against pipes: a segment-to-box distance below the pipe's insulated radius.
+  - Against other ducts: a separating-axis overlap. A branch and its parent never clash.
+  - Result: `DU_CLASH`.
+- **Obstacles:** the pipe engine's new-clash check (`networkPipeClearance.ts`) now rejects a new pipe route through a duct. Auto route, branch kits and riser upgrades therefore keep clear of ducts. The duct settings reach it through `setActiveDuctSettings`.
+- **3D fix:** a 3D bucket that mixed boxes (with UVs) and sweeps (without) failed to merge and vanished silently. UVs are now stripped before merging. This was hiding the NBR skin, and the same bug could drop damper or band meshes.
+
+**Editing (D6, `ductEdits.ts`)**
+- Handles on a single selected run:
+  - a square per movable leg (it moves sideways and stays parallel; the legs either side stretch along their own lines, a riser at a moved corner goes with it; the leg off a collar or parent wall stays);
+  - a diamond per riser (it moves along its heading);
+  - a circle at the end (it moves along the last leg).
+- The inspector edits a riser's rise or drop, and the run after it moves with it.
+- A leg whose neighbour is collinear cannot be dragged sideways: that would need new elbows.
+- Take-offs on a leg whose start slid keep their place in the world. One command per gesture, branches following. Space-drag pans over a selected run (it used to start a run move).
+
+**Verified**
+- **Vitest:**
+  - `ductVertical.test.ts`;
+  - `ductSupports.test.ts`;
+  - `ductInsulation.test.ts`;
+  - `ductChecks.test.ts` (report shape, pipe and duct clashes, ducts as pipe obstacles);
+  - `store/ductInPlaceEdits.test.ts`.
+  - Duct, 3D and store suites: 254 tests.
+- **On canvas** (`D:\claude-tmp-vrf-check\duct-p3.mjs`: real tool, panel, keys and mouse on the real FDUM22; project restored exactly), all passing:
+  1. **Draw:** 600 × 164 off the collar, `[` × 12, 400 × 164, a turn. Result: 674 → 600 at the collar, two easy-way elbows meeting on the 600 drop, 600 → 400, and the inspector shows "drop ▼ 600".
+  2. **Supports:** 7 hangers. The first is past the connector, there is one within 610 mm of each elbow, and every M8 rod reaches the 2900 soffit.
+  3. **NBR 25 from the inspector:** tag, dashed outline, 17.87 m² sheet, adhesive, tape and an insert at each hanger.
+  4. **Editing:** dragging the cross leg 500 mm (one undo restores it), dragging the drop 600 mm along, and a −400 rise from the inspector.
+  5. **Checks:** `DU_*` in the design checks. A gas pipe through the lower leg is `DU_CLASH` in the list with its marker.
+  6. **3D:** iso and side show the drop, the NBR skin, the rods to the soffit and the pipe through the duct.
 
 ## Known limits
 
-- Rectangular trunk only; round spiral trunks are not in scope (flex duct is).
-- Pressure classes above 500 Pa are refused until Tables 1-6M to 1-9M are encoded.
-- Figure-only SMACNA values (vanes, transitions, shoe geometry, TDC cleat spacing) are secondary-sourced and flagged `verified: false`.
+- Round runs are branches (spin-in / conical off rectangular runs); round trunks with their own take-offs are not in scope.
+- Pressure classes above 500 Pa are refused (your decision, 25 September 2026). The scanned PDF has Tables 1-6 to 1-9 if that changes.
 - PID reinforcement counts are unverified until the P3 graph is transcribed.
+- No hard-way (twisted) elbows: a plan turn at a riser is refused.
+- The design-check chip is still titled "VRF checks" though it lists condensate and duct checks too.
+- The NBR skin in 3D does not box the flanges, so a 30 mm TDC flange shows through a 25 mm skin.
+- Duct-to-duct clash skips a branch and its own parent.
 - No airflow sizing or auto-routing from terminals. Sizes are what you draw.

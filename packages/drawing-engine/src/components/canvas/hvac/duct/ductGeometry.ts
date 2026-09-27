@@ -1,7 +1,13 @@
 /**
- * Plan geometry of a duct run: leg directions, turn angles and elbow
- * setbacks/arcs. Coordinates are model millimetres (X right, Y down); turn
- * sides come from the cross product, so the formulas hold in either handedness.
+ * Geometry of a duct run: leg directions, turn angles and elbow setbacks/arcs.
+ * Coordinates are model millimetres (X right, Y down, z up); turn sides come
+ * from the cross product, so the formulas hold in either handedness.
+ *
+ * A leg is level (both ends at one z) or vertical (both ends at one plan
+ * point): a riser or a drop. A vertical leg keeps the heading of the level leg
+ * it leaves (its W stays horizontal, square to that heading, so both of its
+ * elbows bend the easy way). Its fittings are laid out in a vertical plane
+ * through the riser: local (s, t) = (distance along the heading, elevation).
  */
 import type { Point2D } from '../../../../types';
 
@@ -47,25 +53,75 @@ export interface DuctLegGeometry {
   index: number;
   start: DuctPoint3;
   end: DuctPoint3;
+  /** Plan direction; a vertical leg's is the heading of the level leg it leaves (or joins). */
   direction: Point2D;
+  /** Centreline length: the plan length of a level leg, the centreline rise of a vertical one. */
   lengthMm: number;
-  /** Leg rises or falls (vertical legs arrive in phase 3). */
+  /** +1 riser, −1 drop, 0 level (or sloped). */
+  vertical: 0 | 1 | -1;
+  /** Both the plan position and the level change: ducts are level or vertical, so this is refused. */
   sloped: boolean;
+  /** Centreline elevation at the leg's start and end (vertical legs; level legs follow their sections). */
+  startCentreZ: number;
+  endCentreZ: number;
+}
+
+const LEVEL_EPSILON_MM = 0.5;
+
+/**
+ * Centreline elevation at path vertex `i`: its clear bottom plus half the
+ * height of the section arriving there (the first leg's at the start).
+ */
+export function vertexCentreZ(spec: Pick<DuctRunSpec, 'path' | 'legs'>, index: number): number {
+  const section = spec.legs[Math.max(0, index - 1)] ?? spec.legs[0];
+  return spec.path[index]!.z + (section?.heightMm ?? 0) / 2;
 }
 
 export function ductLegs(spec: DuctRunSpec): DuctLegGeometry[] {
-  return spec.path.slice(1).map((end, index) => {
+  const raw = spec.path.slice(1).map((end, index) => {
     const start = spec.path[index]!;
     const plan = sub(end, start);
+    const planLength = length(plan);
+    const rise = end.z - start.z;
+    const vertical: 0 | 1 | -1 = planLength < LEVEL_EPSILON_MM && Math.abs(rise) > LEVEL_EPSILON_MM ? (rise > 0 ? 1 : -1) : 0;
+    return { index, start, end, plan, planLength, vertical, sloped: planLength >= LEVEL_EPSILON_MM && Math.abs(rise) > LEVEL_EPSILON_MM };
+  });
+  // A vertical leg's heading: the level leg before it, else the one after it.
+  const headingOf = (index: number): Point2D => {
+    for (let k = index - 1; k >= 0; k -= 1) if (!raw[k]!.vertical) return unit(raw[k]!.plan);
+    for (let k = index + 1; k < raw.length; k += 1) if (!raw[k]!.vertical) return unit(raw[k]!.plan);
+    return { x: 1, y: 0 };
+  };
+  return raw.map((leg) => {
+    const startCentreZ = vertexCentreZ(spec, leg.index);
+    const endCentreZ = vertexCentreZ(spec, leg.index + 1);
     return {
-      index,
-      start,
-      end,
-      direction: unit(plan),
-      lengthMm: length(plan),
-      sloped: Math.abs(end.z - start.z) > 0.5,
+      index: leg.index,
+      start: leg.start,
+      end: leg.end,
+      direction: leg.vertical ? headingOf(leg.index) : unit(leg.plan),
+      lengthMm: leg.vertical ? Math.abs(endCentreZ - startCentreZ) : leg.planLength,
+      vertical: leg.vertical,
+      sloped: leg.sloped,
+      startCentreZ,
+      endCentreZ,
     };
   });
+}
+
+/** A vertical plane through `origin` containing `heading`: local (s, t) ↦ plan origin + s·heading, elevation t. */
+export interface DuctVerticalFrame {
+  origin: Point2D;
+  heading: Point2D;
+}
+
+export function frameToPlan(frame: DuctVerticalFrame, local: Point2D): Point2D {
+  return add(frame.origin, scale(frame.heading, local.x));
+}
+
+export function frameToWorld(frame: DuctVerticalFrame, local: Point2D): DuctPoint3 {
+  const plan = frameToPlan(frame, local);
+  return { x: plan.x, y: plan.y, z: local.y };
 }
 
 /** Turn angle at an interior node (degrees, 0 = straight on). */

@@ -34,7 +34,7 @@ import {
   getDuctedIndoorUnitPlanBounds,
 } from "./ductedIndoorUnitModel";
 import { resolveFieldPipeBendRadiusMm } from "./fieldPipeBends";
-import { buildGiDuctVisual, isGiDuctElementType } from "./giDuctModel";
+import { isGiDuctElementType } from "./giDuctModel";
 import { hitTestModelBackedHvacElement } from "./hvacElementHitTesting";
 import { buildPipePlanTubes, type PlanPipeTube } from "./pipePlanPresentation";
 import { liftPipePlanRouteTo3d, readPipeRouteNodes3d } from "./pipeRoute3d";
@@ -3754,89 +3754,6 @@ export class HvacPlanRenderer {
               port.bandColor,
               Math.max(toPx(port.bandRadius * 0.16), 0.8),
             );
-          }
-        });
-        break;
-      }
-      case "duct": {
-        const ductVisual = buildGiDuctVisual(element);
-        const ductBodyFill = options.valid
-          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody
-          : "rgba(255,255,255,0.5)";
-        const ductEdgeStroke = options.valid
-          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge
-          : "rgba(185,28,28,0.48)";
-        const ductSeamStroke = options.valid
-          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctSeam
-          : "rgba(255,255,255,0.4)";
-
-        ductVisual.segments.forEach((segment, index) => {
-          const body = new fabric.Rect({
-            left: toPx(segment.localCenter.x),
-            top: toPx(segment.localCenter.y),
-            width: Math.max(toPx(segment.lengthMm), 1),
-            height: Math.max(toPx(ductVisual.outerWidthMm), 1),
-            angle: segment.angleDeg,
-            originX: "center",
-            originY: "center",
-            fill: ductBodyFill,
-            stroke: ductEdgeStroke,
-            strokeWidth: 0.8,
-            selectable: false,
-            evented: false,
-          });
-          this.annotate(body, element.id, "hvac-detail");
-          objects.push(body);
-
-          const direction = {
-            x: (segment.localEnd.x - segment.localStart.x) / segment.lengthMm,
-            y: (segment.localEnd.y - segment.localStart.y) / segment.lengthMm,
-          };
-          const normal = {
-            x: -direction.y,
-            y: direction.x,
-          };
-
-          segment.seamOffsetsMm.forEach((offsetMm) => {
-            const seamCenter = {
-              x: segment.localStart.x + direction.x * offsetMm,
-              y: segment.localStart.y + direction.y * offsetMm,
-            };
-            const seam = new fabric.Line(
-              [
-                toPx(seamCenter.x - normal.x * ductVisual.outerWidthMm * 0.48),
-                toPx(seamCenter.y - normal.y * ductVisual.outerWidthMm * 0.48),
-                toPx(seamCenter.x + normal.x * ductVisual.outerWidthMm * 0.48),
-                toPx(seamCenter.y + normal.y * ductVisual.outerWidthMm * 0.48),
-              ],
-              {
-                stroke: ductSeamStroke,
-                strokeWidth: 0.55,
-                selectable: false,
-                evented: false,
-              },
-            );
-            this.annotate(seam, element.id, "hvac-detail");
-            objects.push(seam);
-          });
-
-          if (index === ductVisual.segments.length - 1) {
-            const endFrame = new fabric.Line(
-              [
-                toPx(segment.localEnd.x - normal.x * ductVisual.outerWidthMm * 0.5),
-                toPx(segment.localEnd.y - normal.y * ductVisual.outerWidthMm * 0.5),
-                toPx(segment.localEnd.x + normal.x * ductVisual.outerWidthMm * 0.5),
-                toPx(segment.localEnd.y + normal.y * ductVisual.outerWidthMm * 0.5),
-              ],
-              {
-                stroke: ductEdgeStroke,
-                strokeWidth: 0.9,
-                selectable: false,
-                evented: false,
-              },
-            );
-            this.annotate(endFrame, element.id, "hvac-detail");
-            objects.push(endFrame);
           }
         });
         break;

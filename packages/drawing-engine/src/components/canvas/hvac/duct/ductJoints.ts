@@ -3,20 +3,23 @@
  * Side lengths are the outside sheet dimensions the flanges wrap.
  *
  *  - TDC / TDF (T-25a/b): integral roll-formed flanges; 4 corner pieces per
- *    end, one bolt per corner pair, gasket, 152 mm cleats per the T-24 note
- *    (cleat spacing for TDC is unverified — Fig. 1-15 not read).
+ *    end, one bolt per corner pair, gasket, 152 mm clips per SMACNA Fig. 1-15
+ *    (which lists T-25a/b with T-24).
  *  - Ductmate (T-24 type, proprietary): slip-on flange pieces fastened to the
  *    duct per the manufacturer's screw schedule, cleats at 610 mm.
  *  - Companion angle (T-22): two welded angle frames, M8 bolts at ≤152 mm,
  *    angle-to-duct rivets at ≤305 mm including the corners.
  *  - Slip-over onto a unit collar: sheet-metal screws within 51 mm of the
- *    corners and at ≤305 mm (S1.40 by analogy, unverified).
+ *    corners and at ≤305 mm (S1.40 by analogy, project practice).
+ *  - Round slip joints (Fig. 3-2): RT-1 beaded sleeve coupling or RT-5 crimp,
+ *    screws at ≤381 mm round the circumference (three minimum), sealant.
  */
 import { JOINT_HARDWARE_PROVENANCE, JOINT_HARDWARE_RULES, type JointRigidityRow } from './ductCatalog';
 import type { ResolvedDuctJoint } from './ductGauge';
+import { roundJointScrewsPerEnd, ROUND_JOINT_RULES } from './ductRoundRules';
 import type { DuctRuleProvenance } from './ductSources';
 
-export type JointHardwareSystem = 'tdc' | 'ductmate' | 'angle-flange' | 'slip-over';
+export type JointHardwareSystem = 'tdc' | 'ductmate' | 'angle-flange' | 'slip-over' | 'takeoff' | 'round-slip' | 'round-takeoff';
 
 export interface JointHardware {
   system: JointHardwareSystem;
@@ -37,6 +40,9 @@ export interface JointHardware {
   gasketLengthMm: number;
   sealedCorners: number;
   cornerWelds: number;
+  /** Round joints: sleeve couplings (RT-1) and the sealant bead (mm). */
+  sleeves?: number;
+  sealantLengthMm?: number;
   provenance: DuctRuleProvenance[];
 }
 
@@ -102,6 +108,20 @@ export function jointHardware(joint: ResolvedDuctJoint, input: JointHardwareInpu
       provenance: [JOINT_HARDWARE_PROVENANCE.ductmate!],
     };
   }
+  if (joint.system === 'round-slip') {
+    // Round: sideA is the outside diameter.
+    const screws = roundJointScrewsPerEnd(input.sideAMm);
+    const sleeve = joint.type === 'RT-1';
+    return {
+      system: 'round-slip', label: sleeve ? `RT-1 beaded sleeve (${ROUND_JOINT_RULES.sleeveLengthMm} mm)` : `RT-5 crimp (${ROUND_JOINT_RULES.crimpLapMm} mm lap)`,
+      flangePieces: 0, flangeLengthMm: 0, angleMember: null, angleLengthMm: 0, cornerPieces: 0,
+      bolts: null, nuts: 0, washers: 0, cleats: null,
+      ductFasteners: { kind: 'screw', spec: 'self-drilling sheet-metal screw', count: (sleeve ? 2 : 1) * screws },
+      gasketLengthMm: 0, sealedCorners: 0, cornerWelds: 0,
+      sleeves: sleeve ? 1 : 0, sealantLengthMm: Math.PI * input.sideAMm,
+      provenance: [ROUND_JOINT_RULES.provenance],
+    };
+  }
   if (joint.system === 'angle-flange') {
     const leg = joint.member.legMm;
     const bolts = sides(input).reduce((total, side) => total + sharedCornerFasteners(side, JOINT_HARDWARE_RULES.companionAngleBoltSpacingMm), 0);
@@ -121,12 +141,33 @@ export function jointHardware(joint: ResolvedDuctJoint, input: JointHardwareInpu
   throw new Error('unknown joint system');
 }
 
-/** Duct (or connector) slipped over a unit collar and screwed. */
-export function slipOverHardware(input: JointHardwareInput): JointHardware {
-  const screws = sides(input).reduce((total, side) => {
+/** Screws within 51 mm of each corner and at ≤305 mm along every side (S1.40). */
+function perimeterScrews(input: JointHardwareInput): number {
+  return sides(input).reduce((total, side) => {
     const span = Math.max(0, side - 2 * JOINT_HARDWARE_RULES.fastenerFromCornerMm);
     return total + Math.ceil(span / JOINT_HARDWARE_RULES.fastenerSpacingMm) + 1;
   }, 0);
+}
+
+/**
+ * A take-off collar fastened round the opening cut in its parent: screws at the
+ * S1.40 spacing and sealant (branch intersections are joints for sealing,
+ * SMACNA p.1.8). `sideAMm` is the opening length along the parent, lead-in included.
+ */
+export function takeoffHardware(input: JointHardwareInput): JointHardware {
+  return {
+    system: 'takeoff', label: 'Take-off collar on parent',
+    flangePieces: 0, flangeLengthMm: 0, angleMember: null, angleLengthMm: 0,
+    cornerPieces: 0, bolts: null, nuts: 0, washers: 0, cleats: null,
+    ductFasteners: { kind: 'screw', spec: 'self-drilling sheet-metal screw', count: perimeterScrews(input) },
+    gasketLengthMm: 0, sealedCorners: 4, cornerWelds: 0,
+    provenance: [JOINT_HARDWARE_PROVENANCE.slipOver!],
+  };
+}
+
+/** Duct (or connector) slipped over a unit collar and screwed. */
+export function slipOverHardware(input: JointHardwareInput): JointHardware {
+  const screws = perimeterScrews(input);
   return {
     system: 'slip-over', label: 'Slip-over on unit collar',
     flangePieces: 0, flangeLengthMm: 0, angleMember: null, angleLengthMm: 0,
@@ -134,5 +175,22 @@ export function slipOverHardware(input: JointHardwareInput): JointHardware {
     ductFasteners: { kind: 'screw', spec: 'self-drilling sheet-metal screw', count: screws },
     gasketLengthMm: 0, sealedCorners: 4, cornerWelds: 0,
     provenance: [JOINT_HARDWARE_PROVENANCE.slipOver!],
+  };
+}
+
+/**
+ * A round collar (spin-in or conical) into a rectangular wall (SMACNA Fig. 2-6):
+ * the opening cut to the collar, screws round it as for a round slip joint
+ * (Fig. 3-2 spacing, by analogy) and sealant. `sideAMm` is the opening diameter.
+ */
+export function roundTakeoffHardware(input: JointHardwareInput, style: 'spin-in' | 'conical'): JointHardware {
+  return {
+    system: 'round-takeoff', label: style === 'spin-in' ? 'Spin-in collar into parent' : 'Conical collar into parent',
+    flangePieces: 0, flangeLengthMm: 0, angleMember: null, angleLengthMm: 0, cornerPieces: 0,
+    bolts: null, nuts: 0, washers: 0, cleats: null,
+    ductFasteners: { kind: 'screw', spec: 'self-drilling sheet-metal screw', count: roundJointScrewsPerEnd(input.sideAMm) },
+    gasketLengthMm: 0, sealedCorners: 0, cornerWelds: 0,
+    sealantLengthMm: Math.PI * input.sideAMm,
+    provenance: [ROUND_JOINT_RULES.provenance],
   };
 }

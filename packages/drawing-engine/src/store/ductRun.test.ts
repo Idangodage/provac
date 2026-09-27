@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveUnitAirPorts } from '../components/canvas/hvac/duct/ductAirPorts';
+import { tapOrigin } from '../components/canvas/hvac/duct/ductBranchTargets';
 import { buildDuctRunDraftElement } from '../components/canvas/hvac/duct/ductDraft';
-import { DEFAULT_DUCT_SETTINGS } from '../components/canvas/hvac/duct/ductSettings';
+import { DEFAULT_DUCT_SETTINGS, resolveDuctSettings } from '../components/canvas/hvac/duct/ductSettings';
+import { readDuctRunSpec } from '../components/canvas/hvac/duct/ductTypes';
 import type { HvacElement } from '../types';
 
 import { useDrawingStore } from './index';
@@ -37,6 +39,25 @@ describe('duct run in the document', () => {
     expect(useDrawingStore.getState().hvacElements).toEqual(before);
     useDrawingStore.getState().redo();
     expect(useDrawingStore.getState().hvacElements.find((element) => element.id === 'run-1')?.properties.ductRun).toEqual(run.properties.ductRun);
+  });
+
+  it('deleting a run orphans its branches in the same undo step', () => {
+    const port = resolveUnitAirPorts(unit).find((candidate) => candidate.kind === 'supply')!;
+    const main = buildDuctRunDraftElement({ port, points: [{ x: port.lip.x, y: port.lip.y - 6000 }] }, 'main');
+    const origin = tapOrigin(main, resolveDuctSettings({}), { legIndex: 0, stationMm: 3000, side: 1, style: 'shoe-45', vcd: true }, { widthMm: 300, heightMm: 150 })!;
+    const start = (origin as { point: { x: number; y: number } }).point;
+    const branch = buildDuctRunDraftElement({ origin, points: [{ x: start.x + 2000, y: start.y }], legSizes: [{ widthMm: 300, heightMm: 150 }] }, 'branch');
+    useDrawingStore.getState().commitHvacElementCommand('Draw duct runs', { add: [main, branch] });
+    const before = useDrawingStore.getState().hvacElements;
+
+    useDrawingStore.setState({ selectedElementIds: ['main'], selectedIds: ['main'] });
+    useDrawingStore.getState().deleteSelectedElements();
+    const after = useDrawingStore.getState().hvacElements;
+    expect(after.map((element) => element.id)).toEqual(['fdum', 'branch']);
+    expect(readDuctRunSpec(after.find((element) => element.id === 'branch')!)!.start).toEqual({ kind: 'open', orphaned: true });
+
+    useDrawingStore.getState().undo();
+    expect(useDrawingStore.getState().hvacElements).toEqual(before);
   });
 
   it('duct settings travel with the document and resolve safely on import', () => {

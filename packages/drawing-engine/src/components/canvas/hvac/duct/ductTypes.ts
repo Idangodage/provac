@@ -13,6 +13,7 @@
  */
 import type { HvacElement, Point2D } from '../../../../types';
 
+import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
 import type { DuctJointSystem } from './ductSettings';
 
 export interface DuctPoint3 {
@@ -28,16 +29,61 @@ export type DuctConstruction = 'gi-bare' | 'gi-nbr' | 'pid';
 export interface DuctLeg {
   widthMm: number;
   heightMm: number;
+  /** Round leg: its diameter (width = height = diameter for plan geometry and levels). */
+  diameterMm?: number;
+}
+
+/** Rectangular take-offs (shoe, straight) and round collars off a rectangular wall (spin-in, conical). */
+export type DuctTapStyle = 'shoe-45' | 'straight' | 'spin-in' | 'conical';
+
+export function isRoundLeg(leg: DuctLeg | undefined): boolean {
+  return leg?.diameterMm !== undefined;
+}
+
+export function isRoundTapStyle(style: DuctTapStyle): boolean {
+  return style === 'spin-in' || style === 'conical';
+}
+
+/** A round section of diameter `d`. */
+export function roundLeg(diameterMm: number): DuctLeg {
+  return { widthMm: diameterMm, heightMm: diameterMm, diameterMm };
+}
+export type DuctSplitStyle = 'bullhead' | 'y';
+export type DuctSide = 1 | -1;
+
+/** A branch taken off the side of a parent run's straight leg. */
+export interface DuctTapStart {
+  kind: 'tap';
+  parentRunId: string;
+  legIndex: number;
+  /** Branch centre along the parent leg, from the leg start (mm). */
+  stationMm: number;
+  /** Parent side the branch leaves from: +1 = left normal of the leg direction. */
+  side: DuctSide;
+  style: DuctTapStyle;
+  vcd: boolean;
+}
+
+/** A branch leaving one outlet of a split at the end of a parent run. */
+export interface DuctSplitBranchStart {
+  kind: 'split-branch';
+  parentRunId: string;
+  side: DuctSide;
+  vcd: boolean;
 }
 
 export type DuctEnd =
   | { kind: 'unit-port'; unitId: string; portId: string; connector: boolean }
+  | DuctTapStart
+  | DuctSplitBranchStart
+  | { kind: 'split'; style: DuctSplitStyle }
   | { kind: 'end-cap' }
-  | { kind: 'open' };
+  | { kind: 'open'; orphaned?: boolean };
 
 export interface DuctNodeOverride {
   elbowStyle?: 'radius' | 'square-vaned';
   centrelineRatio?: number;
+  vaneType?: DuctVaneType;
 }
 
 export interface DuctRunSpec {
@@ -53,6 +99,8 @@ export interface DuctRunSpec {
   pressureClassPa: number | null;
   /** Joint system override; null = the project setting. */
   jointSystem: DuctJointSystem | null;
+  /** Sheet thickness chosen for the run (must be stocked and ≥ the SMACNA minimum); null = automatic. */
+  gaugeOverrideMm?: number | null;
   start: DuctEnd;
   end: DuctEnd;
   /** Keyed by path node index. */
@@ -113,13 +161,33 @@ function readEnd(value: unknown): DuctEnd {
   if (candidate.kind === 'unit-port' && typeof candidate.unitId === 'string' && typeof candidate.portId === 'string') {
     return { kind: 'unit-port', unitId: candidate.unitId, portId: candidate.portId, connector: candidate.connector !== false };
   }
+  const side: DuctSide = candidate.side === -1 ? -1 : 1;
+  if (candidate.kind === 'tap' && typeof candidate.parentRunId === 'string' && finite(candidate.stationMm)) {
+    return {
+      kind: 'tap', parentRunId: candidate.parentRunId,
+      legIndex: finite(candidate.legIndex) ? Math.max(0, Math.round(candidate.legIndex)) : 0,
+      stationMm: candidate.stationMm, side,
+      style: candidate.style === 'straight' || candidate.style === 'spin-in' || candidate.style === 'conical' ? candidate.style : 'shoe-45',
+      vcd: candidate.vcd !== false,
+    };
+  }
+  if (candidate.kind === 'split-branch' && typeof candidate.parentRunId === 'string') {
+    return { kind: 'split-branch', parentRunId: candidate.parentRunId, side, vcd: candidate.vcd !== false };
+  }
+  if (candidate.kind === 'split') return { kind: 'split', style: candidate.style === 'bullhead' ? 'bullhead' : 'y' };
   if (candidate.kind === 'end-cap') return { kind: 'end-cap' };
-  return { kind: 'open' };
+  return candidate.orphaned === true ? { kind: 'open', orphaned: true } : { kind: 'open' };
+}
+
+/** The parent run a branch hangs from, if any. */
+export function ductParentRunId(spec: Pick<DuctRunSpec, 'start'>): string | null {
+  return spec.start.kind === 'tap' || spec.start.kind === 'split-branch' ? spec.start.parentRunId : null;
 }
 
 function readLeg(value: unknown, fallback: DuctLeg): DuctLeg {
   if (!value || typeof value !== 'object') return fallback;
-  const candidate = value as { widthMm?: unknown; heightMm?: unknown };
+  const candidate = value as { widthMm?: unknown; heightMm?: unknown; diameterMm?: unknown };
+  if (finite(candidate.diameterMm) && candidate.diameterMm > 0) return roundLeg(Math.max(50, candidate.diameterMm));
   return {
     widthMm: Math.max(40, readNumber(candidate.widthMm, fallback.widthMm)),
     heightMm: Math.max(40, readNumber(candidate.heightMm, fallback.heightMm)),
@@ -192,6 +260,7 @@ export function readDuctRunSpec(
       const override: DuctNodeOverride = {};
       if (candidate.elbowStyle === 'radius' || candidate.elbowStyle === 'square-vaned') override.elbowStyle = candidate.elbowStyle;
       if (finite(candidate.centrelineRatio)) override.centrelineRatio = candidate.centrelineRatio;
+      if (typeof candidate.vaneType === 'string' && candidate.vaneType in DUCT_VANES) override.vaneType = candidate.vaneType as DuctVaneType;
       overrides[key] = override;
     }
   }
@@ -204,6 +273,7 @@ export function readDuctRunSpec(
     insulationThicknessMm: Math.max(0, readNumber(record.insulationThicknessMm, 0)),
     pressureClassPa: finite(record.pressureClassPa) ? record.pressureClassPa : null,
     jointSystem: readJointSystem(record.jointSystem),
+    ...(finite(record.gaugeOverrideMm) && record.gaugeOverrideMm > 0 ? { gaugeOverrideMm: record.gaugeOverrideMm } : {}),
     start: readEnd(record.start),
     end: readEnd(record.end),
     nodeOverrides: overrides,

@@ -35,6 +35,7 @@ import {
   resolveCondensateSettings,
   type CondensateDesignSettings,
 } from '../components/canvas/hvac/condensate/condensateSettings';
+import { expandDuctDeletion } from '../components/canvas/hvac/duct/ductNetwork';
 import {
   DEFAULT_DUCT_SETTINGS,
   resolveDuctSettings,
@@ -4441,7 +4442,8 @@ export const useDrawingStore = create<DrawingState>()(
           return;
         }
         set((state) => ({
-          hvacElements: state.hvacElements.filter((element) => element.id !== id),
+          // Branch ducts of a deleted run start open; an emptied split is capped.
+          hvacElements: expandDuctDeletion(state.hvacElements, new Set([id])),
           selectedElementIds: state.selectedElementIds.filter((selectedId) => selectedId !== id),
           selectedIds: state.selectedIds.filter((selectedId) => selectedId !== id),
           hoveredElementId: state.hoveredElementId === id ? null : state.hoveredElementId,
@@ -4732,7 +4734,7 @@ export const useDrawingStore = create<DrawingState>()(
           annotations: annotations.filter((a) => !selectedSet.has(a.id)),
           sketches: sketches.filter((s) => !selectedSet.has(s.id)),
           symbols: symbols.filter((s) => !selectedSet.has(s.id)),
-          hvacElements: hvacElements.filter((element) => !selectedSet.has(element.id)),
+          hvacElements: expandDuctDeletion(hvacElements, selectedSet),
           walls: nextWalls,
           rooms: rooms
             .filter((room) => !selectedSet.has(room.id))

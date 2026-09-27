@@ -50,16 +50,18 @@ describe('duct run fabrication plan', () => {
     expect(first.widthMm).toBe(674);
     expect(first.heightMm).toBe(164);
     expect(result.startPort?.source).toBe('measured');
-    expect(result.issues.filter((issue) => issue.code === 'DU_MOUTH_MISMATCH' || issue.code === 'DU_MOUTH_APPROX')).toEqual([]);
+    expect(result.issues.filter((issue) => issue.code === 'DU_MOUTH_APPROX')).toEqual([]);
+    expect(result.pieces.some((piece) => piece.kind === 'transition')).toBe(false);
   });
 
   it('lays connector, stock sections, a radius elbow and an end cap', () => {
-    // Connector 100 fabric + 2 × 75 metal; elbow R = 1.0 × 674 → setback 674 + 50 neck.
+    // Connector 102 fabric + 2 × 76 metal (SMACNA Fig. 2-17); elbow R = 1.5 × 674 = 1011 (Fig. 2-2 RE1)
+    // → setback 1011 + 50 neck. Leg 1: 3000 − 254 − 1061 = 1685; leg 2: 4000 − 1061 = 2939.
     expect(result.pieces.map((piece) => `${piece.kind}:${Math.round(piece.lengthMm)}`)).toEqual([
-      'connector:250',
-      'straight:1200', 'straight:826',
-      `elbow:${Math.round((674 * Math.PI) / 2 + 100)}`,
-      'straight:1200', 'straight:1200', 'straight:876',
+      'connector:254',
+      'straight:1200', 'straight:485',
+      `elbow:${Math.round((1011 * Math.PI) / 2 + 100)}`,
+      'straight:1200', 'straight:1200', 'straight:539',
       'end-cap:0',
     ]);
     expect(result.pieces.map((piece) => piece.mark)).toEqual(['C-01', 'S-001', 'S-002', 'E-01', 'S-003', 'S-004', 'S-005', 'K-01']);
@@ -82,23 +84,31 @@ describe('duct run fabrication plan', () => {
   });
 
   it('shares a short remainder with the previous section', () => {
-    // 2780 − 250 connector = 2530 = 2 × 1200 + 130; 130 < 200 → 1200, 665, 665.
+    // 2780 − 254 connector = 2526 = 2 × 1200 + 126; 126 < 200 → 1200, 663, 663.
     const shared = plan(runFrom(supply, [{ x: 0, y: -2780 }]));
-    expect(shared.pieces.filter((piece) => piece.kind === 'straight').map((piece) => Math.round(piece.lengthMm))).toEqual([1200, 665, 665]);
+    expect(shared.pieces.filter((piece) => piece.kind === 'straight').map((piece) => Math.round(piece.lengthMm))).toEqual([1200, 663, 663]);
   });
 
   it('switches to a square vaned elbow when a leg is too short for the radius (auto)', () => {
     const tight = plan(runFrom(supply, [{ x: 0, y: -3000 }, { x: 900, y: 0 }, { x: 0, y: -3000 }]));
     const elbows = tight.pieces.filter((piece) => piece.kind === 'elbow');
     expect(elbows.map((piece) => piece.elbow!.style)).toEqual(['square-vaned', 'square-vaned']);
-    expect(elbows[0]!.elbow!.vaneCount).toBe(Math.ceil(674 / settings.vaneSpacingMm) - 1);
+    // SMACNA Fig. 2-3: 164 mm vanes → single-wall small (R51 @ 38 mm) on the 674·√2 = 953 mm diagonal runner.
+    expect(elbows[0]!.elbow!.vanes!.spec.type).toBe('single-small');
+    expect(elbows[0]!.elbow!.vaneCount).toBe(Math.ceil((674 * Math.SQRT2) / 38) - 1);
+    expect(elbows[0]!.elbow!.vanes!.sections).toBe(1);
     expect(tight.issues.some((issue) => issue.code === 'DU_LEG_TOO_SHORT')).toBe(false);
   });
 
   it('reports a leg that cannot hold its fittings', () => {
-    const tooShort = plan(runFrom(supply, [{ x: 0, y: -3000 }, { x: 300, y: 0 }, { x: 0, y: -3000 }]));
+    // A 300 mm last leg after a 90° turn: even a square vaned elbow needs 337 + 50 mm of it.
+    const tooShort = plan(runFrom(supply, [{ x: 0, y: -3000 }, { x: 300, y: 0 }]));
     expect(tooShort.issues.some((issue) => issue.code === 'DU_LEG_TOO_SHORT' && issue.severity === 'error')).toBe(true);
     expect(tooShort.status).toBe('error');
+    // A 300 mm sideways Z between long legs is fine: it is made as an ogee offset (SMACNA Fig. 2-7).
+    const jog = plan(runFrom(supply, [{ x: 0, y: -3000 }, { x: 300, y: 0 }, { x: 0, y: -3000 }]));
+    expect(jog.status).toBe('ok');
+    expect(jog.pieces.some((piece) => piece.kind === 'offset')).toBe(true);
   });
 
   it('a pressure class above 500 Pa is an explicit error state, never fabricated', () => {
@@ -165,7 +175,7 @@ describe('BOM, schedule and presentation', () => {
     const touchesLip = connector.filter((point) => Math.abs(point.y - supply.lip.y) < 1e-6);
     expect(touchesLip.map((point) => Math.round(point.x)).sort((a, b) => a - b))
       .toEqual([Math.round(supply.lip.x - 674 / 2 - 0.6), Math.round(supply.lip.x + 674 / 2 + 0.6)]);
-    expect(presentation.tag?.text).toBe('674×164 · GI 0.60 (26 ga) · TDC · BOD 2669');
+    expect(presentation.tags.map((tag) => tag.text)).toEqual(['674×164 · GI 0.60 (26 ga) · TDC · BOD 2669']);
     expect(presentation.jointTicks).toHaveLength(result.joints.length);
   });
 

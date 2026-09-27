@@ -11,7 +11,9 @@ export type DuctSourceId =
   | 'fabricator-practice'
   | 'astm-a653'
   | 'fdum22-glb-measured'
-  | 'project-configuration';
+  | 'project-practice'
+  | 'project-configuration'
+  | 'armacell-520';
 
 export interface DuctSource {
   document: string;
@@ -39,10 +41,22 @@ export const DUCT_SOURCES: Record<DuctSourceId, DuctSource> = {
   'fdum22-glb-measured': {
     document: 'Collars measured on the MEPcontent MACO VRF FDUM22KXE6F-W model; face assignment confirmed against MHI dimensions',
   },
+  'project-practice': {
+    document: 'Project practice: SMACNA gives no value; set to the fabricator\'s standard',
+  },
   'project-configuration': {
     document: 'Project configuration (fabricator / supplier stock)',
   },
+  'armacell-520': {
+    document: 'Armacell ArmaFlex 520 adhesive product brochure (coverage 7–9 m²/L, both faces, sheet)',
+    url: 'https://www.armacell.com/sites/default/files/2025/06/10/ArmaFlex%20520%20Adhesive%20-%20Product%20Brochure%20-%20en-LU.pdf',
+  },
 };
+
+/** Practice and configuration values have no document to verify against; the panel labels them as such. */
+export function isPracticeSource(sourceId: DuctSourceId): boolean {
+  return sourceId === 'project-practice' || sourceId === 'fabricator-practice' || sourceId === 'project-configuration';
+}
 
 /** A rule's provenance: its source, and whether the value was checked against it. */
 export interface DuctRuleProvenance {

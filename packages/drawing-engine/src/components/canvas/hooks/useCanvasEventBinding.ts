@@ -50,6 +50,7 @@ import {
 } from "../../DrawingCanvas.types";
 import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
 import { followDrainsWithoutHistory } from "../hvac/condensate/condensateEditController";
+import { followDuctsWithoutHistory } from "../hvac/duct/ductEditController";
 import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
 import {
   isRefrigerantPipeElementType,
@@ -59,6 +60,7 @@ import {
 import type { ObjectRenderer } from "../object/ObjectRenderer";
 import { MM_TO_PX } from "../scale";
 import { snapPointToGrid } from "../snapping";
+import { isEditableElement } from "../toolUtils";
 import type { WallRenderer } from "../wall/WallRenderer";
 
 import { resolveKeyboardNudgeDelta } from "./keyboardNudge";
@@ -685,6 +687,8 @@ export function useCanvasEventBinding(
         return;
       }
       if (tool === "duct") {
+        // A field being typed in (a tool-panel size or level) keeps its own keys.
+        if (isEditableElement(e.target)) return;
         // Esc is owned by the canvas Esc shortcut (cancel draft, then leave the tool).
         const handled = e.key === "Escape" ? false : handleDuctKeyDown(e);
         if (handled) {
@@ -1997,12 +2001,10 @@ export function useCanvasEventBinding(
             movedElement,
             updateHvacElement,
           );
-          // Drains follow a moved indoor unit or gully (same undo step).
-          followDrainsWithoutHistory(
-            hvacElements,
-            hvacElements.map((element) => (element.id === hvacId ? movedElement : element)),
-            [hvacId],
-          );
+          // Drains follow a moved indoor unit or gully, ducts a moved unit (same undo step).
+          const afterMove = hvacElements.map((element) => (element.id === hvacId ? movedElement : element));
+          followDrainsWithoutHistory(hvacElements, afterMove, [hvacId]);
+          followDuctsWithoutHistory(hvacElements, afterMove, [hvacId]);
           saveToHistory("Update AC equipment");
         }
 

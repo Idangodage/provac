@@ -6,16 +6,18 @@
  */
 import { gaugeLabelForSheet } from './ductCatalog';
 import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
+import { VANE_RUNNER, type DuctVaneSpec } from './ductFittingRules';
 import { describeJoint } from './ductGauge';
+import type { DuctSupportPlan } from './ductSupports';
 
-export type DuctBomCategory = 'Sheet metal' | 'Fabricated pieces' | 'Joints' | 'Connections' | 'Issues';
+export type DuctBomCategory = 'Sheet metal' | 'Fabricated pieces' | 'Accessories' | 'Joints' | 'Connections' | 'Insulation' | 'Supports' | 'Issues';
 
 export interface DuctBomRow {
   category: DuctBomCategory;
   description: string;
   size: string;
   quantity: number;
-  unit: 'm²' | 'kg' | 'no.' | 'm';
+  unit: 'm²' | 'kg' | 'no.' | 'm' | 'L';
   basis: string;
 }
 
@@ -36,19 +38,69 @@ export interface DuctScheduleRow {
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
-function sizeLabel(piece: Pick<DuctPiece, 'widthMm' | 'heightMm'>): string {
-  return `${Math.round(piece.widthMm)}×${Math.round(piece.heightMm)}`;
+function sizeLabel(piece: Pick<DuctPiece, 'widthMm' | 'heightMm' | 'endWidthMm' | 'endHeightMm' | 'diameterMm' | 'endDiameterMm'>): string {
+  const start = piece.diameterMm !== undefined ? `Ø${Math.round(piece.diameterMm)}` : `${Math.round(piece.widthMm)}×${Math.round(piece.heightMm)}`;
+  const endDiameter = piece.endDiameterMm ?? piece.diameterMm;
+  const end = endDiameter !== undefined ? `Ø${Math.round(endDiameter)}` : `${Math.round(piece.endWidthMm)}×${Math.round(piece.endHeightMm)}`;
+  return start === end ? start : `${start} → ${end}`;
 }
 
-function pieceDescription(piece: DuctPiece): string {
-  if (piece.kind === 'straight') return `Straight section ${Math.round(piece.lengthMm)} mm`;
+/** Round pieces (SMACNA chapter 3). */
+function roundPieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string | null {
+  if (piece.diameterMm === undefined) return null;
+  if (piece.kind === 'straight') return `${plan.seamRound === 'spiral' ? 'Spiral' : 'Longitudinal-seam'} round duct${riserWord(piece)} ${Math.round(piece.lengthMm)} mm`;
+  if (piece.kind === 'elbow' && piece.elbow) {
+    return `${Math.round(piece.elbow.angleDeg)}° gored elbow${piece.elbow.plane === 'vertical' ? ' (vertical)' : ''}, ${piece.elbow.gores ?? '—'} pieces, R/D ${round2(piece.elbow.centrelineRadiusMm / piece.diameterMm)} (SMACNA Table 3-1)`;
+  }
+  if (piece.kind === 'transition') return `Round reducer (${piece.vertical ? 'concentric, riser' : 'flat bottom'}), ${Math.round(piece.lengthMm)} mm`;
+  if (piece.kind === 'end-cap') return 'Round end cap';
+  if (piece.kind === 'takeoff') {
+    return piece.takeoff?.style === 'conical'
+      ? `Conical take-off, mouth Ø${Math.round(piece.takeoff.openingMm ?? piece.diameterMm)} (SMACNA Fig. 2-6)`
+      : 'Spin-in collar with bead (SMACNA Fig. 2-6)';
+  }
+  if (piece.kind === 'offset' && piece.offset) return `Round offset, ${Math.round(piece.offset.lateralOffsetMm)} mm`;
+  return null;
+}
+
+/** " (riser)" / " (drop)" for a piece on a vertical leg. */
+function riserWord(piece: DuctPiece): string {
+  return piece.vertical && !piece.frame ? (piece.vertical > 0 ? ' (riser)' : ' (drop)') : '';
+}
+
+function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
+  const round = roundPieceDescription(piece, plan);
+  if (round) return round;
+  if (piece.kind === 'straight') return `Straight section${riserWord(piece)} ${Math.round(piece.lengthMm)} mm`;
   if (piece.kind === 'connector') return 'Flexible connector (fabric + GI edges)';
   if (piece.kind === 'end-cap') return 'End cap (blank flange)';
+  if (piece.kind === 'transition') return `Transition (${piece.vertical ? 'concentric, riser' : 'flat bottom'}), ${Math.round(piece.lengthMm)} mm`;
+  if (piece.kind === 'offset' && piece.offset) {
+    const offset = piece.offset;
+    const plane = piece.frame ? ' vertical' : '';
+    return offset.type === 'mitered'
+      ? `Offset,${plane} mitred ${Math.round(offset.angleDeg)}° (SMACNA Type 2), ${Math.round(offset.lateralOffsetMm)} mm`
+      : `Offset,${plane} ogee R${Math.round(offset.throatRadiusMm ?? 0)} throat (SMACNA Type 3), ${Math.round(offset.lateralOffsetMm)} mm`;
+  }
+  if (piece.kind === 'damper') return piece.damper?.description ?? 'Volume control damper, locking quadrant';
+  if (piece.kind === 'takeoff') {
+    return piece.takeoff && piece.takeoff.leadInMm > 0
+      ? `Shoe take-off, 45° lead-in ${Math.round(piece.takeoff.leadInMm)} mm`
+      : 'Straight take-off collar';
+  }
+  if (piece.kind === 'split') {
+    const split = piece.split!;
+    return split.style === 'bullhead'
+      ? `Bullhead tee, ${split.branches.reduce((total, branch) => total + branch.vaneCount, 0)} turning vanes`
+      : `Divided-flow Y split (${split.branches.length} radius elbow${split.branches.length === 1 ? '' : 's'})`;
+  }
   const elbow = piece.elbow!;
   const angle = Math.round(elbow.angleDeg);
+  // A vertical elbow bends the easy way: its radius is on H.
+  const vertical = elbow.plane === 'vertical';
   return elbow.style === 'radius'
-    ? `${angle}° radius elbow R/W ${round2(elbow.centrelineRadiusMm / piece.widthMm)}`
-    : `${angle}° square elbow with ${elbow.vaneCount} turning vanes`;
+    ? `${angle}° radius elbow${vertical ? ' (vertical, easy way)' : ''} R/${vertical ? 'H' : 'W'} ${round2(elbow.centrelineRadiusMm / (elbow.inPlaneMm ?? piece.widthMm))}`
+    : `${angle}° square elbow${vertical ? ' (vertical)' : ''} with ${elbow.vaneCount} turning vanes`;
 }
 
 function increment(map: Map<string, number>, key: string, by: number): void {
@@ -56,7 +108,52 @@ function increment(map: Map<string, number>, key: string, by: number): void {
   map.set(key, (map.get(key) ?? 0) + by);
 }
 
-export function buildDuctBom(plans: readonly DuctFabricationPlan[]): DuctBomRow[] {
+/**
+ * Supports (SMACNA chapter 4): rods by size (metres, plus the cut count),
+ * trapeze angles by member and cut length, round bands, nuts and washers at
+ * the bar, one soffit anchor per rod, riser angles and their screws.
+ */
+function supportRows(supports: readonly DuctSupportPlan[]): DuctBomRow[] {
+  const rows: DuctBomRow[] = [];
+  const counted = new Map<string, { quantity: number; unit: DuctBomRow['unit']; basis: string }>();
+  const add = (description: string, size: string, quantity: number, unit: DuctBomRow['unit'], basis: string) => {
+    if (quantity <= 0) return;
+    const key = `${description}|${size}`;
+    const entry = counted.get(key) ?? { quantity: 0, unit, basis };
+    entry.quantity += quantity;
+    counted.set(key, entry);
+  };
+  for (const plan of supports) {
+    for (const hanger of plan.hangers) {
+      const rod = hanger.rod?.label ?? 'special';
+      for (const piece of hanger.rods) {
+        add(`Threaded rod ${rod}, galvanised`, rod, piece.lengthMm / 1000, 'm', 'rods by load at SMACNA stress (derived metric)');
+        add(`Threaded rod ${rod}, cut lengths`, `${Math.ceil(piece.lengthMm / 50) * 50} mm`, 1, 'no.', 'rod to the soffit');
+        add(`Soffit anchor ${rod}`, rod, 1, 'no.', 'one per rod (upper attachment, S4.1: ≤ ¼ of proof load)');
+      }
+      if (hanger.bar) {
+        add(`Trapeze angle ${hanger.bar.member.label}`, `${Math.ceil(hanger.bar.lengthMm / 10) * 10} mm`, 1, 'no.', `SMACNA Table 4-3M (${hanger.bar.allowableKg} kg at ${Math.round(hanger.bar.spanMm)} mm)`);
+        add(`Nut ${rod} (above and below the bar)`, rod, 2 * hanger.rods.length, 'no.', 'project practice');
+        add(`Washer ${rod}`, rod, 2 * hanger.rods.length, 'no.', 'project practice');
+      } else if (hanger.kind === 'band') {
+        add('Hanger band 25.4×0.85 with bolt', `Ø${Math.round(hanger.outerWidthMm)}`, 1, 'no.', 'SMACNA Table 4-2');
+        add(`Nut ${rod} (band)`, rod, 2, 'no.', 'project practice');
+      }
+      if (hanger.insert) add('Load-bearing insulation insert (under the bar)', `${Math.round(hanger.outerWidthMm)} mm`, 1, 'no.', 'insulation stays continuous at supports');
+    }
+    for (const riser of plan.risers) {
+      add(`Riser support angle ${riser.member}`, `${Math.ceil(riser.lengthMm / 10) * 10} mm`, 2, 'no.', 'SMACNA §4.2.10 (member: project practice)');
+      add('Screw: self-drilling sheet-metal screw (riser angles)', '—', 8, 'no.', 'project practice');
+    }
+  }
+  for (const [key, entry] of [...counted].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))) {
+    const [description, size] = key.split('|') as [string, string];
+    rows.push({ category: 'Supports', description, size, quantity: entry.unit === 'm' ? round2(entry.quantity) : Math.round(entry.quantity), unit: entry.unit, basis: entry.basis });
+  }
+  return rows;
+}
+
+export function buildDuctBom(plans: readonly DuctFabricationPlan[], supports: readonly DuctSupportPlan[] = []): DuctBomRow[] {
   const rows: DuctBomRow[] = [];
   const good = plans.filter((plan) => plan.status === 'ok');
   for (const plan of plans) {
@@ -76,7 +173,7 @@ export function buildDuctBom(plans: readonly DuctFabricationPlan[]): DuctBomRow[
         sheetMass.set(piece.sheetThicknessMm, (sheetMass.get(piece.sheetThicknessMm) ?? 0) + piece.massKg);
       }
       fabric += piece.fabricAreaM2;
-      increment(pieces, `${pieceDescription(piece)}|${sizeLabel(piece)}|${piece.sheetThicknessMm ?? '-'}`, 1);
+      increment(pieces, `${pieceDescription(piece, plan)}|${sizeLabel(piece)}|${piece.sheetThicknessMm ?? '-'}`, 1);
     }
   }
   for (const [thickness, area] of [...sheetArea].sort((a, b) => a[0] - b[0])) {
@@ -92,6 +189,37 @@ export function buildDuctBom(plans: readonly DuctFabricationPlan[]): DuctBomRow[
     rows.push({ category: 'Fabricated pieces', description, size: `${size} · ${sheet} mm`, quantity: count, unit: 'no.', basis: 'fabrication plan' });
   }
 
+  // Longitudinal seams (SMACNA Fig. 1-5), by seam type.
+  const seamLength = good.reduce((total, plan) => total + plan.pieces.reduce((sum, piece) => sum + (piece.seamLengthMm ?? 0), 0), 0);
+  if (seamLength > 0) {
+    const seamType = good[0]!.seamType;
+    rows.push({
+      category: 'Fabricated pieces',
+      description: seamType === 'snaplock' ? 'Longitudinal seam, button-punch snaplock (L-2)' : 'Longitudinal seam, Pittsburgh lock (L-1)',
+      size: '—', quantity: round2(seamLength / 1000), unit: 'm', basis: 'SMACNA Fig. 1-5; seams per section by coil width',
+    });
+  }
+
+  // Turning vanes and runners (SMACNA Fig. 2-3 / 2-4): vanes span the height, runners run the diagonal.
+  const accessories = new Map<string, number>();
+  const addVanes = (vanes: { spec: DuctVaneSpec; lengthMm: number; sections: number }, count: number, inPlaneWidthMm: number) => {
+    const piece = Math.round(vanes.lengthMm / vanes.sections);
+    increment(accessories, `Turning vane, ${vanes.spec.label}|${piece} mm long`, count * vanes.sections);
+    increment(accessories, `Vane runner ${VANE_RUNNER.thicknessMm} mm, ${VANE_RUNNER.minWidthMm} mm min|${Math.round(inPlaneWidthMm * Math.SQRT2)} mm long`, vanes.sections + 1);
+  };
+  for (const plan of good) {
+    for (const piece of plan.pieces) {
+      if (piece.elbow?.vanes) addVanes(piece.elbow.vanes, piece.elbow.vaneCount, piece.elbow.inPlaneMm ?? piece.widthMm);
+      for (const branch of piece.split?.branches ?? []) {
+        if (branch.vanes) addVanes(branch.vanes, branch.vaneCount, branch.section.widthMm);
+      }
+    }
+  }
+  for (const [key, count] of [...accessories].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const [description, size] = key.split('|') as [string, string];
+    rows.push({ category: 'Accessories', description, size, quantity: count, unit: 'no.', basis: 'SMACNA Fig. 2-3 / 2-4' });
+  }
+
   // Joint hardware, per system.
   const hardware = new Map<string, { unit: DuctBomRow['unit']; quantity: number; basis: string }>();
   const add = (key: string, quantity: number, unit: DuctBomRow['unit'], basis: string) => {
@@ -104,7 +232,7 @@ export function buildDuctBom(plans: readonly DuctFabricationPlan[]): DuctBomRow[
     for (const joint of plan.joints) {
       const h = joint.hardware;
       if (!h) continue;
-      const category = joint.kind === 'unit-connection' ? 'Connections' : 'Joints';
+      const category = joint.kind === 'unit-connection' || joint.kind === 'tap-connection' ? 'Connections' : 'Joints';
       const system = h.label;
       add(`${category}|${system}: joints|—`, 1, 'no.', 'fabrication plan');
       if (h.flangePieces > 0) add(`${category}|${system}: flange profile|—`, h.flangeLengthMm / 1000, 'm', 'both duct ends');
@@ -120,6 +248,8 @@ export function buildDuctBom(plans: readonly DuctFabricationPlan[]): DuctBomRow[
       add(`${category}|Gasket tape|—`, h.gasketLengthMm / 1000, 'm', system);
       add(`${category}|Corner sealant points|—`, h.sealedCorners, 'no.', 'seal class');
       add(`${category}|Angle frame corner welds|—`, h.cornerWelds, 'no.', 'SMACNA T-22');
+      if (h.sleeves) add(`${category}|RT-1 beaded sleeve coupling|—`, h.sleeves, 'no.', 'SMACNA Fig. 3-2');
+      if (h.sealantLengthMm) add(`${category}|Duct sealant (round joints and collars)|—`, h.sealantLengthMm / 1000, 'm', 'SMACNA Fig. 3-2 / seal class');
     }
   }
   for (const [key, entry] of [...hardware].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -130,6 +260,26 @@ export function buildDuctBom(plans: readonly DuctFabricationPlan[]): DuctBomRow[
       unit: entry.unit, basis: entry.basis,
     });
   }
+  // NBR insulation (mid-plane takeoff with flange bands), by thickness.
+  const insulation = new Map<number, { area: number; withWaste: number; adhesive: number; tape: number }>();
+  for (const plan of good) {
+    if (!plan.insulation) continue;
+    const entry = insulation.get(plan.insulation.thicknessMm) ?? { area: 0, withWaste: 0, adhesive: 0, tape: 0 };
+    entry.area += plan.insulation.areaM2;
+    entry.withWaste += plan.insulation.areaWithWasteM2;
+    entry.adhesive += plan.insulation.adhesiveL;
+    entry.tape += plan.insulation.tapeM;
+    insulation.set(plan.insulation.thicknessMm, entry);
+  }
+  for (const [thickness, entry] of [...insulation].sort((a, b) => a[0] - b[0])) {
+    const size = `${Math.round(thickness)} mm`;
+    rows.push({ category: 'Insulation', description: 'NBR (elastomeric) sheet, incl. waste', size, quantity: round2(entry.withWaste), unit: 'm²', basis: `mid-plane area ${round2(entry.area)} m² incl. flange bands + waste (practice)` });
+    rows.push({ category: 'Insulation', description: 'Contact adhesive (ArmaFlex 520 type)', size, quantity: round2(entry.adhesive), unit: 'L', basis: 'both faces glued, Armacell 520 coverage' });
+    rows.push({ category: 'Insulation', description: 'NBR tape 50 mm (seams and flange bands)', size, quantity: round2(entry.tape), unit: 'm', basis: 'project practice' });
+  }
+  // Supports of the runs that are fabricated.
+  const fabricated = new Set(good.map((plan) => plan.elementId));
+  rows.push(...supportRows(supports.filter((plan) => fabricated.has(plan.elementId))));
   return rows;
 }
 
@@ -139,7 +289,7 @@ export function buildDuctFabricationSchedule(plans: readonly DuctFabricationPlan
     return {
       run: plan.elementId,
       mark: piece.mark,
-      kind: pieceDescription(piece),
+      kind: pieceDescription(piece, plan),
       size: sizeLabel(piece),
       lengthMm: Math.round(piece.lengthMm),
       sheetMm: piece.sheetThicknessMm,

@@ -45,6 +45,7 @@ import type { InteractionViewMode } from "../../../vrf/interaction/view-manipula
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
+import type { DuctDesignSettings } from "../hvac/duct/ductSettings";
 import { constrainPipeDraftDelta, resolvePipeDraftAngleMode } from "../hvac/pipeDraftingPolicy";
 import { editablePipeNodes, pipeEditControlIndices } from "../hvac/pipeEditModel";
 import {
@@ -986,6 +987,7 @@ function rebuildPipePreviewLayer(
   committedElements: readonly HvacElement[],
   externalEdits: readonly HvacElement[] | null,
   buildRenderContext: ReturnType<typeof createPipeRenderStateCache>,
+  ductSettings?: DuctDesignSettings,
 ): void {
   clearGroup(sceneState.pipePreviewLayer);
   const { previews, allElements, hiddenIds } = composeHybridPipePreviewScene(
@@ -995,7 +997,7 @@ function rebuildPipePreviewLayer(
     const elementId = child.userData.hvacElementId as string | undefined;
     const elementType = child.userData.hvacElementType as HvacElement["type"] | undefined;
     if (elementId && elementType && (isRefrigerantPipeElementType(elementType)
-      || elementType === "refrigerant-branch-kit" || elementType === "condensate-pipe")) {
+      || elementType === "refrigerant-branch-kit" || elementType === "condensate-pipe" || elementType === "duct")) {
       child.visible = !hiddenIds.has(elementId);
     }
   });
@@ -1017,6 +1019,8 @@ function rebuildPipePreviewLayer(
   });
   const context = {
     ...renderState,
+    // Duct drafts (and their re-planned parents) fabricate with the project's duct settings.
+    ...(ductSettings ? { ductSettings } : {}),
     // Straight targets orient branch-kit bodies. Pipe meshes do not consume
     // them, so local pipe previews avoid compiling the entire network twice.
     ...(previews.some(element => element.type === "refrigerant-branch-kit")
@@ -1114,6 +1118,8 @@ export function HybridProjectionLayer({
   const previewRebuildFrameRef = useRef<number | null>(null);
   const hvacElementsRef = useRef(hvacElements);
   hvacElementsRef.current = hvacElements;
+  const ductSettingsRef = useRef(ductSettings);
+  ductSettingsRef.current = ductSettings;
   const schedulePreviewRebuild = useCallback(() => {
     if (previewRebuildFrameRef.current !== null || typeof window === "undefined") return;
     previewRebuildFrameRef.current = window.requestAnimationFrame(() => {
@@ -1127,6 +1133,7 @@ export function HybridProjectionLayer({
         hvacElementsRef.current,
         externalPipeEditsRef.current,
         buildPreviewRenderContext,
+        ductSettingsRef.current,
       );
       controllerRef.current?.setContentBounds(sceneState.contentBounds);
       requestFrameRef.current?.();

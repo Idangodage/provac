@@ -29,6 +29,7 @@ import {
   type JointRigidityRow,
   type PressureMode,
 } from './ductCatalog';
+import { roundMinimumThickness, ROUND_REINFORCEMENT_ANGLES, type DuctRoundJointType } from './ductRoundRules';
 import type { DuctDesignSettings, DuctGaugeMode, DuctJointSystem } from './ductSettings';
 import type { DuctConstruction, DuctService } from './ductTypes';
 import {
@@ -45,6 +46,7 @@ import {
 export type DuctConstructionStatus =
   | 'ok'
   | 'unsupported-pressure'
+  | 'gauge-override-invalid'
   | 'size-over-table'
   | 'no-stock'
   | 'joint-not-achievable';
@@ -52,7 +54,9 @@ export type DuctConstructionStatus =
 export type ResolvedDuctJoint =
   | { system: 'tdc'; ratedClass: SmacnaRigidityClass | null; thickened: boolean }
   | { system: 'ductmate'; series: DuctmateSeries['id']; ratedClass: SmacnaRigidityClass; flangeHeightMm: number }
-  | { system: 'angle-flange'; member: NonNullable<JointRigidityRow['companionAngle']>; forClass: SmacnaRigidityClass | null };
+  | { system: 'angle-flange'; member: NonNullable<JointRigidityRow['companionAngle']>; forClass: SmacnaRigidityClass | null }
+  /** Round duct slip joint (SMACNA Fig. 3-2): RT-1 beaded sleeve or RT-5 crimp. */
+  | { system: 'round-slip'; type: DuctRoundJointType };
 
 export interface SectionConstruction {
   status: DuctConstructionStatus;
@@ -61,8 +65,8 @@ export interface SectionConstruction {
   gaugeMode: DuctGaugeMode;
   pressureClassPa: number;
   pressureMode: PressureMode;
-  /** The SMACNA table used (null in longest-side mode or when refused). */
-  table: SmacnaReinforcementTable['table'] | null;
+  /** The SMACNA table used (null in longest-side mode or when refused); round: '3-2AM' / '3-2BM'. */
+  table: SmacnaReinforcementTable['table'] | '3-2AM' | '3-2BM' | null;
   jointSpacingMm: number;
   /** SMACNA spacing column actually read (mm). */
   spacingColumnMm: number | null;
@@ -92,6 +96,10 @@ export interface SectionConstructionInput {
   pressureClassPa?: number | null;
   jointSystem?: DuctJointSystem | null;
   jointSpacingMm?: number;
+  /** Sheet chosen by the run instead of the automatic stock pick. */
+  gaugeOverrideMm?: number | null;
+  /** Round section: its diameter (the rectangular tables do not apply). */
+  diameterMm?: number;
 }
 
 const EPSILON = 1e-6;
@@ -229,6 +237,7 @@ export function resolveSectionConstruction(input: SectionConstructionInput): Sec
       message: `Pressure class ${pressureClassPa} Pa is not supported: only 125, 250 and 500 Pa (SMACNA Tables 1-3M to 1-5M) are verified.`,
     };
   }
+  if (input.diameterMm !== undefined) return resolveRoundConstruction(input, base, pressureMode);
   const greater = Math.max(widthMm, heightMm);
   const lesser = Math.min(widthMm, heightMm);
 
@@ -291,7 +300,7 @@ export function resolveSectionConstruction(input: SectionConstructionInput): Sec
     requiredClass = maxRigidityClass(greaterClass, lesserClass);
   }
 
-  const stockSheet = selectStockSheet(minimumMm, settings.availableSheetThicknessesMm);
+  let stockSheet = selectStockSheet(minimumMm, settings.availableSheetThicknessesMm);
   const partial: SectionConstruction = {
     ...base,
     table: settings.gaugeMode === 'smacna' ? table.table : null,
@@ -310,6 +319,22 @@ export function resolveSectionConstruction(input: SectionConstructionInput): Sec
       status: 'no-stock',
       message: `No stocked sheet is at least ${minimumMm} mm (stock: ${settings.availableSheetThicknessesMm.join(', ')} mm).`,
     };
+  }
+
+  const override = input.gaugeOverrideMm ?? null;
+  if (override !== null) {
+    const stocked = settings.availableSheetThicknessesMm.some((sheet) => Math.abs(sheet - override) < 1e-6);
+    if (!stocked || override + EPSILON < minimumMm) {
+      return {
+        ...partial,
+        status: 'gauge-override-invalid',
+        message: !stocked
+          ? `The chosen ${override} mm sheet is not in the stock list (${settings.availableSheetThicknessesMm.join(', ')} mm).`
+          : `The chosen ${override} mm sheet is lighter than the SMACNA minimum ${minimumMm} mm.`,
+      };
+    }
+    notes.push(`Sheet set to ${override} mm on this run (SMACNA minimum ${minimumMm} mm).`);
+    stockSheet = override;
   }
 
   const effectiveSystem: DuctJointSystem = settings.gaugeMode === 'longest-side' && system === 'auto' ? 'tdc' : system;
@@ -335,10 +360,55 @@ export function resolveSectionConstruction(input: SectionConstructionInput): Sec
   };
 }
 
+/**
+ * Round sections (SMACNA chapter 3): the ±500 Pa column of Table 3-2AM (supply)
+ * or 3-2BM (return) by diameter and seam, the stock sheet at or above it, and a
+ * slip joint (RT-1 beaded sleeve for spiral duct, RT-5 crimp for longitudinal).
+ */
+function resolveRoundConstruction(input: SectionConstructionInput, base: SectionConstruction, pressureMode: PressureMode): SectionConstruction {
+  const { settings } = input;
+  const diameter = input.diameterMm!;
+  const round = roundMinimumThickness(diameter, settings.roundSeam, pressureMode === 'negative');
+  if (!round) {
+    return { ...base, status: 'size-over-table', message: `Ø${Math.round(diameter)} with a ${settings.roundSeam} seam is beyond SMACNA Table 3-2${pressureMode === 'negative' ? 'B' : 'A'}M.` };
+  }
+  const notes: string[] = [];
+  if (round.reinforcement) {
+    notes.push(`Reinforcement angle ${round.reinforcement.angle} (${ROUND_REINFORCEMENT_ANGLES[round.reinforcement.angle]} mm) at ${round.reinforcement.spacingM} m (Table 3-2BM).`);
+  }
+  const partial: SectionConstruction = {
+    ...base, table: round.table, smacnaMinThicknessMm: round.minimumMm, unreinforced: !round.reinforcement, notes,
+  };
+  let sheet = selectStockSheet(round.minimumMm, settings.availableSheetThicknessesMm);
+  const override = input.gaugeOverrideMm ?? null;
+  if (override !== null) {
+    const stocked = settings.availableSheetThicknessesMm.some((candidate) => Math.abs(candidate - override) < 1e-6);
+    if (!stocked || override + EPSILON < round.minimumMm) {
+      return {
+        ...partial, status: 'gauge-override-invalid',
+        message: !stocked
+          ? `The chosen ${override} mm sheet is not in the stock list (${settings.availableSheetThicknessesMm.join(', ')} mm).`
+          : `The chosen ${override} mm sheet is lighter than the SMACNA minimum ${round.minimumMm} mm.`,
+      };
+    }
+    sheet = override;
+  }
+  if (sheet === null) {
+    return { ...partial, status: 'no-stock', message: `No stocked sheet is at least ${round.minimumMm} mm (stock: ${settings.availableSheetThicknessesMm.join(', ')} mm).` };
+  }
+  return {
+    ...partial,
+    sheetThicknessMm: sheet,
+    gaugeLabel: gaugeLabelForSheet(sheet),
+    joint: { system: 'round-slip', type: settings.roundSeam === 'spiral' ? 'RT-1' : 'RT-5' },
+  };
+}
+
 /** Short label, e.g. "TDC (class G)", "DM35", "L 38.1×3.2". */
 export function describeJoint(joint: ResolvedDuctJoint | null): string {
   if (!joint) return '—';
   if (joint.system === 'tdc') return joint.ratedClass ? `TDC (rates ${joint.ratedClass})` : 'TDC';
   if (joint.system === 'ductmate') return `Ductmate ${joint.series.slice(2)} (rates ${joint.ratedClass})`;
+  if (joint.system === 'round-slip') return joint.type === 'RT-1' ? 'RT-1 beaded sleeve' : 'RT-5 crimp';
   return `Angle flange L${joint.member.legMm}×${joint.member.thicknessMm}${joint.member.hotRolled ? ' HR' : ''}`;
 }
