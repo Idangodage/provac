@@ -60,14 +60,18 @@ export function validateDuctRuns(
   for (const clash of findDuctClashes(elements, settings, listNetworkPipeLanes([...elements]))) {
     const duct = byId.get(clash.ductId);
     const other = byId.get(clash.otherId);
-    const otherName = clash.kind === 'duct' ? `duct run ${other?.label || clash.otherId}` : `${SERVICE_NAMES[clash.service ?? ''] ?? 'pipe'} ${other?.label || clash.otherId}`;
+    const otherName = clash.kind === 'duct' ? `duct run ${other?.label || clash.otherId}`
+      : clash.kind === 'terminal' ? `air terminal ${other?.label || clash.otherId}`
+        : `${SERVICE_NAMES[clash.service ?? ''] ?? 'pipe'} ${other?.label || clash.otherId}`;
+    const subject = duct && !isDuctElement(duct) ? duct.label || 'Air terminal' : duct?.label || 'Duct run';
     issues.push({
       id: `DU_CLASH:${clash.ductId}:${clash.otherId}`,
       level: 'error',
       code: 'DU_CLASH',
       entityId: clash.ductId,
-      message: `${duct?.label || 'Duct run'}: ${clash.mark} clashes with the ${otherName} at (${Math.round(clash.point.x)}, ${Math.round(clash.point.y)}, z ${Math.round(clash.point.z)}).`,
-      suggestedFix: clash.kind === 'pipe' ? 'Re-route the pipe over or under the duct, or change the duct level.' : 'Change one run\'s level or route.',
+      message: `${subject}: ${clash.mark} clashes with the ${otherName} at (${Math.round(clash.point.x)}, ${Math.round(clash.point.y)}, z ${Math.round(clash.point.z)}).`,
+      suggestedFix: clash.kind === 'pipe' ? 'Re-route the pipe over or under the duct, or change the duct level.'
+        : clash.kind === 'terminal' ? 'Move the terminal or re-route the run round its box.' : 'Change one run\'s level or route.',
     });
   }
   issues.push(...extra);

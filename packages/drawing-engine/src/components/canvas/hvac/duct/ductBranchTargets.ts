@@ -12,8 +12,20 @@ import { getDuctRunPlan } from './ductFabricationPlanner';
 import { resolveSectionConstruction } from './ductGauge';
 import { add, dot, ductLegs, scale, sub } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
+import { plenumGeometry, spigotAttachment } from './ductPlenum';
 import type { DuctDesignSettings } from './ductSettings';
-import { isDuctElement, isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctSide, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
+import {
+  isDuctElement,
+  isRoundLeg,
+  readDuctRunSpec,
+  roundLeg,
+  type DuctLeg,
+  type DuctRunSpec,
+  type DuctSide,
+  type DuctSpigotFace,
+  type DuctSplitStyle,
+  type DuctTapStyle,
+} from './ductTypes';
 
 function parentSheetMm(spec: DuctRunSpec, section: DuctLeg, settings: DuctDesignSettings): number {
   return resolveSectionConstruction({
@@ -64,9 +76,29 @@ export function splitOrigin(
   };
 }
 
+/** A round branch off a spigot on the parent's plenum. */
+export function spigotOrigin(
+  parent: HvacElement,
+  settings: DuctDesignSettings,
+  request: { face: DuctSpigotFace; alongMm: number; acrossMm: number; style: Extract<DuctTapStyle, 'spin-in' | 'conical'>; vcd: boolean },
+  branch: DuctLeg,
+): DuctDraftOrigin | null {
+  const spec = readDuctRunSpec(parent);
+  if (!spec || spec.end.kind !== 'plenum') return null;
+  const box = { widthMm: spec.end.widthMm, heightMm: spec.end.heightMm };
+  const attachment = spigotAttachment(spec, request, branch, parentSheetMm(spec, box, settings), settings);
+  if (!attachment) return null;
+  return {
+    kind: 'spigot', parentRunId: parent.id, face: request.face, alongMm: request.alongMm, acrossMm: request.acrossMm,
+    style: request.style, vcd: request.vcd, point: attachment.wallPoint, direction: attachment.direction,
+    bottomZ: attachment.bottomZ, service: spec.service,
+  };
+}
+
 export type DuctBranchTarget =
   | { kind: 'tap'; parent: HvacElement; spec: DuctRunSpec; legIndex: number; stationMm: number; side: DuctSide; marker: [Point2D, Point2D] }
-  | { kind: 'split'; parent: HvacElement; spec: DuctRunSpec; side: DuctSide; marker: [Point2D, Point2D] };
+  | { kind: 'split'; parent: HvacElement; spec: DuctRunSpec; side: DuctSide; marker: [Point2D, Point2D] }
+  | { kind: 'spigot'; parent: HvacElement; spec: DuctRunSpec; face: DuctSpigotFace; alongMm: number; acrossMm: number; marker: [Point2D, Point2D] };
 
 /** Tolerance around the run end in which a click starts a split (mm). */
 const SPLIT_ZONE_MM = 250;
@@ -110,6 +142,27 @@ export function findBranchTarget(
           const wall = add(end, scale(n, side * lastSection.widthMm / 2));
           offer({ kind: 'split', parent, spec, side, marker: [end, add(wall, scale(lastLeg.direction, 1))] }, Math.max(0, Math.abs(along) - 1));
         }
+      }
+    }
+
+    // A plenum's faces: a spigot on its left, right or end face.
+    const plenum = plenumGeometry(spec);
+    if (plenum) {
+      const offset = sub(point, plenum.back);
+      const along = dot(offset, plenum.direction);
+      const across = dot(offset, plenum.normal);
+      const sideGap = Math.abs(across) - plenum.widthMm / 2;
+      if (along > 0 && along < plenum.lengthMm && sideGap > -plenum.widthMm / 4 && sideGap < thresholdMm) {
+        const face: DuctSpigotFace = across >= 0 ? 'left' : 'right';
+        const alongMm = Math.round(along / 10) * 10;
+        const wall = add(add(plenum.back, scale(plenum.direction, alongMm)), scale(plenum.normal, (face === 'left' ? 1 : -1) * plenum.widthMm / 2));
+        offer({ kind: 'spigot', parent, spec, face, alongMm, acrossMm: 0, marker: [sub(wall, scale(plenum.direction, 100)), add(wall, scale(plenum.direction, 100))] }, Math.abs(sideGap));
+      }
+      const endGap = along - plenum.lengthMm;
+      if (endGap > -plenum.lengthMm / 4 && endGap < thresholdMm && Math.abs(across) < plenum.widthMm / 2) {
+        const acrossMm = Math.round(across / 10) * 10;
+        const wall = add(plenum.end, scale(plenum.normal, acrossMm));
+        offer({ kind: 'spigot', parent, spec, face: 'end', alongMm: 0, acrossMm, marker: [sub(wall, scale(plenum.normal, 100)), add(wall, scale(plenum.normal, 100))] }, Math.abs(endGap));
       }
     }
 

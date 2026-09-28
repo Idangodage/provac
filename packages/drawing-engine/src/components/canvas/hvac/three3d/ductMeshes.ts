@@ -14,6 +14,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { HvacElement, Point2D } from '../../../../types';
 import type { DuctElbow, DuctFabricationPlan, DuctJoint, DuctPiece } from '../duct/ductFabricationPlanner';
 import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
+import { flexPointAt, flexSupportStations, saggedFlexPoints } from '../duct/ductFlex';
 import { frameToWorld, sampleArc } from '../duct/ductGeometry';
 import { resolveDuctSettings, type DuctDesignSettings } from '../duct/ductSettings';
 import { getDuctSupportPlan, type DuctSupportPlan } from '../duct/ductSupports';
@@ -27,6 +28,7 @@ export const DUCT_3D_COLORS = {
   fabric: '#34383e',
   cap: '#a6b1bb',
   damper: '#e2a42b',
+  flexJacket: '#cdd2d7',
   support: '#6d5a45',
   rod: '#8a8f96',
   insulation: '#1f2226',
@@ -591,8 +593,31 @@ export function addDuctSupportMeshes(supports: DuctSupportPlan, push: MeshPush):
   }
 }
 
+/**
+ * A flexible runout as installed: a corrugated tube (its jacket on an insulated
+ * form) along its curve, sagging between the supports.
+ */
+function addFlexMeshes(piece: DuctPiece, push: MeshPush): void {
+  const flex = piece.flex!;
+  const radius = piece.widthMm / 2 + flex.jacketMm;
+  const supports = flexSupportStations(piece.lengthMm);
+  const sagged = saggedFlexPoints({ points: flex.points, stations: flex.stations, lengthMm: piece.lengthMm }, supports);
+  // Resample about every 25 mm so the corrugations read.
+  const samples = Math.max(8, Math.round(piece.lengthMm / 25));
+  const points = Array.from({ length: samples + 1 }, (_, index) => flexPointAt({ points: sagged, stations: flex.stations }, (piece.lengthMm * index) / samples));
+  const radii = points.map((_, index) => radius + (index % 2 === 0 ? 1.5 : -1.5));
+  const heading = { x: points[points.length - 1]!.x - points[0]!.x, y: points[points.length - 1]!.y - points[0]!.y };
+  const across = Math.hypot(heading.x, heading.y) > 1 ? undefined : { x: 1, y: 0 };
+  push('duct-flex', material(flex.type === 'm-un' ? DUCT_3D_COLORS.galvanised : DUCT_3D_COLORS.flexJacket, flex.type === 'm-un' ? 0.3 : 0.15, 0.55),
+    sweepCircularPath3(points, radii, across));
+}
+
 /** One piece's sheet metal and its accessories, with the sheet `t` thick (grown by the insulation for its skin). */
 function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push: MeshPush): void {
+  if (piece.kind === 'flex' && piece.flex) {
+    addFlexMeshes(piece, push);
+    return;
+  }
   const path3 = piecePath3(piece);
   if (path3) {
     addVerticalPiece(piece, path3, t, metal, push);
@@ -607,6 +632,25 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
   if (piece.kind === 'end-cap') {
     const centre = new THREE.Vector3(piece.end.x, piece.end.y, piece.centreZ);
     push('duct-caps', material(DUCT_3D_COLORS.cap, 0.12, 0.55), orientedBox(centre, piece.direction, 2, 2 * halfWidth, 2 * halfHeight));
+    return;
+  }
+  if (piece.kind === 'plenum' && piece.plenum) {
+    // The box: its sides, the blank far face, and the back face round the duct inlet.
+    push('duct-metal', metal, sweepRectangularTube([piece.start, piece.end], piece.centreZ, halfWidth, halfHeight));
+    const caps = material(DUCT_3D_COLORS.cap, 0.12, 0.55);
+    push('duct-caps', caps, orientedBox(new THREE.Vector3(piece.end.x, piece.end.y, piece.centreZ), piece.direction, 2, 2 * halfWidth, 2 * halfHeight));
+    const bottom = piece.centreZ - halfHeight;
+    const inletW = Math.min(piece.plenum.inletWidthMm, 2 * halfWidth);
+    const inletH = Math.min(piece.plenum.inletHeightMm, 2 * halfHeight);
+    const n = { x: -piece.direction.y, y: piece.direction.x };
+    const back = (across: number, up: number, width: number, height: number) => {
+      if (width < 1 || height < 1) return;
+      push('duct-caps', caps, orientedBox(new THREE.Vector3(piece.start.x + n.x * across, piece.start.y + n.y * across, up), piece.direction, 2, width, height));
+    };
+    back(0, bottom + inletH + (2 * halfHeight - inletH) / 2, 2 * halfWidth, 2 * halfHeight - inletH);
+    const side = (2 * halfWidth - inletW) / 2;
+    back(inletW / 2 + side / 2, bottom + inletH / 2, side, inletH);
+    back(-(inletW / 2 + side / 2), bottom + inletH / 2, side, inletH);
     return;
   }
   if (piece.kind === 'connector') {
@@ -720,7 +764,8 @@ export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, conte
       else geometry?.dispose();
     };
     for (const piece of plan.pieces) {
-      if (piece.kind === 'connector' || piece.kind === 'split') continue;
+      // The connector must flex; a flexible runout carries its own jacket.
+      if (piece.kind === 'connector' || piece.kind === 'split' || piece.kind === 'flex') continue;
       addPieceMeshes(piece, (piece.sheetThicknessMm ?? 1) + plan.insulationMm, skin, skinPush);
     }
   }

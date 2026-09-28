@@ -55,11 +55,14 @@ import {
 } from './ductGeometry';
 import { ductInsulationThicknessMm, insulationTakeoff, type DuctInsulationTakeoff } from './ductInsulation';
 import { jointHardware, roundTakeoffHardware, slipOverHardware, takeoffHardware, type JointHardware } from './ductJoints';
-import { ductBranchesOf, ductParentOf } from './ductNetwork';
+import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
+import { FLEX_RULES, flexCurve } from './ductFlex';
+import { checkSpigotFit, plenumGeometry, spigotAttachment } from './ductPlenum';
+import { findTerminalPort } from './ductTerminals';
 import { jogOffset, tightestOgee, type DuctOffsetGeometry } from './ductOffsets';
 import { goredElbowPieces, SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';
-import { isRoundLeg, isRoundTapStyle, readDuctRunSpec, type DuctLeg, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
+import { isRoundLeg, isRoundTapStyle, readDuctRunSpec, type DuctLeg, type DuctPoint3, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
 
 export type DuctIssueCode =
   | 'DU_PRESSURE_UNSUPPORTED'
@@ -87,6 +90,14 @@ export type DuctIssueCode =
   | 'DU_SUPPORT_LOAD'
   | 'DU_SOFFIT'
   | 'DU_CLASH'
+  | 'DU_SPIGOT_CLASH'
+  | 'DU_PLENUM_SIZE'
+  | 'DU_FLEX_LENGTH'
+  | 'DU_FLEX_BEND'
+  | 'DU_FLEX_SIZE'
+  | 'DU_FLEX_DROP'
+  | 'DU_TERMINAL_SIZE'
+  | 'DU_TERMINAL_ALIGN'
   | 'DU_OPEN_END';
 
 export interface DuctIssue {
@@ -98,7 +109,31 @@ export interface DuctIssue {
   point?: Point2D;
 }
 
-export type DuctPieceKind = 'connector' | 'takeoff' | 'damper' | 'straight' | 'elbow' | 'offset' | 'transition' | 'split' | 'end-cap';
+export type DuctPieceKind = 'connector' | 'takeoff' | 'damper' | 'straight' | 'elbow' | 'offset' | 'transition' | 'split' | 'plenum' | 'flex' | 'end-cap';
+
+/** A flexible runout to an air terminal (SMACNA §3.5–3.7): its 3D centreline and what it serves. */
+export interface DuctFlexPiece {
+  /** Centreline samples (z = centre) and their arc lengths. */
+  points: DuctPoint3[];
+  stations: number[];
+  minBendRadiusMm: number;
+  terminalId: string;
+  /** SMACNA Fig. 3-7 form; NM-IL = non-metallic, insulated. */
+  type: DuctDesignSettings['flexType'];
+  /** Insulation on an insulated form (mm). */
+  jacketMm: number;
+}
+
+/** A plenum box ending the run, and the spigots on its faces (their branches' collars). */
+export interface DuctPlenumPiece {
+  widthMm: number;
+  heightMm: number;
+  lengthMm: number;
+  spigots: Array<{ branchId: string; face: 'left' | 'right' | 'end'; point: Point2D; direction: Point2D; centreZ: number; openingMm: number }>;
+  /** The duct entering the back face (outside). */
+  inletWidthMm: number;
+  inletHeightMm: number;
+}
 
 export interface DuctElbowVanes {
   spec: DuctVaneSpec;
@@ -191,6 +226,8 @@ export interface DuctPiece {
   transition?: DuctTransitionInfo;
   takeoff?: DuctTakeoffInfo;
   split?: SplitFittingGeometry;
+  plenum?: DuctPlenumPiece;
+  flex?: DuctFlexPiece;
   isMakeUp?: boolean;
   /** Longitudinal seam length in this piece (mm): seams × developed length. */
   seamLengthMm: number;
@@ -204,7 +241,7 @@ export interface DuctPiece {
   massKg: number;
 }
 
-export type DuctJointKind = 'flange' | 'unit-connection' | 'tap-connection' | 'end-cap';
+export type DuctJointKind = 'flange' | 'unit-connection' | 'tap-connection' | 'flex-connection' | 'terminal-connection' | 'end-cap';
 
 export interface DuctJoint {
   id: string;
@@ -263,6 +300,8 @@ const PRACTICE = {
   slipOver: 'Screws at the unit collar (S1.40 spacing by analogy)',
   transitionTaper: 'Transition design taper (within the Fig. 2-7 limits)',
   takeoff: 'Take-off collar length, damper section length and tap-window margin',
+  plenum: 'Plenum construction from the rectangular duct tables; spigot edge margin 50 mm',
+  flex: 'Flexible runout: 100 mm straight lead off each collar, maximum length, jacket thickness',
   neckStretch: 'A leg remainder shorter than the minimum make-up piece is taken up in the elbow neck',
   insulation: 'NBR thickness by service, flange bands, tape and waste',
   split: 'Split neck and tee depth (types per Fig. 2-5)',
@@ -621,11 +660,34 @@ export function planDuctRun(element: HvacElement, options: PlanDuctRunOptions): 
   return planDuctRunSpec(element.id, spec, options);
 }
 
-export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: PlanDuctRunOptions): DuctFabricationPlan {
+/**
+ * The rigid part of a run ending in a flexible runout: its path up to the last
+ * point before the terminal. A run that is all runout keeps a short stub off
+ * its start (its collar and damper).
+ */
+function rigidPartOf(spec: DuctRunSpec): DuctRunSpec {
+  const path = spec.path.slice(0, -1);
+  const legs = spec.legs.slice(0, -1);
+  if (path.length >= 2) return { ...spec, path, legs };
+  const start = spec.path[0]!;
+  const end = spec.path[spec.path.length - 1]!;
+  const length = Math.hypot(end.x - start.x, end.y - start.y) || 1;
+  const stub = 150;
+  return {
+    ...spec,
+    path: [start, { x: start.x + ((end.x - start.x) / length) * stub, y: start.y + ((end.y - start.y) / length) * stub, z: start.z }],
+    legs: [spec.legs[0]!],
+  };
+}
+
+export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, options: PlanDuctRunOptions): DuctFabricationPlan {
   const { settings, scene } = options;
   const issues: DuctIssue[] = [];
   const unverified = new Set<string>();
   const practice = new Set<string>([PRACTICE.allowances]);
+  // A flexible runout to a terminal is planned after the rigid part it leaves from.
+  const flexTail = plannedSpec.end.kind === 'terminal' && plannedSpec.end.flex && plannedSpec.path.length >= 2;
+  const spec: DuctRunSpec = flexTail ? rigidPartOf(plannedSpec) : plannedSpec;
   const legs = ductLegs(spec);
   const polylineLengthMm = legs.reduce((total, leg) => total + leg.lengthMm, 0);
   const flowAlongPath = spec.service === 'supply';
@@ -645,7 +707,7 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
     }
     return construction;
   };
-  const constructionByLeg = spec.legs.map(constructionOf);
+  const constructionByLeg = plannedSpec.legs.map(constructionOf);
   const sheetOf = (section: DuctLeg) => constructionOf(section).sheetThicknessMm;
   const heavier = (a: DuctLeg, b: DuctLeg) => ((sheetOf(b) ?? 0) > (sheetOf(a) ?? 0) ? b : a);
   const flangeRollEnds = (section: DuctLeg) => (constructionOf(section).joint?.system === 'tdc' ? 2 : 0);
@@ -702,7 +764,7 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
       startPieces.push({ kind: 'connector', lengthMm: settings.connectorFabricMm + 2 * settings.connectorMetalMm, section: entrySection });
     }
     practice.add(PRACTICE.slipOver);
-  } else if (spec.start.kind === 'tap' || spec.start.kind === 'split-branch') {
+  } else if (spec.start.kind === 'tap' || spec.start.kind === 'split-branch' || spec.start.kind === 'spigot') {
     const start = spec.start;
     let leaving: Point2D | null = null;
     const parent = ductParentOf(spec, scene);
@@ -737,6 +799,27 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
         leaving = tap.direction;
         startPieces.push({ kind: 'takeoff', lengthMm: tap.collarLengthMm, section: firstLeg });
       }
+    } else if (start.kind === 'spigot') {
+      // A round spigot on the parent's plenum: a take-off off the box face.
+      const plenum = plenumGeometry(parentSpec);
+      const parentSheet = plenum
+        ? resolveSectionConstruction({ widthMm: plenum.widthMm, heightMm: plenum.heightMm, service: parentSpec.service,
+          construction: parentSpec.construction, settings, pressureClassPa: parentSpec.pressureClassPa, jointSystem: parentSpec.jointSystem, gaugeOverrideMm: parentSpec.gaugeOverrideMm }).sheetThicknessMm ?? 1
+        : 1;
+      tap = plenum ? spigotAttachment(parentSpec, start, firstLeg, parentSheet, settings) : null;
+      if (!isRoundLeg(firstLeg)) {
+        issues.push({ code: 'DU_TAP_CLASH', severity: 'error', point: spec.path[0], message: 'A plenum spigot takes a round branch.' });
+      }
+      if (!tap) {
+        issues.push({ code: 'DU_STALE', severity: 'warning', point: spec.path[0], message: 'The parent run no longer ends in a plenum.' });
+      } else {
+        if (Math.hypot(tap.wallPoint.x - spec.path[0]!.x, tap.wallPoint.y - spec.path[0]!.y) > 5 || Math.abs(tap.bottomZ - spec.path[0]!.z) > 5) {
+          issues.push({ code: 'DU_STALE', severity: 'warning', point: spec.path[0], message: 'The parent plenum has moved away from this branch.' });
+        }
+        leaving = tap.direction;
+        startPieces.push({ kind: 'takeoff', lengthMm: tap.collarLengthMm, section: firstLeg });
+      }
+      practice.add(PRACTICE.plenum);
     } else {
       const style = parentSpec.end.kind === 'split' ? parentSpec.end.style : 'bullhead';
       const lastSection = parentSpec.legs[parentSpec.legs.length - 1]!;
@@ -849,7 +932,9 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
       station += leg.lengthMm;
       return;
     }
-    const endReserve = endFitting ? endFitting.consumeInMm : 0;
+    // A plenum fills the end of the last level leg.
+    const plenumHere = legIndex === legs.length - 1 && spec.end.kind === 'plenum' && !leg.vertical ? plenumGeometry(spec) : null;
+    const endReserve = (endFitting ? endFitting.consumeInMm : 0) + (plenumHere?.lengthMm ?? 0);
     let cursor = legIndex === 0 ? 0 : (fittings.get(legIndex)?.consumeOutMm ?? 0);
     const legFirstPiece = pieces.length;
 
@@ -1024,6 +1109,35 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
         sheetThicknessMm: sheetOf(section), sheetAreaM2: area, fabricAreaM2: 0, massKg: massOf(area, section),
         seamLengthMm: 4 * offset.developedLengthMm,
       });
+    } else if (plenumHere) {
+      const box = { widthMm: plenumHere.widthMm, heightMm: plenumHere.heightMm };
+      const sheet = sheetOf(box);
+      const o = outer(box, sheet);
+      const duct = outer(section, sheetOf(section));
+      const length = plenumHere.lengthMm;
+      // Four sides, the blank far face and the back face around the duct opening; four seams.
+      const areaMm2 = 2 * (o.w + o.h) * (length + 2 * TDC_FLANGE_ROLL_MM) + 2 * o.w * o.h - duct.w * duct.h + 4 * 25 * length;
+      const spigots = plenumSpigots(branches, spec, sheet ?? 1, settings);
+      for (const found of checkSpigotFit(plenumHere, spigots)) {
+        issues.push({ code: found.code, severity: 'error', point: spigots.find((spigot) => spigot.branchId === found.branchId)?.point, message: found.message });
+      }
+      if (plenumHere.widthMm < section.widthMm - 0.5 || plenumHere.heightMm < section.heightMm - 0.5) {
+        issues.push({ code: 'DU_PLENUM_SIZE', severity: 'error', point: plenumHere.end,
+          message: `The plenum (${Math.round(plenumHere.widthMm)} × ${Math.round(plenumHere.heightMm)}) is smaller than the duct entering it.` });
+      }
+      practice.add(PRACTICE.plenum);
+      pieces.push({
+        mark: mark('P'), kind: 'plenum', legIndex, start: at(leg.lengthMm - length), end: at(leg.lengthMm), direction: leg.direction,
+        stationStartMm: station + leg.lengthMm - length, stationEndMm: station + leg.lengthMm, lengthMm: length,
+        widthMm: box.widthMm, heightMm: box.heightMm, endWidthMm: box.widthMm, endHeightMm: box.heightMm,
+        bottomZ, centreZ: bottomZ + box.heightMm / 2, endCentreZ: bottomZ + box.heightMm / 2,
+        plenum: {
+          ...box, lengthMm: length, inletWidthMm: duct.w, inletHeightMm: duct.h,
+          spigots: spigots.map(({ branchId, face, point, direction, centreZ, openingMm }) => ({ branchId, face, point, direction, centreZ, openingMm })),
+        },
+        sheetThicknessMm: sheet, sheetAreaM2: areaMm2 / 1e6, fabricAreaM2: 0, massKg: massOf(areaMm2 / 1e6, box),
+        seamLengthMm: 4 * length,
+      });
     } else if (endFitting?.elbow) {
       const elbow = stretchNextElbowMm > 0 ? stretchElbowNeck(endFitting.elbow, 'start', stretchNextElbowMm) : endFitting.elbow;
       const nodeStation = station + leg.lengthMm;
@@ -1076,8 +1190,8 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
     const capArea = isRoundLeg(lastSection) ? (Math.PI * o.w * o.w) / 4 + Math.PI * o.w * 25 : o.w * o.h + 2 * (o.w + o.h) * TDC_FLANGE_ROLL_MM;
     pieces.push(endPiece('end-cap', 'K', isRoundLeg(lastSection) ? { diameterMm: lastSection.diameterMm, endDiameterMm: lastSection.diameterMm } : {}, capArea / 1e6, lastSection));
   } else if (spec.end.kind === 'split') {
-    const splitBranches = branches.filter((branch) => branch.start.kind === 'split-branch')
-      .map((branch) => ({ side: branch.start.side, section: branch.spec.legs[0]! }));
+    const splitBranches = branches.flatMap((branch) => (branch.start.kind === 'split-branch'
+      ? [{ side: branch.start.side, section: branch.spec.legs[0]! }] : []));
     const geometry = splitFitting(spec, spec.end.style, splitBranches, sheetOf(lastSection) ?? 1, settings);
     if (lastLeg.vertical) {
       issues.push({ code: 'DU_SPLIT_SIZE', severity: 'error', point: spec.path[spec.path.length - 1],
@@ -1116,8 +1230,74 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
       }
       pieces.push(endPiece('split', 'Y', { split: geometry, lengthMm: geometry.depthMm }, area, heavy));
     }
+  } else if (spec.end.kind === 'terminal') {
+    const end = spec.end;
+    const port = findTerminalPort(scene, end.terminalId, end.portId);
+    const stored = plannedSpec.path[plannedSpec.path.length - 1]!;
+    if (!port) {
+      issues.push({ code: 'DU_STALE', severity: 'warning', point: stored, message: 'The air terminal this run serves is missing.' });
+    } else if (Math.hypot(port.lip.x - stored.x, port.lip.y - stored.y) > 5) {
+      issues.push({ code: 'DU_STALE', severity: 'warning', point: stored, message: 'The air terminal has moved away from this run.' });
+    }
+    if (flexTail) {
+      const flexSection = plannedSpec.legs[plannedSpec.legs.length - 1]!;
+      const diameter = flexSection.diameterMm ?? flexSection.widthMm;
+      const rigidEnd = spec.path[spec.path.length - 1]!;
+      const startCentre = { x: rigidEnd.x, y: rigidEnd.y, z: lastLeg.vertical ? lastLeg.endCentreZ : rigidEnd.z + lastSection.heightMm / 2 };
+      const startDirection = lastLeg.vertical ? { x: 0, y: 0, z: lastLeg.vertical } : { x: lastLeg.direction.x, y: lastLeg.direction.y, z: 0 };
+      const endCentre = port ? port.lip : { x: stored.x, y: stored.y, z: stored.z + diameter / 2 };
+      const endDirection = port ? { x: -port.normal.x, y: -port.normal.y, z: 0 } : startDirection;
+      const curve = flexCurve(startCentre, startDirection, endCentre, endDirection);
+      practice.add(PRACTICE.flex);
+      if (curve.lengthMm > settings.flexMaxLengthMm + 0.5) {
+        issues.push({ code: 'DU_FLEX_LENGTH', severity: 'warning', point: stored,
+          message: `The flexible runout is ${(curve.lengthMm / 1000).toFixed(2)} m, over the ${(settings.flexMaxLengthMm / 1000).toFixed(2)} m maximum (project; SMACNA S3.23 asks for the minimum length). Bring the rigid duct closer.` });
+      }
+      if (curve.minBendRadiusMm < FLEX_RULES.minBendDiameters * diameter - 0.5) {
+        issues.push({ code: 'DU_FLEX_BEND', severity: 'error', point: { x: curve.tightestAt.x, y: curve.tightestAt.y },
+          message: `The runout bends at ${Math.round(curve.minBendRadiusMm)} mm radius, under one diameter (${Math.round(diameter)} mm, SMACNA S3.24).` });
+      }
+      if (port?.diameterMm !== undefined && Math.abs(port.diameterMm - diameter) > 0.5) {
+        issues.push({ code: 'DU_FLEX_SIZE', severity: 'error', point: stored,
+          message: `A Ø${Math.round(diameter)} runout on a Ø${Math.round(port.diameterMm)} terminal spigot.` });
+      }
+      if (startCentre.z - endCentre.z > FLEX_RULES.terminalDropSupportMm) {
+        issues.push({ code: 'DU_FLEX_DROP', severity: 'info', point: stored,
+          message: `The runout drops ${Math.round(startCentre.z - endCentre.z)} mm to the terminal: add supports (SMACNA Fig. 2-15, over 0.91 m).` });
+      }
+      const planDirection = { x: endCentre.x - startCentre.x, y: endCentre.y - startCentre.y };
+      const planLength = Math.hypot(planDirection.x, planDirection.y) || 1;
+      const zs = curve.points.map((point) => point.z);
+      pieces.push({
+        mark: mark('F'), kind: 'flex', legIndex: plannedSpec.legs.length - 1,
+        start: { x: startCentre.x, y: startCentre.y }, end: { x: endCentre.x, y: endCentre.y },
+        direction: { x: planDirection.x / planLength, y: planDirection.y / planLength },
+        stationStartMm: polylineLengthMm, stationEndMm: polylineLengthMm + curve.lengthMm, lengthMm: curve.lengthMm,
+        widthMm: diameter, heightMm: diameter, endWidthMm: diameter, endHeightMm: diameter, diameterMm: diameter, endDiameterMm: diameter,
+        bottomZ: Math.min(...zs) - diameter / 2, centreZ: startCentre.z, endCentreZ: endCentre.z,
+        flex: { points: curve.points, stations: curve.stations, minBendRadiusMm: curve.minBendRadiusMm, terminalId: end.terminalId,
+          type: settings.flexType, jacketMm: settings.flexType === 'nm-il' ? settings.flexJacketMm : 0 },
+        sheetThicknessMm: null, sheetAreaM2: 0, fabricAreaM2: 0, massKg: 0, seamLengthMm: 0,
+      });
+    } else if (port) {
+      if (port.diameterMm !== undefined && !(isRoundLeg(lastSection) && Math.abs((lastSection.diameterMm ?? 0) - port.diameterMm) < 0.5)) {
+        issues.push({ code: 'DU_TERMINAL_SIZE', severity: 'error', point: stored,
+          message: `The run (${isRoundLeg(lastSection) ? `Ø${Math.round(lastSection.diameterMm!)}` : `${lastSection.widthMm}×${lastSection.heightMm}`}) does not fit the terminal's Ø${Math.round(port.diameterMm)} spigot.` });
+      }
+      // Rigid duct slips over the spigot: it must arrive level, square to it and on its axis.
+      const square = !lastLeg.vertical && lastLeg.direction.x * -port.normal.x + lastLeg.direction.y * -port.normal.y > Math.cos(Math.PI / 90);
+      const across = Math.abs((stored.x - port.lip.x) * port.normal.y - (stored.y - port.lip.y) * port.normal.x);
+      if (!square || across > 5 || Math.abs(stored.z + lastSection.heightMm / 2 - port.lip.z) > 5) {
+        issues.push({ code: 'DU_TERMINAL_ALIGN', severity: 'error', point: stored,
+          message: 'Rigid duct must meet the terminal\'s spigot level, square to it and on its axis; route the last leg straight into the spigot or use a flexible runout.' });
+      }
+    }
+  } else if (spec.end.kind === 'plenum' && lastLeg.vertical) {
+    issues.push({ code: 'DU_PLENUM_SIZE', severity: 'error', point: spec.path[spec.path.length - 1],
+      message: 'A plenum ends a level leg; add a level leg after the riser.' });
   } else if (spec.end.kind === 'open' && !spec.legacy) {
-    issues.push({ code: 'DU_OPEN_END', severity: 'info', point: spec.path[spec.path.length - 1], message: 'The run ends open.' });
+    issues.push({ code: 'DU_OPEN_END', severity: spec.end.orphaned ? 'warning' : 'info', point: spec.path[spec.path.length - 1],
+      message: spec.end.orphaned ? 'The terminal this run served was deleted; the run ends open.' : 'The run ends open.' });
   }
 
   // ---- Constructions actually used, reported once each. ----
@@ -1183,7 +1363,7 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
     if (spec.start.kind === 'unit-port') {
       pushJoint('unit-connection', 0, first, section, [null, first.mark],
         slipOverHardware({ sideAMm: o.w, sideBMm: o.h, pressureClassPa, washersPerBolt: settings.washersPerBolt }));
-    } else if (spec.start.kind === 'tap' && tap) {
+    } else if ((spec.start.kind === 'tap' || spec.start.kind === 'spigot') && tap) {
       const start = spec.start;
       pushJoint('tap-connection', 0, first, section, [null, first.mark],
         tap.openingDiameterMm !== null && (start.style === 'spin-in' || start.style === 'conical')
@@ -1197,8 +1377,29 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
     const previous = pieces[index - 1]!;
     const next = pieces[index]!;
     const section = pieceSection(previous, 'end');
+    // A runout slips over the rigid end and is held by draw bands (counted with the runout).
+    if (next.kind === 'flex') {
+      pushJoint('flex-connection', next.stationStartMm, next, section, [previous.mark, next.mark], null);
+      continue;
+    }
     pushJoint(next.kind === 'end-cap' ? 'end-cap' : 'flange', next.stationStartMm, next, section,
       [previous.mark, next.mark], hardwareFor(section));
+  }
+
+  // The run's last piece meets the terminal's spigot: a runout's draw band, or a rigid slip joint.
+  const lastPiece = pieces[pieces.length - 1];
+  if (spec.end.kind === 'terminal' && lastPiece) {
+    const section = pieceSection(lastPiece, 'end');
+    const o = outer(section, lastPiece.sheetThicknessMm);
+    const flexEnd = lastPiece.flex?.points[lastPiece.flex.points.length - 2];
+    const along = flexEnd ? { x: lastPiece.end.x - flexEnd.x, y: lastPiece.end.y - flexEnd.y } : lastPiece.direction;
+    const length = Math.hypot(along.x, along.y) || 1;
+    joints.push({
+      id: `${elementId}:J${joints.length + 1}`, kind: 'terminal-connection', stationMm: lastPiece.stationEndMm, point: lastPiece.end,
+      direction: { x: along.x / length, y: along.y / length }, centreZ: lastPiece.endCentreZ,
+      widthMm: section.widthMm, heightMm: section.heightMm, outerWidthMm: o.w, outerHeightMm: o.h,
+      between: [lastPiece.mark, null], hardware: lastPiece.kind === 'flex' ? null : hardwareFor(section),
+    });
   }
 
   const insulationMm = ductInsulationThicknessMm(spec, settings);
@@ -1209,9 +1410,10 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
     massKg: sum.massKg + piece.massKg,
   }), { sheetAreaM2: 0, fabricAreaM2: 0, massKg: 0 });
 
+  const flexLength = pieces.reduce((total, piece) => total + (piece.kind === 'flex' ? piece.lengthMm : 0), 0);
   return {
     elementId,
-    spec,
+    spec: plannedSpec,
     status: issues.some((issue) => issue.severity === 'error') ? 'error' : 'ok',
     constructionByLeg,
     startPort,
@@ -1219,7 +1421,7 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
     pieces,
     joints,
     issues,
-    polylineLengthMm,
+    polylineLengthMm: polylineLengthMm + flexLength,
     totals,
     unverifiedRules: [...unverified],
     practiceRules: [...practice],
@@ -1228,6 +1430,22 @@ export function planDuctRunSpec(elementId: string, spec: DuctRunSpec, options: P
     insulationMm,
     insulation: insulationMm > 0 ? insulationTakeoff({ pieces, joints }, insulationMm, settings) : null,
   };
+}
+
+/** The spigots the run's branches take off its plenum: where each collar opens. */
+function plenumSpigots(branches: readonly DuctBranchRef[], spec: DuctRunSpec, sheetMm: number, settings: Pick<DuctDesignSettings, 'tapCollarMm' | 'conicalFlareMm'>) {
+  return branches.flatMap((branch) => {
+    if (branch.start.kind !== 'spigot') return [];
+    const start = branch.start;
+    const attachment = spigotAttachment(spec, start, branch.spec.legs[0]!, sheetMm, settings);
+    if (!attachment) return [];
+    return [{
+      branchId: branch.element.id, face: start.face, alongMm: start.alongMm, acrossMm: start.acrossMm,
+      point: attachment.wallPoint, direction: attachment.direction,
+      centreZ: attachment.bottomZ + (branch.spec.legs[0]!.diameterMm ?? branch.spec.legs[0]!.widthMm) / 2,
+      openingMm: attachment.openingDiameterMm ?? branch.spec.legs[0]!.widthMm,
+    }];
+  });
 }
 
 /** What a run's plan depends on besides itself: its unit or parent, and its branches. */

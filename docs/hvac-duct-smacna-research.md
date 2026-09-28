@@ -362,17 +362,46 @@ The engine's flat-bottom reducer is concentric in plan (judged on the included a
   - RT-2 Van Stone flange: 8 mm bolts at 203 mm maximum.
 - Fig. 3-3: pleated, stamped, adjustable and segmented elbows.
 
-### Flexible duct (§3.6–3.7, text)
+### Flexible duct (§3.5–3.7, pp.3.15–3.21, read from the scanned PDF pages 151–157)
 
+**§3.5 Installation standards**
+- **S3.19–S3.22:** "flexible air duct" means UL-classified flexible air ducts or connectors. Indoor comfort service only (not particulates, corrosive fumes, high temperature). Where NFPA 90A/90B applies, the duct is tested to UL 181 and installed to its listing.
+- **S3.23:** the minimum length of flexible duct should be used.
+- **S3.24:** bends with a centreline radius of at least one duct diameter. Ducts extend a few inches beyond the end of a sheet-metal connection before bending. Not compressed.
+- **S3.25:** kept away from hot equipment (furnaces, steam pipes).
+- **S3.27:** where the manufacturer's guidelines are more stringent, they govern.
+
+**§3.6 Joining and attaching**
+- **S3.28:** sealing per the duct sealing provisions; adhesives compatible with the materials.
+- **S3.29:** ends trimmed square.
 - **S3.30:** collars ≥51 mm long; joining sleeves ≥102 mm.
 - **S3.31:** collars inserted ≥25 mm before fastening.
 - **S3.32:** metallic flex duct fastened with ≥3 #8 screws, or ≥5 above 305 mm diameter, at least 13 mm from the end.
-- **S3.33:** non-metallic flex duct fastened with a draw band, positioned behind a bead on collars over 305 mm.
-- **S3.34:** the insulation jacket also fastened with a draw band.
-- **S3.35:** supports at the manufacturer's interval but at least every 1.5 m. Maximum sag 41.7 mm per metre between supports. A connection counts as a support.
-- **S3.36:** saddle ≥25 mm wide, or a half-round sheet-metal saddle.
-- **S3.40:** terminals are supported independently of the flex duct.
-- **Maximum length:** institutional specifications cap flex runs at 1.5–2.1 m (Texas State: 6 ft installed; another: 7 ft). The engine default is 1.5 m.
+- **S3.33:** non-metallic flex duct fastened with a draw band, behind a bead on collars over 305 mm diameter.
+- **S3.34:** insulation and vapour barrier fitted over the core connection and also secured with a draw band.
+- **Fig. 3-7 (p.3.16):** forms M-UN (metallic uninsulated), M-I (metallic insulated), NM-UN (non-metallic uninsulated), NM-IL (non-metallic insulated, lined).
+- **§3.6.1 accessories (p.3.18, Fig. 3-8):** metal and non-metallic clamps; collars: dovetail, spin-in flared, spin-in straight, spin-in conical; 4″ (102 mm) sleeve; collar in duct 2″ (51 mm) minimum.
+
+**§3.7 Supporting**
+- **S3.35:** supports at the manufacturer's interval but at least every 1.5 m. Maximum sag 41.7 mm per metre of spacing between supports. A connection to another duct or to equipment counts as a support.
+- **S3.36:** hanger or saddle material in contact with the duct wide enough not to reduce the inside diameter, never less than 25 mm; narrower hangers with a sheet-metal saddle covering half the circumference.
+- **S3.37–S3.39:** factory suspension systems acceptable; hangers attached to the structure; no single hanger carries the whole duct; damaged vapour barrier repaired with tape.
+- **S3.40:** terminal devices connected by flexible duct are supported independently of the flexible duct.
+- **Fig. 3-9 (p.3.20):** 1.5 m maximum between supports; sag ≤ 41.7 mm per metre; "duct should extend straight for several inches from a connection before bending". Closer intervals may be required by a UL listing.
+- **Fig. 3-10 (p.3.21):** strap or saddle ≥25 mm wide; a 25 mm band clamp with a wire is optional; the support must not damage the duct or put it out of round.
+- **Maximum length:** SMACNA sets none (S3.23 asks for the minimum). Institutional specifications cap runouts at 1.5–2.1 m (Texas State: 6 ft installed; another: 7 ft). The engine default is 1.5 m (practice, editable).
+
+### Air terminals (chapter 2, read from the scanned PDF pages 122–124)
+
+- **Fig. 2-14 Grille and register connections (p.2.18):** grille flanges must cover the duct flanges. A register contains volume control at the grille; a grille has none. A surface-mounted terminal in a lay-in ceiling rests on two supplemental terminal-to-duct support members bearing on the tee bars.
+- **Fig. 2-15 Ceiling diffuser branch ducts (p.2.19):**
+  - The ceiling support system must carry the diffuser's weight when flexible connections are used; a properly sized hole is cut in the tile, and the diffuser does not carry the tile.
+  - Branch: round duct tap-in (Figs 2-6, 3-8) with the volume damper (if specified) at its preferred location, near the tap; then flexible duct or a connector; lay-in (25 mm exposed tee bar) or surface-mounted diffusers.
+  - A rigid metal collar (drop) is shown; a flexible runout is preferred to adjust the rough-in to the installed ceiling pattern.
+  - Add supports if the drop A exceeds 0.91 m (3 ft) or the diffuser is heavy. Maximum hanger spacing 3 m rectangular, 3.7 m round.
+- **Fig. 2-16 Linear diffuser plenum (p.2.20):** strap across the plenum when its dimension A is 203 mm or more; neck typically 76 mm; 25 mm lining if specified.
+
+**Terminal sizes (not SMACNA):** SMACNA gives no terminal dimensions. The engine's terminal table uses common catalog sizes (your decision, 27 September 2026: typical sizes, flagged "practice", replaced later with the chosen supplier's data).
 
 ### Hangers and supports (chapter 4)
 

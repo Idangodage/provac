@@ -8,7 +8,7 @@
 import type { Point2D } from '../../../../types';
 
 import { gaugeLabelForSheet } from './ductCatalog';
-import type { DuctElbow, DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
+import type { DuctElbow, DuctFabricationPlan, DuctJointKind, DuctPiece } from './ductFabricationPlanner';
 import { describeJoint } from './ductGauge';
 import { add, dot, ductLegs, frameToPlan, perpToward, sampleArc, scale, squareElbowGeometry, sub, unit } from './ductGeometry';
 import type { DuctLeg } from './ductTypes';
@@ -26,7 +26,7 @@ export interface DuctPlanPresentation {
   /** Closed outline per piece (for drawing and picking). */
   piecePolygons: Array<{ mark: string; kind: DuctPiece['kind']; polygon: Point2D[] }>;
   /** Flange ticks across the duct at joints. */
-  jointTicks: Array<{ a: Point2D; b: Point2D; kind: 'flange' | 'unit-connection' | 'tap-connection' | 'end-cap' }>;
+  jointTicks: Array<{ a: Point2D; b: Point2D; kind: DuctJointKind }>;
   /** Zig-zag inside the connector fabric band. */
   connectorHatch: Point2D[][];
   /** Turning vanes: quadratic curve start / control / end. */
@@ -49,6 +49,8 @@ export interface DuctPlanPresentation {
   risers: Array<{ box: Point2D[]; diagonals: Array<[Point2D, Point2D]>; label: string; labelPoint: Point2D; up: boolean }>;
   /** Insulated run: the insulation's outer face around each piece (drawn dashed). */
   insulationOutlines: Point2D[][];
+  /** Plenum boxes: their diagonals (the usual box symbol). */
+  boxDiagonals: Array<[Point2D, Point2D]>;
 }
 
 /** Flange projection drawn beyond the duct side (mm). */
@@ -84,6 +86,7 @@ function pieceOutline(piece: DuctPiece, sheet: number): Point2D[] | null {
     case 'transition': return transitionOutline(piece, sheet);
     case 'takeoff': return takeoffOutline(piece, sheet);
     case 'straight':
+    case 'plenum':
     case 'damper': return rectangle(piece.start, piece.end, piece.direction, halfWidth);
     default: return null;
   }
@@ -251,6 +254,8 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
   const dampers: DuctPlanPresentation['dampers'] = [];
   const marks: DuctPlanPresentation['marks'] = [];
   const centreline: Point2D[] = [];
+  const boxDiagonals: Array<[Point2D, Point2D]> = [];
+  const tags: DuctPlanTag[] = [];
   for (const piece of plan.pieces) {
     const sheet = piece.sheetThicknessMm ?? 1;
     const halfWidth = piece.widthMm / 2 + sheet;
@@ -325,6 +330,51 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
         centreline.push(...offset.centreline);
         break;
       }
+      case 'flex': {
+        // Flexible runout: its outline along the curve, the usual zig-zag, and its tag.
+        const plan = piece.flex!.points.map((point) => ({ x: point.x, y: point.y }));
+        const path = plan.filter((point, index) => index === 0 || Math.hypot(point.x - plan[index - 1]!.x, point.y - plan[index - 1]!.y) > 1);
+        if (path.length < 2) break;
+        piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: polylineOutline(path, piece.widthMm / 2) });
+        const zig: Point2D[] = [];
+        const steps = Math.max(4, Math.round(piece.lengthMm / 60));
+        const flat = path;
+        let travelled = 0;
+        const segments = flat.slice(1).map((point, index) => {
+          const from = flat[index]!;
+          const length = Math.hypot(point.x - from.x, point.y - from.y);
+          travelled += length;
+          return { from, to: point, length, end: travelled };
+        });
+        for (let k = 0; k <= steps; k += 1) {
+          const at = (travelled * k) / steps;
+          const segment = segments.find((candidate) => candidate.end >= at - 1e-6) ?? segments[segments.length - 1]!;
+          const t = segment.length > 1e-9 ? 1 - (segment.end - at) / segment.length : 0;
+          const point = { x: segment.from.x + (segment.to.x - segment.from.x) * t, y: segment.from.y + (segment.to.y - segment.from.y) * t };
+          const n = normalOf(unit(sub(segment.to, segment.from)));
+          zig.push(add(point, scale(n, (k % 2 === 0 ? 1 : -1) * piece.widthMm * 0.4)));
+        }
+        connectorHatch.push(zig);
+        centreline.push(...path);
+        const middle = path[Math.floor(path.length / 2)]!;
+        tags.push({
+          point: add(middle, { x: 0, y: -(piece.widthMm / 2 + 60) }), angleDeg: 0,
+          text: `FLEX Ø${Math.round(piece.widthMm)} · ${(piece.lengthMm / 1000).toFixed(2)} m${piece.flex!.type === 'nm-il' ? ' · insulated' : ''}`,
+        });
+        break;
+      }
+      case 'plenum': {
+        const box = rectangle(piece.start, piece.end, piece.direction, halfWidth);
+        piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: box });
+        boxDiagonals.push([box[0]!, box[2]!], [box[1]!, box[3]!]);
+        marks.push({ point: mid, text: piece.mark });
+        centreline.push(piece.start, piece.end);
+        tags.push({
+          point: add(mid, scale(normalOf(piece.direction), -(halfWidth + 70))), angleDeg: readableAngle(piece.direction),
+          text: `PLENUM ${Math.round(piece.widthMm)}×${Math.round(piece.heightMm)}×${Math.round(piece.lengthMm)} · GI ${sheet.toFixed(2)}`,
+        });
+        break;
+      }
       case 'transition': {
         piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: transitionOutline(piece, sheet) });
         marks.push({ point: mid, text: piece.mark });
@@ -364,14 +414,14 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
       }
     }
   }
-  const jointTicks = plan.joints.filter((joint) => !joint.vertical).map((joint) => {
+  // Flanges only: a runout's draw bands and a terminal's spigot carry no flange tick.
+  const jointTicks = plan.joints.filter((joint) => !joint.vertical && joint.kind !== 'flex-connection' && joint.kind !== 'terminal-connection').map((joint) => {
     const n = normalOf(joint.direction);
     const half = joint.outerWidthMm / 2 + (joint.kind === 'unit-connection' || joint.kind === 'tap-connection' ? 0 : FLANGE_TICK_OVERHANG_MM);
     return { a: add(joint.point, scale(n, half)), b: sub(joint.point, scale(n, half)), kind: joint.kind };
   });
 
   // One tag per distinct section and level, on its longest level straight.
-  const tags: DuctPlanTag[] = [];
   const longestBySection = new Map<string, DuctPiece>();
   for (const piece of plan.pieces) {
     if (piece.kind !== 'straight' || piece.vertical) continue;
@@ -425,6 +475,7 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
     errorPoints: plan.issues.filter((issue) => issue.severity === 'error' && issue.point).map((issue) => issue.point!),
     warningPoints: plan.issues.filter((issue) => issue.severity === 'warning' && issue.point).map((issue) => issue.point!),
     risers,
+    boxDiagonals,
     insulationOutlines: plan.insulationMm > 0
       ? plan.pieces.filter((piece) => piece.kind !== 'connector')
         .map((piece) => pieceOutline(piece, (piece.sheetThicknessMm ?? 1) + plan.insulationMm))

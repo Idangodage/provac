@@ -15,15 +15,19 @@ import { add, dot, scale, unit } from './ductGeometry';
 import {
   buildDuctRunElement,
   readDuctRunSpec,
+  roundLeg,
   type DuctConstruction,
   type DuctPoint3,
   type DuctEnd,
   type DuctLeg,
+  type DuctPlenumEnd,
   type DuctRunSpec,
   type DuctService,
   type DuctSide,
+  type DuctSpigotFace,
   type DuctSplitStyle,
   type DuctTapStyle,
+  type DuctTerminalEnd,
 } from './ductTypes';
 
 export type DuctAngleMode = '90' | '45';
@@ -38,6 +42,11 @@ export type DuctDraftOrigin =
   | {
     kind: 'split'; parentRunId: string; side: DuctSide; style: DuctSplitStyle; vcd: boolean;
     point: Point2D; direction: Point2D; bottomZ: number; service: DuctService; parentHeightMm: number;
+  }
+  /** A round branch off a spigot on the parent's plenum. */
+  | {
+    kind: 'spigot'; parentRunId: string; face: DuctSpigotFace; alongMm: number; acrossMm: number; style: Extract<DuctTapStyle, 'spin-in' | 'conical'>; vcd: boolean;
+    point: Point2D; direction: Point2D; bottomZ: number; service: DuctService;
   }
   /** A run started in free space (open start); its first leg may go any way. */
   | { kind: 'free'; point: Point2D; bottomZ: number; service: DuctService };
@@ -58,7 +67,16 @@ export interface DuctDraftInput {
   widthMm?: number;
   heightMm?: number;
   construction?: DuctConstruction;
-  end?: 'end-cap' | 'open';
+  end?: DuctDraftEnd;
+}
+
+/** How a drafted run ends: an end cap, open, a plenum box, or on an air terminal's spigot. */
+export type DuctDraftEnd = 'end-cap' | 'open' | DuctPlenumEnd | DuctTerminalEnd;
+
+function draftEnd(end: DuctDraftEnd | undefined): DuctEnd {
+  if (end === 'open') return { kind: 'open' };
+  if (end && typeof end === 'object') return { ...end };
+  return { kind: 'end-cap' };
 }
 
 export function resolveDraftOrigin(input: Pick<DuctDraftInput, 'origin' | 'port'>): DuctDraftOrigin {
@@ -115,6 +133,32 @@ export function levelledPath(
   return { path, legs };
 }
 
+/** Whether the run ends in a flexible runout to a terminal. */
+function endsInRunout(end: DuctDraftEnd | undefined): boolean {
+  return typeof end === 'object' && end.kind === 'terminal' && end.flex;
+}
+
+/**
+ * The levelled path through the clicked points; a runout's last point (the
+ * terminal spigot) is kept exactly as given, since the flex changes level itself.
+ */
+function withRunout(
+  start: DuctPoint3,
+  points: readonly DuctDraftPoint[],
+  sectionFor: (clickIndex: number) => DuctLeg,
+  end: DuctDraftEnd | undefined,
+  arriving?: DuctLeg,
+): { path: DuctPoint3[]; legs: DuctLeg[] } {
+  if (!endsInRunout(end) || points.length === 0) return levelledPath(start, points, sectionFor, arriving);
+  const levelled = levelledPath(start, points.slice(0, -1), sectionFor, arriving);
+  const last = points[points.length - 1]!;
+  const previous = levelled.path[levelled.path.length - 1] ?? start;
+  return {
+    path: [...levelled.path, { x: last.x, y: last.y, z: last.z ?? previous.z }],
+    legs: [...levelled.legs, { ...sectionFor(points.length - 1) }],
+  };
+}
+
 /** Path z is the clear bottom: level with the collar bottom, or with the parent's bottom for a branch. */
 export function buildDuctRunSpecFromOrigin(input: DuctDraftInput): DuctRunSpec {
   const origin = resolveDraftOrigin(input);
@@ -122,14 +166,15 @@ export function buildDuctRunSpecFromOrigin(input: DuctDraftInput): DuctRunSpec {
     ? { widthMm: input.widthMm ?? origin.port.widthMm, heightMm: input.heightMm ?? origin.port.heightMm }
     : origin.kind === 'free'
       ? { widthMm: input.widthMm ?? 300, heightMm: input.heightMm ?? 200 }
-      : { widthMm: input.widthMm ?? 300, heightMm: Math.min(input.heightMm ?? 200, origin.parentHeightMm) };
+      : origin.kind === 'spigot'
+        ? roundLeg(input.widthMm ?? 200)
+        : { widthMm: input.widthMm ?? 300, heightMm: Math.min(input.heightMm ?? 200, origin.parentHeightMm) };
   const z = origin.kind === 'port' ? origin.port.lip.z - origin.port.heightMm / 2 : origin.bottomZ;
   const start = originPoint(origin);
   const first = { x: start.x, y: start.y, z };
-  const levelled = levelledPath(first, input.points,
-    (index) => input.legSizes?.[index] ?? input.legSizes?.[input.legSizes.length - 1] ?? fallback);
-  const path = [first, ...levelled.path];
-  const legs = levelled.legs;
+  const sectionFor = (index: number) => input.legSizes?.[index] ?? input.legSizes?.[input.legSizes.length - 1] ?? fallback;
+  const { path: rest, legs } = withRunout(first, input.points, sectionFor, input.end);
+  const path = [first, ...rest];
   let startEnd: DuctEnd;
   let service: DuctService;
   if (origin.kind === 'port') {
@@ -140,6 +185,9 @@ export function buildDuctRunSpecFromOrigin(input: DuctDraftInput): DuctRunSpec {
     service = origin.service;
   } else if (origin.kind === 'free') {
     startEnd = { kind: 'open' };
+    service = origin.service;
+  } else if (origin.kind === 'spigot') {
+    startEnd = { kind: 'spigot', parentRunId: origin.parentRunId, face: origin.face, alongMm: origin.alongMm, acrossMm: origin.acrossMm, style: origin.style, vcd: origin.vcd };
     service = origin.service;
   } else {
     startEnd = { kind: 'split-branch', parentRunId: origin.parentRunId, side: origin.side, vcd: origin.vcd };
@@ -155,7 +203,7 @@ export function buildDuctRunSpecFromOrigin(input: DuctDraftInput): DuctRunSpec {
     pressureClassPa: null,
     jointSystem: null,
     start: startEnd,
-    end: input.end === 'open' ? { kind: 'open' } : { kind: 'end-cap' },
+    end: draftEnd(input.end),
     nodeOverrides: {},
     locked: false,
   };
@@ -172,15 +220,15 @@ export function buildDuctRunDraftElement(input: DuctDraftInput, id: string): Hva
 }
 
 /** An existing run extended from its open end by `points` (one section per click; a level change adds a riser). */
-export function continueDuctRunSpec(spec: DuctRunSpec, points: DuctDraftPoint[], legSizes: DuctLeg[], end: 'end-cap' | 'open'): DuctRunSpec {
+export function continueDuctRunSpec(spec: DuctRunSpec, points: DuctDraftPoint[], legSizes: DuctLeg[], end: DuctDraftEnd): DuctRunSpec {
   const last = spec.legs[spec.legs.length - 1]!;
-  const levelled = levelledPath(spec.path[spec.path.length - 1]!, points,
-    (index) => legSizes[index] ?? legSizes[legSizes.length - 1] ?? last, last);
+  const levelled = withRunout(spec.path[spec.path.length - 1]!, points,
+    (index) => legSizes[index] ?? legSizes[legSizes.length - 1] ?? last, end, last);
   return {
     ...spec,
     path: [...spec.path, ...levelled.path],
     legs: [...spec.legs, ...levelled.legs],
-    end: end === 'open' ? { kind: 'open' } : { kind: 'end-cap' },
+    end: draftEnd(end),
   };
 }
 

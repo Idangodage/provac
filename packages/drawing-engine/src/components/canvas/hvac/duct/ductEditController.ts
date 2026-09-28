@@ -8,6 +8,7 @@ import type { HvacElement } from '../../../../types';
 
 import { findReattachTarget, REATTACH_REACH_MM } from './ductBranchTargets';
 import { applyDuctRunEdit, type DuctEditResult } from './ductEdits';
+import { readDuctTerminalSpec, terminalEnvelope, type DuctTerminalSpec } from './ductTerminals';
 import { ductRunElementWithSpec, followDuctsForUnitMove, moveDuctRuns, reanchorBranches, toElementUpdate } from './ductFollow';
 import type { DuctRunSpec, DuctTapStyle } from './ductTypes';
 
@@ -41,6 +42,32 @@ export function commitDuctRunEdit(elementId: string, result: DuctEditResult, act
   const element = state.hvacElements.find((candidate) => candidate.id === elementId);
   if (!element) return;
   state.commitHvacElementCommand(action, { updates: applyDuctRunEdit(state.hvacElements, element, result, state.ductSettings).map(toElementUpdate) });
+}
+
+/**
+ * Change an air terminal (its neck, spigot side or ceiling level) in one
+ * command; the runs connected to its spigot follow in the same command.
+ */
+export function commitDuctTerminalEdit(element: HvacElement, update: { spec?: DuctTerminalSpec; elevation?: number }, action: string): void {
+  const state = useSmartDrawingStore.getState();
+  const spec = update.spec ?? readDuctTerminalSpec(element);
+  if (!spec) return;
+  const envelope = terminalEnvelope(spec);
+  // Resize about the centre, so the terminal stays where it is.
+  const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 };
+  const next: HvacElement = {
+    ...element,
+    position: { x: centre.x - envelope.widthMm / 2, y: centre.y - envelope.depthMm / 2 },
+    width: envelope.widthMm, depth: envelope.depthMm, height: envelope.heightMm,
+    elevation: update.elevation ?? element.elevation,
+    properties: { ...element.properties, terminal: spec },
+  };
+  const after = state.hvacElements.map((candidate) => (candidate.id === element.id ? next : candidate));
+  const followers = followDuctsForMove(state.hvacElements, after, [element.id]);
+  state.commitHvacElementCommand(action, { updates: [
+    { id: next.id, updates: { position: next.position, width: next.width, depth: next.depth, height: next.height, elevation: next.elevation, properties: next.properties } },
+    ...followers.map(toElementUpdate),
+  ] });
 }
 
 /** Move the selected runs by a plan delta (one command); branches follow. */

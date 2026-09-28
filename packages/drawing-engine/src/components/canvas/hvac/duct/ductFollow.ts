@@ -12,6 +12,8 @@ import { splitOutlet, tapAttachment } from './ductBranches';
 import { resolveSectionConstruction } from './ductGauge';
 import { ductLegs } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
+import { spigotAttachment } from './ductPlenum';
+import { findTerminalPort } from './ductTerminals';
 import type { DuctDesignSettings } from './ductSettings';
 import { buildDuctRunElement, readDuctRunSpec, type DuctLeg, type DuctRunSpec } from './ductTypes';
 
@@ -83,6 +85,11 @@ function branchAnchor(parentSpec: DuctRunSpec, branchSpec: DuctRunSpec, settings
     const section = parentSpec.legs[start.legIndex];
     if (!section) return null;
     const attachment = tapAttachment(parentSpec, start, firstSection, sheetOf(parentSpec, section, settings), settings);
+    return attachment ? { point: attachment.wallPoint, direction: attachment.direction, z: attachment.bottomZ } : null;
+  }
+  if (start.kind === 'spigot') {
+    const plenum = parentSpec.end.kind === 'plenum' ? parentSpec.end : null;
+    const attachment = plenum ? spigotAttachment(parentSpec, start, firstSection, sheetOf(parentSpec, { widthMm: plenum.widthMm, heightMm: plenum.heightMm }, settings), settings) : null;
     return attachment ? { point: attachment.wallPoint, direction: attachment.direction, z: attachment.bottomZ } : null;
   }
   if (start.kind === 'split-branch' && parentSpec.end.kind === 'split') {
@@ -159,6 +166,18 @@ export function followDuctsForUnitMove(
     if (!anchorsDiffer(from, to)) continue;
     changed.set(element.id, ductRunElementWithSpec(element, rigidTransformSpec(spec, from, to)));
   }
+  // A run ending on a moved terminal: its end point follows the spigot (a runout re-bends to it).
+  for (const element of after) {
+    const current = changed.get(element.id) ?? element;
+    const spec = readDuctRunSpec(current);
+    if (!spec || spec.end.kind !== 'terminal' || !moved.has(spec.end.terminalId)) continue;
+    const port = findTerminalPort(after, spec.end.terminalId, spec.end.portId);
+    if (!port) continue;
+    const lastSection = spec.legs[spec.legs.length - 1]!;
+    const diameter = lastSection.diameterMm ?? lastSection.heightMm;
+    const path = spec.path.map((point, index) => (index === spec.path.length - 1 ? { x: port.lip.x, y: port.lip.y, z: port.lip.z - diameter / 2 } : point));
+    changed.set(element.id, ductRunElementWithSpec(current, { ...spec, path }));
+  }
   if (changed.size === 0) return [];
   const scene = after.map((element) => changed.get(element.id) ?? element);
   return [...changed.values(), ...reanchorBranches(scene, changed, settings)];
@@ -193,7 +212,7 @@ export function moveDuctRuns(
     if (!spec || spec.legacy) continue;
     const start = spec.start;
     if ((start.kind === 'tap' || start.kind === 'split-branch') && selected.has(start.parentRunId)) continue;
-    if (start.kind === 'unit-port' || start.kind === 'split-branch') {
+    if (start.kind === 'unit-port' || start.kind === 'split-branch' || start.kind === 'spigot') {
       refusedLabels.push(element.label || element.id);
       continue;
     }
@@ -220,7 +239,7 @@ export function moveDuctRuns(
   return {
     moved: [...changed.values(), ...followers],
     refused: refusedLabels.length > 0
-      ? `${refusedLabels.join(', ')} ${refusedLabels.length === 1 ? 'starts' : 'start'} on a unit collar or a split outlet: move the unit or the parent run instead.`
+      ? `${refusedLabels.join(', ')} ${refusedLabels.length === 1 ? 'starts' : 'start'} on a unit collar, a split outlet or a plenum spigot: move the unit or the parent run instead.`
       : null,
   };
 }

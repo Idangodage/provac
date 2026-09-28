@@ -5,12 +5,15 @@
  * listed under Issues instead of being silently priced.
  */
 import { gaugeLabelForSheet } from './ductCatalog';
+import type { HvacElement } from '../../../../types';
+
 import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
 import { VANE_RUNNER, type DuctVaneSpec } from './ductFittingRules';
 import { describeJoint } from './ductGauge';
 import type { DuctSupportPlan } from './ductSupports';
+import { readDuctTerminalSpec, TERMINAL_LABELS } from './ductTerminals';
 
-export type DuctBomCategory = 'Sheet metal' | 'Fabricated pieces' | 'Accessories' | 'Joints' | 'Connections' | 'Insulation' | 'Supports' | 'Issues';
+export type DuctBomCategory = 'Sheet metal' | 'Fabricated pieces' | 'Accessories' | 'Joints' | 'Connections' | 'Insulation' | 'Air terminals' | 'Flexible duct' | 'Supports' | 'Issues';
 
 export interface DuctBomRow {
   category: DuctBomCategory;
@@ -73,6 +76,11 @@ function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
   if (round) return round;
   if (piece.kind === 'straight') return `Straight section${riserWord(piece)} ${Math.round(piece.lengthMm)} mm`;
   if (piece.kind === 'connector') return 'Flexible connector (fabric + GI edges)';
+  if (piece.kind === 'flex') return `Flexible runout ${(piece.lengthMm / 1000).toFixed(2)} m`;
+  if (piece.kind === 'plenum' && piece.plenum) {
+    const spigots = piece.plenum.spigots.length;
+    return `Plenum box ${Math.round(piece.plenum.widthMm)}×${Math.round(piece.plenum.heightMm)}×${Math.round(piece.plenum.lengthMm)}${spigots ? `, ${spigots} spigot opening${spigots === 1 ? '' : 's'}` : ''}`;
+  }
   if (piece.kind === 'end-cap') return 'End cap (blank flange)';
   if (piece.kind === 'transition') return `Transition (${piece.vertical ? 'concentric, riser' : 'flat bottom'}), ${Math.round(piece.lengthMm)} mm`;
   if (piece.kind === 'offset' && piece.offset) {
@@ -125,6 +133,13 @@ function supportRows(supports: readonly DuctSupportPlan[]): DuctBomRow[] {
   };
   for (const plan of supports) {
     for (const hanger of plan.hangers) {
+      if (hanger.kind === 'strap') {
+        // Flexible runout (S3.36): a 25 mm strap, a galvanised wire to the soffit and its anchor.
+        add('Flex duct strap 25 mm', `Ø${Math.round(hanger.outerWidthMm)}`, 1, 'no.', 'SMACNA S3.35 / S3.36, Fig. 3-10');
+        add('Hanger wire Ø2.7 mm, galvanised', '—', hanger.rods.reduce((total, piece) => total + piece.lengthMm, 0) / 1000, 'm', 'project practice');
+        add('Soffit anchor (wire)', '—', 1, 'no.', 'project practice');
+        continue;
+      }
       const rod = hanger.rod?.label ?? 'special';
       for (const piece of hanger.rods) {
         add(`Threaded rod ${rod}, galvanised`, rod, piece.lengthMm / 1000, 'm', 'rods by load at SMACNA stress (derived metric)');
@@ -141,6 +156,10 @@ function supportRows(supports: readonly DuctSupportPlan[]): DuctBomRow[] {
       }
       if (hanger.insert) add('Load-bearing insulation insert (under the bar)', `${Math.round(hanger.outerWidthMm)} mm`, 1, 'no.', 'insulation stays continuous at supports');
     }
+    for (const wires of plan.terminalWires) {
+      add('Terminal hanger wire Ø2.7 mm, galvanised', '—', (wires.count * wires.lengthMm) / 1000, 'm', 'SMACNA S3.40 (terminal hung on its own)');
+      add('Soffit anchor (wire)', '—', wires.count, 'no.', 'project practice');
+    }
     for (const riser of plan.risers) {
       add(`Riser support angle ${riser.member}`, `${Math.ceil(riser.lengthMm / 10) * 10} mm`, 2, 'no.', 'SMACNA §4.2.10 (member: project practice)');
       add('Screw: self-drilling sheet-metal screw (riser angles)', '—', 8, 'no.', 'project practice');
@@ -153,7 +172,60 @@ function supportRows(supports: readonly DuctSupportPlan[]): DuctBomRow[] {
   return rows;
 }
 
-export function buildDuctBom(plans: readonly DuctFabricationPlan[], supports: readonly DuctSupportPlan[] = []): DuctBomRow[] {
+/**
+ * The air terminals the runs serve, and each flexible runout: its length by
+ * form and diameter, the draw bands on the core and the jacket at both ends
+ * (S3.33 / S3.34), or the screws of a metallic form (S3.32: ≥ 3, ≥ 5 over Ø305).
+ */
+function terminalAndFlexRows(plans: readonly DuctFabricationPlan[], terminals: readonly HvacElement[]): DuctBomRow[] {
+  const rows: DuctBomRow[] = [];
+  const served = new Set(plans.flatMap((plan) => (plan.spec.end.kind === 'terminal' ? [plan.spec.end.terminalId] : [])));
+  const byKind = new Map<string, number>();
+  for (const terminal of terminals) {
+    if (!served.has(terminal.id)) continue;
+    const spec = readDuctTerminalSpec(terminal);
+    if (!spec) continue;
+    const key = `${TERMINAL_LABELS[spec.kind]} ${Math.round(spec.faceWidthMm)}${spec.kind === 'round' ? '' : `×${Math.round(spec.faceDepthMm)}`}, ${spec.mount}, with plenum box ${Math.round(spec.plenumWidthMm)}×${Math.round(spec.plenumDepthMm)}×${Math.round(spec.plenumHeightMm)}|Ø${Math.round(spec.neckDiameterMm)} side spigot`;
+    byKind.set(key, (byKind.get(key) ?? 0) + 1);
+  }
+  for (const [key, count] of [...byKind].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const [description, size] = key.split('|') as [string, string];
+    rows.push({ category: 'Air terminals', description, size, quantity: count, unit: 'no.', basis: 'typical catalog size (practice)' });
+  }
+  const flex = new Map<string, { quantity: number; unit: DuctBomRow['unit']; basis: string }>();
+  const add = (description: string, size: string, quantity: number, unit: DuctBomRow['unit'], basis: string) => {
+    const key = `${description}|${size}`;
+    const entry = flex.get(key) ?? { quantity: 0, unit, basis };
+    entry.quantity += quantity;
+    flex.set(key, entry);
+  };
+  const FORM: Record<string, string> = { 'nm-il': 'non-metallic, insulated (NM-IL)', 'nm-un': 'non-metallic (NM-UN)', 'm-un': 'metallic (M-UN)' };
+  for (const plan of plans) {
+    for (const piece of plan.pieces) {
+      if (piece.kind !== 'flex' || !piece.flex) continue;
+      const diameter = Math.round(piece.widthMm);
+      add(`Flexible duct, ${FORM[piece.flex.type]}`, `Ø${diameter}`, piece.lengthMm / 1000, 'm', 'SMACNA §3.5–3.7; runout length along its curve');
+      if (piece.flex.type === 'm-un') {
+        add('Screw #8, sheet-metal (flex ends)', '—', 2 * (diameter > 305 ? 5 : 3), 'no.', 'SMACNA S3.32');
+      } else {
+        add('Draw band (flex core)', `Ø${diameter}`, 2, 'no.', 'SMACNA S3.33');
+        if (piece.flex.jacketMm > 0) add('Draw band (flex jacket)', `Ø${Math.round(diameter + 2 * piece.flex.jacketMm)}`, 2, 'no.', 'SMACNA S3.34');
+      }
+      add('Duct sealant / foil tape at flex collars', '—', 2, 'no.', 'SMACNA S3.28 (per connection)');
+    }
+  }
+  for (const [key, entry] of [...flex].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))) {
+    const [description, size] = key.split('|') as [string, string];
+    rows.push({ category: 'Flexible duct', description, size, quantity: entry.unit === 'm' ? round2(entry.quantity) : Math.round(entry.quantity), unit: entry.unit, basis: entry.basis });
+  }
+  return rows;
+}
+
+export function buildDuctBom(
+  plans: readonly DuctFabricationPlan[],
+  supports: readonly DuctSupportPlan[] = [],
+  terminals: readonly HvacElement[] = [],
+): DuctBomRow[] {
   const rows: DuctBomRow[] = [];
   const good = plans.filter((plan) => plan.status === 'ok');
   for (const plan of plans) {
@@ -277,6 +349,7 @@ export function buildDuctBom(plans: readonly DuctFabricationPlan[], supports: re
     rows.push({ category: 'Insulation', description: 'Contact adhesive (ArmaFlex 520 type)', size, quantity: round2(entry.adhesive), unit: 'L', basis: 'both faces glued, Armacell 520 coverage' });
     rows.push({ category: 'Insulation', description: 'NBR tape 50 mm (seams and flange bands)', size, quantity: round2(entry.tape), unit: 'm', basis: 'project practice' });
   }
+  rows.push(...terminalAndFlexRows(good, terminals));
   // Supports of the runs that are fabricated.
   const fabricated = new Set(good.map((plan) => plan.elementId));
   rows.push(...supportRows(supports.filter((plan) => fabricated.has(plan.elementId))));

@@ -27,6 +27,7 @@ import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from ".
 import { resolveLocalAirPorts } from "./duct/ductAirPorts";
 import { pickDuctAtWorldPoint } from "./duct/ductPick";
 import { resolveDuctSettings, type DuctDesignSettings } from "./duct/ductSettings";
+import { localTerminalSpigot, readDuctTerminalSpec } from "./duct/ductTerminals";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
@@ -3012,6 +3013,65 @@ export class HvacPlanRenderer {
             options.valid ? "#0ea5e9" : "#dc2626",
           );
         }
+        break;
+      }
+      case "diffuser":
+      case "return-grille": {
+        // Air terminal: its face symbol, and the plenum spigot (above the ceiling, dashed).
+        const terminal = readDuctTerminalSpec(element);
+        if (!terminal) break;
+        const detail = (object: fabric.FabricObject) => {
+          this.annotate(object, element.id, "hvac-detail");
+          objects.push(object);
+        };
+        const line = (x1: number, y1: number, x2: number, y2: number, width = 0.9) => detail(
+          new fabric.Line([x1, y1, x2, y2], { stroke: palette.detail, strokeWidth: width, selectable: false, evented: false }),
+        );
+        const box = (halfX: number, halfY: number, dash?: number[]) => detail(new fabric.Rect({
+          left: 0, top: 0, width: 2 * halfX, height: 2 * halfY, originX: "center", originY: "center",
+          fill: "transparent", stroke: palette.detail, strokeWidth: 0.9, strokeDashArray: dash, selectable: false, evented: false,
+        }));
+        const ring = (radius: number) => detail(new fabric.Circle({
+          left: 0, top: 0, radius, originX: "center", originY: "center",
+          fill: "transparent", stroke: palette.detail, strokeWidth: 0.9, selectable: false, evented: false,
+        }));
+        if (terminal.kind === "square-4way") {
+          // Four-way throw: the neck square and a diagonal to each face corner.
+          const neck = Math.min(halfW, halfD) * 0.42;
+          box(neck, neck);
+          box(halfW * 0.86, halfD * 0.86);
+          for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) line(sx * neck, sy * neck, sx * halfW, sy * halfD);
+        } else if (terminal.kind === "round") {
+          ring(Math.min(halfW, halfD) * 0.9);
+          ring(Math.min(halfW, halfD) * 0.64);
+          ring(Math.min(halfW, halfD) * 0.38);
+        } else if (terminal.kind === "linear-slot") {
+          const slots = terminal.slots ?? 2;
+          for (let index = 0; index < slots; index += 1) {
+            const y = -halfD * 0.6 + (1.2 * halfD * (index + 0.5)) / slots;
+            line(-halfW * 0.94, y, halfW * 0.94, y, 1.4);
+          }
+        } else {
+          // Egg-crate return: the grid.
+          for (let index = 1; index < 5; index += 1) {
+            line(-halfW + (2 * halfW * index) / 5, -halfD, -halfW + (2 * halfW * index) / 5, halfD, 0.7);
+            line(-halfW, -halfD + (2 * halfD * index) / 5, halfW, -halfD + (2 * halfD * index) / 5, 0.7);
+          }
+        }
+        // Spigot stub from the plenum box (hidden above the ceiling).
+        const spigot = localTerminalSpigot(terminal);
+        const radius = toPx(terminal.neckDiameterMm / 2);
+        const from = Math.abs(spigot.normal.x) > 0 ? toPx(terminal.plenumWidthMm / 2) : toPx(terminal.plenumDepthMm / 2);
+        const to = from + toPx(terminal.spigotLengthMm);
+        const along = (distance: number, across: number) => ({
+          x: spigot.normal.x * distance - spigot.normal.y * across,
+          y: spigot.normal.y * distance + spigot.normal.x * across,
+        });
+        const corners = [along(from, radius), along(to, radius), along(to, -radius), along(from, -radius)];
+        detail(new fabric.Polygon(corners, {
+          left: (corners[0]!.x + corners[2]!.x) / 2, top: (corners[0]!.y + corners[2]!.y) / 2, originX: "center", originY: "center",
+          fill: "transparent", stroke: palette.detail, strokeWidth: 0.9, strokeDashArray: [4, 3], selectable: false, evented: false,
+        }));
         break;
       }
       case "ceiling-cassette-ac": {

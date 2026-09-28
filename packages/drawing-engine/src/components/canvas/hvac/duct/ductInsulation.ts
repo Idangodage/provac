@@ -74,7 +74,8 @@ export function insulationTakeoff(
   let areaMm2 = 0;
   let tapeMm = 0;
   for (const piece of plan.pieces) {
-    if (piece.kind === 'connector') continue;
+    // The connector must flex, and a flexible runout comes insulated.
+    if (piece.kind === 'connector' || piece.kind === 'flex') continue;
     const size = outside(piece);
     const girth = midGirth(size, thicknessMm);
     if (piece.kind === 'end-cap') {
@@ -83,6 +84,8 @@ export function insulationTakeoff(
     }
     const length = piece.kind === 'split' ? (piece.split?.depthMm ?? 0) : piece.lengthMm;
     areaMm2 += girth * length;
+    // A plenum box is closed: its far face and the back face round the inlet are covered too.
+    if (piece.kind === 'plenum') areaMm2 += 2 * (size.w + 2 * thicknessMm) * (size.h + 2 * thicknessMm);
     tapeMm += Math.ceil(girth / SHEET_WIDTH_MM) * length;
   }
   let flangeBands = 0;

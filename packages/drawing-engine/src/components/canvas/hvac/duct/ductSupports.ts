@@ -19,6 +19,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
 
 import type { DuctFabricationPlan, DuctIssue, DuctPiece } from './ductFabricationPlanner';
+import { flexPointAt, flexSupportStations } from './ductFlex';
 import { add, ductLegs, scale, sub } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
 import type { DuctDesignSettings } from './ductSettings';
@@ -43,8 +44,11 @@ export interface DuctHangerRod {
 
 export interface DuctHanger {
   id: string;
-  /** A trapeze (two rods and a bar under the duct) or, on a small round duct, one rod and a band. */
-  kind: 'trapeze' | 'band';
+  /**
+   * A trapeze (two rods and a bar under the duct), on a small round duct one
+   * rod and a band, or on a flexible runout a 25 mm strap on a hanger wire.
+   */
+  kind: 'trapeze' | 'band' | 'strap';
   stationMm: number;
   legIndex: number;
   /** Plan point on the centreline, and the duct axis there. */
@@ -87,6 +91,8 @@ export interface DuctSupportPlan {
   soffitZ: number;
   hangers: DuctHanger[];
   risers: DuctRiserSupport[];
+  /** Hanger wires of the terminal this run serves, when terminals hang on their own (S3.40). */
+  terminalWires: Array<{ terminalId: string; count: number; lengthMm: number }>;
   issues: DuctIssue[];
 }
 
@@ -109,7 +115,7 @@ interface Requirement {
 }
 
 function isBreak(piece: DuctPiece): boolean {
-  return Boolean(piece.vertical || piece.frame);
+  return Boolean(piece.vertical || piece.frame || piece.kind === 'flex');
 }
 
 export function resolveSoffitZ(settings: Pick<DuctDesignSettings, 'soffitMm'>): number {
@@ -128,12 +134,13 @@ export function planDuctSupports(
   const spacing = round ? Math.min(settings.hangerSpacingMm, SUPPORT_RULES.roundMaxSpacingMm) : settings.hangerSpacingMm;
   const insulation = plan.insulationMm;
   const pieces = plan.pieces;
-  const runEnd = plan.polylineLengthMm;
+  // A runout is carried by its own straps; the rigid run ends where it starts.
+  const runEnd = pieces.find((piece) => piece.kind === 'flex')?.stationStartMm ?? plan.polylineLengthMm;
 
   // Where a hanger may go: level straights and transitions, clear of their joints.
   const allowed: Interval[] = [];
   for (const piece of pieces) {
-    if (isBreak(piece) || (piece.kind !== 'straight' && piece.kind !== 'transition')) continue;
+    if (isBreak(piece) || (piece.kind !== 'straight' && piece.kind !== 'transition' && piece.kind !== 'plenum')) continue;
     const length = piece.stationEndMm - piece.stationStartMm;
     const clear = settings.hangerJointClearanceMm;
     if (length >= 2 * clear + EPSILON) allowed.push({ from: piece.stationStartMm + clear, to: piece.stationEndMm - clear, piece });
@@ -397,6 +404,34 @@ export function planDuctSupports(
     };
   });
 
+  // ---- Runouts: a 25 mm strap on a hanger wire at ≤ 1.5 m, the connections counting (S3.35, S3.36). ----
+  for (const piece of pieces) {
+    if (piece.kind !== 'flex' || !piece.flex) continue;
+    const flex = piece.flex;
+    const radius = piece.widthMm / 2 + flex.jacketMm;
+    for (const station of flexSupportStations(piece.lengthMm)) {
+      const at = flexPointAt(flex, station);
+      const ahead = flexPointAt(flex, Math.min(piece.lengthMm, station + 10));
+      const heading = { x: ahead.x - at.x, y: ahead.y - at.y };
+      const length = Math.hypot(heading.x, heading.y) || 1;
+      const top = at.z + radius;
+      hangers.push({
+        id: `${plan.elementId}:H${hangers.length + 1}`, kind: 'strap', stationMm: piece.stationStartMm + station, legIndex: piece.legIndex,
+        point: { x: at.x, y: at.y }, direction: { x: heading.x / length, y: heading.y / length }, reasons: ['spacing'],
+        outerWidthMm: 2 * radius, outerHeightMm: 2 * radius, supportZ: at.z - radius, soffitZ,
+        rods: [{ point: { x: at.x, y: at.y }, bottomZ: top, lengthMm: Math.max(0, soffitZ - top) }],
+        rod: null, bar: null, loadKg: 0, smacnaMinimum: 'S3.35/S3.36: strap ≥ 25 mm at ≤ 1.5 m', insert: false,
+      });
+    }
+  }
+
+  // ---- Terminal hanger wires, when terminals hang on their own rather than on the ceiling grid (S3.40). ----
+  const terminalWires: DuctSupportPlan['terminalWires'] = [];
+  if (settings.terminalHangerWires && spec.end.kind === 'terminal') {
+    const terminal = scene.find((element) => element.id === (spec.end as { terminalId: string }).terminalId);
+    if (terminal) terminalWires.push({ terminalId: terminal.id, count: 2, lengthMm: Math.max(0, soffitZ - (terminal.elevation + terminal.height)) });
+  }
+
   // ---- Risers: angle pairs at the riser interval (§4.2.10). ----
   const risers: DuctRiserSupport[] = [];
   for (const leg of ductLegs(spec)) {
@@ -417,7 +452,7 @@ export function planDuctSupports(
     }
   }
 
-  return { elementId: plan.elementId, spacingMm: spacing, soffitZ, hangers, risers, issues };
+  return { elementId: plan.elementId, spacingMm: spacing, soffitZ, hangers, risers, terminalWires, issues };
 }
 
 const SUPPORT_CACHE = new WeakMap<DuctFabricationPlan, { settings: DuctDesignSettings; soffitZ: number; supports: DuctSupportPlan }>();

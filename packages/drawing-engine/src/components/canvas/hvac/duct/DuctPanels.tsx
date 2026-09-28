@@ -18,7 +18,7 @@ import type { HvacElement } from '../../../../types';
 import { buildDuctBom, buildDuctFabricationSchedule, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
 import { findReattachTarget } from './ductBranchTargets';
 import { gaugeLabelForSheet } from './ductCatalog';
-import { commitDuctRunEdit, commitDuctRunSpec, reattachDuctRun } from './ductEditController';
+import { commitDuctRunEdit, commitDuctRunSpec, commitDuctTerminalEdit, reattachDuctRun } from './ductEditController';
 import { setDuctRiserRise } from './ductEdits';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
@@ -26,7 +26,9 @@ import { describeJoint } from './ductGauge';
 import { ductBranchesOf } from './ductNetwork';
 import { DUCT_RULE_SOURCES, DUCT_SUPPORTED_PRESSURE_CLASSES_PA, type DuctDesignSettings, type DuctJointSystem } from './ductSettings';
 import { DUCT_SOURCES, isPracticeSource } from './ductSources';
+import { defaultPlenumSize } from './ductPlenum';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
+import { DUCT_TERMINAL_NECKS_MM, isDuctTerminalElement, readDuctTerminalSpec, TERMINAL_LABELS, typicalTerminalSpec, type DuctTerminalSpigotSide } from './ductTerminals';
 import { tapStyleFor, useDuctToolStore } from './ductToolStore';
 import { isDuctElement, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
 
@@ -48,6 +50,7 @@ function describeStart(spec: DuctRunSpec, hvacElements: readonly HvacElement[]):
     return `${start.style === 'shoe-45' ? 'shoe' : 'straight'} take-off on ${parentLabel(start.parentRunId)} at ${(start.stationMm / 1000).toFixed(2)} m${start.vcd ? ' + VCD' : ''}`;
   }
   if (start.kind === 'split-branch') return `split outlet of ${parentLabel(start.parentRunId)}${start.vcd ? ' + VCD' : ''}`;
+  if (start.kind === 'spigot') return `${start.style} spigot on the ${start.face} face of ${parentLabel(start.parentRunId)}'s plenum${start.vcd ? ' + VCD' : ''}`;
   if (start.kind === 'open') return start.orphaned ? 'open (its parent run was deleted)' : 'open';
   return start.kind;
 }
@@ -55,6 +58,8 @@ function describeStart(spec: DuctRunSpec, hvacElements: readonly HvacElement[]):
 function describeEnd(spec: DuctRunSpec): string {
   const end = spec.end;
   if (end.kind === 'split') return end.style === 'y' ? 'Y split' : 'bullhead tee';
+  if (end.kind === 'plenum') return `plenum ${Math.round(end.widthMm)} × ${Math.round(end.heightMm)} × ${Math.round(end.lengthMm)}`;
+  if (end.kind === 'terminal') return `${end.flex ? 'flexible runout to ' : ''}an air terminal`;
   return end.kind === 'end-cap' ? 'end cap' : end.kind;
 }
 
@@ -187,6 +192,53 @@ function legCaption(spec: DuctRunSpec, index: number): string {
   return `Leg ${index + 1} · bottom ${Math.round(a.z)}`;
 }
 
+/** A diffuser or return grille: its size (typical catalog, practice), spigot and ceiling level. */
+export function DuctTerminalInspector({ element }: { element: HvacElement }) {
+  const updateHvacElement = useSmartDrawingStore((state) => state.updateHvacElement);
+  const spec = readDuctTerminalSpec(element);
+  if (!spec) return null;
+  const select = 'rounded border border-slate-200 px-1 py-0.5 text-xs';
+  const reshape = (neckDiameterMm: number) => ({
+    ...typicalTerminalSpec(spec.kind, neckDiameterMm, {
+      mount: spec.mount, ...(spec.slots !== undefined ? { slots: spec.slots } : {}),
+      ...(spec.kind === 'linear-slot' ? { lengthMm: spec.faceWidthMm } : {}),
+    }),
+    spigotSide: spec.spigotSide,
+  });
+  return (
+    <div className="space-y-1" data-testid="duct-terminal-inspector">
+      <Row label="Label">
+        <input type="text" value={element.label} onChange={(event) => updateHvacElement(element.id, { label: event.target.value })}
+          className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400" />
+      </Row>
+      <Row label="Terminal">
+        <span className="text-xs">{TERMINAL_LABELS[spec.kind]} · {spec.mount} · {spec.service}</span>
+        <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-600" title="Typical catalog size; SMACNA gives none. Replace with the supplier's data.">practice</span>
+      </Row>
+      <Row label="Spigot Ø">
+        <select value={spec.neckDiameterMm} aria-label="Terminal spigot diameter" className={select}
+          onChange={(event) => commitDuctTerminalEdit(element, { spec: reshape(Number(event.target.value)) }, 'Terminal spigot size')}>
+          {[...new Set([...DUCT_TERMINAL_NECKS_MM, spec.neckDiameterMm])].sort((a, b) => a - b).map((neck) => <option key={neck} value={neck}>Ø{neck}</option>)}
+        </select>
+      </Row>
+      <Row label="Spigot side">
+        <select value={spec.spigotSide} aria-label="Terminal spigot side" className={select}
+          onChange={(event) => commitDuctTerminalEdit(element, { spec: { ...spec, spigotSide: event.target.value as DuctTerminalSpigotSide } }, 'Terminal spigot side')}>
+          {(['back', 'front', 'left', 'right'] as const).map((side) => <option key={side} value={side}>{side}</option>)}
+        </select>
+      </Row>
+      <Row label="Face / plenum box">
+        <span className="text-xs">{Math.round(spec.faceWidthMm)} × {Math.round(spec.faceDepthMm)} · box {Math.round(spec.plenumWidthMm)} × {Math.round(spec.plenumDepthMm)} × {Math.round(spec.plenumHeightMm)} mm</span>
+      </Row>
+      <Row label="Ceiling level">
+        <CommitNumber label="Terminal ceiling level" value={element.elevation} step={50} min={0} max={30000}
+          onCommit={(elevation) => commitDuctTerminalEdit(element, { elevation }, 'Terminal ceiling level')} />
+        <span className="ml-0.5 text-[10px] text-slate-400">mm (face)</span>
+      </Row>
+    </div>
+  );
+}
+
 export function DuctRunInspector({ element }: { element: HvacElement }) {
   const { hvacElements, ductSettings, updateHvacElement } = useSmartDrawingStore((state) => ({
     hvacElements: state.hvacElements,
@@ -213,6 +265,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
   const endValue = spec.end.kind === 'split' ? spec.end.style : spec.end.kind;
   // While branches leave the split, only its style may change.
   const splitBranches = ductBranchesOf(element.id, hvacElements).filter((branch) => branch.start.kind === 'split-branch').length;
+  const spigotBranches = ductBranchesOf(element.id, hvacElements).filter((branch) => branch.start.kind === 'spigot').length;
   const setLeg = (index: number, update: Partial<DuctLeg>) => {
     const legs = spec.legs.map((leg, legIndex) => (legIndex === index ? { ...leg, ...update } : leg));
     commit({ ...spec, legs }, `Duct leg ${index + 1} size`);
@@ -373,15 +426,28 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
           <select value={endValue} aria-label="Run end" className={select}
             onChange={(event) => {
               const value = event.target.value;
-              commit({ ...spec, end: value === 'y' || value === 'bullhead' ? { kind: 'split', style: value } : { kind: value as 'end-cap' | 'open' } }, 'Duct run end');
+              const end: DuctRunSpec['end'] = value === 'y' || value === 'bullhead' ? { kind: 'split', style: value }
+                : value === 'plenum' ? { kind: 'plenum', ...defaultPlenumSize(spec.legs[spec.legs.length - 1]!) }
+                  : { kind: value as 'end-cap' | 'open' };
+              commit({ ...spec, end }, 'Duct run end');
             }}>
-            <option value="end-cap" disabled={splitBranches > 0}>End cap</option>
-            <option value="open" disabled={splitBranches > 0}>Open</option>
-            <option value="y">Y split</option>
-            <option value="bullhead">Bullhead tee</option>
+            <option value="end-cap" disabled={splitBranches > 0 || spigotBranches > 0}>End cap</option>
+            <option value="open" disabled={splitBranches > 0 || spigotBranches > 0}>Open</option>
+            <option value="y" disabled={spigotBranches > 0}>Y split</option>
+            <option value="bullhead" disabled={spigotBranches > 0}>Bullhead tee</option>
+            <option value="plenum" disabled={splitBranches > 0}>Plenum</option>
+            {spec.end.kind === 'terminal' ? <option value="terminal" disabled>Air terminal</option> : null}
           </select>
         )}
       </Row>
+      {spec.end.kind === 'plenum' ? (
+        <Row label="Plenum W × H × L">
+          {(['widthMm', 'heightMm', 'lengthMm'] as const).map((key) => (
+            <CommitNumber key={key} label={`Plenum ${key.replace('Mm', '')}`} value={(spec.end as { widthMm: number; heightMm: number; lengthMm: number })[key]} step={50} min={100} max={5000}
+              onCommit={(value) => commit({ ...spec, end: { ...(spec.end as { kind: 'plenum'; widthMm: number; heightMm: number; lengthMm: number }), [key]: value } }, 'Duct plenum size')} />
+          ))}
+        </Row>
+      ) : null}
       <Row label="Pieces">{pieceSummary}</Row>
       <Row label="Joints">{plan.joints.length}</Row>
       <Row label="Sheet metal">{plan.totals.sheetAreaM2.toFixed(2)} m² · {plan.totals.massKg.toFixed(1)} kg</Row>
@@ -507,11 +573,33 @@ export function DuctToolSection() {
         <span className="ml-0.5 text-[10px] text-slate-400">mm clear bottom</span>
       </Row>
       <Row label="Run end">
-        <select value={tool.endKind} onChange={(event) => tool.setEndKind(event.target.value as 'end-cap' | 'open')} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Run end">
+        <select value={tool.endKind} onChange={(event) => tool.setEndKind(event.target.value as 'end-cap' | 'open' | 'plenum')} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Run end">
           <option value="end-cap">End cap</option>
           <option value="open">Open</option>
+          <option value="plenum">Plenum (spigots)</option>
         </select>
       </Row>
+      <Row label="Terminal connection" title="Click a diffuser or grille spigot while drawing to finish the run on it">
+        <select value={tool.terminalFlex ? 'flex' : 'rigid'} onChange={(event) => tool.setBranchOptions({ terminalFlex: event.target.value === 'flex' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Terminal connection">
+          <option value="flex">Flexible runout</option>
+          <option value="rigid">Rigid duct</option>
+        </select>
+        <SourceBadge settingKey="flexMaxLengthMm" />
+      </Row>
+      {tool.endKind === 'plenum' ? (
+        <Row label="Plenum W × H × L" title="Blank = sized from the run's last section: 200 mm wider, tall enough for the branch spigot, 500 long (practice)">
+          {(['widthMm', 'heightMm', 'lengthMm'] as const).map((key) => (
+            <input key={key} type="number" step={50} placeholder="auto" aria-label={`Tool plenum ${key.replace('Mm', '')}`}
+              value={tool.plenumSize?.[key] ?? ''}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                const current = tool.plenumSize ?? { widthMm: 800, heightMm: 350, lengthMm: 500 };
+                tool.setPlenumSize(event.target.value === '' ? null : { ...current, [key]: Math.max(100, value) });
+              }}
+              className="w-14 rounded border border-slate-200 px-1 text-xs" />
+          ))}
+        </Row>
+      ) : null}
     </div>
   );
 }
@@ -521,7 +609,11 @@ export function DuctSystemsSection() {
     hvacElements: state.hvacElements, ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings,
   }), shallow);
   const plans = usePlans();
-  const bom = useMemo(() => buildDuctBom(plans, plans.map((plan) => getDuctSupportPlan(plan, hvacElements, ductSettings))), [plans, hvacElements, ductSettings]);
+  const bom = useMemo(() => buildDuctBom(
+    plans,
+    plans.map((plan) => getDuctSupportPlan(plan, hvacElements, ductSettings)),
+    hvacElements.filter(isDuctTerminalElement),
+  ), [plans, hvacElements, ductSettings]);
   const schedule = useMemo(() => buildDuctFabricationSchedule(plans), [plans]);
   const [stockDraft, setStockDraft] = useState<string | null>(null);
   const pressureWarning = (value: number) => (DUCT_SUPPORTED_PRESSURE_CLASSES_PA.some((pa) => value <= pa) ? null

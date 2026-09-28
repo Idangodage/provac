@@ -4,11 +4,12 @@
  * imperatively, no React render per pointer move) and later the SVG export.
  * Strokes are non-scaling so line weights stay constant at every zoom.
  */
-import type { Point2D } from '../../../../types';
+import type { HvacElement, Point2D } from '../../../../types';
 
 import type { DuctAirPort } from './ductAirPorts';
 import type { DuctPlanPresentation } from './ductPlanPresentation';
 import type { DuctSupportPlan } from './ductSupports';
+import { localTerminalSpigot, type DuctTerminalSpec } from './ductTerminals';
 
 export interface DuctMarkupStyle {
   /** Screen pixels per model millimetre. */
@@ -72,6 +73,9 @@ export function ductRunMarkup(presentation: DuctPlanPresentation, style: DuctMar
   for (const vane of presentation.vanes) {
     const [a, c, b] = vane as [Point2D, Point2D, Point2D];
     parts.push(`<path d="M${f(a.x)} ${f(a.y)} Q${f(c.x)} ${f(c.y)} ${f(b.x)} ${f(b.y)}" fill="none" stroke="${stroke}" stroke-width="0.9" vector-effect="non-scaling-stroke"/>`);
+  }
+  for (const [a, b] of presentation.boxDiagonals) {
+    parts.push(`<path d="${pathData([a, b])}" stroke="${stroke}" stroke-width="0.7" vector-effect="non-scaling-stroke" opacity="0.7"/>`);
   }
   for (const [a, b] of presentation.goreLines) {
     parts.push(`<path d="${pathData([a, b])}" stroke="${stroke}" stroke-width="0.8" vector-effect="non-scaling-stroke"/>`);
@@ -148,7 +152,77 @@ export function ductSupportMarkup(supports: DuctSupportPlan, k: number): string 
   return parts.join('');
 }
 
-/** Collar markers shown while the duct tool is active. */
+const TERMINAL_TAG: Record<DuctTerminalSpec['kind'], string> = {
+  'square-4way': 'SD', round: 'RD', 'linear-slot': 'LSD', 'return-egg-crate': 'RG',
+};
+
+/**
+ * An air terminal as a ceiling plan shows it: the face with its pattern (the
+ * 4-way throw, rings, slots or the egg-crate grid), its spigot above the
+ * ceiling (dashed) and a tag such as "SD 595 · Ø200". The plan's 3D top view
+ * sees only the plenum box, so the symbol is drawn here, over it.
+ */
+export function airTerminalMarkup(
+  element: Pick<HvacElement, 'id' | 'position' | 'width' | 'depth' | 'rotation'>,
+  spec: DuctTerminalSpec,
+  k: number,
+  showTags: boolean,
+): string {
+  const px = (value: number) => value / Math.max(k, 1e-6);
+  const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 };
+  const angle = ((element.rotation ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const at = (x: number, y: number): Point2D => ({ x: centre.x + x * cos - y * sin, y: centre.y + x * sin + y * cos });
+  const rect = (halfX: number, halfY: number): Point2D[] => [at(-halfX, -halfY), at(halfX, -halfY), at(halfX, halfY), at(-halfX, halfY)];
+  const color = spec.service === 'return' ? COLORS.return : COLORS.supply;
+  const hw = spec.faceWidthMm / 2;
+  const hd = spec.faceDepthMm / 2;
+  const line = (a: Point2D, b: Point2D, width = 0.9) => `<path d="${pathData([a, b])}" stroke="${color.stroke}" stroke-width="${width}" vector-effect="non-scaling-stroke"/>`;
+  const outline = (points: Point2D[], width = 0.9, fill = 'none') => `<path d="${pathData(points, true)}" fill="${fill}" stroke="${color.stroke}" stroke-width="${width}" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
+  const circle = (radius: number, width = 0.9, fill = 'none') => `<circle cx="${f(centre.x)}" cy="${f(centre.y)}" r="${f(radius)}" fill="${fill}" stroke="${color.stroke}" stroke-width="${width}" vector-effect="non-scaling-stroke"/>`;
+  const parts: string[] = [`<g data-duct-terminal="${escapeText(element.id)}">`];
+  const face = 'rgba(255,255,255,0.82)';
+  if (spec.kind === 'round') {
+    parts.push(circle(hw, 1.3, face), circle(hw * 0.66), circle(hw * 0.36));
+  } else {
+    parts.push(outline(rect(hw, hd), 1.3, face));
+    if (spec.kind === 'square-4way') {
+      const neck = Math.min(hw, hd) * 0.34;
+      parts.push(outline(rect(hw * 0.78, hd * 0.78)), outline(rect(neck, neck)));
+      for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) parts.push(line(at(sx * neck, sy * neck), at(sx * hw, sy * hd), 0.8));
+    } else if (spec.kind === 'linear-slot') {
+      const slots = spec.slots ?? 2;
+      for (let index = 0; index < slots; index += 1) {
+        const y = -hd + 25 + 20 * (index + 0.5);
+        parts.push(line(at(-hw + 15, y), at(hw - 15, y), 1.4));
+      }
+    } else {
+      for (let index = 1; index < 5; index += 1) {
+        const x = -hw + (2 * hw * index) / 5;
+        const y = -hd + (2 * hd * index) / 5;
+        parts.push(line(at(x, -hd), at(x, hd), 0.6), line(at(-hw, y), at(hw, y), 0.6));
+      }
+    }
+  }
+  // The spigot, above the ceiling: dashed from the plenum box to its lip.
+  const spigot = localTerminalSpigot(spec);
+  const r = spec.neckDiameterMm / 2;
+  const from = Math.abs(spigot.normal.x) > 0.5 ? spec.plenumWidthMm / 2 : spec.plenumDepthMm / 2;
+  const to = from + spec.spigotLengthMm;
+  const side = (distance: number, across: number) => at(spigot.normal.x * distance - spigot.normal.y * across, spigot.normal.y * distance + spigot.normal.x * across);
+  parts.push(`<path d="${pathData([side(from, r), side(to, r), side(to, -r), side(from, -r)], true)}" fill="none" stroke="${color.stroke}" stroke-width="0.9" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>`);
+  if (showTags) {
+    const size = spec.kind === 'round' ? `Ø${Math.round(spec.faceWidthMm)}`
+      : spec.kind === 'linear-slot' ? `${Math.round(spec.faceWidthMm)}×${spec.slots ?? 2} slots` : `${Math.round(spec.faceWidthMm)}`;
+    const reach = Math.max(hw, hd);
+    parts.push(textMarkup({ x: centre.x, y: centre.y + reach + px(12) }, `${TERMINAL_TAG[spec.kind]} ${size} · Ø${Math.round(spec.neckDiameterMm)}`, px(11), color.stroke));
+  }
+  parts.push('</g>');
+  return parts.join('');
+}
+
+/** Collar and terminal-spigot markers shown while the duct tool is active. */
 export function airPortMarkup(ports: readonly DuctAirPort[], k: number, hoveredKey: string | null, occupiedKeys: ReadonlySet<string>): string {
   const px = (value: number) => value / Math.max(k, 1e-6);
   return ports.map((port) => {
@@ -158,7 +232,8 @@ export function airPortMarkup(ports: readonly DuctAirPort[], k: number, hoveredK
     const color = port.kind === 'supply' ? COLORS.supply.stroke : COLORS.return.stroke;
     const width = hovered ? 6 : 3.5;
     const out = { x: port.lip.x + port.normal.x * px(18), y: port.lip.y + port.normal.y * px(18) };
-    const label = `${port.kind === 'supply' ? 'SUPPLY' : 'RETURN'} ${port.widthMm}×${port.heightMm}${port.source === 'procedural' ? ' (approx.)' : ''}${occupied ? ' · connected' : ''}`;
+    const size = port.diameterMm !== undefined ? `spigot Ø${Math.round(port.diameterMm)}` : `${port.widthMm}×${port.heightMm}`;
+    const label = `${port.kind === 'supply' ? 'SUPPLY' : 'RETURN'} ${size}${port.source === 'procedural' ? ' (approx.)' : ''}${occupied ? ' · connected' : ''}`;
     return [
       `<path d="${pathData([port.edgeA, port.edgeB])}" stroke="${color}" stroke-width="${width}" stroke-linecap="round" vector-effect="non-scaling-stroke" opacity="${occupied && !hovered ? 0.45 : 1}"/>`,
       hovered ? textMarkup(out, label, px(11), color) : '',
@@ -167,7 +242,7 @@ export function airPortMarkup(ports: readonly DuctAirPort[], k: number, hoveredK
 }
 
 /** Where a click would start a branch: the wall a take-off opens, or the split side. */
-export function branchTargetMarkup(target: { kind: 'tap' | 'split'; marker: readonly [Point2D, Point2D]; label: string }, k: number): string {
+export function branchTargetMarkup(target: { kind: 'tap' | 'split' | 'spigot'; marker: readonly [Point2D, Point2D]; label: string }, k: number): string {
   const px = (value: number) => value / Math.max(k, 1e-6);
   const [a, b] = target.marker;
   return [

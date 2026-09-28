@@ -94,6 +94,14 @@ export interface DuctDesignSettings {
   nbrAdhesiveM2PerL: number;
   /** Cutting waste on the insulation sheet (%). */
   nbrWastePercent: number;
+  /** Longest flexible runout before it is flagged (mm). */
+  flexMaxLengthMm: number;
+  /** Flexible duct form (SMACNA Fig. 3-7): non-metallic insulated, non-metallic bare, metallic bare. */
+  flexType: 'nm-il' | 'nm-un' | 'm-un';
+  /** Insulation on an insulated flexible duct (mm). */
+  flexJacketMm: number;
+  /** Hang each air terminal on two wires of its own, rather than from the ceiling grid (S3.40). */
+  terminalHangerWires: boolean;
   showSizeTags: boolean;
   showJointTicks: boolean;
   showPieceMarks: boolean;
@@ -146,6 +154,10 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   nbrReturnThicknessMm: 19,
   nbrAdhesiveM2PerL: 8,
   nbrWastePercent: 10,
+  flexMaxLengthMm: 1500,
+  flexType: 'nm-il',
+  flexJacketMm: 25,
+  terminalHangerWires: false,
   showSizeTags: true,
   showJointTicks: true,
   showPieceMarks: false,
@@ -203,6 +215,10 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   nbrReturnThicknessMm: practice('Typical specifications: 19 mm on return in a conditioned ceiling void.'),
   nbrAdhesiveM2PerL: { sourceId: 'armacell-520', verified: true, note: '7–9 m² per litre with both faces glued (sheet); 8 is used.' },
   nbrWastePercent: practice('Cutting waste on the insulation sheet.'),
+  flexMaxLengthMm: { sourceId: 'institutional-specs', verified: true, note: 'SMACNA sets no maximum (S3.23: use the minimum length); institutional specifications cap runouts at 1.5–2.1 m.' },
+  flexType: { sourceId: 'smacna-1995', reference: 'Fig. 3-7, S3.32–S3.34', verified: true, note: 'Your decision: insulated non-metallic (NM-IL) with draw bands.' },
+  flexJacketMm: practice('Insulation on the flexible duct; 25 mm is the common NM-IL grade.'),
+  terminalHangerWires: { sourceId: 'smacna-1995', reference: 'S3.40, Fig. 2-15', verified: true, note: 'Terminals on flex are supported independently: by the ceiling grid (default) or by their own wires.' },
 };
 
 export const DUCT_SUPPORTED_PRESSURE_CLASSES_PA = [125, 250, 500] as const;
@@ -293,6 +309,10 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     nbrReturnThicknessMm: clampNumber(raw.nbrReturnThicknessMm, d.nbrReturnThicknessMm, 6, 50),
     nbrAdhesiveM2PerL: clampNumber(raw.nbrAdhesiveM2PerL, d.nbrAdhesiveM2PerL, 7, 9),
     nbrWastePercent: clampNumber(raw.nbrWastePercent, d.nbrWastePercent, 0, 50),
+    flexMaxLengthMm: clampNumber(raw.flexMaxLengthMm, d.flexMaxLengthMm, 300, 3000),
+    flexType: oneOf(raw.flexType, ['nm-il', 'nm-un', 'm-un'] as const, d.flexType),
+    flexJacketMm: clampNumber(raw.flexJacketMm, d.flexJacketMm, 0, 75),
+    terminalHangerWires: bool(raw.terminalHangerWires, d.terminalHangerWires),
     showSizeTags: bool(raw.showSizeTags, d.showSizeTags),
     showJointTicks: bool(raw.showJointTicks, d.showJointTicks),
     showPieceMarks: bool(raw.showPieceMarks, d.showPieceMarks),

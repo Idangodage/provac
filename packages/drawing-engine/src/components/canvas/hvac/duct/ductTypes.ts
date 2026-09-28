@@ -72,11 +72,49 @@ export interface DuctSplitBranchStart {
   vcd: boolean;
 }
 
+/** Plenum faces a spigot can leave from (left = the +normal side of the run direction). */
+export type DuctSpigotFace = 'left' | 'right' | 'end';
+
+/**
+ * A round branch leaving a spigot (spin-in or conical collar) on the plenum at
+ * the end of a parent run. Side faces place it `alongMm` from the plenum's back
+ * face; the end face places it `acrossMm` from the centre (+ toward the left).
+ * It sits half way up the plenum.
+ */
+export interface DuctSpigotStart {
+  kind: 'spigot';
+  parentRunId: string;
+  face: DuctSpigotFace;
+  alongMm: number;
+  acrossMm: number;
+  style: Extract<DuctTapStyle, 'spin-in' | 'conical'>;
+  vcd: boolean;
+}
+
+/** A plenum box ending the run: its path end is the centre of the box's far face. */
+export interface DuctPlenumEnd {
+  kind: 'plenum';
+  widthMm: number;
+  heightMm: number;
+  lengthMm: number;
+}
+
+/** The run ends on an air terminal's spigot; with `flex`, its last leg is a flexible runout. */
+export interface DuctTerminalEnd {
+  kind: 'terminal';
+  terminalId: string;
+  portId: string;
+  flex: boolean;
+}
+
 export type DuctEnd =
   | { kind: 'unit-port'; unitId: string; portId: string; connector: boolean }
   | DuctTapStart
   | DuctSplitBranchStart
+  | DuctSpigotStart
   | { kind: 'split'; style: DuctSplitStyle }
+  | DuctPlenumEnd
+  | DuctTerminalEnd
   | { kind: 'end-cap' }
   | { kind: 'open'; orphaned?: boolean };
 
@@ -174,14 +212,33 @@ function readEnd(value: unknown): DuctEnd {
   if (candidate.kind === 'split-branch' && typeof candidate.parentRunId === 'string') {
     return { kind: 'split-branch', parentRunId: candidate.parentRunId, side, vcd: candidate.vcd !== false };
   }
+  if (candidate.kind === 'spigot' && typeof candidate.parentRunId === 'string') {
+    return {
+      kind: 'spigot', parentRunId: candidate.parentRunId,
+      face: candidate.face === 'right' || candidate.face === 'end' ? candidate.face : 'left',
+      alongMm: readNumber(candidate.alongMm, 0), acrossMm: readNumber(candidate.acrossMm, 0),
+      style: candidate.style === 'conical' ? 'conical' : 'spin-in', vcd: candidate.vcd !== false,
+    };
+  }
   if (candidate.kind === 'split') return { kind: 'split', style: candidate.style === 'bullhead' ? 'bullhead' : 'y' };
+  if (candidate.kind === 'plenum') {
+    return {
+      kind: 'plenum',
+      widthMm: Math.max(100, readNumber(candidate.widthMm, 800)),
+      heightMm: Math.max(100, readNumber(candidate.heightMm, 350)),
+      lengthMm: Math.max(100, readNumber(candidate.lengthMm, 500)),
+    };
+  }
+  if (candidate.kind === 'terminal' && typeof candidate.terminalId === 'string') {
+    return { kind: 'terminal', terminalId: candidate.terminalId, portId: typeof candidate.portId === 'string' ? candidate.portId : 'spigot', flex: candidate.flex !== false };
+  }
   if (candidate.kind === 'end-cap') return { kind: 'end-cap' };
   return candidate.orphaned === true ? { kind: 'open', orphaned: true } : { kind: 'open' };
 }
 
 /** The parent run a branch hangs from, if any. */
 export function ductParentRunId(spec: Pick<DuctRunSpec, 'start'>): string | null {
-  return spec.start.kind === 'tap' || spec.start.kind === 'split-branch' ? spec.start.parentRunId : null;
+  return spec.start.kind === 'tap' || spec.start.kind === 'split-branch' || spec.start.kind === 'spigot' ? spec.start.parentRunId : null;
 }
 
 function readLeg(value: unknown, fallback: DuctLeg): DuctLeg {

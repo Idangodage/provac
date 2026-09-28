@@ -8,6 +8,7 @@ import { buildCeilingCassetteModel } from "../ceilingCassetteModel";
 import { compileCopperSocketElbowRoute } from "../copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "../copperSocketElbows";
 import type { DuctDesignSettings } from "../duct/ductSettings";
+import { localTerminalSpigot, readDuctTerminalSpec } from "../duct/ductTerminals";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
@@ -1763,6 +1764,60 @@ function buildLabelAnchor(
   };
 }
 
+const AIR_TERMINAL_COLORS = { face: "#f4f4f2", frame: "#d6d8d6", slot: "#1f2937", plenum: "#b9c3cc", spigot: "#a6b1bb" } as const;
+
+/**
+ * An air terminal in its local frame (z from the ceiling plane): the face with
+ * its pattern (stepped frames, rings, slots or an egg-crate grid), the plenum
+ * box above the ceiling and the side spigot with its bead.
+ */
+function addAirTerminalMeshes(group: THREE.Group, element: HvacElement): void {
+  const spec = readDuctTerminalSpec(element);
+  if (!spec) return;
+  const { faceWidthMm: fw, faceDepthMm: fd, faceHeightMm: fh } = spec;
+  const colors = AIR_TERMINAL_COLORS;
+  if (spec.kind === "round") {
+    const radius = fw / 2;
+    group.add(createLocalCylinderMesh(radius, radius, fh, colors.face, new THREE.Vector3(0, 0, fh / 2), { rotation: new THREE.Euler(Math.PI / 2, 0, 0), radialSegments: 40 }));
+    for (const k of [0.72, 0.46]) {
+      group.add(createLocalCylinderMesh(radius * k, radius * k, 4, colors.frame, new THREE.Vector3(0, 0, -2), { rotation: new THREE.Euler(Math.PI / 2, 0, 0), radialSegments: 40, renderOrder: 19 }));
+    }
+  } else {
+    group.add(createLocalBoxMesh(fw, fd, fh, colors.face, new THREE.Vector3(0, 0, fh / 2)));
+    if (spec.kind === "square-4way") {
+      // Stepped cone frames, seen from below.
+      for (const k of [0.78, 0.56]) group.add(createLocalBoxMesh(fw * k, fd * k, 4, colors.frame, new THREE.Vector3(0, 0, -2), { renderOrder: 19 }));
+      group.add(createLocalBoxMesh(fw * 0.34, fd * 0.34, 4, colors.face, new THREE.Vector3(0, 0, -4), { renderOrder: 20 }));
+    } else if (spec.kind === "linear-slot") {
+      const slots = spec.slots ?? 2;
+      for (let index = 0; index < slots; index += 1) {
+        const y = -fd / 2 + 25 + 20 * (index + 0.5);
+        group.add(createLocalBoxMesh(fw - 30, 12, 4, colors.slot, new THREE.Vector3(0, y, -2), { renderOrder: 19 }));
+      }
+    } else {
+      // Egg-crate grid.
+      for (let index = 1; index < 8; index += 1) {
+        group.add(createLocalBoxMesh(2, fd - 20, 6, colors.frame, new THREE.Vector3(-fw / 2 + (fw * index) / 8, 0, -3), { renderOrder: 19 }));
+        group.add(createLocalBoxMesh(fw - 20, 2, 6, colors.frame, new THREE.Vector3(0, -fd / 2 + (fd * index) / 8, -3), { renderOrder: 19 }));
+      }
+    }
+  }
+  // Plenum box above the ceiling.
+  group.add(createLocalBoxMesh(spec.plenumWidthMm, spec.plenumDepthMm, spec.plenumHeightMm, colors.plenum,
+    new THREE.Vector3(0, 0, fh + spec.plenumHeightMm / 2)));
+  // Side spigot (a collar ≥ 51 mm, SMACNA S3.30) with its bead.
+  const spigot = localTerminalSpigot(spec);
+  const radius = spec.neckDiameterMm / 2;
+  const alongX = Math.abs(spigot.normal.x) > 0.5;
+  const base = alongX ? spec.plenumWidthMm / 2 : spec.plenumDepthMm / 2;
+  const centre = new THREE.Vector3(spigot.normal.x * (base + spec.spigotLengthMm / 2), spigot.normal.y * (base + spec.spigotLengthMm / 2), spigot.lip.z);
+  // CylinderGeometry runs along +Y; a spigot along X is turned a quarter about Z.
+  const rotation = new THREE.Euler(0, 0, alongX ? Math.PI / 2 : 0);
+  group.add(createLocalCylinderMesh(radius, radius, spec.spigotLengthMm, colors.spigot, centre, { rotation, openEnded: true }));
+  const bead = new THREE.Vector3(spigot.normal.x * (base + 25), spigot.normal.y * (base + 25), spigot.lip.z);
+  group.add(createLocalCylinderMesh(radius + 4, radius + 4, 8, colors.spigot, bead, { rotation }));
+}
+
 export function buildHvacElementMesh(
   element: HvacElement,
   context: HvacBuildSceneContext,
@@ -2524,60 +2579,7 @@ export function buildHvacElementMesh(
     }
     case "diffuser":
     case "return-grille": {
-      const terminalHeight = Math.max(24, Math.min(height, 90));
-      const frameHeight = Math.max(8, terminalHeight * 0.28);
-      group.add(
-        createLocalBoxMesh(
-          width,
-          depth,
-          frameHeight,
-          palette.trim,
-          new THREE.Vector3(0, 0, frameHeight / 2),
-        ),
-      );
-      group.add(
-        createLocalBoxMesh(
-          width * 0.78,
-          depth * 0.78,
-          Math.max(4, frameHeight * 0.36),
-          palette.body,
-          new THREE.Vector3(0, 0, frameHeight + 2),
-          { renderOrder: 19 },
-        ),
-      );
-      if (normalizedType === "diffuser") {
-        group.add(
-          createLocalBoxMesh(
-            width * 0.14,
-            depth * 0.76,
-            Math.max(5, frameHeight * 0.42),
-            palette.accent,
-            new THREE.Vector3(0, 0, frameHeight + 6),
-            { renderOrder: 20 },
-          ),
-        );
-        group.add(
-          createLocalBoxMesh(
-            width * 0.76,
-            depth * 0.14,
-            Math.max(5, frameHeight * 0.42),
-            palette.accent,
-            new THREE.Vector3(0, 0, frameHeight + 6),
-            { renderOrder: 20 },
-          ),
-        );
-      } else {
-        addVentSlats(group, {
-          count: 7,
-          width: width * 0.68,
-          depth: Math.max(4, depth * 0.022),
-          height: Math.max(5, frameHeight * 0.4),
-          startY: -depth * 0.27,
-          startZ: frameHeight + 5,
-          stepY: depth * 0.09,
-          color: palette.grille,
-        });
-      }
+      addAirTerminalMeshes(group, effectiveElement);
       break;
     }
     case "remote-controller":

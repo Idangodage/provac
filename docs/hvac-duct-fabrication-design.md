@@ -134,9 +134,10 @@ Invariant: the lengths of the pieces sum to the centreline length (property-test
 | Geometry and fittings | `DU_TRANSITION_ANGLE`, `DU_ELBOW_RADIUS`, `DU_LEG_TOO_SHORT`, `DU_VANE_SPAN`, `DU_SLOPED_LEG` (a leg that runs and climbs; a riser that turns back; a riser straight off a collar), `DU_HARD_WAY_ELBOW` (a plan turn at a riser), `DU_ASPECT_RATIO` (>4:1, info), `DU_SIZE_OVER_TABLE` |
 | Construction | `DU_PRESSURE_UNSUPPORTED` (above 500 Pa), `DU_NO_STOCK`, `DU_GAUGE_JOINT`, `DU_GAUGE_OVERRIDE`, `DU_INTERMEDIATE_REINF`, `DU_CROSS_BREAK` (info; not on insulated duct). P5: `DU_PID_LIMITS`, `DU_PID_REINF_UNVERIFIED` |
 | Branches | `DU_TAP_TOO_BIG`, `DU_TAP_CLASH`, `DU_SPLIT_INCOMPLETE`, `DU_SPLIT_SIZE`, `DU_BRANCH_DIRECTION` |
-| Connections | `DU_MOUTH_APPROX` (unit without measured ports), `DU_OPEN_END`, `DU_STALE`. P4: `DU_FLEX_LENGTH`, `DU_FLEX_SAG` |
+| Connections | `DU_MOUTH_APPROX` (unit without measured ports), `DU_OPEN_END`, `DU_STALE`, `DU_TERMINAL_SIZE` (rigid end off the spigot's Ø), `DU_TERMINAL_ALIGN` (rigid end not level, square and on the spigot's axis) |
+| Plenums and flex | `DU_PLENUM_SIZE` (a spigot off its face, or a plenum after a riser), `DU_SPIGOT_CLASH` (spigots closer than 50 mm, practice), `DU_FLEX_LENGTH` (over the project maximum, 1.5 m), `DU_FLEX_BEND` (R < 1 D, S3.24), `DU_FLEX_SIZE` (runout Ø ≠ spigot Ø), `DU_FLEX_DROP` (info: over 0.91 m to the terminal, Fig. 2-15). The sag is drawn within 41.7 mm/m, so no sag check is raised. |
 | Supports | `DU_SUPPORT_RULE` (no straight within S4.1 reach or the spacing), `DU_SUPPORT_LOAD` (beyond Table 4-3M or an M16 rod), `DU_SOFFIT` (the duct reaches the soffit) |
-| Coordination | `DU_CLASH` (duct body against a pipe or another duct) |
+| Coordination | `DU_CLASH` (duct body against a pipe, another duct, or an air terminal's box) |
 
 All of them reach the design-check list (`ductValidation.ts`, `useDuctLiveValidation`), merged with the refrigerant and condensate checks; information-level entries are counted but not listed.
 
@@ -525,6 +526,60 @@ Built and verified on 25 September 2026.
   5. **Checks:** `DU_*` in the design checks. A gas pipe through the lower leg is `DU_CLASH` in the list with its marker.
   6. **3D:** iso and side show the drop, the NBR skin, the rods to the soffit and the pipe through the duct.
 
+## Phase 4 status
+
+Built on 27 September 2026 (uncommitted).
+
+**Terminals (`ductTerminalCatalog.ts`, `ductTerminals.ts`)**
+- Typical catalog sizes, flagged practice until a supplier's data replaces them (SMACNA gives none):
+  - square 4-way, 595 lay-in or 600 surface on a 530 box, box height neck + 100;
+  - round;
+  - linear slot (1–4 slots);
+  - 595 egg-crate return.
+- Each has a round side spigot, 60 mm long, half way up the box. The spec is stored on the existing `diffuser` / `return-grille` elements; old ones read as the typical spec of their type.
+- An **Air terminals** category in the AC Equipment panel. The face sits in the ceiling plane the ceiling units use (median cassette, else the lowest ducted unit, else 2400). R turns it.
+- **2D:** in plan the 3D top view sees only the plenum box, so the duct overlay draws the ceiling-plan symbol over it: the face with its pattern (4-way throw, rings, slots or egg-crate), the spigot dashed above the ceiling, and a tag such as "SD 595 · Ø200" or "RG 595 · Ø250".
+- **3D:** face, plenum box, spigot and bead.
+- **Inspector:** kind, neck, spigot side and mount.
+
+**Plenums (`ductPlenum.ts`)**
+- A run can end in a plenum box `{ widthMm, heightMm, lengthMm }` that fills the end of its last level leg, flat bottom level with the duct, flanged to it.
+- Default size (practice): duct W + 200, max(H, spigot + 100), 500 long.
+- Round spigot branches start on its side or end face (`{ kind: 'spigot', face, alongMm, acrossMm, style, vcd }`) with a spin-in or conical collar and a damper, half way up the box. `DU_SPIGOT_CLASH` / `DU_PLENUM_SIZE` check the layout.
+
+**Flex runouts (`ductFlex.ts`)**
+- A run ending on a terminal (`{ kind: 'terminal', terminalId, portId, flex }`) with `flex` has its last leg as the runout. It is a 3D Bezier from the rigid end to the spigot lip, square to both, with a 100 mm straight lead at each end (Fig. 3-9; practice length).
+- A branch that is all runout keeps its collar and damper as a rigid stub.
+- NM-IL by default (your decision) with a 25 mm jacket.
+- Straps: 25 mm, at ≤ 1.5 m along the curve, the two connections counting (S3.35 / S3.36), each on a wire to the soffit. The sag is drawn within 41.7 mm/m.
+- Terminals are carried by the ceiling grid (Fig. 2-15, S3.40). A setting adds two hanger wires per terminal.
+- BOM: flex in metres by form and Ø; core and jacket draw bands (S3.33 / S3.34), or screws for a metallic form (S3.32); sealant per connection; straps, wire and anchors; the served terminals by kind and size.
+- With `flex: false` the run slips straight onto the spigot, checked by `DU_TERMINAL_SIZE` / `DU_TERMINAL_ALIGN`.
+
+**Tool, follow, delete, clash**
+- **Tool:** with a run being drawn, the free spigots of its service highlight next to the collars. Hovering one previews the finish ("Flex Ø200 · 0.70 m to …", flagged over the maximum); a click finishes the run there. The Terminal connection option (flexible runout / rigid duct) sits in the tool panel. Hovering a plenum face offers a spigot.
+- **Follow:** moving a terminal pulls the runout's end to the new spigot, in the move's own undo step. Spigot branches re-anchor when their plenum changes.
+- **Delete:** deleting a terminal takes its runout with it; the rigid duct ends open (orphaned, `DU_OPEN_END`). Deleting a plenum run orphans its spigot branches.
+- **Clash:** terminal boxes join `ductVolumes`: `DU_CLASH` against other runs (never the run that serves them), and obstacles for new pipe routes.
+- **Also fixed:** R during AC equipment placement was undone at once. The preview effect re-seeded the default rotation every time the placement callback changed, which it does on every R. The default is now applied once per picked item. This was pre-existing on main.
+
+**Verified**
+- **Vitest:** `ductTerminals.test.ts`, `ductPlenum.test.ts`, `ductFlex.test.ts` (curve leads, length and bend; strap spacing and sag; the planner's runout pieces and joints; `DU_FLEX_LENGTH` / `_SIZE` / `_BEND` / `_DROP`; rigid alignment; straps, bands, terminal wires and BOM rows; follow and delete; terminal clash; the 2D tag and the 3D mesh).
+- **Unit tests:** the full drawing-engine suite, 177 files and 1,583 tests, plus the type-check. ESLint could not be run: `@typescript-eslint/eslint-plugin` is not installed in this workspace.
+- **On canvas** (`D:\claude-tmp-vrf-check\duct-p4.mjs`: real AC Equipment panel, duct tool, keys and mouse on the real FDUM22; project restored exactly). All 22 checks pass on 27 September 2026:
+  1. **Terminals:** three square diffusers Ø200 from the Air terminals category, each turned with R so its spigot faces the plenum. Their faces sit at the FDUM22's 2400 plane, and the plan shows "SD 595 · Ø200".
+  2. **Supply:** collar → 900 mm → plenum 800 × 350 × 500. Spigots on the left, right and end faces (spin-in + damper) lead to flex runouts of 0.70–0.71 m, with no issues. The plenum lists 3 spigot openings.
+  3. **Return:** collar → plenum → Ø250 side spigot → 0.70 m flex → egg-crate grille "RG 595 · Ø250".
+  4. **Tool:** the spigots show with the collars, and hovering one previews "Flex Ø200 · 0.70 m to …".
+  5. **Moves:**
+     - one Shift+→ nudge (500 mm) pulls the runout's end to the new spigot, and one undo puts both back;
+     - moving it 900 mm makes a 1.70 m runout, which raises `DU_FLEX_LENGTH` in the design checks.
+  6. **Delete:** deleting the diffuser leaves the collar stub open (`DU_OPEN_END` warning, no errors); undo restores it.
+  7. **BOM:** diffusers and grille; both plenum boxes with their openings; flex 2.12 m Ø200 and 0.70 m Ø250; core and jacket draw bands; sealant; straps and rods.
+  8. **3D (iso):** the plenum on the unit, corrugated runouts sagging to the diffuser boxes, and the return grille.
+  9. **Design checks:** the only duct errors are `DU_CLASH` against the test room's two existing refrigerant pipes, which cross the plenum area. That is correct coordination feedback.
+  10. **Regressions:** `duct-p3.mjs` (14 of 14) and `duct-complete.mjs` (11 of 11) pass, and both restore the project exactly.
+
 ## Known limits
 
 - Round runs are branches (spin-in / conical off rectangular runs); round trunks with their own take-offs are not in scope.
@@ -535,3 +590,7 @@ Built and verified on 25 September 2026.
 - The NBR skin in 3D does not box the flanges, so a 30 mm TDC flange shows through a 25 mm skin.
 - Duct-to-duct clash skips a branch and its own parent.
 - No airflow sizing or auto-routing from terminals. Sizes are what you draw.
+- Terminal sizes are typical catalog values (practice) until a supplier's data is entered.
+- A rigid connection to a terminal is checked, not routed: its last leg has to be drawn straight into the spigot.
+- Plenum spigots are round, on the side and end faces; there are no bottom spigots or rectangular necks yet.
+- During equipment placement, R with nothing focused switches to the Room tool (the single-key tool shortcuts do not know about placement). R works while the picked card keeps focus, as it does after a click. This is pre-existing.

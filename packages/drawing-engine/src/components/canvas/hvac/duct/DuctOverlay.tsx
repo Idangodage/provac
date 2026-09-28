@@ -30,11 +30,12 @@ import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, t
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
 import { moveDuctRuns } from './ductFollow';
 import { ductLegs } from './ductGeometry';
-import { airPortMarkup, branchTargetMarkup, draftLabelMarkup, ductRunMarkup, ductSupportMarkup, type DuctMarkupStyle } from './ductOverlayMarkup';
+import { airPortMarkup, airTerminalMarkup, branchTargetMarkup, draftLabelMarkup, ductRunMarkup, ductSupportMarkup, type DuctMarkupStyle } from './ductOverlayMarkup';
 import { getDuctPlanPresentation } from './ductPick';
 import { buildDuctPlanPresentation } from './ductPlanPresentation';
 import type { DuctDesignSettings } from './ductSettings';
 import { getDuctSupportPlan } from './ductSupports';
+import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec } from './ductTypes';
 
 export interface DuctOverlayDraft {
@@ -45,7 +46,7 @@ export interface DuctOverlayDraft {
 }
 
 export interface DuctOverlayBranchTarget {
-  kind: 'tap' | 'split';
+  kind: 'tap' | 'split' | 'spigot';
   marker: readonly [Point2D, Point2D];
   label: string;
 }
@@ -130,13 +131,14 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     if (gRef.current && gRef.current.getAttribute('transform') !== value) gRef.current.setAttribute('transform', value);
   }, []);
 
-  const ports = useMemo(() => (showPorts ? listAirPorts(hvacElements) : []), [showPorts, hvacElements]);
+  const ports = useMemo(() => (showPorts ? [...listAirPorts(hvacElements), ...listTerminalPorts(hvacElements)] : []), [showPorts, hvacElements]);
   const occupied = useMemo(() => {
     const keys = new Set<string>();
     for (const element of hvacElements) {
       if (!isDuctElement(element)) continue;
-      const start = readDuctRunSpec(element)?.start;
-      if (start?.kind === 'unit-port') keys.add(`${start.unitId}:${start.portId}`);
+      const spec = readDuctRunSpec(element);
+      if (spec?.start.kind === 'unit-port') keys.add(`${spec.start.unitId}:${spec.start.portId}`);
+      if (spec?.end.kind === 'terminal') keys.add(`${spec.end.terminalId}:${spec.end.portId}`);
     }
     return keys;
   }, [hvacElements]);
@@ -315,6 +317,10 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   });
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const terminals = useMemo(() => hvacElements.flatMap((element) => {
+    const spec = isDuctTerminalElement(element) ? readDuctTerminalSpec(element) : null;
+    return spec ? [{ element, spec }] : [];
+  }), [hvacElements]);
   const runs = useMemo(() => hvacElements
     .filter(isDuctElement)
     .map((element) => getDuctRunPlan(element, hvacElements, settings))
@@ -353,6 +359,10 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     <div className="absolute left-0 top-0 z-[6]" style={{ width, height, pointerEvents: 'none' }} data-testid="duct-overlay">
       <svg width={width} height={height} style={{ display: 'block', pointerEvents: 'none' }}>
         <g ref={gRef} transform={matrix}>
+          <g
+            data-testid="duct-terminals"
+            dangerouslySetInnerHTML={{ __html: terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, k, style.showTags)).join('') }}
+          />
           <g ref={runsRef}>
             {runs.map((plan) => (
               <g

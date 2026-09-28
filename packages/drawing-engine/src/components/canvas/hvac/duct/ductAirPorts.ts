@@ -45,6 +45,8 @@ export interface DuctAirPort {
   edgeB: Point2D;
   source: 'element' | 'measured' | 'procedural';
   provenance: DuctRuleProvenance;
+  /** A round spigot (an air terminal's): its diameter; width and height equal it. */
+  diameterMm?: number;
 }
 
 /**

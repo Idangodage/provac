@@ -10,6 +10,7 @@ import {
   isDuctElement,
   readDuctRunSpec,
   type DuctRunSpec,
+  type DuctSpigotStart,
   type DuctSplitBranchStart,
   type DuctTapStart,
 } from './ductTypes';
@@ -17,7 +18,7 @@ import {
 export interface DuctBranchRef {
   element: HvacElement;
   spec: DuctRunSpec;
-  start: DuctTapStart | DuctSplitBranchStart;
+  start: DuctTapStart | DuctSplitBranchStart | DuctSpigotStart;
 }
 
 const INDEX_CACHE = new WeakMap<readonly HvacElement[], Map<string, DuctBranchRef[]>>();
@@ -29,7 +30,7 @@ function indexOf(scene: readonly HvacElement[]): Map<string, DuctBranchRef[]> {
   for (const element of scene) {
     if (!isDuctElement(element)) continue;
     const spec = readDuctRunSpec(element);
-    if (!spec || (spec.start.kind !== 'tap' && spec.start.kind !== 'split-branch')) continue;
+    if (!spec || (spec.start.kind !== 'tap' && spec.start.kind !== 'split-branch' && spec.start.kind !== 'spigot')) continue;
     const list = index.get(spec.start.parentRunId) ?? [];
     list.push({ element, spec, start: spec.start });
     index.set(spec.start.parentRunId, list);
@@ -38,7 +39,7 @@ function indexOf(scene: readonly HvacElement[]): Map<string, DuctBranchRef[]> {
   return index;
 }
 
-/** Branch runs taken off `parentId` (taps and split branches). */
+/** Branch runs taken off `parentId` (taps, split branches and plenum spigots). */
 export function ductBranchesOf(parentId: string, scene: readonly HvacElement[]): DuctBranchRef[] {
   return indexOf(scene).get(parentId) ?? [];
 }
@@ -52,11 +53,12 @@ export function ductParentOf(spec: DuctRunSpec, scene: readonly HvacElement[]): 
 /**
  * Remove `removedIds` from the scene, keeping the network consistent in the
  * same step: branches of a removed run keep their geometry but start open
- * (orphaned), and a split whose branches are all removed becomes an end cap.
+ * (orphaned), a split whose branches are all removed becomes an end cap, and a
+ * run whose air terminal is removed ends open.
  */
 export function expandDuctDeletion(elements: readonly HvacElement[], removedIds: ReadonlySet<string>): HvacElement[] {
   const kept = elements.filter((element) => !removedIds.has(element.id));
-  const removedDucts = elements.filter((element) => removedIds.has(element.id) && isDuctElement(element));
+  const removedDucts = elements.filter((element) => removedIds.has(element.id) && (isDuctElement(element) || element.type === 'diffuser' || element.type === 'return-grille'));
   if (removedDucts.length === 0) return kept;
   const survivingParents = new Set<string>();
   for (const element of kept) {
@@ -72,6 +74,21 @@ export function expandDuctDeletion(elements: readonly HvacElement[], removedIds:
     let next: DuctRunSpec | null = null;
     const parentId = ductParentRunId(spec);
     if (parentId && removedIds.has(parentId)) next = { ...spec, start: { kind: 'open', orphaned: true } };
+    if (spec.end.kind === 'terminal' && removedIds.has(spec.end.terminalId)) {
+      // A flexible runout goes with its terminal: the rigid duct it left from ends open.
+      const base = next ?? spec;
+      const dropRunout = spec.end.flex && base.path.length > 2;
+      const lastNode = base.path.length - 1;
+      next = dropRunout
+        ? {
+          ...base,
+          path: base.path.slice(0, -1),
+          legs: base.legs.slice(0, -1),
+          nodeOverrides: Object.fromEntries(Object.entries(base.nodeOverrides).filter(([node]) => Number(node) < lastNode)),
+          end: { kind: 'open', orphaned: true },
+        }
+        : { ...base, end: { kind: 'open', orphaned: true } };
+    }
     if (spec.end.kind === 'split' && !survivingParents.has(element.id)) next = { ...(next ?? spec), end: { kind: 'end-cap' } };
     if (!next) return element;
     return { ...element, properties: { ...element.properties, ...buildDuctRunElement(next).properties } };

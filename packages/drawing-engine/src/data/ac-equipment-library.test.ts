@@ -18,7 +18,7 @@ const REMOVED_PLACEHOLDER_IDS = [
 ];
 
 describe("AC equipment library — real MACO VRF models only", () => {
-  it("contains exactly the 5 GLB units + 2 retained branch kits + 3 condensate terminations", () => {
+  it("contains exactly the 5 GLB units + 2 retained branch kits + 3 condensate terminations + 5 air terminals", () => {
     const ids = DEFAULT_AC_EQUIPMENT_LIBRARY.map((d) => d.id).sort();
     expect(ids).toEqual([
       "ac-branch-kit-dis-22-1g",
@@ -26,6 +26,11 @@ describe("AC equipment library — real MACO VRF models only", () => {
       "condensate-external-discharge",
       "condensate-floor-gully",
       "condensate-stack-connection",
+      "terminal-linear-2slot-1200-150",
+      "terminal-return-eggcrate-595-250",
+      "terminal-round-200",
+      "terminal-square-595-200",
+      "terminal-square-595-250",
       "vrf-fdc140kxzes1-w",
       "vrf-fdc280kxze1",
       "vrf-fdc280kxzpe1",
@@ -52,6 +57,17 @@ describe("AC equipment library — real MACO VRF models only", () => {
     const ids = new Set(DEFAULT_AC_EQUIPMENT_LIBRARY.map((d) => d.id));
     for (const gone of REMOVED_PLACEHOLDER_IDS) {
       expect(ids.has(gone)).toBe(false);
+    }
+  });
+
+  it("air terminals: diffusers and a return grille at typical sizes, each with its terminal spec", () => {
+    const g = groupAcEquipmentByCategory(DEFAULT_AC_EQUIPMENT_LIBRARY);
+    expect(g["air-terminals"].map((d) => d.type)).toEqual(["diffuser", "diffuser", "diffuser", "diffuser", "return-grille"]);
+    for (const d of g["air-terminals"]) {
+      const spec = d.defaultProperties?.terminal as { faceWidthMm: number; faceHeightMm: number; plenumHeightMm: number };
+      expect(d.widthMm).toBe(spec.faceWidthMm);
+      expect(d.heightMm).toBe(spec.faceHeightMm + spec.plenumHeightMm);
+      expect(d.mountType).toBe("ceiling");
     }
   });
 

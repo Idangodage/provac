@@ -1112,8 +1112,13 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
         );
     }, [pendingPlacementDefinition, placementRotationDeg, buildOpeningPreviewProperties, computePlacement, objectRendererRef, placementCursorRef, setPlacementValid]);
 
+    // The equipment whose default rotation was last applied: R turns the preview
+    // afterwards, and re-running this effect (the placement callback changes with
+    // the rotation) must not put it back.
+    const equipmentRotationSeededRef = useRef<string | null>(null);
     useEffect(() => {
         if (!pendingPlacementEquipmentDefinition) {
+            equipmentRotationSeededRef.current = null;
             hvacRendererRef.current?.clearPlacementPreview();
             if (!pendingPlacementDefinition) {
                 placementCursorRef.current = null;
@@ -1122,7 +1127,10 @@ export function useRendererSync(options: UseRendererSyncOptions): UseRendererSyn
             return;
         }
         objectRendererRef.current?.clearPlacementPreview();
-        setPlacementRotationDeg(pendingPlacementEquipmentDefinition.defaultRotationDeg ?? 0);
+        if (equipmentRotationSeededRef.current !== pendingPlacementEquipmentDefinition.id) {
+            equipmentRotationSeededRef.current = pendingPlacementEquipmentDefinition.id;
+            setPlacementRotationDeg(pendingPlacementEquipmentDefinition.defaultRotationDeg ?? 0);
+        }
         if (!placementCursorRef.current) {
             const seedPoint = {
                 x: mousePositionRef.current.x / MM_TO_PX,

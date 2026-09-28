@@ -45,7 +45,7 @@ import {
   CondensatePipeInspector,
   UnitDrainageRows,
 } from "./canvas/hvac/condensate/CondensateInspector";
-import { DuctRunInspector, DuctSystemsSection, DuctToolSection } from "./canvas/hvac/duct/DuctPanels";
+import { DuctRunInspector, DuctSystemsSection, DuctTerminalInspector, DuctToolSection } from "./canvas/hvac/duct/DuctPanels";
 import { editablePipeMaterials, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
 import { buildPipePropertyEdit, type PipePropertyEdit } from "./canvas/hvac/pipePropertyEdits";
 import {
@@ -1798,6 +1798,10 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 
   if (selectedEquipment.type === "duct") {
     return <DuctRunInspector element={selectedEquipment} />;
+  }
+
+  if (selectedEquipment.type === "diffuser" || selectedEquipment.type === "return-grille") {
+    return <DuctTerminalInspector element={selectedEquipment} />;
   }
 
   return (

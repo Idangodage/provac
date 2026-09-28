@@ -9,6 +9,7 @@ import { useCallback, useMemo } from 'react';
 import type { AcEquipmentDefinition } from '../../../data';
 import type { HvacElement, Point2D, Room } from '../../../types';
 import { GeometryEngine } from '../../../utils/geometry-engine';
+import { terminalCeilingPlane } from '../hvac/duct/ductTerminals';
 import {
     buildRefrigerantBranchKitViewModel,
     isRefrigerantBranchKitType,
@@ -596,10 +597,10 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
             width: placement.widthMm,
             depth: placement.depthMm,
             height: placement.heightMm,
-            elevation: resolvePlacementSpec(
-                pendingPlacementEquipmentDefinition,
-                placementRotationDeg,
-            ).elevationMm,
+            // An air terminal's face sits in the ceiling plane the ceiling units already use.
+            elevation: pendingPlacementEquipmentDefinition.category === 'air-terminals'
+                ? terminalCeilingPlane(hvacElements)
+                : resolvePlacementSpec(pendingPlacementEquipmentDefinition, placementRotationDeg).elevationMm,
             mountType: pendingPlacementEquipmentDefinition.mountType,
             label: pendingPlacementEquipmentDefinition.name,
             roomId: placement.roomId ?? undefined,
@@ -617,6 +618,7 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
     }, [
         addHvacElement,
         computeHvacPlacement,
+        hvacElements,
         onEquipmentPlaced,
         pendingPlacementEquipmentDefinition,
         placementRotationDeg,

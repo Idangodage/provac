@@ -104,6 +104,7 @@ import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
 import { moveDuctRuns, toElementUpdate } from "./canvas/hvac/duct/ductFollow";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
 import { getDuctSupportPlan } from "./canvas/hvac/duct/ductSupports";
+import { isDuctTerminalElement, listTerminalPorts } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
@@ -800,6 +801,10 @@ export function DrawingCanvas({
       },
       /** Ducts: air collars, plans, BOM/schedule, and a scripted run from a collar. */
       getAirPorts: () => listAirPorts(hvacElements),
+      /** Air terminals' spigots (diffusers and grilles) a run can finish on. */
+      getTerminalPorts: () => listTerminalPorts(hvacElements),
+      /** Room outlines (scripted placement of room-mounted equipment). */
+      getRooms: () => useSmartDrawingStore.getState().rooms.map((room) => ({ id: room.id, name: room.name, vertices: room.vertices })),
       getDuctPlan: (elementId: string) => {
         const state = useSmartDrawingStore.getState();
         const target = state.hvacElements.find((candidate) => candidate.id === elementId);
@@ -810,7 +815,8 @@ export function DrawingCanvas({
         const plans = state.hvacElements.filter(isDuctElement)
           .map((element) => getDuctRunPlan(element, state.hvacElements, state.ductSettings))
           .filter((plan): plan is NonNullable<typeof plan> => plan !== null);
-        return { bom: buildDuctBom(plans, plans.map((plan) => getDuctSupportPlan(plan, state.hvacElements, state.ductSettings))), schedule: buildDuctFabricationSchedule(plans) };
+        const supports = plans.map((plan) => getDuctSupportPlan(plan, state.hvacElements, state.ductSettings));
+        return { bom: buildDuctBom(plans, supports, state.hvacElements.filter(isDuctTerminalElement)), schedule: buildDuctFabricationSchedule(plans) };
       },
       getDuctSettings: () => useSmartDrawingStore.getState().ductSettings,
       /** Add elements as one undoable command (scripted checks: e.g. a pipe across a duct). */
