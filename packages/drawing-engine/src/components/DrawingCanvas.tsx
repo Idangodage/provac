@@ -84,6 +84,7 @@ import {
 } from "./canvas/hvac/PipeStudioOverlay";
 import { VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
 import { applyAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteController";
+import { CondensateEditGizmo3D } from "./canvas/hvac/condensate/CondensateEditGizmo3D";
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
 import { condensateEditContext, condensateNetworkIdOf, followDrainsForMove } from "./canvas/hvac/condensate/condensateEditController";
 import { createCondensateEditSession, isUnitBranchSpec } from "./canvas/hvac/condensate/condensateEditing";
@@ -753,6 +754,7 @@ export function DrawingCanvas({
       getDrainPorts: () => getIndoorUnitDrainPorts(hvacElements),
       getCondensatePreview: () => useCondensatePreviewStore.getState().result,
       getSelectedIds: () => [...useSmartDrawingStore.getState().selectedIds],
+      select: (ids: string[]) => setSelectedIds(ids),
       generateCondensate: (scope: 'drawing' | 'selection' = 'drawing') => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope }),
       /** One Auto route for the ticked services (preview; apply with applyAutoRoute). */
       autoRoute: (services: { gas: boolean; liquid: boolean; condensate: boolean }, scope: 'drawing' | 'selection' = 'drawing') =>
@@ -3222,6 +3224,9 @@ export function DrawingCanvas({
           onPipePointerCancel={_cancelRefrigerantPipeDrawing}
           pipeInteractionRef={hybridPipeInteractionRef}
         />
+        <CondensateEditGizmo3D enabled={projectionViewOnly && tool === "select"} controllerRef={hybridControllerRef}
+          width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
+          settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
           showInteriorNodeHandles={projectionViewOnly}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}

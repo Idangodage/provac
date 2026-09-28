@@ -19,7 +19,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import type { HvacElement, Point2D } from '../../../../types';
 
 import { commitCondensateEdit, condensateEditContext, deleteDrainNetwork, editRunFittings, runCondensateEdit } from './condensateEditController';
-import { createCondensateEditSession, isUnitBranchSpec, type CondensateEditResult, type CondensateEditSession, type CondensateFittingEdit } from './condensateEditing';
+import {
+  createCondensateEditSession,
+  isUnitBranchSpec,
+  type CondensateEdit,
+  type CondensateEditResult,
+  type CondensateEditSession,
+  type CondensateFittingEdit,
+} from './condensateEditing';
 import { closestOnSegment, distance } from './condensateGeometry';
 import { Tag, pathData } from './condensatePlanGlyphs';
 import {
@@ -38,15 +45,33 @@ import {
 import type { CondensateDesignSettings } from './condensateSettings';
 import { getCondensateOwnership, isCondensatePipe, readCondensatePipeSpec } from './condensateTypes';
 
-type DragKind = 'bend' | 'leg' | 'body' | 'foot' | 'wye';
+export type CondensateDragKind = 'bend' | 'leg' | 'body' | 'foot' | 'wye' | 'riser-top';
+type DragKind = CondensateDragKind;
+
+/** A pointer resolved to the model: plan position plus a level when the drag carries Z (3D views). */
+export interface CondensatePointerPoint {
+  plan: Point2D;
+  z: number | null;
+}
+
+/** 3D drags bring their own pointer -> model solver (camera ray on an axis or plane). */
+export interface CondensatePointerResolver {
+  start: CondensatePointerPoint;
+  resolve: (event: PointerEvent) => CondensatePointerPoint | null;
+}
 
 interface DragState {
   kind: DragKind;
   pipeId: string;
   index: number;
   startWorld: Point2D;
+  startZ: number | null;
   pointerId: number;
+  resolve?: CondensatePointerResolver['resolve'];
 }
+
+/** A level change smaller than this is not a level edit (mm). */
+const LEVEL_EDIT_MIN_MM = 5;
 
 export interface CondensateEditPreview {
   result: CondensateEditResult | null;
@@ -97,7 +122,7 @@ export function useCondensateEditing(options: {
   const { enabled, pipe, hvacElements, settings, gRef, hpx, onPreviewChange } = options;
   const sessionRef = useRef<{ key: string; elements: HvacElement[]; session: CondensateEditSession } | null>(null);
   const dragRef = useRef<DragState | null>(null);
-  const latestRef = useRef<{ world: Point2D; shift: boolean } | null>(null);
+  const latestRef = useRef<{ world: Point2D; z: number | null; shift: boolean } | null>(null);
   const frameRef = useRef<number | null>(null);
   const [preview, setPreview] = useState<CondensateEditPreview | null>(null);
   const previewRef = useRef<CondensateEditPreview | null>(null);
@@ -205,17 +230,40 @@ export function useCondensateEditing(options: {
     }
   }, [session, settings.liftMaxHorizontalMm]);
 
+  /** The edit a drag at `world` (and level `z`, in 3D) stands for. */
+  const editFor = useCallback((drag: DragState, world: Point2D, z: number | null, shift: boolean): { edit: CondensateEdit; routes: Map<string, PlanRoute>; guides: PlanSnap['guides'] } | null => {
+    const current = session();
+    if (!current) return null;
+    const spec = current.model.specs.get(drag.pipeId);
+    if (!spec) return null;
+    if (drag.kind === 'riser-top') {
+      const unitId = spec.drainStart?.unitId;
+      const outlet = spec.routeNodes3d[0];
+      if (!unitId || !outlet || z === null) return null;
+      return { edit: { liftLimitMm: { [unitId]: Math.max(0, Math.round(z - outlet.z)) } }, routes: new Map(), guides: [] };
+    }
+    const planned = routesFor(drag, world, shift);
+    if (!planned) return null;
+    const edit: CondensateEdit = { routes: planned.routes };
+    // A vertical component sets this run's level limit (bends, legs, the whole run).
+    const levelled = drag.kind === 'bend' || drag.kind === 'leg' || drag.kind === 'body';
+    if (levelled && z !== null && drag.startZ !== null && Math.abs(z - drag.startZ) > LEVEL_EDIT_MIN_MM) {
+      edit.levelCapMm = { [drag.pipeId]: Math.round(z) };
+    }
+    return { edit, routes: planned.routes, guides: planned.guides };
+  }, [session, routesFor]);
+
   const solveFrame = useCallback(() => {
     frameRef.current = null;
     const drag = dragRef.current;
     const latest = latestRef.current;
     if (!drag || !latest) return;
-    const working = routesFor(drag, latest.world, latest.shift);
+    const working = editFor(drag, latest.world, latest.z, latest.shift);
     const current = session();
     if (!working || !current) return;
-    const result = current.solve({ routes: working.routes });
+    const result = current.solve(working.edit);
     publish({ result, cursor: latest.world, guides: working.guides, routes: working.routes, pipeId: drag.pipeId, kind: drag.kind, index: drag.index });
-  }, [routesFor, session, publish]);
+  }, [editFor, session, publish]);
 
   const endDrag = useCallback((commit: boolean) => {
     if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
@@ -223,12 +271,17 @@ export function useCondensateEditing(options: {
     const drag = dragRef.current;
     dragRef.current = null;
     if (commit && drag && latestRef.current) {
-      const moved = distance(latestRef.current.world, drag.startWorld) > hpxRef.current(2);
-      if (moved) {
+      const latest = latestRef.current;
+      const planMoved = distance(latest.world, drag.startWorld) > hpxRef.current(2);
+      const levelMoved = latest.z !== null && drag.startZ !== null && Math.abs(latest.z - drag.startZ) > LEVEL_EDIT_MIN_MM;
+      if (planMoved || levelMoved) {
         solveFrame();
         const final = previewRef.current?.result;
         if (final) {
-          const label = { bend: 'Move drain bend', leg: 'Move drain leg', body: 'Move drain run', foot: 'Move riser', wye: 'Slide drain wye' }[drag.kind];
+          const labels: Record<DragKind, string> = {
+            bend: 'Move drain bend', leg: 'Move drain leg', body: 'Move drain run', foot: 'Move riser', wye: 'Slide drain wye', 'riser-top': 'Set riser height',
+          };
+          const label = drag.kind !== 'riser-top' && levelMoved && !planMoved ? 'Set drain level limit' : labels[drag.kind];
           commitCondensateEdit(final, label, [drag.pipeId]);
         }
       }
@@ -241,9 +294,14 @@ export function useCondensateEditing(options: {
     const onMove = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag || event.pointerId !== drag.pointerId) return;
-      const world = toWorld(event.clientX, event.clientY);
-      if (!world) return;
-      latestRef.current = { world, shift: event.shiftKey };
+      let resolved: CondensatePointerPoint | null = null;
+      if (drag.resolve) resolved = drag.resolve(event);
+      else {
+        const plan = toWorld(event.clientX, event.clientY);
+        resolved = plan ? { plan, z: null } : null;
+      }
+      if (!resolved) return;
+      latestRef.current = { world: resolved.plan, z: resolved.z, shift: event.shiftKey };
       if (frameRef.current === null) frameRef.current = requestAnimationFrame(solveFrame);
     };
     const onUp = (event: PointerEvent) => {
@@ -308,25 +366,27 @@ export function useCondensateEditing(options: {
   // A drawing change under an open preview discards it.
   useEffect(() => { if (!dragRef.current && previewRef.current) publish(null); }, [hvacElements, publish]);
 
-  const beginDrag = useCallback((kind: DragKind, index: number, event: ReactPointerEvent) => {
+  const beginDrag = useCallback((kind: DragKind, index: number, event: ReactPointerEvent, resolver?: CondensatePointerResolver) => {
     if (!enabled || !pipe || event.button !== 0) return;
-    const world = toWorld(event.clientX, event.clientY);
-    if (!world || !session()) return;
+    let start: CondensatePointerPoint | null = resolver ? resolver.start : null;
+    if (!resolver) {
+      const plan = toWorld(event.clientX, event.clientY);
+      start = plan ? { plan, z: null } : null;
+    }
+    if (!start || !session()) return;
     event.stopPropagation();
     event.preventDefault();
-    dragRef.current = { kind, pipeId: pipe.id, index, startWorld: world, pointerId: event.pointerId };
-    latestRef.current = { world, shift: event.shiftKey };
+    dragRef.current = { kind, pipeId: pipe.id, index, startWorld: start.plan, startZ: start.z, pointerId: event.pointerId, resolve: resolver?.resolve };
+    latestRef.current = { world: start.plan, z: start.z, shift: event.shiftKey };
   }, [enabled, pipe, toWorld, session]);
 
-  const insertBendAt = useCallback((event: ReactMouseEvent) => {
+  /** Adds a bend on the selected run at the plan point nearest `world`. */
+  const insertBendAtPlan = useCallback((world: Point2D) => {
     const current = session();
     if (!current || !pipe) return;
-    const world = toWorld(event.clientX, event.clientY);
     const route = current.model.routes.get(pipe.id);
     const spec = current.model.specs.get(pipe.id);
-    if (!world || !route || !spec) return;
-    event.stopPropagation();
-    event.preventDefault();
+    if (!route || !spec) return;
     const prefix = fixedPrefixLength(isUnitBranchSpec(spec));
     let best = -1;
     let gap = Number.POSITIVE_INFINITY;
@@ -339,7 +399,15 @@ export function useCondensateEditing(options: {
     if (best < 0) return;
     const next = insertRouteVertex(route, best, at, prefix);
     commitCondensateEdit(current.solve({ routes: new Map([[pipe.id, next]]) }), 'Add drain bend', [pipe.id]);
-  }, [session, pipe, toWorld]);
+  }, [session, pipe]);
+
+  const insertBendAt = useCallback((event: ReactMouseEvent) => {
+    const world = toWorld(event.clientX, event.clientY);
+    if (!world) return;
+    event.stopPropagation();
+    event.preventDefault();
+    insertBendAtPlan(world);
+  }, [toWorld, insertBendAtPlan]);
 
   /** Adds a rodding eye where the run was clicked, or removes the eye at that point. */
   const toggleEyeAt = useCallback((point: Point2D, remove: boolean) => {
@@ -355,7 +423,7 @@ export function useCondensateEditing(options: {
   }, [pipe]);
 
   return {
-    model, preview, beginDrag, insertBendAt, removeBend, hoverBend, setHoverBend, hoverFoot, setHoverFoot,
+    model, preview, beginDrag, insertBendAt, insertBendAtPlan, removeBend, hoverBend, setHoverBend, hoverFoot, setHoverFoot,
     eyeMode, setEyeMode, toggleEyeAt, toWorld, dragging: dragRef,
   };
 }

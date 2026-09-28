@@ -157,6 +157,18 @@ route: fall, risers, 45° offsets, wyes, sizes, fittings, crossings, hangers).
   square; runs ending on the termination re-end on it). A network that cannot follow is left as it
   is and reported (then CD_STALE offers Regenerate).
 - **Picking:** a click inside a gully's footprint selects the gully, not the drains ending on it.
+- **3D views** (`CondensateEditGizmo3D.tsx`, partial tilt, Iso, Front, Side): drains are pickable in
+  3D (hybrid layer pick). The selected run's handles are projected from their real 3D positions
+  every frame (screen-sized): bends, leg midpoints (hidden when the leg is end-on), riser foot,
+  riser top, wye. A plain drag moves on the view's own surface — XY (plan / iso / tilt), XZ
+  (front), YZ (side); clicking a handle activates an X / Y / Z + XY / XZ / YZ gizmo on it.
+  Pointer rays are solved with the interaction service (`beginDrag` / `updateDrag`, axis or plane
+  constraint) into the same edit hook as 2D (`CondensatePointerResolver`). Plan components are the
+  2D edits; a vertical component sets the run's **level limit** (`levelCapMm`: every node of the run
+  except the outlet stays at or below it; the fall re-solves around it; a limit the fall cannot meet
+  is refused with the reason); the riser top sets the riser height (`riserLiftLimitMm`). The layer
+  root carries `data-pipe-edit-gizmo` so the hybrid layer leaves its pointer events alone. The edit
+  bar renders flat on screen in 3D, with the drag surface and a clearable "Level ≤ N" chip.
 - **Performance:** a re-solve of the canvas network takes ~25 ms (the crossing scan's exact
   segment-distance early reject made it ~10× faster, which also speeds up Auto route).
 
@@ -188,7 +200,8 @@ route: fall, risers, 45° offsets, wyes, sizes, fittings, crossings, hangers).
 - Vitest: `condensateEditing.test.ts` (re-solve fidelity, every gesture, verdicts, delete / re-route,
   persisted overrides, follow unit / gully) and `condensateRouteOps.test.ts` (operations, snapping,
   gully-first pick). On canvas: `D:\claude-tmp-vrf-check\micro.mjs` (every gesture with undo,
-  bar actions, nudge, gully follow; screenshots `me-*`).
+  bar actions, nudge, gully follow; screenshots `me-*`) and `micro3d.mjs` (Iso / Front / Side /
+  partial tilt: 3D pick, bend on XY / XZ / YZ, Z level limit, riser height, undo; screenshots `m3-*`).
 - On canvas: `D:\claude-tmp-vrf-check\condensate.mjs` (`all` = single unit; `multi` = four units,
   pumps, refrigerant crossings with approved hops, 2D/Iso screenshots) and `unified.mjs`
   (`setup,gas,condensate` / `setup,all` / `setup,clear-refrigerant,all`: toolbar ticks, preview,
@@ -201,5 +214,5 @@ route: fall, risers, 45° offsets, wyes, sizes, fittings, crossings, hangers).
 - An infeasible crossing falls back to a hop proposal; re-routing the branch around the crossing
   with a penalty is not yet attempted.
 - Tree improvement is limited to three trunk orders (no detach/re-attach pass yet).
-- Micro-edits happen in plan view; the tilted / isometric views show the live preview and the
-  result, but have no 3D gizmo (levels are solved from the fall, not dragged).
+- Levels stay solved from the fall: a vertical drag sets a level limit (a maximum), never a fixed
+  level; gullies and indoor units are moved in plan (their drains follow).

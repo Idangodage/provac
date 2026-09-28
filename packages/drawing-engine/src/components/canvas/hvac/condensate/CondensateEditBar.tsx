@@ -6,7 +6,7 @@
  * fall, upsize the run, set the riser height, lock, release to Auto route,
  * delete. Every action re-solves the network and commits as one undo step.
  */
-import { CircleDot, Lock, LockOpen, Plus, RotateCcw, Route, Trash2 } from 'lucide-react';
+import { CircleDot, Lock, LockOpen, Plus, RotateCcw, Route, Trash2, X } from 'lucide-react';
 
 import type { HvacElement } from '../../../../types';
 
@@ -18,6 +18,7 @@ import {
   rerouteDrainRun,
   setNetworkFall,
   setRiserLimit,
+  setRunLevelCap,
   setRunLocked,
   setRunSize,
 } from './condensateEditController';
@@ -32,7 +33,13 @@ const RISERS = [150, 250, 350, 450, 600];
 const button = 'inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40';
 const select = 'rounded-md border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-700 focus:border-sky-600 focus:outline-none';
 
-export function CondensateEditBar({ pipe, api, pumpMaxLiftMm }: { pipe: HvacElement; api: CondensateEditingApi; pumpMaxLiftMm: number }) {
+export function CondensateEditBar({ pipe, api, pumpMaxLiftMm, surface }: {
+  pipe: HvacElement;
+  api: CondensateEditingApi;
+  pumpMaxLiftMm: number;
+  /** The drag surface of the current 3D view (XY / XZ / YZ); absent on the 2D board. */
+  surface?: string;
+}) {
   const spec = readCondensatePipeSpec(pipe);
   const owner = getCondensateOwnership(pipe);
   const branch = isUnitBranchSpec(spec);
@@ -44,6 +51,7 @@ export function CondensateEditBar({ pipe, api, pumpMaxLiftMm }: { pipe: HvacElem
   const size = typeof pipe.properties.minOuterDiameterMm === 'number' ? String(pipe.properties.minOuterDiameterMm) : 'auto';
   const riser = typeof pipe.properties.riserLiftLimitMm === 'number' ? String(pipe.properties.riserLiftLimitMm) : 'auto';
   const busy = api.preview !== null;
+  const levelCap = typeof pipe.properties.levelCapMm === 'number' ? pipe.properties.levelCapMm : null;
   return (
     <div className="pointer-events-auto absolute bottom-4 left-1/2 z-[26] flex max-w-[calc(100%-32px)] -translate-x-1/2 flex-wrap items-center gap-1 rounded-xl border border-slate-200 bg-white/95 px-2 py-1.5 shadow-lg backdrop-blur"
       role="toolbar" aria-label="Edit drain run" data-testid="condensate-edit-bar"
@@ -55,7 +63,17 @@ export function CondensateEditBar({ pipe, api, pumpMaxLiftMm }: { pipe: HvacElem
         <span className="font-normal text-slate-500">· {spec.nominalSize} · {formatFallRatio(spec.designSlopePercent)}{rise > 0 ? ` · riser ${rise}` : ''}</span>
         {owner?.editPolicy === 'retain' ? <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800" title="Hand-edited: Auto route keeps this network">Edited</span> : null}
         {locked ? <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">Locked</span> : null}
+        {surface ? <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-800" title="A plain drag moves on this surface; the gizmo on the active handle offers X, Y, Z and the other surfaces">Surface {surface}</span> : null}
       </span>
+      {levelCap !== null ? (
+        <span className="flex items-center gap-1 rounded-md bg-indigo-50 px-1.5 py-1 text-[11px] text-indigo-800" title="This run stays at or below this level; the fall re-solves around it">
+          Level ≤ {Math.round(levelCap)}
+          <button type="button" className="rounded p-0.5 hover:bg-indigo-100 disabled:opacity-40" aria-label="Clear the level limit" disabled={locked || busy}
+            onClick={() => setRunLevelCap(pipe, null)}>
+            <X size={11} />
+          </button>
+        </span>
+      ) : null}
       <span className="h-5 border-l border-slate-200" aria-hidden="true" />
       <button type="button" className={button} disabled={locked || busy} onClick={() => addBendToRun(pipe)} title="Add a bend in the middle of the longest leg">
         <Plus size={13} /> Bend

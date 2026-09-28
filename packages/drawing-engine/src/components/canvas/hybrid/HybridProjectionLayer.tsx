@@ -1985,7 +1985,8 @@ export function HybridProjectionLayer({
       for (const hit of hits) {
         const root = objectAncestry(hit.object).find((candidate) => {
           const type = candidate.userData.hvacElementType as HvacElement["type"] | undefined;
-          return type ? isRefrigerantPipeElementType(type) : false;
+          // Drain runs are selectable in 3D too (their edit handles live in 3D).
+          return type ? isRefrigerantPipeElementType(type) || type === "condensate-pipe" : false;
         });
         const elementId = root?.userData.hvacElementId as string | undefined;
         if (elementId) return elementId;

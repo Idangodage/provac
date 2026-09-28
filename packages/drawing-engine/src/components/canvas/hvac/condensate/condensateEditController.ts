@@ -121,6 +121,10 @@ export function setRiserLimit(pipe: HvacElement, liftMm: number | null): Condens
   return runCondensateEdit(pipe, { liftLimitMm: { [unitId]: liftMm } }, liftMm === null ? 'Riser to the high point' : `Riser height ${Math.round(liftMm)} mm`);
 }
 
+export function setRunLevelCap(pipe: HvacElement, levelMm: number | null): CondensateEditResult | null {
+  return runCondensateEdit(pipe, { levelCapMm: { [pipe.id]: levelMm } }, levelMm === null ? 'Clear drain level limit' : `Drain level limit ${Math.round(levelMm)} mm`);
+}
+
 export function editRunFittings(pipe: HvacElement, edits: CondensateFittingEdit[], action: string): CondensateEditResult | null {
   return runCondensateEdit(pipe, { fittingEdits: { [pipe.id]: edits } }, action);
 }

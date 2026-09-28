@@ -177,6 +177,8 @@ export interface CondensateFixedNetwork {
   liftLimitMm?: Record<string, number>;
   /** Minimum outer diameter per run, keyed by its upstream units ('a+b'). */
   sizeFloorsMm?: Record<string, number>;
+  /** Hand-set level limits: every point of the run along `points` stays at or below `capZ`. */
+  levelCaps?: Array<{ points: Point2D[]; capZ: number }>;
 }
 
 /** Key of a run by the units draining through it (size floors, id mapping). */
@@ -1364,6 +1366,16 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
       }, settings, obstacles, router.services);
     }
     if (!net.units.length) return;
+    // Level limits: the run's nodes (not the outlet or the termination) stay at or below the cap.
+    for (const cap of fixed.levelCaps ?? []) {
+      for (const node of net.nodes.values()) {
+        if (node.kind === 'port' || node.kind === 'stub' || node.kind === 'root' || node.kind === 'drop-top') continue;
+        const onRun = cap.points.some((point, index) => index > 0 && pointToSegmentDistance(node.point, cap.points[index - 1]!, point) <= 1);
+        if (!onRun || (node.upper !== undefined && node.upper <= cap.capZ)) continue;
+        node.upper = cap.capZ;
+        node.upperReason = 'level limit set by hand';
+      }
+    }
     finishNetwork(net, exposed ?? false);
   }
 

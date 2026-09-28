@@ -217,6 +217,35 @@ describe('condensate micro-editing engine', () => {
     expect(kept.properties.designFallPercent).toBe(1.5);
   });
 
+  it('keeps a run at or below a hand-set level limit, and refuses one the fall cannot meet', () => {
+    const scene = baseScene();
+    const networkId = networkIdOf(scene);
+    const session = createCondensateEditSession(scene, networkId, context)!;
+    const branchId = session.model.unitBranchOf.get('c-1')!;
+    const before = readCondensatePipeSpec(scene.find((element) => element.id === branchId)!).routeNodes3d;
+    const top = Math.max(...before.slice(2).map((node) => node.z));
+    const cap = top - 120;
+    const capped = session.solve({ levelCapMm: { [branchId]: cap } });
+    expect(capped.ok, capped.message).toBe(true);
+    const after = applyResult(scene, capped);
+    expect(errors(after)).toEqual([]);
+    const branch = after.find((element) => element.id === branchId)!;
+    expect(branch.properties.levelCapMm).toBe(cap);
+    const nodes = readCondensatePipeSpec(branch).routeNodes3d;
+    // The outlet stays at the unit; everything from the riser top on is under the limit.
+    expect(nodes.slice(2).every((node) => node.z <= cap + 0.5)).toBe(true);
+
+    const cleared = createCondensateEditSession(after, networkId, context)!.solve({ levelCapMm: { [branchId]: null } });
+    expect(cleared.ok, cleared.message).toBe(true);
+    const restored = applyResult(after, cleared).find((element) => element.id === branchId)!;
+    expect(restored.properties.levelCapMm).toBeUndefined();
+    expect(Math.max(...readCondensatePipeSpec(restored).routeNodes3d.slice(2).map((node) => node.z))).toBeCloseTo(top, 0);
+
+    const impossible = session.solve({ levelCapMm: { [branchId]: 1500 } });
+    expect(impossible.ok).toBe(false);
+    expect(impossible.status).toBe('short');
+  });
+
   it('lets drains follow a moved unit and a moved gully in one step', () => {
     const scene = baseScene();
     const movedUnit = scene.map((element) => (element.id === 'c-2' ? { ...element, position: { x: element.position.x + 400, y: element.position.y + 250 } } : element));

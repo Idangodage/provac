@@ -62,6 +62,8 @@ export interface CondensateEdit {
   minOuterDiameterMm?: Record<string, number | null>;
   /** Hand-placed / removed fittings per pipe id (replaces that pipe's list). */
   fittingEdits?: Record<string, CondensateFittingEdit[]>;
+  /** Level limit per pipe id: the run stays at or below this centreline level (mm); null clears it. */
+  levelCapMm?: Record<string, number | null>;
 }
 
 export type CondensateEditStatus = 'ok' | 'short' | 'clash' | 'blocked' | 'locked' | 'invalid';
@@ -99,6 +101,7 @@ const FALL_KEY = 'designFallPercent';
 const LIFT_KEY = 'riserLiftLimitMm';
 const SIZE_KEY = 'minOuterDiameterMm';
 const FITTINGS_KEY = 'fittingEdits';
+const LEVEL_KEY = 'levelCapMm';
 
 export function isUnitBranchSpec(spec: Pick<CondensatePipeSpec, 'drainStart'>): boolean {
   return spec.drainStart?.kind === 'unit-drain' && typeof spec.drainStart.unitId === 'string';
@@ -272,6 +275,7 @@ function storedOverrides(model: CondensateNetworkModel) {
   let fall: number | null = null;
   const lift: Record<string, number> = {};
   const size: Record<string, number> = {};
+  const level: Record<string, number> = {};
   const fittings: Record<string, CondensateFittingEdit[]> = {};
   for (const pipe of model.pipes) {
     const spec = model.specs.get(pipe.id)!;
@@ -280,10 +284,12 @@ function storedOverrides(model: CondensateNetworkModel) {
     if (cap !== null && isUnitBranchSpec(spec)) lift[spec.drainStart!.unitId!] = cap;
     const floor = finiteNumber(pipe.properties[SIZE_KEY]);
     if (floor !== null) size[pipe.id] = floor;
+    const levelCap = finiteNumber(pipe.properties[LEVEL_KEY]);
+    if (levelCap !== null) level[pipe.id] = levelCap;
     const edits = pipe.properties[FITTINGS_KEY];
     if (Array.isArray(edits)) fittings[pipe.id] = edits as CondensateFittingEdit[];
   }
-  return { fall, lift, size, fittings };
+  return { fall, lift, size, level, fittings };
 }
 
 function merge<T>(base: Record<string, T>, edits: Record<string, T | null> | undefined): Record<string, T> {
@@ -348,6 +354,10 @@ export function createCondensateEditSession(
       if (spec) sizeFloorsMm[condensateRunKey(spec.upstreamUnitIds)] = od;
     }
     const fittingEdits = { ...stored.fittings, ...(edit.fittingEdits ?? {}) };
+    const levelByPipe = merge(stored.level, edit.levelCapMm);
+    const levelCaps = Object.entries(levelByPipe)
+      .filter(([pipeId]) => !removed.has(pipeId) && routes.has(pipeId))
+      .map(([pipeId, capZ]) => ({ points: routes.get(pipeId)!, capZ }));
 
     const environmentKey = `${settings.minSlopePercent}`;
     const envOptions = {
@@ -368,7 +378,7 @@ export function createCondensateEditSession(
       ...envOptions,
       environment,
       idFactory,
-      fixedNetwork: { networkId, gullyId: model.gullyId, routes: fixedRoutes, liftLimitMm: liftLimits, sizeFloorsMm },
+      fixedNetwork: { networkId, gullyId: model.gullyId, routes: fixedRoutes, liftLimitMm: liftLimits, sizeFloorsMm, levelCaps },
     });
 
     // ---- verdict ----------------------------------------------------------
@@ -414,6 +424,7 @@ export function createCondensateEditSession(
       if (fall !== null && fall > 0) properties[FALL_KEY] = fall;
       if (unitId && liftLimits[unitId] !== undefined) properties[LIFT_KEY] = liftLimits[unitId];
       if (previous && sizeByPipe[previous.id] !== undefined) properties[SIZE_KEY] = sizeByPipe[previous.id];
+      if (previous && levelByPipe[previous.id] !== undefined) properties[LEVEL_KEY] = levelByPipe[previous.id];
       const oldOwner = previous ? getCondensateOwnership(previous) : null;
       const owner: CondensateNetworkOwnership = {
         ...(fresh.properties.condensateNetwork as CondensateNetworkOwnership),
