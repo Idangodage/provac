@@ -17,6 +17,7 @@ import type { DuctDesignSettings } from './ductSettings';
 import {
   isDuctElement,
   isRoundLeg,
+  isRoundMainTapStyle,
   readDuctRunSpec,
   roundLeg,
   type DuctLeg,
@@ -34,10 +35,23 @@ function parentSheetMm(spec: DuctRunSpec, section: DuctLeg, settings: DuctDesign
   }).sheetThicknessMm ?? 1;
 }
 
-/** A branch may not be taller than its parent (flat bottom, shared); a round branch stays round. */
+/**
+ * A branch may not be taller than its parent (flat bottom, shared); a round
+ * branch stays round, and a round main takes round branches only.
+ */
 export function clampBranchSection(branch: DuctLeg, parentSection: DuctLeg): DuctLeg {
+  if (isRoundLeg(parentSection)) {
+    const wanted = isRoundLeg(branch) ? branch.diameterMm! : Math.min(branch.widthMm, branch.heightMm);
+    return roundLeg(Math.min(wanted, parentSection.diameterMm!));
+  }
   if (isRoundLeg(branch)) return roundLeg(Math.min(branch.diameterMm!, parentSection.heightMm));
   return { widthMm: branch.widthMm, heightMm: Math.min(branch.heightMm, parentSection.heightMm) };
+}
+
+/** The split style a run's end takes: a round main splits by a wye, a rectangular run by a Y or bullhead. */
+export function splitStyleFor(lastSection: DuctLeg, requested: DuctSplitStyle): DuctSplitStyle {
+  if (isRoundLeg(lastSection)) return 'wye';
+  return requested === 'wye' ? 'y' : requested;
 }
 
 export function tapOrigin(
@@ -67,7 +81,7 @@ export function splitOrigin(
   const spec = readDuctRunSpec(parent);
   if (!spec) return null;
   const last = spec.legs[spec.legs.length - 1]!;
-  const style = spec.end.kind === 'split' ? spec.end.style : request.style;
+  const style = spec.end.kind === 'split' ? spec.end.style : splitStyleFor(last, request.style);
   const outlet = splitOutlet(spec, style, request.side, branch, parentSheetMm(spec, last, settings), settings);
   if (!outlet) return null;
   return {
@@ -113,7 +127,8 @@ export function findBranchTarget(
   scene: readonly HvacElement[],
   settings: DuctDesignSettings,
   thresholdMm: number,
-  options: { splits?: boolean } = {},
+  /** `branchShape`: the tool's branch shape; a rectangular run's split takes rectangular branches, a round main's wye round ones. */
+  options: { splits?: boolean; branchShape?: 'rect' | 'round' } = {},
 ): DuctBranchTarget | null {
   let best: { target: DuctBranchTarget; distance: number } | null = null;
   const offer = (target: DuctBranchTarget, distance: number) => {
@@ -122,14 +137,15 @@ export function findBranchTarget(
   for (const parent of scene) {
     if (!isDuctElement(parent)) continue;
     const spec = readDuctRunSpec(parent);
-    // Round runs carry no take-offs or splits (rectangular trunks only).
-    if (!spec || spec.legacy || spec.legs.some(isRoundLeg)) continue;
+    // Round runs take branches too: taps off a round main and a wye at its end (SMACNA Fig. 3-4 / 3-5).
+    if (!spec || spec.legacy) continue;
     const legs = ductLegs(spec);
     const lastLeg = legs[legs.length - 1];
     const lastSection = spec.legs[spec.legs.length - 1];
     if (!lastLeg || !lastSection) continue;
 
-    if (options.splits !== false && !lastLeg.vertical && (spec.end.kind === 'end-cap' || spec.end.kind === 'open' || spec.end.kind === 'split')) {
+    const splitShapeFits = options.branchShape === undefined || (options.branchShape === 'round') === isRoundLeg(lastSection);
+    if (options.splits !== false && splitShapeFits && !lastLeg.vertical && (spec.end.kind === 'end-cap' || spec.end.kind === 'open' || spec.end.kind === 'split')) {
       const end = { x: lastLeg.end.x, y: lastLeg.end.y };
       const n = legNormal(lastLeg.direction);
       const offset = sub(point, end);
@@ -251,7 +267,7 @@ export function findReattachTarget(
   for (const parent of scene) {
     if (!isDuctElement(parent) || excluded.has(parent.id)) continue;
     const parentSpec = readDuctRunSpec(parent);
-    if (!parentSpec || parentSpec.legacy || parentSpec.legs.some(isRoundLeg)) continue;
+    if (!parentSpec || parentSpec.legacy) continue;
     const plan = getDuctRunPlan(parent, scene, settings);
     if (!plan) continue;
     const legs = ductLegs(parentSpec);
@@ -268,6 +284,11 @@ export function findReattachTarget(
       const n = legNormal(leg.direction);
       const side: DuctSide = dot(d, n) > 0 ? 1 : -1;
       const section = parentSpec.legs[piece.legIndex]!;
+      // A round main takes a round branch by a round-main tap; a rectangular wall by its own styles.
+      if (isRoundLeg(section) && !isRoundLeg(spec.legs[0])) continue;
+      const style: DuctTapStyle = isRoundLeg(section)
+        ? (isRoundMainTapStyle(options.style) ? options.style : 'round-conical')
+        : (isRoundMainTapStyle(options.style) ? 'spin-in' : options.style);
       const sheet = parentSheetMm(parentSpec, section, settings);
       const offset = sub(start, leg.start);
       // Distance back along −d from the start to the parent's wall on that side.
@@ -277,7 +298,7 @@ export function findReattachTarget(
       const from = piece.stationStartMm - legStartStation[piece.legIndex]!;
       const to = piece.stationEndMm - legStartStation[piece.legIndex]!;
       if (station < from || station > to) continue;
-      const attachment = tapAttachment(parentSpec, { legIndex: piece.legIndex, stationMm: station, side, style: options.style },
+      const attachment = tapAttachment(parentSpec, { legIndex: piece.legIndex, stationMm: station, side, style },
         spec.legs[0]!, sheet, settings);
       if (!attachment) continue;
       const distance = Math.abs(back);
@@ -295,7 +316,7 @@ export function findReattachTarget(
             ...spec,
             service: parentSpec.service,
             path,
-            start: { kind: 'tap', parentRunId: parent.id, legIndex: piece.legIndex, stationMm: station, side, style: options.style, vcd: options.vcd },
+            start: { kind: 'tap', parentRunId: parent.id, legIndex: piece.legIndex, stationMm: station, side, style, vcd: options.vcd },
           },
         },
       };

@@ -9,6 +9,7 @@ import { ELBOW_RULES, FAN_CONNECTOR, TRANSITION_LIMITS, type DuctVaneType } from
 import type { DuctRoundSeam, DuctRoundVelocityBand } from './ductRoundRules';
 import type { DuctRuleProvenance } from './ductSources';
 import { SUPPORT_RULES, type MetricRod } from './ductSupportTables';
+import { ROUND_MAIN_TAP_STYLES, type DuctRoundMainTapStyle } from './ductTypes';
 
 export type DuctGaugeMode = 'smacna' | 'longest-side';
 export type DuctJointSystem = 'auto' | 'tdc' | 'ductmate' | 'angle-flange';
@@ -119,6 +120,37 @@ export interface DuctDesignSettings {
   autoRoundSizesMm: number[];
   /** Auto layout: a trunk reduces only when its width drops by at least this much (mm). */
   autoReducerStepMm: number;
+  /** Optimiser: exact tree search up to this many terminals per service (above it, a heuristic). */
+  autoExactTerminals: number;
+  /** Optimiser: the round-main take-offs it may use, and whether a round main may end in a wye. */
+  autoRoundMainStyles: DuctRoundMainTapStyle[];
+  autoAllowWye: boolean;
+  /**
+   * Economics (auto duct optimiser), in `econCurrency`. First cost: galvanised
+   * sheet by mass, fabrication and installation by sheet area (fittings at a
+   * multiple), NBR by area, flexible duct per metre at Ø200 (scaled by the
+   * diameter), dampers each at Ø200 (scaled by the girth), hangers each,
+   * joints per metre of perimeter. Energy: the fan's power Q·Δp/η over the
+   * operating hours, brought to present worth over the life. All placeholders
+   * until the supplier's prices are entered.
+   */
+  econCurrency: string;
+  econSheetPerKg: number;
+  econFabricationRectPerM2: number;
+  econFabricationSpiralPerM2: number;
+  econFittingFactor: number;
+  econInstallPerM2: number;
+  econInsulationPerM2: number;
+  econFlexPerM: number;
+  econDamperEach: number;
+  econHangerEach: number;
+  econJointPerM: number;
+  econElectricityPerKWh: number;
+  econHoursPerYear: number;
+  econFanEfficiency: number;
+  econLifeYears: number;
+  econDiscountPercent: number;
+  econEscalationPercent: number;
   showSizeTags: boolean;
   showJointTicks: boolean;
   showPieceMarks: boolean;
@@ -186,6 +218,26 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoGrilleDropPa: 10,
   autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500],
   autoReducerStepMm: 100,
+  autoExactTerminals: 10,
+  autoRoundMainStyles: ['round-conical', 'round-tee', 'round-lateral'],
+  autoAllowWye: true,
+  econCurrency: 'USD',
+  econSheetPerKg: 1.6,
+  econFabricationRectPerM2: 14,
+  econFabricationSpiralPerM2: 6,
+  econFittingFactor: 2.5,
+  econInstallPerM2: 9,
+  econInsulationPerM2: 18,
+  econFlexPerM: 7,
+  econDamperEach: 25,
+  econHangerEach: 14,
+  econJointPerM: 5,
+  econElectricityPerKWh: 0.15,
+  econHoursPerYear: 3000,
+  econFanEfficiency: 0.45,
+  econLifeYears: 15,
+  econDiscountPercent: 6,
+  econEscalationPercent: 2,
   showSizeTags: true,
   showJointTicks: true,
   showPieceMarks: false,
@@ -258,6 +310,26 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   autoGrilleDropPa: practice('Placeholder terminal pressure drop until the supplier\'s data is entered.'),
   autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex).' },
   autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
+  autoExactTerminals: practice('The exact tree search grows as 3^k; above this many terminals a heuristic is used (and labelled).'),
+  autoRoundMainStyles: { sourceId: 'smacna-1995', reference: 'Fig. 3-4 (p.3.11), Fig. 3-5 (p.3.12)', verified: true, note: 'Which of the SMACNA round-main fittings the optimiser may choose; it picks per branch by cost and loss.' },
+  autoAllowWye: { sourceId: 'smacna-1995', reference: 'Fig. 3-5 (p.3.12)', verified: true, note: 'A round main may end in a wye.' },
+  econCurrency: { sourceId: 'project-configuration', verified: false, note: 'Currency of the rates below.' },
+  econSheetPerKg: practice('Placeholder: galvanised coil price per kg; enter the supplier\'s.'),
+  econFabricationRectPerM2: practice('Placeholder: rectangular duct fabrication (brake, seams, flanges) per m² of sheet.'),
+  econFabricationSpiralPerM2: practice('Placeholder: spiral round duct is machine-made, cheaper per m² than rectangular.'),
+  econFittingFactor: practice('Placeholder: a fitting\'s fabrication costs this multiple of a straight\'s per m².'),
+  econInstallPerM2: practice('Placeholder: installation labour per m² of duct surface.'),
+  econInsulationPerM2: practice('Placeholder: NBR sheet, adhesive and labour per m².'),
+  econFlexPerM: practice('Placeholder: insulated flexible duct per metre at Ø200, scaled by the diameter.'),
+  econDamperEach: practice('Placeholder: volume damper at Ø200, scaled by the girth.'),
+  econHangerEach: practice('Placeholder: a hanger (rods, bar or band, anchors, labour).'),
+  econJointPerM: practice('Placeholder: a transverse joint per metre of its perimeter (flanges or sleeve, fasteners, sealant, labour).'),
+  econElectricityPerKWh: practice('Placeholder: electricity tariff.'),
+  econHoursPerYear: practice('Placeholder: fan running hours a year.'),
+  econFanEfficiency: practice('Placeholder: fan and motor efficiency of a small ducted unit.'),
+  econLifeYears: practice('Placeholder: economic life of the ductwork.'),
+  econDiscountPercent: practice('Placeholder: discount rate for the present worth of the energy.'),
+  econEscalationPercent: practice('Placeholder: yearly rise of the energy price.'),
 };
 
 export const DUCT_SUPPORTED_PRESSURE_CLASSES_PA = [125, 250, 500] as const;
@@ -364,6 +436,28 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     autoRoundSizesMm: Array.isArray(raw.autoRoundSizesMm) && raw.autoRoundSizesMm.every((size) => typeof size === 'number' && size >= 50 && size <= 2000)
       ? [...new Set(raw.autoRoundSizesMm as number[])].sort((a, b) => a - b) : [...d.autoRoundSizesMm],
     autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),
+    autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 12)),
+    autoRoundMainStyles: Array.isArray(raw.autoRoundMainStyles)
+      ? [...new Set((raw.autoRoundMainStyles as unknown[]).filter((style): style is DuctRoundMainTapStyle => (ROUND_MAIN_TAP_STYLES as readonly unknown[]).includes(style)))]
+      : [...d.autoRoundMainStyles],
+    autoAllowWye: bool(raw.autoAllowWye, d.autoAllowWye),
+    econCurrency: typeof raw.econCurrency === 'string' && /^[A-Za-z]{3}$/.test(raw.econCurrency) ? raw.econCurrency.toUpperCase() : d.econCurrency,
+    econSheetPerKg: clampNumber(raw.econSheetPerKg, d.econSheetPerKg, 0, 1e4),
+    econFabricationRectPerM2: clampNumber(raw.econFabricationRectPerM2, d.econFabricationRectPerM2, 0, 1e5),
+    econFabricationSpiralPerM2: clampNumber(raw.econFabricationSpiralPerM2, d.econFabricationSpiralPerM2, 0, 1e5),
+    econFittingFactor: clampNumber(raw.econFittingFactor, d.econFittingFactor, 1, 10),
+    econInstallPerM2: clampNumber(raw.econInstallPerM2, d.econInstallPerM2, 0, 1e5),
+    econInsulationPerM2: clampNumber(raw.econInsulationPerM2, d.econInsulationPerM2, 0, 1e5),
+    econFlexPerM: clampNumber(raw.econFlexPerM, d.econFlexPerM, 0, 1e5),
+    econDamperEach: clampNumber(raw.econDamperEach, d.econDamperEach, 0, 1e6),
+    econHangerEach: clampNumber(raw.econHangerEach, d.econHangerEach, 0, 1e6),
+    econJointPerM: clampNumber(raw.econJointPerM, d.econJointPerM, 0, 1e5),
+    econElectricityPerKWh: clampNumber(raw.econElectricityPerKWh, d.econElectricityPerKWh, 0, 1e3),
+    econHoursPerYear: clampNumber(raw.econHoursPerYear, d.econHoursPerYear, 0, 8760),
+    econFanEfficiency: clampNumber(raw.econFanEfficiency, d.econFanEfficiency, 0.05, 0.95),
+    econLifeYears: Math.round(clampNumber(raw.econLifeYears, d.econLifeYears, 1, 60)),
+    econDiscountPercent: clampNumber(raw.econDiscountPercent, d.econDiscountPercent, 0, 50),
+    econEscalationPercent: clampNumber(raw.econEscalationPercent, d.econEscalationPercent, -10, 50),
     showSizeTags: bool(raw.showSizeTags, d.showSizeTags),
     showJointTicks: bool(raw.showJointTicks, d.showJointTicks),
     showPieceMarks: bool(raw.showPieceMarks, d.showPieceMarks),

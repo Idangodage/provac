@@ -28,12 +28,13 @@ import { listAirPorts, type DuctAirPort } from './ductAirPorts';
 import { spigotOrigin, splitOrigin, tapOrigin } from './ductBranchTargets';
 import { legNormal } from './ductBranches';
 import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from './ductDraft';
-import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
+import { energyPricePerPa, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
+import type { DuctFabricationPlan } from './ductFabricationPlanner';
 import { flexCurve } from './ductFlex';
 import { ductRunElementWithSpec } from './ductFollow';
 import { ductBranchesOf } from './ductNetwork';
 import { checkSpigotFit } from './ductPlenum';
-import { systemPressure, type ServicePressure } from './ductPressure';
+import type { ServicePressure } from './ductPressure';
 import { SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';
 import {
@@ -45,6 +46,8 @@ import {
   sizeRectangular,
   sizeRound,
   sizingLimits,
+  velocityMs,
+  velocityPressurePa,
   type FanSpeed,
 } from './ductSizing';
 import { resolveSoffitZ } from './ductSupports';
@@ -60,16 +63,53 @@ import {
   type DuctSplitStyle,
 } from './ductTypes';
 import { findDuctClashes, terminalBoxOf } from './ductVolumes';
+import { designFromRuns, type ServiceDesign } from './optimizer/designTree';
+import { optimiseService, verifyRuns, type ServiceOption } from './optimizer/ductOptimizer';
+import type { ShapeMode } from './optimizer/sizingModel';
+import {
+  ALL_FLEX_REACH_MM,
+  RUNOUT_TARGETS_MM,
+  addRunObstacles,
+  boxToLocal,
+  branchStubMm,
+  cardinal,
+  dirToLocal,
+  dot,
+  flexFit,
+  flexOk,
+  footprintCorners,
+  newBuild,
+  obstaclesFor,
+  roundUp,
+  segmentHitsBox,
+  simplifyCollinear,
+  stretchBlocked,
+  sub,
+  toLocal,
+  toWorld,
+  type AutoDuctIssue,
+  type Build,
+  type Frame,
+  type ServiceCtx,
+  type TerminalCtx,
+} from './ductAutoContext';
+
+export type { AutoDuctIssue, AutoDuctIssueCode } from './ductAutoContext';
 
 export type AutoDuctLayoutChoice = 'auto' | 'plenum' | 'trunk';
-export type AutoDuctLayoutKind = 'plenum' | 'trunk-straight' | 'trunk-l' | 'trunk-split';
+export type AutoDuctLayoutKind = 'plenum' | 'trunk-straight' | 'trunk-l' | 'trunk-split' | 'tree';
 
 export const AUTO_DUCT_LAYOUT_LABELS: Record<AutoDuctLayoutKind, string> = {
   plenum: 'Plenum + runouts',
   'trunk-straight': 'Straight trunk + branches',
   'trunk-l': 'Trunk with one turn + branches',
   'trunk-split': 'Split trunk + branches',
+  tree: 'Optimised tree + branches',
 };
+
+/** Trunk shape: rectangular, round, or the optimiser's choice per stretch (branches are round either way). */
+export type AutoDuctShape = ShapeMode;
+export const AUTO_DUCT_SHAPE_LABELS: Record<AutoDuctShape, string> = { rect: 'Rectangular', round: 'Round', optimal: 'Optimal' };
 
 export interface AutoDuctRequest {
   unitId: string;
@@ -82,26 +122,8 @@ export interface AutoDuctRequest {
   services: { supply: boolean; return: boolean };
   /** Replace the duct already on a collar (the run and its branches). */
   rebuildExisting: boolean;
-}
-
-export type AutoDuctIssueCode =
-  | 'DU_AUTO_NO_DATA'
-  | 'DU_AUTO_NO_PORT'
-  | 'DU_AUTO_OCCUPIED'
-  | 'DU_AUTO_CONNECTED'
-  | 'DU_AUTO_AIRFLOW'
-  | 'DU_AUTO_VOID'
-  | 'DU_AUTO_NO_LAYOUT'
-  | 'DU_AUTO_WALL'
-  | 'DU_AUTO_ESP'
-  | 'DU_TERMINAL_VELOCITY';
-
-export interface AutoDuctIssue {
-  code: AutoDuctIssueCode | string;
-  severity: 'error' | 'warning' | 'info';
-  message: string;
-  service?: DuctService;
-  point?: Point2D;
+  /** Trunk shape (default: the optimiser chooses). */
+  shape?: AutoDuctShape;
 }
 
 export interface AutoDuctTerminalReport {
@@ -117,7 +139,10 @@ export interface AutoDuctTerminalReport {
 
 export interface AutoDuctCandidateReport {
   layout: AutoDuctLayoutKind;
+  label: string;
+  /** Verified first cost (currency). */
   cost: number;
+  espPa: number;
   errors: number;
   warnings: number;
 }
@@ -131,12 +156,46 @@ export interface AutoDuctServiceResult {
   removeIds: string[];
   terminals: AutoDuctTerminalReport[];
   /** Trunk / plenum sections, first to last. */
-  trunkSections: Array<{ widthMm: number; heightMm: number; airflowM3h: number }>;
+  trunkSections: Array<{ widthMm: number; heightMm: number; diameterMm?: number; airflowM3h: number }>;
   plans: DuctFabricationPlan[];
   /** Pressure along each terminal's path; the index path is what the fan must deliver. */
   pressure: ServicePressure | null;
   issues: AutoDuctIssue[];
   candidates: AutoDuctCandidateReport[];
+  /** What the layout was built from, its trunk shape and its verified first cost. */
+  label: string;
+  shape: AutoDuctShape;
+  cost: DuctCostBreakdown | null;
+}
+
+/** One whole design (every service), verified and priced. */
+export interface AutoDuctDesign {
+  key: string;
+  label: string;
+  services: AutoDuctServiceResult[];
+  runs: HvacElement[];
+  /** Verified first cost, by item (currency). */
+  cost: DuctCostBreakdown;
+  firstCost: number;
+  /** Supply + return index paths (Pa). */
+  requiredEspPa: number;
+  /** Present worth of the fan energy the pressure costs, and first cost + that. */
+  energyCost: number;
+  lifeCycleCost: number;
+  errors: number;
+  warnings: number;
+  /** The sizing model's own life-cycle figure for the design (the certificate compares it). */
+  modelLifeCycleCost: number;
+}
+
+export interface AutoDuctCertificate {
+  /** Every tree was searched exactly (router within its terminal limit) and every size set is the catalogue optimum. */
+  exact: boolean;
+  trees: number;
+  realised: number;
+  solveMs: number;
+  /** Verified life-cycle cost of the chosen design over the model's (%), the geometry the realiser settled. */
+  modelGapPct: number | null;
 }
 
 export interface AutoDuctResult {
@@ -153,115 +212,18 @@ export interface AutoDuctResult {
   runs: HvacElement[];
   removeIds: string[];
   issues: AutoDuctIssue[];
-}
-
-// ---- Local frame ----
-
-interface Frame { origin: Point2D; n: Point2D; t: Point2D }
-
-const dot = (a: Point2D, b: Point2D) => a.x * b.x + a.y * b.y;
-const sub = (a: Point2D, b: Point2D): Point2D => ({ x: a.x - b.x, y: a.y - b.y });
-const toLocal = (frame: Frame, point: Point2D): Point2D => {
-  const d = sub(point, frame.origin);
-  return { x: dot(d, frame.n), y: dot(d, frame.t) };
-};
-const toWorld = (frame: Frame, point: Point2D): Point2D => ({
-  x: frame.origin.x + frame.n.x * point.x + frame.t.x * point.y,
-  y: frame.origin.y + frame.n.y * point.x + frame.t.y * point.y,
-});
-const dirToLocal = (frame: Frame, direction: Point2D): Point2D => ({ x: dot(direction, frame.n), y: dot(direction, frame.t) });
-const dirToWorld = (frame: Frame, direction: Point2D): Point2D => ({
-  x: frame.n.x * direction.x + frame.t.x * direction.y,
-  y: frame.n.y * direction.x + frame.t.y * direction.y,
-});
-const cardinal = (direction: Point2D): Point2D => (Math.abs(direction.x) >= Math.abs(direction.y)
-  ? { x: Math.sign(direction.x) || 1, y: 0 } : { x: 0, y: Math.sign(direction.y) || 1 });
-const roundUp = (value: number, step = 50) => Math.ceil(value / step - 1e-9) * step;
-
-function boxToLocal(frame: Frame, corners: readonly Point2D[], padMm: number, id?: string): OrthogonalRouteObstacle {
-  const local = corners.map((corner) => toLocal(frame, corner));
-  return {
-    ...(id ? { id } : {}),
-    minX: Math.min(...local.map((p) => p.x)) - padMm, maxX: Math.max(...local.map((p) => p.x)) + padMm,
-    minY: Math.min(...local.map((p) => p.y)) - padMm, maxY: Math.max(...local.map((p) => p.y)) + padMm,
-  };
-}
-
-function footprintCorners(element: Pick<HvacElement, 'position' | 'width' | 'depth' | 'rotation'>): Point2D[] {
-  const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 };
-  const angle = ((element.rotation ?? 0) * Math.PI) / 180;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => {
-    const x = (sx! * element.width) / 2;
-    const y = (sy! * element.depth) / 2;
-    return { x: centre.x + x * cos - y * sin, y: centre.y + x * sin + y * cos };
-  });
-}
-
-function segmentHitsBox(a: Point2D, b: Point2D, box: OrthogonalRouteObstacle): boolean {
-  // Axis-aligned segments only (the layout is orthogonal in the local frame).
-  if (Math.abs(a.y - b.y) < 1e-6) {
-    return a.y > box.minY && a.y < box.maxY && Math.max(a.x, b.x) > box.minX && Math.min(a.x, b.x) < box.maxX;
-  }
-  return a.x > box.minX && a.x < box.maxX && Math.max(a.y, b.y) > box.minY && Math.min(a.y, b.y) < box.maxY;
-}
-
-// ---- Context ----
-
-interface TerminalCtx {
-  element: HvacElement;
-  spec: DuctTerminalSpec;
-  port: DuctAirPort;
-  /** Lip and outward normal in the local frame. */
-  lip: Point2D;
-  normal: Point2D;
-  airflowM3h: number;
-  fixed: boolean;
-  neck: number;
-  branch: number;
-}
-
-interface ServiceCtx {
-  service: DuctService;
-  unitId: string;
-  frame: Frame;
-  port: DuctAirPort;
-  bottomZ: number;
-  terminals: TerminalCtx[];
-  airflowM3h: number;
-  baseScene: HvacElement[];
-  settings: DuctDesignSettings;
-  /** Obstacles in the local frame, unpadded; routes pad them by their own half width. */
-  obstacles: Array<OrthogonalRouteObstacle & { zMin: number; zMax: number }>;
-  maxHeightMm: number;
-  construction: DuctDesignSettings['defaultConstruction'];
-  ids: () => string;
-}
-
-/** The candidate under construction: its own trunk and branches become obstacles for the branches routed after them. */
-interface Build {
-  extra: Array<OrthogonalRouteObstacle & { zMin: number; zMax: number }>;
-  notes: AutoDuctIssue[];
-}
-
-function newBuild(): Build {
-  return { extra: [], notes: [] };
-}
-
-/** A run's legs as boxes in the local frame (half its width either side). */
-function addRunObstacles(ctx: ServiceCtx, build: Build, run: HvacElement): void {
-  const spec = readDuctRunSpec(run);
-  if (!spec) return;
-  spec.legs.forEach((leg, index) => {
-    const a = spec.path[index]!;
-    const b = spec.path[index + 1]!;
-    const half = (leg.diameterMm ?? leg.widthMm) / 2 + spec.insulationThicknessMm;
-    build.extra.push({
-      ...boxToLocal(ctx.frame, [{ x: a.x, y: a.y }, { x: b.x, y: b.y }], half, run.id),
-      zMin: Math.min(a.z, b.z), zMax: Math.max(a.z, b.z) + (leg.diameterMm ?? leg.heightMm),
-    });
-  });
+  /** Every verified design, the cost–pressure frontier's picks and the one shown. */
+  designs: AutoDuctDesign[];
+  picks: { cheapest: number; lifeCycle: number; quietest: number } | null;
+  selected: number;
+  /** Currency per pascal of fan pressure (present worth of the energy). */
+  pricePerPa: number;
+  currency: string;
+  certificate: AutoDuctCertificate | null;
+  /** Issues that hold whichever design is shown. */
+  baseIssues: AutoDuctIssue[];
+  /** Services with nothing to optimise (no collar, occupied, …), shown with every design. */
+  staticServices: AutoDuctServiceResult[];
 }
 
 interface Candidate {
@@ -278,67 +240,11 @@ interface Candidate {
 
 // ---- Branches (shared by every layout) ----
 
-/** Collar + damper at the start of a round branch (spin-in). */
-function branchStubMm(settings: DuctDesignSettings): number {
-  return settings.tapCollarMm + settings.vcdLengthMm;
-}
-
-/** How far a flexible runout may reach from the collar stub before rigid duct is needed (mm, practice). */
-const ALL_FLEX_REACH_MM = 1300;
-/** Where the rigid branch stops short of the terminal spigot: the runout's length (mm, practice). */
-const RUNOUT_TARGETS_MM = [800, 600, 1000];
-
-/**
- * The flexible runout from a collar stub (leaving along `out`, local) into the
- * terminal's spigot, curved as the planner will draw it: its tightest bend and length.
- */
-function flexFit(ctx: ServiceCtx, stubEnd: Point2D, out: Point2D, stubBottomZ: number, terminal: TerminalCtx): { radiusMm: number; lengthMm: number } {
-  const start = toWorld(ctx.frame, stubEnd);
-  const direction = dirToWorld(ctx.frame, out);
-  const curve = flexCurve(
-    { ...start, z: stubBottomZ + terminal.neck / 2 }, { ...direction, z: 0 },
-    terminal.port.lip, { x: -terminal.port.normal.x, y: -terminal.port.normal.y, z: 0 },
-  );
-  return { radiusMm: curve.minBendRadiusMm, lengthMm: curve.lengthMm };
-}
-
-function flexOk(fit: { radiusMm: number; lengthMm: number }, terminal: TerminalCtx, settings: DuctDesignSettings): boolean {
-  return fit.radiusMm >= terminal.neck * 1.05 && fit.lengthMm <= settings.flexMaxLengthMm;
-}
-
-function obstaclesFor(ctx: ServiceCtx, padMm: number, zMin: number, zMax: number, exclude: ReadonlySet<string> = new Set(), build?: Build): OrthogonalRouteObstacle[] {
-  return [...ctx.obstacles, ...(build?.extra ?? [])]
-    .filter((box) => !(box.id && exclude.has(box.id)) && box.zMax > zMin && box.zMin < zMax)
-    .map((box) => ({ ...(box.id ? { id: box.id } : {}), minX: box.minX - padMm, minY: box.minY - padMm, maxX: box.maxX + padMm, maxY: box.maxY + padMm }));
-}
-
 /**
  * The branch's points after its origin and its leg sections: all flex when the
  * terminal is close, else rigid round routed round the obstacles to a point a
  * runout's length in front of the spigot, then the flexible runout.
  */
-/** Whether a straight stretch of round duct (local frame, at `bottomZ`) runs into an obstacle. */
-function stretchBlocked(ctx: ServiceCtx, a: Point2D, b: Point2D, diameterMm: number, bottomZ: number, exclude: ReadonlySet<string>): boolean {
-  const boxes = obstaclesFor(ctx, diameterMm / 2 + 50, bottomZ, bottomZ + diameterMm, exclude);
-  return boxes.some((box) => segmentHitsBox(a, b, box));
-}
-
-/** Drops vertices where the path goes straight on. */
-function simplifyCollinear(points: Point2D[]): Point2D[] {
-  const out: Point2D[] = [];
-  for (const point of points) {
-    if (out.length && Math.hypot(point.x - out[out.length - 1]!.x, point.y - out[out.length - 1]!.y) < 1) continue;
-    if (out.length >= 2) {
-      const a = out[out.length - 2]!;
-      const b = out[out.length - 1]!;
-      const cross = (b.x - a.x) * (point.y - b.y) - (b.y - a.y) * (point.x - b.x);
-      if (Math.abs(cross) < 1e-3 && (b.x - a.x) * (point.x - b.x) + (b.y - a.y) * (point.y - b.y) > 0) out.pop();
-    }
-    out.push(point);
-  }
-  return out;
-}
-
 function branchPath(
   ctx: ServiceCtx,
   origin: Extract<DuctDraftOrigin, { point: Point2D; direction: Point2D; bottomZ: number }>,
@@ -898,26 +804,7 @@ interface Scored {
 }
 
 function score(ctx: ServiceCtx, candidate: Candidate): Scored {
-  const scene = [...ctx.baseScene, ...candidate.runs];
-  const plans = candidate.runs.map((run) => planDuctRunSpec(run.id, readDuctRunSpec(run)!, { settings: ctx.settings, scene }));
-  const issues: AutoDuctIssue[] = [...candidate.notes];
-  let errors = 0;
-  let warnings = 0;
-  for (const plan of plans) {
-    for (const issue of plan.issues) {
-      if (issue.severity === 'error') errors += 1;
-      else if (issue.severity === 'warning') warnings += 1;
-      else continue;
-      issues.push({ code: issue.code, severity: issue.severity, message: issue.message, service: ctx.service, ...(issue.point ? { point: { x: issue.point.x, y: issue.point.y } } : {}) });
-    }
-  }
-  const newIds = new Set(candidate.runs.map((run) => run.id));
-  for (const clash of findDuctClashes(scene, ctx.settings, listNetworkPipeLanes(scene))) {
-    if (!newIds.has(clash.ductId) && !newIds.has(clash.otherId)) continue;
-    // A branch meeting its own trunk or terminal is by design; anything else is a clash.
-    errors += 1;
-    issues.push({ code: 'DU_CLASH', severity: 'error', message: `${clash.mark} clashes with ${clash.kind === 'pipe' ? `a ${clash.service ?? 'pipe'}` : clash.kind === 'terminal' ? 'an air terminal' : 'another duct'}.`, service: ctx.service, point: { x: clash.point.x, y: clash.point.y } });
-  }
+  const { plans, issues, errors, warnings, pressure } = verifyRuns(ctx, candidate.runs, candidate.notes);
   let sheet = 0;
   let fittings = 0;
   let flex = 0;
@@ -931,7 +818,6 @@ function score(ctx: ServiceCtx, candidate: Candidate): Scored {
   if (candidate.obstacleHits) {
     issues.push({ code: 'DU_CLASH', severity: 'error', service: ctx.service, message: `The trunk crosses ${candidate.obstacleHits} piece${candidate.obstacleHits === 1 ? '' : 's'} of equipment at duct level.` });
   }
-  const pressure = systemPressure(plans, new Map(ctx.terminals.map((terminal) => [terminal.element.id, terminal.airflowM3h])), ctx.settings, ctx.service);
   // A pascal at the index terminal is worth about 50 mm of duct: the fan pays for it all the time.
   const cost = sheet + 0.6 * fittings + 0.8 * flex + 0.05 * pressure.indexPa + 100 * (errors + candidate.obstacleHits) + 2 * warnings + (candidate.penalty ?? 0);
   return { candidate, plans, pressure, errors: errors + candidate.obstacleHits, warnings, cost, issues };
@@ -945,14 +831,106 @@ function removalTree(runId: string, scene: readonly HvacElement[]): string[] {
   return out;
 }
 
+/** Extra fan pressure of a shortened fan-outlet straight (system effect; practice ≈ half the outlet velocity pressure). */
+function fanOutletSystemEffectPa(port: DuctAirPort, airflowM3h: number): number {
+  return 0.5 * velocityPressurePa(velocityMs({ widthMm: port.widthMm, heightMm: port.heightMm }, airflowM3h));
+}
+
+interface ServiceWork {
+  ctx: ServiceCtx;
+  base: AutoDuctServiceResult;
+  options: ServiceOption[];
+  terminals: TerminalCtx[];
+}
+
+/** Per terminal: its airflow, neck, the branch size the chosen design gave it and its run. */
+function terminalReports(work: ServiceWork, option: ServiceOption): AutoDuctTerminalReport[] {
+  const plans = new Map(option.plans.map((plan) => [plan.elementId, plan]));
+  return work.terminals.map((terminal) => {
+    const runId = option.terminalRuns.get(terminal.element.id) ?? null;
+    const first = runId ? plans.get(runId)?.spec.legs[0] : undefined;
+    return {
+      terminalId: terminal.element.id, label: terminal.element.label || terminal.spec.kind, airflowM3h: Math.round(terminal.airflowM3h),
+      fixed: terminal.fixed, neckMm: terminal.neck, neckVelocityMs: Math.round(neckVelocityMs(terminal.spec, terminal.airflowM3h) * 100) / 100,
+      branchDiameterMm: first ? Math.round(first.diameterMm ?? first.widthMm) : terminal.branch, runId,
+    };
+  });
+}
+
+function serviceResultFor(work: ServiceWork, option: ServiceOption): AutoDuctServiceResult {
+  return {
+    ...work.base,
+    layout: layoutKindOf(option.label),
+    label: option.label,
+    shape: option.shape,
+    runs: option.runs,
+    plans: option.plans,
+    pressure: option.pressure,
+    trunkSections: option.trunkSections,
+    cost: option.cost,
+    issues: [...work.base.issues, ...option.issues],
+    terminals: terminalReports(work, option),
+    candidates: work.options.map((candidate) => ({
+      layout: layoutKindOf(candidate.label), label: candidate.label, cost: Math.round(candidate.cost.total),
+      espPa: Math.round(candidate.espPa * 10) / 10, errors: candidate.errors, warnings: candidate.warnings,
+    })),
+  };
+}
+
+function layoutKindOf(label: string): AutoDuctLayoutKind {
+  const found = (Object.entries(AUTO_DUCT_LAYOUT_LABELS) as Array<[AutoDuctLayoutKind, string]>).find(([, text]) => label.startsWith(text));
+  return found ? found[0] : 'tree';
+}
+
+/** The options worth combining: clean ones (else the least bad), non-dominated on first cost and pressure, best life-cycle first. */
+function shortlist(options: readonly ServiceOption[], pricePerPa: number, limit: number): ServiceOption[] {
+  const fewest = Math.min(...options.map((option) => option.errors));
+  const pool = options.filter((option) => option.errors === fewest);
+  const front = pool.filter((option) => !pool.some((other) => other !== option
+    && other.cost.total <= option.cost.total + 1e-6 && other.espPa <= option.espPa + 1e-6
+    && (other.cost.total < option.cost.total - 1e-6 || other.espPa < option.espPa - 1e-6)));
+  const unique = front.filter((option, index) => front.findIndex((other) => Math.abs(other.cost.total - option.cost.total) < 0.5 && Math.abs(other.espPa - option.espPa) < 0.05) === index);
+  return unique.sort((a, b) => (a.cost.total + pricePerPa * a.espPa) - (b.cost.total + pricePerPa * b.espPa)).slice(0, limit);
+}
+
+function addCosts(parts: readonly DuctCostBreakdown[]): DuctCostBreakdown {
+  const out: DuctCostBreakdown = { sheet: 0, fabrication: 0, fittings: 0, install: 0, insulation: 0, flex: 0, dampers: 0, joints: 0, hangers: 0, total: 0 };
+  for (const part of parts) for (const key of Object.keys(out) as Array<keyof DuctCostBreakdown>) out[key] += part[key];
+  return out;
+}
+
+/** The result showing design `index`: its services, runs, pressure and the issues that go with them. */
+export function selectAutoDuctDesign(result: AutoDuctResult, index: number): AutoDuctResult {
+  const design = result.designs[index];
+  if (!design) return result;
+  const issues = [...result.baseIssues];
+  if (result.maxEspPa !== null && design.requiredEspPa > result.maxEspPa) {
+    issues.push({
+      code: 'DU_AUTO_ESP', severity: 'warning',
+      message: `The ducts need about ${Math.round(design.requiredEspPa)} Pa of external static pressure; ${result.unitLabel} gives at most ${result.maxEspPa} Pa. Enlarge the ducts or shorten the index run.`,
+    });
+  }
+  return {
+    ...result,
+    selected: index,
+    services: [...design.services, ...result.staticServices],
+    runs: design.runs,
+    requiredEspPa: design.requiredEspPa,
+    issues,
+  };
+}
+
 export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings): AutoDuctResult {
+  const started = Date.now();
   const unit = scene.find((element) => element.id === request.unitId);
   let counter = 0;
   const stamp = Date.now().toString(36);
   const ids = () => `duct-auto-${stamp}-${(counter += 1)}`;
+  const shape: AutoDuctShape = request.shape ?? 'optimal';
   const result: AutoDuctResult = {
     unitId: request.unitId, unitLabel: unit?.label || unit?.modelLabel || 'Unit', fanSpeed: request.fanSpeed,
     airflowM3h: null, airflowSource: null, maxEspPa: null, requiredEspPa: null, services: [], runs: [], removeIds: [], issues: [],
+    designs: [], picks: null, selected: 0, pricePerPa: 0, currency: settings.econCurrency, certificate: null, baseIssues: [], staticServices: [],
   };
   if (!unit) {
     result.issues.push({ code: 'DU_AUTO_NO_PORT', severity: 'error', message: 'The unit is not in the drawing.' });
@@ -971,10 +949,16 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
     result.issues.push({ code: 'DU_AUTO_NO_DATA', severity: 'error', message: `${result.unitLabel} has no airflow data: enter its airflow to size the ducts.` });
     return result;
   }
+  result.pricePerPa = energyPricePerPa(airflow, settings);
   const ports = listAirPorts(scene).filter((port) => port.unitId === unit.id);
   const terminalPorts = listTerminalPorts(scene);
   const requested = scene.filter((element) => request.terminalIds.includes(element.id) && isDuctTerminalElement(element));
   let removed = new Set<string>();
+  const work: ServiceWork[] = [];
+  /** Runs the services optimised so far will most likely keep (their best life-cycle option): the next service avoids them. */
+  const context: HvacElement[] = [];
+  let trees = 0;
+  let realised = 0;
 
   for (const service of ['supply', 'return'] as const) {
     if (!request.services[service]) continue;
@@ -982,11 +966,12 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
     if (!group.length) continue;
     const serviceResult: AutoDuctServiceResult = {
       service, layout: null, airflowM3h: airflow, runs: [], removeIds: [], terminals: [], trunkSections: [], plans: [], pressure: null, issues: [], candidates: [],
+      label: '', shape, cost: null,
     };
-    result.services.push(serviceResult);
     const port = ports.find((candidate) => candidate.kind === service);
     if (!port) {
       serviceResult.issues.push({ code: 'DU_AUTO_NO_PORT', severity: 'error', service, message: `${result.unitLabel} has no ${service} collar.` });
+      result.staticServices.push(serviceResult);
       continue;
     }
     // The duct already on this collar: replaced (with its branches) or left alone.
@@ -997,12 +982,13 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
     });
     if (existing.length && !request.rebuildExisting) {
       serviceResult.issues.push({ code: 'DU_AUTO_OCCUPIED', severity: 'error', service, message: `The ${service} collar already has a duct; tick Rebuild existing to replace it.` });
+      result.staticServices.push(serviceResult);
       continue;
     }
     const removeIds = existing.flatMap((element) => removalTree(element.id, scene));
     serviceResult.removeIds = removeIds;
     removed = new Set([...removed, ...removeIds]);
-    const baseScene = [...scene.filter((element) => !removed.has(element.id)), ...result.runs];
+    const baseScene = [...scene.filter((element) => !removed.has(element.id)), ...context];
     // Terminals another duct already serves stay as they are.
     const servedBy = new Map<string, string>();
     for (const element of baseScene) {
@@ -1014,7 +1000,10 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       serviceResult.issues.push({ code: 'DU_AUTO_CONNECTED', severity: 'warning', service, message: `${element.label || 'A terminal'} is already connected to another duct; it is left as it is.` });
       return false;
     });
-    if (!free.length) continue;
+    if (!free.length) {
+      result.staticServices.push(serviceResult);
+      continue;
+    }
     const frame: Frame = { origin: { x: port.lip.x, y: port.lip.y }, n: port.normal, t: legNormal(port.normal) };
     const shares = shareAirflow(airflow, free.map((element) => ({ id: element.id, spec: readDuctTerminalSpec(element)! })));
     const total = shares.reduce((sum, share) => sum + share.airflowM3h, 0);
@@ -1085,6 +1074,7 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       service, unitId: unit.id, frame, port, bottomZ, terminals, airflowM3h: total, baseScene, settings, obstacles, maxHeightMm,
       construction: settings.defaultConstruction, ids,
     };
+    // Candidate trees: the v1 layouts (plenum, trunks), then sized exactly and verified.
     const candidates: Candidate[] = [];
     if (request.layout !== 'trunk') {
       const plenum = plenumCandidate(ctx);
@@ -1095,37 +1085,95 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       serviceResult.issues.push({ code: 'DU_AUTO_NO_LAYOUT', severity: 'error', service, message: request.layout === 'plenum'
         ? 'No plenum layout fits these terminals (at most four, two per face, within about 4 m); try Trunk.'
         : 'No duct layout could be built for these terminals.' });
+      result.staticServices.push(serviceResult);
       continue;
     }
-    const scored = candidates.map((candidate) => score(ctx, candidate)).sort((a, b) => a.cost - b.cost);
-    serviceResult.candidates = scored.map((entry) => ({ layout: entry.candidate.layout, cost: Math.round(entry.cost * 100) / 100, errors: entry.errors, warnings: entry.warnings }));
-    const best = scored[0]!;
-    serviceResult.layout = best.candidate.layout;
-    serviceResult.runs = best.candidate.runs;
-    serviceResult.plans = best.plans;
-    serviceResult.pressure = best.pressure;
-    serviceResult.trunkSections = best.candidate.trunkSections;
-    serviceResult.issues.push(...best.issues);
-    serviceResult.terminals = terminals.map((terminal) => ({
-      terminalId: terminal.element.id, label: terminal.element.label || terminal.spec.kind, airflowM3h: Math.round(terminal.airflowM3h),
-      fixed: terminal.fixed, neckMm: terminal.neck, neckVelocityMs: Math.round(neckVelocityMs(terminal.spec, terminal.airflowM3h) * 100) / 100,
-      branchDiameterMm: terminal.branch, runId: best.candidate.terminalRuns.get(terminal.element.id) ?? null,
-    }));
-    result.runs.push(...best.candidate.runs);
+    const seeds: ServiceDesign[] = [];
+    for (const candidate of candidates) {
+      const design = designFromRuns(ctx, candidate.runs, AUTO_DUCT_LAYOUT_LABELS[candidate.layout], exitLengthMm(port), 0, candidate.notes);
+      if (!design) continue;
+      design.kind = candidate.layout;
+      if (candidate.penalty) design.pressurePenaltyPa = fanOutletSystemEffectPa(port, total);
+      seeds.push(design);
+    }
+    const optimised = optimiseService(ctx, seeds, shape, airflow, result.maxEspPa ?? 150);
+    trees += optimised.frontiers;
+    realised += optimised.realised;
+    let options = optimised.options;
+    {
+      // The reference: the v1 layout as it sizes it (equal friction). A verified option like any other,
+      // so the optimiser's choice is never worse than it.
+      const best = candidates.map((candidate) => score(ctx, candidate)).sort((a, b) => a.cost - b.cost)[0]!;
+      const verified = verifyRuns(ctx, best.candidate.runs, best.candidate.notes);
+      options = [...options, {
+        key: `v1:${best.candidate.layout}`, label: `${AUTO_DUCT_LAYOUT_LABELS[best.candidate.layout]} (equal friction)`, source: 'v1', shape: 'rect',
+        runs: best.candidate.runs, plans: verified.plans, terminalRuns: best.candidate.terminalRuns, trunkSections: best.candidate.trunkSections,
+        pressure: verified.pressure, espPa: verified.pressure.indexPa,
+        cost: priceDuctPlans(verified.plans, settings, verified.hangers, verified.straps), errors: verified.errors, warnings: verified.warnings, issues: verified.issues,
+        modelCost: 0, modelPressurePa: verified.pressure.indexPa, exact: false,
+      }];
+    }
+    work.push({ ctx, base: serviceResult, options, terminals });
+    const bestOption = shortlist(options, result.pricePerPa, 1)[0];
+    if (bestOption) context.push(...bestOption.runs);
     result.removeIds.push(...removeIds);
   }
-  if (!result.services.length) {
+
+  if (!work.length && !result.staticServices.length) {
     result.issues.push({ code: 'DU_AUTO_NO_LAYOUT', severity: 'error', message: 'Select the diffusers and grilles this unit serves (supply to diffusers, return to grilles).' });
   }
-  const paths = result.services.map((service) => service.pressure).filter((pressure): pressure is ServicePressure => pressure !== null);
-  if (paths.length) {
-    result.requiredEspPa = paths.reduce((total, pressure) => total + pressure.indexPa, 0);
-    if (result.maxEspPa !== null && result.requiredEspPa > result.maxEspPa) {
-      result.issues.push({
-        code: 'DU_AUTO_ESP', severity: 'warning',
-        message: `The ducts need about ${Math.round(result.requiredEspPa)} Pa of external static pressure; ${result.unitLabel} gives at most ${result.maxEspPa} Pa. Enlarge the ducts or shorten the index run.`,
-      });
+  result.baseIssues = [...result.issues];
+  // Whole designs: every combination of the services' shortlisted options, re-checked for clashes between them.
+  let combos: ServiceOption[][] = [[]];
+  for (const entry of work) combos = combos.flatMap((prefix) => shortlist(entry.options, result.pricePerPa, 5).map((option) => [...prefix, option]));
+  if (!work.length) combos = [];
+  const contextIds = new Set(context.map((run) => run.id));
+  result.designs = combos.map((parts, index) => {
+    const services = parts.map((option, k) => serviceResultFor(work[k]!, option));
+    const runs = parts.flatMap((option) => option.runs);
+    let errors = parts.reduce((sum, option) => sum + option.errors, 0);
+    // A later service was checked against the earlier one's best option; another pairing is checked here.
+    if (parts.length > 1 && parts.slice(0, -1).some((option) => option.runs.some((run) => !contextIds.has(run.id)))) {
+      const ids = parts.map((option) => new Set(option.runs.map((run) => run.id)));
+      const all = [...scene.filter((element) => !removed.has(element.id)), ...runs];
+      for (const clash of findDuctClashes(all, settings, listNetworkPipeLanes(all))) {
+        const a = ids.findIndex((set) => set.has(clash.ductId));
+        const b = ids.findIndex((set) => set.has(clash.otherId));
+        if (a >= 0 && b >= 0 && a !== b) errors += 1;
+      }
     }
+    const cost = addCosts(parts.map((option) => option.cost));
+    const requiredEspPa = parts.reduce((sum, option) => sum + option.espPa, 0);
+    const energyCost = result.pricePerPa * requiredEspPa;
+    const modelLifeCycleCost = parts.reduce((sum, option) => sum + option.modelCost + result.pricePerPa * option.modelPressurePa, 0);
+    return {
+      key: `d${index}`, label: parts.map((option) => option.label).join(' · '), services, runs, cost, firstCost: cost.total,
+      requiredEspPa, energyCost, lifeCycleCost: cost.total + energyCost, errors, warnings: parts.reduce((sum, option) => sum + option.warnings, 0),
+      modelLifeCycleCost,
+    };
+  });
+  if (result.designs.length) {
+    const fewest = Math.min(...result.designs.map((design) => design.errors));
+    const clean = result.designs.map((design, index) => ({ design, index })).filter(({ design }) => design.errors === fewest);
+    const withinFan = clean.filter(({ design }) => result.maxEspPa === null || design.requiredEspPa <= result.maxEspPa + 1e-6);
+    const pool = withinFan.length ? withinFan : clean;
+    const by = (value: (design: AutoDuctDesign) => number, tie: (design: AutoDuctDesign) => number) => pool.reduce((best, entry) => {
+      const a = value(entry.design);
+      const b = value(best.design);
+      return a < b - 1e-9 || (Math.abs(a - b) <= 1e-9 && tie(entry.design) < tie(best.design)) ? entry : best;
+    }).index;
+    result.picks = {
+      cheapest: by((design) => design.firstCost, (design) => design.requiredEspPa),
+      lifeCycle: by((design) => design.lifeCycleCost, (design) => design.firstCost),
+      quietest: by((design) => design.requiredEspPa, (design) => design.firstCost),
+    };
+    const chosen = result.designs[result.picks.lifeCycle]!;
+    result.certificate = {
+      exact: false, trees, realised, solveMs: Date.now() - started,
+      modelGapPct: chosen.modelLifeCycleCost > 0 ? Math.round(((chosen.lifeCycleCost - chosen.modelLifeCycleCost) / chosen.modelLifeCycleCost) * 1000) / 10 : null,
+    };
+    return selectAutoDuctDesign(result, result.picks.lifeCycle);
   }
+  result.services = [...result.staticServices];
   return result;
 }

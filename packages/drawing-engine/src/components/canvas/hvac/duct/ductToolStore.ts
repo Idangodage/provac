@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 
 import type { DuctAngleMode } from './ductDraft';
-import { isRoundLeg, type DuctLeg, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
+import { isRoundLeg, type DuctLeg, type DuctRoundMainTapStyle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
 
 export interface DuctToolState {
   angleMode: DuctAngleMode;
@@ -24,6 +24,8 @@ export interface DuctToolState {
   branchShape: 'rect' | 'round';
   branchDiameterMm: number;
   roundTapStyle: Extract<DuctTapStyle, 'spin-in' | 'conical'>;
+  /** A branch off a round main: conical tap, 90° tap or 45° lateral (SMACNA Fig. 3-4 / 3-5). */
+  roundMainTapStyle: DuctRoundMainTapStyle;
   /** Volume control damper at the start of each branch. */
   vcd: boolean;
   /** A run started in free space: its clear-bottom level (mm) and service. */
@@ -44,7 +46,7 @@ export interface DuctToolState {
   setAngleMode: (mode: DuctAngleMode) => void;
   setSize: (update: Partial<Pick<DuctToolState, 'sizeMode' | 'widthMm' | 'heightMm'>>) => void;
   setBranchSize: (update: Partial<Pick<DuctToolState, 'branchWidthMm' | 'branchHeightMm'>>) => void;
-  setBranchOptions: (update: Partial<Pick<DuctToolState, 'tapStyle' | 'splitStyle' | 'vcd' | 'freeBottomMm' | 'freeService' | 'branchShape' | 'branchDiameterMm' | 'roundTapStyle' | 'terminalFlex'>>) => void;
+  setBranchOptions: (update: Partial<Pick<DuctToolState, 'tapStyle' | 'splitStyle' | 'vcd' | 'freeBottomMm' | 'freeService' | 'branchShape' | 'branchDiameterMm' | 'roundTapStyle' | 'roundMainTapStyle' | 'terminalFlex'>>) => void;
   setEndKind: (kind: DuctToolState['endKind']) => void;
   setLevel: (levelMm: number | null) => void;
   setAnchorLevel: (levelMm: number | null) => void;
@@ -65,6 +67,7 @@ export const useDuctToolStore = create<DuctToolState>((set) => ({
   branchShape: 'rect',
   branchDiameterMm: 200,
   roundTapStyle: 'spin-in',
+  roundMainTapStyle: 'round-conical',
   vcd: true,
   freeBottomMm: 2700,
   freeService: 'supply',
@@ -90,8 +93,13 @@ export const useDuctToolStore = create<DuctToolState>((set) => ({
   setPlenumSize: (plenumSize) => set({ plenumSize }),
 }));
 
-/** The take-off style for a branch whose first leg is `leg` (a round branch needs a round collar). */
-export function tapStyleFor(leg: DuctLeg | undefined): DuctTapStyle {
+/**
+ * The take-off style for a branch whose first leg is `leg` (a round branch
+ * needs a round collar), off a parent leg `parent` (a round main takes a
+ * round-main tap).
+ */
+export function tapStyleFor(leg: DuctLeg | undefined, parent?: DuctLeg): DuctTapStyle {
   const tool = useDuctToolStore.getState();
+  if (parent && isRoundLeg(parent)) return tool.roundMainTapStyle;
   return isRoundLeg(leg) ? tool.roundTapStyle : tool.tapStyle;
 }

@@ -302,7 +302,7 @@ export function constrainDuctLeg(
   anchor: Point2D,
   cursor: Point2D,
   previousDirection: Point2D,
-  options: { first: boolean; mode: DuctAngleMode; stepMm?: number; free?: boolean },
+  options: { first: boolean; mode: DuctAngleMode; stepMm?: number; free?: boolean; returnTurns?: boolean },
 ): ConstrainedLeg {
   const step = options.stepMm ?? 10;
   const base = unit(previousDirection);
@@ -311,7 +311,8 @@ export function constrainDuctLeg(
     ? [0, 90, 180, 270, ...(options.mode === '45' ? [45, 135, 225, 315] : [])].map((angle) => rotate({ x: 1, y: 0 }, angle))
     : options.first
       ? [base]
-      : [0, 90, -90, ...(options.mode === '45' ? [45, -45] : [])].map((angle) => rotate(base, angle));
+      // After a 45° lateral or wye leg the run may turn 45° back square in any mode.
+      : [0, 90, -90, ...(options.mode === '45' || options.returnTurns ? [45, -45] : [])].map((angle) => rotate(base, angle));
   const offset = { x: cursor.x - anchor.x, y: cursor.y - anchor.y };
   let best = candidates[0]!;
   let bestProjection = -Infinity;

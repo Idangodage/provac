@@ -11,8 +11,18 @@ import type { Point2D } from '../../../../types';
 
 import { resolveVaneType, shoeLeadInMm, vaneCountOnDiagonal, vaneSectionsFor, type DuctVaneSpec } from './ductFittingRules';
 import { add, ductLegs, radiusElbowGeometry, scale, type DuctLegGeometry, type ElbowPlanGeometry } from './ductGeometry';
+import { roundMainLeavingDirection, roundMainTapGeometry, wyeLegLengthMm } from './ductRoundFittings';
 import type { DuctDesignSettings } from './ductSettings';
-import { isRoundTapStyle, type DuctLeg, type DuctRunSpec, type DuctSide, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
+import {
+  isRoundLeg,
+  isRoundMainTapStyle,
+  isRoundTapStyle,
+  type DuctLeg,
+  type DuctRunSpec,
+  type DuctSide,
+  type DuctSplitStyle,
+  type DuctTapStyle,
+} from './ductTypes';
 
 /** Shoe (45° entry) lead-in: L = W/4, 102 mm minimum (SMACNA Fig. 2-6). */
 export { shoeLeadInMm };
@@ -56,6 +66,24 @@ export function tapAttachment(
   const n = legNormal(leg.direction);
   const along = add(leg.start, scale(leg.direction, tap.stationMm));
   const wallPoint = add(along, scale(n, tap.side * (section.widthMm / 2 + parentSheetMm)));
+  if (isRoundLeg(section)) {
+    // A round main (SMACNA Fig. 3-4 / 3-5): the branch is centred on the main's axis. A style
+    // meant for a rectangular wall is drawn as a 90° tap; the planner reports the mismatch.
+    const style = isRoundMainTapStyle(tap.style) ? tap.style : 'round-tee';
+    const d = branch.diameterMm ?? branch.widthMm;
+    const geometry = roundMainTapGeometry(style, d, settings);
+    return {
+      parentLeg: leg, parentSection: section, wallPoint,
+      direction: roundMainLeavingDirection(geometry.angleDeg, scale(n, tap.side), leg.direction),
+      parentDirection: leg.direction,
+      bottomZ: leg.start.z + (section.heightMm - branch.heightMm) / 2,
+      leadInMm: 0,
+      collarLengthMm: geometry.collarLengthMm,
+      openingDiameterMm: geometry.openingMm,
+      openingFromMm: tap.stationMm - geometry.windowHalfMm,
+      openingToMm: tap.stationMm + geometry.windowHalfMm,
+    };
+  }
   const leadInMm = tap.style === 'shoe-45' ? shoeLeadInMm(branch.widthMm) : 0;
   if (isRoundTapStyle(tap.style)) {
     // Round collar off the rectangular wall (SMACNA Fig. 2-6): spin-in at the branch
@@ -138,6 +166,15 @@ function branchGeometry(
   const n = legNormal(d);
   const out = scale(n, side);
   const neck = settings.elbowNeckMm;
+  if (style === 'wye') {
+    // Round wye (SMACNA Fig. 3-5): each leg leaves at 45°, 3A/2 to its outlet, centred on the main's axis.
+    const direction = roundMainLeavingDirection(45, out, d);
+    const point = add(origin, scale(direction, wyeLegLengthMm(end.section.widthMm)));
+    return {
+      side, section: branch, elbow: null, vaneCount: 0, vanes: null,
+      outlet: { side, point, direction, bottomZ: end.leg.end.z + (end.section.heightMm - branch.heightMm) / 2 },
+    };
+  }
   if (style === 'bullhead') {
     const point = add(add(origin, scale(d, neck + branch.widthMm / 2)), scale(n, side * (end.section.widthMm / 2 + parentSheetMm)));
     const spec = resolveVaneType(settings.vaneType, branch.heightMm);
@@ -180,6 +217,10 @@ export function splitFitting(
     .map((side) => branches.find((branch) => branch.side === side))
     .filter((branch): branch is { side: DuctSide; section: DuctLeg } => Boolean(branch));
   const widest = Math.max(0, ...present.map((branch) => branch.section.widthMm));
+  // A wye reaches 3A/2 along each 45° leg: its depth along the main is that leg's run plus half the widest outlet.
+  const depthMm = style === 'wye'
+    ? wyeLegLengthMm(end.section.widthMm) * Math.SQRT1_2 + (widest > 0 ? widest : end.section.widthMm) / 2
+    : settings.elbowNeckMm + (widest > 0 ? widest : end.section.widthMm / 2);
   return {
     style,
     origin: { x: end.leg.end.x, y: end.leg.end.y },
@@ -187,7 +228,7 @@ export function splitFitting(
     normal: legNormal(end.leg.direction),
     parentSection: end.section,
     bottomZ: end.leg.end.z,
-    depthMm: settings.elbowNeckMm + (widest > 0 ? widest : end.section.widthMm / 2),
+    depthMm,
     neckMm: settings.elbowNeckMm,
     branches: present.map((branch) => branchGeometry(style, end, branch.side, branch.section, parentSheetMm, settings)),
     cappedSides: ([1, -1] as const).filter((side) => !present.some((branch) => branch.side === side)),

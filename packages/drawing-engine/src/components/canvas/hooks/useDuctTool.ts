@@ -37,7 +37,8 @@ import type { HvacElementCommand } from "../../../store";
 import type { HvacElement, Point2D } from "../../../types";
 import type { DuctOverlayHandle } from "../hvac/duct/DuctOverlay";
 import { listAirPorts, type DuctAirPort } from "../hvac/duct/ductAirPorts";
-import { clampBranchSection, findBranchTarget, findReattachTarget, spigotOrigin, splitOrigin, tapOrigin, type DuctBranchTarget } from "../hvac/duct/ductBranchTargets";
+import { clampBranchSection, findBranchTarget, findReattachTarget, spigotOrigin, splitOrigin, splitStyleFor, tapOrigin, type DuctBranchTarget } from "../hvac/duct/ductBranchTargets";
+import { roundMainTapGeometry } from "../hvac/duct/ductRoundFittings";
 import {
   buildDuctRunDraft,
   constrainDuctLeg,
@@ -62,6 +63,7 @@ import { tapStyleFor, useDuctToolStore } from "../hvac/duct/ductToolStore";
 import {
   ductParentRunId,
   isDuctElement,
+  isRoundLeg,
   readDuctRunSpec,
   roundLeg,
   type DuctLeg,
@@ -154,11 +156,14 @@ function spigotPathPoint(port: DuctAirPort): DuctDraftPoint & { z: number } {
  * The rigid stub an all-runout branch keeps: its collar and damper (the flex's
  * draw band goes on the end), or the flexible connector at a unit collar.
  */
-function runoutStubMm(start: DuctToolStart, settings: DuctDesignSettings): number {
+function runoutStubMm(start: DuctToolStart, settings: DuctDesignSettings, parentSection?: DuctLeg): number {
   const tool = useDuctToolStore.getState();
   const damper = tool.vcd ? settings.vcdLengthMm : 0;
   if (start.kind === "port") return settings.connectorFabricMm + 2 * settings.connectorMetalMm + 50;
   if (start.kind === "split") return damper + 100;
+  if (start.kind === "tap" && parentSection && isRoundLeg(parentSection)) {
+    return roundMainTapGeometry(tool.roundMainTapStyle, tool.branchDiameterMm, settings).collarLengthMm + damper;
+  }
   const collar = tool.branchShape !== "round" && start.kind === "tap"
     ? Math.max(settings.tapCollarMm, 200)
     : tool.roundTapStyle === "conical" ? Math.max(settings.tapCollarMm, settings.conicalFlareMm + 100) : settings.tapCollarMm;
@@ -169,9 +174,13 @@ function newRunId(): string {
   return `duct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+const ROUND_MAIN_TAP_LABELS = { "round-conical": "Conical tap (round main)", "round-tee": "90° tap (round main)", "round-lateral": "45° lateral (round main)" } as const;
+
 function targetLabel(target: DuctBranchTarget): string {
   const tool = useDuctToolStore.getState();
   if (target.kind === "spigot") return `Spigot Ø${tool.branchDiameterMm} (${tool.roundTapStyle === "spin-in" ? "spin-in" : "conical"}) on the plenum's ${target.face} face`;
+  if (target.kind === "tap" && isRoundLeg(target.spec.legs[target.legIndex])) return ROUND_MAIN_TAP_LABELS[tool.roundMainTapStyle];
+  if (target.kind === "split" && isRoundLeg(target.spec.legs[target.spec.legs.length - 1])) return "Wye outlet (round main)";
   if (target.kind === "tap" && tool.branchShape === "round") return tool.roundTapStyle === "spin-in" ? "Spin-in collar (round)" : "Conical take-off (round)";
   if (target.kind === "tap") return tool.tapStyle === "shoe-45" ? "Shoe take-off" : "Straight take-off";
   const style = target.spec.end.kind === "split" ? target.spec.end.style : tool.splitStyle;
@@ -286,7 +295,8 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     if (!parent) return null;
     const parentSection = start.kind === "tap" ? parent.spec.legs[start.legIndex] : parent.spec.legs[parent.spec.legs.length - 1];
     if (!parentSection) return null;
-    return clampBranchSection(branch, parentSection);
+    // A round main takes round branches (taps and wye outlets) at the tool's branch diameter.
+    return clampBranchSection(isRoundLeg(parentSection) ? roundLeg(tool.branchDiameterMm) : branch, parentSection);
   }, [continuedRun, parentOf]);
 
   /** A branch's start point depends on its first section (a Y elbow's radius), so it is derived here. */
@@ -302,8 +312,8 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
       return spigotOrigin(parent.parent, settings, { face: start.face, alongMm: start.alongMm, acrossMm: start.acrossMm, style: tool.roundTapStyle, vcd: tool.vcd }, firstSection);
     }
     return start.kind === "tap"
-      ? tapOrigin(parent.parent, settings, { legIndex: start.legIndex, stationMm: start.stationMm, side: start.side, style: tapStyleFor(firstSection), vcd: tool.vcd }, firstSection)
-      : splitOrigin(parent.parent, settings, { side: start.side, style: tool.splitStyle, vcd: tool.vcd }, firstSection);
+      ? tapOrigin(parent.parent, settings, { legIndex: start.legIndex, stationMm: start.stationMm, side: start.side, style: tapStyleFor(firstSection, parent.spec.legs[start.legIndex]), vcd: tool.vcd }, firstSection)
+      : splitOrigin(parent.parent, settings, { side: start.side, style: splitStyleFor(parent.spec.legs[parent.spec.legs.length - 1]!, tool.splitStyle), vcd: tool.vcd }, firstSection);
   }, [parentOf]);
 
   /** Sections of the clicked legs plus the live one. */
@@ -392,8 +402,11 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     if (nextLevel()?.changes) return constrainDuctLeg(current.anchor, cursor, directionRef.current, { first: true, mode });
     // Continuing a run: its next leg goes straight on or turns, like any later leg.
     const locked = first && start.kind !== "continue";
-    return constrainDuctLeg(current.anchor, cursor, locked ? current.firstDirection ?? directionRef.current : directionRef.current, { first: locked, mode });
-  }, [anchorAndDirection, nextLevel]);
+    // The leg after a 45° lateral or wye outlet may turn 45° back square.
+    const origin = pointsRef.current.length === 1 ? draftInput(pointsRef.current)?.origin : null;
+    const returnTurns = Boolean(origin && ((origin.kind === "tap" && origin.style === "round-lateral") || (origin.kind === "split" && origin.style === "wye")));
+    return constrainDuctLeg(current.anchor, cursor, locked ? current.firstDirection ?? directionRef.current : directionRef.current, { first: locked, mode, returnTurns });
+  }, [anchorAndDirection, draftInput, nextLevel]);
 
   /** Keep the panel's Level field on the point the next leg starts from. */
   const publishAnchorLevel = useCallback(() => {
@@ -439,7 +452,8 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     if (!start || clicked.length > 0 || !flex || start.kind === "free" || start.kind === "continue") return [...clicked, spigot];
     const current = anchorAndDirection();
     if (!current?.firstDirection) return [spigot];
-    const length = runoutStubMm(start, sceneRef.current.ductSettings);
+    const parentLeg = start.kind === "tap" ? parentOf(start)?.spec.legs[start.legIndex] : undefined;
+    const length = runoutStubMm(start, sceneRef.current.ductSettings, parentLeg);
     const direction = current.firstDirection;
     return [{ x: current.anchor.x + direction.x * length, y: current.anchor.y + direction.y * length, z: current.anchorZ }, spigot];
   }, [anchorAndDirection]);
@@ -643,7 +657,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
       return;
     }
     const target = port ? null : findBranchTarget(point, sceneRef.current.hvacElements, sceneRef.current.ductSettings, thresholdMm,
-      { splits: useDuctToolStore.getState().branchShape !== "round" });
+      { branchShape: useDuctToolStore.getState().branchShape });
     overlay?.setBranchTarget(target ? { kind: target.kind, marker: target.marker, label: targetLabel(target) } : null);
   }, [ductOverlayRef, findOpenEnd, findOrphanStart, findPort, renderPreview, thresholdMm]);
 
@@ -689,7 +703,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
         return;
       }
       const target = findBranchTarget(point, sceneRef.current.hvacElements, sceneRef.current.ductSettings, thresholdMm,
-        { splits: useDuctToolStore.getState().branchShape !== "round" });
+        { branchShape: useDuctToolStore.getState().branchShape });
       if (!target) {
         const tool = useDuctToolStore.getState();
         begin({ kind: "free", point }, point,

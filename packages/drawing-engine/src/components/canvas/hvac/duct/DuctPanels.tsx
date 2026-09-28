@@ -31,7 +31,7 @@ import { neckVelocityMs } from './ductSizing';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
 import { DUCT_TERMINAL_NECKS_MM, isDuctTerminalElement, readDuctTerminalSpec, TERMINAL_LABELS, typicalTerminalSpec, type DuctTerminalSpigotSide } from './ductTerminals';
 import { tapStyleFor, useDuctToolStore } from './ductToolStore';
-import { isDuctElement, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
+import { isDuctElement, isRoundLeg, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
 
 const JOINT_OPTIONS: Array<{ value: DuctJointSystem; label: string }> = [
   { value: 'auto', label: 'Auto (TDC → angle)' },
@@ -58,7 +58,7 @@ function describeStart(spec: DuctRunSpec, hvacElements: readonly HvacElement[]):
 
 function describeEnd(spec: DuctRunSpec): string {
   const end = spec.end;
-  if (end.kind === 'split') return end.style === 'y' ? 'Y split' : 'bullhead tee';
+  if (end.kind === 'split') return end.style === 'y' ? 'Y split' : end.style === 'wye' ? 'wye' : 'bullhead tee';
   if (end.kind === 'plenum') return `plenum ${Math.round(end.widthMm)} × ${Math.round(end.heightMm)} × ${Math.round(end.lengthMm)}`;
   if (end.kind === 'terminal') return `${end.flex ? 'flexible runout to ' : ''}an air terminal`;
   return end.kind === 'end-cap' ? 'end cap' : end.kind;
@@ -458,15 +458,21 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
           <select value={endValue} aria-label="Run end" className={select}
             onChange={(event) => {
               const value = event.target.value;
-              const end: DuctRunSpec['end'] = value === 'y' || value === 'bullhead' ? { kind: 'split', style: value }
+              const end: DuctRunSpec['end'] = value === 'y' || value === 'bullhead' || value === 'wye' ? { kind: 'split', style: value }
                 : value === 'plenum' ? { kind: 'plenum', ...defaultPlenumSize(spec.legs[spec.legs.length - 1]!) }
                   : { kind: value as 'end-cap' | 'open' };
               commit({ ...spec, end }, 'Duct run end');
             }}>
             <option value="end-cap" disabled={splitBranches > 0 || spigotBranches > 0}>End cap</option>
             <option value="open" disabled={splitBranches > 0 || spigotBranches > 0}>Open</option>
-            <option value="y" disabled={spigotBranches > 0}>Y split</option>
-            <option value="bullhead" disabled={spigotBranches > 0}>Bullhead tee</option>
+            {isRoundLeg(spec.legs[spec.legs.length - 1]) ? (
+              <option value="wye" disabled={spigotBranches > 0}>Wye (SMACNA Fig. 3-5)</option>
+            ) : (
+              <>
+                <option value="y" disabled={spigotBranches > 0}>Y split</option>
+                <option value="bullhead" disabled={spigotBranches > 0}>Bullhead tee</option>
+              </>
+            )}
             <option value="plenum" disabled={splitBranches > 0}>Plenum</option>
             {spec.end.kind === 'terminal' ? <option value="terminal" disabled>Air terminal</option> : null}
           </select>
@@ -573,6 +579,13 @@ export function DuctToolSection() {
           </Row>
         </>
       ) : null}
+      <Row label="Off a round main">
+        <select value={tool.roundMainTapStyle} onChange={(event) => tool.setBranchOptions({ roundMainTapStyle: event.target.value as 'round-conical' | 'round-tee' | 'round-lateral' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Round main take-off">
+          <option value="round-conical">Conical tap (Fig. 3-5)</option>
+          <option value="round-tee">90° tap (Fig. 3-4)</option>
+          <option value="round-lateral">45° lateral (Fig. 3-4)</option>
+        </select>
+      </Row>
       <Row label="Branch W × H (clear)">
         <input type="number" step={50} value={tool.branchWidthMm} onChange={(event) => tool.setBranchSize({ branchWidthMm: Number(event.target.value) })} className="w-16 rounded border border-slate-200 px-1 text-xs" aria-label="Branch width" />
         {' × '}
@@ -590,6 +603,7 @@ export function DuctToolSection() {
           <option value="y">Y (divided flow, radius elbows)</option>
           <option value="bullhead">Bullhead tee with vanes</option>
         </select>
+        <span className="ml-1 text-[10px] text-slate-400">a round main splits by a wye</span>
       </Row>
       <Row label="Damper at branch">
         <input type="checkbox" checked={tool.vcd} onChange={(event) => tool.setBranchOptions({ vcd: event.target.checked })} aria-label="Volume control damper" />

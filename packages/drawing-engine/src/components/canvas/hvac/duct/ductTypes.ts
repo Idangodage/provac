@@ -33,22 +33,38 @@ export interface DuctLeg {
   diameterMm?: number;
 }
 
-/** Rectangular take-offs (shoe, straight) and round collars off a rectangular wall (spin-in, conical). */
-export type DuctTapStyle = 'shoe-45' | 'straight' | 'spin-in' | 'conical';
+/**
+ * Take-offs: rectangular (shoe, straight) and round collars (spin-in, conical)
+ * off a rectangular wall (SMACNA Fig. 2-6); round branches off a round main:
+ * a 90° tap, a conical tap (Fig. 3-4 / 3-5) or a 45° lateral (Fig. 3-4).
+ */
+export type DuctTapStyle = 'shoe-45' | 'straight' | 'spin-in' | 'conical' | 'round-tee' | 'round-conical' | 'round-lateral';
+
+export const ROUND_MAIN_TAP_STYLES = ['round-conical', 'round-tee', 'round-lateral'] as const;
+export type DuctRoundMainTapStyle = (typeof ROUND_MAIN_TAP_STYLES)[number];
 
 export function isRoundLeg(leg: DuctLeg | undefined): boolean {
   return leg?.diameterMm !== undefined;
 }
 
+/** The style takes a round branch. */
 export function isRoundTapStyle(style: DuctTapStyle): boolean {
-  return style === 'spin-in' || style === 'conical';
+  return style === 'spin-in' || style === 'conical' || isRoundMainTapStyle(style);
 }
+
+/** The style belongs on a round main. */
+export function isRoundMainTapStyle(style: DuctTapStyle): style is DuctRoundMainTapStyle {
+  return style === 'round-tee' || style === 'round-conical' || style === 'round-lateral';
+}
+
+const TAP_STYLES: readonly DuctTapStyle[] = ['shoe-45', 'straight', 'spin-in', 'conical', 'round-tee', 'round-conical', 'round-lateral'];
 
 /** A round section of diameter `d`. */
 export function roundLeg(diameterMm: number): DuctLeg {
   return { widthMm: diameterMm, heightMm: diameterMm, diameterMm };
 }
-export type DuctSplitStyle = 'bullhead' | 'y';
+/** Rectangular runs split by a Y or a bullhead tee (Fig. 2-5); a round main by a wye (Fig. 3-5). */
+export type DuctSplitStyle = 'bullhead' | 'y' | 'wye';
 export type DuctSide = 1 | -1;
 
 /** A branch taken off the side of a parent run's straight leg. */
@@ -205,7 +221,7 @@ function readEnd(value: unknown): DuctEnd {
       kind: 'tap', parentRunId: candidate.parentRunId,
       legIndex: finite(candidate.legIndex) ? Math.max(0, Math.round(candidate.legIndex)) : 0,
       stationMm: candidate.stationMm, side,
-      style: candidate.style === 'straight' || candidate.style === 'spin-in' || candidate.style === 'conical' ? candidate.style : 'shoe-45',
+      style: TAP_STYLES.includes(candidate.style as DuctTapStyle) ? candidate.style as DuctTapStyle : 'shoe-45',
       vcd: candidate.vcd !== false,
     };
   }
@@ -220,7 +236,7 @@ function readEnd(value: unknown): DuctEnd {
       style: candidate.style === 'conical' ? 'conical' : 'spin-in', vcd: candidate.vcd !== false,
     };
   }
-  if (candidate.kind === 'split') return { kind: 'split', style: candidate.style === 'bullhead' ? 'bullhead' : 'y' };
+  if (candidate.kind === 'split') return { kind: 'split', style: candidate.style === 'bullhead' || candidate.style === 'wye' ? candidate.style : 'y' };
   if (candidate.kind === 'plenum') {
     return {
       kind: 'plenum',

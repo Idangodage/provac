@@ -872,7 +872,7 @@ export function DrawingCanvas({
         legIndex?: number;
         stationMm?: number;
         side: 1 | -1;
-        style?: "shoe-45" | "straight" | "spin-in" | "conical" | "y" | "bullhead";
+        style?: "shoe-45" | "straight" | "spin-in" | "conical" | "round-tee" | "round-conical" | "round-lateral" | "y" | "bullhead" | "wye";
         vcd?: boolean;
         widthMm: number;
         heightMm: number;
@@ -887,6 +887,7 @@ export function DrawingCanvas({
         if (!parent || !isDuctElement(parent)) return null;
         const section = request.diameterMm ? roundLeg(request.diameterMm) : { widthMm: request.widthMm, heightMm: request.heightMm };
         const tapStyle = request.style === "straight" || request.style === "spin-in" || request.style === "conical"
+          || request.style === "round-tee" || request.style === "round-conical" || request.style === "round-lateral"
           ? request.style : request.diameterMm ? "spin-in" : "shoe-45";
         const origin = request.kind === "tap"
           ? tapOrigin(parent, state.ductSettings, {
@@ -894,7 +895,7 @@ export function DrawingCanvas({
             style: tapStyle, vcd: request.vcd ?? true,
           }, request.legSizes?.[0] ?? section)
           : splitOrigin(parent, state.ductSettings, {
-            side: request.side, style: request.style === "bullhead" ? "bullhead" : "y", vcd: request.vcd ?? false,
+            side: request.side, style: request.style === "bullhead" || request.style === "wye" ? request.style : "y", vcd: request.vcd ?? false,
           }, request.legSizes?.[0] ?? section);
         if (!origin || origin.kind === "port") return null;
         let cursor = { ...origin.point, z: origin.bottomZ };

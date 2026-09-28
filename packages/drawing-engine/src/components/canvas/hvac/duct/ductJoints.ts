@@ -16,8 +16,10 @@
  */
 import { JOINT_HARDWARE_PROVENANCE, JOINT_HARDWARE_RULES, type JointRigidityRow } from './ductCatalog';
 import type { ResolvedDuctJoint } from './ductGauge';
+import { ROUND_FITTING_RULES, roundTapEdgeMm } from './ductRoundFittings';
 import { roundJointScrewsPerEnd, ROUND_JOINT_RULES } from './ductRoundRules';
 import type { DuctRuleProvenance } from './ductSources';
+import { isRoundMainTapStyle, type DuctTapStyle } from './ductTypes';
 
 export type JointHardwareSystem = 'tdc' | 'ductmate' | 'angle-flange' | 'slip-over' | 'takeoff' | 'round-slip' | 'round-takeoff';
 
@@ -178,19 +180,35 @@ export function slipOverHardware(input: JointHardwareInput): JointHardware {
   };
 }
 
+const ROUND_TAKEOFF_LABELS: Record<Exclude<DuctTapStyle, 'shoe-45' | 'straight'>, string> = {
+  'spin-in': 'Spin-in collar into parent',
+  conical: 'Conical collar into parent',
+  'round-tee': '90° tap into round main',
+  'round-conical': 'Conical tap into round main',
+  'round-lateral': '45° lateral tap into round main',
+};
+
 /**
- * A round collar (spin-in or conical) into a rectangular wall (SMACNA Fig. 2-6):
- * the opening cut to the collar, screws round it as for a round slip joint
- * (Fig. 3-2 spacing, by analogy) and sealant. `sideAMm` is the opening diameter.
+ * A round collar into its parent, `sideAMm` being the opening diameter:
+ *  - spin-in or conical into a rectangular wall (SMACNA Fig. 2-6): screws round
+ *    the opening as for a round slip joint (Fig. 3-2 spacing, by analogy);
+ *  - a tap into a round main (Fig. 3-4 / 3-5): screws on 101 mm centres round
+ *    the cut (the figure also allows stitch or spot welds).
+ * Sealant round the opening in both cases (S3.4: saddles sealed at all pressures).
  */
-export function roundTakeoffHardware(input: JointHardwareInput, style: 'spin-in' | 'conical'): JointHardware {
+export function roundTakeoffHardware(input: JointHardwareInput, style: Exclude<DuctTapStyle, 'shoe-45' | 'straight'>): JointHardware {
+  const roundMain = isRoundMainTapStyle(style);
+  const edge = roundMain ? roundTapEdgeMm(style, input.sideAMm) : Math.PI * input.sideAMm;
+  const screws = roundMain
+    ? Math.max(ROUND_JOINT_RULES.minScrews, Math.ceil(edge / ROUND_FITTING_RULES.tapFastenerSpacingMm))
+    : roundJointScrewsPerEnd(input.sideAMm);
   return {
-    system: 'round-takeoff', label: style === 'spin-in' ? 'Spin-in collar into parent' : 'Conical collar into parent',
+    system: 'round-takeoff', label: ROUND_TAKEOFF_LABELS[style],
     flangePieces: 0, flangeLengthMm: 0, angleMember: null, angleLengthMm: 0, cornerPieces: 0,
     bolts: null, nuts: 0, washers: 0, cleats: null,
-    ductFasteners: { kind: 'screw', spec: 'self-drilling sheet-metal screw', count: roundJointScrewsPerEnd(input.sideAMm) },
+    ductFasteners: { kind: 'screw', spec: 'self-drilling sheet-metal screw', count: screws },
     gasketLengthMm: 0, sealedCorners: 0, cornerWelds: 0,
-    sealantLengthMm: Math.PI * input.sideAMm,
-    provenance: [ROUND_JOINT_RULES.provenance],
+    sealantLengthMm: edge,
+    provenance: [roundMain ? ROUND_FITTING_RULES.provenance : ROUND_JOINT_RULES.provenance],
   };
 }

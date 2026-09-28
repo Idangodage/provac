@@ -48,6 +48,18 @@ function sizeLabel(piece: Pick<DuctPiece, 'widthMm' | 'heightMm' | 'endWidthMm' 
   return start === end ? start : `${start} → ${end}`;
 }
 
+/** A transition between a rectangular and a round end (SMACNA Fig. 2-7). */
+function shapeChangeDescription(piece: DuctPiece): string | null {
+  if (piece.kind !== 'transition' || (piece.diameterMm === undefined) === (piece.endDiameterMm === undefined)) return null;
+  const form = piece.diameterMm === undefined ? 'Square-to-round' : 'Round-to-square';
+  return `${form} transition (${piece.vertical ? 'concentric, riser' : 'flat bottom'}; SMACNA Fig. 2-7), ${Math.round(piece.lengthMm)} mm`;
+}
+
+const ROUND_TAKEOFF_DESCRIPTIONS = {
+  'round-tee': '90° tap into round main, 51 mm spigot (SMACNA Fig. 3-4)',
+  'round-lateral': '45° lateral tap into round main, 51 mm spigot (SMACNA Fig. 3-4)',
+} as const;
+
 /** Round pieces (SMACNA chapter 3). */
 function roundPieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string | null {
   if (piece.diameterMm === undefined) return null;
@@ -58,8 +70,11 @@ function roundPieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): str
   if (piece.kind === 'transition') return `Round reducer (${piece.vertical ? 'concentric, riser' : 'flat bottom'}), ${Math.round(piece.lengthMm)} mm`;
   if (piece.kind === 'end-cap') return 'Round end cap';
   if (piece.kind === 'takeoff') {
-    return piece.takeoff?.style === 'conical'
-      ? `Conical take-off, mouth Ø${Math.round(piece.takeoff.openingMm ?? piece.diameterMm)} (SMACNA Fig. 2-6)`
+    const style = piece.takeoff?.style;
+    if (style === 'round-conical') return `Conical tap into round main, mouth Ø${Math.round(piece.takeoff!.openingMm ?? piece.diameterMm)} (SMACNA Fig. 3-5)`;
+    if (style === 'round-tee' || style === 'round-lateral') return ROUND_TAKEOFF_DESCRIPTIONS[style];
+    return style === 'conical'
+      ? `Conical take-off, mouth Ø${Math.round(piece.takeoff!.openingMm ?? piece.diameterMm)} (SMACNA Fig. 2-6)`
       : 'Spin-in collar with bead (SMACNA Fig. 2-6)';
   }
   if (piece.kind === 'offset' && piece.offset) return `Round offset, ${Math.round(piece.offset.lateralOffsetMm)} mm`;
@@ -72,6 +87,8 @@ function riserWord(piece: DuctPiece): string {
 }
 
 function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
+  const shapeChange = shapeChangeDescription(piece);
+  if (shapeChange) return shapeChange;
   const round = roundPieceDescription(piece, plan);
   if (round) return round;
   if (piece.kind === 'straight') return `Straight section${riserWord(piece)} ${Math.round(piece.lengthMm)} mm`;
@@ -98,6 +115,7 @@ function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
   }
   if (piece.kind === 'split') {
     const split = piece.split!;
+    if (split.style === 'wye') return `Wye fitting, 45° legs 3A/2${split.cappedSides.length ? ', one leg capped' : ''} (SMACNA Fig. 3-5)`;
     return split.style === 'bullhead'
       ? `Bullhead tee, ${split.branches.reduce((total, branch) => total + branch.vaneCount, 0)} turning vanes`
       : `Divided-flow Y split (${split.branches.length} radius elbow${split.branches.length === 1 ? '' : 's'})`;

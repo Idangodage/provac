@@ -16,7 +16,9 @@ import type { DuctElbow, DuctFabricationPlan, DuctJoint, DuctPiece } from '../du
 import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
 import { flexPointAt, flexSupportStations, saggedFlexPoints } from '../duct/ductFlex';
 import { frameToWorld, sampleArc } from '../duct/ductGeometry';
+import { wyeLegLengthMm } from '../duct/ductRoundFittings';
 import { resolveDuctSettings, type DuctDesignSettings } from '../duct/ductSettings';
+import { squareToRoundTriangles, type SquareToRoundInput } from '../duct/ductSquareToRound';
 import { getDuctSupportPlan, type DuctSupportPlan } from '../duct/ductSupports';
 import type { DuctPoint3 } from '../duct/ductTypes';
 
@@ -410,6 +412,60 @@ export function piecePath3(piece: DuctPiece): DuctPoint3[] | null {
   return null;
 }
 
+/** A transition between a rectangular and a round end (either way). */
+function isSquareToRound(piece: DuctPiece): boolean {
+  return piece.kind === 'transition' && (piece.diameterMm === undefined) !== (piece.endDiameterMm === undefined);
+}
+
+/**
+ * Square-to-round loft (the development's triangles) placed by a frame: world =
+ * origin + axis·s + across·a + up·u.
+ */
+function squareToRoundGeometry(origin: THREE.Vector3, axis: THREE.Vector3, across: THREE.Vector3, up: THREE.Vector3, input: SquareToRoundInput): THREE.BufferGeometry {
+  const positions: number[] = [];
+  for (const triangle of squareToRoundTriangles({ ...input, segmentsPerQuarter: 6 })) {
+    for (const point of triangle) {
+      const world = origin.clone().addScaledVector(axis, point.s).addScaledVector(across, point.a).addScaledVector(up, point.u);
+      positions.push(world.x, world.y, world.z);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/**
+ * A level square-to-round (SMACNA Fig. 2-7), flat bottom shared: a straight
+ * neck of each shape and the development between them.
+ */
+function addSquareToRoundLevel(piece: DuctPiece, t: number, metal: THREE.Material, push: MeshPush): void {
+  const rectFirst = piece.diameterMm === undefined;
+  const d = piece.direction;
+  const n = { x: -d.y, y: d.x };
+  const neck = Math.min(piece.transition?.neckMm ?? 0, piece.lengthMm / 2);
+  const at = (distance: number) => ({ x: piece.start.x + d.x * distance, y: piece.start.y + d.y * distance });
+  const rect = rectFirst ? { w: piece.widthMm, h: piece.heightMm } : { w: piece.endWidthMm, h: piece.endHeightMm };
+  const diameter = rectFirst ? piece.endDiameterMm! : piece.diameterMm!;
+  const rectCentre = piece.bottomZ + rect.h / 2;
+  const circleCentre = piece.bottomZ + diameter / 2;
+  const rectRing = (point: Point2D): DuctSweepRing => ({ point, normal: n, halfWidth: rect.w / 2 + t, halfHeight: rect.h / 2 + t, centreZ: rectCentre });
+  const roundRing = (point: Point2D) => ({ point, z: circleCentre, radius: diameter / 2 + t });
+  if (rectFirst) {
+    push('duct-metal', metal, sweepRectangularRings([rectRing(piece.start), rectRing(at(neck))]));
+    push('duct-metal', metal, sweepCircularRings([roundRing(at(piece.lengthMm - neck)), roundRing(piece.end)]));
+  } else {
+    push('duct-metal', metal, sweepCircularRings([roundRing(piece.start), roundRing(at(neck))]));
+    push('duct-metal', metal, sweepRectangularRings([rectRing(at(piece.lengthMm - neck)), rectRing(piece.end)]));
+  }
+  const origin = new THREE.Vector3(at(neck).x, at(neck).y, 0);
+  push('duct-metal', metal, squareToRoundGeometry(origin, new THREE.Vector3(d.x, d.y, 0), new THREE.Vector3(n.x, n.y, 0), new THREE.Vector3(0, 0, 1), {
+    rectHalfWidthMm: rect.w / 2 + t, rectHalfHeightMm: rect.h / 2 + t, rectCentreUpMm: rectCentre,
+    radiusMm: diameter / 2 + t, circleCentreUpMm: circleCentre,
+    lengthMm: Math.max(1, piece.lengthMm - 2 * neck), rectAtStart: rectFirst,
+  }));
+}
+
 /** Riser pieces and vertical-plane fittings: 3D sweeps with the width held horizontal. */
 function addVerticalPiece(piece: DuctPiece, path: DuctPoint3[], t: number, metal: THREE.Material, push: MeshPush): void {
   const heading = piece.frame?.heading ?? piece.direction;
@@ -433,6 +489,28 @@ function addVerticalPiece(piece: DuctPiece, path: DuctPoint3[], t: number, metal
     const neck = Math.min(piece.transition?.neckMm ?? 0, piece.lengthMm / 2);
     const k = piece.lengthMm > 0 ? neck / piece.lengthMm : 0;
     const points = [first, along(k), along(1 - k), last];
+    if (isSquareToRound(piece)) {
+      // Square-to-round on a riser, concentric: rectangular and round necks, the development between.
+      const rectFirst = piece.diameterMm === undefined;
+      const rect = rectFirst ? { w: piece.widthMm, h: piece.heightMm } : { w: piece.endWidthMm, h: piece.endHeightMm };
+      const radius = (rectFirst ? piece.endDiameterMm! : piece.diameterMm!) / 2 + t;
+      const rectHalves = { halfWidth: rect.w / 2 + t, halfHeight: rect.h / 2 + t };
+      const [a, b, c, e] = points as [DuctPoint3, DuctPoint3, DuctPoint3, DuctPoint3];
+      push('duct-metal', metal, rectFirst ? sweepRectangularPath3([a, b], [rectHalves, rectHalves], across) : sweepCircularPath3([a, b], [radius, radius], across));
+      push('duct-metal', metal, rectFirst ? sweepCircularPath3([c, e], [radius, radius], across) : sweepRectangularPath3([c, e], [rectHalves, rectHalves], across));
+      const axis = new THREE.Vector3(c.x - b.x, c.y - b.y, c.z - b.z);
+      const length = axis.length();
+      if (length > 1e-6) {
+        axis.divideScalar(length);
+        const n = new THREE.Vector3(-heading.y, heading.x, 0);
+        const up = new THREE.Vector3().crossVectors(axis, n).normalize();
+        push('duct-metal', metal, squareToRoundGeometry(new THREE.Vector3(b.x, b.y, b.z), axis, n, up, {
+          rectHalfWidthMm: rectHalves.halfWidth, rectHalfHeightMm: rectHalves.halfHeight, rectCentreUpMm: 0,
+          radiusMm: radius, circleCentreUpMm: 0, lengthMm: length, rectAtStart: rectFirst,
+        }));
+      }
+      return;
+    }
     if (round) {
       const r1 = piece.diameterMm! / 2 + t;
       const r2 = (piece.endDiameterMm ?? piece.diameterMm!) / 2 + t;
@@ -521,7 +599,7 @@ function addRoundPiece(piece: DuctPiece, t: number, metal: THREE.Material, push:
     ]));
     return;
   }
-  if (piece.kind === 'takeoff' && piece.takeoff?.style === 'conical' && piece.takeoff.openingMm) {
+  if (piece.kind === 'takeoff' && (piece.takeoff?.style === 'conical' || piece.takeoff?.style === 'round-conical') && piece.takeoff.openingMm) {
     const mouth = piece.takeoff.openingMm / 2 + t;
     push('duct-metal', metal, sweepCircularRings([
       { point: piece.start, z: piece.bottomZ - t + mouth, radius: mouth }, { point: piece.end, z, radius },
@@ -623,6 +701,10 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
     addVerticalPiece(piece, path3, t, metal, push);
     return;
   }
+  if (isSquareToRound(piece)) {
+    addSquareToRoundLevel(piece, t, metal, push);
+    return;
+  }
   if (piece.diameterMm !== undefined) {
     addRoundPiece(piece, t, metal, push);
     return;
@@ -715,6 +797,28 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
     const parentHalfWidth = split.parentSection.widthMm / 2 + t;
     const parentHalfHeight = split.parentSection.heightMm / 2 + t;
     const centreZ = split.bottomZ + split.parentSection.heightMm / 2;
+    if (split.style === 'wye') {
+      // Round wye (SMACNA Fig. 3-5): a cone along each 45° leg from the main to its outlet, a disc on a capped leg.
+      const mainRadius = split.parentSection.widthMm / 2 + t;
+      for (const branch of split.branches) {
+        const radius = branch.section.widthMm / 2 + t;
+        push('duct-metal', metal, sweepCircularRings([
+          { point: split.origin, z: centreZ, radius: mainRadius },
+          { point: branch.outlet.point, z: branch.outlet.bottomZ + branch.section.heightMm / 2, radius },
+        ]));
+      }
+      for (const side of split.cappedSides) {
+        const out = { x: split.direction.x + split.normal.x * side, y: split.direction.y + split.normal.y * side };
+        const length = Math.hypot(out.x, out.y) || 1;
+        const reach = wyeLegLengthMm(split.parentSection.widthMm) / 2;
+        const centre = new THREE.Vector3(split.origin.x + (out.x / length) * reach, split.origin.y + (out.y / length) * reach, centreZ);
+        push('duct-metal', metal, sweepCircularRings([
+          { point: split.origin, z: centreZ, radius: mainRadius }, { point: { x: centre.x, y: centre.y }, z: centreZ, radius: mainRadius * 0.8 },
+        ]));
+        push('duct-caps', material(DUCT_3D_COLORS.cap, 0.12, 0.55), roundDisc(centre, { x: out.x / length, y: out.y / length }, mainRadius * 0.8));
+      }
+      return;
+    }
     if (split.style === 'bullhead') {
       const far = { x: split.origin.x + split.direction.x * split.depthMm, y: split.origin.y + split.direction.y * split.depthMm };
       push('duct-metal', metal, sweepRectangularTube([split.origin, far], centreZ, parentHalfWidth, parentHalfHeight));

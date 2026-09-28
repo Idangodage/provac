@@ -7,16 +7,23 @@
  * The gap between a path and the index path is what its damper throttles to
  * balance.
  *
- * Friction is the Darcy–Weisbach model in ductSizing.ts. The loss
- * coefficients are practice values of the usual order (ASHRAE Duct Fitting
- * Database fittings), not transcribed from it; the result is an estimate for
- * checking the fan, not a certified calculation.
+ * Friction is the Darcy–Weisbach model in ductSizing.ts. The fitting losses
+ * respond to size and flow, so an optimiser can trade them:
+ *  - a take-off's branch passage by the Idelchik form ζ = A′·[1 + r² − 2r·cos α]
+ *    on the main's (combined) velocity pressure, r = v_branch / v_main, α the
+ *    angle the branch leaves at, A′ by fitting type;
+ *  - the main's straight-through passage at each take-off, ζ = 0.4·(1 − v_s/v_c)²;
+ *  - elbows by R/W (R/D) and angle; transitions by their included angle.
+ * The coefficients are practice values (Idelchik's forms, calibrated to the
+ * usual ASHRAE Duct Fitting Database order), not transcribed from either; the
+ * result is an estimate for checking and optimising the fan duty, not a
+ * certified calculation.
  */
-import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
+import type { DuctElbow, DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
 import type { DuctDesignSettings } from './ductSettings';
 import { frictionPaPerM, velocityMs, velocityPressurePa } from './ductSizing';
-import type { DuctLeg, DuctService } from './ductTypes';
+import type { DuctLeg, DuctService, DuctSplitStyle, DuctTapStyle } from './ductTypes';
 
 /** Loss coefficients (on the velocity pressure of the section named). Practice. */
 export const FITTING_LOSS_COEFFICIENTS = {
@@ -40,7 +47,77 @@ export const FITTING_LOSS_COEFFICIENTS = {
   plenumEntry: 1.0,
   /** Y split, on each outlet's velocity. */
   split: 0.3,
+  /** Bullhead tee with turning vanes, on each outlet's velocity. */
+  bullhead: 0.5,
+  /** Square-to-round, over the transition's own loss. */
+  shapeChange: 0.05,
 } as const;
+
+/** Idelchik's A′ by take-off type (practice): C_branch ≈ 2A′ at equal velocities for a 90° branch. */
+export const TAKEOFF_A_PRIME: Record<DuctTapStyle, number> = {
+  straight: 0.55,
+  'round-tee': 0.55,
+  'spin-in': 0.5,
+  conical: 0.4,
+  'round-conical': 0.4,
+  'shoe-45': 0.35,
+  'round-lateral': 0.6,
+};
+
+/** The angle a take-off's branch leaves the main at (deg). */
+export function takeoffAngleDeg(style: DuctTapStyle): number {
+  return style === 'round-lateral' ? 45 : 90;
+}
+
+/**
+ * Loss (Pa) from the main into a branch: ζ = A′·[1 + r² − 2r·cos α] on the
+ * main's velocity pressure (Idelchik form, practice).
+ */
+export function takeoffBranchLossPa(style: DuctTapStyle | 'wye', branchVelocityMs: number, mainVelocityMs: number): number {
+  if (mainVelocityMs <= 1e-9) return FITTING_LOSS_COEFFICIENTS.takeoffTrunk * velocityPressurePa(branchVelocityMs);
+  const r = branchVelocityMs / mainVelocityMs;
+  const aPrime = style === 'wye' ? 0.6 : TAKEOFF_A_PRIME[style];
+  const alpha = ((style === 'wye' ? 45 : takeoffAngleDeg(style)) * Math.PI) / 180;
+  const zeta = aPrime * Math.max(0, 1 + r * r - 2 * r * Math.cos(alpha));
+  return zeta * velocityPressurePa(mainVelocityMs);
+}
+
+/** Loss (Pa) in the main's straight-through passage at a take-off: ζ = 0.4·(1 − v_s/v_c)² on v_c (practice). */
+export function mainPassageLossPa(downstreamVelocityMs: number, upstreamVelocityMs: number): number {
+  if (upstreamVelocityMs <= 1e-9) return 0;
+  const ratio = Math.min(1, downstreamVelocityMs / upstreamVelocityMs);
+  return 0.4 * (1 - ratio) ** 2 * velocityPressurePa(upstreamVelocityMs);
+}
+
+/** Elbow coefficient by R/W (R/D) and angle (practice; square vaned 0.3). */
+export function elbowCoefficient(style: DuctElbow['style'], radiusRatio: number, angleDeg: number): number {
+  if (style === 'square-vaned') return FITTING_LOSS_COEFFICIENTS.elbowVaned * Math.min(1, angleDeg / 90);
+  const points: Array<[number, number]> = [[0.5, 0.9], [0.75, 0.45], [1, 0.3], [1.5, 0.2], [2, 0.18]];
+  const ratio = Math.max(points[0]![0], Math.min(points[points.length - 1]![0], radiusRatio));
+  let k = points[points.length - 1]![1];
+  for (let index = 1; index < points.length; index += 1) {
+    const [x1, y1] = points[index - 1]!;
+    const [x2, y2] = points[index]!;
+    if (ratio <= x2) {
+      k = y1 + ((ratio - x1) / (x2 - x1)) * (y2 - y1);
+      break;
+    }
+  }
+  // Gored (mitred-segment) elbows carry a little more than a smooth one; the angle scales the loss.
+  return k * (style === 'gored' ? 1.15 : 1) * Math.pow(angleDeg / 90, 0.7);
+}
+
+/** Transition coefficient on the downstream velocity, by its included angle and sense (practice). */
+export function transitionCoefficient(includedDeg: number, expanding: boolean): number {
+  if (!expanding) return 0.05;
+  return Math.min(1, 0.1 + 0.6 * Math.pow(Math.max(0, includedDeg) / 60, 1.5));
+}
+
+/** Split outlet loss on the outlet velocity (practice). */
+export function splitOutletLossPa(style: DuctSplitStyle, outletVelocityMs: number, mainVelocityMs: number): number {
+  if (style === 'wye') return takeoffBranchLossPa('wye', outletVelocityMs, mainVelocityMs);
+  return (style === 'bullhead' ? FITTING_LOSS_COEFFICIENTS.bullhead : FITTING_LOSS_COEFFICIENTS.split) * velocityPressurePa(outletVelocityMs);
+}
 
 export interface TerminalPressure {
   terminalId: string;
@@ -73,9 +150,20 @@ function coefficientOf(piece: DuctPiece, fromPlenum: boolean): number {
   const c = FITTING_LOSS_COEFFICIENTS;
   switch (piece.kind) {
     case 'connector': return c.connector;
-    case 'elbow': return piece.elbow?.style === 'square-vaned' ? c.elbowVaned : c.elbowRadius;
+    case 'elbow': {
+      const elbow = piece.elbow;
+      if (!elbow) return c.elbowRadius;
+      const inPlane = elbow.inPlaneMm ?? piece.widthMm;
+      return elbowCoefficient(elbow.style, inPlane > 0 ? elbow.centrelineRadiusMm / inPlane : 1, elbow.angleDeg);
+    }
     case 'offset': return c.offset;
-    case 'transition': return c.transition;
+    case 'transition': {
+      const info = piece.transition;
+      const shapeChange = (piece.diameterMm === undefined) !== (piece.endDiameterMm === undefined) ? c.shapeChange : 0;
+      if (!info) return c.transition + shapeChange;
+      const expanding = info.widthSense === 'expanding' || info.heightSense === 'expanding';
+      return transitionCoefficient(2 * Math.max(info.angleWidthDeg, info.angleHeightDeg), expanding) + shapeChange;
+    }
     case 'takeoff': return fromPlenum ? c.takeoffPlenum : c.takeoffTrunk;
     case 'damper': return c.damper;
     case 'plenum': return c.plenumEntry;
@@ -134,11 +222,35 @@ export function systemPressure(
   const flowAt = (node: RunNode, station: number) => (node.terminalId ? airflow.get(node.terminalId) ?? 0 : 0)
     + node.children.filter((child) => child.attachMm > station + 1e-6).reduce((sum, child) => sum + child.airflowM3h, 0);
 
+  /** The section of `node` at a station along its path (the piece covering it). */
+  const sectionAt = (node: RunNode, station: number): DuctLeg | null => {
+    const piece = node.plan.pieces.find((candidate) => candidate.kind !== 'flex' && candidate.kind !== 'split'
+      && candidate.stationStartMm <= station + 1e-6 && candidate.stationEndMm >= station - 1e-6);
+    return piece ? sectionOf(piece) : null;
+  };
+  /** Velocity in the parent main just upstream of where `node` leaves it (the combined flow). */
+  const mainVelocityAt = (node: RunNode): number => {
+    const parent = node.parentId ? nodes.get(node.parentId) : undefined;
+    if (!parent) return 0;
+    const flow = flowAt(parent, node.attachMm - 1);
+    const section = node.plan.spec.start.kind === 'split-branch'
+      ? (() => { const last = parent.plan.spec.legs[parent.plan.spec.legs.length - 1]; return last ?? null; })()
+      : sectionAt(parent, node.attachMm);
+    return section ? velocityMs(section, flow) : 0;
+  };
+
   /** Friction and fittings in `node` from its start up to `limitMm`; `child` = the run the path leaves by. */
   const along = (node: RunNode, limitMm: number, child: RunNode | null): { friction: number; fittings: number } => {
     let friction = 0;
     let fittings = 0;
     const fromPlenum = node.plan.spec.start.kind === 'spigot';
+    // The main's straight-through passage at every take-off this path passes.
+    for (const passed of node.children) {
+      if (passed === child || passed.plan.spec.start.kind !== 'tap' || passed.attachMm >= limitMm - 1e-6) continue;
+      const section = sectionAt(node, passed.attachMm);
+      if (!section) continue;
+      fittings += mainPassageLossPa(velocityMs(section, flowAt(node, passed.attachMm + 1)), velocityMs(section, flowAt(node, passed.attachMm - 1)));
+    }
     for (const piece of node.plan.pieces) {
       if (piece.stationStartMm >= limitMm - 1e-6 && piece.kind !== 'split') continue;
       const station = (piece.stationStartMm + Math.min(piece.stationEndMm, limitMm)) / 2;
@@ -149,7 +261,13 @@ export function systemPressure(
       friction += frictionPaPerM(section, flow, piece.kind === 'flex' ? 'flex' : 'galvanised') * (length / 1000);
       if (piece.kind === 'split' && child) {
         const first = child.plan.pieces[0];
-        if (first) fittings += FITTING_LOSS_COEFFICIENTS.split * velocityPressurePa(velocityMs(sectionOf(first), child.airflowM3h));
+        const style = piece.split?.style ?? 'y';
+        const last = node.plan.spec.legs[node.plan.spec.legs.length - 1];
+        if (first) fittings += splitOutletLossPa(style, velocityMs(sectionOf(first), child.airflowM3h), last ? velocityMs(last, node.airflowM3h) : 0);
+        continue;
+      }
+      if (piece.kind === 'takeoff' && !fromPlenum && node.plan.spec.start.kind === 'tap') {
+        fittings += takeoffBranchLossPa(node.plan.spec.start.style, velocityMs(section, flow), mainVelocityAt(node));
         continue;
       }
       const coefficient = coefficientOf(piece, fromPlenum);

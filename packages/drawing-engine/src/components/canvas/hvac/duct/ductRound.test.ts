@@ -12,7 +12,7 @@ import { planDuctRun } from './ductFabricationPlanner';
 import { resolveSectionConstruction } from './ductGauge';
 import { goredElbowPieces, roundJointScrewsPerEnd, roundMinimumThickness } from './ductRoundRules';
 import { resolveDuctSettings } from './ductSettings';
-import { roundLeg, type DuctTapStyle } from './ductTypes';
+import { readDuctRunSpec, roundLeg, type DuctTapStyle } from './ductTypes';
 
 const settings = resolveDuctSettings({});
 const unit: HvacElement = {
@@ -98,11 +98,12 @@ describe('round branch off a rectangular run', () => {
     expect(plan.issues.some((issue) => issue.code === 'DU_TAP_TOO_BIG')).toBe(true);
   });
 
-  it('round runs offer no take-off targets (rectangular trunks only)', () => {
+  it('a round run offers take-off targets too (round-main taps, SMACNA Fig. 3-4 / 3-5)', () => {
     const { element } = roundBranch('spin-in', 150, [{ x: 4000, y: 0 }]);
-    const along = { x: (element.position.x + element.width / 2), y: supply.lip.y - 3000 };
-    const target = findBranchTarget(along, [unit, main, element], settings, 60);
-    expect(target?.parent.id ?? null).not.toBe('round');
+    const spec = readDuctRunSpec(element)!;
+    const beside = { x: (spec.path[0]!.x + spec.path[1]!.x) / 2, y: spec.path[0]!.y + 150 / 2 + 10 };
+    const target = findBranchTarget(beside, [unit, main, element], settings, 60, { branchShape: 'round' });
+    expect(target?.parent.id).toBe('round');
   });
 
   it('schedules spiral duct, the gored elbow, the collar, sleeves and sealant', () => {

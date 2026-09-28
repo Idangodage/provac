@@ -60,9 +60,20 @@ import { FLEX_RULES, flexCurve } from './ductFlex';
 import { checkSpigotFit, plenumGeometry, spigotAttachment } from './ductPlenum';
 import { findTerminalPort } from './ductTerminals';
 import { jogOffset, tightestOgee, type DuctOffsetGeometry } from './ductOffsets';
+import { maxRoundBranchMm, roundReducerMinLengthMm, wyeLegLengthMm, ROUND_FITTING_RULES } from './ductRoundFittings';
 import { goredElbowPieces, SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';
-import { isRoundLeg, isRoundTapStyle, readDuctRunSpec, type DuctLeg, type DuctPoint3, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
+import { squareToRoundAreaMm2 } from './ductSquareToRound';
+import {
+  isRoundLeg,
+  isRoundMainTapStyle,
+  isRoundTapStyle,
+  readDuctRunSpec,
+  type DuctLeg,
+  type DuctPoint3,
+  type DuctRunSpec,
+  type DuctTapStyle,
+} from './ductTypes';
 
 export type DuctIssueCode =
   | 'DU_PRESSURE_UNSUPPORTED'
@@ -305,6 +316,8 @@ const PRACTICE = {
   neckStretch: 'A leg remainder shorter than the minimum make-up piece is taken up in the elbow neck',
   insulation: 'NBR thickness by service, flange bands, tape and waste',
   split: 'Split neck and tee depth (types per Fig. 2-5)',
+  roundTap: 'Round-main tap stub and lateral collar lengths (Fig. 3-4 leaves them undimensioned)',
+  wye: 'Wye leg 3A/2 read as the centreline length to the outlet',
 } as const;
 
 /** The clear section at a piece's start or end, round pieces keeping their diameter. */
@@ -361,13 +374,28 @@ function elbowAreaM2(elbow: DuctElbow, section: DuctLeg, thicknessMm: number | n
   return (body + necks + flangeRollEnds * TDC_FLANGE_ROLL_MM * girth) / 1e6;
 }
 
+/** A transition between a rectangular and a round section (either way). */
+export function isShapeChange(from: DuctLeg, to: DuctLeg): boolean {
+  return isRoundLeg(from) !== isRoundLeg(to);
+}
+
 function transitionAreaM2(from: DuctLeg, to: DuctLeg, thicknessMm: number | null, neckMm: number, slopeMm: number, flangeRollEnds: number, seams: SeamSpec): number {
   const a = outer(from, thicknessMm);
   const b = outer(to, thicknessMm);
   const girthA = girthOf(from, thicknessMm);
   const girthB = girthOf(to, thicknessMm);
   const slant = Math.hypot(slopeMm, Math.max(Math.abs(b.w - a.w) / 2, Math.abs(b.h - a.h)));
-  const body = ((girthA + girthB) / 2) * slant + neckMm * (girthA + girthB);
+  let lofted = ((girthA + girthB) / 2) * slant;
+  if (isShapeChange(from, to)) {
+    // Square-to-round: its development (4 triangles + 4 cone quarters), flat bottom shared.
+    const rect = isRoundLeg(from) ? b : a;
+    const diameter = isRoundLeg(from) ? a.w : b.w;
+    lofted = squareToRoundAreaMm2({
+      rectHalfWidthMm: rect.w / 2, rectHalfHeightMm: rect.h / 2, rectCentreUpMm: rect.h / 2,
+      radiusMm: diameter / 2, circleCentreUpMm: diameter / 2, lengthMm: slopeMm, rectAtStart: !isRoundLeg(from),
+    });
+  }
+  const body = lofted + neckMm * (girthA + girthB);
   return (body + seams.count * seams.allowanceMm * (slant + 2 * neckMm) + flangeRollEnds * TDC_FLANGE_ROLL_MM * (girthA + girthB) / 2) / 1e6;
 }
 
@@ -608,7 +636,9 @@ interface TransitionPlan {
 /** Level legs keep a flat bottom (the height changes on top); a riser's transition is concentric both ways. */
 function planTransition(from: DuctLeg, to: DuctLeg, settings: DuctDesignSettings, concentric = false): TransitionPlan {
   const rise = Math.max(Math.abs(to.widthMm - from.widthMm) / 2, Math.abs(to.heightMm - from.heightMm) / (concentric ? 2 : 1));
-  const slope = Math.ceil(rise / Math.tan((settings.transitionTaperDeg * Math.PI) / 180) / 10) * 10;
+  let slope = Math.ceil(rise / Math.tan((settings.transitionTaperDeg * Math.PI) / 180) / 10) * 10;
+  // A round reducer's cone is at least A - B and 102 mm long (SMACNA Fig. 3-5, L2).
+  if (isRoundLeg(from) && isRoundLeg(to)) slope = Math.max(slope, Math.ceil(roundReducerMinLengthMm(from.diameterMm!, to.diameterMm!) / 10) * 10);
   return { from, to, neckMm: settings.elbowNeckMm, slopeMm: slope };
 }
 
@@ -778,14 +808,22 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
           construction: parentSpec.construction, settings, pressureClassPa: parentSpec.pressureClassPa, jointSystem: parentSpec.jointSystem, gaugeOverrideMm: parentSpec.gaugeOverrideMm }).sheetThicknessMm ?? 1
         : 1;
       tap = tapAttachment(parentSpec, start, firstLeg, parentSheet, settings);
-      if (parentSection && isRoundLeg(parentSection)) {
+      const roundMain = Boolean(parentSection && isRoundLeg(parentSection));
+      if (roundMain && !isRoundMainTapStyle(start.style)) {
         issues.push({ code: 'DU_TAP_CLASH', severity: 'error', point: spec.path[0],
-          message: 'Take-offs are made off rectangular runs only; this parent leg is round.' });
-      }
-      if (isRoundTapStyle(start.style) !== isRoundLeg(firstLeg)) {
+          message: 'A round main takes a branch by a conical tap, a 90° tap or a 45° lateral (SMACNA Fig. 3-4 / 3-5).' });
+      } else if (!roundMain && isRoundMainTapStyle(start.style)) {
+        issues.push({ code: 'DU_TAP_CLASH', severity: 'error', point: spec.path[0],
+          message: 'Round-main taps go on round runs; take a round branch off a rectangular wall with a spin-in or conical collar (SMACNA Fig. 2-6).' });
+      } else if (isRoundTapStyle(start.style) !== isRoundLeg(firstLeg)) {
         issues.push({ code: 'DU_TAP_CLASH', severity: 'error', point: spec.path[0],
           message: isRoundLeg(firstLeg) ? 'A round branch needs a spin-in or conical collar.' : 'A spin-in or conical collar needs a round branch.' });
       }
+      if (roundMain && parentSection && isRoundLeg(firstLeg) && firstLeg.diameterMm! > maxRoundBranchMm(parentSection.diameterMm!) + 0.5) {
+        issues.push({ code: 'DU_TAP_TOO_BIG', severity: 'error', point: spec.path[0],
+          message: `A Ø${Math.round(firstLeg.diameterMm!)} branch is over two thirds of the Ø${Math.round(parentSection.diameterMm!)} main (SMACNA S3.4: at most Ø${Math.floor(maxRoundBranchMm(parentSection.diameterMm!))}).` });
+      }
+      if (roundMain) practice.add(PRACTICE.roundTap);
       if (!tap) {
         issues.push({ code: 'DU_STALE', severity: 'warning', point: spec.path[0], message: 'The parent leg this branch was taken off no longer exists.' });
       } else {
@@ -1197,9 +1235,15 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       issues.push({ code: 'DU_SPLIT_SIZE', severity: 'error', point: spec.path[spec.path.length - 1],
         message: 'A split ends a level leg; add a level leg after the riser.' });
     }
-    if (isRoundLeg(lastSection) || splitBranches.some((branch) => isRoundLeg(branch.section))) {
+    if (spec.end.style === 'wye') {
+      if (!isRoundLeg(lastSection) || splitBranches.some((branch) => !isRoundLeg(branch.section))) {
+        issues.push({ code: 'DU_SPLIT_SIZE', severity: 'error', point: spec.path[spec.path.length - 1],
+          message: 'A wye splits a round main into round branches (SMACNA Fig. 3-5); a rectangular run splits with a Y or a bullhead tee (Fig. 2-5).' });
+      }
+      practice.add(PRACTICE.wye);
+    } else if (isRoundLeg(lastSection) || splitBranches.some((branch) => isRoundLeg(branch.section))) {
       issues.push({ code: 'DU_SPLIT_SIZE', severity: 'error', point: spec.path[spec.path.length - 1],
-        message: 'Splits are rectangular fittings (SMACNA Fig. 2-5); take round branches off with spin-in or conical collars.' });
+        message: 'Y and bullhead splits are rectangular fittings (SMACNA Fig. 2-5); split a round main with a wye (Fig. 3-5).' });
     }
     if (geometry) {
       practice.add(PRACTICE.split);
@@ -1221,7 +1265,16 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       const o = outer(lastSection, sheetOf(lastSection));
       const heavy = geometry.branches.reduce((best, branch) => heavier(best, branch.section), lastSection);
       let area: number;
-      if (geometry.style === 'bullhead') {
+      if (geometry.style === 'wye') {
+        // A cone from the main to each outlet over its 3A/2 leg, a 51 mm spigot on each, a disc on a capped leg.
+        const leg = wyeLegLengthMm(lastSection.widthMm);
+        const spigot = ROUND_FITTING_RULES.spigotMm;
+        area = (geometry.branches.reduce((total, branch) => {
+          const r1 = o.w / 2;
+          const r2 = branch.section.widthMm / 2 + (sheetOf(branch.section) ?? 1);
+          return total + Math.PI * (r1 + r2) * Math.hypot(leg, r1 - r2) + 2 * Math.PI * r2 * spigot;
+        }, 0) + geometry.cappedSides.length * (Math.PI * o.w * o.w) / 4) / 1e6;
+      } else if (geometry.style === 'bullhead') {
         area = (2 * (o.w + o.h) * geometry.depthMm + o.w * o.h) / 1e6;
       } else {
         area = geometry.branches.reduce((total, branch) => total + (branch.elbow
@@ -1366,8 +1419,9 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     } else if ((spec.start.kind === 'tap' || spec.start.kind === 'spigot') && tap) {
       const start = spec.start;
       pushJoint('tap-connection', 0, first, section, [null, first.mark],
-        tap.openingDiameterMm !== null && (start.style === 'spin-in' || start.style === 'conical')
-          ? roundTakeoffHardware({ sideAMm: tap.openingDiameterMm, sideBMm: tap.openingDiameterMm, pressureClassPa, washersPerBolt: settings.washersPerBolt }, start.style)
+        tap.openingDiameterMm !== null && isRoundTapStyle(start.style)
+          ? roundTakeoffHardware({ sideAMm: tap.openingDiameterMm, sideBMm: tap.openingDiameterMm, pressureClassPa, washersPerBolt: settings.washersPerBolt },
+            start.style as Exclude<DuctTapStyle, 'shoe-45' | 'straight'>)
           : takeoffHardware({ sideAMm: o.w + tap.leadInMm, sideBMm: o.h, pressureClassPa, washersPerBolt: settings.washersPerBolt }));
     } else if (spec.start.kind === 'split-branch') {
       pushJoint('flange', 0, first, section, [null, first.mark], hardwareFor(section));

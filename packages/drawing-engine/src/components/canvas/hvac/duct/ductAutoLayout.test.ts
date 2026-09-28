@@ -184,8 +184,12 @@ describe('duct auto layout', () => {
       expect(entry.fittingsPa).toBeGreaterThan(0);
       expect(pressure.throttlePa[entry.terminalId]).toBeGreaterThanOrEqual(0);
     }
-    // The ends of the row are furthest: one of them is the index.
-    expect(['r1', 'r6']).toContain(pressure.indexTerminalId);
+    // Slow air: the take-off losses dominate, and the tees nearest the split see the fastest
+    // main air (Idelchik form), so the inner branches lose most and one of them is the index.
+    const byId = (id: string) => pressure.terminals.find((entry) => entry.terminalId === id)!;
+    expect(byId('r3').fittingsPa).toBeGreaterThan(byId('r1').fittingsPa);
+    expect(byId('r4').fittingsPa).toBeGreaterThan(byId('r6').fittingsPa);
+    expect(['r3', 'r4']).toContain(pressure.indexTerminalId);
     expect(result.requiredEspPa).toBeCloseTo(pressure.indexPa, 6);
     // 600 m³/h over six runouts is slow air (about 1 m/s): the diffuser's own drop dominates.
     expect(result.requiredEspPa!).toBeGreaterThan(settings.autoDiffuserDropPa);
@@ -199,7 +203,7 @@ describe('duct auto layout', () => {
     const unit = fdum();
     const { supply } = frames(unit);
     const far = [4000, 6000].map((along, index) => terminal(`f${index + 1}`, at(supply, along, 0), minus(supply.n)));
-    const result = generateAutoDuct([unit, ...far], request(far.map((element) => element.id), { airflowM3h: 2400, layout: 'trunk' }), settings);
+    const result = generateAutoDuct([unit, ...far], request(far.map((element) => element.id), { airflowM3h: 3000, layout: 'trunk' }), settings);
     expect(result.requiredEspPa!).toBeGreaterThan(100);
     expect(result.issues.map((issue) => issue.code)).toContain('DU_AUTO_ESP');
   });

@@ -181,7 +181,7 @@ function transitionOutline(piece: DuctPiece, sheet: number): Point2D[] {
 function takeoffOutline(piece: DuctPiece, sheet: number): Point2D[] {
   const half = piece.widthMm / 2 + sheet;
   const lead = piece.takeoff?.leadInMm ?? 0;
-  if (piece.takeoff?.style === 'conical' && piece.takeoff.openingMm) {
+  if ((piece.takeoff?.style === 'conical' || piece.takeoff?.style === 'round-conical') && piece.takeoff.openingMm) {
     // Cone: the mouth on the parent wall is wider than the branch (SMACNA Fig. 2-6, D1 ≥ D2).
     const n = normalOf(piece.direction);
     const mouth = piece.takeoff.openingMm / 2 + sheet;
@@ -193,6 +193,25 @@ function takeoffOutline(piece: DuctPiece, sheet: number): Point2D[] {
   const at = (a: number, b: number) => add(add(piece.start, scale(u, a)), scale(v, b));
   const length = piece.lengthMm;
   return [at(0, -half - lead), at(0, half), at(length, half), at(length, -half), at(Math.min(lead, length), -half)];
+}
+
+/**
+ * Square-to-round fold lines in plan: from each corner of the rectangular end
+ * to the round end's 45° points, the usual symbol for the development.
+ */
+function squareToRoundFolds(piece: DuctPiece, sheet: number): Array<[Point2D, Point2D]> {
+  if (piece.kind !== 'transition' || (piece.diameterMm === undefined) === (piece.endDiameterMm === undefined)) return [];
+  const n = normalOf(piece.direction);
+  const neck = Math.min(piece.transition?.neckMm ?? 0, piece.lengthMm / 2);
+  const rectFirst = piece.diameterMm === undefined;
+  const rectHalf = (rectFirst ? piece.widthMm : piece.endWidthMm) / 2 + sheet;
+  const roundHalf = ((rectFirst ? piece.endDiameterMm! : piece.diameterMm!) / 2 + sheet) * Math.SQRT1_2;
+  const rectAt = rectFirst ? add(piece.start, scale(piece.direction, neck)) : sub(piece.end, scale(piece.direction, neck));
+  const roundAt = rectFirst ? sub(piece.end, scale(piece.direction, neck)) : add(piece.start, scale(piece.direction, neck));
+  return [
+    [add(rectAt, scale(n, rectHalf)), add(roundAt, scale(n, roundHalf))],
+    [sub(rectAt, scale(n, rectHalf)), sub(roundAt, scale(n, roundHalf))],
+  ];
 }
 
 function readableAngle(direction: Point2D): number {
@@ -295,7 +314,27 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
       case 'split': {
         const split = piece.split!;
         const half = split.parentSection.widthMm / 2 + sheet;
-        if (split.style === 'bullhead') {
+        if (split.style === 'wye') {
+          // Round wye: each 45° leg tapers from the main to its outlet.
+          for (const branch of split.branches) {
+            const out = unit(sub(branch.outlet.point, split.origin));
+            const across = normalOf(out);
+            const branchHalf = branch.section.widthMm / 2 + sheet;
+            piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: [
+              add(split.origin, scale(across, half)), add(branch.outlet.point, scale(across, branchHalf)),
+              sub(branch.outlet.point, scale(across, branchHalf)), sub(split.origin, scale(across, half)),
+            ] });
+            centreline.push(split.origin, branch.outlet.point);
+          }
+          for (const side of split.cappedSides) {
+            const out = unit(add(split.direction, scale(split.normal, side)));
+            const cap = add(split.origin, scale(out, half));
+            const across = normalOf(out);
+            piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: [
+              add(split.origin, scale(across, half)), add(cap, scale(across, half * 0.8)), sub(cap, scale(across, half * 0.8)), sub(split.origin, scale(across, half)),
+            ] });
+          }
+        } else if (split.style === 'bullhead') {
           const far = add(split.origin, scale(split.direction, split.depthMm));
           piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: [
             add(split.origin, scale(split.normal, half)), add(far, scale(split.normal, half)),
@@ -377,6 +416,7 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
       }
       case 'transition': {
         piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: transitionOutline(piece, sheet) });
+        goreLines.push(...squareToRoundFolds(piece, sheet));
         marks.push({ point: mid, text: piece.mark });
         centreline.push(piece.start, piece.end);
         break;
