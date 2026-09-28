@@ -13,7 +13,8 @@ export type DuctSourceId =
   | 'fdum22-glb-measured'
   | 'project-practice'
   | 'project-configuration'
-  | 'armacell-520';
+  | 'armacell-520'
+  | 'mhi-fdum22-data';
 
 export interface DuctSource {
   document: string;
@@ -46,6 +47,10 @@ export const DUCT_SOURCES: Record<DuctSourceId, DuctSource> = {
   },
   'project-configuration': {
     document: 'Project configuration (fabricator / supplier stock)',
+  },
+  'mhi-fdum22-data': {
+    document: 'MHI FDUM22KXE6F product data: airflow P-Hi 13 / Hi 10 / Me 9 / Lo 8 m³/min (cooling), maximum external static pressure 100 Pa (MHIAE and Form MHI product pages, read 28 September 2026)',
+    url: 'https://mhiae.com/units/fdum22kxe6f/',
   },
   'armacell-520': {
     document: 'Armacell ArmaFlex 520 adhesive product brochure (coverage 7–9 m²/L, both faces, sheet)',

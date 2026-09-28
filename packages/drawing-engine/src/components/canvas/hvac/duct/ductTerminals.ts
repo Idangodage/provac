@@ -67,6 +67,7 @@ export function readDuctTerminalSpec(element: Pick<HvacElement, 'type' | 'proper
     spigotLengthMm: read('spigotLengthMm', 51),
     spigotSide: SIDES.includes(raw?.spigotSide as DuctTerminalSpigotSide) ? (raw!.spigotSide as DuctTerminalSpigotSide) : base.spigotSide,
     service: element.type === 'return-grille' ? 'return' : 'supply',
+    designAirflowM3h: finite(raw?.designAirflowM3h) && (raw!.designAirflowM3h as number) > 0 ? raw!.designAirflowM3h as number : null,
   };
 }
 

@@ -106,6 +106,8 @@ import { moveDuctRuns, toElementUpdate } from "./canvas/hvac/duct/ductFollow";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
 import { getDuctSupportPlan } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts } from "./canvas/hvac/duct/ductTerminals";
+import { generateAutoDuctPreview, applyAutoDuctPreview } from "./canvas/hvac/duct/ductAutoController";
+import { useDuctAutoPreviewStore } from "./canvas/hvac/duct/ductAutoPreviewStore";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
@@ -805,6 +807,21 @@ export function DrawingCanvas({
       getAirPorts: () => listAirPorts(hvacElements),
       /** Air terminals' spigots (diffusers and grilles) a run can finish on. */
       getTerminalPorts: () => listTerminalPorts(hvacElements),
+      /** Auto duct: generate a preview for a unit and terminals, read it back, apply it (one undo). */
+      autoDuct: (request: Parameters<typeof generateAutoDuctPreview>[0]) => { generateAutoDuctPreview(request); },
+      getAutoDuctPreview: () => {
+        const result = useDuctAutoPreviewStore.getState().result;
+        return result ? {
+          unitId: result.unitId, airflowM3h: result.airflowM3h, airflowSource: result.airflowSource, requiredEspPa: result.requiredEspPa, maxEspPa: result.maxEspPa,
+          runs: result.runs.map((run) => run.id), removeIds: result.removeIds,
+          issues: [...result.issues, ...result.services.flatMap((service) => service.issues)].map((issue) => `${issue.severity}:${issue.code}: ${issue.message}`),
+          services: result.services.map((service) => ({
+            service: service.service, layout: service.layout, trunkSections: service.trunkSections, candidates: service.candidates,
+            terminals: service.terminals, indexPa: service.pressure?.indexPa ?? null,
+          })),
+        } : null;
+      },
+      applyAutoDuct: () => applyAutoDuctPreview(),
       /** Room outlines (scripted placement of room-mounted equipment). */
       getRooms: () => useSmartDrawingStore.getState().rooms.map((room) => ({ id: room.id, name: room.name, vertices: room.vertices })),
       getDuctPlan: (elementId: string) => {
@@ -1863,6 +1880,13 @@ export function DrawingCanvas({
     pipeStudioOverlayRef.current?.setDraftPipes(elements);
     hybridPipeInteractionRef.current?.setDraftPipes(elements);
   }, []);
+  // Auto duct preview in 3D, through the same draft path the duct tool uses.
+  const autoDuctPreview = useDuctAutoPreviewStore((state) => (state.result && state.scene === hvacElements ? state.result : null));
+  useEffect(() => {
+    if (!autoDuctPreview?.runs.length) return undefined;
+    hybridPipeInteractionRef.current?.setDraftPipes(autoDuctPreview.runs);
+    return () => hybridPipeInteractionRef.current?.setDraftPipes(null);
+  }, [autoDuctPreview]);
   // Snap-hover indicator: the tool forwards the detected snap point; the overlay
   // renders it with the same endpoint-handle bullseye a committed pipe shows.
   const handleSnapIndicator = useCallback((point: (Point2D & { label?: string }) | null) => {

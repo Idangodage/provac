@@ -580,6 +580,81 @@ Built on 27 September 2026 (uncommitted).
   9. **Design checks:** the only duct errors are `DU_CLASH` against the test room's two existing refrigerant pipes, which cross the plenum area. That is correct coordination feedback.
   10. **Regressions:** `duct-p3.mjs` (14 of 14) and `duct-complete.mjs` (11 of 11) pass, and both restore the project exactly.
 
+## Duct auto layout
+
+Select a ducted unit together with the diffusers and grilles it serves (Shift-click or a box). The **Auto duct** card appears at the top of the AC Equipment section:
+
+1. **Generate** lays the ducts out as a preview on the canvas (dashed, with size tags) and in 3D.
+2. The card shows a design summary: layout, sections, each terminal's airflow, branch Ø and neck velocity, what each damper throttles, the external static pressure against the unit's maximum, and any issues.
+3. **Apply** adds the ducts as one undo step. **Discard** drops the preview. A preview of a drawing that has since changed is refused.
+
+With no terminals selected, the card uses the unconnected terminals in the unit's room.
+
+**Data**
+- **FDUM22KXE6F (manufacturer data):**
+  - airflow P-Hi 13 / Hi 10 / Me 9 / Lo 8 m³/min, maximum external static pressure 100 Pa;
+  - read from the MHIAE and Form MHI product pages;
+  - stored on the catalog entry (`airflowM3min`, `maxEspPa`) and read by model code for units placed earlier.
+- **Airflow used:** the card's Airflow field, else the unit's own Airflow field, else its data at the chosen fan speed (Hi by default).
+- **Terminal share:** each terminal takes its Design airflow if set, else an equal share of what the fixed ones leave.
+
+**Sizing (`ductSizing.ts`, the equal-friction method)**
+- **Friction:** Darcy–Weisbach with the Altshul–Tsal factor. Rectangular sections use the Huebscher equivalent diameter. Galvanised ε 0.09 mm, flex ε 3 mm, air 1.2 kg/m³.
+- **Choice:** the smallest standard size meeting both the friction-rate target (0.8 Pa/m supply, 0.6 return) and the velocity cap:
+  - trunk 5, branch 4, runout 3 m/s;
+  - necks 3 m/s (diffuser) and 3.5 m/s (grille).
+  - These are project settings in Duct Systems, labelled practice.
+- **Trunk height:** at least the largest round branch + 50 mm, so each spin-in fits the side wall. It is raised past 4:1 within the ceiling void.
+- **Branches:** at least the neck. A larger branch reduces to the neck before the flex. The flex always matches the spigot.
+
+**Layout (`ductAutoLayout.ts`)**
+- **Frame:** the layout is worked in the collar's own frame, so it follows the unit whatever its rotation.
+- **Candidates:** each is built as real runs, planned and clash-checked; the cheapest wins. Cost = sheet + fittings + flex + fan pressure + heavy penalties for errors.
+  - **Plenum + runouts:** up to four terminals, two per face, within about 4 m. The box has room for its spigots. Each terminal takes the face whose runout sits best, and a spigot whose collar + damper would run into a pipe or unit is ruled out.
+  - **Straight trunk** along the collar's normal.
+  - **Trunk with one turn** along a row of terminals, a branch's reach in front of their spigots.
+  - **Y split** along the row: the main carries both outlets and is pulled back so the outlet trunks run on the row.
+- **Take-offs:**
+  - placed opposite a point a runout's length in front of each spigot, clear of the fan-outlet straight (about 2.5 equivalent diameters), elbows, the split and each other;
+  - opposing take-offs are spread evenly about their stations;
+  - spin-in + damper.
+- **Reducers:** half way between take-offs, only when the width falls by the reducer step (100 mm).
+- **Branches:**
+  - **All flex** when the stub ends in front of the spigot and the runout fits (bend ≥ 1 D, length ≤ the maximum).
+  - **Otherwise rigid round**, routed round the obstacles and the branches already laid, ending a runout's length square in front of the spigot.
+  - **Obstacles:** other equipment, terminal boxes, existing ducts, and pipes in the duct's height band.
+- **Levels:** one level per service, the collar's bottom. The flex takes up the drop to the ceiling.
+
+**Pressure (`ductPressure.ts`)**
+- Each terminal path sums, piece by piece: friction at the airflow the piece carries, fitting loss coefficients × velocity pressure (practice values), and the terminal drop (15 Pa diffuser, 10 Pa grille; placeholders).
+- **Index path:** the largest; supply + return index paths are the required external static pressure. `DU_AUTO_ESP` warns when the unit cannot give it. The gap to the index path is what each damper throttles.
+
+**Codes**
+- `DU_AUTO_NO_DATA`: the unit has no airflow; enter it.
+- `DU_AUTO_OCCUPIED`: the collar already has a duct; tick Rebuild existing.
+- `DU_AUTO_CONNECTED`: a terminal is already served by another duct.
+- `DU_AUTO_AIRFLOW`: the terminal shares don't add up to the unit's airflow.
+- `DU_AUTO_VOID`: too little room under the soffit.
+- `DU_AUTO_NO_LAYOUT`: nothing could be built.
+- `DU_AUTO_ESP`: the ducts need more static pressure than the fan gives.
+- `DU_TERMINAL_VELOCITY`: a neck is too fast; the next neck size is proposed.
+- `DU_AUTO_RUNOUT` (info): a runout kept at the neck size.
+
+**Verified**
+- **Vitest:**
+  - `ductSizing.test.ts`: equivalent diameter, friction against the ASHRAE chart, size choice, unit data, shares, necks.
+  - `ductAutoLayout.test.ts`: plenum group, Y split along a row, straight trunk with a reducer, return, rotated unit, occupied collar, no data, neck velocity, pressure index and damper throttle, the ESP warning.
+  - `store/ductAutoApply.test.ts`: selection, preview, apply as one undo, stale preview, rebuild.
+- **On canvas:** `D:\claude-tmp-vrf-check\duct-auto.mjs` (real panel, Shift-click selection, mouse; project restored exactly), 28 September 2026:
+  1. **Compact group:** FDUM22 + 3 diffusers + 1 grille, all selected.
+     - The card reads "3 diffusers · 1 grille" and offers the fan speeds from the manufacturer data.
+     - Generate previews, without changing the drawing: a supply plenum 900 × 300 with three spin-in + damper + flex runouts, and a return plenum 900 × 400 to the grille. The pressure is 35 Pa of 100 Pa.
+     - Apply adds the 6 runs, each planning clean, with runouts of 0.51–0.66 m. One undo removes them.
+  2. **Close row:** 6 diffusers in a row 2.3 m in front of the unit.
+     - The layout is a split trunk (500 × 250 → 250 × 250 each side) with the fan outlet straight shortened and noted, and six take-offs with dampers and runouts. The pressure is 16 Pa.
+     - Apply and one undo work.
+  3. **Real conflicts, reported:** the test room's two refrigerant pipes and its ceiling cassette sit at duct level in front of the unit. The generator reports them as `DU_CLASH`: a damper stub against the pipes, and the trunk across the cassette. There is no room above them under the 2900 soffit.
+
 ## Known limits
 
 - Round runs are branches (spin-in / conical off rectangular runs); round trunks with their own take-offs are not in scope.
@@ -589,7 +664,8 @@ Built on 27 September 2026 (uncommitted).
 - The design-check chip is still titled "VRF checks" though it lists condensate and duct checks too.
 - The NBR skin in 3D does not box the flanges, so a 30 mm TDC flange shows through a 25 mm skin.
 - Duct-to-duct clash skips a branch and its own parent.
-- No airflow sizing or auto-routing from terminals. Sizes are what you draw.
+- Auto duct lays out one unit at a time, one level per service. It adds no risers and does not route round walls (there are no beams or storeys in the model).
+- Auto duct's pressure figures are estimates with practice loss coefficients, not a certified duct calculation.
 - Terminal sizes are typical catalog values (practice) until a supplier's data is entered.
 - A rigid connection to a terminal is checked, not routed: its last leg has to be drawn straight into the spigot.
 - Plenum spigots are round, on the side and end faces; there are no bottom spigots or rectangular necks yet.

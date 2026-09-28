@@ -45,6 +45,7 @@ import {
   CondensatePipeInspector,
   UnitDrainageRows,
 } from "./canvas/hvac/condensate/CondensateInspector";
+import { DuctAutoCard } from "./canvas/hvac/duct/DuctAutoCard";
 import { DuctRunInspector, DuctSystemsSection, DuctTerminalInspector, DuctToolSection } from "./canvas/hvac/duct/DuctPanels";
 import { editablePipeMaterials, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
 import { buildPipePropertyEdit, type PipePropertyEdit } from "./canvas/hvac/pipePropertyEdits";
@@ -4152,6 +4153,7 @@ export function PropertiesPanel({
         </CollapsibleSection>
 
         <CollapsibleSection title="AC Equipment" defaultOpen={hasSelectedHvac}>
+          <DuctAutoCard />
           <AcEquipmentSection propertyUnit={propertyUnit} />
         </CollapsibleSection>
 

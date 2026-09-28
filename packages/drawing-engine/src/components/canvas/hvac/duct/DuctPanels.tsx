@@ -27,6 +27,7 @@ import { ductBranchesOf } from './ductNetwork';
 import { DUCT_RULE_SOURCES, DUCT_SUPPORTED_PRESSURE_CLASSES_PA, type DuctDesignSettings, type DuctJointSystem } from './ductSettings';
 import { DUCT_SOURCES, isPracticeSource } from './ductSources';
 import { defaultPlenumSize } from './ductPlenum';
+import { neckVelocityMs } from './ductSizing';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
 import { DUCT_TERMINAL_NECKS_MM, isDuctTerminalElement, readDuctTerminalSpec, TERMINAL_LABELS, typicalTerminalSpec, type DuctTerminalSpigotSide } from './ductTerminals';
 import { tapStyleFor, useDuctToolStore } from './ductToolStore';
@@ -193,6 +194,28 @@ function legCaption(spec: DuctRunSpec, index: number): string {
 }
 
 /** A diffuser or return grille: its size (typical catalog, practice), spigot and ceiling level. */
+/** A number that may be left blank (null); commits on Enter or blur. */
+function TerminalAirflowInput({ value, onCommit }: { value: number | null; onCommit: (value: number | null) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const parsed = Number.parseFloat(draft);
+    setDraft(null);
+    const next = draft.trim() === '' ? null : Number.isFinite(parsed) && parsed > 0 ? Math.min(20000, parsed) : value;
+    if (next !== value) onCommit(next);
+  };
+  return (
+    <input
+      type="number" step={10} min={0} aria-label="Terminal design airflow" placeholder="share"
+      value={draft ?? (value === null ? '' : String(value))}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => { if (event.key === 'Enter') commit(); }}
+      className="w-16 rounded border border-slate-200 px-1 text-xs"
+    />
+  );
+}
+
 export function DuctTerminalInspector({ element }: { element: HvacElement }) {
   const updateHvacElement = useSmartDrawingStore((state) => state.updateHvacElement);
   const spec = readDuctTerminalSpec(element);
@@ -234,6 +257,15 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
         <CommitNumber label="Terminal ceiling level" value={element.elevation} step={50} min={0} max={30000}
           onCommit={(elevation) => commitDuctTerminalEdit(element, { elevation }, 'Terminal ceiling level')} />
         <span className="ml-0.5 text-[10px] text-slate-400">mm (face)</span>
+      </Row>
+      <Row label="Design airflow" title="Used by Auto duct; blank = an equal share of its unit's airflow">
+        <TerminalAirflowInput
+          value={spec.designAirflowM3h ?? null}
+          onCommit={(designAirflowM3h) => commitDuctTerminalEdit(element, { spec: { ...spec, designAirflowM3h } }, 'Terminal airflow')} />
+        <span className="ml-0.5 text-[10px] text-slate-400">m³/h</span>
+        {spec.designAirflowM3h ? (
+          <span className="ml-1 text-[10px] text-slate-500">{neckVelocityMs(spec, spec.designAirflowM3h).toFixed(1)} m/s in the neck</span>
+        ) : null}
       </Row>
     </div>
   );
@@ -713,6 +745,17 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="minMakeUpPieceMm" label="Shortest make-up piece" step={10} min={50} max={1000} />
       <SettingNumber settingKey="washersPerBolt" label="Washers per bolt" step={1} min={0} max={4} unit="" />
       <SettingNumber settingKey="transitionTaperDeg" label="Transition design taper" step={1} min={5} max={30} unit="° / side" />
+      <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Auto duct sizing</div>
+      <SettingNumber settingKey="autoFrictionSupplyPaPerM" label="Friction rate, supply" step={0.1} min={0.2} max={3} unit="Pa/m" />
+      <SettingNumber settingKey="autoFrictionReturnPaPerM" label="Friction rate, return" step={0.1} min={0.2} max={3} unit="Pa/m" />
+      <SettingNumber settingKey="autoMaxVelocityTrunkMs" label="Max velocity, trunk" step={0.5} min={1} max={12} unit="m/s" />
+      <SettingNumber settingKey="autoMaxVelocityBranchMs" label="Max velocity, branch" step={0.5} min={1} max={10} unit="m/s" />
+      <SettingNumber settingKey="autoMaxVelocityRunoutMs" label="Max velocity, runout" step={0.5} min={1} max={8} unit="m/s" />
+      <SettingNumber settingKey="autoMaxNeckVelocitySupplyMs" label="Max neck velocity, diffuser" step={0.5} min={1} max={8} unit="m/s" />
+      <SettingNumber settingKey="autoMaxNeckVelocityReturnMs" label="Max neck velocity, grille" step={0.5} min={1} max={8} unit="m/s" />
+      <SettingNumber settingKey="autoDiffuserDropPa" label="Diffuser pressure drop" step={1} min={0} max={150} unit="Pa" />
+      <SettingNumber settingKey="autoGrilleDropPa" label="Grille pressure drop" step={1} min={0} max={150} unit="Pa" />
+      <SettingNumber settingKey="autoReducerStepMm" label="Reduce the trunk from" step={50} min={0} max={500} />
       <SettingNumber settingKey="transitionMaxDivergingIncludedDeg" label="Max diverging (concentric)" step={1} min={10} max={45} unit="° incl." />
       <SettingNumber settingKey="transitionMaxConvergingIncludedDeg" label="Max converging (concentric)" step={1} min={10} max={60} unit="° incl." />
       <SettingNumber settingKey="transitionMaxEccentricDeg" label="Max eccentric (flat bottom)" step={1} min={5} max={30} unit="°" />

@@ -25,6 +25,8 @@ export interface DuctTerminalSpec {
   spigotLengthMm: number;
   /** Linear slot diffusers. */
   slots?: number;
+  /** Design airflow through this terminal (m³/h); absent = an equal share of its unit's airflow. */
+  designAirflowM3h?: number | null;
 }
 
 export const DUCT_TERMINAL_NECKS_MM = [150, 200, 250, 300] as const;

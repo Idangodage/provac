@@ -102,6 +102,23 @@ export interface DuctDesignSettings {
   flexJacketMm: number;
   /** Hang each air terminal on two wires of its own, rather than from the ceiling grid (S3.40). */
   terminalHangerWires: boolean;
+  /** Auto layout: friction-rate targets for sizing (Pa per metre; equal-friction method). */
+  autoFrictionSupplyPaPerM: number;
+  autoFrictionReturnPaPerM: number;
+  /** Auto layout: velocity caps by part of the system (m/s). */
+  autoMaxVelocityTrunkMs: number;
+  autoMaxVelocityBranchMs: number;
+  autoMaxVelocityRunoutMs: number;
+  /** Auto layout: velocity caps in a terminal's neck (m/s). */
+  autoMaxNeckVelocitySupplyMs: number;
+  autoMaxNeckVelocityReturnMs: number;
+  /** Auto layout: pressure drop across a terminal at its design airflow (Pa). */
+  autoDiffuserDropPa: number;
+  autoGrilleDropPa: number;
+  /** Auto layout: round duct sizes to choose from (mm). */
+  autoRoundSizesMm: number[];
+  /** Auto layout: a trunk reduces only when its width drops by at least this much (mm). */
+  autoReducerStepMm: number;
   showSizeTags: boolean;
   showJointTicks: boolean;
   showPieceMarks: boolean;
@@ -158,6 +175,17 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   flexType: 'nm-il',
   flexJacketMm: 25,
   terminalHangerWires: false,
+  autoFrictionSupplyPaPerM: 0.8,
+  autoFrictionReturnPaPerM: 0.6,
+  autoMaxVelocityTrunkMs: 5,
+  autoMaxVelocityBranchMs: 4,
+  autoMaxVelocityRunoutMs: 3,
+  autoMaxNeckVelocitySupplyMs: 3,
+  autoMaxNeckVelocityReturnMs: 3.5,
+  autoDiffuserDropPa: 15,
+  autoGrilleDropPa: 10,
+  autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500],
+  autoReducerStepMm: 100,
   showSizeTags: true,
   showJointTicks: true,
   showPieceMarks: false,
@@ -219,6 +247,17 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   flexType: { sourceId: 'smacna-1995', reference: 'Fig. 3-7, S3.32–S3.34', verified: true, note: 'Your decision: insulated non-metallic (NM-IL) with draw bands.' },
   flexJacketMm: practice('Insulation on the flexible duct; 25 mm is the common NM-IL grade.'),
   terminalHangerWires: { sourceId: 'smacna-1995', reference: 'S3.40, Fig. 2-15', verified: true, note: 'Terminals on flex are supported independently: by the ceiling grid (default) or by their own wires.' },
+  autoFrictionSupplyPaPerM: practice('Equal-friction sizing (method: ASHRAE Fundamentals ch. 21); 0.8 Pa/m is the usual low-pressure supply rate.'),
+  autoFrictionReturnPaPerM: practice('Return sized a little lower than supply to keep the fan pressure down.'),
+  autoMaxVelocityTrunkMs: practice('Low-velocity trunk above an occupied space (noise).'),
+  autoMaxVelocityBranchMs: practice('Branch ducts to terminals.'),
+  autoMaxVelocityRunoutMs: practice('Flexible runouts and the last rigid length before a terminal.'),
+  autoMaxNeckVelocitySupplyMs: practice('Diffuser neck velocity for a quiet office (about NC 30–35); check the supplier\'s data.'),
+  autoMaxNeckVelocityReturnMs: practice('Return grille neck velocity; check the supplier\'s data.'),
+  autoDiffuserDropPa: practice('Placeholder terminal pressure drop until the supplier\'s data is entered.'),
+  autoGrilleDropPa: practice('Placeholder terminal pressure drop until the supplier\'s data is entered.'),
+  autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex).' },
+  autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
 };
 
 export const DUCT_SUPPORTED_PRESSURE_CLASSES_PA = [125, 250, 500] as const;
@@ -313,6 +352,18 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     flexType: oneOf(raw.flexType, ['nm-il', 'nm-un', 'm-un'] as const, d.flexType),
     flexJacketMm: clampNumber(raw.flexJacketMm, d.flexJacketMm, 0, 75),
     terminalHangerWires: bool(raw.terminalHangerWires, d.terminalHangerWires),
+    autoFrictionSupplyPaPerM: clampNumber(raw.autoFrictionSupplyPaPerM, d.autoFrictionSupplyPaPerM, 0.2, 3),
+    autoFrictionReturnPaPerM: clampNumber(raw.autoFrictionReturnPaPerM, d.autoFrictionReturnPaPerM, 0.2, 3),
+    autoMaxVelocityTrunkMs: clampNumber(raw.autoMaxVelocityTrunkMs, d.autoMaxVelocityTrunkMs, 1, 12),
+    autoMaxVelocityBranchMs: clampNumber(raw.autoMaxVelocityBranchMs, d.autoMaxVelocityBranchMs, 1, 10),
+    autoMaxVelocityRunoutMs: clampNumber(raw.autoMaxVelocityRunoutMs, d.autoMaxVelocityRunoutMs, 1, 8),
+    autoMaxNeckVelocitySupplyMs: clampNumber(raw.autoMaxNeckVelocitySupplyMs, d.autoMaxNeckVelocitySupplyMs, 1, 8),
+    autoMaxNeckVelocityReturnMs: clampNumber(raw.autoMaxNeckVelocityReturnMs, d.autoMaxNeckVelocityReturnMs, 1, 8),
+    autoDiffuserDropPa: clampNumber(raw.autoDiffuserDropPa, d.autoDiffuserDropPa, 0, 150),
+    autoGrilleDropPa: clampNumber(raw.autoGrilleDropPa, d.autoGrilleDropPa, 0, 150),
+    autoRoundSizesMm: Array.isArray(raw.autoRoundSizesMm) && raw.autoRoundSizesMm.every((size) => typeof size === 'number' && size >= 50 && size <= 2000)
+      ? [...new Set(raw.autoRoundSizesMm as number[])].sort((a, b) => a - b) : [...d.autoRoundSizesMm],
+    autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),
     showSizeTags: bool(raw.showSizeTags, d.showSizeTags),
     showJointTicks: bool(raw.showJointTicks, d.showJointTicks),
     showPieceMarks: bool(raw.showPieceMarks, d.showPieceMarks),

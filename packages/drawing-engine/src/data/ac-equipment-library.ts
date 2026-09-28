@@ -162,6 +162,10 @@ export const DEFAULT_AC_EQUIPMENT_LIBRARY: AcEquipmentDefinition[] = [
       model: "FDUM22KXE6F-W",
       capacityKw: 2.2,
       mountingType: "ducted",
+      // Manufacturer data (cooling), for duct sizing: see duct/ductSizing.ts.
+      airflowM3min: { "p-hi": 13, hi: 10, me: 9, lo: 8 },
+      maxEspPa: 100,
+      airDataSource: "mhi-fdum22-data",
     },
   }),
 

@@ -26,6 +26,7 @@ import {
 import { MM_TO_PX } from '../../scale';
 
 import { listAirPorts } from './ductAirPorts';
+import { useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, type DuctEditResult } from './ductEdits';
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
 import { moveDuctRuns } from './ductFollow';
@@ -321,6 +322,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const spec = isDuctTerminalElement(element) ? readDuctTerminalSpec(element) : null;
     return spec ? [{ element, spec }] : [];
   }), [hvacElements]);
+  // Auto duct preview: the proposed runs, dashed, over the drawing they were generated from (hiding the runs they replace).
+  const autoPreview = useDuctAutoPreviewStore((state) => (state.result && state.scene === hvacElements ? state.result : null));
+  const replacedIds = useMemo(() => new Set(autoPreview?.removeIds ?? []), [autoPreview]);
+  const previewMarkup = useMemo(() => {
+    if (!autoPreview?.runs.length) return '';
+    const scene = [...hvacElements.filter((element) => !replacedIds.has(element.id)), ...autoPreview.runs];
+    return autoPreview.runs.map((run) => {
+      const spec = readDuctRunSpec(run);
+      return spec ? ductRunMarkup(buildDuctPlanPresentation(planDuctRunSpec(run.id, spec, { settings, scene })), {
+        k, draft: true, showTags: true, showJointTicks: true, showMarks: false,
+      }) : '';
+    }).join('');
+  }, [autoPreview, hvacElements, replacedIds, settings, k]);
   const runs = useMemo(() => hvacElements
     .filter(isDuctElement)
     .map((element) => getDuctRunPlan(element, hvacElements, settings))
@@ -364,7 +378,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
             dangerouslySetInnerHTML={{ __html: terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, k, style.showTags)).join('') }}
           />
           <g ref={runsRef}>
-            {runs.map((plan) => (
+            {runs.filter((plan) => !replacedIds.has(plan.elementId)).map((plan) => (
               <g
                 key={plan.elementId}
                 dangerouslySetInnerHTML={{
@@ -374,6 +388,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
               />
             ))}
           </g>
+          <g data-testid="duct-auto-preview" dangerouslySetInnerHTML={{ __html: previewMarkup }} />
           <g ref={portsRef} data-testid="duct-ports" />
           <g ref={targetRef} data-testid="duct-branch-target" />
           <g ref={draftRef} data-testid="duct-draft" />
