@@ -24,6 +24,10 @@ import { readCondensateGullySpec } from "./condensate/condensateTypes";
 import { copperSocketCoverOutline, copperSocketCupOutline } from "./copperSocketElbowPlanGeometry";
 import { compileCopperSocketElbowRoute } from "./copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "./copperSocketElbows";
+import { resolveLocalAirPorts } from "./duct/ductAirPorts";
+import { pickDuctAtWorldPoint } from "./duct/ductPick";
+import { resolveDuctSettings, type DuctDesignSettings } from "./duct/ductSettings";
+import { localTerminalSpigot, readDuctTerminalSpec } from "./duct/ductTerminals";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
@@ -31,7 +35,7 @@ import {
   getDuctedIndoorUnitPlanBounds,
 } from "./ductedIndoorUnitModel";
 import { resolveFieldPipeBendRadiusMm } from "./fieldPipeBends";
-import { buildGiDuctVisual, isGiDuctElementType } from "./giDuctModel";
+import { isGiDuctElementType } from "./giDuctModel";
 import { hitTestModelBackedHvacElement } from "./hvacElementHitTesting";
 import { buildPipePlanTubes, type PlanPipeTube } from "./pipePlanPresentation";
 import { liftPipePlanRouteTo3d, readPipeRouteNodes3d } from "./pipeRoute3d";
@@ -330,6 +334,8 @@ export class HvacPlanRenderer {
   >();
   private selectedIds = new Set<string>();
   private hoveredId: string | null = null;
+  /** Duct settings used to pick runs on their drawn pieces. */
+  private ductSettings: DuctDesignSettings = resolveDuctSettings({});
   private placementPreview: HvacGroup[] = [];
   // Cached straight-segment geometry for deterministic pipe hit-testing; rebuilt
   // lazily on the next pick after any element render/override change.
@@ -3009,6 +3015,65 @@ export class HvacPlanRenderer {
         }
         break;
       }
+      case "diffuser":
+      case "return-grille": {
+        // Air terminal: its face symbol, and the plenum spigot (above the ceiling, dashed).
+        const terminal = readDuctTerminalSpec(element);
+        if (!terminal) break;
+        const detail = (object: fabric.FabricObject) => {
+          this.annotate(object, element.id, "hvac-detail");
+          objects.push(object);
+        };
+        const line = (x1: number, y1: number, x2: number, y2: number, width = 0.9) => detail(
+          new fabric.Line([x1, y1, x2, y2], { stroke: palette.detail, strokeWidth: width, selectable: false, evented: false }),
+        );
+        const box = (halfX: number, halfY: number, dash?: number[]) => detail(new fabric.Rect({
+          left: 0, top: 0, width: 2 * halfX, height: 2 * halfY, originX: "center", originY: "center",
+          fill: "transparent", stroke: palette.detail, strokeWidth: 0.9, strokeDashArray: dash, selectable: false, evented: false,
+        }));
+        const ring = (radius: number) => detail(new fabric.Circle({
+          left: 0, top: 0, radius, originX: "center", originY: "center",
+          fill: "transparent", stroke: palette.detail, strokeWidth: 0.9, selectable: false, evented: false,
+        }));
+        if (terminal.kind === "square-4way") {
+          // Four-way throw: the neck square and a diagonal to each face corner.
+          const neck = Math.min(halfW, halfD) * 0.42;
+          box(neck, neck);
+          box(halfW * 0.86, halfD * 0.86);
+          for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) line(sx * neck, sy * neck, sx * halfW, sy * halfD);
+        } else if (terminal.kind === "round") {
+          ring(Math.min(halfW, halfD) * 0.9);
+          ring(Math.min(halfW, halfD) * 0.64);
+          ring(Math.min(halfW, halfD) * 0.38);
+        } else if (terminal.kind === "linear-slot") {
+          const slots = terminal.slots ?? 2;
+          for (let index = 0; index < slots; index += 1) {
+            const y = -halfD * 0.6 + (1.2 * halfD * (index + 0.5)) / slots;
+            line(-halfW * 0.94, y, halfW * 0.94, y, 1.4);
+          }
+        } else {
+          // Egg-crate return: the grid.
+          for (let index = 1; index < 5; index += 1) {
+            line(-halfW + (2 * halfW * index) / 5, -halfD, -halfW + (2 * halfW * index) / 5, halfD, 0.7);
+            line(-halfW, -halfD + (2 * halfD * index) / 5, halfW, -halfD + (2 * halfD * index) / 5, 0.7);
+          }
+        }
+        // Spigot stub from the plenum box (hidden above the ceiling).
+        const spigot = localTerminalSpigot(terminal);
+        const radius = toPx(terminal.neckDiameterMm / 2);
+        const from = Math.abs(spigot.normal.x) > 0 ? toPx(terminal.plenumWidthMm / 2) : toPx(terminal.plenumDepthMm / 2);
+        const to = from + toPx(terminal.spigotLengthMm);
+        const along = (distance: number, across: number) => ({
+          x: spigot.normal.x * distance - spigot.normal.y * across,
+          y: spigot.normal.y * distance + spigot.normal.x * across,
+        });
+        const corners = [along(from, radius), along(to, radius), along(to, -radius), along(from, -radius)];
+        detail(new fabric.Polygon(corners, {
+          left: (corners[0]!.x + corners[2]!.x) / 2, top: (corners[0]!.y + corners[2]!.y) / 2, originX: "center", originY: "center",
+          fill: "transparent", stroke: palette.detail, strokeWidth: 0.9, strokeDashArray: [4, 3], selectable: false, evented: false,
+        }));
+        break;
+      }
       case "ceiling-cassette-ac": {
         const cassette = buildCeilingCassetteModel(element);
         const toPx = (valueMm: number): number => valueMm * MM_TO_PX;
@@ -3439,7 +3504,56 @@ export class HvacPlanRenderer {
             0.9,
           );
         });
-        ducted.airOpenings.forEach((opening) => {
+        // Units with measured collars (catalog GLB) draw the real collars; the
+        // procedural openings are only a placeholder for unknown units.
+        const measuredAirPorts = resolveLocalAirPorts(element);
+        if (measuredAirPorts.source !== "procedural") {
+          measuredAirPorts.ports.forEach((port) => {
+            const alongY = Math.abs(port.normal.y) >= Math.abs(port.normal.x);
+            const collarDepthMm = port.collarDepthMm;
+            const collarCentre = {
+              x: port.lip.x - port.normal.x * collarDepthMm * 0.5,
+              y: port.lip.y - port.normal.y * collarDepthMm * 0.5,
+            };
+            const mouthDepthMm = 36;
+            const mouthCentre = {
+              x: port.lip.x - port.normal.x * (collarDepthMm + mouthDepthMm * 0.5),
+              y: port.lip.y - port.normal.y * (collarDepthMm + mouthDepthMm * 0.5),
+            };
+            const size = (depthMm: number) => (alongY
+              ? { width: port.widthMm, depth: depthMm }
+              : { width: depthMm, depth: port.widthMm });
+            renderRect(
+              { ...mouthCentre, ...size(mouthDepthMm), cornerRadius: 3 },
+              {
+                fill: options.valid
+                  ? port.kind === "return"
+                    ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCavityReturn
+                    : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCavitySupply
+                  : "#1f2a31",
+                stroke: undefined,
+                strokeWidth: 0,
+              },
+            );
+            renderRect(
+              { ...collarCentre, ...size(collarDepthMm), cornerRadius: 2 },
+              {
+                fill: options.valid
+                  ? port.kind === "return"
+                    ? "rgba(108,115,123,0.22)"
+                    : "rgba(188,194,200,0.28)"
+                  : "rgba(255,255,255,0.08)",
+                stroke: options.valid
+                  ? port.kind === "return"
+                    ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthReturn
+                    : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthSupply
+                  : "rgba(185,28,28,0.52)",
+                strokeWidth: 1,
+              },
+            );
+          });
+        }
+        (measuredAirPorts.source === "procedural" ? ducted.airOpenings : []).forEach((opening) => {
           const projection = getDuctedIndoorUnitOpeningPlanProjection(
             ducted,
             opening,
@@ -3700,89 +3814,6 @@ export class HvacPlanRenderer {
               port.bandColor,
               Math.max(toPx(port.bandRadius * 0.16), 0.8),
             );
-          }
-        });
-        break;
-      }
-      case "duct": {
-        const ductVisual = buildGiDuctVisual(element);
-        const ductBodyFill = options.valid
-          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody
-          : "rgba(255,255,255,0.5)";
-        const ductEdgeStroke = options.valid
-          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge
-          : "rgba(185,28,28,0.48)";
-        const ductSeamStroke = options.valid
-          ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctSeam
-          : "rgba(255,255,255,0.4)";
-
-        ductVisual.segments.forEach((segment, index) => {
-          const body = new fabric.Rect({
-            left: toPx(segment.localCenter.x),
-            top: toPx(segment.localCenter.y),
-            width: Math.max(toPx(segment.lengthMm), 1),
-            height: Math.max(toPx(ductVisual.outerWidthMm), 1),
-            angle: segment.angleDeg,
-            originX: "center",
-            originY: "center",
-            fill: ductBodyFill,
-            stroke: ductEdgeStroke,
-            strokeWidth: 0.8,
-            selectable: false,
-            evented: false,
-          });
-          this.annotate(body, element.id, "hvac-detail");
-          objects.push(body);
-
-          const direction = {
-            x: (segment.localEnd.x - segment.localStart.x) / segment.lengthMm,
-            y: (segment.localEnd.y - segment.localStart.y) / segment.lengthMm,
-          };
-          const normal = {
-            x: -direction.y,
-            y: direction.x,
-          };
-
-          segment.seamOffsetsMm.forEach((offsetMm) => {
-            const seamCenter = {
-              x: segment.localStart.x + direction.x * offsetMm,
-              y: segment.localStart.y + direction.y * offsetMm,
-            };
-            const seam = new fabric.Line(
-              [
-                toPx(seamCenter.x - normal.x * ductVisual.outerWidthMm * 0.48),
-                toPx(seamCenter.y - normal.y * ductVisual.outerWidthMm * 0.48),
-                toPx(seamCenter.x + normal.x * ductVisual.outerWidthMm * 0.48),
-                toPx(seamCenter.y + normal.y * ductVisual.outerWidthMm * 0.48),
-              ],
-              {
-                stroke: ductSeamStroke,
-                strokeWidth: 0.55,
-                selectable: false,
-                evented: false,
-              },
-            );
-            this.annotate(seam, element.id, "hvac-detail");
-            objects.push(seam);
-          });
-
-          if (index === ductVisual.segments.length - 1) {
-            const endFrame = new fabric.Line(
-              [
-                toPx(segment.localEnd.x - normal.x * ductVisual.outerWidthMm * 0.5),
-                toPx(segment.localEnd.y - normal.y * ductVisual.outerWidthMm * 0.5),
-                toPx(segment.localEnd.x + normal.x * ductVisual.outerWidthMm * 0.5),
-                toPx(segment.localEnd.y + normal.y * ductVisual.outerWidthMm * 0.5),
-              ],
-              {
-                stroke: ductEdgeStroke,
-                strokeWidth: 0.9,
-                selectable: false,
-                evented: false,
-              },
-            );
-            this.annotate(endFrame, element.id, "hvac-detail");
-            objects.push(endFrame);
           }
         });
         break;
@@ -4142,7 +4173,9 @@ export class HvacPlanRenderer {
       element.type === "refrigerant-pipe-pair" ||
       element.type === "refrigerant-branch-kit" ||
       // Condensate pipes are painted by CondensateOverlay and picked geometrically.
-      element.type === "condensate-pipe"
+      element.type === "condensate-pipe" ||
+      // Duct runs are painted by DuctOverlay from their fabrication plan.
+      element.type === "duct"
     ) {
       return;
     }
@@ -4381,6 +4414,10 @@ export class HvacPlanRenderer {
     return bestId ? { id: bestId, distanceMm: bestDist } : null;
   }
 
+  setDuctSettings(settings: DuctDesignSettings): void {
+    this.ductSettings = settings;
+  }
+
   findElementAtWorldPoint(worldPointMm: Point2D): string | null {
     // Pipes: precise geometric pick (deterministic, matches the visible pipe).
     // Refrigerant and condensate runs can sit side by side; the nearer
@@ -4395,6 +4432,16 @@ export class HvacPlanRenderer {
       if (!condensatePick) return refrigerantPick!.id;
       if (!refrigerantPick) return condensatePick.id;
       return condensatePick.distanceMm < refrigerantPick.distanceMm ? condensatePick.id : refrigerantPick.id;
+    }
+    // Ducts: picked on their drawn pieces, after the pipes that may run over them.
+    const ductPick = pickDuctAtWorldPoint(
+      worldPointMm,
+      this.hvacData.values(),
+      this.ductSettings,
+      PIPE_PICK_PADDING_PX / (MM_TO_PX * Math.max(this.canvas.getZoom(), 0.01)),
+    );
+    if (ductPick) {
+      return ductPick.id;
     }
     const modelBackedId = hitTestModelBackedHvacElement(
       worldPointMm,

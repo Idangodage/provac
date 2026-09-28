@@ -1,0 +1,781 @@
+'use client';
+
+/**
+ * Properties-panel UI for ducts:
+ *  - DuctRunInspector: the selected run's construction (SMACNA minimum → stock
+ *    sheet, class, joint), pieces, issues and its own BOM;
+ *  - DuctToolSection: options while the Duct tool is active;
+ *  - DuctSystemsSection: project duct settings with their sources, the project
+ *    BOM and the fabrication schedule (CSV).
+ * Unverified rule values are always labelled as such.
+ */
+import { useMemo, useState } from 'react';
+import { shallow } from 'zustand/shallow';
+
+import { useSmartDrawingStore } from '../../../../store';
+import type { HvacElement } from '../../../../types';
+
+import { buildDuctBom, buildDuctFabricationSchedule, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
+import { findReattachTarget } from './ductBranchTargets';
+import { gaugeLabelForSheet } from './ductCatalog';
+import { commitDuctRunEdit, commitDuctRunSpec, commitDuctTerminalEdit, reattachDuctRun } from './ductEditController';
+import { setDuctRiserRise } from './ductEdits';
+import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
+import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
+import { describeJoint } from './ductGauge';
+import { ductBranchesOf } from './ductNetwork';
+import { DUCT_RULE_SOURCES, DUCT_SUPPORTED_PRESSURE_CLASSES_PA, type DuctDesignSettings, type DuctJointSystem } from './ductSettings';
+import { DUCT_SOURCES, isPracticeSource } from './ductSources';
+import { defaultPlenumSize } from './ductPlenum';
+import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
+import { DUCT_TERMINAL_NECKS_MM, isDuctTerminalElement, readDuctTerminalSpec, TERMINAL_LABELS, typicalTerminalSpec, type DuctTerminalSpigotSide } from './ductTerminals';
+import { tapStyleFor, useDuctToolStore } from './ductToolStore';
+import { isDuctElement, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
+
+const JOINT_OPTIONS: Array<{ value: DuctJointSystem; label: string }> = [
+  { value: 'auto', label: 'Auto (TDC → angle)' },
+  { value: 'tdc', label: 'TDC / TDF flange' },
+  { value: 'ductmate', label: 'Ductmate' },
+  { value: 'angle-flange', label: 'L-angle companion flange' },
+];
+
+function describeStart(spec: DuctRunSpec, hvacElements: readonly HvacElement[]): string {
+  const start = spec.start;
+  const parentLabel = (id: string) => {
+    const parent = hvacElements.find((element) => element.id === id);
+    return parent ? (parent.label || parent.id) : 'missing run';
+  };
+  if (start.kind === 'unit-port') return `unit collar (${start.portId})${start.connector ? ' + flexible connector' : ''}`;
+  if (start.kind === 'tap') {
+    return `${start.style === 'shoe-45' ? 'shoe' : 'straight'} take-off on ${parentLabel(start.parentRunId)} at ${(start.stationMm / 1000).toFixed(2)} m${start.vcd ? ' + VCD' : ''}`;
+  }
+  if (start.kind === 'split-branch') return `split outlet of ${parentLabel(start.parentRunId)}${start.vcd ? ' + VCD' : ''}`;
+  if (start.kind === 'spigot') return `${start.style} spigot on the ${start.face} face of ${parentLabel(start.parentRunId)}'s plenum${start.vcd ? ' + VCD' : ''}`;
+  if (start.kind === 'open') return start.orphaned ? 'open (its parent run was deleted)' : 'open';
+  return start.kind;
+}
+
+function describeEnd(spec: DuctRunSpec): string {
+  const end = spec.end;
+  if (end.kind === 'split') return end.style === 'y' ? 'Y split' : 'bullhead tee';
+  if (end.kind === 'plenum') return `plenum ${Math.round(end.widthMm)} × ${Math.round(end.heightMm)} × ${Math.round(end.lengthMm)}`;
+  if (end.kind === 'terminal') return `${end.flex ? 'flexible runout to ' : ''}an air terminal`;
+  return end.kind === 'end-cap' ? 'end cap' : end.kind;
+}
+
+function Row({ label, children, title }: { label: string; children: React.ReactNode; title?: string }) {
+  return (
+    <div className="flex items-start justify-between gap-2 py-1 text-sm" title={title}>
+      <span className="text-slate-500">{label}</span>
+      <span className="text-right text-slate-800">{children}</span>
+    </div>
+  );
+}
+
+function SourceBadge({ settingKey }: { settingKey: keyof DuctDesignSettings }) {
+  const source = DUCT_RULE_SOURCES[settingKey];
+  if (!source) return null;
+  const title = [DUCT_SOURCES[source.sourceId].document, source.reference, source.note].filter(Boolean).join(' — ');
+  if (source.verified) return <span className="ml-1 rounded bg-emerald-50 px-1 text-[10px] text-emerald-700" title={title}>verified</span>;
+  // SMACNA gives no number for these: labelled as the project's own practice, never as a standard.
+  if (isPracticeSource(source.sourceId)) return <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-600" title={title}>practice</span>;
+  return <span className="ml-1 rounded bg-amber-50 px-1 text-[10px] text-amber-700" title={title}>unverified</span>;
+}
+
+type NumericSettingKey = {
+  [K in keyof DuctDesignSettings]: DuctDesignSettings[K] extends number ? K : never
+}[keyof DuctDesignSettings];
+
+/** One numeric project setting, committed on blur, with its source badge. */
+function SettingNumber({ settingKey, label, step, min, max, unit = 'mm' }: {
+  settingKey: NumericSettingKey; label: string; step: number; min: number; max: number; unit?: string;
+}) {
+  const { value, setDuctSettings } = useSmartDrawingStore((state) => ({ value: state.ductSettings[settingKey], setDuctSettings: state.setDuctSettings }), shallow);
+  return (
+    <Row label={label}>
+      <CommitNumber label={label} value={value} step={step} min={min} max={max} onCommit={(next) => setDuctSettings({ [settingKey]: next })} />
+      {unit ? <span className="ml-0.5 text-[10px] text-slate-400">{unit}</span> : null}
+      <SourceBadge settingKey={settingKey} />
+    </Row>
+  );
+}
+
+function BomTable({ rows }: { rows: DuctBomRow[] }) {
+  if (rows.length === 0) return <p className="text-xs text-slate-500">Nothing to schedule.</p>;
+  return (
+    <table className="w-full text-[11px]">
+      <tbody>
+        {rows.map((row, index) => (
+          <tr key={index} className={row.category === 'Issues' ? 'text-red-700' : 'text-slate-700'}>
+            <td className="py-0.5 pr-1 align-top">{row.description}{row.size !== '—' ? <span className="text-slate-400"> · {row.size}</span> : null}</td>
+            <td className="whitespace-nowrap py-0.5 text-right align-top">{row.quantity} {row.unit}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+      }}
+    >
+      {copied ? 'Copied' : label}
+    </button>
+  );
+}
+
+function usePlans(): DuctFabricationPlan[] {
+  const { hvacElements, ductSettings } = useSmartDrawingStore((state) => ({
+    hvacElements: state.hvacElements, ductSettings: state.ductSettings,
+  }), shallow);
+  return useMemo(() => hvacElements
+    .filter(isDuctElement)
+    .map((element) => getDuctRunPlan(element, hvacElements, ductSettings))
+    .filter((plan): plan is DuctFabricationPlan => plan !== null), [hvacElements, ductSettings]);
+}
+
+/** A number field that commits on blur or Enter (never per keystroke). */
+function CommitNumber({ value, onCommit, step = 10, min = 50, max = 3000, label }: {
+  value: number; onCommit: (value: number) => void; step?: number; min?: number; max?: number; label: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const parsed = Number.parseFloat(draft);
+    setDraft(null);
+    if (Number.isFinite(parsed) && Math.abs(parsed - value) > 1e-9) onCommit(Math.min(max, Math.max(min, parsed)));
+  };
+  return (
+    <input
+      type="number" step={step} min={min} max={max} aria-label={label}
+      value={draft ?? String(Math.round(value * 100) / 100)}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); }}
+      className="w-16 rounded border border-slate-200 px-1 text-xs"
+    />
+  );
+}
+
+/** "4 hangers · M8 rods · L25.4×3.2 · soffit 2900" (and any support issue). */
+function supportSummary(supports: ReturnType<typeof getDuctSupportPlan>): string {
+  const rods = [...new Set(supports.hangers.map((hanger) => hanger.rod?.label ?? 'special'))].join('/');
+  const bars = [...new Set(supports.hangers.map((hanger) => hanger.bar?.member.label ?? (hanger.kind === 'band' ? 'band' : 'special')))].join('/');
+  const risers = supports.risers.length > 0 ? ` · ${supports.risers.length} riser support${supports.risers.length === 1 ? '' : 's'}` : '';
+  const issue = supports.issues[0] ? ` · ${supports.issues[0].message}` : '';
+  return `${supports.hangers.length} hanger${supports.hangers.length === 1 ? '' : 's'} at ≤ ${supports.spacingMm} mm · ${rods} rods · ${bars} · soffit ${Math.round(supports.soffitZ)}${risers}${issue}`;
+}
+
+/** A vertical leg's rise (+ up, − down), or null for a level leg. */
+function riseOf(spec: DuctRunSpec, index: number): number | null {
+  const a = spec.path[index];
+  const b = spec.path[index + 1];
+  if (!a || !b || Math.hypot(b.x - a.x, b.y - a.y) >= 0.5 || Math.abs(b.z - a.z) <= 0.5) return null;
+  return Math.round(b.z - a.z);
+}
+
+/** "Leg 2 · bottom 2669" for a level leg, "Leg 3 · drop ▼ 800" for a vertical one. */
+function legCaption(spec: DuctRunSpec, index: number): string {
+  const a = spec.path[index];
+  const b = spec.path[index + 1];
+  if (!a || !b) return `Leg ${index + 1}`;
+  const plan = Math.hypot(b.x - a.x, b.y - a.y);
+  const rise = b.z - a.z;
+  if (plan < 0.5 && Math.abs(rise) > 0.5) return `Leg ${index + 1} · ${rise > 0 ? 'riser ▲' : 'drop ▼'} ${Math.round(Math.abs(rise))}`;
+  return `Leg ${index + 1} · bottom ${Math.round(a.z)}`;
+}
+
+/** A diffuser or return grille: its size (typical catalog, practice), spigot and ceiling level. */
+export function DuctTerminalInspector({ element }: { element: HvacElement }) {
+  const updateHvacElement = useSmartDrawingStore((state) => state.updateHvacElement);
+  const spec = readDuctTerminalSpec(element);
+  if (!spec) return null;
+  const select = 'rounded border border-slate-200 px-1 py-0.5 text-xs';
+  const reshape = (neckDiameterMm: number) => ({
+    ...typicalTerminalSpec(spec.kind, neckDiameterMm, {
+      mount: spec.mount, ...(spec.slots !== undefined ? { slots: spec.slots } : {}),
+      ...(spec.kind === 'linear-slot' ? { lengthMm: spec.faceWidthMm } : {}),
+    }),
+    spigotSide: spec.spigotSide,
+  });
+  return (
+    <div className="space-y-1" data-testid="duct-terminal-inspector">
+      <Row label="Label">
+        <input type="text" value={element.label} onChange={(event) => updateHvacElement(element.id, { label: event.target.value })}
+          className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400" />
+      </Row>
+      <Row label="Terminal">
+        <span className="text-xs">{TERMINAL_LABELS[spec.kind]} · {spec.mount} · {spec.service}</span>
+        <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-600" title="Typical catalog size; SMACNA gives none. Replace with the supplier's data.">practice</span>
+      </Row>
+      <Row label="Spigot Ø">
+        <select value={spec.neckDiameterMm} aria-label="Terminal spigot diameter" className={select}
+          onChange={(event) => commitDuctTerminalEdit(element, { spec: reshape(Number(event.target.value)) }, 'Terminal spigot size')}>
+          {[...new Set([...DUCT_TERMINAL_NECKS_MM, spec.neckDiameterMm])].sort((a, b) => a - b).map((neck) => <option key={neck} value={neck}>Ø{neck}</option>)}
+        </select>
+      </Row>
+      <Row label="Spigot side">
+        <select value={spec.spigotSide} aria-label="Terminal spigot side" className={select}
+          onChange={(event) => commitDuctTerminalEdit(element, { spec: { ...spec, spigotSide: event.target.value as DuctTerminalSpigotSide } }, 'Terminal spigot side')}>
+          {(['back', 'front', 'left', 'right'] as const).map((side) => <option key={side} value={side}>{side}</option>)}
+        </select>
+      </Row>
+      <Row label="Face / plenum box">
+        <span className="text-xs">{Math.round(spec.faceWidthMm)} × {Math.round(spec.faceDepthMm)} · box {Math.round(spec.plenumWidthMm)} × {Math.round(spec.plenumDepthMm)} × {Math.round(spec.plenumHeightMm)} mm</span>
+      </Row>
+      <Row label="Ceiling level">
+        <CommitNumber label="Terminal ceiling level" value={element.elevation} step={50} min={0} max={30000}
+          onCommit={(elevation) => commitDuctTerminalEdit(element, { elevation }, 'Terminal ceiling level')} />
+        <span className="ml-0.5 text-[10px] text-slate-400">mm (face)</span>
+      </Row>
+    </div>
+  );
+}
+
+export function DuctRunInspector({ element }: { element: HvacElement }) {
+  const { hvacElements, ductSettings, updateHvacElement } = useSmartDrawingStore((state) => ({
+    hvacElements: state.hvacElements,
+    ductSettings: state.ductSettings,
+    updateHvacElement: state.updateHvacElement,
+  }), shallow);
+  const tool = useDuctToolStore();
+  const plan = useMemo(() => getDuctRunPlan(element, hvacElements, ductSettings), [element, hvacElements, ductSettings]);
+  const bom = useMemo(() => (plan ? buildDuctBom([plan], [getDuctSupportPlan(plan, hvacElements, ductSettings)]) : []), [plan, hvacElements, ductSettings]);
+  const reattachStyle = plan ? tapStyleFor(plan.spec.legs[0]) : tool.tapStyle;
+  const reattach = useMemo(() => (plan && plan.spec.start.kind === 'open'
+    ? findReattachTarget(element, hvacElements, ductSettings, { style: reattachStyle, vcd: tool.vcd }) : null),
+  [plan, element, hvacElements, ductSettings, reattachStyle, tool.vcd]);
+  if (!plan) return null;
+  const spec = plan.spec;
+  const construction = plan.constructionByLeg[0];
+  const commit = (next: DuctRunSpec, action: string) => commitDuctRunSpec(element, next, action);
+  const count = (kind: string) => plan.pieces.filter((piece) => piece.kind === kind).length;
+  const pieceSummary = [
+    [count('straight'), 'section'], [count('elbow'), 'elbow'], [count('offset'), 'offset'], [count('transition'), 'transition'],
+    [count('takeoff'), 'take-off'], [count('damper'), 'damper'], [count('split'), 'split'],
+    [count('connector'), 'connector'], [count('end-cap'), 'cap'],
+  ].filter(([n]) => (n as number) > 0).map(([n, label]) => `${n} ${label}${n === 1 || label === 'cap' ? '' : 's'}`).join(' · ');
+  const endValue = spec.end.kind === 'split' ? spec.end.style : spec.end.kind;
+  // While branches leave the split, only its style may change.
+  const splitBranches = ductBranchesOf(element.id, hvacElements).filter((branch) => branch.start.kind === 'split-branch').length;
+  const spigotBranches = ductBranchesOf(element.id, hvacElements).filter((branch) => branch.start.kind === 'spigot').length;
+  const setLeg = (index: number, update: Partial<DuctLeg>) => {
+    const legs = spec.legs.map((leg, legIndex) => (legIndex === index ? { ...leg, ...update } : leg));
+    commit({ ...spec, legs }, `Duct leg ${index + 1} size`);
+  };
+  const setNode = (node: number, update: Partial<DuctNodeOverride> | null) => {
+    const nodeOverrides = { ...spec.nodeOverrides };
+    const merged = update === null ? {} : { ...(nodeOverrides[String(node)] ?? {}), ...update };
+    const cleaned = Object.fromEntries(Object.entries(merged).filter(([, value]) => value !== undefined)) as DuctNodeOverride;
+    if (Object.keys(cleaned).length === 0) delete nodeOverrides[String(node)];
+    else nodeOverrides[String(node)] = cleaned;
+    commit({ ...spec, nodeOverrides }, `Duct elbow ${node}`);
+  };
+  const elbows = plan.pieces.filter((piece) => piece.kind === 'elbow' && piece.nodeIndex !== undefined);
+  const select = 'rounded border border-slate-200 px-1 py-0.5 text-xs';
+  return (
+    <div className="space-y-1" data-testid="duct-run-inspector">
+      <Row label="Label">
+        <input
+          type="text"
+          value={element.label}
+          onChange={(event) => updateHvacElement(element.id, { label: event.target.value })}
+          className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+        />
+      </Row>
+      <Row label="Service"><span className="capitalize">{spec.service}</span>{spec.legacy ? <span className="ml-1 text-xs text-slate-400">(old stub)</span> : null}</Row>
+      <Row label="Construction">
+        <select value={spec.construction === 'gi-nbr' ? 'gi-nbr' : 'gi-bare'} aria-label="Run construction" className={select}
+          onChange={(event) => {
+            const construction = event.target.value as 'gi-bare' | 'gi-nbr';
+            const insulationThicknessMm = construction === 'gi-nbr'
+              ? (spec.service === 'return' ? ductSettings.nbrReturnThicknessMm : ductSettings.nbrSupplyThicknessMm) : 0;
+            commit({ ...spec, construction, insulationThicknessMm }, 'Duct construction');
+          }}>
+          <option value="gi-bare">GI, bare</option>
+          <option value="gi-nbr">GI + NBR insulation</option>
+        </select>
+        {spec.construction === 'gi-nbr' ? (
+          <>
+            {' '}
+            <CommitNumber label="Insulation thickness" value={plan.insulationMm} step={1} min={6} max={50}
+              onCommit={(insulationThicknessMm) => commit({ ...spec, insulationThicknessMm }, 'Duct insulation thickness')} />
+            <span className="ml-0.5 text-[10px] text-slate-400">mm</span>
+          </>
+        ) : null}
+      </Row>
+      <Row label="Starts at">
+        {describeStart(spec, hvacElements)}
+        {reattach ? (
+          <button type="button" className="ml-1 rounded border border-amber-300 px-1.5 text-xs text-amber-800 hover:bg-amber-50" data-testid="duct-reattach"
+            onClick={() => reattachDuctRun(element, { style: reattachStyle, vcd: tool.vcd })}>
+            Re-attach to {reattach.parent.label || reattach.parent.id}
+          </button>
+        ) : null}
+      </Row>
+      <Row label="Length">{(plan.polylineLengthMm / 1000).toFixed(2)} m · {spec.legs.length} leg(s)</Row>
+      <Row label="Supports">
+        <span className="text-xs" data-testid="duct-supports-summary">{supportSummary(getDuctSupportPlan(plan, hvacElements, ductSettings))}</span>
+      </Row>
+      {!spec.legacy ? (
+        <div className="rounded border border-slate-100 px-2 py-1" data-testid="duct-leg-sizes">
+          <div className="text-xs text-slate-500">Clear section per leg (W × H mm; a change adds a transition)</div>
+          {spec.legs.map((leg, index) => (
+            <div key={index} className="flex items-center justify-between py-0.5 text-xs">
+              <span className="text-slate-500">
+                {legCaption(spec, index)}
+                {riseOf(spec, index) !== null ? (
+                  <span className="ml-1" title="Rise (+) or drop (−) in mm; the run after it moves with it">
+                    <CommitNumber label={`Leg ${index + 1} rise`} value={riseOf(spec, index)!} step={50} min={-30000} max={30000}
+                      onCommit={(rise) => {
+                        const result = setDuctRiserRise(spec, index, rise);
+                        if (result) commitDuctRunEdit(element.id, result, 'Duct riser height');
+                      }} />
+                  </span>
+                ) : null}
+              </span>
+              <span>
+                <CommitNumber label={`Leg ${index + 1} width`} value={leg.widthMm} onCommit={(widthMm) => setLeg(index, { widthMm })} />
+                {' × '}
+                <CommitNumber label={`Leg ${index + 1} height`} value={leg.heightMm} onCommit={(heightMm) => setLeg(index, { heightMm })} />
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Row label="Clear section">{Math.round(spec.legs[0]!.widthMm)} × {Math.round(spec.legs[0]!.heightMm)} mm</Row>
+      )}
+      <Row label="Pressure class">
+        <select value={spec.pressureClassPa ?? 'project'} aria-label="Run pressure class" className={select}
+          onChange={(event) => commit({ ...spec, pressureClassPa: event.target.value === 'project' ? null : Number(event.target.value) }, 'Duct pressure class')}>
+          <option value="project">Project ({spec.service === 'supply' ? ductSettings.supplyPressureClassPa : ductSettings.returnPressureClassPa} Pa)</option>
+          {DUCT_SUPPORTED_PRESSURE_CLASSES_PA.map((pa) => <option key={pa} value={pa}>{pa} Pa</option>)}
+        </select>
+      </Row>
+      {construction && construction.status === 'ok' ? (
+        <>
+          <Row label="SMACNA minimum" title={construction.table ? `Table ${construction.table}, ${construction.spacingColumnMm} mm column` : 'longest-side table'}>
+            {construction.smacnaMinThicknessMm?.toFixed(2)} mm{construction.table ? ` · T${construction.table}` : ''}
+          </Row>
+          <Row label="Joint class">{construction.requiredClass ?? 'none required'}{construction.tieRodAlternative ? ` (tie-rod ${construction.tieRodAlternative})` : ''}</Row>
+          <Row label="Joint">{describeJoint(construction.joint)}</Row>
+          {construction.crossBreak.width || construction.crossBreak.height ? <Row label="Cross-break">wide sides (S1.15)</Row> : null}
+        </>
+      ) : (
+        <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{construction?.message ?? 'Construction unresolved.'}</p>
+      )}
+      <Row label="Sheet">
+        <select value={spec.gaugeOverrideMm ?? 'auto'} aria-label="Run sheet" className={select}
+          onChange={(event) => commit({ ...spec, gaugeOverrideMm: event.target.value === 'auto' ? null : Number(event.target.value) }, 'Duct sheet')}>
+          <option value="auto">Auto{construction?.sheetThicknessMm ? ` (${construction.sheetThicknessMm.toFixed(2)} mm · ${gaugeLabelForSheet(construction.sheetThicknessMm)})` : ''}</option>
+          {ductSettings.availableSheetThicknessesMm.map((sheet) => (
+            <option key={sheet} value={sheet} disabled={construction?.smacnaMinThicknessMm !== null && construction?.smacnaMinThicknessMm !== undefined && sheet + 1e-6 < construction.smacnaMinThicknessMm}>
+              {sheet.toFixed(2)} mm · {gaugeLabelForSheet(sheet)}
+            </option>
+          ))}
+        </select>
+      </Row>
+      <Row label="Joint system">
+        <select value={spec.jointSystem ?? 'project'} aria-label="Run joint system" className={select}
+          onChange={(event) => commit({ ...spec, jointSystem: event.target.value === 'project' ? null : (event.target.value as DuctJointSystem) }, 'Duct joint system')}>
+          <option value="project">Project default</option>
+          {JOINT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </Row>
+      {elbows.length > 0 ? (
+        <div className="rounded border border-slate-100 px-2 py-1" data-testid="duct-elbows">
+          <div className="text-xs text-slate-500">Elbows (SMACNA Fig. 2-2 / 2-3)</div>
+          {elbows.map((piece) => {
+            const node = piece.nodeIndex!;
+            const override = spec.nodeOverrides[String(node)] ?? {};
+            const elbow = piece.elbow!;
+            return (
+              <div key={node} className="flex flex-wrap items-center justify-between gap-1 py-0.5 text-xs">
+                <span className="text-slate-500">{piece.mark} · {Math.round(elbow.angleDeg)}°</span>
+                <select value={override.elbowStyle ?? 'auto'} aria-label={`Elbow ${node} style`} className={select}
+                  onChange={(event) => setNode(node, { elbowStyle: event.target.value === 'auto' ? undefined : (event.target.value as 'radius' | 'square-vaned') })}>
+                  <option value="auto">Project ({elbow.style === 'radius' ? 'radius' : 'vaned'})</option>
+                  <option value="radius">Radius</option>
+                  <option value="square-vaned">Square, vanes</option>
+                </select>
+                {elbow.style === 'radius' ? (
+                  <span>R/W <CommitNumber label={`Elbow ${node} R/W`} step={0.25} min={0.25} max={3}
+                    value={override.centrelineRatio ?? ductSettings.elbowCentrelineRatio}
+                    onCommit={(centrelineRatio) => setNode(node, { centrelineRatio })} /></span>
+                ) : (
+                  <select value={override.vaneType ?? 'auto'} aria-label={`Elbow ${node} vanes`} className={select}
+                    onChange={(event) => setNode(node, { vaneType: event.target.value === 'auto' ? undefined : (event.target.value as DuctVaneType) })}>
+                    <option value="auto">Vanes: project ({elbow.vanes?.spec.type ?? 'auto'})</option>
+                    {Object.values(DUCT_VANES).map((vane) => <option key={vane.type} value={vane.type}>{vane.label}</option>)}
+                  </select>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      <Row label="Ends in">
+        {spec.legacy ? describeEnd(spec) : (
+          <select value={endValue} aria-label="Run end" className={select}
+            onChange={(event) => {
+              const value = event.target.value;
+              const end: DuctRunSpec['end'] = value === 'y' || value === 'bullhead' ? { kind: 'split', style: value }
+                : value === 'plenum' ? { kind: 'plenum', ...defaultPlenumSize(spec.legs[spec.legs.length - 1]!) }
+                  : { kind: value as 'end-cap' | 'open' };
+              commit({ ...spec, end }, 'Duct run end');
+            }}>
+            <option value="end-cap" disabled={splitBranches > 0 || spigotBranches > 0}>End cap</option>
+            <option value="open" disabled={splitBranches > 0 || spigotBranches > 0}>Open</option>
+            <option value="y" disabled={spigotBranches > 0}>Y split</option>
+            <option value="bullhead" disabled={spigotBranches > 0}>Bullhead tee</option>
+            <option value="plenum" disabled={splitBranches > 0}>Plenum</option>
+            {spec.end.kind === 'terminal' ? <option value="terminal" disabled>Air terminal</option> : null}
+          </select>
+        )}
+      </Row>
+      {spec.end.kind === 'plenum' ? (
+        <Row label="Plenum W × H × L">
+          {(['widthMm', 'heightMm', 'lengthMm'] as const).map((key) => (
+            <CommitNumber key={key} label={`Plenum ${key.replace('Mm', '')}`} value={(spec.end as { widthMm: number; heightMm: number; lengthMm: number })[key]} step={50} min={100} max={5000}
+              onCommit={(value) => commit({ ...spec, end: { ...(spec.end as { kind: 'plenum'; widthMm: number; heightMm: number; lengthMm: number }), [key]: value } }, 'Duct plenum size')} />
+          ))}
+        </Row>
+      ) : null}
+      <Row label="Pieces">{pieceSummary}</Row>
+      <Row label="Joints">{plan.joints.length}</Row>
+      <Row label="Sheet metal">{plan.totals.sheetAreaM2.toFixed(2)} m² · {plan.totals.massKg.toFixed(1)} kg</Row>
+      {plan.issues.length > 0 ? (
+        <ul className="space-y-0.5 pt-1" data-testid="duct-run-issues">
+          {plan.issues.map((issue, index) => (
+            <li key={index} className={`text-xs ${issue.severity === 'error' ? 'text-red-700' : issue.severity === 'warning' ? 'text-amber-700' : 'text-slate-500'}`}>
+              {issue.code}: {issue.message}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <details className="pt-1">
+        <summary className="cursor-pointer text-xs text-slate-600">Run BOM</summary>
+        <BomTable rows={bom} />
+        <div className="pt-1"><CopyButton text={ductBomToCsv(bom)} label="Copy CSV" /></div>
+      </details>
+      {plan.practiceRules.length > 0 ? (
+        <details>
+          <summary className="cursor-pointer text-xs text-slate-600">Project-practice values used ({plan.practiceRules.length})</summary>
+          <ul className="list-disc pl-4 text-[11px] text-slate-600">{plan.practiceRules.map((rule) => <li key={rule}>{rule}</li>)}</ul>
+        </details>
+      ) : null}
+      {plan.unverifiedRules.length > 0 ? (
+        <details>
+          <summary className="cursor-pointer text-xs text-amber-700">Unverified rules used ({plan.unverifiedRules.length})</summary>
+          <ul className="list-disc pl-4 text-[11px] text-amber-800">{plan.unverifiedRules.map((rule) => <li key={rule}>{rule}</li>)}</ul>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+export function DuctToolSection() {
+  const tool = useDuctToolStore();
+  return (
+    <div className="space-y-2 text-sm" data-testid="duct-tool-section">
+      <p className="text-xs text-slate-500">
+        Click a ducted unit&apos;s supply or return collar — or the side of a duct run for a take-off, a run&apos;s end for a split, or a run&apos;s open end to continue it — then click to add bends.
+        Empty space starts a free run; finishing it on a run&apos;s side makes it a take-off. An orphaned open start re-attaches with one click.
+        Double-click or Enter finishes; Backspace removes a leg; Esc cancels. A size change while drawing applies to the next leg (a transition is added).
+        A new Level (or [ / ]) makes the next leg rise or drop where it starts; it then goes straight on (risers bend the easy way).
+      </p>
+      {tool.anchorLevelMm !== null ? (
+        <Row label="Level (clear bottom)">
+          <CommitNumber label="Next leg level" value={tool.levelMm ?? tool.anchorLevelMm} step={50} min={0} max={30000}
+            onCommit={(levelMm) => tool.setLevel(levelMm)} />
+          <span className="ml-0.5 text-[10px] text-slate-400">
+            mm{tool.levelMm !== null && Math.abs(tool.levelMm - tool.anchorLevelMm) > 0.5
+              ? ` · ${tool.levelMm > tool.anchorLevelMm ? '▲' : '▼'} ${Math.abs(tool.levelMm - tool.anchorLevelMm)} from ${tool.anchorLevelMm}`
+              : ' · [ / ] ±50'}
+          </span>
+        </Row>
+      ) : null}
+      <Row label="Angles">
+        <select value={tool.angleMode} onChange={(event) => tool.setAngleMode(event.target.value as '90' | '45')} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Angles">
+          <option value="90">90° only</option>
+          <option value="45">90° and 45° (Tab)</option>
+        </select>
+      </Row>
+      <Row label="Size">
+        <select value={tool.sizeMode} onChange={(event) => tool.setSize({ sizeMode: event.target.value as 'collar' | 'custom' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Size">
+          <option value="collar">Match collar</option>
+          <option value="custom">Custom W × H (transition from the collar)</option>
+        </select>
+      </Row>
+      {tool.sizeMode === 'custom' ? (
+        <Row label="W × H (clear)">
+          <input type="number" step={50} value={tool.widthMm} onChange={(event) => tool.setSize({ widthMm: Number(event.target.value) })} className="w-16 rounded border border-slate-200 px-1 text-xs" aria-label="Duct width" />
+          {' × '}
+          <input type="number" step={50} value={tool.heightMm} onChange={(event) => tool.setSize({ heightMm: Number(event.target.value) })} className="w-16 rounded border border-slate-200 px-1 text-xs" aria-label="Duct height" />
+        </Row>
+      ) : null}
+      <Row label="Branch shape">
+        <select value={tool.branchShape} onChange={(event) => tool.setBranchOptions({ branchShape: event.target.value as 'rect' | 'round' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Branch shape">
+          <option value="rect">Rectangular</option>
+          <option value="round">Round (spin-in / conical)</option>
+        </select>
+      </Row>
+      {tool.branchShape === 'round' ? (
+        <>
+          <Row label="Branch Ø">
+            <CommitNumber label="Branch diameter" value={tool.branchDiameterMm} step={25} min={100} max={1000} onCommit={(branchDiameterMm) => tool.setBranchOptions({ branchDiameterMm })} />
+            <span className="ml-0.5 text-[10px] text-slate-400">mm</span>
+          </Row>
+          <Row label="Round collar">
+            <select value={tool.roundTapStyle} onChange={(event) => tool.setBranchOptions({ roundTapStyle: event.target.value as 'spin-in' | 'conical' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Round collar">
+              <option value="spin-in">Spin-in with bead</option>
+              <option value="conical">Conical (D1 ≥ D2)</option>
+            </select>
+          </Row>
+        </>
+      ) : null}
+      <Row label="Branch W × H (clear)">
+        <input type="number" step={50} value={tool.branchWidthMm} onChange={(event) => tool.setBranchSize({ branchWidthMm: Number(event.target.value) })} className="w-16 rounded border border-slate-200 px-1 text-xs" aria-label="Branch width" />
+        {' × '}
+        <input type="number" step={50} value={tool.branchHeightMm} onChange={(event) => tool.setBranchSize({ branchHeightMm: Number(event.target.value) })} className="w-16 rounded border border-slate-200 px-1 text-xs" aria-label="Branch height" />
+      </Row>
+      <Row label="Take-off">
+        <select value={tool.tapStyle} onChange={(event) => tool.setBranchOptions({ tapStyle: event.target.value as 'shoe-45' | 'straight' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Take-off style">
+          <option value="shoe-45">Shoe, 45° lead-in</option>
+          <option value="straight">Straight collar</option>
+        </select>
+        <SourceBadge settingKey="tapCollarMm" />
+      </Row>
+      <Row label="Split">
+        <select value={tool.splitStyle} onChange={(event) => tool.setBranchOptions({ splitStyle: event.target.value as 'y' | 'bullhead' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Split style">
+          <option value="y">Y (divided flow, radius elbows)</option>
+          <option value="bullhead">Bullhead tee with vanes</option>
+        </select>
+      </Row>
+      <Row label="Damper at branch">
+        <input type="checkbox" checked={tool.vcd} onChange={(event) => tool.setBranchOptions({ vcd: event.target.checked })} aria-label="Volume control damper" />
+        <SourceBadge settingKey="vcdLengthMm" />
+      </Row>
+      <Row label="Free start">
+        <select value={tool.freeService} onChange={(event) => tool.setBranchOptions({ freeService: event.target.value as 'supply' | 'return' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Free start service">
+          <option value="supply">Supply</option>
+          <option value="return">Return</option>
+        </select>
+        {' at '}
+        <CommitNumber label="Free start level" value={tool.freeBottomMm} step={50} min={0} max={20000} onCommit={(freeBottomMm) => tool.setBranchOptions({ freeBottomMm })} />
+        <span className="ml-0.5 text-[10px] text-slate-400">mm clear bottom</span>
+      </Row>
+      <Row label="Run end">
+        <select value={tool.endKind} onChange={(event) => tool.setEndKind(event.target.value as 'end-cap' | 'open' | 'plenum')} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Run end">
+          <option value="end-cap">End cap</option>
+          <option value="open">Open</option>
+          <option value="plenum">Plenum (spigots)</option>
+        </select>
+      </Row>
+      <Row label="Terminal connection" title="Click a diffuser or grille spigot while drawing to finish the run on it">
+        <select value={tool.terminalFlex ? 'flex' : 'rigid'} onChange={(event) => tool.setBranchOptions({ terminalFlex: event.target.value === 'flex' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Terminal connection">
+          <option value="flex">Flexible runout</option>
+          <option value="rigid">Rigid duct</option>
+        </select>
+        <SourceBadge settingKey="flexMaxLengthMm" />
+      </Row>
+      {tool.endKind === 'plenum' ? (
+        <Row label="Plenum W × H × L" title="Blank = sized from the run's last section: 200 mm wider, tall enough for the branch spigot, 500 long (practice)">
+          {(['widthMm', 'heightMm', 'lengthMm'] as const).map((key) => (
+            <input key={key} type="number" step={50} placeholder="auto" aria-label={`Tool plenum ${key.replace('Mm', '')}`}
+              value={tool.plenumSize?.[key] ?? ''}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                const current = tool.plenumSize ?? { widthMm: 800, heightMm: 350, lengthMm: 500 };
+                tool.setPlenumSize(event.target.value === '' ? null : { ...current, [key]: Math.max(100, value) });
+              }}
+              className="w-14 rounded border border-slate-200 px-1 text-xs" />
+          ))}
+        </Row>
+      ) : null}
+    </div>
+  );
+}
+
+export function DuctSystemsSection() {
+  const { hvacElements, ductSettings, setDuctSettings } = useSmartDrawingStore((state) => ({
+    hvacElements: state.hvacElements, ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings,
+  }), shallow);
+  const plans = usePlans();
+  const bom = useMemo(() => buildDuctBom(
+    plans,
+    plans.map((plan) => getDuctSupportPlan(plan, hvacElements, ductSettings)),
+    hvacElements.filter(isDuctTerminalElement),
+  ), [plans, hvacElements, ductSettings]);
+  const schedule = useMemo(() => buildDuctFabricationSchedule(plans), [plans]);
+  const [stockDraft, setStockDraft] = useState<string | null>(null);
+  const pressureWarning = (value: number) => (DUCT_SUPPORTED_PRESSURE_CLASSES_PA.some((pa) => value <= pa) ? null
+    : <span className="ml-1 text-[10px] text-red-600">unsupported (&gt;500 Pa)</span>);
+  return (
+    <div className="space-y-2 text-sm" data-testid="duct-systems-section">
+      <Row label="Gauge rule">
+        <select value={ductSettings.gaugeMode} onChange={(event) => setDuctSettings({ gaugeMode: event.target.value as DuctDesignSettings['gaugeMode'] })} className="rounded border border-slate-200 px-1 py-0.5 text-xs">
+          <option value="smacna">SMACNA 1995 tables</option>
+          <option value="longest-side">Longest-side table</option>
+        </select>
+        <SourceBadge settingKey="gaugeMode" />
+      </Row>
+      {(['supplyPressureClassPa', 'returnPressureClassPa'] as const).map((key) => (
+        <Row key={key} label={key === 'supplyPressureClassPa' ? 'Supply pressure' : 'Return pressure'}>
+          <select value={ductSettings[key]} onChange={(event) => setDuctSettings({ [key]: Number(event.target.value) })} className="rounded border border-slate-200 px-1 py-0.5 text-xs">
+            {[125, 250, 500, 750, 1000].map((pa) => <option key={pa} value={pa}>{pa} Pa{pa > 500 ? ' (unsupported)' : ''}</option>)}
+          </select>
+          {pressureWarning(ductSettings[key])}
+        </Row>
+      ))}
+      <Row label="Section length">
+        <select value={ductSettings.sectionLengthMm} onChange={(event) => setDuctSettings({ sectionLengthMm: Number(event.target.value) })} className="rounded border border-slate-200 px-1 py-0.5 text-xs">
+          <option value={1200}>1200 mm</option>
+          <option value={1500}>1500 mm</option>
+        </select>
+      </Row>
+      <Row label="Sheet stock (mm)">
+        <input
+          type="text"
+          value={stockDraft ?? ductSettings.availableSheetThicknessesMm.join(', ')}
+          onChange={(event) => setStockDraft(event.target.value)}
+          onBlur={() => {
+            if (stockDraft !== null) {
+              const values = stockDraft.split(/[,\s]+/).map((value) => Number.parseFloat(value)).filter((value) => Number.isFinite(value));
+              if (values.length > 0) setDuctSettings({ availableSheetThicknessesMm: values });
+            }
+            setStockDraft(null);
+          }}
+          className="w-40 rounded border border-slate-200 px-1 text-xs"
+          aria-label="Available sheet thicknesses"
+        />
+        <SourceBadge settingKey="availableSheetThicknessesMm" />
+      </Row>
+      <Row label="Joint system">
+        <select value={ductSettings.jointSystem} onChange={(event) => setDuctSettings({ jointSystem: event.target.value as DuctJointSystem })} className="rounded border border-slate-200 px-1 py-0.5 text-xs">
+          {JOINT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <SourceBadge settingKey="jointSystem" />
+      </Row>
+      <Row label="Elbows">
+        <select value={ductSettings.elbowStyle} onChange={(event) => setDuctSettings({ elbowStyle: event.target.value as DuctDesignSettings['elbowStyle'] })} className="rounded border border-slate-200 px-1 py-0.5 text-xs">
+          <option value="auto">Auto (radius, vaned if tight)</option>
+          <option value="radius">Radius</option>
+          <option value="square-vaned">Square with vanes</option>
+        </select>
+        <SourceBadge settingKey="elbowStyle" />
+      </Row>
+      <SettingNumber settingKey="elbowCentrelineRatio" label="Radius elbow R/W" step={0.25} min={0.25} max={3} unit="" />
+      <SettingNumber settingKey="elbowNeckMm" label="Elbow neck" step={10} min={0} max={300} />
+      <Row label="Turning vanes">
+        <select value={ductSettings.vaneType} aria-label="Turning vanes" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => setDuctSettings({ vaneType: event.target.value as DuctDesignSettings['vaneType'] })}>
+          <option value="auto">Auto (lightest that spans the height)</option>
+          {Object.values(DUCT_VANES).map((vane) => <option key={vane.type} value={vane.type}>{vane.label}</option>)}
+        </select>
+        <SourceBadge settingKey="vaneType" />
+      </Row>
+      <Row label="Round seam">
+        <select value={ductSettings.roundSeam} aria-label="Round seam" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => setDuctSettings({ roundSeam: event.target.value as DuctDesignSettings['roundSeam'] })}>
+          <option value="spiral">Spiral (RL-1, RT-1 sleeves)</option>
+          <option value="longitudinal">Longitudinal (RT-5 crimp)</option>
+        </select>
+        <SourceBadge settingKey="roundSeam" />
+      </Row>
+      <Row label="Round elbow velocity">
+        <select value={ductSettings.roundVelocityBand} aria-label="Round elbow velocity" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => setDuctSettings({ roundVelocityBand: event.target.value as DuctDesignSettings['roundVelocityBand'] })}>
+          <option value="low">≤ 5.1 m/s: R/D 0.6, 3 pieces</option>
+          <option value="medium">5.1–7.6 m/s: R/D 1.0, 4 pieces</option>
+          <option value="high">&gt; 7.6 m/s: R/D 1.5, 5 pieces</option>
+        </select>
+        <SourceBadge settingKey="roundVelocityBand" />
+      </Row>
+      <SettingNumber settingKey="roundSectionLengthMm" label="Spiral section length" step={100} min={600} max={6000} />
+      <SettingNumber settingKey="conicalFlareMm" label="Conical flare" step={10} min={0} max={300} />
+      <Row label="Longitudinal seam">
+        <select value={ductSettings.longitudinalSeam} aria-label="Longitudinal seam" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => setDuctSettings({ longitudinalSeam: event.target.value as DuctDesignSettings['longitudinalSeam'] })}>
+          <option value="pittsburgh">Pittsburgh lock (L-1)</option>
+          <option value="snaplock">Button-punch snaplock (L-2)</option>
+        </select>
+        <SourceBadge settingKey="longitudinalSeam" />
+      </Row>
+      <SettingNumber settingKey="coilWidthMm" label="Coil width" step={50} min={600} max={2000} />
+      <SettingNumber settingKey="minMakeUpPieceMm" label="Shortest make-up piece" step={10} min={50} max={1000} />
+      <SettingNumber settingKey="washersPerBolt" label="Washers per bolt" step={1} min={0} max={4} unit="" />
+      <SettingNumber settingKey="transitionTaperDeg" label="Transition design taper" step={1} min={5} max={30} unit="° / side" />
+      <SettingNumber settingKey="transitionMaxDivergingIncludedDeg" label="Max diverging (concentric)" step={1} min={10} max={45} unit="° incl." />
+      <SettingNumber settingKey="transitionMaxConvergingIncludedDeg" label="Max converging (concentric)" step={1} min={10} max={60} unit="° incl." />
+      <SettingNumber settingKey="transitionMaxEccentricDeg" label="Max eccentric (flat bottom)" step={1} min={5} max={30} unit="°" />
+      <SettingNumber settingKey="aspectRatioAdvisory" label="Aspect-ratio advisory" step={0.5} min={2} max={10} unit=": 1" />
+      <SettingNumber settingKey="tapCollarMm" label="Take-off collar" step={10} min={50} max={400} />
+      <SettingNumber settingKey="vcdLengthMm" label="Damper section" step={10} min={50} max={600} />
+      <SettingNumber settingKey="tapWindowMarginMm" label="Take-off window margin" step={10} min={0} max={300} />
+      <Row label="Flexible connector at unit">
+        <input type="checkbox" checked={ductSettings.flexibleConnectorAtUnit} onChange={(event) => setDuctSettings({ flexibleConnectorAtUnit: event.target.checked })} />
+        <SourceBadge settingKey="flexibleConnectorAtUnit" />
+      </Row>
+      <SettingNumber settingKey="connectorFabricMm" label="Connector fabric" step={1} min={76} max={254} />
+      <SettingNumber settingKey="connectorMetalMm" label="Connector metal edge" step={1} min={76} max={200} />
+      <div className="pt-1 text-xs font-medium text-slate-700">Insulation (NBR)</div>
+      <Row label="New runs">
+        <select value={ductSettings.defaultConstruction} aria-label="New run construction" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => setDuctSettings({ defaultConstruction: event.target.value as 'gi-bare' | 'gi-nbr' })}>
+          <option value="gi-bare">GI, bare</option>
+          <option value="gi-nbr">GI + NBR</option>
+        </select>
+        <SourceBadge settingKey="defaultConstruction" />
+      </Row>
+      <SettingNumber settingKey="nbrSupplyThicknessMm" label="NBR on supply" step={1} min={6} max={50} />
+      <SettingNumber settingKey="nbrReturnThicknessMm" label="NBR on return" step={1} min={6} max={50} />
+      <SettingNumber settingKey="nbrAdhesiveM2PerL" label="Adhesive coverage" step={0.5} min={7} max={9} unit="m²/L" />
+      <SettingNumber settingKey="nbrWastePercent" label="Insulation waste" step={1} min={0} max={50} unit="%" />
+      <div className="pt-1 text-xs font-medium text-slate-700">Supports (SMACNA chapter 4)</div>
+      <SettingNumber settingKey="hangerSpacingMm" label="Hanger spacing" step={100} min={600} max={3050} />
+      <Row label="Soffit (rods hang from)">
+        <CommitNumber label="Soffit level" value={resolveSoffitZ(ductSettings)} step={50} min={500} max={30000}
+          onCommit={(soffitMm) => setDuctSettings({ soffitMm })} />
+        <span className="ml-0.5 text-[10px] text-slate-400">mm{ductSettings.soffitMm === null ? ' · routing ceiling' : ''}</span>
+        {ductSettings.soffitMm !== null ? (
+          <button type="button" className="ml-1 text-[10px] text-slate-500 underline" onClick={() => setDuctSettings({ soffitMm: null })}>use routing ceiling</button>
+        ) : null}
+        <SourceBadge settingKey="soffitMm" />
+      </Row>
+      <Row label="Smallest rod">
+        <select value={ductSettings.minimumRod} aria-label="Smallest rod" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => setDuctSettings({ minimumRod: event.target.value as DuctDesignSettings['minimumRod'] })}>
+          {(['M8', 'M10', 'M12', 'M16'] as const).map((rod) => <option key={rod} value={rod}>{rod}</option>)}
+        </select>
+        <SourceBadge settingKey="minimumRod" />
+      </Row>
+      <SettingNumber settingKey="hangerRodOffsetMm" label="Rod offset from duct side" step={5} min={15} max={152} />
+      <SettingNumber settingKey="trapezeOverhangMm" label="Trapeze beyond rod" step={5} min={15} max={200} />
+      <SettingNumber settingKey="hangerJointClearanceMm" label="Hanger clear of joints" step={10} min={0} max={400} />
+      <SettingNumber settingKey="hangerFromUnitMm" label="First hanger past connector" step={10} min={50} max={610} />
+      <SettingNumber settingKey="riserSupportIntervalMm" label="Riser support interval" step={10} min={3660} max={7320} />
+      <Row label="Show">
+        <label className="mr-2 text-xs"><input type="checkbox" checked={ductSettings.showSizeTags} onChange={(event) => setDuctSettings({ showSizeTags: event.target.checked })} /> tags</label>
+        <label className="mr-2 text-xs"><input type="checkbox" checked={ductSettings.showJointTicks} onChange={(event) => setDuctSettings({ showJointTicks: event.target.checked })} /> joints</label>
+        <label className="mr-2 text-xs"><input type="checkbox" checked={ductSettings.showPieceMarks} onChange={(event) => setDuctSettings({ showPieceMarks: event.target.checked })} /> marks</label>
+        <label className="text-xs"><input type="checkbox" checked={ductSettings.showSupports} onChange={(event) => setDuctSettings({ showSupports: event.target.checked })} /> supports</label>
+      </Row>
+      <details open>
+        <summary className="cursor-pointer text-xs font-medium text-slate-700">Project duct BOM ({plans.length} run{plans.length === 1 ? '' : 's'})</summary>
+        <BomTable rows={bom} />
+        <div className="flex gap-2 pt-1">
+          <CopyButton text={ductBomToCsv(bom)} label="Copy BOM CSV" />
+          <CopyButton text={ductScheduleToCsv(schedule)} label="Copy schedule CSV" />
+        </div>
+      </details>
+    </div>
+  );
+}

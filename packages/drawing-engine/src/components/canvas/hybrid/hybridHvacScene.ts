@@ -1,4 +1,5 @@
 import type { HvacElement } from '../../../types';
+import { ductBranchesOf } from '../hvac/duct/ductNetwork';
 import { getActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
 import type { HvacBuildSceneContext } from '../hvac/three3d';
 
@@ -35,6 +36,15 @@ function dependencyReader(context: HvacBuildSceneContext, modelRevision: number)
         dependencies.push(chain.renderAsHead, signature, tail);
         if (tail) dependencies.push(...connectorSources(tail, byId));
       }
+    } else if (element.type === 'duct') {
+      // A run's fabrication depends on the project duct settings, the unit
+      // collar or parent run it starts from, and the branches taken off it
+      // (their openings move its joints; its split grows their elbows).
+      dependencies.push(context.ductSettings, ...connectorSources(element, byId));
+      const start = (element.properties.ductRun as { start?: { unitId?: unknown; parentRunId?: unknown } } | undefined)?.start;
+      if (typeof start?.unitId === 'string') dependencies.push(byId.get(start.unitId));
+      if (typeof start?.parentRunId === 'string') dependencies.push(byId.get(start.parentRunId));
+      for (const branch of ductBranchesOf(element.id, context.allElements)) dependencies.push(branch.element);
     } else if (element.type === 'refrigerant-branch-kit') {
       dependencies.push(settings);
       // Only an INLINE kit resolves its render centre against the scene:

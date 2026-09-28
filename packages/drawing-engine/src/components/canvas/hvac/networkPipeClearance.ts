@@ -2,6 +2,8 @@ import type { HvacElement, Point2D } from '../../../types';
 
 import { compileCopperSocketElbowRoute } from './copperSocketElbowRoute';
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from './copperSocketElbows';
+import { getActiveDuctSettings } from './duct/ductSettings';
+import { ductBoxesInScene, segmentBoxDistance, type DuctBox } from './duct/ductVolumes';
 import { resolveFieldPipeBendRadiusMm } from './fieldPipeBends';
 import type { PipeBypass } from './pipeBypass';
 import { liftPipePlanRouteTo3d, normalizePipeRouteNodes3d, type PipeRouteNode3D } from './pipeRoute3d';
@@ -726,6 +728,34 @@ function findNetworkPipeClashes(scene: HvacElement[], proposed: HvacElement[], r
         if (stopAtFirst) return [{ elementIds: ids, distanceMm: newDistance, requiredMm: required }];
         const previous = found.get(key);
         if (!previous || required - newDistance > previous.requiredMm - previous.distanceMm) found.set(key, { elementIds: ids, distanceMm: newDistance, requiredMm: required });
+      }
+    }
+  }
+  // Ducts are obstacles: a new pipe route may not pass through a duct body (a box, not a tube).
+  const ducts = ductBoxesInScene(afterElements, getActiveDuctSettings());
+  if (ducts.length) {
+    const clashWith = (lane: PipeLane, duct: DuctBox): number => {
+      let nearest = Number.POSITIVE_INFINITY;
+      if (!overlaps(lane.bounds, duct.bounds)) return nearest;
+      for (const segment of lane.segments) {
+        if (!overlaps(segment.bounds, duct.bounds)) continue;
+        const hit = segmentBoxDistance(segment.a, segment.b, duct).distance;
+        if (hit < lane.radius - TOLERANCE_MM) nearest = Math.min(nearest, hit);
+      }
+      return nearest;
+    };
+    for (const lane of after) {
+      if (!proposedIds.has(lane.id)) continue;
+      for (const duct of ducts) {
+        const hit = clashWith(lane, duct);
+        if (!Number.isFinite(hit)) continue;
+        // A contact the lane already had with this duct is not new.
+        if ((previousByKey.get(lane.key) ?? []).some((previous) => Number.isFinite(clashWith(previous, duct)))) continue;
+        const ids = [lane.id, duct.elementId].sort() as [string, string];
+        if (stopAtFirst) return [{ elementIds: ids, distanceMm: hit, requiredMm: lane.radius }];
+        const key = ids.join('\u0000');
+        const previous = found.get(key);
+        if (!previous || lane.radius - hit > previous.requiredMm - previous.distanceMm) found.set(key, { elementIds: ids, distanceMm: hit, requiredMm: lane.radius });
       }
     }
   }

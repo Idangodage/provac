@@ -14,7 +14,7 @@
  * with the cache source would dispose/recolour the master copy.
  */
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 import type { HvacElement } from "../../../../types";
 import { markMaterialOwned } from "../../threeResourceLifecycle";
@@ -33,6 +33,35 @@ function getLoader(): GLTFLoader {
     loader = new GLTFLoader();
   }
   return loader;
+}
+
+/** Meshes the file defines but no node places (an IFC → GLB converter fault). */
+export function unplacedMeshIndices(json: { meshes?: unknown[]; nodes?: Array<{ mesh?: number }> } | undefined): number[] {
+  if (!json?.meshes) return [];
+  const placed = new Set((json.nodes ?? []).flatMap((node) => (node.mesh !== undefined ? [node.mesh] : [])));
+  return json.meshes.map((_, index) => index).filter((index) => !placed.has(index));
+}
+
+/**
+ * The MEPcontent IFC → GLB export writes every part of a unit as its own mesh
+ * over one shared vertex buffer, but places only the LAST mesh in the scene —
+ * the rest of the body never renders (a ducted unit showed as a small block).
+ * Place the unplaced meshes where the placed one sits (same parent, same node
+ * transform), so the whole model renders.
+ */
+async function placeUnplacedMeshes(gltf: GLTF, indices: number[]): Promise<void> {
+  let host: THREE.Object3D | null = null;
+  gltf.scene.traverse((object) => {
+    if (!host && (object as THREE.Mesh).isMesh) host = object;
+  });
+  if (!host) return;
+  const anchor = host as THREE.Object3D;
+  const parts = await Promise.all(indices.map((index) => gltf.parser.getDependency("mesh", index) as Promise<THREE.Object3D>));
+  anchor.updateMatrix();
+  for (const part of parts) {
+    part.applyMatrix4(anchor.matrix);
+    (anchor.parent ?? gltf.scene).add(part);
+  }
 }
 
 /** Kicks off a load if this URL has not been requested yet. Idempotent.
@@ -63,7 +92,15 @@ export function preloadGlb(url: string, onSettled?: () => void): void {
   getLoader().load(
     url,
     (gltf) => {
-      settle("loaded", gltf.scene);
+      const unplaced = unplacedMeshIndices(gltf.parser?.json as Parameters<typeof unplacedMeshIndices>[0]);
+      if (unplaced.length === 0) {
+        settle("loaded", gltf.scene);
+        return;
+      }
+      placeUnplacedMeshes(gltf, unplaced).then(
+        () => settle("loaded", gltf.scene),
+        () => settle("loaded", gltf.scene),
+      );
     },
     undefined,
     () => {

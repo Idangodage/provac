@@ -112,11 +112,15 @@ export function useCanvasKeyboard({
     if (!setTool) return;
 
     const handleToolShortcut = (event: KeyboardEvent) => {
-      if (isEditableElement(event.target)) return;
+      const key = event.key.toLowerCase();
+      // A focused button (e.g. the view switch just clicked mid-draft) has no Escape of its
+      // own, so Escape still reaches the canvas; fields keep theirs.
+      const escapeFromButton = key === "escape" && event.target instanceof HTMLElement
+        && Boolean(event.target.closest("button")) && !event.target.closest("input, textarea, select, [contenteditable]");
+      if (isEditableElement(event.target) && !escapeFromButton) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.repeat) return;
 
-      const key = event.key.toLowerCase();
       if (key === "escape") {
         if (onEscape?.()) {
           event.preventDefault();

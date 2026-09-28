@@ -29,7 +29,6 @@ import {
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
   getDuctedIndoorUnitOpeningPlanProjection,
 } from "../hvac/ductedIndoorUnitModel";
-import { buildGiDuctVisual } from "../hvac/giDuctModel";
 import {
   buildRefrigerantBranchKitViewModel,
   DEFAULT_REFRIGERANT_BRANCH_KIT_INSULATION_THICKNESS_MM,
@@ -52,6 +51,7 @@ import {
   type VisibleRefrigerantPipeSegmentTarget,
 } from "../hvac/refrigerantPipeRenderState";
 import { buildHvacElementMesh } from "../hvac/three3d";
+import { addDuctRunMeshes } from "../hvac/three3d/ductMeshes";
 import {
   MODEL_SPACE_DEV_ASSERTIONS,
   assertCanonicalModelRoot,
@@ -3259,144 +3259,11 @@ function createHvacEquipmentMesh(
       break;
     }
     case "duct": {
-      const ductVisual = buildGiDuctVisual(element);
-      const halfHeight = ductVisual.outerHeightMm / 2;
-      const halfWidth = ductVisual.outerWidthMm / 2;
-      const wallThickness = ductVisual.wallThicknessMm;
-      const innerWidth = Math.max(12, ductVisual.innerWidthMm);
-      const innerHeight = Math.max(12, ductVisual.innerHeightMm);
-
-      ductVisual.segments.forEach((segment, index) => {
-        const segmentGroup = new THREE.Group();
-        segmentGroup.position.set(segment.localCenter.x, segment.localCenter.y, 0);
-        segmentGroup.rotation.z = THREE.MathUtils.degToRad(segment.angleDeg);
-
-        segmentGroup.add(
-          createLocalBoxMesh(
-            segment.lengthMm,
-            ductVisual.outerWidthMm,
-            wallThickness,
-            DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody,
-            new THREE.Vector3(0, 0, halfHeight - wallThickness / 2),
-            { renderOrder: 18 },
-          ),
-        );
-        segmentGroup.add(
-          createLocalBoxMesh(
-            segment.lengthMm,
-            ductVisual.outerWidthMm,
-            wallThickness,
-            DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody,
-            new THREE.Vector3(0, 0, wallThickness / 2),
-            { renderOrder: 18 },
-          ),
-        );
-        segmentGroup.add(
-          createLocalBoxMesh(
-            segment.lengthMm,
-            wallThickness,
-            ductVisual.outerHeightMm,
-            DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody,
-            new THREE.Vector3(0, -halfWidth + wallThickness / 2, halfHeight),
-            { renderOrder: 18 },
-          ),
-        );
-        segmentGroup.add(
-          createLocalBoxMesh(
-            segment.lengthMm,
-            wallThickness,
-            ductVisual.outerHeightMm,
-            DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctBody,
-            new THREE.Vector3(0, halfWidth - wallThickness / 2, halfHeight),
-            { renderOrder: 18 },
-          ),
-        );
-
-        segment.seamOffsetsMm.forEach((offsetMm) => {
-          segmentGroup.add(
-            createLocalBoxMesh(
-              Math.max(2.4, wallThickness * 2.8),
-              ductVisual.outerWidthMm + wallThickness * 0.8,
-              Math.max(1.4, wallThickness * 1.7),
-              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctSeam,
-              new THREE.Vector3(
-                offsetMm - segment.lengthMm / 2,
-                0,
-                halfHeight + wallThickness * 0.2,
-              ),
-              { renderOrder: 19 },
-            ),
-          );
-        });
-
-        if (index === ductVisual.segments.length - 1) {
-          const endFaceX = segment.lengthMm / 2 - wallThickness / 2;
-          segmentGroup.add(
-            createLocalBoxMesh(
-              wallThickness,
-              ductVisual.outerWidthMm,
-              wallThickness,
-              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
-              new THREE.Vector3(endFaceX, 0, halfHeight - wallThickness / 2),
-              { renderOrder: 19 },
-            ),
-          );
-          segmentGroup.add(
-            createLocalBoxMesh(
-              wallThickness,
-              ductVisual.outerWidthMm,
-              wallThickness,
-              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
-              new THREE.Vector3(endFaceX, 0, wallThickness / 2),
-              { renderOrder: 19 },
-            ),
-          );
-          segmentGroup.add(
-            createLocalBoxMesh(
-              wallThickness,
-              wallThickness,
-              innerHeight,
-              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
-              new THREE.Vector3(
-                endFaceX,
-                -halfWidth + wallThickness / 2,
-                halfHeight,
-              ),
-              { renderOrder: 19 },
-            ),
-          );
-          segmentGroup.add(
-            createLocalBoxMesh(
-              wallThickness,
-              wallThickness,
-              innerHeight,
-              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctEdge,
-              new THREE.Vector3(
-                endFaceX,
-                halfWidth - wallThickness / 2,
-                halfHeight,
-              ),
-              { renderOrder: 19 },
-            ),
-          );
-          segmentGroup.add(
-            createLocalBoxMesh(
-              Math.max(1.2, wallThickness * 0.85),
-              innerWidth,
-              innerHeight,
-              DUCTED_INDOOR_UNIT_COLOR_PALETTE.giDuctInterior,
-              new THREE.Vector3(
-                segment.lengthMm / 2 - wallThickness * 0.7,
-                0,
-                halfHeight,
-              ),
-              { renderOrder: 17 },
-            ),
-          );
-        }
-
-        group.add(segmentGroup);
-      });
+      // The fabrication plan drives this view too (world-space geometry), so the
+      // isometric canvas shows the same pieces, joints and fittings as the board.
+      group.position.set(0, 0, 0);
+      group.rotation.set(0, 0, 0);
+      addDuctRunMeshes(group, element, { allElements });
       break;
     }
     case "ceiling-suspended-ac": {

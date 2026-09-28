@@ -45,7 +45,7 @@ import {
   CondensatePipeInspector,
   UnitDrainageRows,
 } from "./canvas/hvac/condensate/CondensateInspector";
-import { buildGiDuctVisual } from "./canvas/hvac/giDuctModel";
+import { DuctRunInspector, DuctSystemsSection, DuctTerminalInspector, DuctToolSection } from "./canvas/hvac/duct/DuctPanels";
 import { editablePipeMaterials, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
 import { buildPipePropertyEdit, type PipePropertyEdit } from "./canvas/hvac/pipePropertyEdits";
 import {
@@ -1797,84 +1797,11 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   }
 
   if (selectedEquipment.type === "duct") {
-    const ductVisual = buildGiDuctVisual(selectedEquipment);
-    const ductLengthMm = ductVisual.segments.reduce(
-      (total, segment) => total + segment.lengthMm,
-      0,
-    );
-    const ductKind = propertyAsString(
-      selectedEquipment.properties,
-      "ductKind",
-      "supply",
-    );
-    const sourceElementId = propertyAsString(
-      selectedEquipment.properties,
-      "sourceElementId",
-      "",
-    );
+    return <DuctRunInspector element={selectedEquipment} />;
+  }
 
-    return (
-      <div className="space-y-1">
-        <PropertyRow label="Label">
-          <input
-            type="text"
-            value={selectedEquipment.label}
-            onChange={(e) =>
-              updateHvacElement(selectedEquipment.id, { label: e.target.value })
-            }
-            className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
-          />
-        </PropertyRow>
-        <PropertyRow label="Type">
-          <span className="text-sm text-slate-700">GI Duct</span>
-        </PropertyRow>
-        <PropertyRow label="Connection">
-          <span className="text-sm text-slate-700 capitalize">{ductKind}</span>
-        </PropertyRow>
-        <PropertyRow label="Source Unit">
-          <span className="max-w-[10rem] truncate text-xs text-slate-500">
-            {sourceElementId || "Manual"}
-          </span>
-        </PropertyRow>
-        <PropertyRow label="Length">
-          <span className="text-sm text-slate-700">
-            {fromMm(ductLengthMm, propertyUnit).toFixed(2)}{" "}
-            {formatUnit(propertyUnit)}
-          </span>
-        </PropertyRow>
-        <PropertyRow label="Section">
-          <span className="text-sm text-slate-700">
-            {fromMm(ductVisual.outerWidthMm, propertyUnit).toFixed(2)} x{" "}
-            {fromMm(ductVisual.outerHeightMm, propertyUnit).toFixed(2)}{" "}
-            {formatUnit(propertyUnit)}
-          </span>
-        </PropertyRow>
-        <PropertyRow label="Sheet Thickness">
-          <span className="text-sm text-slate-700">
-            {fromMm(ductVisual.wallThicknessMm, propertyUnit).toFixed(2)}{" "}
-            {formatUnit(propertyUnit)}
-          </span>
-        </PropertyRow>
-        <PropertyRow label="Elevation">
-          <input
-            type="number"
-            step={propertyUnit === "mm" ? 1 : 0.01}
-            value={fromMm(selectedEquipment.elevation, propertyUnit).toFixed(2)}
-            onChange={(e) => {
-              const parsed = Number.parseFloat(e.target.value);
-              if (!Number.isFinite(parsed)) return;
-              updateHvacElement(selectedEquipment.id, {
-                elevation: Math.max(0, toMm(parsed, propertyUnit)),
-              });
-            }}
-            className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
-          />
-          <span className="text-xs text-slate-500">
-            {formatUnit(propertyUnit)}
-          </span>
-        </PropertyRow>
-      </div>
-    );
+  if (selectedEquipment.type === "diffuser" || selectedEquipment.type === "return-grille") {
+    return <DuctTerminalInspector element={selectedEquipment} />;
   }
 
   return (
@@ -4234,6 +4161,12 @@ export function PropertiesPanel({
           </CollapsibleSection>
         )}
 
+        {(activeTool === "duct" || hvacElements.some((element) => element.type === "duct")) && (
+          <CollapsibleSection title="Duct Systems" defaultOpen={activeTool === "duct"}>
+            <DuctSystemsSection />
+          </CollapsibleSection>
+        )}
+
         <CollapsibleSection
           title="Room Properties"
           defaultOpen={hasSelectedRoom}
@@ -4270,6 +4203,12 @@ export function PropertiesPanel({
         {activeTool === "refrigerant-pipe" && (
           <CollapsibleSection title="Refrigerant Pipe Tool" defaultOpen>
             <RefrigerantPipeToolSection />
+          </CollapsibleSection>
+        )}
+
+        {activeTool === "duct" && (
+          <CollapsibleSection title="Duct Tool" defaultOpen>
+            <DuctToolSection />
           </CollapsibleSection>
         )}
 

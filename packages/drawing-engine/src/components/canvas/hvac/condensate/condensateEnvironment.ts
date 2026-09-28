@@ -10,6 +10,7 @@
  * overridden in the condensate settings.
  */
 import type { HvacElement, Point2D, Room, Wall } from '../../../../types';
+import { ductRunLegFootprintsMm } from '../duct/ductTypes';
 import { listNetworkPipeLanes } from '../networkPipeClearance';
 import type { PipeRoutingSettings } from '../pipeRoutingSettings';
 
@@ -353,6 +354,12 @@ export function buildCondensateEnvironment(
     const top = element.elevation + element.height;
     // Only bodies that occupy the ceiling-void band obstruct a void run.
     if (top < envelope.voidFloorMm - 1 || bottom > envelope.soffitMm) continue;
+    // A drawn duct run blocks its legs, not the empty corners of its bounding box.
+    const ductLegs = element.type === 'duct' ? ductRunLegFootprintsMm(element) : null;
+    if (ductLegs) {
+      for (const leg of ductLegs) obstacles.push({ id: element.id, ...leg, kind: 'equipment' });
+      continue;
+    }
     const bounds = unitFootprintBoundsMm(element);
     obstacles.push({ id: element.id, ...bounds, kind: sourceIds.has(element.id) ? 'source-body' : 'equipment' });
   }
