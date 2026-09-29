@@ -23,8 +23,8 @@ import { isRoundLeg, isRoundMainTapStyle, roundLeg, type DuctLeg, type DuctSplit
 
 export type ShapeMode = 'rect' | 'round' | 'optimal';
 
-/** Slowest trunk air the catalogue offers (m/s): bigger ducts only cost more (practice). */
-const MIN_TRUNK_VELOCITY_MS = 1.2;
+/** Slowest trunk air the catalogue offers (m/s): at about 2 USD a pascal, bigger ducts do not pay back (practice). */
+const MIN_TRUNK_VELOCITY_MS = 1.8;
 /** Largest rectangular section height tried (mm). */
 const MAX_RECT_HEIGHT_MM = 600;
 
@@ -218,6 +218,25 @@ export class SizingModel {
       cost = outlets.reduce((total, outlet) => total + this.elbow(outlet.leg, 90, outlet.airflowM3h).cost, 0);
     }
     return { cost: cost + this.settings.econHangerEach, losses };
+  }
+
+  /** One outlet of a split: its share of the fitting and its loss. */
+  splitOutlet(style: DuctSplitStyle, main: DuctLeg, mainAirflowM3h: number, outlet: DuctLeg, outletAirflowM3h: number): CostLoss {
+    const loss = splitOutletLossPa(style, velocityMs(outlet, outletAirflowM3h), velocityMs(main, mainAirflowM3h));
+    if (style === 'wye') {
+      const leg = wyeLegLengthMm(main.diameterMm ?? main.widthMm);
+      return { cost: fittingCost(main, leg + 51, this.costContext) * ((outlet.widthMm + main.widthMm) / (2 * main.widthMm)), loss };
+    }
+    if (style === 'bullhead') {
+      // The box over the main, as deep as its outlets are wide (half each), with its vanes.
+      return { cost: fittingCost(main, (this.settings.elbowNeckMm + outlet.widthMm + main.widthMm) / 2, this.costContext), loss };
+    }
+    return { cost: this.elbow(outlet, 90, outletAirflowM3h).cost, loss };
+  }
+
+  /** The part of a split's cost that is not per outlet (its hanger). */
+  splitBaseCost(_style: DuctSplitStyle, _main: DuctLeg, _mainAirflowM3h: number): number {
+    return this.settings.econHangerEach;
   }
 
   capCost(leg: DuctLeg): number {

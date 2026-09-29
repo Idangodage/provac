@@ -203,10 +203,6 @@ function planSegments(run: RunDesign, children: RunState[], model: SizingModel):
 
 // ---- Options ----
 
-function runServesOneTerminal(run: RunDesign): boolean {
-  return run.end.kind === 'terminal' && run.taps.length === 0;
-}
-
 function dedupe(legs: DuctLeg[]): DuctLeg[] {
   const out: DuctLeg[] = [];
   for (const leg of legs) if (!out.some((other) => sameLeg(other, leg))) out.push(leg);
@@ -299,11 +295,11 @@ function splitStylesFor(main: DuctLeg, model: SizingModel): DuctSplitStyle[] {
   return ['y', 'bullhead'];
 }
 
-function splitPairOk(style: DuctSplitStyle, main: DuctLeg, a: DuctLeg, b: DuctLeg): boolean {
-  if (style === 'wye') return isRoundLeg(a) && isRoundLeg(b) && a.diameterMm! <= main.diameterMm! && b.diameterMm! <= main.diameterMm!;
-  if (isRoundLeg(a) || isRoundLeg(b)) return false;
-  if (a.heightMm > main.heightMm + 0.5 || b.heightMm > main.heightMm + 0.5) return false;
-  return style === 'y' ? a.widthMm + b.widthMm <= main.widthMm + 0.5 : a.widthMm <= main.widthMm && b.widthMm <= main.widthMm;
+/** An outlet section a split of `style` on `main` can take (the Y's shared width is applied pairwise). */
+function splitOutletOk(style: DuctSplitStyle, main: DuctLeg, outlet: DuctLeg): boolean {
+  if (style === 'wye') return isRoundLeg(outlet) && outlet.diameterMm! <= main.diameterMm!;
+  if (isRoundLeg(outlet)) return false;
+  return outlet.heightMm <= main.heightMm + 0.5 && outlet.widthMm <= main.widthMm + 0.5;
 }
 
 // ---- The DP ----
@@ -382,23 +378,42 @@ function endFrontiers(state: RunState, solver: Solver): void {
       const room = [firstEventMm(plus.run, plus.children, model), firstEventMm(minus.run, minus.children, model)];
       for (const style of splitStylesFor(leg, model)) {
         const styleIndex = SPLIT_STYLES.indexOf(style);
-        plus.options[0]!.forEach((a, ia) => {
-          minus.options[0]!.forEach((b, ib) => {
-            if (!splitPairOk(style, leg, a, b)) return;
-            // A wye's 45° legs need their run before the outlets' first take-off or bend.
-            if (style === 'wye' && (room[0]! < diagonalRoomMm(leg.diameterMm!, a, model, true) || room[1]! < diagonalRoomMm(leg.diameterMm!, b, model, true))) return;
-            const fa = plus.G[0]![ia]!;
-            const fb = minus.G[0]![ib]!;
-            const split = model.split(style, leg, flow, [{ leg: a, airflowM3h: plus.run.airflowM3h }, { leg: b, airflowM3h: minus.run.airflowM3h }]);
-            const ka = steps(split.losses[0], grid);
-            const kb = steps(split.losses[1], grid);
-            const code = styleIndex * 1_000_000 + ia * 1000 + ib;
-            for (let i = 0; i < grid.size; i += 1) {
-              const value = (i >= ka ? fa[i - ka]! : INF) + (i >= kb ? fb[i - kb]! : INF) + split.cost;
-              if (value < frontier[i]!) { frontier[i] = value; arg[i] = code; }
-            }
-          });
+        // Each outlet on its own (its section fits the split, its loss and share of the fitting), shifted by that.
+        const side = (child: RunState, which: 0 | 1) => child.options[0]!.flatMap((y, index) => {
+          if (!splitOutletOk(style, leg, y)) return [];
+          if (style === 'wye' && room[which]! < diagonalRoomMm(leg.diameterMm!, y, model, true)) return [];
+          const part = model.splitOutlet(style, leg, flow, y, child.run.airflowM3h);
+          const shifted = filled(grid, INF);
+          minShiftedInto(shifted, null, child.G[0]![index]!, part.cost, steps(part.loss, grid), 0);
+          return [{ index, leg: y, shifted }];
         });
+        const as = side(plus, 0);
+        const bs = side(minus, 1).sort((m, n) => m.leg.widthMm - n.leg.widthMm);
+        if (!as.length || !bs.length) continue;
+        // Envelope over the second outlet, narrowest first: the best of those up to each width.
+        const envelope: Float64Array[] = [];
+        const envelopeArg: Int32Array[] = [];
+        bs.forEach((entry, j) => {
+          const value = j ? Float64Array.from(envelope[j - 1]!) : filled(grid, INF);
+          const which = j ? Int32Array.from(envelopeArg[j - 1]!) : new Int32Array(grid.size).fill(-1);
+          for (let i = 0; i < grid.size; i += 1) if (entry.shifted[i]! < value[i]!) { value[i] = entry.shifted[i]!; which[i] = entry.index; }
+          envelope.push(value);
+          envelopeArg.push(which);
+        });
+        const base = model.splitBaseCost(style, leg, flow);
+        for (const a of as) {
+          // A Y shares the main's width between its outlets; a bullhead or a wye takes each within the main.
+          const limit = style === 'y' ? leg.widthMm - a.leg.widthMm + 0.5 : Number.POSITIVE_INFINITY;
+          let j = -1;
+          while (j + 1 < bs.length && bs[j + 1]!.leg.widthMm <= limit) j += 1;
+          if (j < 0) continue;
+          const best = envelope[j]!;
+          const which = envelopeArg[j]!;
+          for (let i = 0; i < grid.size; i += 1) {
+            const value = a.shifted[i]! + best[i]! + base;
+            if (value < frontier[i]!) { frontier[i] = value; arg[i] = styleIndex * 1_000_000 + a.index * 1000 + which[i]!; }
+          }
+        }
       }
       state.end[x] = frontier;
       state.argEnd[x] = arg;
@@ -555,11 +570,11 @@ function reconstructEnd(state: RunState, x: number, i: number, solver: Solver, o
     sizing.splitStyle = style;
     const [plus, minus] = state.children.slice(run.taps.length) as [RunState, RunState];
     const leg = state.options[state.segments.length - 1]![x]!;
-    const split = model.split(style, leg, state.segments.at(-1)!.flowOut, [
-      { leg: plus.options[0]![ia]!, airflowM3h: plus.run.airflowM3h }, { leg: minus.options[0]![ib]!, airflowM3h: minus.run.airflowM3h },
-    ]);
-    return reconstructRun(plus, ia, i - steps(split.losses[0], grid), solver, out)
-      && reconstructRun(minus, ib, i - steps(split.losses[1], grid), solver, out);
+    const flow = state.segments.at(-1)!.flowOut;
+    const a = model.splitOutlet(style, leg, flow, plus.options[0]![ia]!, plus.run.airflowM3h);
+    const b = model.splitOutlet(style, leg, flow, minus.options[0]![ib]!, minus.run.airflowM3h);
+    return reconstructRun(plus, ia, i - steps(a.loss, grid), solver, out)
+      && reconstructRun(minus, ib, i - steps(b.loss, grid), solver, out);
   }
   if (run.end.kind === 'plenum') {
     const args = (state as RunState & { argSpigots?: Int32Array[] }).argSpigots ?? [];

@@ -62,7 +62,25 @@ function expectServed(result: AutoDuctResult, ids: string[]): void {
     const flex = plan!.pieces.find((piece) => piece.kind === 'flex');
     expect(flex, id).toBeDefined();
     expect(flex!.lengthMm).toBeLessThanOrEqual(settings.flexMaxLengthMm);
-    expect(plan!.pieces.map((piece) => piece.kind).slice(0, 2)).toEqual(['takeoff', 'damper']);
+    // A take-off branch starts with its collar and damper; the run off the unit collar with its connector;
+    // a split outlet's run with the duct itself (the take-offs along it carry the dampers).
+    const first = plan!.pieces.map((piece) => piece.kind).slice(0, 2);
+    const start = plan!.spec.start.kind;
+    if (start === 'unit-port') expect(first[0]).toBe('connector');
+    else if (start === 'tap' || start === 'spigot') expect(first).toEqual(['takeoff', 'damper']);
+  }
+}
+
+/**
+ * The optimiser never does worse than the v1 layout sized by equal friction: its chosen design's
+ * verified life-cycle cost is at most that reference's (a verified option of the same result).
+ */
+function expectNoWorseThanEqualFriction(result: AutoDuctResult): void {
+  const chosen = result.designs[result.selected]!;
+  const reference = result.designs.find((design) => design.label.includes('(equal friction)'));
+  if (reference && reference.errors === 0) {
+    expect(chosen.errors).toBe(0);
+    expect(chosen.lifeCycleCost).toBeLessThanOrEqual(reference.lifeCycleCost + 1e-6);
   }
 }
 
@@ -91,11 +109,20 @@ describe('duct auto layout', () => {
     const row = [-3750, -2250, -750, 750, 2250, 3750].map((across, index) => terminal(`r${index + 1}`, at(supply, 3000, across), minus(supply.n)));
     const result = generateAutoDuct([unit, ...row], request(row.map((element) => element.id)), settings);
     expect(errorsOf(result)).toEqual([]);
-    const service = result.services[0]!;
-    expect(service.layout).toBe('trunk-split');
-    const [main, left, right] = service.trunkSections;
+    // v1's own answer, a split trunk, is still built and verified as the reference…
+    const reference = result.designs.find((design) => design.label.includes('(equal friction)'))!;
+    const split = reference.services[0]!;
+    expect(split.layout).toBe('trunk-split');
+    const [main, left, right] = split.trunkSections;
     expect(main!.widthMm).toBeGreaterThanOrEqual(left!.widthMm + right!.widthMm);
-    expect(service.trunkSections.every((section) => section.heightMm >= 250)).toBe(true);
+    expect(split.trunkSections.every((section) => section.heightMm >= 250)).toBe(true);
+    // …and the optimiser's tree beats it on life-cycle cost (the rectangular trunk still takes spin-ins: ≥ Ø200 + 50).
+    const service = result.services[0]!;
+    expect(service.layout).toBe('tree');
+    expect(result.designs[result.selected]!.lifeCycleCost).toBeLessThan(reference.lifeCycleCost);
+    for (const plan of service.plans) {
+      for (const piece of plan.pieces) if (piece.kind === 'takeoff' && piece.takeoff?.style === 'spin-in') expect(piece.diameterMm).toBeLessThanOrEqual(200);
+    }
     expectServed(result, row.map((element) => element.id));
   });
 
@@ -124,12 +151,14 @@ describe('duct auto layout', () => {
       terminal('a4', at(supply, 3600, -1500), supply.t, 'square-4way', 250)];
     const result = generateAutoDuct(scene, request(['a1', 'a2', 'a3', 'a4'], { airflowM3h: 2000, layout: 'trunk' }), settings);
     expect(errorsOf(result)).toEqual([]);
-    const service = result.services[0]!;
-    expect(service.layout).toBe('trunk-straight');
-    expect(service.trunkSections.map((section) => section.widthMm)).toEqual([400, 300]);
-    const trunk = service.plans.find((plan) => plan.spec.start.kind === 'unit-port')!;
-    // Collar transition, then the reducer between the pairs of take-offs.
+    // Equal friction (v1, the reference) reduces between the pairs of take-offs…
+    const reference = result.designs.find((design) => design.label.includes('(equal friction)'))!.services[0]!;
+    expect(reference.layout).toBe('trunk-straight');
+    expect(reference.trunkSections.map((section) => section.widthMm)).toEqual([400, 300]);
+    const trunk = reference.plans.find((plan) => plan.spec.start.kind === 'unit-port')!;
     expect(trunk.pieces.filter((piece) => piece.kind === 'transition')).toHaveLength(2);
+    // …the optimiser keeps the reducer only if it pays back over the life, and is never dearer.
+    expectNoWorseThanEqualFriction(result);
     expectServed(result, ['a1', 'a2', 'a3', 'a4']);
   });
 

@@ -94,9 +94,9 @@ export interface ServiceOptimisation {
   pricePerPa: number;
 }
 
-/** Grid of the frontiers: 0.1 Pa up to 1.5 × the fan's maximum (at least 80 Pa). */
+/** Grid of the frontiers: 0.2 Pa up to 1.5 × the fan's maximum (at least 80 Pa). */
 export function frontierGrid(maxEspPa: number | null): DpGrid {
-  const stepPa = 0.1;
+  const stepPa = 0.2;
   return { stepPa, size: Math.ceil((Math.max(80, maxEspPa ?? 100) * 1.5) / stepPa) + 1 };
 }
 

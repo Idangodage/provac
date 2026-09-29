@@ -1,9 +1,14 @@
 /**
- * One Auto route for every ticked service — gas, liquid, condensate —
- * coordinated so the services do not clash with each other.
+ * One Auto route for every ticked service — supply and return ducts, gas,
+ * liquid, condensate — coordinated so the services do not clash.
  *
  * Order (and why):
- *  1. Refrigerant — the most constrained topology (unit ports, branch kits).
+ *  0. Ducts — the largest bodies, tied to fixed collars and terminals, with
+ *     the least freedom to move; pipes can pass them, not the other way round.
+ *     Each ducted unit gets the optimiser's best life-cycle design; the new
+ *     runs are part of the scene every later step sees (the pipe clearance
+ *     check treats duct bodies as obstacles).
+ *  1. Refrigerant — the most constrained pipe topology (unit ports, branch kits).
  *     Its router already rejects every candidate that clashes in 3D with any
  *     other pipe, existing condensate included. Drains that THIS run will
  *     regenerate are taken out of its scene first, so refrigerant never bends
@@ -26,7 +31,11 @@ import { generateCondensateNetwork, type CondensateGenerationResult } from './co
 import type { CondensateDesignSettings } from './condensate/condensateSettings';
 import { isCondensatePipe } from './condensate/condensateTypes';
 import { findCondensateRefrigerantClashes } from './condensate/condensateValidation';
-import { findNewNetworkPipeClashes } from './networkPipeClearance';
+import { applyDuctProposal, planAutoRouteDucts, type AutoRouteDuctOptions, type AutoRouteDuctResult } from './duct/ductAutoRoute';
+import { setActiveDuctSettings } from './duct/ductSettings';
+import { isDuctElement, readDuctRunSpec } from './duct/ductTypes';
+import { findDuctClashes } from './duct/ductVolumes';
+import { findNewNetworkPipeClashes, listNetworkPipeLanes } from './networkPipeClearance';
 import { getAutoRouteOwnership, retainGeneratedPipeEdit } from './pipeEditRetention';
 import { isRefrigerantBranchKitElement, resolveRefrigerantBranchKitLineSelection } from './refrigerantBranchKitModel';
 import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
@@ -35,9 +44,16 @@ export interface AutoRouteServices {
   gas: boolean;
   liquid: boolean;
   condensate: boolean;
+  /** Ducts from each ducted unit's collars to its diffusers / grilles (absent = not routed). */
+  supplyDuct?: boolean;
+  returnDuct?: boolean;
 }
 
-export type RoutedService = 'gas' | 'liquid' | 'both' | 'condensate' | 'other';
+export type RoutedService = 'gas' | 'liquid' | 'both' | 'condensate' | 'supply-duct' | 'return-duct' | 'other';
+
+export function wantsDucts(services: AutoRouteServices): boolean {
+  return Boolean(services.supplyDuct || services.returnDuct);
+}
 
 export interface UnifiedAutoRouteProgress {
   stage: string;
@@ -55,6 +71,8 @@ export interface UnifiedAutoRouteOptions {
     unitIds?: string[];
     gullyIds?: string[];
   };
+  /** Duct design (and the duct settings every step plans duct bodies with). */
+  duct?: AutoRouteDuctOptions;
   onProgress?: (progress: UnifiedAutoRouteProgress) => void;
 }
 
@@ -70,6 +88,8 @@ export interface ServiceClash {
 
 export interface UnifiedAutoRouteResult {
   services: AutoRouteServices;
+  /** Duct proposal (every unit's best life-cycle design). */
+  ducts: AutoRouteDuctResult | null;
   /** Refrigerant proposal, already reduced to the ticked line(s). */
   refrigerant: AutoRouteNetworkResult | null;
   condensate: CondensateGenerationResult | null;
@@ -79,6 +99,7 @@ export interface UnifiedAutoRouteResult {
 
 export function routedServiceOf(element: HvacElement | undefined): RoutedService {
   if (!element) return 'other';
+  if (isDuctElement(element)) return readDuctRunSpec(element)?.service === 'return' ? 'return-duct' : 'supply-duct';
   if (isCondensatePipe(element)) return 'condensate';
   if (element.type === 'refrigerant-pipe') return resolveRefrigerantPipeSpec(element.properties).lineKind;
   if (element.type === 'refrigerant-pipe-pair') return 'both';
@@ -151,7 +172,7 @@ export function reduceRefrigerantResultToLine(
   const removeIds = result.removeElementIds.filter((id) => keeps(byId.get(id)));
   const updates = result.updates.filter((element) => keeps(byId.get(element.id) ?? element));
 
-  const isRefrigerant = (element: HvacElement) => routedServiceOf(element) !== 'other' && routedServiceOf(element) !== 'condensate';
+  const isRefrigerant = (element: HvacElement) => ['gas', 'liquid', 'both'].includes(routedServiceOf(element));
   const circuitOf = refrigerantCircuits([...scene.filter(isRefrigerant), ...result.elementsToAdd, ...result.updates]);
   const proposedByCircuit = new Map<string, HvacElement[]>();
   for (const element of [...add, ...updates]) {
@@ -235,14 +256,27 @@ export function applyRefrigerantProposal(scene: readonly HvacElement[], result: 
   ];
 }
 
-export async function planUnifiedAutoRoute(scene: HvacElement[], options: UnifiedAutoRouteOptions): Promise<UnifiedAutoRouteResult> {
+export async function planUnifiedAutoRoute(originalScene: HvacElement[], options: UnifiedAutoRouteOptions): Promise<UnifiedAutoRouteResult> {
   const { services } = options;
   const progress = options.onProgress ?? (() => undefined);
   const issues: string[] = [];
   const wantsRefrigerant = services.gas || services.liquid;
-  if (!wantsRefrigerant && !services.condensate) {
-    return { services, refrigerant: null, condensate: null, clashes: [], issues: ['Tick at least one service to route.'] };
+  const routeDucts = wantsDucts(services) && Boolean(options.duct);
+  if (!wantsRefrigerant && !services.condensate && !routeDucts) {
+    return { services, ducts: null, refrigerant: null, condensate: null, clashes: [], issues: ['Tick at least one service to route.'] };
   }
+  // Pipes are clash-checked against duct bodies planned with the document's duct settings (also in the worker).
+  if (options.duct) setActiveDuctSettings(options.duct.settings);
+
+  let ducts: AutoRouteDuctResult | null = null;
+  if (routeDucts) {
+    progress({ stage: 'Designing ducts', completed: 0, total: 0 });
+    ducts = planAutoRouteDucts(originalScene, { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) }, options.duct!,
+      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total }));
+    issues.push(...ducts.issues);
+  }
+  // Every later step sees the new ducts as part of the drawing.
+  const scene = applyDuctProposal(originalScene, ducts);
 
   // Drains this run will regenerate must not shape the refrigerant layout.
   const replacedDrains = services.condensate
@@ -298,11 +332,68 @@ export async function planUnifiedAutoRoute(scene: HvacElement[], options: Unifie
   }
 
   progress({ stage: 'Checking clashes between services', completed: 0, total: 0 });
-  const clashes = auditServiceClashes(scene, refrigerant, condensate);
-  if (clashes.some((clash) => !clash.resolvedByHop)) {
-    issues.push(`${clashes.filter((clash) => !clash.resolvedByHop).length} pipe clash${clashes.length === 1 ? '' : 'es'} between services remain — see the clash list.`);
+  const clashes = [
+    ...auditServiceClashes(scene, refrigerant, condensate),
+    ...(options.duct ? auditDuctClashes(originalScene, ducts, refrigerant, condensate, options.duct) : []),
+  ];
+  const open = clashes.filter((clash) => !clash.resolvedByHop).length;
+  if (open) issues.push(`${open} clash${open === 1 ? '' : 'es'} between services remain — see the clash list.`);
+  return { services, ducts, refrigerant, condensate, clashes, issues };
+}
+
+const SERVICE_NAMES: Record<RoutedService, string> = {
+  gas: 'gas pipe', liquid: 'liquid pipe', both: 'refrigerant pair', condensate: 'condensate pipe',
+  'supply-duct': 'supply duct', 'return-duct': 'return duct', other: 'equipment',
+};
+
+/**
+ * New duct contacts once everything is applied: new ducts against anything,
+ * and new or changed pipes against any duct. Contacts the drawing already had
+ * are not new and are not listed (the duct validation shows them).
+ */
+export function auditDuctClashes(
+  originalScene: readonly HvacElement[],
+  ducts: AutoRouteDuctResult | null,
+  refrigerant: AutoRouteNetworkResult | null,
+  condensate: CondensateGenerationResult | null,
+  options: Pick<AutoRouteDuctOptions, 'settings'>,
+): ServiceClash[] {
+  const changed = new Set([
+    ...(ducts?.elementsToAdd ?? []).map((element) => element.id),
+    ...(refrigerant ? [...refrigerant.elementsToAdd, ...refrigerant.updates].map((element) => element.id) : []),
+    ...(condensate?.elementsToAdd ?? []).map((element) => element.id),
+  ]);
+  if (!changed.size) return [];
+  const afterDucts = applyDuctProposal(originalScene, ducts);
+  const afterRefrigerant = applyRefrigerantProposal(afterDucts, refrigerant);
+  const removedDrains = new Set(condensate?.removeElementIds ?? []);
+  const finalScene = [...afterRefrigerant.filter((element) => !removedDrains.has(element.id)), ...(condensate?.elementsToAdd ?? [])];
+  if (!finalScene.some(isDuctElement)) return [];
+  const byId = new Map(finalScene.map((element) => [element.id, element]));
+  const key = (clash: { ductId: string; otherId: string }) => [clash.ductId, clash.otherId].sort().join('|');
+  const before = new Set(findDuctClashes(originalScene, options.settings, listNetworkPipeLanes([...originalScene])).map(key));
+  const clashes: ServiceClash[] = [];
+  const seen = new Set<string>();
+  for (const clash of findDuctClashes(finalScene, options.settings, listNetworkPipeLanes(finalScene))) {
+    const pair = key(clash);
+    if (seen.has(pair) || before.has(pair) || (!changed.has(clash.ductId) && !changed.has(clash.otherId))) continue;
+    seen.add(pair);
+    const duct = byId.get(clash.ductId);
+    const other = byId.get(clash.otherId);
+    const services: [RoutedService, RoutedService] = [routedServiceOf(duct), routedServiceOf(other)];
+    const name = (element: HvacElement | undefined, service: RoutedService) => `${SERVICE_NAMES[service]}${element?.label ? ` ${element.label}` : ''}`;
+    clashes.push({
+      elementIds: [clash.ductId, clash.otherId],
+      services,
+      distanceMm: null,
+      requiredMm: null,
+      message: clash.kind === 'terminal'
+        ? `The ${name(duct, services[0])} passes through ${other?.label || 'an air terminal'}.`
+        : `The ${name(duct, services[0])} (${clash.mark}) runs into the ${name(other, services[1])}.`,
+      resolvedByHop: false,
+    });
   }
-  return { services, refrigerant, condensate, clashes, issues };
+  return clashes;
 }
 
 /**

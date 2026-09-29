@@ -1,77 +1,166 @@
 /**
- * AC equipment planning panel.
+ * AC equipment toolbox: each category a grid of icon tiles (short name, how
+ * many are placed, a ring while placing). Hover or focus a tile for its card:
+ * full name, model, size, placement and description. Arrow keys move between
+ * tiles; Enter or a click starts placing, again (or Esc on the canvas) stops.
  */
 
 'use client';
 
-import {
-  Fan,
-  Filter,
-  LayoutGrid,
-  MonitorSmartphone,
-  PanelTop,
-  Radio,
-  SlidersHorizontal,
-  Snowflake,
-  Wind,
-  GitBranch,
-  Droplets,
-} from 'lucide-react';
-import React, { useMemo } from 'react';
+import { X } from 'lucide-react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import {
   AC_EQUIPMENT_CATEGORY_LABELS,
   groupAcEquipmentByCategory,
   type AcEquipmentDefinition,
+  type AcEquipmentLibraryCategory,
 } from '../data';
+
+import { EQUIPMENT_CATEGORY_ICONS, EquipmentIcon, equipmentIconKind } from './canvas/hvac/equipmentIcons';
 
 export interface AcEquipmentPanelProps {
   className?: string;
   equipment: AcEquipmentDefinition[];
   pendingEquipmentId: string | null;
+  /** Placed elements by type (the header total). */
   placedCountByType?: Record<string, number>;
+  /** Placed elements by library entry (each tile's badge). */
+  placedCountByDefinition?: Record<string, number>;
   roomEquipmentCounts?: Array<{ roomId: string; roomName: string; count: number }>;
   onStartPlacement: (definition: AcEquipmentDefinition) => void;
   onCancelPlacement: () => void;
 }
 
-function categoryIcon(definition: AcEquipmentDefinition): React.ReactNode {
+const PLACEMENT_LABELS: Record<AcEquipmentDefinition['placementMode'], string> = {
+  wall: 'Wall',
+  room: 'Room',
+  outdoor: 'Outdoor',
+};
+
+const MOUNT_LABELS: Record<string, string> = {
+  ceiling: 'ceiling',
+  wall: 'wall',
+  floor: 'floor',
+};
+
+type Tone = 'gas' | 'liquid' | 'supply' | 'return' | null;
+const TONE_DOT: Record<Exclude<Tone, null>, string> = {
+  gas: 'bg-orange-500',
+  liquid: 'bg-blue-600',
+  supply: 'bg-blue-700',
+  return: 'bg-teal-700',
+};
+
+interface TileText {
+  title: string;
+  caption: string;
+  tone: Tone;
+}
+
+function terminalOf(definition: AcEquipmentDefinition): { neckDiameterMm?: number; service?: string } | null {
+  const terminal = definition.defaultProperties?.terminal;
+  return terminal && typeof terminal === 'object' ? terminal as { neckDiameterMm?: number; service?: string } : null;
+}
+
+/** The model code of a unit (its label without the brand). */
+function modelCode(definition: AcEquipmentDefinition): string {
+  const parts = definition.modelLabel.trim().split(/\s+/);
+  return parts[parts.length - 1] ?? definition.modelLabel;
+}
+
+/** What a tile says: a short name and one caption line (model, neck, line). */
+export function equipmentTileText(definition: AcEquipmentDefinition): TileText {
   switch (definition.type) {
-    case 'ceiling-cassette-ac':
-      return <LayoutGrid size={16} />;
-    case 'wall-mounted-ac':
-      return <PanelTop size={16} />;
-    case 'ceiling-suspended-ac':
-      return <Wind size={16} />;
-    case 'ducted-ac':
-      return <Fan size={16} />;
-    case 'outdoor-unit':
-      return <Snowflake size={16} />;
-    case 'filter':
-      return <Filter size={16} />;
-    case 'refrigerant-branch-kit':
-      return <GitBranch size={16} />;
-    case 'control-panel':
-      return <MonitorSmartphone size={16} />;
-    case 'remote-controller':
-      return <Radio size={16} />;
+    case 'ceiling-cassette-ac': return { title: 'Cassette', caption: modelCode(definition), tone: null };
+    case 'wall-mounted-ac': return { title: 'Wall unit', caption: modelCode(definition), tone: null };
+    case 'ceiling-suspended-ac': return { title: 'Suspended', caption: modelCode(definition), tone: null };
+    case 'ducted-ac': return { title: 'Ducted', caption: modelCode(definition), tone: null };
+    case 'outdoor-unit': return { title: 'Outdoor', caption: modelCode(definition), tone: null };
+    case 'refrigerant-branch-kit': {
+      const liquid = /liquid/i.test(`${definition.subtype} ${definition.modelLabel}`);
+      return { title: 'Branch kit', caption: liquid ? 'Liquid' : 'Gas', tone: liquid ? 'liquid' : 'gas' };
+    }
     case 'condensate-gully':
-      return <Droplets size={16} />;
-    default:
-      return <SlidersHorizontal size={16} />;
+      return definition.subtype === 'stack-connection' ? { title: 'Stack', caption: 'Branch + trap', tone: null }
+        : definition.subtype === 'external-discharge' ? { title: 'Wall outlet', caption: 'External', tone: null }
+          : { title: 'Floor gully', caption: 'Tundish', tone: null };
+    case 'diffuser':
+    case 'return-grille': {
+      const terminal = terminalOf(definition);
+      const neck = terminal?.neckDiameterMm ? `Ø${terminal.neckDiameterMm}` : '';
+      const tone: Tone = definition.type === 'return-grille' ? 'return' : 'supply';
+      const title = definition.type === 'return-grille' ? 'Return grille'
+        : definition.subtype === 'round' ? 'Round' : definition.subtype === 'linear-slot' ? 'Linear slot' : 'Square';
+      return { title, caption: neck, tone };
+    }
+    default: return { title: definition.name, caption: definition.modelLabel, tone: null };
   }
 }
 
-function placementLabel(definition: AcEquipmentDefinition): string {
-  switch (definition.placementMode) {
-    case 'wall':
-      return 'Wall';
-    case 'outdoor':
-      return 'Outdoor';
-    case 'room':
-    default:
-      return 'Room';
+/** Keyboard focus (not a click): the card opens at once. */
+function focusVisible(element: HTMLElement): boolean {
+  try {
+    return element.matches(':focus-visible');
+  } catch {
+    return false;
   }
+}
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="rounded border border-slate-300 bg-white px-1 font-sans text-[10px] font-medium text-slate-600 shadow-[inset_0_-1px_0_rgba(148,163,184,0.5)]">
+      {children}
+    </kbd>
+  );
+}
+
+interface HoverState {
+  definition: AcEquipmentDefinition;
+  anchor: DOMRect;
+}
+
+const CARD_WIDTH = 272;
+
+function EquipmentHoverCard({ hover, placedCount, id }: { hover: HoverState; placedCount: number; id: string }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [top, setTop] = useState(hover.anchor.top);
+  const { definition, anchor } = hover;
+  const left = Math.max(8, Math.min(anchor.right + 10, window.innerWidth - CARD_WIDTH - 8));
+  useLayoutEffect(() => {
+    const height = ref.current?.getBoundingClientRect().height ?? 0;
+    setTop(Math.max(8, Math.min(anchor.top - 6, window.innerHeight - height - 8)));
+  }, [anchor]);
+  const text = equipmentTileText(definition);
+  return (
+    <div ref={ref} id={id} role="tooltip" data-testid="equipment-hover-card" style={{ left, top, width: CARD_WIDTH }}
+      className="pointer-events-none fixed z-[1000] rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-xl ring-1 ring-black/5">
+      <div className="flex items-start gap-2.5">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-slate-700 ring-1 ring-amber-200/80">
+          <EquipmentIcon kind={equipmentIconKind(definition)} size={28} />
+        </span>
+        <div className="min-w-0">
+          <p className="text-[13px] font-semibold leading-4 text-slate-900">{definition.name}</p>
+          <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
+            {text.tone ? <span className={`inline-block h-1.5 w-1.5 rounded-full ${TONE_DOT[text.tone]}`} aria-hidden="true" /> : null}
+            {definition.modelLabel}
+          </p>
+        </div>
+      </div>
+      <dl className="mt-2.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+        <dt className="text-slate-400">Size</dt>
+        <dd className="text-slate-700">{Math.round(definition.widthMm)} × {Math.round(definition.depthMm)} × {Math.round(definition.heightMm)} mm</dd>
+        <dt className="text-slate-400">Placement</dt>
+        <dd className="text-slate-700">{PLACEMENT_LABELS[definition.placementMode]}{MOUNT_LABELS[definition.mountType] ? ` · ${MOUNT_LABELS[definition.mountType]} mounted` : ''}</dd>
+        <dt className="text-slate-400">Placed</dt>
+        <dd className="text-slate-700">{placedCount}</dd>
+      </dl>
+      <p className="mt-2 leading-4 text-slate-600">{definition.description}</p>
+      <p className="mt-2 flex flex-wrap items-center gap-1 border-t border-slate-100 pt-2 text-[10px] text-slate-500">
+        <Kbd>Click</Kbd> place <Kbd>R</Kbd> rotate 90° <Kbd>Shift R</Kbd> 15° <Kbd>Esc</Kbd> stop
+      </p>
+    </div>
+  );
 }
 
 export function AcEquipmentPanel({
@@ -79,103 +168,166 @@ export function AcEquipmentPanel({
   equipment,
   pendingEquipmentId,
   placedCountByType = {},
+  placedCountByDefinition = {},
   roomEquipmentCounts = [],
   onStartPlacement,
   onCancelPlacement,
 }: AcEquipmentPanelProps) {
   const grouped = useMemo(() => groupAcEquipmentByCategory(equipment), [equipment]);
   const totalPlaced = Object.values(placedCountByType).reduce((sum, count) => sum + count, 0);
+  const pending = pendingEquipmentId ? equipment.find((definition) => definition.id === pendingEquipmentId) ?? null : null;
+  const [hover, setHover] = useState<HoverState | null>(null);
+  const [roomsOpen, setRoomsOpen] = useState(false);
+  const timer = useRef<number | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const cardId = 'ac-equipment-hover-card';
+
+  const clearTimer = () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+  };
+  const showCard = useCallback((definition: AcEquipmentDefinition, element: HTMLElement, immediate: boolean) => {
+    clearTimer();
+    const open = () => setHover({ definition, anchor: element.getBoundingClientRect() });
+    if (immediate) open();
+    else timer.current = window.setTimeout(open, 320);
+  }, []);
+  const hideCard = useCallback(() => {
+    clearTimer();
+    setHover(null);
+  }, []);
+  useEffect(() => () => clearTimer(), []);
+
+  /** Arrow keys walk the tiles: left/right in order, up/down by rows of the same grid. */
+  const onGridKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    const tiles = Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>('[data-equipment-tile]') ?? []);
+    const index = tiles.indexOf(document.activeElement as HTMLButtonElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const current = tiles[index]!;
+    let next: HTMLButtonElement | undefined;
+    if (event.key === 'ArrowRight') next = tiles[index + 1];
+    else if (event.key === 'ArrowLeft') next = tiles[index - 1];
+    else if (event.key === 'Home') next = tiles[0];
+    else if (event.key === 'End') next = tiles[tiles.length - 1];
+    else {
+      const down = event.key === 'ArrowDown';
+      const x = current.getBoundingClientRect().left;
+      const y = current.getBoundingClientRect().top;
+      const rows = tiles.filter((tile) => (down ? tile.getBoundingClientRect().top > y + 4 : tile.getBoundingClientRect().top < y - 4));
+      const rowTop = rows.length ? (down ? Math.min(...rows.map((tile) => tile.getBoundingClientRect().top)) : Math.max(...rows.map((tile) => tile.getBoundingClientRect().top))) : null;
+      if (rowTop !== null) {
+        const row = rows.filter((tile) => Math.abs(tile.getBoundingClientRect().top - rowTop) < 4);
+        next = row.reduce((best, tile) => (Math.abs(tile.getBoundingClientRect().left - x) < Math.abs(best.getBoundingClientRect().left - x) ? tile : best), row[0]!);
+      }
+    }
+    next?.focus();
+  };
 
   return (
-    <div className={`h-full overflow-y-auto overflow-x-hidden ${className}`}>
-      <div className="space-y-2.5 p-2.5">
-        <div className="rounded-xl border border-amber-200/80 bg-white/80 p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">AC Equipment Mode</p>
-          <p className="mt-2 text-xs leading-5 text-slate-600">
-            Select a unit, then place it on the drawing canvas. Wall units snap to nearby room walls.
-          </p>
-          <div className="mt-3 flex items-center justify-between rounded-lg border border-amber-200/70 bg-amber-50/50 px-3 py-2">
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Placed Equipment</div>
-              <div className="text-lg font-semibold text-slate-800">{totalPlaced}</div>
-            </div>
-            <div className="text-right text-[11px] text-slate-500">
-              <div>Click canvas to place</div>
-              <div>Press R to rotate</div>
-            </div>
+    <div ref={rootRef} className={`h-full overflow-y-auto overflow-x-hidden ${className}`} onScroll={hideCard} data-testid="ac-equipment-panel">
+      <div className="space-y-2 p-2.5">
+        <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-white/80 px-2.5 py-2">
+          <div className="flex items-baseline gap-1" title="Equipment placed in the drawing">
+            <span className="text-base font-semibold tabular-nums text-slate-800">{totalPlaced}</span>
+            <span className="text-[11px] text-slate-500">placed</span>
+          </div>
+          <div className="flex items-center justify-end gap-1 whitespace-nowrap text-[10px] text-slate-500" title="Click a tile, then click the canvas to place it">
+            <Kbd>R</Kbd>rotate<span className="text-slate-300" aria-hidden="true">·</span><Kbd>Esc</Kbd>stop
           </div>
         </div>
 
-        {Object.entries(grouped).map(([category, definitions]) => {
+        {pending ? (
+          <div className="flex items-center gap-2 rounded-xl border border-amber-400 bg-amber-100/80 px-2.5 py-1.5 text-xs text-amber-900" role="status">
+            <EquipmentIcon kind={equipmentIconKind(pending)} size={18} />
+            <span className="min-w-0 flex-1 truncate">Placing <span className="font-medium">{equipmentTileText(pending).title}</span> — click the canvas{pending.placementMode === 'wall' ? ' near a wall' : ''}</span>
+            <button type="button" onClick={onCancelPlacement} aria-label="Stop placing" className="rounded p-0.5 text-amber-800 hover:bg-amber-200/70">
+              <X size={14} />
+            </button>
+          </div>
+        ) : null}
+
+        {(Object.entries(grouped) as Array<[AcEquipmentLibraryCategory, AcEquipmentDefinition[]]>).map(([category, definitions]) => {
           if (definitions.length === 0) return null;
+          const categoryPlaced = definitions.reduce((sum, definition) => sum + (placedCountByDefinition[definition.id] ?? 0), 0);
           return (
-            <div key={category} className="rounded-xl border border-amber-200/80 bg-white/80 p-2.5">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                {AC_EQUIPMENT_CATEGORY_LABELS[category as keyof typeof AC_EQUIPMENT_CATEGORY_LABELS]}
-              </p>
-              <div className="mt-2 space-y-2">
+            <section key={category} className="rounded-xl border border-amber-200/80 bg-white/80 p-2" aria-label={AC_EQUIPMENT_CATEGORY_LABELS[category]}>
+              <header className="mb-1.5 flex items-center gap-1.5 px-0.5 text-slate-600">
+                <EquipmentIcon kind={EQUIPMENT_CATEGORY_ICONS[category]} size={14} />
+                <span className="text-[11px] font-semibold uppercase tracking-wide">{AC_EQUIPMENT_CATEGORY_LABELS[category]}</span>
+                {categoryPlaced ? <span className="ml-auto text-[10px] tabular-nums text-slate-400">{categoryPlaced} placed</span> : null}
+              </header>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(68px,1fr))] gap-1.5" onKeyDown={onGridKeyDown}>
                 {definitions.map((definition) => {
                   const isActive = pendingEquipmentId === definition.id;
-                  const placedCount = placedCountByType[definition.type] ?? 0;
+                  const placedCount = placedCountByDefinition[definition.id] ?? 0;
+                  const text = equipmentTileText(definition);
                   return (
                     <button
                       key={definition.id}
                       type="button"
-                      onClick={() => (isActive ? onCancelPlacement() : onStartPlacement(definition))}
-                      className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
+                      data-equipment-tile={definition.id}
+                      aria-label={definition.name}
+                      aria-pressed={isActive}
+                      aria-describedby={hover?.definition.id === definition.id ? cardId : undefined}
+                      onClick={() => { hideCard(); if (isActive) onCancelPlacement(); else onStartPlacement(definition); }}
+                      onMouseEnter={(event) => showCard(definition, event.currentTarget, false)}
+                      onMouseLeave={hideCard}
+                      onFocus={(event) => { if (focusVisible(event.currentTarget)) showCard(definition, event.currentTarget, true); }}
+                      onBlur={hideCard}
+                      className={`group relative flex min-h-[74px] flex-col items-center justify-start gap-1 rounded-lg border px-1 pb-1.5 pt-2 text-center outline-none transition-[background-color,border-color,box-shadow] focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-1 ${
                         isActive
-                          ? 'border-amber-400 bg-amber-100/80'
-                          : 'border-amber-200/70 bg-white hover:bg-amber-50'
+                          ? 'border-amber-500 bg-amber-100/80 text-amber-900 shadow-[0_0_0_1px_rgba(245,158,11,0.6)]'
+                          : 'border-amber-200/60 bg-white text-slate-700 hover:border-amber-300 hover:bg-amber-50/70 hover:shadow-sm'
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-2">
-                          <span className={`mt-0.5 ${isActive ? 'text-amber-800' : 'text-slate-600'}`}>
-                            {categoryIcon(definition)}
-                          </span>
-                          <div>
-                            <div className="text-sm font-medium text-slate-800">{definition.name}</div>
-                            <div className="text-[11px] text-slate-500">{definition.modelLabel}</div>
-                          </div>
-                        </div>
-                        <span className="rounded-full border border-amber-200/70 bg-amber-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-600">
-                          {placementLabel(definition)}
+                      {placedCount ? (
+                        <span className="absolute right-1 top-1 min-w-[16px] rounded-full bg-slate-700 px-1 text-[9px] font-semibold leading-4 tabular-nums text-white" aria-label={`${placedCount} placed`}>
+                          {placedCount}
                         </span>
-                      </div>
-                      <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-slate-500">
-                        <span>
-                          {Math.round(definition.widthMm)} x {Math.round(definition.depthMm)} mm
+                      ) : null}
+                      <EquipmentIcon kind={equipmentIconKind(definition)} size={26} className={isActive ? 'text-amber-800' : 'text-slate-600 group-hover:text-slate-800'} />
+                      <span className="w-full truncate text-[11px] font-medium leading-[14px]">{text.title}</span>
+                      {text.caption ? (
+                        <span className="flex w-full items-center justify-center gap-1 text-[9.5px] leading-3 text-slate-400">
+                          {text.tone ? <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${TONE_DOT[text.tone]}`} aria-hidden="true" /> : null}
+                          <span className="truncate">{text.caption}</span>
                         </span>
-                        <span>{placedCount} placed</span>
-                      </div>
-                      <p className="mt-2 text-[11px] leading-4 text-slate-600">{definition.description}</p>
+                      ) : null}
                     </button>
                   );
                 })}
               </div>
-            </div>
+            </section>
           );
         })}
 
-        <div className="rounded-xl border border-amber-200/80 bg-white/80 p-2.5">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">Room Counts</p>
-          {roomEquipmentCounts.length === 0 ? (
-            <p className="mt-2 text-xs text-slate-500">No room-linked equipment placed yet.</p>
-          ) : (
-            <div className="mt-2 space-y-1.5">
-              {roomEquipmentCounts.slice(0, 8).map((entry) => (
-                <div
-                  key={entry.roomId}
-                  className="flex items-center justify-between rounded-md border border-amber-200/60 bg-amber-50/40 px-2.5 py-1.5 text-xs text-slate-600"
-                >
-                  <span className="truncate pr-3">{entry.roomName}</span>
-                  <span className="font-medium text-slate-800">{entry.count}</span>
-                </div>
+        <details className="group rounded-xl border border-amber-200/80 bg-white/80 px-2.5 py-2" open={roomsOpen}
+          onToggle={(event) => setRoomsOpen(event.currentTarget.open)}>
+          <summary className="flex cursor-pointer list-none items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+            Rooms
+            <span className="font-normal normal-case tracking-normal text-slate-400">
+              {roomEquipmentCounts.length ? `${roomEquipmentCounts.length} with equipment` : 'none yet'}
+            </span>
+          </summary>
+          {roomEquipmentCounts.length ? (
+            <ul className="mt-1.5 space-y-0.5 text-xs text-slate-600">
+              {roomEquipmentCounts.slice(0, 12).map((entry) => (
+                <li key={entry.roomId} className="flex items-center justify-between gap-2">
+                  <span className="truncate">{entry.roomName}</span>
+                  <span className="tabular-nums font-medium text-slate-800">{entry.count}</span>
+                </li>
               ))}
-            </div>
+              {roomEquipmentCounts.length > 12 ? <li className="text-slate-400">+{roomEquipmentCounts.length - 12} more</li> : null}
+            </ul>
+          ) : (
+            <p className="mt-1.5 text-xs text-slate-500">Equipment placed in a room is counted here.</p>
           )}
-        </div>
+        </details>
       </div>
+      {/* Fixed to the viewport, so the panel's scroll clipping does not cut it. */}
+      {hover ? <EquipmentHoverCard hover={hover} id={cardId} placedCount={placedCountByDefinition[hover.definition.id] ?? 0} /> : null}
     </div>
   );
 }

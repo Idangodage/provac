@@ -763,6 +763,13 @@ export function SmartDrawingEditor({
       return acc;
     }, {});
   }, [hvacElements]);
+  const placedEquipmentCountByDefinition = useMemo(() => {
+    return hvacElements.reduce<Record<string, number>>((acc, element) => {
+      const definitionId = element.properties?.definitionId;
+      if (typeof definitionId === 'string') acc[definitionId] = (acc[definitionId] ?? 0) + 1;
+      return acc;
+    }, {});
+  }, [hvacElements]);
   const roomEquipmentCounts = useMemo(() => {
     return rooms
       .map((room) => ({
@@ -1428,6 +1435,7 @@ export function SmartDrawingEditor({
                       equipment={DEFAULT_AC_EQUIPMENT_LIBRARY}
                       pendingEquipmentId={pendingPlacementEquipmentId}
                       placedCountByType={placedEquipmentCountByType}
+                      placedCountByDefinition={placedEquipmentCountByDefinition}
                       roomEquipmentCounts={roomEquipmentCounts}
                       onStartPlacement={handleStartEquipmentPlacement}
                       onCancelPlacement={handleCancelEquipmentPlacement}

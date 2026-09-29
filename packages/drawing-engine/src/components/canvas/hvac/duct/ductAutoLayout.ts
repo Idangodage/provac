@@ -65,7 +65,9 @@ import {
 import { findDuctClashes, terminalBoxOf } from './ductVolumes';
 import { designFromRuns, type ServiceDesign } from './optimizer/designTree';
 import { optimiseService, verifyRuns, type ServiceOption } from './optimizer/ductOptimizer';
-import type { ShapeMode } from './optimizer/sizingModel';
+import { buildRoutingGraph } from './optimizer/routingGraph';
+import { SizingModel, type ShapeMode } from './optimizer/sizingModel';
+import { routeTrees } from './optimizer/steinerArborescence';
 import {
   ALL_FLEX_REACH_MM,
   RUNOUT_TARGETS_MM,
@@ -194,6 +196,9 @@ export interface AutoDuctCertificate {
   trees: number;
   realised: number;
   solveMs: number;
+  /** Of which: the tree router, and sizing + building + verifying the candidates (ms). */
+  routerMs: number;
+  sizingMs: number;
   /** Verified life-cycle cost of the chosen design over the model's (%), the geometry the realiser settled. */
   modelGapPct: number | null;
 }
@@ -825,10 +830,17 @@ function score(ctx: ServiceCtx, candidate: Candidate): Scored {
 
 // ---- Entry point ----
 
-function removalTree(runId: string, scene: readonly HvacElement[]): string[] {
+/** A run and every branch hanging off it (what replacing the run removes). */
+export function removalTree(runId: string, scene: readonly HvacElement[]): string[] {
   const out = [runId];
   for (const branch of ductBranchesOf(runId, scene)) out.push(...removalTree(branch.element.id, scene));
   return out;
+}
+
+/** Tests and the debug handle: sees each service's context as it is built. */
+let contextInspector: ((ctx: ServiceCtx) => void) | null = null;
+export function inspectAutoDuctContexts(inspector: ((ctx: ServiceCtx) => void) | null): void {
+  contextInspector = inspector;
 }
 
 /** Extra fan pressure of a shortened fan-outlet straight (system effect; practice ≈ half the outlet velocity pressure). */
@@ -890,7 +902,10 @@ function shortlist(options: readonly ServiceOption[], pricePerPa: number, limit:
     && other.cost.total <= option.cost.total + 1e-6 && other.espPa <= option.espPa + 1e-6
     && (other.cost.total < option.cost.total - 1e-6 || other.espPa < option.espPa - 1e-6)));
   const unique = front.filter((option, index) => front.findIndex((other) => Math.abs(other.cost.total - option.cost.total) < 0.5 && Math.abs(other.espPa - option.espPa) < 0.05) === index);
-  return unique.sort((a, b) => (a.cost.total + pricePerPa * a.espPa) - (b.cost.total + pricePerPa * b.espPa)).slice(0, limit);
+  const best = unique.sort((a, b) => (a.cost.total + pricePerPa * a.espPa) - (b.cost.total + pricePerPa * b.espPa)).slice(0, limit);
+  // The equal-friction reference always comes along (the card shows what the optimiser saves against it).
+  const reference = options.find((option) => option.source === 'v1');
+  return reference && !best.includes(reference) && limit > 1 ? [...best, reference] : best;
 }
 
 function addCosts(parts: readonly DuctCostBreakdown[]): DuctCostBreakdown {
@@ -920,11 +935,14 @@ export function selectAutoDuctDesign(result: AutoDuctResult, index: number): Aut
   };
 }
 
+let generation = 0;
+
 export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings): AutoDuctResult {
   const started = Date.now();
   const unit = scene.find((element) => element.id === request.unitId);
   let counter = 0;
-  const stamp = Date.now().toString(36);
+  // Unique across calls in the same millisecond (Auto route designs several units in a row).
+  const stamp = `${Date.now().toString(36)}${(generation += 1).toString(36)}`;
   const ids = () => `duct-auto-${stamp}-${(counter += 1)}`;
   const shape: AutoDuctShape = request.shape ?? 'optimal';
   const result: AutoDuctResult = {
@@ -959,6 +977,10 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
   const context: HvacElement[] = [];
   let trees = 0;
   let realised = 0;
+  /** Every service's trees came from the exact router (within its terminal limit). */
+  let exact = true;
+  let routerMs = 0;
+  let sizingMs = 0;
 
   for (const service of ['supply', 'return'] as const) {
     if (!request.services[service]) continue;
@@ -1074,6 +1096,7 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       service, unitId: unit.id, frame, port, bottomZ, terminals, airflowM3h: total, baseScene, settings, obstacles, maxHeightMm,
       construction: settings.defaultConstruction, ids,
     };
+    contextInspector?.(ctx);
     // Candidate trees: the v1 layouts (plenum, trunks), then sized exactly and verified.
     const candidates: Candidate[] = [];
     if (request.layout !== 'trunk') {
@@ -1096,13 +1119,48 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       if (candidate.penalty) design.pressurePenaltyPa = fanOutletSystemEffectPa(port, total);
       seeds.push(design);
     }
-    const optimised = optimiseService(ctx, seeds, shape, airflow, result.maxEspPa ?? 150);
-    trees += optimised.frontiers;
-    realised += optimised.realised;
-    let options = optimised.options;
-    {
-      // The reference: the v1 layout as it sizes it (equal friction). A verified option like any other,
-      // so the optimiser's choice is never worse than it.
+    // The tree router's own trees, at two prices of fan pressure (the sizing then prices it exactly).
+    if (request.layout !== 'plenum' && terminals.length <= settings.autoExactTerminals) {
+      // Optimal routes with each shape's catalogue too, so it never does worse than either alone.
+      for (const routeShape of shape === 'optimal' ? (['rect', 'round'] as const) : [shape]) {
+      const routerStarted = Date.now();
+      const model = new SizingModel(ctx, routeShape, airflow);
+      // The straight off the collar must hold the connector, the collar transition and a take-off window.
+      const collar: DuctLeg = { widthMm: port.widthMm, heightMm: port.heightMm };
+      const connector = settings.flexibleConnectorAtUnit ? settings.connectorFabricMm + 2 * settings.connectorMetalMm : 0;
+      const trunkOptions = model.trunkOptions(total);
+      const transitions = trunkOptions.map((leg) => model.transitionLengthMm(collar, leg).lengthMm);
+      const minOutletMm = connector + (transitions.length ? Math.min(...transitions) : 0) + 300;
+      // Turning at the root's end also needs the elbow's setback past the transition.
+      const turnOutletMm = connector + (trunkOptions.length
+        ? Math.min(...trunkOptions.map((leg, index) => transitions[index]! + model.elbowRadiusMm(leg) + settings.elbowNeckMm)) : 0) + 50;
+      const graph = buildRoutingGraph(ctx, model, exitLengthMm(port), minOutletMm, turnOutletMm);
+      for (const factor of [0.5, 2]) {
+        const solution = routeTrees(ctx, model, graph, {
+          lambda: factor * model.pricePerPa, label: AUTO_DUCT_LAYOUT_LABELS.tree, fanOutletMm: exitLengthMm(port),
+          shortOutletPenaltyPa: fanOutletSystemEffectPa(port, total), maxTerminals: settings.autoExactTerminals, rootTurnMinMm: turnOutletMm,
+        });
+        if (solution) seeds.push(...solution.designs);
+        else exact = false;
+      }
+      routerMs += Date.now() - routerStarted;
+      }
+    } else {
+      exact = false;
+    }
+    const sizingStarted = Date.now();
+    // Optimal sizes every tree with the mixed catalogue and with each shape's own, and keeps the verified best.
+    let options: ServiceOption[] = [];
+    for (const sizeShape of shape === 'optimal' ? (['optimal', 'rect', 'round'] as const) : [shape]) {
+      const optimised = optimiseService(ctx, seeds, sizeShape, airflow, result.maxEspPa ?? 150);
+      trees += optimised.frontiers;
+      realised += optimised.realised;
+      options.push(...optimised.options);
+    }
+    sizingMs += Date.now() - sizingStarted;
+    if (shape !== 'round') {
+      // The reference: the v1 layout as it sizes it (equal friction, rectangular). A verified option like
+      // any other, so the optimiser's choice is never worse than it.
       const best = candidates.map((candidate) => score(ctx, candidate)).sort((a, b) => a.cost - b.cost)[0]!;
       const verified = verifyRuns(ctx, best.candidate.runs, best.candidate.notes);
       options = [...options, {
@@ -1112,6 +1170,16 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
         cost: priceDuctPlans(verified.plans, settings, verified.hangers, verified.straps), errors: verified.errors, warnings: verified.warnings, issues: verified.issues,
         modelCost: 0, modelPressurePa: verified.pressure.indexPa, exact: false,
       }];
+    }
+    if (!options.length) {
+      serviceResult.issues.push({
+        code: 'DU_AUTO_NO_LAYOUT', severity: 'error', service,
+        message: shape === 'round'
+          ? 'No buildable round layout for these terminals: the square-to-round off the collar and the round-main taps need more straight than the room gives. Try Optimal or Rectangular.'
+          : 'No buildable layout for these terminals.',
+      });
+      result.staticServices.push(serviceResult);
+      continue;
     }
     work.push({ ctx, base: serviceResult, options, terminals });
     const bestOption = shortlist(options, result.pricePerPa, 1)[0];
@@ -1168,9 +1236,10 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       quietest: by((design) => design.requiredEspPa, (design) => design.firstCost),
     };
     const chosen = result.designs[result.picks.lifeCycle]!;
+    const modelled = chosen.services.every((service) => service.label && !service.label.endsWith('(equal friction)'));
     result.certificate = {
-      exact: false, trees, realised, solveMs: Date.now() - started,
-      modelGapPct: chosen.modelLifeCycleCost > 0 ? Math.round(((chosen.lifeCycleCost - chosen.modelLifeCycleCost) / chosen.modelLifeCycleCost) * 1000) / 10 : null,
+      exact, trees, realised, solveMs: Date.now() - started, routerMs, sizingMs,
+      modelGapPct: modelled && chosen.modelLifeCycleCost > 0 ? Math.round(((chosen.lifeCycleCost - chosen.modelLifeCycleCost) / chosen.modelLifeCycleCost) * 1000) / 10 : null,
     };
     return selectAutoDuctDesign(result, result.picks.lifeCycle);
   }

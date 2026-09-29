@@ -1888,7 +1888,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
       {(showRoutingToolbar || placingKit) && ((enabled && autoRoutePreviewOpen) || (canInteract && (pipeToolActive || placingKit
         || pipes.some((pipe) => selectedSet.has(pipe.id))
-        || (selectionHitTesting && hvacElements.some(element => element.type === 'outdoor-unit' || element.type === 'condensate-gully'))))) ? (
+        || (selectionHitTesting && hvacElements.some(element => element.type === 'outdoor-unit' || element.type === 'condensate-gully' || element.type === 'ducted-ac'))))) ? (
         <PipeRoutingToolbar
           ruleProfile={ruleProfile}
           drawing={pipeToolActive}

@@ -1,5 +1,5 @@
 /**
- * Transient Auto route preview state (gas / liquid / condensate) shared by the
+ * Transient Auto route preview state (ducts / gas / liquid / condensate) shared by the
  * toolbar action, the plan overlays, the 3D preview and the properties panel.
  * Never persisted and never part of undo history: only Apply commits (one
  * store command).
@@ -21,6 +21,8 @@ export interface AutoRouteSignatures {
   refrigerant: string | null;
   /** Condensate source signature at generation time. */
   condensate: string | null;
+  /** Duct source signature (the drawing and the duct settings) at generation time. */
+  ducts: string | null;
 }
 
 export interface CondensatePreviewState {
@@ -77,7 +79,7 @@ export const useCondensatePreviewStore = create<CondensatePreviewState>((set) =>
 export const AUTO_ROUTE_SERVICES_STORAGE_KEY = 'provacx.autoRoute.services';
 
 export function readStoredAutoRouteServices(): AutoRouteServices {
-  const fallback: AutoRouteServices = { gas: true, liquid: true, condensate: true };
+  const fallback: AutoRouteServices = { gas: true, liquid: true, condensate: true, supplyDuct: true, returnDuct: true };
   try {
     const raw = typeof window !== 'undefined' ? window.sessionStorage.getItem(AUTO_ROUTE_SERVICES_STORAGE_KEY) : null;
     if (!raw) return fallback;
@@ -86,6 +88,8 @@ export function readStoredAutoRouteServices(): AutoRouteServices {
       gas: typeof parsed.gas === 'boolean' ? parsed.gas : true,
       liquid: typeof parsed.liquid === 'boolean' ? parsed.liquid : true,
       condensate: typeof parsed.condensate === 'boolean' ? parsed.condensate : true,
+      supplyDuct: typeof parsed.supplyDuct === 'boolean' ? parsed.supplyDuct : true,
+      returnDuct: typeof parsed.returnDuct === 'boolean' ? parsed.returnDuct : true,
     };
   } catch {
     return fallback;

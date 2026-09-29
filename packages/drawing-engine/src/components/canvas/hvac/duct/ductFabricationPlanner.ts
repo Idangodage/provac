@@ -97,6 +97,7 @@ export type DuctIssueCode =
   | 'DU_GAUGE_OVERRIDE'
   | 'DU_SLOPED_LEG'
   | 'DU_HARD_WAY_ELBOW'
+  | 'DU_TURN_BACK'
   | 'DU_SUPPORT_RULE'
   | 'DU_SUPPORT_LOAD'
   | 'DU_SOFFIT'
@@ -453,6 +454,9 @@ interface NodeBend {
   bendSection: DuctLeg;
 }
 
+/** The sharpest plan turn one elbow makes (practice: SMACNA RE1 leaves θ open; a U-turn is two elbows). */
+const MAX_PLAN_TURN_DEG = 150;
+
 function nodeBend(spec: DuctRunSpec, legs: DuctLegGeometry[], node: number, issues?: DuctIssue[]): NodeBend | null {
   const incoming = legs[node - 1];
   const outgoing = legs[node];
@@ -461,6 +465,12 @@ function nodeBend(spec: DuctRunSpec, legs: DuctLegGeometry[], node: number, issu
   if (!incoming.vertical && !outgoing.vertical) {
     const angleDeg = turnAngleDeg(incoming.direction, outgoing.direction);
     if (angleDeg < TURN_EPSILON_DEG) return null;
+    // Past this one elbow would need a setback of R·tan(θ/2) → ∞: the run doubles back on itself.
+    if (angleDeg > MAX_PLAN_TURN_DEG) {
+      issues?.push({ code: 'DU_TURN_BACK', severity: 'error', nodeIndex: node, point: spec.path[node],
+        message: `The run turns back on itself here (${Math.round(angleDeg)}°): one elbow turns at most ${MAX_PLAN_TURN_DEG}°. Add a leg between two turns.` });
+      return null;
+    }
     return { plane: 'plan', angleDeg, frame: null, corner: spec.path[node]!, inDirection: incoming.direction, outDirection: outgoing.direction, bendSection: section };
   }
   if (incoming.vertical && outgoing.vertical) {

@@ -286,6 +286,7 @@ Runner 38 mm minimum; runner type 1 is 0.85 mm (22 ga). The free area between do
 - Do not use connections with scoops.
 
 **Fig. 2-7 Offsets and transitions (p.2.9)**
+- Transitions may convert any combination of rectangular, round and flat oval (the figure's note).
 - Concentric transition: θ max 45° diverging, 60° converging (θ is the included angle).
 - Eccentric transition: θ max 30° (45° only from round to flat oval).
 - Offsets: Type 1 angled 15° max; Type 2 mitred 60° max; Type 3 radiussed (ogee) with a 150 mm minimum throat radius.
@@ -361,6 +362,37 @@ The engine's flat-bottom reducer is concentric in plan (judged on the included a
   - Screws on RT-1, 4, 5 and 6 at 381 mm maximum along the circumference, three minimum up to 356 mm diameter.
   - RT-2 Van Stone flange: 8 mm bolts at 203 mm maximum.
 - Fig. 3-3: pleated, stamped, adjustable and segmented elbows.
+
+### Round branch fittings (Fig. 3-4 p.3.11, Fig. 3-5 p.3.12; scanned PDF pages 147–148)
+
+These are the fittings for taking a branch off a **round main** and for splitting one. They are encoded in `ductRoundFittings.ts` (`ROUND_FITTING_RULES`, `verified: true`).
+
+**Fig. 3-4 90° tees and laterals**
+- **90° tee / tap:**
+  - the tee body is the branch diameter C + 102 mm long, between 51 mm spigots;
+  - the branch spigot is 51 mm;
+  - tap edges are fastened by screws at 101 mm centres, or by stitch welds.
+- **45° lateral:**
+  - the branch leaves the main at 45°;
+  - it meets the main along an ellipse d / sin 45° long;
+  - the same 51 mm spigots.
+
+**Fig. 3-5 Conical tees**
+- **Conical tee / tap:**
+  - the cone is at least 152 mm long (L1);
+  - its mouth on the main is C + 51 mm;
+  - the body is the mouth + 102 mm between 51 mm spigots.
+- **Conical tee and reducer:** the reducer after the tee is L2 = A − B long, 102 mm minimum.
+- **Wye:** a main split into two legs, each 3A/2 long.
+
+**The rules that come with them**
+- S3.4 applies to every one of these (each is a tap or saddle): the branch is at most ⅔ of the main's diameter.
+- Fig. 2-7 applies to the transition that joins a rectangular collar to a round main: "transitions may convert … any combination for rectangular, round or flat oval". The engine builds it as a true square-to-round (4 flat triangles + 4 oblique cone quarters), judged on the same included angles (45° diverging, 60° converging; 30° eccentric).
+
+**Undimensioned in the figures (the engine uses practice values, `ROUND_FITTING_PRACTICE`, `verified: false`)**
+- A 90° tap stub is at least one spigot (51 mm) out of the main before its spigot.
+- A 45° lateral collar reaches half the branch diameter past the main wall, plus its spigot.
+- The wye's 3A/2 is read as each leg's centreline length to its outlet.
 
 ### Flexible duct (§3.5–3.7, pp.3.15–3.21, read from the scanned PDF pages 151–157)
 

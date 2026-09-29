@@ -5,8 +5,9 @@
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
-import { generateAutoDuct, type AutoDuctRequest } from './ductAutoLayout';
+import type { AutoDuctRequest } from './ductAutoLayout';
 import { useDuctAutoPreviewStore } from './ductAutoPreviewStore';
+import { cancelAutoDuctWorker, runAutoDuctInWorker } from './optimizer/ductOptimizerClient';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec } from './ductTypes';
 
@@ -44,13 +45,27 @@ export function autoDuctSelection(selectedIds: readonly string[], scene: readonl
   return { unit, terminals, fromSelection: false };
 }
 
-export function generateAutoDuctPreview(request: AutoDuctRequest): void {
+/** Routes, sizes and verifies the designs in the worker; the preview shows the best life-cycle one. */
+export async function generateAutoDuctPreview(request: AutoDuctRequest): Promise<void> {
   const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
-  const result = generateAutoDuct(hvacElements, request, ductSettings);
-  useDuctAutoPreviewStore.getState().setPreview(result, request, hvacElements);
+  const preview = useDuctAutoPreviewStore.getState();
+  preview.setRunning(request.unitId);
+  try {
+    const result = await runAutoDuctInWorker(hvacElements, request, ductSettings);
+    useDuctAutoPreviewStore.getState().setPreview(result, request, hvacElements);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'cancelled') return;
+    useDuctAutoPreviewStore.getState().clear(error instanceof Error ? error.message : 'The duct layout could not be calculated.');
+  }
+}
+
+export function cancelAutoDuctPreview(): void {
+  cancelAutoDuctWorker();
+  useDuctAutoPreviewStore.getState().setRunning(null);
 }
 
 export function discardAutoDuctPreview(): void {
+  cancelAutoDuctWorker();
   useDuctAutoPreviewStore.getState().clear();
 }
 

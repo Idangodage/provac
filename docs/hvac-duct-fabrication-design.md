@@ -131,7 +131,7 @@ Invariant: the lengths of the pieces sum to the centreline length (property-test
 
 | Group | Codes |
 |---|---|
-| Geometry and fittings | `DU_TRANSITION_ANGLE`, `DU_ELBOW_RADIUS`, `DU_LEG_TOO_SHORT`, `DU_VANE_SPAN`, `DU_SLOPED_LEG` (a leg that runs and climbs; a riser that turns back; a riser straight off a collar), `DU_HARD_WAY_ELBOW` (a plan turn at a riser), `DU_ASPECT_RATIO` (>4:1, info), `DU_SIZE_OVER_TABLE` |
+| Geometry and fittings | `DU_TRANSITION_ANGLE`, `DU_ELBOW_RADIUS`, `DU_LEG_TOO_SHORT`, `DU_VANE_SPAN`, `DU_SLOPED_LEG` (a leg that runs and climbs; a riser that turns back; a riser straight off a collar), `DU_HARD_WAY_ELBOW` (a plan turn at a riser), `DU_TURN_BACK` (a plan turn sharper than 150°: the run doubles back), `DU_ASPECT_RATIO` (>4:1, info), `DU_SIZE_OVER_TABLE` |
 | Construction | `DU_PRESSURE_UNSUPPORTED` (above 500 Pa), `DU_NO_STOCK`, `DU_GAUGE_JOINT`, `DU_GAUGE_OVERRIDE`, `DU_INTERMEDIATE_REINF`, `DU_CROSS_BREAK` (info; not on insulated duct). P5: `DU_PID_LIMITS`, `DU_PID_REINF_UNVERIFIED` |
 | Branches | `DU_TAP_TOO_BIG`, `DU_TAP_CLASH`, `DU_SPLIT_INCOMPLETE`, `DU_SPLIT_SIZE`, `DU_BRANCH_DIRECTION` |
 | Connections | `DU_MOUTH_APPROX` (unit without measured ports), `DU_OPEN_END`, `DU_STALE`, `DU_TERMINAL_SIZE` (rigid end off the spigot's Ø), `DU_TERMINAL_ALIGN` (rigid end not level, square and on the spigot's axis) |
@@ -655,16 +655,145 @@ With no terminals selected, the card uses the unconnected terminals in the unit'
      - Apply and one undo work.
   3. **Real conflicts, reported:** the test room's two refrigerant pipes and its ceiling cassette sit at duct level in front of the unit. The generator reports them as `DU_CLASH`: a damper stub against the pipes, and the trunk across the cassette. There is no room above them under the 2900 soffit.
 
+## Duct optimiser (Auto duct v2)
+
+Your decisions (28 September 2026):
+- **Trunk shape:** Rectangular / Round / Optimal; branches stay round either way.
+- **Objective:** life-cycle cost. The card shows the cost–pressure frontier with three picks.
+- **Currency:** USD; every rate is a setting flagged *practice*.
+- **Round-main fittings:** all four are allowed (conical, 90°, 45° lateral, wye).
+
+**Standard fittings (planner, drawing by hand and the optimiser alike)**
+- **Square-to-round** (`ductSquareToRound.ts`, Fig. 2-7):
+  - wherever rectangular meets round, e.g. after the collar's connector when the trunk is round;
+  - built as 4 flat triangles + 4 oblique cone quarters, and that development gives both the sheet area and the 3D loft;
+  - flat bottom shared; judged on the Fig. 2-7 included angles.
+- **Take-offs off a round main** (`ductRoundFittings.ts`, Figs 3-4 / 3-5):
+  - `round-conical`, `round-tee` (90°) and `round-lateral` (45° plus a 45° gored elbow, so the branch still leaves square);
+  - S3.4 ⅔ limit (`DU_TAP_TOO_BIG`); windows kept clear of joints, fittings and each other;
+  - the draw tool picks the style from the parent's shape (Duct Systems → Round-main fittings).
+- **Wye** splits a round main, legs 3A/2. **Round reducers** after a tee are L2 = A − B, 102 mm minimum.
+- **Losses** (`ductPressure.ts`, practice, Idelchik form — not transcribed from ASHRAE DFDB):
+  - tee branch ζ = A′[1 + r² − 2r cos α] on the main's velocity pressure, with A′ by fitting (90° tee > conical > lateral);
+  - straight passage 0.4(1 − vs/vc)²;
+  - elbows by R/W; transitions by included angle.
+
+**Economics (`ductEconomics.ts`, Duct Systems → Economics)**
+- **First cost** is priced from the planner's own pieces: sheet mass (SMACNA gauge × 7850 kg/m³) × rate, fabrication per m² (rectangular / spiral, fittings × a factor), installation, NBR, flex per m, dampers, hangers and straps per support, joints per metre of perimeter.
+- **Energy:** present worth PW = Σₖ₌₁..ₙ ((1+e)/(1+r))ᵏ, and the price of a pascal E_pa = Q·h·price·PW / (1000·η).
+- **Scale:** with the placeholder rates (0.15 $/kWh, 3000 h, η 0.45, 15 years, 6 % / 2 %), a pascal is worth about 2 USD over the FDUM22's life. The card shows the figure.
+
+**Algorithm (`optimizer/`, pure, run in a Web Worker with a main-thread fallback)**
+1. **Routing graph** (`routingGraph.ts`):
+   - an escape (Hanan) grid in the collar frame, through the outlet, each terminal's feasible branch ends and the obstacle edges;
+   - clearance accumulates in 100 mm levels, so a corridor knows which sections fit;
+   - states are (node, heading), so elbows are priced.
+2. **Tree** (`steinerArborescence.ts`): an exact Dreyfus–Wagner DP for a flow-weighted Steiner arborescence.
+   - Layer S carries exactly the flow of its terminals, so the flow-dependent cost and the corridor fit are exact.
+   - Merges are tees, splits or all-flex stubs.
+   - Rules:
+     - the tail rule (900 mm straight into a branch end, then anything);
+     - a root turn rule for the fan-outlet straight;
+     - a conflict-repair loop.
+   - It runs at two prices of pressure (½ and 2 × E_pa).
+   - It is exact up to `autoExactTerminals` terminals per service (default 8, at most 10: time grows as 3ᵏ). Above that the router is skipped: only the layout candidates are sized, and the certificate says "not exact".
+3. **Sizes, shapes and fittings** (`sizingDp.ts`, `sizingModel.ts`): an exact Pareto-frontier tree DP, the exact counterpart of the T-method.
+   - Each subtree keeps first cost per pressure bucket (0.2 Pa): a serial part shifts the frontier, parallel parts add pointwise, and choices take the pointwise minimum.
+   - Parent–child rules are checked at each join:
+     - ⅔ on round mains;
+     - rectangular wall height ≥ branch Ø + 50;
+     - Y width ≥ the sum of its outlets;
+     - a shape change pays its transition.
+   - Velocity window 1.8–5 m/s. Optimal sizes each tree with the mixed catalogue and with each shape's own, and keeps the best.
+4. **Verification** (`realiseDesign.ts`, `ductOptimizer.ts`):
+   - every design is built as real runs, with tap windows legalised;
+   - it is planned (`planDuctRunSpec`), clash-checked and pressure-summed, then re-priced from its pieces;
+   - the v1 layouts are seeds too, and the v1 equal-friction design is always kept as the reference, so the choice is never worse than it.
+5. **Whole designs:** supply × return combinations, re-checked for clashes between them.
+   - The picks are least first cost, **best life-cycle** (shown first) and least pressure, among the designs with the fewest errors within the fan's maximum.
+6. **Certificate** (card): exact or heuristic, trees sized, designs realised, router and sizing time, and the gap between the verified and the model life-cycle cost.
+
+**Auto duct card:** Shape (Rect / Round / Optimal), Generate (in the worker, cancellable), the certificate, the frontier (click a point to preview it), the three picks, the cost breakdown, then Apply as one undo.
+
+**Ducts in the unified Auto route** (`duct/ductAutoRoute.ts`, `unifiedAutoRoute.ts`)
+- **Ticks:** **Supply** and **Return** duct ticks sit beside Gas / Liquid / Condensate, remembered for the session.
+- **Order:** ducts → refrigerant → condensate. Ducts are the largest bodies and the least free to move.
+  - Each ducted unit gets its best life-cycle design; its runs join the working scene the next unit sees.
+  - The pipe steps route with the new ducts as obstacles (the network clearance check sees duct bodies).
+- **Scope:**
+  - *All units*: each unit's free terminals. A terminal goes to the nearest unit in its room with a free collar of its service; a collar with a duct is free only with Rebuild existing ducts ticked.
+  - *Selected*: the selected ducted units and the selected diffusers and grilles.
+- **Only clean designs are proposed:** a unit whose best design still has errors is kept as it is, with the reason, and **Study** selects it for the Auto duct card.
+- **Walls** are not modelled by the optimiser: a proposed run that crosses one is flagged on its unit (sleeve it, or move the unit or terminal).
+- **Checks:** the clash audit lists new duct contacts with every service.
+- **Apply:** one Apply commits ducts + refrigerant + condensate (+ approved hops) as one undo. A preview of a drawing (or of duct settings) that has since changed is refused.
+- **Options:** a Ducts section (trunk shape, fan speed, rebuild). The result panel shows each unit's layouts, trunk sections, ESP against its maximum, first and life-cycle cost.
+
+**AC Equipment toolbox** (`AcEquipmentPanel.tsx`, `hvac/equipmentIcons.tsx`)
+- **Tiles:** a custom line-art icon set (cassette, wall unit, suspended, ducted, outdoor, branch kit, gully / stack / wall outlet, square / round / linear diffuser, return grille, controller, remote, filter).
+- **Layout:** one grid of tiles per category (two per row in the default panel width, more when it is wider).
+- **On each tile:** a short name and caption (model code, Ø, gas / liquid), a placed-count badge per library entry, and an active ring plus a "Placing …" banner.
+- **Hover or keyboard focus:** a card with the full name, model, size, placement and mounting, placed count, description and keys.
+- **Keys:** arrow keys move between tiles, Enter places, Esc stops.
+
+**Verified**
+- **Vitest:**
+  - `ductRoundFittings.test.ts` (15), `optimizer/optimizer.test.ts` (9): the DP equals brute force, Dreyfus–Wagner equals brute force (k = 1, 2), a higher energy price never raises the chosen pressure;
+  - `ductAutoLayout.test.ts`: invariants, never worse than equal friction, Optimal ≤ min(Rect, Round);
+  - `ductAutoRoute.test.ts` (8): assignment, second unit around the first, occupied / rebuild, Selected scope, wall flag, signature, unified order, duct ↔ pipe clash;
+  - `store/autoRouteDucts.test.ts`, `store/ductAutoApply.test.ts`: one undo, stale preview refused.
+  - Full drawing-engine suite green (190 files, 1676 tests, 29 September 2026); `tsc --noEmit` clean.
+- **Results (unit tests):**
+  - 6-diffuser row: USD 737 optimised against 836 for equal friction, no errors;
+  - far-4 USD 626; line USD 502;
+  - two diffusers USD 289 round / 326 rectangular.
+- **On canvas** (`D:\claude-tmp-vrf-check\duct-route-ui.mjs`, real panel, keys and mouse; project restored exactly), 28 September 2026:
+  - **Toolbox:**
+    - 15 tiles with icons in 5 categories;
+    - the hover card sits beside the panel and closes on leave;
+    - ArrowRight / ArrowDown move focus and open the card;
+    - the active tile is pressed with the banner, and Esc stops;
+    - the badge counts placed diffusers.
+  - **Auto route, ducts only**, FDUM22 + 2 diffusers + 1 grille:
+    - optimised trees Ø300 supply / Ø250 return, 45 / 100 Pa, USD 622 first / 705 life-cycle, exact;
+    - preview in plan and 3D;
+    - Apply adds the 3 runs, all planning without errors, and one undo removes them;
+    - the return crossing the room's wall is flagged.
+  - **All five ticks:** ducts designed first, then the refrigerant circuit rebuilt around them (2 / 2 units), no clashes; Discard leaves the drawing as it was.
+  - **Real refusals** (kept, with the reason):
+    - a plenum against the room's refrigerant pair;
+    - tight runout bends (SMACNA S3.24) in a cramped layout.
+- **Auto duct card on canvas** (`duct-optimise.mjs`, 29 September 2026), same unit and terminals:
+  - **Rect:** a rectangular 250×250 trunk to Ø200, 45 Pa. **Round:** the supply falls back to the plenum and is shown with its issues; the fan pressure is finite (42 Pa). **Optimal:** 704 USD / 44.9 Pa, the same design as Rect.
+  - **Certificate:** "Optimal on the model · 6 verified · 38 trees sized · 0.5 s".
+  - **Frontier and picks:**
+    - the frontier plots the 6 verified designs;
+    - the three picks are least first cost, best life-cycle (both 704 USD, 44.9 Pa) and least pressure (722 USD, 43.1 Pa);
+    - each pick and a frontier point switch the preview.
+  - **Apply:** the 3 runs plan without errors, the BOM has 65 rows (square-to-round, gored elbows, spin-in + VCD, flex), and one undo removes them.
+- **Round main by hand** (`duct-round-taps.mjs`), with the real duct tool:
+  - a 600×400 main off the collar;
+  - a Ø300 round main off it (spin-in, then a gored elbow);
+  - a Ø150 conical tap, a 90° tap and a 45° lateral off the round main.
+  - The taps plan without errors, the round main stays clean, and the BOM lists "Conical tap into round main, mouth Ø201 (Fig. 3-5)", "90° tap … (Fig. 3-4)" and "45° lateral tap … (Fig. 3-4)".
+  - Taps placed closer than their windows allow (the Fig. 3-4 / 3-5 body + the 50 mm joint margin) are flagged on the main (`DU_TAP_CLASH`).
+- **Fixed on the way:** a plan turn sharper than 150° (a run doubling back) used to give an elbow setback of R·tan 90° ≈ 10¹⁸ mm and a fan pressure of 10¹⁵ Pa. It is now refused as `DU_TURN_BACK` with finite numbers.
+- **Regressions:** `duct-auto.mjs` 18/18, `duct-p4.mjs` 21/21, `duct-p3.mjs` 14/14, `duct-complete.mjs` 11/11; each restores the project exactly.
+
 ## Known limits
 
-- Round runs are branches (spin-in / conical off rectangular runs); round trunks with their own take-offs are not in scope.
+- Round trunks take conical, 90° and 45° lateral taps and wye splits (Figs 3-4 / 3-5). In Round mode a layout often cannot be built near the unit: the square-to-round off the flat collar needs about 0.85 m of straight. The service is then reported `DU_AUTO_NO_LAYOUT`; Optimal falls back to rectangular.
+- The optimum is exact on the modelled grid and catalogue (not between grid lines), and only up to `autoExactTerminals` terminals per service. Above that only the layout candidates are sized (not exact).
+- Costs, energy data and fitting loss coefficients are practice placeholders until supplier prices or DFDB data replace them.
+- In compact scenes the fallback plenum's runouts can bend under one diameter; such a design is refused by the unified Auto route and shown with its issues in the card.
+- Drawing a take-off by hand does not stop a window that clashes with an elbow or another take-off: the parent run reports `DU_TAP_CLASH` afterwards and the tap has to be moved.
 - Pressure classes above 500 Pa are refused (your decision, 25 September 2026). The scanned PDF has Tables 1-6 to 1-9 if that changes.
 - PID reinforcement counts are unverified until the P3 graph is transcribed.
 - No hard-way (twisted) elbows: a plan turn at a riser is refused.
 - The design-check chip is still titled "VRF checks" though it lists condensate and duct checks too.
 - The NBR skin in 3D does not box the flanges, so a 30 mm TDC flange shows through a 25 mm skin.
 - Duct-to-duct clash skips a branch and its own parent.
-- Auto duct lays out one unit at a time, one level per service. It adds no risers and does not route round walls (there are no beams or storeys in the model).
+- Auto duct designs one level per service and adds no risers. It does not route round walls (there are no beams or storeys in the model); the unified Auto route flags a run that crosses a wall. Units are designed one after another (each around the ones before), not jointly.
 - Auto duct's pressure figures are estimates with practice loss coefficients, not a certified duct calculation.
 - Terminal sizes are typical catalog values (practice) until a supplier's data is entered.
 - A rigid connection to a terminal is checked, not routed: its last leg has to be drawn straight into the spigot.

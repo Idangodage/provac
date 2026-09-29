@@ -783,8 +783,9 @@ export function DrawingCanvas({
       select: (ids: string[]) => setSelectedIds(ids),
       generateCondensate: (scope: 'drawing' | 'selection' = 'drawing') => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope }),
       /** One Auto route for the ticked services (preview; apply with applyAutoRoute). */
-      autoRoute: (services: { gas: boolean; liquid: boolean; condensate: boolean }, scope: 'drawing' | 'selection' = 'drawing') =>
-        runAutoRoute({ services, scope, profile: vrfRuleProfile }),
+      autoRoute: (services: { gas: boolean; liquid: boolean; condensate: boolean; supplyDuct?: boolean; returnDuct?: boolean }, scope: 'drawing' | 'selection' = 'drawing',
+        duct?: { shape: 'rect' | 'round' | 'optimal'; fanSpeed: 'p-hi' | 'hi' | 'me' | 'lo'; rebuildExisting: boolean }) =>
+        runAutoRoute({ services, scope, profile: vrfRuleProfile, duct }),
       getAutoRoutePreview: () => useCondensatePreviewStore.getState().unified,
       approveAllHops: () => {
         const store = useCondensatePreviewStore.getState();
@@ -808,7 +809,7 @@ export function DrawingCanvas({
       /** Air terminals' spigots (diffusers and grilles) a run can finish on. */
       getTerminalPorts: () => listTerminalPorts(hvacElements),
       /** Auto duct: generate a preview for a unit and terminals, read it back, apply it (one undo). */
-      autoDuct: (request: Parameters<typeof generateAutoDuctPreview>[0]) => { generateAutoDuctPreview(request); },
+      autoDuct: (request: Parameters<typeof generateAutoDuctPreview>[0]) => generateAutoDuctPreview(request),
       getAutoDuctPreview: () => {
         const result = useDuctAutoPreviewStore.getState().result;
         return result ? {
@@ -1647,6 +1648,7 @@ export function DrawingCanvas({
   const condensateOverlayRef = useRef<CondensateOverlayHandle | null>(null);
   const condensatePreview = useCondensatePreviewStore((state) => state.result);
   const refrigerantPreview = useCondensatePreviewStore((state) => state.unified?.refrigerant ?? null);
+  const ductRoutePreview = useCondensatePreviewStore((state) => state.unified?.ducts ?? null);
   // An Auto route preview renders in 3D through the same transient path as a
   // pipe edit: new and changed pipes are previews; replaced ones become empty
   // placeholders so their committed meshes are hidden until Apply.
@@ -1656,8 +1658,9 @@ export function DrawingCanvas({
     setCondensateEditPreview(elements ? { elements, removeIds } : null);
   }, []);
   const autoRoutePreviewElements = useMemo(() => {
-    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview) return null;
+    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview) return null;
     const removed = new Set([
+      ...(ductRoutePreview?.removeElementIds ?? []),
       ...(condensatePreview?.removeElementIds ?? []),
       ...(refrigerantPreview?.removeElementIds ?? []),
       ...(condensateEditPreview?.removeIds ?? []),
@@ -1666,13 +1669,14 @@ export function DrawingCanvas({
       .filter((element) => removed.has(element.id))
       .map((element): HvacElement => ({ ...element, type: "condensate-pipe", properties: { routeNodes3d: [], routePoints: [], fittings: [] } }));
     return [
+      ...(ductRoutePreview?.elementsToAdd ?? []),
       ...(refrigerantPreview?.elementsToAdd ?? []),
       ...(refrigerantPreview?.updates ?? []),
       ...(condensatePreview?.elementsToAdd ?? []),
       ...(condensateEditPreview?.elements ?? []),
       ...hidden,
     ];
-  }, [condensatePreview, refrigerantPreview, condensateEditPreview, hvacElements]);
+  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, hvacElements]);
   const hybridPlanPaintPendingRef = useRef(false);
   const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the

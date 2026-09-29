@@ -61,9 +61,9 @@ describe('auto duct: select, generate, apply as one undo', () => {
     expect(room.fromSelection).toBe(false);
   });
 
-  it('previews without touching the drawing, applies as one command, and one undo removes it all', () => {
+  it('previews without touching the drawing, applies as one command, and one undo removes it all', async () => {
     const before = state().hvacElements;
-    generateAutoDuctPreview({ unitId: 'fdum', terminalIds: ['sd1', 'sd2', 'sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: true }, rebuildExisting: false });
+    await generateAutoDuctPreview({ unitId: 'fdum', terminalIds: ['sd1', 'sd2', 'sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: true }, rebuildExisting: false });
     expect(state().hvacElements).toBe(before);
     const preview = useDuctAutoPreviewStore.getState().result!;
     expect(preview.runs.length).toBe(4);
@@ -75,13 +75,13 @@ describe('auto duct: select, generate, apply as one undo', () => {
     expect(state().hvacElements).toEqual(before);
   });
 
-  it('a preview of an older drawing is refused; Rebuild replaces the collar\'s duct in the same step', () => {
-    generateAutoDuctPreview({ unitId: 'fdum', terminalIds: ['sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: false });
+  it('a preview of an older drawing is refused; Rebuild replaces the collar\'s duct in the same step', async () => {
+    await generateAutoDuctPreview({ unitId: 'fdum', terminalIds: ['sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: false });
     state().commitHvacElementCommand('Something else', { add: [buildDuctRunDraftElement({ port: supply, points: [at(1500, 0)] }, 'old')] });
     expect(applyAutoDuctPreview()).toMatch(/changed since the preview/);
     expect(ducts().map((element) => element.id)).toEqual(['old']);
     const before = state().hvacElements;
-    generateAutoDuctPreview({ unitId: 'fdum', terminalIds: ['sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: true });
+    await generateAutoDuctPreview({ unitId: 'fdum', terminalIds: ['sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: true });
     expect(applyAutoDuctPreview()).toMatch(/added, 1 replaced/);
     expect(ducts().some((element) => element.id === 'old')).toBe(false);
     expect(ducts().some((element) => readDuctRunSpec(element)?.end.kind === 'terminal')).toBe(true);

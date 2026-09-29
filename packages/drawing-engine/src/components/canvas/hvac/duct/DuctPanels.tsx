@@ -770,6 +770,51 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="autoDiffuserDropPa" label="Diffuser pressure drop" step={1} min={0} max={150} unit="Pa" />
       <SettingNumber settingKey="autoGrilleDropPa" label="Grille pressure drop" step={1} min={0} max={150} unit="Pa" />
       <SettingNumber settingKey="autoReducerStepMm" label="Reduce the trunk from" step={50} min={0} max={500} />
+      <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Optimiser</div>
+      <SettingNumber settingKey="autoExactTerminals" label="Exact tree search up to" step={1} min={1} max={10} unit="terminals" />
+      <Row label="Round-main fittings">
+        <span className="flex flex-col items-end gap-0.5">
+          {([['round-conical', 'Conical tap (Fig. 3-5)'], ['round-tee', '90° tap (Fig. 3-4)'], ['round-lateral', '45° lateral (Fig. 3-4)']] as const).map(([style, label]) => (
+            <label key={style} className="flex items-center gap-1 text-xs">
+              <input type="checkbox" checked={ductSettings.autoRoundMainStyles.includes(style)} aria-label={`Allow ${label}`}
+                onChange={(event) => setDuctSettings({
+                  autoRoundMainStyles: event.target.checked
+                    ? [...new Set([...ductSettings.autoRoundMainStyles, style])]
+                    : ductSettings.autoRoundMainStyles.filter((entry) => entry !== style),
+                })} />
+              {label}
+            </label>
+          ))}
+          <label className="flex items-center gap-1 text-xs">
+            <input type="checkbox" checked={ductSettings.autoAllowWye} aria-label="Allow wye splits" onChange={(event) => setDuctSettings({ autoAllowWye: event.target.checked })} />
+            Wye split (Fig. 3-5)
+          </label>
+        </span>
+        <SourceBadge settingKey="autoRoundMainStyles" />
+      </Row>
+      <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Economics ({ductSettings.econCurrency})</div>
+      <Row label="Currency">
+        <input type="text" maxLength={3} defaultValue={ductSettings.econCurrency} aria-label="Economics currency"
+          onBlur={(event) => { const code = event.target.value.trim().toUpperCase(); if (/^[A-Z]{3}$/.test(code)) setDuctSettings({ econCurrency: code }); else event.target.value = ductSettings.econCurrency; }}
+          className="w-14 rounded border border-slate-200 px-1 text-xs uppercase" />
+        <SourceBadge settingKey="econCurrency" />
+      </Row>
+      <SettingNumber settingKey="econSheetPerKg" label="Galvanised sheet" step={0.1} min={0} max={10000} unit="/ kg" />
+      <SettingNumber settingKey="econFabricationRectPerM2" label="Fabrication, rectangular" step={0.5} min={0} max={100000} unit="/ m²" />
+      <SettingNumber settingKey="econFabricationSpiralPerM2" label="Fabrication, spiral round" step={0.5} min={0} max={100000} unit="/ m²" />
+      <SettingNumber settingKey="econFittingFactor" label="Fittings, × a straight" step={0.1} min={1} max={10} unit="×" />
+      <SettingNumber settingKey="econInstallPerM2" label="Installation" step={0.5} min={0} max={100000} unit="/ m²" />
+      <SettingNumber settingKey="econInsulationPerM2" label="NBR insulation" step={0.5} min={0} max={100000} unit="/ m²" />
+      <SettingNumber settingKey="econFlexPerM" label="Flexible duct, Ø200" step={0.5} min={0} max={100000} unit="/ m" />
+      <SettingNumber settingKey="econDamperEach" label="Damper, Ø200" step={1} min={0} max={1000000} unit="each" />
+      <SettingNumber settingKey="econHangerEach" label="Hanger" step={1} min={0} max={1000000} unit="each" />
+      <SettingNumber settingKey="econJointPerM" label="Joint" step={0.5} min={0} max={100000} unit="/ m of perimeter" />
+      <SettingNumber settingKey="econElectricityPerKWh" label="Electricity" step={0.01} min={0} max={1000} unit="/ kWh" />
+      <SettingNumber settingKey="econHoursPerYear" label="Fan hours" step={100} min={0} max={8760} unit="h / year" />
+      <SettingNumber settingKey="econFanEfficiency" label="Fan + motor efficiency" step={0.05} min={0.05} max={0.95} unit="" />
+      <SettingNumber settingKey="econLifeYears" label="Life" step={1} min={1} max={60} unit="years" />
+      <SettingNumber settingKey="econDiscountPercent" label="Discount rate" step={0.5} min={0} max={50} unit="%" />
+      <SettingNumber settingKey="econEscalationPercent" label="Energy price rise" step={0.5} min={-10} max={50} unit="% / year" />
       <SettingNumber settingKey="transitionMaxDivergingIncludedDeg" label="Max diverging (concentric)" step={1} min={10} max={45} unit="° incl." />
       <SettingNumber settingKey="transitionMaxConvergingIncludedDeg" label="Max converging (concentric)" step={1} min={10} max={60} unit="° incl." />
       <SettingNumber settingKey="transitionMaxEccentricDeg" label="Max eccentric (flat bottom)" step={1} min={5} max={30} unit="°" />

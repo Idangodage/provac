@@ -24,6 +24,7 @@ import {
   type FabricViewportMatrix,
 } from '../../coordinateTransform';
 import { MM_TO_PX } from '../../scale';
+import { useCondensatePreviewStore } from '../condensate/condensatePreviewStore';
 
 import { listAirPorts } from './ductAirPorts';
 import { useDuctAutoPreviewStore } from './ductAutoPreviewStore';
@@ -323,7 +324,14 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     return spec ? [{ element, spec }] : [];
   }), [hvacElements]);
   // Auto duct preview: the proposed runs, dashed, over the drawing they were generated from (hiding the runs they replace).
-  const autoPreview = useDuctAutoPreviewStore((state) => (state.result && state.scene === hvacElements ? state.result : null));
+  const cardPreview = useDuctAutoPreviewStore((state) => (state.result && state.scene === hvacElements ? state.result : null));
+  // The unified Auto route's duct proposal previews the same way.
+  const routePreview = useCondensatePreviewStore((state) => state.unified?.ducts ?? null);
+  const autoPreview = useMemo(() => {
+    const runs = [...(cardPreview?.runs ?? []), ...(routePreview?.elementsToAdd ?? [])];
+    const removeIds = [...(cardPreview?.removeIds ?? []), ...(routePreview?.removeElementIds ?? [])];
+    return runs.length || removeIds.length ? { runs, removeIds } : null;
+  }, [cardPreview, routePreview]);
   const replacedIds = useMemo(() => new Set(autoPreview?.removeIds ?? []), [autoPreview]);
   const previewMarkup = useMemo(() => {
     if (!autoPreview?.runs.length) return '';

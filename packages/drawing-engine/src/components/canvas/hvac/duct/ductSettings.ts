@@ -218,7 +218,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoGrilleDropPa: 10,
   autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500],
   autoReducerStepMm: 100,
-  autoExactTerminals: 10,
+  autoExactTerminals: 8,
   autoRoundMainStyles: ['round-conical', 'round-tee', 'round-lateral'],
   autoAllowWye: true,
   econCurrency: 'USD',
@@ -310,7 +310,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   autoGrilleDropPa: practice('Placeholder terminal pressure drop until the supplier\'s data is entered.'),
   autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex).' },
   autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
-  autoExactTerminals: practice('The exact tree search grows as 3^k; above this many terminals a heuristic is used (and labelled).'),
+  autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
   autoRoundMainStyles: { sourceId: 'smacna-1995', reference: 'Fig. 3-4 (p.3.11), Fig. 3-5 (p.3.12)', verified: true, note: 'Which of the SMACNA round-main fittings the optimiser may choose; it picks per branch by cost and loss.' },
   autoAllowWye: { sourceId: 'smacna-1995', reference: 'Fig. 3-5 (p.3.12)', verified: true, note: 'A round main may end in a wye.' },
   econCurrency: { sourceId: 'project-configuration', verified: false, note: 'Currency of the rates below.' },
@@ -436,7 +436,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     autoRoundSizesMm: Array.isArray(raw.autoRoundSizesMm) && raw.autoRoundSizesMm.every((size) => typeof size === 'number' && size >= 50 && size <= 2000)
       ? [...new Set(raw.autoRoundSizesMm as number[])].sort((a, b) => a - b) : [...d.autoRoundSizesMm],
     autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),
-    autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 12)),
+    autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 10)),
     autoRoundMainStyles: Array.isArray(raw.autoRoundMainStyles)
       ? [...new Set((raw.autoRoundMainStyles as unknown[]).filter((style): style is DuctRoundMainTapStyle => (ROUND_MAIN_TAP_STYLES as readonly unknown[]).includes(style)))]
       : [...d.autoRoundMainStyles],

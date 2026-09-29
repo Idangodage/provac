@@ -100,6 +100,13 @@ describe('duct run fabrication plan', () => {
     expect(tight.issues.some((issue) => issue.code === 'DU_LEG_TOO_SHORT')).toBe(false);
   });
 
+  it('refuses a run that doubles back on itself, with finite numbers (no elbow of R·tan 90°)', () => {
+    const back = plan(runFrom(supply, [{ x: 0, y: -2000 }, { x: 0, y: 900 }]));
+    expect(back.issues.map((issue) => issue.code)).toContain('DU_TURN_BACK');
+    expect(back.pieces.every((piece) => Number.isFinite(piece.lengthMm) && piece.lengthMm < 10000)).toBe(true);
+    expect(back.issues.every((issue) => !/e\+|\d{7,}/.test(issue.message))).toBe(true);
+  });
+
   it('reports a leg that cannot hold its fittings', () => {
     // A 300 mm last leg after a 90° turn: even a square vaned elbow needs 337 + 50 mm of it.
     const tooShort = plan(runFrom(supply, [{ x: 0, y: -3000 }, { x: 300, y: 0 }]));

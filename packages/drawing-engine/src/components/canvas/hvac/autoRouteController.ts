@@ -1,6 +1,6 @@
 /**
  * Auto route for every ticked service: generate off-thread → preview on the
- * board → Apply (ONE undo step for refrigerant + condensate + approved
+ * board → Apply (ONE undo step for ducts + refrigerant + condensate + approved
  * refrigerant hops) or Discard. Results computed against a drawing that has
  * since changed are refused.
  */
@@ -13,10 +13,15 @@ import type { AutoRouteCostRates } from './autoRouteEvaluation';
 import { condensateSourceSignature, prepareCondensateCommand, type CondensateCommandSource } from './condensate/condensateCommand';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
+import type { AutoDuctShape } from './duct/ductAutoLayout';
+import { ductSourceSignature } from './duct/ductAutoRoute';
+import type { FanSpeed } from './duct/ductSizing';
+import { isDuctTerminalElement } from './duct/ductTerminals';
 import {
   applyRefrigerantProposal,
   foldRefrigerantHopUpdates,
   planUnifiedAutoRoute,
+  wantsDucts,
   type AutoRouteServices,
   type HvacElementUpdate,
 } from './unifiedAutoRoute';
@@ -29,6 +34,8 @@ export interface AutoRouteRunOptions {
   objective?: 'balanced' | 'cost' | 'fewest-fittings';
   rates?: AutoRouteCostRates;
   rebuildExisting?: boolean;
+  /** Duct design: trunk shape, the units' fan speed, and whether ducts already on a collar are replaced. */
+  duct?: { shape: AutoDuctShape; fanSpeed: FanSpeed; rebuildExisting: boolean };
 }
 
 let activeWorker: Worker | null = null;
@@ -72,15 +79,15 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
   const preview = useCondensatePreviewStore.getState();
   if (activeWorker) return;
   const { services } = options;
-  if (!services.gas && !services.liquid && !services.condensate) {
-    preview.setMessage('Tick gas, liquid or condensate to route.');
+  if (!services.gas && !services.liquid && !services.condensate && !wantsDucts(services)) {
+    preview.setMessage('Tick ducts, gas, liquid or condensate to route.');
     return;
   }
   const state = useSmartDrawingStore.getState();
   const selected = new Set(state.selectedIds);
   const selection = options.scope === 'selection' ? state.hvacElements.filter((element) => selected.has(element.id)) : [];
   if (options.scope === 'selection' && !selection.length) {
-    preview.setMessage('Select the units (and gullies) to route, or choose all units in the drawing.');
+    preview.setMessage('Select the units (and their gullies, diffusers or grilles) to route, or choose all units in the drawing.');
     return;
   }
   // End any live manual draft before a generated network is previewed.
@@ -88,6 +95,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
   const signatures = {
     refrigerant: services.gas || services.liquid ? autoRouteSourceSignature(refrigerantSource(options.profile)) : null,
     condensate: services.condensate ? condensateSourceSignature(condensateSource()) : null,
+    ducts: wantsDucts(services) ? ductSourceSignature(state.hvacElements, state.ductSettings) : null,
   };
   const request: UnifiedAutoRouteRequest = {
     type: 'route',
@@ -110,6 +118,19 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
         ...(options.scope === 'selection' ? {
           unitIds: selection.filter((element) => element.type !== 'condensate-gully').map((element) => element.id),
           gullyIds: selection.filter((element) => element.type === 'condensate-gully').map((element) => element.id),
+        } : {}),
+      },
+      // Always passed: every step plans duct bodies with the document's duct settings.
+      duct: {
+        settings: state.ductSettings,
+        shape: options.duct?.shape ?? 'optimal',
+        fanSpeed: options.duct?.fanSpeed ?? 'hi',
+        rebuildExisting: options.duct?.rebuildExisting ?? false,
+        scope: options.scope,
+        walls: state.walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint })),
+        ...(options.scope === 'selection' ? {
+          unitIds: selection.filter((element) => element.type === 'ducted-ac').map((element) => element.id),
+          terminalIds: selection.filter(isDuctTerminalElement).map((element) => element.id),
         } : {}),
       },
     },
@@ -169,6 +190,16 @@ export function applyAutoRoutePreview(): string {
   const removeIds: string[] = [];
   let updates: HvacElementUpdate[] = [];
 
+  const ducts = unified.ducts;
+  if (ducts && signatures.ducts && (ducts.elementsToAdd.length || ducts.removeElementIds.length)) {
+    const state = useSmartDrawingStore.getState();
+    if (ductSourceSignature(state.hvacElements, state.ductSettings) !== signatures.ducts) {
+      return refuse('The drawing or duct settings changed since the preview. Run Auto route again.');
+    }
+    add.push(...ducts.elementsToAdd);
+    removeIds.push(...ducts.removeElementIds);
+  }
+
   if (unified.refrigerant && signatures.refrigerant) {
     const prepared = prepareAutoRouteCommand(signatures.refrigerant, refrigerantSource(previewProfile), unified.refrigerant);
     if (prepared.issue) return refuse(prepared.issue);
@@ -204,7 +235,10 @@ export function applyAutoRoutePreview(): string {
   const refrigerantChanged = Boolean(unified.refrigerant && (unified.refrigerant.elementsToAdd.length
     || unified.refrigerant.removeElementIds.length || unified.refrigerant.updates.length));
   const drainUnits = unified.condensate?.metrics.unitsConnected ?? 0;
+  const ductRuns = unified.ducts?.elementsToAdd.length ?? 0;
+  const ductUnits = unified.ducts?.units.filter((unit) => unit.status === 'designed').length ?? 0;
   const parts = [
+    ductRuns ? `${ductRuns} duct run${ductRuns === 1 ? '' : 's'} for ${ductUnits} unit${ductUnits === 1 ? '' : 's'}` : null,
     unified.refrigerant && !refrigerantChanged ? 'refrigerant unchanged' : null,
     refrigerantChanged ? `${refrigerantUnits} unit${refrigerantUnits === 1 ? '' : 's'} on refrigerant` : null,
     unified.condensate ? `${drainUnits} drain${drainUnits === 1 ? '' : 's'}` : null,
