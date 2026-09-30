@@ -24,6 +24,7 @@ import type { DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService } from './ductTypes';
+import { withReplaced } from './optimizer/designTree';
 
 /** Terminals without a room count as a unit's within this distance of its collar (mm), as in the Auto duct card. */
 const NEARBY_TERMINALS_MM = 10000;
@@ -44,7 +45,7 @@ export interface AutoRouteDuctOptions {
   unitIds?: readonly string[];
   terminalIds?: readonly string[];
   /** Walls a proposed run is checked against (crossings are flagged, not avoided). */
-  walls?: ReadonlyArray<Pick<Wall, 'id' | 'startPoint' | 'endPoint'>>;
+  walls?: ReadonlyArray<Pick<Wall, 'id' | 'startPoint' | 'endPoint'> & { thickness?: number }>;
 }
 
 export interface AutoRouteDuctServiceSummary {
@@ -76,6 +77,8 @@ export interface AutoRouteDuctUnit {
 export interface AutoRouteDuctResult {
   elementsToAdd: HvacElement[];
   removeElementIds: string[];
+  /** Terminals whose plenum-box spigot a design turns, as they will be. */
+  terminalUpdates: HvacElement[];
   units: AutoRouteDuctUnit[];
   issues: string[];
 }
@@ -145,7 +148,7 @@ export function planAutoRouteDucts(
   options: AutoRouteDuctOptions,
   onProgress: (progress: AutoRouteDuctProgress) => void = () => undefined,
 ): AutoRouteDuctResult {
-  const result: AutoRouteDuctResult = { elementsToAdd: [], removeElementIds: [], units: [], issues: [] };
+  const result: AutoRouteDuctResult = { elementsToAdd: [], removeElementIds: [], terminalUpdates: [], units: [], issues: [] };
   const wanted = (['supply', 'return'] as const).filter((service) => services[service]);
   if (!wanted.length) return result;
   const allUnits = scene.filter((element) => element.type === 'ducted-ac');
@@ -216,10 +219,11 @@ export function planAutoRouteDucts(
     const auto = generateAutoDuct(working, {
       unitId: unit.id, terminalIds: group.map((terminal) => terminal.id), fanSpeed: options.fanSpeed, layout: 'auto',
       services: { supply: kinds.has('supply'), return: kinds.has('return') }, rebuildExisting: options.rebuildExisting, shape: options.shape,
+      ...(options.walls ? { walls: options.walls } : {}),
     }, options.settings);
     const design = auto.designs[auto.selected] ?? null;
     const messages = [...new Set([...auto.issues, ...auto.services.flatMap((service) => service.issues)]
-      .filter((issue) => issue.severity !== 'info').map((issue) => issue.message))];
+      .filter((issue) => issue.severity !== 'info' || issue.code === 'DU_AUTO_SPIGOT').map((issue) => issue.message))];
     const unitResult: AutoRouteDuctUnit = {
       unitId: unit.id, unitLabel: label, status: 'kept', services: [], requiredEspPa: auto.requiredEspPa, maxEspPa: auto.maxEspPa,
       firstCost: design?.firstCost ?? null, lifeCycleCost: design?.lifeCycleCost ?? null, currency: auto.currency, runIds: [],
@@ -244,8 +248,9 @@ export function planAutoRouteDucts(
       }
       result.elementsToAdd.push(...auto.runs);
       result.removeElementIds.push(...auto.removeIds);
+      result.terminalUpdates.push(...auto.terminalUpdates);
       const removed = new Set(auto.removeIds);
-      working = [...working.filter((element) => !removed.has(element.id)), ...auto.runs];
+      working = [...withReplaced(working.filter((element) => !removed.has(element.id)), auto.terminalUpdates), ...auto.runs];
     }
     result.units.push(unitResult);
     for (const note of unitResult.notes) result.issues.push(`${label}: ${note}`);
@@ -255,9 +260,10 @@ export function planAutoRouteDucts(
 
 /** The scene as it will be once the duct proposal is applied. */
 export function applyDuctProposal(scene: readonly HvacElement[], result: AutoRouteDuctResult | null): HvacElement[] {
-  if (!result || (!result.elementsToAdd.length && !result.removeElementIds.length)) return [...scene];
+  const turned = result?.terminalUpdates ?? [];
+  if (!result || (!result.elementsToAdd.length && !result.removeElementIds.length && !turned.length)) return [...scene];
   const removed = new Set(result.removeElementIds);
-  return [...scene.filter((element) => !removed.has(element.id)), ...result.elementsToAdd];
+  return [...withReplaced(scene.filter((element) => !removed.has(element.id)), turned), ...result.elementsToAdd];
 }
 
 /**

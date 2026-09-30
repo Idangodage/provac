@@ -5,7 +5,8 @@
  * of ductPressure.ts). The same functions the verification uses, so the model
  * and the planned result agree to within the geometry the realiser settles.
  */
-import type { ServiceCtx } from '../ductAutoContext';
+import type { Point2D } from '../../../../../types';
+import { branchStubMm, flexClear, flexFit, flexOk, runoutStaysOut, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { damperCost, energyPricePerPa, fittingCost, flexCost, sectionCostPerMetre, type SectionCostContext } from '../ductEconomics';
 import {
   elbowCoefficient,
@@ -15,7 +16,8 @@ import {
   takeoffBranchLossPa,
   transitionCoefficient,
 } from '../ductPressure';
-import { roundMainTapGeometry, roundReducerMinLengthMm, wyeLegLengthMm } from '../ductRoundFittings';
+import { shoeLeadInMm } from '../ductBranches';
+import { maxRoundBranchMm, roundMainTapGeometry, roundReducerMinLengthMm, wyeLegLengthMm } from '../ductRoundFittings';
 import { SMACNA_TABLE_3_1 } from '../ductRoundRules';
 import type { DuctDesignSettings } from '../ductSettings';
 import { frictionPaPerM, sizingLimits, velocityMs, velocityPressurePa } from '../ductSizing';
@@ -123,6 +125,47 @@ export class SizingModel {
       : this.settings.elbowCentrelineRatio * leg.widthMm;
   }
 
+  /**
+   * The shortest setback an elbow on this section can take, as the realiser
+   * will specify it: a 90° turn on a rectangular section may be a square
+   * vaned elbow (setback W/2, SMACNA Fig. 2-2 RE2); otherwise the radius
+   * elbow's R·tan(θ/2). Neck not included.
+   */
+  elbowSetbackMm(leg: DuctLeg, angleDeg = 90): number {
+    if (!isRoundLeg(leg) && Math.abs(angleDeg - 90) < 1) return leg.widthMm / 2;
+    return this.elbowRadiusMm(leg) * Math.tan((angleDeg * Math.PI) / 360);
+  }
+
+  /**
+   * How far an elbow's fitting reaches along each leg from its corner, as the
+   * realiser keeps it clear of take-offs and reducers: setback, neck and a
+   * margin. A rectangular 90° turn may be square vaned (the realiser says so).
+   */
+  bendReachMm(leg: DuctLeg, angleDeg = 90): number {
+    return this.elbowSetbackMm(leg, angleDeg) + this.settings.elbowNeckMm + 25;
+  }
+
+  /** Half the length of main a take-off occupies (its opening as the planner cuts it) plus the joint margin. */
+  tapWindowHalfMm(style: DuctTapStyle, branch: DuctLeg, main: DuctLeg): number {
+    const s = this.settings;
+    let half: number;
+    if (isRoundLeg(main) && isRoundMainTapStyle(style)) half = roundMainTapGeometry(style, branch.diameterMm ?? branch.widthMm, s).windowHalfMm;
+    else if (style === 'conical') half = (branch.widthMm + s.conicalFlareMm) / 2;
+    else if (style === 'shoe-45') half = branch.widthMm / 2 + shoeLeadInMm(branch.widthMm);
+    else half = branch.widthMm / 2;
+    return half + s.tapWindowMarginMm;
+  }
+
+  /**
+   * Straight a run ending on a terminal keeps before its end, as the realiser
+   * builds it: the fitting down to the neck and a lead into the runout (the
+   * lead alone where the run is already the neck size).
+   */
+  endStraightMm(leg: DuctLeg, neckMm: number): number {
+    const neck = roundLeg(neckMm);
+    return sameLeg(leg, neck) ? 400 : Math.max(400, this.transitionLengthMm(leg, neck).lengthMm + 100);
+  }
+
   elbow(leg: DuctLeg, angleDeg: number, airflowM3h: number): CostLoss {
     const radius = this.elbowRadiusMm(leg);
     const developed = radius * (angleDeg * Math.PI) / 180 + 2 * this.settings.elbowNeckMm;
@@ -161,6 +204,78 @@ export class SizingModel {
       loss: (transitionCoefficient(geometry.includedDeg, expanding) + shapeChange) * this.pv(downstream, airflowM3h),
       lengthMm: geometry.lengthMm,
     };
+  }
+
+  /**
+   * Straight a lateral or a wye leg needs on its branch before any other
+   * fitting (SMACNA Fig. 3-4 / 3-5): the 45° run (the collar and damper, or
+   * the wye's 3A/2 leg), the elbow back square and a margin. One formula for
+   * the tree router and the sizing.
+   */
+  diagonalRoomMm(mainDiameterMm: number, branch: DuctLeg, wye: boolean): number {
+    const size = branch.diameterMm ?? branch.widthMm;
+    const setback = (this.elbowRadiusMm(branch) / size) * size * Math.tan(Math.PI / 8);
+    const diagonal = (wye ? 1.5 * mainDiameterMm : this.collarLengthMm('round-lateral', branch) + this.settings.vcdLengthMm) + setback + this.settings.elbowNeckMm;
+    return diagonal * Math.SQRT1_2 + setback + this.settings.elbowNeckMm + 300;
+  }
+
+  /**
+   * The 45° leg the realiser lays from a lateral's collar or a wye's outlet
+   * before the elbow that squares the branch back (collar, damper, that
+   * elbow's setback and neck, and a margin).
+   */
+  diagonalLegMm(first: DuctLeg, collarMm: number, damper: boolean): number {
+    const setback = this.elbowRadiusMm(roundLeg(first.diameterMm ?? first.widthMm)) * Math.tan(Math.PI / 8);
+    return collarMm + (damper ? this.settings.vcdLengthMm : 0) + setback + this.settings.elbowNeckMm + 50;
+  }
+
+  /**
+   * A root that turns first at the collar's own section (a square vaned elbow),
+   * where the collar straight is too short for its transition: the straight
+   * the next leg needs — that elbow's reach, then the transition to a trunk
+   * section and that section's next elbow — the least over the sections that
+   * can take a branch of Ø`branchNeckMm` (the trunk carries the take-offs),
+   * among the catalogue's and ones as wide as the collar (short transitions).
+   */
+  turnFirstReachMm(airflowM3h: number, branchNeckMm: number): number {
+    const collar: DuctLeg = { widthMm: this.ctx.port.widthMm, heightMm: this.ctx.port.heightMm };
+    const neck = this.settings.elbowNeckMm;
+    const wide: DuctLeg[] = this.shape === 'round' ? [] : [150, 200, 250, 300, 350]
+      .filter((h) => h <= this.maxHeightMm)
+      .map((h) => ({ widthMm: Math.max(100, Math.round(collar.widthMm / 50) * 50), heightMm: h }));
+    const sections = [...this.trunkOptions(airflowM3h), ...wide];
+    const takes = sections.filter((leg) => (isRoundLeg(leg) ? maxRoundBranchMm(leg.diameterMm!) >= branchNeckMm - 0.5 : leg.heightMm >= branchNeckMm + 50 - 0.5));
+    const reach = (leg: DuctLeg) => this.transitionLengthMm(collar, leg).lengthMm + this.elbowSetbackMm(leg) + neck + 25;
+    return this.elbowSetbackMm(collar) + neck + 25 + Math.min(...(takes.length ? takes : sections).map(reach));
+  }
+
+  /**
+   * How far past a run's end the outlet of a split runs on its own line (mm,
+   * along the main), as ductBranches builds the fitting: a Y's outlet elbow
+   * (neck and radius), a bullhead's box to the outlet's centre, a wye's 3A/2
+   * leg and the diagonal to the elbow that squares it (both at 45°).
+   */
+  splitLeadMm(style: DuctSplitStyle, main: DuctLeg, outlet: DuctLeg): number {
+    const neck = this.settings.elbowNeckMm;
+    if (style === 'wye') return (wyeLegLengthMm(main.diameterMm ?? main.widthMm) + this.diagonalLegMm(outlet, 51, false)) * Math.SQRT1_2;
+    if (style === 'bullhead') return neck + outlet.widthMm / 2;
+    return neck + Math.max(0.5, this.settings.elbowCentrelineRatio) * outlet.widthMm;
+  }
+
+  /**
+   * An all-flex branch off a main of section `main`, leaving its centreline
+   * at `centre` along `out` (local frame): whether its runout — from the end
+   * of the collar and damper stub into the terminal's spigot — bends within
+   * limits, is short enough and runs clear, exactly as the realiser lays it.
+   */
+  stubRunoutFits(centre: Point2D, out: Point2D, main: DuctLeg, style: DuctTapStyle, terminal: TerminalCtx, bottomZ: number): boolean {
+    const neck = roundLeg(terminal.neck);
+    const stub = branchStubMm(this.settings) + Math.max(0, this.collarLengthMm(style, neck) - this.settings.tapCollarMm);
+    const half = (main.diameterMm ?? main.widthMm) / 2;
+    const offset = half + stub;
+    const end = { x: centre.x + out.x * offset, y: centre.y + out.y * offset };
+    return flexOk(flexFit(this.ctx, end, out, bottomZ, terminal), terminal, this.settings) && flexClear(this.ctx, end, out, bottomZ, terminal)
+      && runoutStaysOut(this.ctx, centre, out, end, bottomZ, terminal, half);
   }
 
   /** Collar length of a take-off style for a branch. */

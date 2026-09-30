@@ -75,7 +75,9 @@ function Designs({ result }: { result: AutoDuctResult }) {
       {certificate ? (
         <div className="flex items-center gap-1 text-[10px] text-slate-600" title="Exact: every tree came from the exact tree router within its terminal limit, and every size set is the catalogue optimum for its tree.">
           <ShieldCheck size={12} className={certificate.exact ? 'text-emerald-600' : 'text-slate-400'} />
-          <span className="font-medium">{certificate.exact ? 'Optimal on the model' : 'Best of the candidates'}</span>
+          <span className="font-medium">{certificate.exact ? 'Optimal on the model'
+            : certificate.grouped ? 'Grouped search (exact within groups)'
+              : certificate.timeLimited ? 'Best found in the time allowed' : 'Best of the candidates'}</span>
           <span>· {result.designs.length} verified · {certificate.trees} trees sized · {(certificate.solveMs / 1000).toFixed(1)} s</span>
         </div>
       ) : null}
@@ -129,7 +131,8 @@ function Summary({ result }: { result: AutoDuctResult }) {
   const issues = [...result.issues, ...result.services.flatMap((service) => service.issues)];
   const errors = issues.filter((issue) => issue.severity === 'error');
   const warnings = issues.filter((issue) => issue.severity === 'warning');
-  const notes = issues.filter((issue) => issue.severity === 'info');
+  const turned = issues.filter((issue) => issue.code === 'DU_AUTO_SPIGOT');
+  const notes = issues.filter((issue) => issue.severity === 'info' && issue.code !== 'DU_AUTO_SPIGOT');
   const esp = result.requiredEspPa;
   return (
     <div className="mt-1 space-y-1 border-t border-sky-100 pt-1" data-testid="duct-auto-summary">
@@ -171,6 +174,11 @@ function Summary({ result }: { result: AutoDuctResult }) {
           </span>
           {result.maxEspPa !== null ? <span className="text-[10px] text-slate-500"> of {result.maxEspPa} Pa max</span> : null}
         </Line>
+      ) : null}
+      {turned.length ? (
+        <ul className="space-y-0.5 text-[10px] text-sky-700" data-testid="duct-auto-spigots">
+          {turned.map((issue, index) => <li key={index}>{issue.message}</li>)}
+        </ul>
       ) : null}
       {[...errors, ...warnings].length ? (
         <ul className="space-y-0.5 text-[10px]" data-testid="duct-auto-issues">

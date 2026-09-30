@@ -695,8 +695,8 @@ Your decisions (28 September 2026):
      - the tail rule (900 mm straight into a branch end, then anything);
      - a root turn rule for the fan-outlet straight;
      - a conflict-repair loop.
-   - It runs at two prices of pressure (½ and 2 × E_pa).
-   - It is exact up to `autoExactTerminals` terminals per service (default 8, at most 10: time grows as 3ᵏ). Above that the router is skipped: only the layout candidates are sized, and the certificate says "not exact".
+   - It routes at the life-cycle price of pressure while the feasibility loop learns; ½ and 2 × E_pa add variety at the end (see "Auto duct for 4, 5, 6 … terminals").
+   - It is exact up to `autoExactTerminals` terminals per service (default 8, at most 10: time grows as 3ᵏ). Above that (up to 16) the grouped router runs, exact within groups, and the certificate says "Grouped search".
 3. **Sizes, shapes and fittings** (`sizingDp.ts`, `sizingModel.ts`): an exact Pareto-frontier tree DP, the exact counterpart of the T-method.
    - Each subtree keeps first cost per pressure bucket (0.2 Pa): a serial part shifts the frontier, parallel parts add pointwise, and choices take the pointwise minimum.
    - Parent–child rules are checked at each join:
@@ -724,7 +724,7 @@ Your decisions (28 September 2026):
   - *All units*: each unit's free terminals. A terminal goes to the nearest unit in its room with a free collar of its service; a collar with a duct is free only with Rebuild existing ducts ticked.
   - *Selected*: the selected ducted units and the selected diffusers and grilles.
 - **Only clean designs are proposed:** a unit whose best design still has errors is kept as it is, with the reason, and **Study** selects it for the Auto duct card.
-- **Walls** are not modelled by the optimiser: a proposed run that crosses one is flagged on its unit (sleeve it, or move the unit or terminal).
+- **Walls** are obstacles to the optimiser (since 30 September 2026); a proposed run that still crosses one is flagged on its unit (sleeve it, or move the unit or terminal).
 - **Checks:** the clash audit lists new duct contacts with every service.
 - **Apply:** one Apply commits ducts + refrigerant + condensate (+ approved hops) as one undo. A preview of a drawing (or of duct settings) that has since changed is refused.
 - **Options:** a Ducts section (trunk shape, fan speed, rebuild). The result panel shows each unit's layouts, trunk sections, ESP against its maximum, first and life-cycle cost.
@@ -780,10 +780,50 @@ Your decisions (28 September 2026):
 - **Fixed on the way:** a plan turn sharper than 150° (a run doubling back) used to give an elbow setback of R·tan 90° ≈ 10¹⁸ mm and a fan pressure of 10¹⁵ Pa. It is now refused as `DU_TURN_BACK` with finite numbers.
 - **Regressions:** `duct-auto.mjs` 18/18, `duct-p4.mjs` 21/21, `duct-p3.mjs` 14/14, `duct-complete.mjs` 11/11; each restores the project exactly.
 
+## Auto duct for 4, 5, 6 … terminals (29 September 2026)
+
+**The problem:** with 2–3 diffusers Auto duct worked; with 4 or more it often proposed nothing. Reproduced offline on 38 layouts (rows, lines on the unit's axis, 2×2 … 4×3 grids, spigots as dropped or turned to the unit, with return grilles): 9 were clean. Every miss traced to the tree router's grid model disagreeing with the exact checks (sizing, realiser, planner), and a failed tree was simply dropped.
+
+**Your decision:** for symmetric faces (square 4-way, round, egg-crate) the optimiser chooses the plenum-box spigot side; linear slots keep theirs. The turn shows in the preview and applies in the same undo.
+
+**What changed (`duct/optimizer/`, `ductAutoContext.ts`, `ductAutoLayout.ts`)**
+1. **One source for lengths** (`sizingModel.ts`): the router, the sizing and the realiser use the same formulas — elbow setback and reach (a rectangular 90° may be square vaned, W/2), take-off windows, the straight a run keeps before its terminal, a wye's diagonal room, a split's outlet lead, an all-flex stub's runout check, the turn-first reach.
+2. **Runouts are checked where they run:** `flexClear` samples the planner's own flex curve against the room's equipment (not its own terminal), in its height band; an all-flex runout must also stay on its side of the main it leaves (`runoutStaysOut`).
+3. **Splits:** the realiser ends a run that splits short by its outlets' lead, so the outlets run on the lines the router priced.
+4. **Leaves:** a run's last leg needs its last elbow and the end the sizing can build — stepped down to the neck before that elbow (the elbow alone) or the reducer and its lead after it; the router takes the lesser.
+5. **Spigot side** (`TerminalCtx.variants`, `spigotVariants`): each symmetric terminal offers its two most promising sides; the router picks per leaf and per stub, the realiser builds against the terminals as turned, verification plans them turned, and the result carries `terminalUpdates`. Card Apply and the unified Auto route commit the turned terminals with the runs (one command). The card lists "Spigot turned: SD-3 back → left"; Auto route shows it on the unit. Setting: Duct Systems → Optimiser → Turn diffuser spigots (on by default, practice).
+6. **Turn first** (a terminal in front of the collar): the root may turn at the collar's own section with a square vaned elbow and make the collar transition on the next leg; the router adds a root just short of the obstacle and a trunk line the turn reaches; the sizing offers sections as wide as the collar there (short transitions).
+7. **Feasibility loop** (lazy constraint generation, `routerCuts.ts`): every sizing or realiser failure is typed (run, reason, take-off) and every planner error is traced to its run; each forbids the one routing decision that caused it (a take-off, a stub, a split, a runout start, a root), and the router solves again, until its best remaining tree verifies clean. The certificate reports the rounds and cuts.
+8. **Conflict repair** also sees what the grid does not: a runout curving through another run of the same tree, or two parallel legs closer than their halves; it rules out every runout start or stub of that terminal that would cross the same duct.
+9. **More than 8 terminals:** the grouped router (rows of up to four across the collar axis; subsets inside a group and unions of whole groups only) — exact within the groups, labelled "Grouped search".
+10. **Speed** (exact results unchanged; the brute-force tests still hold): the router's Dijkstra on a typed-array heap with no allocation per state, predecessor levels computed directly, the merge loop allocation-free, stub runouts cached per graph, sheet gauges cached per settings, layers reused across repair and loop rounds where no cut touches them, roots that cannot hold the collar fittings rejected before solving. Learning runs at the life-cycle price of pressure; the prices either side add variety at the end while time allows. A tree's other frontier picks are built only when its life-cycle pick verifies.
+11. **Honest messages** (`failureMessages.ts`): when no design is clean, the card and Auto route say why from what failed most often, naming the terminal ("SD-4: no room for its take-off where the duct passes … space the terminals further apart, or move the unit").
+
+12. **A run may end on a stub:** its last terminal off its side on an all-flex stub, the run going on 250 mm to an end cap (a trunk with take-offs and a cap); a main going on to its last terminal no longer has to run 900 mm straight first.
+13. **Take-off branches** run straight off the main for the main's half, the collar and damper and 150 mm before their first fitting (the realiser's rule).
+14. **Walls are obstacles:** the card and the unified Auto route pass the drawing's walls (centre line ± half the thickness, full height); the router keeps clear of them, and verification counts a run through a wall as an error (`DU_AUTO_WALL`, the layout seeds included), so no design through a wall is proposed. Before, a design could loop outside the room through its walls and was only flagged.
+15. **Spigot sides with room:** a side is offered only when 400 mm in front of it is clear of equipment (other terminals included), at most two per terminal.
+16. **Repair bounds:** a router call stops repairing after 6 s (or at the time budget); only routers whose failed trees could still beat the best clean one route again in the loop; the variety round runs only when the design came in under a quarter of the budget.
+
+**Settings:** `autoTimeBudgetMs` 20 s (practice; past it the best verified design is kept and the certificate says "time-limited"), `autoChooseSpigotSide` on.
+
+**Verified (29–30 September 2026)**
+- **Benchmark** (`optimizer/autoDuctBenchmark.test.ts`, run on request: `DUCT_BENCHMARK=1 npx vitest run src/components/canvas/hvac/duct/optimizer/autoDuctBenchmark.test.ts`, about 4½ minutes; its outcome depends on the time budget, so it is kept out of the default suite): **37 / 37** layouts within the exact search clean, every terminal served — rows of 2–8, lines of 2–8 on the unit's axis, 2×2, 3×2 and 2×3 grids, 2×2 + 1 and 3×2 + 2 returns, spigots dropped or turned (before: 9 of 39). Optimal ≤ min(Rect, Round). Slowest 11.6 s (a line of 8, in the test runner); 3×2 / 2×3 grids 6–9 s; 2×2 3–4.5 s.
+- **Unit tests:** `optimizer/autoDuctRobustness.test.ts` (spigot sides and room in front, `flexClear`, grouping, turn-first, a dropped 2×2 grid, gauge cache), `optimizer/optimizer.test.ts` (Dreyfus–Wagner still equals brute force; layer reuse equals a fresh solve), `store/ductAutoApply.test.ts` and `store/autoRouteDucts.test.ts` (turned spigots applied with the runs, one undo). Full drawing-engine suite green; `tsc --noEmit` clean.
+- **On canvas** (`D:\claude-tmp-vrf-check\duct-many.mjs`, the test project's room, real toolbar and mouse, project restored exactly):
+  - 2×2 diffusers dropped as they come, before walls were modelled: designed (exact, 24 Pa, USD 737), four spigots turned in the preview and listed on the unit, Apply adds the runs and turns the spigots together, the runs plan without errors, BOM 57 rows, one undo restores it all; the card path the same. That design ran outside the room (flagged "crosses a wall 4 times"), which is why walls are now obstacles.
+  - With walls (30 September 2026): no duct crosses a wall. Two diffusers dropped as they come are designed inside the room (split trunk 250×250, 21 Pa, USD 439): Apply, the runs plan without errors, BOM 47 rows, one undo; the card the same. In this room (the collar 1.4 m from the left wall, the far wall 3.2 m ahead, a cassette and its refrigerant pair on the right) a 2×2 grid is left as it is with 1 issue and the reason given ("no room for its take-off where the duct passes …"), the spigot turns listed.
+
+## Known limits (auto duct, 30 September 2026)
+
+- **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
+- **Tight rooms with walls:** where the room leaves only a few hundred millimetres round the terminals, the router's trees clash with themselves once built (larger sections, elbow and collar bodies) and the loop does not always find a clean one; the design is kept and the reason given.
+- **Terminal labels:** a terminal placed from the toolbox carries the library name, so "Spigot turned" lines for several diffusers read alike.
+
 ## Known limits
 
 - Round trunks take conical, 90° and 45° lateral taps and wye splits (Figs 3-4 / 3-5). In Round mode a layout often cannot be built near the unit: the square-to-round off the flat collar needs about 0.85 m of straight. The service is then reported `DU_AUTO_NO_LAYOUT`; Optimal falls back to rectangular.
-- The optimum is exact on the modelled grid and catalogue (not between grid lines), and only up to `autoExactTerminals` terminals per service. Above that only the layout candidates are sized (not exact).
+- The optimum is exact on the modelled grid and catalogue (not between grid lines), and only up to `autoExactTerminals` terminals per service. Above that the grouped router is a heuristic (exact within its groups).
 - Costs, energy data and fitting loss coefficients are practice placeholders until supplier prices or DFDB data replace them.
 - In compact scenes the fallback plenum's runouts can bend under one diameter; such a design is refused by the unified Auto route and shown with its issues in the card.
 - Drawing a take-off by hand does not stop a window that clashes with an elbow or another take-off: the parent run reports `DU_TAP_CLASH` afterwards and the tap has to be moved.
@@ -793,7 +833,7 @@ Your decisions (28 September 2026):
 - The design-check chip is still titled "VRF checks" though it lists condensate and duct checks too.
 - The NBR skin in 3D does not box the flanges, so a 30 mm TDC flange shows through a 25 mm skin.
 - Duct-to-duct clash skips a branch and its own parent.
-- Auto duct designs one level per service and adds no risers. It does not route round walls (there are no beams or storeys in the model); the unified Auto route flags a run that crosses a wall. Units are designed one after another (each around the ones before), not jointly.
+- Auto duct designs one level per service and adds no risers. It keeps clear of walls (as obstacles; there are no beams or storeys in the model); the unified Auto route still flags a run that crosses one. Units are designed one after another (each around the ones before), not jointly.
 - Auto duct's pressure figures are estimates with practice loss coefficients, not a certified duct calculation.
 - Terminal sizes are typical catalog values (practice) until a supplier's data is entered.
 - A rigid connection to a terminal is checked, not routed: its last leg has to be drawn straight into the spigot.

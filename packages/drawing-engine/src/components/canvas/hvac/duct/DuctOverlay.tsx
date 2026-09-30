@@ -319,10 +319,6 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   });
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const terminals = useMemo(() => hvacElements.flatMap((element) => {
-    const spec = isDuctTerminalElement(element) ? readDuctTerminalSpec(element) : null;
-    return spec ? [{ element, spec }] : [];
-  }), [hvacElements]);
   // Auto duct preview: the proposed runs, dashed, over the drawing they were generated from (hiding the runs they replace).
   const cardPreview = useDuctAutoPreviewStore((state) => (state.result && state.scene === hvacElements ? state.result : null));
   // The unified Auto route's duct proposal previews the same way.
@@ -330,12 +326,23 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const autoPreview = useMemo(() => {
     const runs = [...(cardPreview?.runs ?? []), ...(routePreview?.elementsToAdd ?? [])];
     const removeIds = [...(cardPreview?.removeIds ?? []), ...(routePreview?.removeElementIds ?? [])];
-    return runs.length || removeIds.length ? { runs, removeIds } : null;
+    // Terminals whose spigot the design turns show turned while the preview is open.
+    const turned = [...(cardPreview?.terminalUpdates ?? []), ...(routePreview?.terminalUpdates ?? [])];
+    return runs.length || removeIds.length || turned.length ? { runs, removeIds, turned } : null;
   }, [cardPreview, routePreview]);
+  const terminals = useMemo(() => {
+    const turned = new Map((autoPreview?.turned ?? []).map((element) => [element.id, element]));
+    return hvacElements.flatMap((original) => {
+      const element = turned.get(original.id) ?? original;
+      const spec = isDuctTerminalElement(element) ? readDuctTerminalSpec(element) : null;
+      return spec ? [{ element, spec }] : [];
+    });
+  }, [hvacElements, autoPreview]);
   const replacedIds = useMemo(() => new Set(autoPreview?.removeIds ?? []), [autoPreview]);
   const previewMarkup = useMemo(() => {
     if (!autoPreview?.runs.length) return '';
-    const scene = [...hvacElements.filter((element) => !replacedIds.has(element.id)), ...autoPreview.runs];
+    const turned = new Map(autoPreview.turned.map((element) => [element.id, element]));
+    const scene = [...hvacElements.filter((element) => !replacedIds.has(element.id)).map((element) => turned.get(element.id) ?? element), ...autoPreview.runs];
     return autoPreview.runs.map((run) => {
       const spec = readDuctRunSpec(run);
       return spec ? ductRunMarkup(buildDuctPlanPresentation(planDuctRunSpec(run.id, spec, { settings, scene })), {

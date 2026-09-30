@@ -102,7 +102,7 @@ describe('Auto route: the duct step', () => {
     expect(none.units).toHaveLength(0);
   });
 
-  it('flags a proposed run that crosses a wall (the optimiser does not model walls)', () => {
+  it('keeps ducts clear of walls: no proposed run crosses one (it goes round, or the unit is kept with the reason)', () => {
     const scene = [unit, sd1, sd2, sd3];
     const clear = planAutoRouteDucts(scene, { supply: true, return: false }, options());
     const trunk = clear.elementsToAdd.find((run) => readDuctRunSpec(run)?.start.kind === 'unit-port')!;
@@ -113,10 +113,11 @@ describe('Auto route: the duct step', () => {
       endPoint: along ? { x: middle.x, y: middle.y + 3000 } : { x: middle.x + 3000, y: middle.y } };
     expect(ductWallCrossings(clear.elementsToAdd, [wall]).get('supply')).toBeGreaterThanOrEqual(1);
     expect(ductWallCrossings(clear.elementsToAdd, [{ id: 'far', startPoint: { x: 50000, y: 0 }, endPoint: { x: 50000, y: 1000 } }]).size).toBe(0);
-    const flagged = planAutoRouteDucts(scene, { supply: true, return: false }, options({ walls: [wall] }));
-    expect(flagged.units[0]!.status).toBe('designed');
-    expect(flagged.units[0]!.notes[0]).toMatch(/supply duct crosses a wall/);
-  });
+    const walled = planAutoRouteDucts(scene, { supply: true, return: false }, options({ walls: [wall] }));
+    expect(ductWallCrossings(walled.elementsToAdd, [wall]).size).toBe(0);
+    if (walled.units[0]!.status === 'kept') expect(walled.units[0]!.notes.length).toBeGreaterThan(0);
+    else expect(walled.elementsToAdd.length).toBeGreaterThan(0);
+  }, 60000);
 
   it('fingerprints the drawing and the settings it was designed against', () => {
     const scene = [unit, sd1];

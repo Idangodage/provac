@@ -5,7 +5,7 @@ import { applyAutoDuctPreview, autoDuctSelection, generateAutoDuctPreview } from
 import { useDuctAutoPreviewStore } from '../components/canvas/hvac/duct/ductAutoPreviewStore';
 import { buildDuctRunDraftElement } from '../components/canvas/hvac/duct/ductDraft';
 import { DEFAULT_DUCT_SETTINGS } from '../components/canvas/hvac/duct/ductSettings';
-import { terminalEnvelope, typicalTerminalSpec } from '../components/canvas/hvac/duct/ductTerminals';
+import { readDuctTerminalSpec, terminalEnvelope, typicalTerminalSpec } from '../components/canvas/hvac/duct/ductTerminals';
 import { isDuctElement, readDuctRunSpec } from '../components/canvas/hvac/duct/ductTypes';
 import type { HvacElement, Point2D } from '../types';
 
@@ -85,6 +85,32 @@ describe('auto duct: select, generate, apply as one undo', () => {
     expect(applyAutoDuctPreview()).toMatch(/added, 1 replaced/);
     expect(ducts().some((element) => element.id === 'old')).toBe(false);
     expect(ducts().some((element) => readDuctRunSpec(element)?.end.kind === 'terminal')).toBe(true);
+    state().undo();
+    expect(state().hvacElements).toEqual(before);
+  });
+
+  it('turns the spigots the design chooses in the same command, and the one undo turns them back', async () => {
+    // Dropped as they come (no rotation): the optimiser picks the plenum-box side each duct reaches best.
+    const a = diffuser('sa', at(3000, 1500), 0);
+    const b = diffuser('sb', at(3000, -1500), 0);
+    useDrawingStore.setState({ hvacElements: [unit, a, b] });
+    state().clearHistory();
+    const before = state().hvacElements;
+    await generateAutoDuctPreview({ unitId: 'fdum', terminalIds: ['sa', 'sb'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: false });
+    const preview = useDuctAutoPreviewStore.getState().result!;
+    expect(state().hvacElements).toBe(before);
+    expect(preview.terminalUpdates.length).toBeGreaterThan(0);
+    const sides = new Map(preview.terminalUpdates.map((element) => [element.id, readDuctTerminalSpec(element)!.spigotSide]));
+    // The card says which, from which side to which.
+    const notes = preview.services.flatMap((service) => service.issues).filter((issue) => issue.code === 'DU_AUTO_SPIGOT');
+    expect(notes.length).toBe(sides.size);
+    expect(applyAutoDuctPreview()).toMatch(/spigots? turned/);
+    for (const [id, side] of sides) expect(readDuctTerminalSpec(state().hvacElements.find((element) => element.id === id)!)!.spigotSide).toBe(side);
+    // Each run ends on its terminal's spigot as turned.
+    for (const run of ducts()) {
+      const end = readDuctRunSpec(run)!.end;
+      if (end.kind === 'terminal' && sides.has(end.terminalId)) expect(end.portId).toBeTruthy();
+    }
     state().undo();
     expect(state().hvacElements).toEqual(before);
   });

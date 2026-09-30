@@ -47,9 +47,31 @@ export type DesignStart =
   | { kind: 'split'; side: DuctSide }
   | { kind: 'spigot' };
 
+/**
+ * Where the tree router made a run (grid nodes, terminal sets as bit masks):
+ * the fitting it starts from, its take-offs, split and runout. A failure the
+ * sizing, the realiser or the planner finds on the run is traced back to one
+ * of these and forbidden for the next routing round (routerCuts.ts).
+ */
+export interface RunRoute {
+  kind: 'root' | 'tee' | 'stub' | 'split';
+  /** The node of the fitting the run starts from (the root's end for the run off the collar). */
+  node: number;
+  /** The terminals the run serves, and those its parent served at that fitting. */
+  set: number;
+  parentSet: number;
+  /** Node of each take-off, in the run's tap order. */
+  tapNodes: number[];
+  splitNode?: number;
+  /** Where the run reaches its terminal's runout, heading which way, and that terminal's set (one bit). */
+  leaf?: { node: number; heading: number; set: number };
+}
+
 export interface RunDesign {
   key: string;
   start: DesignStart;
+  /** Set on the router's trees: where each part came from on the grid. */
+  route?: RunRoute;
   /**
    * Centreline in the local frame. A branch's first vertex is where it leaves
    * its parent's centreline (a tap) or the split point; its first leg leaves
@@ -63,6 +85,12 @@ export interface RunDesign {
   airflowM3h: number;
   /** A branch that is only its collar + damper stub, then flex. */
   allFlex: boolean;
+  /**
+   * The narrowest free corridor the run passes (half-width to the nearest
+   * obstacle beside it, mm): its section's outer half plus the clearance must
+   * fit. Unset where unknown (a layout read back from built runs).
+   */
+  corridorMm?: number;
 }
 
 export interface ServiceDesign {
@@ -81,6 +109,8 @@ export interface ServiceDesign {
   notes: AutoDuctIssue[];
   /** The tree router's own optimum of its model (for the certificate), when it made this design. */
   modelCost?: number;
+  /** Which tree router made it (its catalogue's shape). */
+  router?: 'rect' | 'round';
   exact?: boolean;
 }
 
@@ -162,6 +192,18 @@ export function allRuns(root: RunDesign): RunDesign[] {
 /** Terminals the tree serves. */
 export function servedTerminals(root: RunDesign): TerminalCtx[] {
   return allRuns(root).flatMap((run) => (run.end.kind === 'terminal' ? [run.end.terminal] : []));
+}
+
+/** The terminals whose plenum spigot the tree turns to another side: each element as it will be. */
+export function turnedTerminals(root: RunDesign): HvacElement[] {
+  return servedTerminals(root).filter((terminal) => terminal.turnedTo !== undefined).map((terminal) => terminal.element);
+}
+
+/** A scene with some of its elements replaced (by id). */
+export function withReplaced(scene: readonly HvacElement[], replacements: readonly HvacElement[]): HvacElement[] {
+  if (!replacements.length) return [...scene];
+  const byId = new Map(replacements.map((element) => [element.id, element]));
+  return scene.map((element) => byId.get(element.id) ?? element);
 }
 
 /** Distance along a polyline to the point on it nearest `point`. */

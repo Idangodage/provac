@@ -139,14 +139,23 @@ function outerGirthMm(section: DuctLeg, sheetMm: number): number {
   return isRoundLeg(section) ? Math.PI * (section.diameterMm! + 2 * sheetMm) : 2 * (section.widthMm + section.heightMm + 4 * sheetMm);
 }
 
-/** The sheet a section resolves to (SMACNA gauge at the project's class), or null when it cannot be built. */
+const SECTION_SHEET_CACHE = new WeakMap<DuctDesignSettings, Map<string, number | null>>();
+
+/** The sheet a section resolves to (SMACNA gauge at the project's class), or null when it cannot be built. Cached per settings. */
 export function sectionSheetMm(section: DuctLeg, context: Omit<SectionCostContext, 'insulationMm'>): number | null {
+  const key = `${context.service}|${context.construction}|${isRoundLeg(section) ? `d${section.diameterMm}` : `${section.widthMm}x${section.heightMm}`}`;
+  let cache = SECTION_SHEET_CACHE.get(context.settings);
+  if (!cache) SECTION_SHEET_CACHE.set(context.settings, (cache = new Map()));
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
   const construction = resolveSectionConstruction({
     widthMm: section.widthMm, heightMm: section.heightMm, service: context.service, construction: context.construction,
     settings: context.settings, pressureClassPa: null, jointSystem: null,
     ...(isRoundLeg(section) ? { diameterMm: section.diameterMm } : {}),
   });
-  return construction.status === 'ok' ? construction.sheetThicknessMm : null;
+  const sheet = construction.status === 'ok' ? construction.sheetThicknessMm : null;
+  cache.set(key, sheet);
+  return sheet;
 }
 
 /**

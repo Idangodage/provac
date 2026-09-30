@@ -13,7 +13,7 @@ import type { AutoRouteCostRates } from './autoRouteEvaluation';
 import { condensateSourceSignature, prepareCondensateCommand, type CondensateCommandSource } from './condensate/condensateCommand';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
-import type { AutoDuctShape } from './duct/ductAutoLayout';
+import { terminalSpigotUpdates, type AutoDuctShape } from './duct/ductAutoLayout';
 import { ductSourceSignature } from './duct/ductAutoRoute';
 import type { FanSpeed } from './duct/ductSizing';
 import { isDuctTerminalElement } from './duct/ductTerminals';
@@ -127,7 +127,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
         fanSpeed: options.duct?.fanSpeed ?? 'hi',
         rebuildExisting: options.duct?.rebuildExisting ?? false,
         scope: options.scope,
-        walls: state.walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint })),
+        walls: state.walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
         ...(options.scope === 'selection' ? {
           unitIds: selection.filter((element) => element.type === 'ducted-ac').map((element) => element.id),
           terminalIds: selection.filter(isDuctTerminalElement).map((element) => element.id),
@@ -191,13 +191,14 @@ export function applyAutoRoutePreview(): string {
   let updates: HvacElementUpdate[] = [];
 
   const ducts = unified.ducts;
-  if (ducts && signatures.ducts && (ducts.elementsToAdd.length || ducts.removeElementIds.length)) {
+  if (ducts && signatures.ducts && (ducts.elementsToAdd.length || ducts.removeElementIds.length || ducts.terminalUpdates?.length)) {
     const state = useSmartDrawingStore.getState();
     if (ductSourceSignature(state.hvacElements, state.ductSettings) !== signatures.ducts) {
       return refuse('The drawing or duct settings changed since the preview. Run Auto route again.');
     }
     add.push(...ducts.elementsToAdd);
     removeIds.push(...ducts.removeElementIds);
+    updates.push(...terminalSpigotUpdates(ducts.terminalUpdates ?? []));
   }
 
   if (unified.refrigerant && signatures.refrigerant) {

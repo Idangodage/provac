@@ -10,7 +10,8 @@ import type { OrthogonalRouteObstacle } from '../obstacleAwareOrthogonalRoute';
 import type { DuctAirPort } from './ductAirPorts';
 import { flexCurve } from './ductFlex';
 import type { DuctDesignSettings } from './ductSettings';
-import type { DuctTerminalSpec } from './ductTerminals';
+import type { DuctTerminalSpigotSide } from './ductTerminalCatalog';
+import { readDuctTerminalSpec, terminalSpigotPort, type DuctTerminalSpec } from './ductTerminals';
 import { readDuctRunSpec, type DuctService } from './ductTypes';
 
 export type AutoDuctIssueCode =
@@ -23,6 +24,7 @@ export type AutoDuctIssueCode =
   | 'DU_AUTO_NO_LAYOUT'
   | 'DU_AUTO_WALL'
   | 'DU_AUTO_ESP'
+  | 'DU_AUTO_SPIGOT'
   | 'DU_TERMINAL_VELOCITY';
 
 export interface AutoDuctIssue {
@@ -31,6 +33,8 @@ export interface AutoDuctIssue {
   message: string;
   service?: DuctService;
   point?: Point2D;
+  /** The run it was found on (the optimiser traces it back to the tree). */
+  runId?: string;
 }
 
 // ---- Local frame ----
@@ -98,6 +102,69 @@ export interface TerminalCtx {
   fixed: boolean;
   neck: number;
   branch: number;
+  /**
+   * The spigot sides the optimiser may give the terminal's plenum box (each a
+   * full context: the element with that side, its spigot port), placed side
+   * included. Only symmetric faces turn; unset = the placed side only.
+   */
+  variants?: TerminalCtx[];
+  /** The side this context's spigot is on, where it differs from the drawing's. */
+  turnedTo?: DuctTerminalSpigotSide;
+}
+
+/** Symmetric faces: the plenum box's spigot may go on any side without changing what the room sees. */
+const TURNABLE: ReadonlySet<DuctTerminalSpec['kind']> = new Set(['square-4way', 'round', 'return-egg-crate']);
+const SIDES: readonly DuctTerminalSpigotSide[] = ['back', 'front', 'left', 'right'];
+
+/** The terminal with its plenum box's spigot on `side`: the element as it would be, and its spigot in the local frame. */
+export function terminalWithSide(frame: Frame, terminal: TerminalCtx, side: DuctTerminalSpigotSide): TerminalCtx | null {
+  if (side === terminal.spec.spigotSide) return { ...terminal, variants: undefined, turnedTo: undefined };
+  const raw = (terminal.element.properties.terminal ?? {}) as Record<string, unknown>;
+  const element: HvacElement = { ...terminal.element, properties: { ...terminal.element.properties, terminal: { ...raw, spigotSide: side } } };
+  const port = terminalSpigotPort(element);
+  const spec = readDuctTerminalSpec(element);
+  if (!port || !spec) return null;
+  return {
+    ...terminal, element, spec, port, lip: toLocal(frame, port.lip), normal: cardinal(dirToLocal(frame, port.normal)),
+    variants: undefined, turnedTo: side,
+  };
+}
+
+/** Straight room a runout needs in front of a spigot to come in square (mm, practice). */
+const SPIGOT_FRONT_MM = 400;
+
+/**
+ * The spigot sides worth trying for a terminal, from the four of a symmetric
+ * face: those with room in front of them (a runout can come in square — no
+ * equipment, other terminals included, within the neck's half and a margin
+ * for `SPIGOT_FRONT_MM`), the most promising first (facing the collar's axis,
+ * where trunks run, or back towards the unit), at most two. The placed side
+ * alone for other faces, or when no side has room.
+ */
+export function spigotVariants(frame: Frame, terminal: TerminalCtx, enabled: boolean, obstacles: ServiceCtx['obstacles'] = []): TerminalCtx[] {
+  const placed = { ...terminal, variants: undefined, turnedTo: undefined };
+  if (!enabled || !TURNABLE.has(terminal.spec.kind)) return [placed];
+  const centre = { x: terminal.lip.x - terminal.normal.x * 300, y: terminal.lip.y - terminal.normal.y * 300 };
+  const onAxis = Math.abs(centre.y) < 150;
+  const towardAxis = onAxis ? null : { x: 0, y: -Math.sign(centre.y) };
+  const score = (normal: Point2D) => (towardAxis
+    ? dot(normal, towardAxis) + 0.3 * -normal.x
+    // On the axis the trunk passes beside the terminal: a side spigot, else one facing the unit.
+    : Math.abs(normal.y) + 0.8 * Math.max(0, -normal.x) - Math.max(0, normal.x));
+  const own = terminal.element.id;
+  const pad = terminal.neck / 2 + FLEX_SKIN_MM;
+  const roomInFront = (side: TerminalCtx) => {
+    const a = side.lip;
+    const b = { x: a.x + side.normal.x * SPIGOT_FRONT_MM, y: a.y + side.normal.y * SPIGOT_FRONT_MM };
+    return obstacles.every((box) => box.id === own
+      || Math.max(a.x, b.x) + pad <= box.minX || Math.min(a.x, b.x) - pad >= box.maxX
+      || Math.max(a.y, b.y) + pad <= box.minY || Math.min(a.y, b.y) - pad >= box.maxY);
+  };
+  const sides = SIDES.flatMap((side) => terminalWithSide(frame, terminal, side) ?? [])
+    .filter(roomInFront)
+    .sort((a, b) => score(b.normal) - score(a.normal))
+    .slice(0, 2);
+  return sides.length ? sides : [placed];
 }
 
 export interface ServiceCtx {
@@ -112,6 +179,8 @@ export interface ServiceCtx {
   settings: DuctDesignSettings;
   /** Obstacles in the local frame, unpadded; routes pad them by their own half width. */
   obstacles: Array<OrthogonalRouteObstacle & { zMin: number; zMax: number }>;
+  /** The drawing's walls (centre lines, world): a run that crosses one fails verification. */
+  walls?: ReadonlyArray<{ id: string; startPoint: Point2D; endPoint: Point2D }>;
   maxHeightMm: number;
   construction: DuctDesignSettings['defaultConstruction'];
   ids: () => string;
@@ -168,8 +237,64 @@ export function flexFit(ctx: ServiceCtx, stubEnd: Point2D, out: Point2D, stubBot
   return { radiusMm: curve.minBendRadiusMm, lengthMm: curve.lengthMm };
 }
 
+/**
+ * A runout the planner accepts: its tightest bend at least one diameter
+ * (SMACNA S3.24, the planner's DU_FLEX_BEND rule; 2 mm for rounding) and no
+ * longer than the settings allow. The curve is the planner's own (flexFit).
+ */
 export function flexOk(fit: { radiusMm: number; lengthMm: number }, terminal: TerminalCtx, settings: DuctDesignSettings): boolean {
-  return fit.radiusMm >= terminal.neck * 1.05 && fit.lengthMm <= settings.flexMaxLengthMm;
+  return fit.radiusMm >= terminal.neck + 2 && fit.lengthMm <= settings.flexMaxLengthMm;
+}
+
+/** Room kept around an insulated flexible runout (half its jacket over the neck, plus a margin; mm, practice). */
+const FLEX_SKIN_MM = 25;
+
+/**
+ * Whether the flexible runout from a stub end (local frame, leaving along
+ * `out`) into the terminal's spigot passes clear of every obstacle in its
+ * height band — equipment, other terminals' boxes, pipes and existing ducts —
+ * but the terminal it serves. The same curve the planner draws.
+ */
+/** The runout's centreline as the planner curves it, from a stub end along `out` into the terminal's spigot (world points). */
+function runoutCurve(ctx: ServiceCtx, stubEnd: Point2D, out: Point2D, stubBottomZ: number, terminal: TerminalCtx) {
+  const start = toWorld(ctx.frame, stubEnd);
+  const direction = dirToWorld(ctx.frame, out);
+  return flexCurve(
+    { ...start, z: stubBottomZ + terminal.neck / 2 }, { ...direction, z: 0 },
+    terminal.port.lip, { x: -terminal.port.normal.x, y: -terminal.port.normal.y, z: 0 },
+  );
+}
+
+/** The same runout in the local frame, with the half-width it keeps clear (its radius and skin). */
+export function runoutPath(ctx: ServiceCtx, stubEnd: Point2D, out: Point2D, stubBottomZ: number, terminal: TerminalCtx): { points: Point2D[]; radiusMm: number } {
+  return {
+    points: runoutCurve(ctx, stubEnd, out, stubBottomZ, terminal).points.map((point) => toLocal(ctx.frame, point)),
+    radiusMm: terminal.neck / 2 + FLEX_SKIN_MM,
+  };
+}
+
+/**
+ * An all-flex branch's runout stays on its own side of the main it leaves
+ * (local frame): no point of the curve comes back within the main's half
+ * and the runout's own radius of the main's centreline.
+ */
+export function runoutStaysOut(ctx: ServiceCtx, mainPoint: Point2D, out: Point2D, stubEnd: Point2D, stubBottomZ: number, terminal: TerminalCtx, mainHalfMm: number): boolean {
+  const path = runoutPath(ctx, stubEnd, out, stubBottomZ, terminal);
+  return path.points.every((point) => (point.x - mainPoint.x) * out.x + (point.y - mainPoint.y) * out.y >= mainHalfMm + path.radiusMm);
+}
+
+export function flexClear(ctx: ServiceCtx, stubEnd: Point2D, out: Point2D, stubBottomZ: number, terminal: TerminalCtx): boolean {
+  const curve = runoutCurve(ctx, stubEnd, out, stubBottomZ, terminal);
+  const radius = terminal.neck / 2 + FLEX_SKIN_MM;
+  const own = terminal.element.id;
+  for (const point of curve.points) {
+    const local = toLocal(ctx.frame, point);
+    for (const box of ctx.obstacles) {
+      if (box.id === own || box.zMax <= point.z - radius || box.zMin >= point.z + radius) continue;
+      if (local.x > box.minX - radius && local.x < box.maxX + radius && local.y > box.minY - radius && local.y < box.maxY + radius) return false;
+    }
+  }
+  return true;
 }
 
 export function obstaclesFor(ctx: ServiceCtx, padMm: number, zMin: number, zMax: number, exclude: ReadonlySet<string> = new Set(), build?: Build): OrthogonalRouteObstacle[] {

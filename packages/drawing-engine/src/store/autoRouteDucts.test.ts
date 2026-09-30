@@ -4,7 +4,7 @@ import { applyAutoRoutePreview, discardAutoRoutePreview, runAutoRoute } from '..
 import { useCondensatePreviewStore } from '../components/canvas/hvac/condensate/condensatePreviewStore';
 import { resolveUnitAirPorts } from '../components/canvas/hvac/duct/ductAirPorts';
 import { DEFAULT_DUCT_SETTINGS } from '../components/canvas/hvac/duct/ductSettings';
-import { terminalEnvelope, typicalTerminalSpec } from '../components/canvas/hvac/duct/ductTerminals';
+import { readDuctTerminalSpec, terminalEnvelope, typicalTerminalSpec } from '../components/canvas/hvac/duct/ductTerminals';
 import { isDuctElement, readDuctRunSpec } from '../components/canvas/hvac/duct/ductTypes';
 import type { HvacElement, Point2D } from '../types';
 
@@ -62,6 +62,25 @@ describe('Auto route with duct ticks: preview, then one Apply and one undo', () 
     expect(ducts().map((element) => element.id).sort()).toEqual(proposal.elementsToAdd.map((run) => run.id).sort());
     expect(ducts().filter((element) => readDuctRunSpec(element)?.end.kind === 'terminal').length).toBe(3);
     expect(useCondensatePreviewStore.getState().unified).toBeNull();
+    state().undo();
+    expect(state().hvacElements).toEqual(before);
+  });
+
+  it('turns the spigots the design chooses with the same Apply and undo', async () => {
+    const dropped = [unit, diffuser('sa', at(3000, 1500), 0), diffuser('sb', at(3000, -1500), 0)];
+    useDrawingStore.setState({ hvacElements: dropped });
+    state().clearHistory();
+    const before = state().hvacElements;
+    await route();
+    const proposal = useCondensatePreviewStore.getState().unified!.ducts!;
+    expect(proposal.units[0]!.status).toBe('designed');
+    expect(proposal.terminalUpdates.length).toBeGreaterThan(0);
+    expect(proposal.units[0]!.notes.some((note) => /Spigot turned/.test(note))).toBe(true);
+    applyAutoRoutePreview();
+    for (const turned of proposal.terminalUpdates) {
+      const now = state().hvacElements.find((element) => element.id === turned.id)!;
+      expect(readDuctTerminalSpec(now)!.spigotSide).toBe(readDuctTerminalSpec(turned)!.spigotSide);
+    }
     state().undo();
     expect(state().hvacElements).toEqual(before);
   });

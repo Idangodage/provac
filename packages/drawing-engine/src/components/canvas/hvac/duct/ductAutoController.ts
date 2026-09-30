@@ -5,7 +5,7 @@
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
-import type { AutoDuctRequest } from './ductAutoLayout';
+import { terminalSpigotUpdates, type AutoDuctRequest } from './ductAutoLayout';
 import { useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { cancelAutoDuctWorker, runAutoDuctInWorker } from './optimizer/ductOptimizerClient';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
@@ -47,11 +47,15 @@ export function autoDuctSelection(selectedIds: readonly string[], scene: readonl
 
 /** Routes, sizes and verifies the designs in the worker; the preview shows the best life-cycle one. */
 export async function generateAutoDuctPreview(request: AutoDuctRequest): Promise<void> {
-  const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
+  const { hvacElements, ductSettings, walls } = useSmartDrawingStore.getState();
   const preview = useDuctAutoPreviewStore.getState();
   preview.setRunning(request.unitId);
   try {
-    const result = await runAutoDuctInWorker(hvacElements, request, ductSettings);
+    // The drawing's walls come with it: the ducts stay in their room.
+    const withWalls: AutoDuctRequest = {
+      ...request, walls: request.walls ?? walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
+    };
+    const result = await runAutoDuctInWorker(hvacElements, withWalls, ductSettings);
     useDuctAutoPreviewStore.getState().setPreview(result, request, hvacElements);
   } catch (error) {
     if (error instanceof Error && error.message === 'cancelled') return;
@@ -80,8 +84,10 @@ export function applyAutoDuctPreview(): string {
   }
   if (!result.runs.length) return 'The preview has no ducts to add.';
   const ids = result.runs.map((run) => run.id);
-  state.commitHvacElementCommand('Auto duct', { add: result.runs, removeIds: result.removeIds, selectedIds: ids });
-  const message = `Auto duct: ${result.runs.length} run${result.runs.length === 1 ? '' : 's'} added${result.removeIds.length ? `, ${result.removeIds.length} replaced` : ''}.`;
+  const turned = result.terminalUpdates ?? [];
+  state.commitHvacElementCommand('Auto duct', { add: result.runs, removeIds: result.removeIds, updates: terminalSpigotUpdates(turned), selectedIds: ids });
+  const message = `Auto duct: ${result.runs.length} run${result.runs.length === 1 ? '' : 's'} added${result.removeIds.length ? `, ${result.removeIds.length} replaced` : ''}`
+    + `${turned.length ? `, ${turned.length} spigot${turned.length === 1 ? '' : 's'} turned` : ''}.`;
   useDuctAutoPreviewStore.getState().clear(message);
   state.setProcessingStatus(message, false);
   return message;

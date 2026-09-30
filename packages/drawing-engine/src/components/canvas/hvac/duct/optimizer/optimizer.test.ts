@@ -18,7 +18,7 @@ import { frontierGrid } from './ductOptimizer';
 import type { RoutingGraph } from './routingGraph';
 import { frontierPoints, sizeDesign } from './sizingDp';
 import { sameLeg, SizingModel } from './sizingModel';
-import { steinerTrees } from './steinerArborescence';
+import { emptyCuts, newLayerMemo, steinerTrees } from './steinerArborescence';
 
 // ---- Scene helpers (as the auto layout tests) ----
 
@@ -202,16 +202,17 @@ describe('tree router: exact against brute force (two terminals, an open grid)',
       }
     }
   }
-  const leafA = { node: node(3, 4), heading: 1, flexLengthMm: 500 };
-  const leafB = { node: node(4, 0), heading: 0, flexLengthMm: 900 };
+  const leafA = { node: node(3, 4), heading: 1, flexLengthMm: 500, variant: 0 };
+  const leafB = { node: node(4, 0), heading: 0, flexLengthMm: 900, variant: 0 };
   const graph: RoutingGraph = {
     xs, ys, nodeX, nodeY, nodeCount: count, neighbour, edgeLength, corridor,
+    nodeClear: new Float64Array(count).fill(Number.POSITIVE_INFINITY),
     leaves: [[leafA], [leafB]], roots: [{ node: node(1, 2), outletMm: 1000 }],
   };
   const settings = resolveDuctSettings({ tapCollarMm: 50, vcdLengthMm: 50, elbowNeckMm: 0 });
   const far = { x: 1e6, y: 1e6 };
   const terminalCtx = (id: string) => ({ element: { id } as HvacElement, airflowM3h: 100, neck: 100, lip: far, normal: { x: 1, y: 0 }, port: { lip: { ...far, z: 0 }, normal: { x: 1, y: 0 } } }) as unknown as TerminalCtx;
-  const ctx = { terminals: [terminalCtx('a'), terminalCtx('b')], settings, service: 'supply', bottomZ: 0 } as unknown as ServiceCtx;
+  const ctx = { terminals: [terminalCtx('a'), terminalCtx('b')], settings, service: 'supply', bottomZ: 0, port: { widthMm: 100, heightMm: 100 } } as unknown as ServiceCtx;
   const ELBOW = 3;
   const TEE = 5;
   const perMm = (flow: number) => (flow > 150 ? 0.004 : 0.001);
@@ -226,6 +227,9 @@ describe('tree router: exact against brute force (two terminals, an open grid)',
     split: () => ({ cost: Number.POSITIVE_INFINITY, losses: [0, 0] }),
     flex: (_neck: number, _q: number, length: number) => ({ cost: length / 1000, loss: 0 }),
     collarLengthMm: () => 0,
+    // No fitting lengths: every clearance holds after one 1 m edge, as the brute force assumes.
+    bendReachMm: () => 0, elbowSetbackMm: () => 0, tapWindowHalfMm: () => 0, endStraightMm: () => 0, diagonalRoomMm: () => 0, turnFirstReachMm: () => 0,
+    transitionLengthMm: () => ({ lengthMm: 0, slopeMm: 0, includedDeg: 0 }),
   } as unknown as SizingModel;
 
   /** Independent shortest paths over (node, heading) with elbows, for one layer. */
@@ -290,6 +294,23 @@ describe('tree router: exact against brute force (two terminals, an open grid)',
     expect(solution!.modelCost).toBeCloseTo(best + 1000 * perMm(200), 6);
   });
 
+  it('a new cut re-solves only the layers it can change, and the optimum is the same as solving afresh', () => {
+    const base = { lambda: 0, label: 'test', fanOutletMm: 1000, shortOutletPenaltyPa: 0, maxTerminals: 8 };
+    const memo = newLayerMemo();
+    const first = steinerTrees(ctx, mock, graph, { ...base, memo })!;
+    const aloneA = memo.saved.get(1);
+    // No take-off for terminal b where the optimum took it off: only the layers holding b can change.
+    const cuts = emptyCuts();
+    const allRuns = (run: RunDesign): RunDesign[] => [run, ...run.taps.flatMap((tap) => allRuns(tap.child))];
+    const tapped = allRuns(first.designs[0]!.root).find((run) => run.route?.kind === 'tee' || run.route?.kind === 'stub');
+    cuts.tees.set(2, new Set(tapped ? [tapped.route!.node] : [0]));
+    const again = steinerTrees(ctx, mock, graph, { ...base, memo, cuts });
+    const fresh = steinerTrees(ctx, mock, graph, { ...base, cuts });
+    expect(memo.saved.get(1)).toBe(aloneA);
+    expect(again === null).toBe(fresh === null);
+    if (fresh) expect(again!.modelCost).toBeCloseTo(fresh.modelCost, 9);
+  });
+
   it('one terminal: the least-cost path, elbows included', () => {
     const one = { ...ctx, terminals: [ctx.terminals[0]!] } as ServiceCtx;
     const solution = steinerTrees(one, mock, { ...graph, leaves: [[leafA]] }, { lambda: 0, label: 'test', fanOutletMm: 1000, shortOutletPenaltyPa: 0, maxTerminals: 8 });
@@ -316,7 +337,7 @@ describe('the optimiser end to end', () => {
     const reference = optimal.designs.find((design) => design.label.includes('(equal friction)'))!;
     expect(optimal.designs[optimal.selected]!.lifeCycleCost).toBeLessThan(reference.lifeCycleCost);
     expect(optimal.certificate?.exact).toBe(true);
-  });
+  }, 120_000);
 
   it('the picks sit on the frontier: least first cost, least life-cycle, least pressure', () => {
     const result = generateAutoDuct(scene, request(ids, { shape: 'optimal' }), settings);
@@ -326,5 +347,5 @@ describe('the optimiser end to end', () => {
     expect(result.designs[lifeCycle]!.lifeCycleCost).toBeCloseTo(Math.min(...clean.map((design) => design.lifeCycleCost)), 6);
     expect(result.designs[quietest]!.requiredEspPa).toBeCloseTo(Math.min(...clean.map((design) => design.requiredEspPa)), 6);
     expect(result.selected).toBe(lifeCycle);
-  });
+  }, 120_000);
 });

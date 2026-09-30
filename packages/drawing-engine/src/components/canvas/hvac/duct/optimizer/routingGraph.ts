@@ -12,7 +12,7 @@
  * local frame is a rotation of the plan, so left is left in plan too).
  */
 import type { Point2D } from '../../../../../types';
-import { flexFit, flexOk, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { flexClear, flexFit, flexOk, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 
 import type { SizingModel } from './sizingModel';
 
@@ -36,6 +36,13 @@ export interface LeafCandidate {
   /** Heading the rigid branch arrives with (towards the terminal). */
   heading: number;
   flexLengthMm: number;
+  /** Which of the terminal's spigot sides it serves (index into `terminalVariants`). */
+  variant: number;
+}
+
+/** The spigot sides the router may use for a terminal (its placed side when it has no alternatives). */
+export function terminalVariants(terminal: TerminalCtx): TerminalCtx[] {
+  return terminal.variants?.length ? terminal.variants : [terminal];
 }
 
 export interface RoutingGraph {
@@ -48,6 +55,8 @@ export interface RoutingGraph {
   neighbour: Int32Array;
   edgeLength: Float64Array;
   corridor: Float64Array;
+  /** Per node: the distance to the nearest obstacle in any direction (the room a corner or a split there has, mm). */
+  nodeClear: Float64Array;
   /** Per terminal (the service's order): where its rigid branch may end. */
   leaves: LeafCandidate[][];
   /** Candidate roots on the collar's axis: the node where the fan-outlet straight ends, and its length. */
@@ -100,19 +109,21 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
 
   // Leaf candidates: in front of each spigot (arriving along its axis) and to either side (the flex turns in).
   const headingOf = (v: Point2D) => DIRECTIONS.findIndex((d) => d.x === Math.round(v.x) && d.y === Math.round(v.y));
-  const leafPoints: Array<Array<{ point: Point2D; heading: number }>> = terminals.map((terminal: TerminalCtx) => {
-    const n = terminal.normal;
-    const t = { x: -n.y, y: n.x };
-    const out: Array<{ point: Point2D; heading: number }> = [];
-    for (const reach of FRONT_REACH_MM) out.push({ point: { x: terminal.lip.x + n.x * reach, y: terminal.lip.y + n.y * reach }, heading: headingOf({ x: -n.x, y: -n.y }) });
-    for (const side of [1, -1]) {
-      for (const reach of SIDE_REACH_MM) {
-        out.push({
-          point: { x: terminal.lip.x + n.x * (terminal.neck + 250) + t.x * side * reach, y: terminal.lip.y + n.y * (terminal.neck + 250) + t.y * side * reach },
-          heading: headingOf({ x: -side * t.x, y: -side * t.y }),
-        });
+  const leafPoints: Array<Array<{ point: Point2D; heading: number; variant: number }>> = terminals.map((terminal: TerminalCtx) => {
+    const out: Array<{ point: Point2D; heading: number; variant: number }> = [];
+    terminalVariants(terminal).forEach((spigot, variant) => {
+      const n = spigot.normal;
+      const t = { x: -n.y, y: n.x };
+      for (const reach of FRONT_REACH_MM) out.push({ point: { x: spigot.lip.x + n.x * reach, y: spigot.lip.y + n.y * reach }, heading: headingOf({ x: -n.x, y: -n.y }), variant });
+      for (const side of [1, -1]) {
+        for (const reach of SIDE_REACH_MM) {
+          out.push({
+            point: { x: spigot.lip.x + n.x * (spigot.neck + 250) + t.x * side * reach, y: spigot.lip.y + n.y * (spigot.neck + 250) + t.y * side * reach },
+            heading: headingOf({ x: -side * t.x, y: -side * t.y }), variant,
+          });
+        }
       }
-    }
+    });
     return out;
   });
 
@@ -120,8 +131,19 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
   const floor = Math.ceil(minOutletMm / 50) * 50;
   const turnAt = Math.ceil(turnOutletMm / 50) * 50;
   const rootXs = [...new Set([600, fanOutletMm, fanOutletMm + 600, fanOutletMm + 1200, floor, turnAt].map((x) => Math.round(Math.max(x, floor))))];
-  const xsRaw: number[] = [0, ...rootXs];
-  const ysRaw: number[] = [0];
+  // Turning first at the collar's own section (an obstacle on the axis close ahead): a root just short of it,
+  // the collar elbow's half and the clearance off its face, and long enough for the connector and that elbow.
+  const collarHalf = ctx.port.widthMm / 2 + model.costContext.insulationMm;
+  const connectorMm = ctx.settings.flexibleConnectorAtUnit ? ctx.settings.connectorFabricMm + 2 * ctx.settings.connectorMetalMm : 0;
+  const turnFloor = connectorMm + model.elbowSetbackMm({ widthMm: ctx.port.widthMm, heightMm: ctx.port.heightMm }) + ctx.settings.elbowNeckMm + 25;
+  const turnXs = boxes
+    .filter((box) => box.minX > 0 && box.minY < collarHalf + ROUTE_CLEARANCE_MM && box.maxY > -(collarHalf + ROUTE_CLEARANCE_MM))
+    .map((box) => Math.floor((box.minX - collarHalf - ROUTE_CLEARANCE_MM) / 10) * 10)
+    .filter((x) => x >= turnFloor && x < floor);
+  const xsRaw: number[] = [0, ...rootXs, ...turnXs];
+  // Turning first, the trunk runs on a line the turn's straight reaches (either side of the axis).
+  const turnReach = turnXs.length ? Math.ceil(model.turnFirstReachMm(ctx.airflowM3h, Math.max(...terminals.map((terminal) => terminal.neck))) / 50) * 50 : 0;
+  const ysRaw: number[] = [0, ...(turnReach ? [turnReach, -turnReach] : [])];
   for (const points of leafPoints) {
     for (const { point } of points) {
       xsRaw.push(point.x);
@@ -130,8 +152,8 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
   }
   const keepX = new Set(leafPoints.flatMap((points) => points.map((entry) => Math.round(entry.point.x))));
   const keepY = new Set(leafPoints.flatMap((points) => points.map((entry) => Math.round(entry.point.y))));
-  const mustX = new Set([0, ...rootXs]);
-  const mustY = new Set([0]);
+  const mustX = new Set([0, ...rootXs, ...turnXs]);
+  const mustY = new Set([0, ...(turnReach ? [turnReach, -turnReach] : [])]);
   const span = {
     minX: 0, maxX: Math.max(fanOutletMm, ...xsRaw) + 1000,
     minY: Math.min(0, ...ysRaw) - 1000, maxY: Math.max(0, ...ysRaw) + 1000,
@@ -160,6 +182,15 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
     }
   }
   const count = nodeXs.length;
+  // A corner or a split occupies the section's half-width round its node in every direction.
+  const nodeClear = new Float64Array(count).fill(Number.POSITIVE_INFINITY);
+  for (let node = 0; node < count; node += 1) {
+    for (const box of boxes) {
+      const dx = Math.max(box.minX - nodeXs[node]!, 0, nodeXs[node]! - box.maxX);
+      const dy = Math.max(box.minY - nodeYs[node]!, 0, nodeYs[node]! - box.maxY);
+      nodeClear[node] = Math.min(nodeClear[node]!, Math.max(dx, dy));
+    }
+  }
   const neighbour = new Int32Array(count * 4).fill(-1);
   const edgeLength = new Float64Array(count * 4);
   const corridor = new Float64Array(count * 4);
@@ -201,23 +232,43 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
     const j = ys.findIndex((y) => Math.abs(y - point.y) < MERGE_MM / 2);
     return i < 0 || j < 0 ? -1 : nodeAt[i * ys.length + j]!;
   };
-  // Leaves whose runout fits (bend radius and length) as the planner will curve it.
+  // Leaves whose runout fits (bend radius and length) as the planner will curve it, clear of other equipment.
   const leaves: LeafCandidate[][] = terminals.map((terminal, index) => {
     const out: LeafCandidate[] = [];
-    for (const { point, heading } of leafPoints[index]!) {
+    const variants = terminalVariants(terminal);
+    for (const { point, heading, variant } of leafPoints[index]!) {
       const node = nodeOf(point);
       if (node < 0 || heading < 0) continue;
-      const fit = flexFit(ctx, { x: nodeXs[node]!, y: nodeYs[node]! }, DIRECTIONS[heading]!, ctx.bottomZ, terminal);
-      if (!flexOk(fit, terminal, ctx.settings)) continue;
-      if (!out.some((leaf) => leaf.node === node && leaf.heading === heading)) out.push({ node, heading, flexLengthMm: fit.lengthMm });
+      const spigot = variants[variant]!;
+      const end = { x: nodeXs[node]!, y: nodeYs[node]! };
+      const fit = flexFit(ctx, end, DIRECTIONS[heading]!, ctx.bottomZ, spigot);
+      if (!flexOk(fit, spigot, ctx.settings) || !flexClear(ctx, end, DIRECTIONS[heading]!, ctx.bottomZ, spigot)) continue;
+      if (!out.some((leaf) => leaf.node === node && leaf.heading === heading && leaf.variant === variant)) out.push({ node, heading, flexLengthMm: fit.lengthMm, variant });
     }
     return out;
   });
-  const roots = rootXs
-    .map((outletMm) => ({ node: nodeOf({ x: outletMm, y: 0 }), outletMm }))
-    .filter((root) => root.node >= 0);
+  // Roots: every axis line the straight off the collar reaches without touching an obstacle — the
+  // collar's width over its connector and transition, the narrowest trunk after that — and no
+  // shorter than the floor. (A diffuser on the axis ends the straight before it.)
+  const narrowest = model.trunkOptions(ctx.airflowM3h).reduce((least, leg) => Math.min(least, leg.widthMm), ctx.port.widthMm);
+  const trunkHalf = narrowest / 2 + model.costContext.insulationMm;
+  const transitionReach = Math.max(floor, 800);
+  const straightClear = (x: number) => boxes.every((box) => {
+    if (box.maxX <= 0 || box.minX >= x) return true;
+    const near = box.minX < transitionReach ? collarHalf : trunkHalf;
+    const half = Math.max(near, trunkHalf) + ROUTE_CLEARANCE_MM;
+    return box.minY >= half || box.maxY <= -half;
+  });
+  const roots: Array<{ node: number; outletMm: number }> = [];
+  for (const candidate of [...rootXs, ...turnXs, ...xs.filter((x) => x >= floor - 1)]) {
+    const node = nodeOf({ x: candidate, y: 0 });
+    if (node < 0 || roots.some((root) => root.node === node)) continue;
+    const outletMm = Math.round(nodeXs[node]!);
+    const least = turnXs.includes(outletMm) ? turnFloor : floor;
+    if (outletMm >= least - 1 && straightClear(outletMm)) roots.push({ node, outletMm });
+  }
   return {
     xs, ys, nodeX: Float64Array.from(nodeXs), nodeY: Float64Array.from(nodeYs), nodeCount: count,
-    neighbour, edgeLength, corridor, leaves, roots,
+    neighbour, edgeLength, corridor, nodeClear, leaves, roots,
   };
 }

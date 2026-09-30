@@ -772,6 +772,15 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="autoReducerStepMm" label="Reduce the trunk from" step={50} min={0} max={500} />
       <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Optimiser</div>
       <SettingNumber settingKey="autoExactTerminals" label="Exact tree search up to" step={1} min={1} max={10} unit="terminals" />
+      <SettingNumber settingKey="autoTimeBudgetMs" label="Time per unit" step={1000} min={1000} max={60000} unit="ms" />
+      <Row label="Turn diffuser spigots">
+        <label className="flex items-center gap-1 text-xs">
+          <input type="checkbox" checked={ductSettings.autoChooseSpigotSide} aria-label="Let the optimiser choose the spigot side"
+            onChange={(event) => setDuctSettings({ autoChooseSpigotSide: event.target.checked })} />
+          Square, round, egg-crate
+        </label>
+        <SourceBadge settingKey="autoChooseSpigotSide" />
+      </Row>
       <Row label="Round-main fittings">
         <span className="flex flex-col items-end gap-0.5">
           {([['round-conical', 'Conical tap (Fig. 3-5)'], ['round-tee', '90° tap (Fig. 3-4)'], ['round-lateral', '45° lateral (Fig. 3-4)']] as const).map(([style, label]) => (

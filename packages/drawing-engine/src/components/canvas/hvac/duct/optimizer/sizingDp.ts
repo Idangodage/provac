@@ -23,13 +23,15 @@
  * each fan pressure. The caller picks points (least first cost, least
  * life-cycle cost, least pressure) and reconstructs their sizes.
  */
-import { flexFit } from '../ductAutoContext';
+import type { Point2D } from '../../../../../types';
+import { flexFit, type TerminalCtx } from '../ductAutoContext';
 import { FITTING_LOSS_COEFFICIENTS } from '../ductPressure';
 import { maxRoundBranchMm } from '../ductRoundFittings';
 import { velocityMs, velocityPressurePa } from '../ductSizing';
 import { isRoundLeg, type DuctLeg, type DuctSplitStyle, type DuctTapStyle } from '../ductTypes';
 
-import { runBends, runLengthMm, type DesignSpigot, type RunDesign, type ServiceDesign } from './designTree';
+import { pointAlong, runBends, runLengthMm, type DesignSpigot, type RunDesign, type ServiceDesign } from './designTree';
+import { ROUTE_CLEARANCE_MM } from './routingGraph';
 import { areaOf, sameLeg, type SizingModel } from './sizingModel';
 
 const INF = Number.POSITIVE_INFINITY;
@@ -66,6 +68,8 @@ export interface RunSizing {
   tapStyles: DuctTapStyle[];
   splitStyle?: DuctSplitStyle;
   spigotStyles?: Array<'spin-in' | 'conical'>;
+  /** The root turns at the collar's own section first (a square vaned elbow) and steps to its size after it. */
+  collarTurn?: boolean;
 }
 
 export interface SizedDesign {
@@ -95,6 +99,8 @@ interface RunState {
   options: DuctLeg[][];
   /** G[k][x]: frontier of everything from segment k's start with section x there. */
   G: Float64Array[][];
+  /** Per segment and section: whether the run can carry on from it, and whether its take-off can be made on it (for explanations). */
+  alive: Array<Array<{ main: boolean; branch: boolean }>>;
   argTap: Array<Array<Int32Array | null>>;
   argNext: Int32Array[][];
   /** Last segment: the end's frontier and choices per section. */
@@ -223,7 +229,9 @@ function segmentOptions(run: RunDesign, segment: RunSegment, index: number, chil
   // Take-offs set a floor: the branch must fit the trunk (two thirds of a round main, height − 50 for a spin-in).
   if (segment.tap !== null) {
     const child = children[segment.tap]!;
-    const smallest = Math.min(...child.options[0]!.map((leg) => leg.diameterMm ?? leg.heightMm));
+    // The smallest branch that can be sized at all (a branch with take-offs of its own may need a tall one).
+    const live = child.options[0]!.filter((_, iy) => child.G[0]?.[iy]?.some(Number.isFinite) ?? true);
+    const smallest = Math.min(...(live.length ? live : child.options[0]!).map((leg) => leg.diameterMm ?? leg.heightMm));
     const cap = model.settings.autoMaxVelocityTrunkMs;
     const extra: DuctLeg[] = [];
     if (model.shape !== 'rect') {
@@ -241,7 +249,33 @@ function segmentOptions(run: RunDesign, segment: RunSegment, index: number, chil
     }
     options = [...options, ...extra];
   }
-  return dedupe(options);
+  // Off the collar, sections as wide as the collar (a short transition) at the heights offered: slow for
+  // the flow, but where the collar's straight is short they may be the only ones whose transition fits.
+  if (run.start.kind === 'unit' && index === 0 && model.shape !== 'round') {
+    const width = Math.max(100, Math.round(model.ctx.port.widthMm / 50) * 50);
+    const heights = new Set(options.filter((leg) => !isRoundLeg(leg)).map((leg) => leg.heightMm));
+    for (const h of heights) if (h <= model.maxHeightMm && width <= 4 * h) options.push({ widthMm: width, heightMm: h });
+  }
+  // A rectangular Y shares the main's width between its two outlets (Fig. 2-5): the stretch before it may be
+  // as wide as a pair of outlets side by side — slower than the economy band, but the fitting needs it.
+  if (run.end.kind === 'split' && model.shape !== 'round' && segment.to >= runLengthMm(run) - 1) {
+    const outlets = children.slice(run.taps.length);
+    if (outlets.length === 2) {
+      const [a, b] = outlets.map((child) => child.options[0]!.filter((leg) => !isRoundLeg(leg))) as [DuctLeg[], DuctLeg[]];
+      const pairs: DuctLeg[] = [];
+      for (const x of a) {
+        for (const y of b) {
+          const leg = { widthMm: x.widthMm + y.widthMm, heightMm: Math.max(x.heightMm, y.heightMm) };
+          if (leg.heightMm <= model.maxHeightMm && leg.widthMm <= 4 * leg.heightMm) pairs.push(leg);
+        }
+      }
+      options = [...options, ...dedupe(pairs).sort((m, n) => areaOf(m) - areaOf(n)).slice(0, 24)];
+    }
+  }
+  // Only sections that fit the corridor the router ran the run through (its outer half and the clearance).
+  const corridor = run.corridorMm;
+  return dedupe(options).filter((leg) => corridor === undefined || !Number.isFinite(corridor)
+    || leg.widthMm / 2 + 1 + model.costContext.insulationMm <= corridor - ROUTE_CLEARANCE_MM + 1e-6);
 }
 
 // ---- Compatibility ----
@@ -251,7 +285,7 @@ function tapStyles(main: DuctLeg, branch: DuctLeg, child: RunState, model: Sizin
   if (isRoundLeg(main)) {
     if (!isRoundLeg(branch) || branch.diameterMm! > maxRoundBranchMm(main.diameterMm!) + 0.5) return [];
     const room = child.run.allFlex ? 0 : firstEventMm(child.run, child.children, model);
-    return model.settings.autoRoundMainStyles.filter((style) => style !== 'round-lateral' || room >= diagonalRoomMm(main.diameterMm!, branch, model, false));
+    return model.settings.autoRoundMainStyles.filter((style) => style !== 'round-lateral' || room >= model.diagonalRoomMm(main.diameterMm!, branch, false));
   }
   if (isRoundLeg(branch)) {
     const out: DuctTapStyle[] = [];
@@ -277,17 +311,6 @@ function firstEventMm(run: RunDesign, children: RunState[], model: SizingModel):
   const bends = runBends(run).map((bend) => bend.station);
   const taps = run.taps.map((tap, index) => tap.station - windowHalfMm(children[index]!, model));
   return Math.min(runLengthMm(run), ...bends, ...taps);
-}
-
-/**
- * Room a wye's leg or a lateral needs on the branch before its first fitting:
- * the 45° run (3A/2 or the collar), the elbow back square and a margin.
- */
-function diagonalRoomMm(mainDiameterMm: number, branch: DuctLeg, model: SizingModel, wye: boolean): number {
-  const ratio = model.elbowRadiusMm(branch) / (branch.diameterMm ?? branch.widthMm);
-  const setback = ratio * (branch.diameterMm ?? branch.widthMm) * Math.tan(Math.PI / 8);
-  const diagonal = (wye ? 1.5 * mainDiameterMm : model.collarLengthMm('round-lateral', branch) + model.settings.vcdLengthMm) + setback + model.settings.elbowNeckMm;
-  return diagonal * Math.SQRT1_2 + setback + model.settings.elbowNeckMm + 300;
 }
 
 function splitStylesFor(main: DuctLeg, model: SizingModel): DuctSplitStyle[] {
@@ -381,7 +404,7 @@ function endFrontiers(state: RunState, solver: Solver): void {
         // Each outlet on its own (its section fits the split, its loss and share of the fitting), shifted by that.
         const side = (child: RunState, which: 0 | 1) => child.options[0]!.flatMap((y, index) => {
           if (!splitOutletOk(style, leg, y)) return [];
-          if (style === 'wye' && room[which]! < diagonalRoomMm(leg.diameterMm!, y, model, true)) return [];
+          if (style === 'wye' && room[which]! < model.diagonalRoomMm(leg.diameterMm!, y, true)) return [];
           const part = model.splitOutlet(style, leg, flow, y, child.run.airflowM3h);
           const shifted = filled(grid, INF);
           minShiftedInto(shifted, null, child.G[0]![index]!, part.cost, steps(part.loss, grid), 0);
@@ -452,8 +475,31 @@ function endFrontiers(state: RunState, solver: Solver): void {
   });
 }
 
+/** Where an all-flex take-off leaves its main (design point and direction), for the runout check; null otherwise. */
+function stubAt(run: RunDesign, tap: number, child: RunDesign): { centre: Point2D; out: Point2D; terminal: TerminalCtx } | null {
+  if (!child.allFlex || child.end.kind !== 'terminal' || child.vertices.length < 2) return null;
+  const [first, second] = child.vertices as [Point2D, Point2D];
+  const reach = Math.hypot(second.x - first.x, second.y - first.y) || 1;
+  return {
+    centre: pointAlong(run, run.taps[tap]!.station).point,
+    out: { x: (second.x - first.x) / reach, y: (second.y - first.y) / reach },
+    terminal: child.end.terminal,
+  };
+}
+
 function solveRun(run: RunDesign, solver: Solver): RunState {
   const { model, grid } = solver;
+  /** Runout checks, per take-off, main section and fitting (each is a curve against the obstacles). */
+  const stubCache = new Map<string, boolean>();
+  const stubFits = (stub: NonNullable<ReturnType<typeof stubAt>>, leg: DuctLeg, style: DuctTapStyle): boolean => {
+    const key = `${stub.centre.x},${stub.centre.y},${leg.diameterMm ?? leg.widthMm},${style}`;
+    let fits = stubCache.get(key);
+    if (fits === undefined) {
+      fits = model.stubRunoutFits(stub.centre, stub.out, leg, style, stub.terminal, model.ctx.bottomZ);
+      stubCache.set(key, fits);
+    }
+    return fits;
+  };
   const children: RunState[] = [
     ...run.taps.map((tap) => solveRun(tap.child, solver)),
     ...(run.end.kind === 'split' ? run.end.children.map((child) => solveRun(child, solver)) : []),
@@ -461,9 +507,12 @@ function solveRun(run: RunDesign, solver: Solver): RunState {
   ];
   const { segments, boundaries } = planSegments(run, children, model);
   const state: RunState = {
-    run, segments, boundaries, options: [], G: [], argTap: [], argNext: [], end: [], argEnd: [], children,
+    run, segments, boundaries, options: [], G: [], alive: [], argTap: [], argNext: [], end: [], argEnd: [], children,
   };
   state.options = segments.map((segment, index) => segmentOptions(run, segment, index, children, model));
+  // A section may always carry on past a take-off (a velocity under the economy band is no rule), so each
+  // segment also offers the sections of the one before it; otherwise close take-offs leave no room to reduce.
+  for (let k = 1; k < state.options.length; k += 1) state.options[k] = dedupe([...state.options[k]!, ...state.options[k - 1]!]);
   endFrontiers(state, solver);
   for (let k = segments.length - 1; k >= 0; k -= 1) {
     const segment = segments[k]!;
@@ -471,6 +520,7 @@ function solveRun(run: RunDesign, solver: Solver): RunState {
     const G: Float64Array[] = [];
     const argTap: Array<Int32Array | null> = [];
     const argNext: Int32Array[] = [];
+    const alive: Array<{ main: boolean; branch: boolean }> = [];
     options.forEach((leg, x) => {
       // Main side: the end, or the next segment through a reducer where it fits.
       const main = filled(grid, INF);
@@ -497,14 +547,20 @@ function solveRun(run: RunDesign, solver: Solver): RunState {
         const child = children[segment.tap]!;
         const branch = filled(grid, INF);
         tapArg = new Int32Array(grid.size).fill(-1);
+        const stub = stubAt(run, segment.tap, child.run);
         child.options[0]!.forEach((y, iy) => {
           for (const style of tapStyles(leg, y, child, model)) {
+            // An all-flex branch: its runout must still fit from this main's wall with this fitting.
+            if (stub && !stubFits(stub, leg, style)) continue;
             const tee = model.tee(style, y, child.run.airflowM3h, leg, segment.flowIn);
             minShiftedInto(branch, tapArg, child.G[0]![iy]!, tee.cost, steps(tee.loss, grid), (iy << 4) | TAP_STYLES.indexOf(style));
           }
         });
         combined = new Float64Array(grid.size);
         for (let i = 0; i < grid.size; i += 1) combined[i] = branch[i]! + main[i]!;
+        alive.push({ main: main.some(Number.isFinite), branch: branch.some(Number.isFinite) });
+      } else {
+        alive.push({ main: main.some(Number.isFinite), branch: true });
       }
       const frontier = filled(grid, INF);
       minShiftedInto(frontier, null, combined, segmentCost(segment, leg, model), steps(lossBefore(segment, leg, model), grid), 0);
@@ -513,6 +569,7 @@ function solveRun(run: RunDesign, solver: Solver): RunState {
       argNext[x] = next;
     });
     state.G[k] = G;
+    state.alive[k] = alive;
     state.argTap[k] = argTap;
     state.argNext[k] = argNext;
   }
@@ -596,12 +653,68 @@ function reconstructEnd(state: RunState, x: number, i: number, solver: Solver, o
   return true;
 }
 
+/** Why a design tree has no size set at all: the run, and the rule that rules out every section there. */
+export interface SizingFailure {
+  runKey: string;
+  reason: 'end-terminal' | 'end-split' | 'end-plenum' | 'take-off' | 'section-change' | 'collar' | 'unknown';
+  /** The take-off (index into the run's taps) or the split outlet side it concerns. */
+  tap?: number;
+  detail: string;
+}
+
+const alive = (state: RunState) => state.G[0]?.some((frontier) => frontier.some(Number.isFinite)) ?? false;
+
+/** The deepest run with no size set, and why (the child is explained before its parent). */
+function explainInfeasible(state: RunState, model: SizingModel): SizingFailure {
+  for (const child of state.children) if (!alive(child)) return explainInfeasible(child, model);
+  const run = state.run;
+  const lastIndex = state.segments.length - 1;
+  const endAlive = state.end.some((frontier) => frontier?.some(Number.isFinite));
+  if (!endAlive) {
+    if (run.end.kind === 'terminal') {
+      const last = run.vertices.length > 1 ? Math.hypot(run.vertices.at(-1)!.x - run.vertices.at(-2)!.x, run.vertices.at(-1)!.y - run.vertices.at(-2)!.y) : 0;
+      return { runKey: run.key, reason: 'end-terminal', detail: `last leg ${Math.round(last)} mm; the fitting down to the Ø${run.end.terminal.neck} neck needs ${END_TRANSITION_MIN_LEG_MM} mm` };
+    }
+    if (run.end.kind === 'split') {
+      const outlets = state.children.slice(run.taps.length);
+      const rooms = outlets.map((child) => Math.round(firstEventMm(child.run, child.children, model)));
+      return { runKey: run.key, reason: 'end-split', detail: `no split style fits its outlets (straight before their first fitting: ${rooms.join(' / ')} mm)` };
+    }
+    if (run.end.kind === 'plenum') return { runKey: run.key, reason: 'end-plenum', detail: 'no spigot fits the plenum' };
+  }
+  const corridor = run.corridorMm !== undefined && Number.isFinite(run.corridorMm) ? `; corridor ${Math.round(run.corridorMm)} mm` : '';
+  for (let k = lastIndex; k >= 0; k -= 1) {
+    if (state.G[k]!.some((frontier) => frontier.some(Number.isFinite))) continue;
+    const segment = state.segments[k]!;
+    const options = state.options[k]!;
+    const alive = state.alive[k] ?? [];
+    const sizes = `${options.length} section${options.length === 1 ? '' : 's'}${corridor}`;
+    if (segment.tap !== null) {
+      const child = state.children[segment.tap]!;
+      const compatible = options.some((leg) => child.options[0]!.some((y) => tapStyles(leg, y, child, model).length > 0));
+      if (!compatible) {
+        return { runKey: run.key, reason: 'take-off', tap: segment.tap, detail: `no take-off joins its branch (${child.options[0]!.length} sections) to this main (${sizes})` };
+      }
+      if (!alive.some((entry) => entry.branch)) {
+        return { runKey: run.key, reason: 'take-off', tap: segment.tap, detail: child.run.allFlex
+          ? `its all-flex runout fits from none of this main's sections (${sizes})`
+          : `no branch size that can be built joins any of this main's sections (${sizes})` };
+      }
+      if (alive.some((entry) => entry.main) && !alive.some((entry) => entry.main && entry.branch)) {
+        return { runKey: run.key, reason: 'take-off', tap: segment.tap, detail: `the sections that can take its branch cannot carry on along the run (${sizes})` };
+      }
+    }
+    return { runKey: run.key, reason: 'section-change', tap: segment.tap ?? undefined, detail: `no section can follow at segment ${k} (reducer room ${Math.round(segment.reducerRoomMm)} mm; ${sizes})` };
+  }
+  return { runKey: run.key, reason: 'unknown', detail: 'no size set' };
+}
+
 /**
  * Sizes a design tree: the root frontier (least first cost per fan pressure,
  * collar transition and fan-outlet compromise included) and the sizes for any
- * point on it.
+ * point on it. When there is none, `onFailure` hears why.
  */
-export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGrid): DesignFrontier | null {
+export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGrid, onFailure?: (failure: SizingFailure) => void): DesignFrontier | null {
   const solver: Solver = { model, grid, states: new Map() };
   const root = solveRun(design.root, solver);
   const collar: DuctLeg = { widthMm: model.ctx.port.widthMm, heightMm: model.ctx.port.heightMm };
@@ -611,17 +724,51 @@ export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGr
   // The connector and the collar transition must fit on the root's first leg with the take-off windows
   // the leg carries (the realiser spreads them downstream), before its first elbow.
   const connectorMm = model.settings.flexibleConnectorAtUnit ? model.settings.connectorFabricMm + 2 * model.settings.connectorMetalMm : 0;
-  const firstBend = runBends(root.run)[0]?.station ?? Number.POSITIVE_INFINITY;
+  const bends = runBends(root.run);
+  const firstBend = bends[0]?.station ?? Number.POSITIVE_INFINITY;
   const plenumMm = root.run.end.kind === 'plenum' ? root.run.end.lengthMm : 0;
-  const legEnd = Math.min(firstBend, runLengthMm(root.run) - plenumMm - 100);
-  const windows = root.run.taps.reduce((total, tap, index) => total + (tap.station < legEnd ? 2 * windowHalfMm(root.children[index]!, model) : 0), 0);
+  const runEnd = runLengthMm(root.run) - plenumMm - 100;
+  const legEnd = Math.min(firstBend, runEnd);
+  const windowsIn = (from: number, to: number) => root.run.taps.reduce((total, tap, index) => total + (tap.station > from && tap.station < to ? 2 * windowHalfMm(root.children[index]!, model) : 0), 0);
+  const windows = windowsIn(-1, legEnd);
+  // Turn first (the collar straight too short for its transition): a square vaned elbow at the collar's own
+  // section, and the transition on the next leg, which holds it with that leg's take-off windows.
+  const flow = root.segments[0]!.flowIn;
+  const neck = model.settings.elbowNeckMm;
+  const collarTurnMm = model.elbowSetbackMm(collar) + neck;
+  const secondEnd = Math.min(bends[1]?.station ?? Number.POSITIVE_INFINITY, runEnd);
+  const turnable = Number.isFinite(firstBend) && Math.abs(bends[0]!.angleDeg - 90) < 1 && windows === 0 && connectorMm + collarTurnMm <= firstBend + 1e-6;
+  const collarElbow = turnable ? model.elbow(collar, 90, flow) : null;
+  const windowsNext = turnable ? windowsIn(firstBend, secondEnd) : 0;
+  /** Per first section: whether it is reached by turning first, and the extra loss that costs (Pa). */
+  const turned = new Uint8Array(root.options[0]!.length);
+  const extraLoss = new Float64Array(root.options[0]!.length);
   root.options[0]!.forEach((leg, x) => {
-    const transition = model.transition(collar, leg, root.segments[0]!.flowIn);
-    const bendSetback = Number.isFinite(firstBend) ? model.elbowRadiusMm(leg) + model.settings.elbowNeckMm : 0;
-    if (connectorMm + transition.lengthMm + windows > legEnd - bendSetback + 1e-6) return;
-    minShiftedInto(cost, arg, root.G[0]![x]!, transition.cost + design.penalty, steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0), grid), x);
+    const transition = model.transition(collar, leg, flow);
+    const bendSetback = Number.isFinite(firstBend) ? model.elbowSetbackMm(leg) + neck : 0;
+    if (connectorMm + transition.lengthMm + windows <= legEnd - bendSetback + 1e-6) {
+      minShiftedInto(cost, arg, root.G[0]![x]!, transition.cost + design.penalty, steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0), grid), x);
+      return;
+    }
+    if (!collarElbow) return;
+    const nextSetback = Number.isFinite(bends[1]?.station ?? Number.POSITIVE_INFINITY) ? model.elbowSetbackMm(leg) + neck : 0;
+    if (collarTurnMm + transition.lengthMm + windowsNext > secondEnd - firstBend - nextSetback + 1e-6) return;
+    // The collar's elbow replaces the one the sizing priced on this section, and the stretch up to it is the collar's.
+    const trunkElbow = model.elbow(leg, 90, flow);
+    const stretch = (firstBend + collarTurnMm) / 1000;
+    const extraCost = collarElbow.cost - trunkElbow.cost + (model.costPerMetre(collar) - model.costPerMetre(leg)) * stretch;
+    turned[x] = 1;
+    extraLoss[x] = Math.max(0, collarElbow.loss - trunkElbow.loss);
+    minShiftedInto(cost, arg, root.G[0]![x]!, transition.cost + design.penalty + extraCost,
+      steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0) + extraLoss[x]!, grid), x);
   });
-  if (!cost.some(Number.isFinite)) return null;
+  if (!cost.some(Number.isFinite)) {
+    onFailure?.(alive(root) ? {
+      runKey: root.run.key, reason: 'collar',
+      detail: `the connector, collar transition and ${Math.round(windows)} mm of take-off windows do not fit before the first elbow (${Math.round(legEnd)} mm)`,
+    } : explainInfeasible(root, model));
+    return null;
+  }
   return {
     design, grid, cost,
     reconstruct(index: number): SizedDesign | null {
@@ -630,7 +777,8 @@ export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGr
       const leg = root.options[0]![x]!;
       const transition = model.transition(collar, leg, root.segments[0]!.flowIn);
       const sizing = new Map<string, RunSizing>();
-      if (!reconstructRun(root, x, index - steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0), grid), solver, sizing)) return null;
+      if (!reconstructRun(root, x, index - steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0) + extraLoss[x]!, grid), solver, sizing)) return null;
+      if (turned[x]) sizing.get(root.run.key)!.collarTurn = true;
       return { design, sizing, modelCost: cost[index]!, modelPressurePa: index * grid.stepPa };
     },
   };
