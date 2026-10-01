@@ -12,6 +12,7 @@ import { priceDuctPlans, type DuctCostBreakdown } from '../ductEconomics';
 import { planDuctRunSpec, type DuctFabricationPlan } from '../ductFabricationPlanner';
 import { systemPressure, type ServicePressure } from '../ductPressure';
 import { getDuctSupportPlan } from '../ductSupports';
+import type { DuctSystemSizingReport } from '../ductSystemSizing';
 import { readDuctRunSpec } from '../ductTypes';
 import { findDuctClashes } from '../ductVolumes';
 
@@ -118,6 +119,8 @@ export interface ServiceOption {
   runKeys?: Map<string, string>;
   /** Terminals whose plenum spigot the design turns to another side: the elements as they will be. */
   terminalUpdates: HvacElement[];
+  /** Sized again by constant friction: the sections and what set them. */
+  sizingReport?: DuctSystemSizingReport;
 }
 
 /** A tree that could not be sized or built: which, where and why (the router learns from these). */

@@ -29,9 +29,10 @@ import { DUCT_SOURCES, isPracticeSource } from './ductSources';
 import { defaultPlenumSize } from './ductPlenum';
 import { neckVelocityMs } from './ductSizing';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
+import { ductSystemRootOfRun } from './ductSystemSizing';
 import { DUCT_TERMINAL_NECKS_MM, isDuctTerminalElement, readDuctTerminalSpec, TERMINAL_LABELS, typicalTerminalSpec, type DuctTerminalSpigotSide } from './ductTerminals';
 import { tapStyleFor, useDuctToolStore } from './ductToolStore';
-import { isDuctElement, isRoundLeg, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
+import { isDuctElement, isRoundLeg, readDuctRunSpec, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
 
 const JOINT_OPTIONS: Array<{ value: DuctJointSystem; label: string }> = [
   { value: 'auto', label: 'Auto (TDC → angle)' },
@@ -271,6 +272,32 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
   );
 }
 
+/** The system a run belongs to: its unit, and how it is sized (constant friction at its basis, or the optimiser). */
+function SystemLine({ element }: { element: HvacElement }) {
+  const { hvacElements, selectElement } = useSmartDrawingStore((state) => ({ hvacElements: state.hvacElements, selectElement: state.selectElement }), shallow);
+  const root = useMemo(() => ductSystemRootOfRun(hvacElements, element.id), [hvacElements, element.id]);
+  const spec = root ? readDuctRunSpec(root) : null;
+  if (!spec || spec.start.kind !== 'unit-port') return null;
+  const unitId = spec.start.unitId;
+  const unit = hvacElements.find((candidate) => candidate.id === unitId);
+  const sizing = spec.sizing;
+  return (
+    <Row label="System">
+      <span className="text-xs" data-testid="duct-run-system">
+        {(unit?.label || 'Unit')} {spec.service} · {sizing
+          ? `constant friction ${sizing.frictionPaPerM.toFixed(2)} Pa/m · ${sizing.mainVelocityMs.toFixed(1)} m/s`
+          : 'life-cycle optimum'}
+      </span>
+      {unit ? (
+        <button type="button" onClick={() => selectElement(unitId)} title="Select the unit: its Auto duct card sizes the ducts on it"
+          className="ml-1 rounded border border-sky-200 bg-sky-50 px-1 text-[10px] text-sky-800 hover:bg-sky-100">
+          Size this system
+        </button>
+      ) : null}
+    </Row>
+  );
+}
+
 export function DuctRunInspector({ element }: { element: HvacElement }) {
   const { hvacElements, ductSettings, updateHvacElement } = useSmartDrawingStore((state) => ({
     hvacElements: state.hvacElements,
@@ -323,6 +350,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
         />
       </Row>
       <Row label="Service"><span className="capitalize">{spec.service}</span>{spec.legacy ? <span className="ml-1 text-xs text-slate-400">(old stub)</span> : null}</Row>
+      <SystemLine element={element} />
       <Row label="Construction">
         <select value={spec.construction === 'gi-nbr' ? 'gi-nbr' : 'gi-bare'} aria-label="Run construction" className={select}
           onChange={(event) => {

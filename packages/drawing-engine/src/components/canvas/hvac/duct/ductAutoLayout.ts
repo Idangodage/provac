@@ -50,7 +50,8 @@ import {
   velocityPressurePa,
   type FanSpeed,
 } from './ductSizing';
-import { resolveSoffitZ } from './ductSupports';
+import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
+import { linkSizingBasis, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec, type DuctTerminalSpec } from './ductTerminals';
 import {
   isDuctElement,
@@ -61,6 +62,7 @@ import {
   type DuctSide,
   type DuctSpigotFace,
   type DuctSplitStyle,
+  type DuctSystemSizing,
 } from './ductTypes';
 import { findDuctClashes, terminalBoxOf } from './ductVolumes';
 import { designFromRuns, withReplaced, type ServiceDesign } from './optimizer/designTree';
@@ -131,6 +133,23 @@ export interface AutoDuctRequest {
   shape?: AutoDuctShape;
   /** The drawing's walls: the ducts stay clear of them (a duct through a wall needs a sleeve and a reason). */
   walls?: ReadonlyArray<AutoDuctWall>;
+  /** Size by constant friction at these bases (per service); absent or null = the life-cycle optimum. */
+  sizing?: AutoDuctSizingBases | null;
+  /** Airflow per terminal set in the card (m³/h; null = an equal share), written to the terminals with the runs. */
+  terminalAirflows?: Readonly<Record<string, number | null>>;
+}
+
+/** Constant-friction bases by service. */
+export type AutoDuctSizingBases = Partial<Record<DuctService, DuctSystemSizing>>;
+
+/** A terminal's design airflow as the card sets it (an absent entry leaves the terminal's own). */
+export function terminalWithAirflow(element: HvacElement, airflows: Readonly<Record<string, number | null>> | undefined): HvacElement {
+  const spec = readDuctTerminalSpec(element);
+  if (!spec || !airflows || !Object.prototype.hasOwnProperty.call(airflows, element.id)) return element;
+  const value = airflows[element.id];
+  const next = value !== null && value !== undefined && value > 0 ? value : null;
+  if ((spec.designAirflowM3h ?? null) === next) return element;
+  return { ...element, properties: { ...element.properties, terminal: { ...spec, designAirflowM3h: next } } };
 }
 
 /** A wall as the auto layout sees it: its centre line and thickness (mm). */
@@ -183,6 +202,8 @@ export interface AutoDuctServiceResult {
   cost: DuctCostBreakdown | null;
   /** Terminals whose plenum-box spigot the design turns, as they will be (applied with the runs). */
   terminalUpdates: HvacElement[];
+  /** Sized by constant friction: every section, what set it, and the basis. */
+  sizingReport?: DuctSystemSizingReport | null;
 }
 
 /** One whole design (every service), verified and priced. */
@@ -255,6 +276,10 @@ export interface AutoDuctResult {
   baseIssues: AutoDuctIssue[];
   /** Services with nothing to optimise (no collar, occupied, …), shown with every design. */
   staticServices: AutoDuctServiceResult[];
+  /** The constant-friction bases the designs are sized at (linked at the system airflow); null = life-cycle optimum. */
+  sizing: AutoDuctSizingBases | null;
+  /** Terminals whose design airflow the card set, as they will be (applied with the runs, one undo). */
+  terminalAirflowUpdates: HvacElement[];
 }
 
 interface Candidate {
@@ -922,6 +947,7 @@ function serviceResultFor(work: ServiceWork, option: ServiceOption): AutoDuctSer
     issues: [...work.base.issues, ...spigotNotes(work, option), ...option.issues],
     terminalUpdates: option.terminalUpdates,
     terminals: terminalReports(work, option),
+    sizingReport: option.sizingReport ?? null,
     candidates: work.options.map((candidate) => ({
       layout: layoutKindOf(candidate.label), label: candidate.label, cost: Math.round(candidate.cost.total),
       espPa: Math.round(candidate.espPa * 10) / 10, errors: candidate.errors, warnings: candidate.warnings,
@@ -989,6 +1015,165 @@ export function selectAutoDuctDesign(result: AutoDuctResult, index: number): Aut
   };
 }
 
+/** The trunk's sections first to last (one entry per change), from a constant-friction report. */
+function trunkSectionsOf(report: DuctSystemSizingReport): AutoDuctServiceResult['trunkSections'] {
+  const out: AutoDuctServiceResult['trunkSections'] = [];
+  for (const section of report.sections) {
+    if (section.runId !== report.rootRunId) continue;
+    const last = out[out.length - 1];
+    if (last && last.widthMm === section.section.widthMm && last.heightMm === section.section.heightMm && last.diameterMm === section.section.diameterMm) continue;
+    out.push({ ...section.section, airflowM3h: section.airflowM3h });
+  }
+  return out;
+}
+
+/**
+ * A verified option sized again by constant friction at `basis` (the route
+ * kept), verified again exactly as the optimiser's own: plans, clashes, walls,
+ * pressure, price.
+ */
+function constantFrictionOption(ctx: ServiceCtx, option: ServiceOption, basis: DuctSystemSizing, terminalAirflows: AutoDuctRequest['terminalAirflows']): ServiceOption {
+  const root = option.runs.find((run) => readDuctRunSpec(run)?.start.kind === 'unit-port');
+  if (!root) return option;
+  const scene = [...withReplaced(ctx.baseScene, option.terminalUpdates), ...option.runs];
+  const sized = sizeDuctSystem(scene, root.id, { basis, ...(terminalAirflows ? { terminalAirflows } : {}), verify: false }, ctx.settings);
+  const byId = new Map(sized.runs.map((run) => [run.id, run]));
+  const runs = option.runs.map((run) => byId.get(run.id) ?? run);
+  // The design's own notes stay; the sizing's go with them (the planner's are found again).
+  const notes = [...option.issues.filter((issue) => !issue.runId), ...sized.report.issues.filter((issue) => issue.code.startsWith('DU_SIZE_'))];
+  const verified = verifyRuns(ctx, runs, notes, option.terminalUpdates);
+  const cost = priceDuctPlans(verified.plans, ctx.settings, verified.hangers, verified.straps);
+  cost.total += option.design?.penalty ?? 0;
+  const report: DuctSystemSizingReport = {
+    ...sized.report,
+    pressure: verified.pressure,
+    terminals: sized.report.terminals.map((terminal) => ({ ...terminal, throttlePa: Math.round(verified.pressure.throttlePa[terminal.terminalId] ?? 0) })),
+    issues: verified.issues, errors: verified.errors, warnings: verified.warnings,
+  };
+  return {
+    ...option,
+    key: `${option.key}|cf`,
+    label: `${option.label.replace(/ \(equal friction\)$/, '')} · constant friction`,
+    runs, plans: verified.plans, pressure: verified.pressure, espPa: verified.pressure.indexPa, cost,
+    errors: verified.errors, warnings: verified.warnings, issues: verified.issues, trunkSections: trunkSectionsOf(report), sizingReport: report,
+  };
+}
+
+/** The frontier's picks among designs: the fewest errors, within the fan if any are, then by each measure. */
+export function pickAutoDuctDesigns(designs: readonly AutoDuctDesign[], maxEspPa: number | null): AutoDuctResult['picks'] {
+  if (!designs.length) return null;
+  const fewest = Math.min(...designs.map((design) => design.errors));
+  const clean = designs.map((design, index) => ({ design, index })).filter(({ design }) => design.errors === fewest);
+  const withinFan = clean.filter(({ design }) => maxEspPa === null || design.requiredEspPa <= maxEspPa + 1e-6);
+  const pool = withinFan.length ? withinFan : clean;
+  const by = (value: (design: AutoDuctDesign) => number, tie: (design: AutoDuctDesign) => number) => pool.reduce((best, entry) => {
+    const a = value(entry.design);
+    const b = value(best.design);
+    return a < b - 1e-9 || (Math.abs(a - b) <= 1e-9 && tie(entry.design) < tie(best.design)) ? entry : best;
+  }).index;
+  return {
+    cheapest: by((design) => design.firstCost, (design) => design.requiredEspPa),
+    lifeCycle: by((design) => design.lifeCycleCost, (design) => design.firstCost),
+    quietest: by((design) => design.requiredEspPa, (design) => design.firstCost),
+  };
+}
+
+/** Issues a constant-friction report finds again (the rest of a service's issues stay). */
+const REPORTED_AGAIN = new Set(['DU_AUTO_AIRFLOW', 'DU_TERMINAL_VELOCITY', 'DU_AUTO_ESP', 'DU_AUTO_NO_DATA']);
+
+/** The bases linked at the result's system airflow, with its fan speed and typed airflow. */
+export function linkedAutoDuctBases(result: Pick<AutoDuctResult, 'fanSpeed' | 'airflowM3h' | 'airflowSource'>, bases: AutoDuctSizingBases): AutoDuctSizingBases {
+  const out: AutoDuctSizingBases = {};
+  for (const service of ['supply', 'return'] as const) {
+    const basis = bases[service];
+    if (!basis) continue;
+    out[service] = linkSizingBasis({
+      ...basis, fanSpeed: result.fanSpeed, airflowM3h: result.airflowSource === 'entered' ? result.airflowM3h : null,
+    }, result.airflowM3h);
+  }
+  return out;
+}
+
+/**
+ * A preview design sized again by constant friction at `bases` (the routes
+ * kept): each service's runs, plans, pressure, price and issues, from the
+ * drawing the preview was made on. Pure.
+ */
+export function resizeAutoDuctDesign(
+  result: AutoDuctResult,
+  index: number,
+  bases: AutoDuctSizingBases,
+  terminalAirflows: AutoDuctRequest['terminalAirflows'],
+  scene: readonly HvacElement[],
+  settings: DuctDesignSettings,
+): AutoDuctDesign {
+  const design = result.designs[index]!;
+  const removed = new Set(result.removeIds);
+  const base = withReplaced(scene.filter((element) => !removed.has(element.id)), design.terminalUpdates);
+  const linked = linkedAutoDuctBases(result, bases);
+  let runs = [...design.runs];
+  const services = design.services.map((service): AutoDuctServiceResult => {
+    const basis = linked[service.service];
+    const root = service.runs.find((run) => readDuctRunSpec(run)?.start.kind === 'unit-port');
+    if (!basis || !root) return service;
+    const sized = sizeDuctSystem([...base, ...runs], root.id, { basis, ...(terminalAirflows ? { terminalAirflows } : {}) }, settings);
+    const byId = new Map(sized.runs.map((run) => [run.id, run]));
+    runs = runs.map((run) => byId.get(run.id) ?? run);
+    const report = sized.report;
+    const after = [...base, ...runs];
+    let hangers = 0;
+    let straps = 0;
+    for (const plan of report.plans) {
+      for (const hanger of getDuctSupportPlan(plan, after, settings).hangers) {
+        if (hanger.kind === 'strap') straps += 1;
+        else hangers += 1;
+      }
+    }
+    const firstLegs = new Map(report.plans.map((plan) => [plan.elementId, plan.spec.legs[0]]));
+    return {
+      ...service,
+      label: service.label.includes('constant friction') ? service.label : `${service.label.replace(/ \(equal friction\)$/, '')} · constant friction`,
+      runs: service.runs.map((run) => byId.get(run.id) ?? run),
+      plans: report.plans,
+      pressure: report.pressure,
+      trunkSections: trunkSectionsOf(report),
+      cost: priceDuctPlans(report.plans, settings, hangers, straps),
+      issues: [...service.issues.filter((issue) => !issue.runId && !REPORTED_AGAIN.has(issue.code) && !issue.code.startsWith('DU_SIZE_')), ...report.issues],
+      terminals: service.terminals.map((terminal) => {
+        const sizedTerminal = report.terminals.find((entry) => entry.terminalId === terminal.terminalId);
+        const first = terminal.runId ? firstLegs.get(terminal.runId) : undefined;
+        return sizedTerminal ? {
+          ...terminal, airflowM3h: sizedTerminal.airflowM3h, fixed: sizedTerminal.fixed, neckVelocityMs: sizedTerminal.neckVelocityMs,
+          branchDiameterMm: first ? Math.round(first.diameterMm ?? first.widthMm) : terminal.branchDiameterMm,
+        } : terminal;
+      }),
+      sizingReport: report,
+    };
+  });
+  const cost = addCosts(services.flatMap((service) => (service.cost ? [service.cost] : [])));
+  const requiredEspPa = services.reduce((sum, service) => sum + (service.pressure?.indexPa ?? 0), 0);
+  const energyCost = result.pricePerPa * requiredEspPa;
+  return {
+    ...design,
+    label: services.map((service) => service.label).join(' · '),
+    services, runs, cost, firstCost: cost.total, requiredEspPa, energyCost, lifeCycleCost: cost.total + energyCost,
+    errors: services.reduce((sum, service) => sum + (service.sizingReport?.errors ?? 0), 0),
+    warnings: services.reduce((sum, service) => sum + (service.sizingReport?.warnings ?? 0), 0),
+  };
+}
+
+/** The result with some designs replaced (by index), its picks found again and the shown one kept. */
+export function withAutoDuctDesigns(result: AutoDuctResult, replaced: ReadonlyMap<number, AutoDuctDesign>, sizing: AutoDuctSizingBases, terminalAirflowUpdates: HvacElement[]): AutoDuctResult {
+  const designs = result.designs.map((design, index) => replaced.get(index) ?? design);
+  const next: AutoDuctResult = {
+    ...result, designs, sizing: linkedAutoDuctBases(result, sizing), terminalAirflowUpdates,
+    picks: pickAutoDuctDesigns(designs, result.maxEspPa),
+    // A certificate's model gap compares the optimiser's own sizes, no longer shown.
+    certificate: result.certificate ? { ...result.certificate, modelGapPct: null } : null,
+  };
+  return selectAutoDuctDesign(next, result.selected);
+}
+
 /** The store updates that turn terminals' spigots as a design has them (their terminal properties only). */
 export function terminalSpigotUpdates(elements: readonly HvacElement[]): Array<{ id: string; updates: Partial<HvacElement> }> {
   return elements.map((element) => ({ id: element.id, updates: { properties: element.properties } }));
@@ -1014,6 +1199,7 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
     unitId: request.unitId, unitLabel: unit?.label || unit?.modelLabel || 'Unit', fanSpeed: request.fanSpeed,
     airflowM3h: null, airflowSource: null, maxEspPa: null, requiredEspPa: null, services: [], runs: [], removeIds: [], terminalUpdates: [], issues: [],
     designs: [], picks: null, selected: 0, pricePerPa: 0, currency: settings.econCurrency, certificate: null, baseIssues: [], staticServices: [],
+    sizing: null, terminalAirflowUpdates: [],
   };
   if (!unit) {
     result.issues.push({ code: 'DU_AUTO_NO_PORT', severity: 'error', message: 'The unit is not in the drawing.' });
@@ -1033,6 +1219,16 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
     return result;
   }
   result.pricePerPa = energyPricePerPa(airflow, settings);
+  // Constant friction: each service's basis, linked at the system airflow (the typed one or the fan speed's).
+  const bases: AutoDuctSizingBases = {};
+  for (const service of ['supply', 'return'] as const) {
+    const basis = request.sizing?.[service];
+    if (basis) bases[service] = linkSizingBasis({ ...basis, fanSpeed: request.fanSpeed, airflowM3h: request.airflowM3h && request.airflowM3h > 0 ? request.airflowM3h : null }, airflow);
+  }
+  result.sizing = Object.keys(bases).length ? bases : null;
+  const airflows = request.terminalAirflows;
+  result.terminalAirflowUpdates = scene.filter((element) => request.terminalIds.includes(element.id) && isDuctTerminalElement(element))
+    .map((element) => terminalWithAirflow(element, airflows)).filter((element) => !scene.includes(element));
   const ports = listAirPorts(scene).filter((port) => port.unitId === unit.id);
   const terminalPorts = listTerminalPorts(scene);
   const requested = scene.filter((element) => request.terminalIds.includes(element.id) && isDuctTerminalElement(element));
@@ -1097,7 +1293,7 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       continue;
     }
     const frame: Frame = { origin: { x: port.lip.x, y: port.lip.y }, n: port.normal, t: legNormal(port.normal) };
-    const shares = shareAirflow(airflow, free.map((element) => ({ id: element.id, spec: readDuctTerminalSpec(element)! })));
+    const shares = shareAirflow(airflow, free.map((element) => ({ id: element.id, spec: readDuctTerminalSpec(terminalWithAirflow(element, airflows))! })));
     const total = shares.reduce((sum, share) => sum + share.airflowM3h, 0);
     if (Math.abs(total - airflow) > airflow * 0.1) {
       serviceResult.issues.push({ code: 'DU_AUTO_AIRFLOW', severity: 'warning', service, message: `The ${service} terminals add up to ${Math.round(total)} m³/h, not the unit's ${Math.round(airflow)} m³/h.` });
@@ -1320,6 +1516,9 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
         modelCost: 0, modelPressurePa: verified.pressure.indexPa, exact: false, terminalUpdates: [],
       }];
     }
+    // Constant friction: every verified route sized again at the designer's basis, and verified again.
+    const basis = bases[service];
+    if (basis) options = options.map((option) => constantFrictionOption(ctx, option, basis, airflows));
     // Nothing clean: why, from what failed most often across the trees tried.
     if (options.length && Math.min(...options.map((option) => option.errors)) > 0) {
       // No tree at all: first, whether something in front of the collar is why.
@@ -1378,22 +1577,10 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
     };
   });
   if (result.designs.length) {
-    const fewest = Math.min(...result.designs.map((design) => design.errors));
-    const clean = result.designs.map((design, index) => ({ design, index })).filter(({ design }) => design.errors === fewest);
-    const withinFan = clean.filter(({ design }) => result.maxEspPa === null || design.requiredEspPa <= result.maxEspPa + 1e-6);
-    const pool = withinFan.length ? withinFan : clean;
-    const by = (value: (design: AutoDuctDesign) => number, tie: (design: AutoDuctDesign) => number) => pool.reduce((best, entry) => {
-      const a = value(entry.design);
-      const b = value(best.design);
-      return a < b - 1e-9 || (Math.abs(a - b) <= 1e-9 && tie(entry.design) < tie(best.design)) ? entry : best;
-    }).index;
-    result.picks = {
-      cheapest: by((design) => design.firstCost, (design) => design.requiredEspPa),
-      lifeCycle: by((design) => design.lifeCycleCost, (design) => design.firstCost),
-      quietest: by((design) => design.requiredEspPa, (design) => design.firstCost),
-    };
+    result.picks = pickAutoDuctDesigns(result.designs, result.maxEspPa)!;
     const chosen = result.designs[result.picks.lifeCycle]!;
-    const modelled = chosen.services.every((service) => service.label && !service.label.endsWith('(equal friction)'));
+    // The model's gap means something only for the optimiser's own sizes.
+    const modelled = !result.sizing && chosen.services.every((service) => service.label && !service.label.endsWith('(equal friction)'));
     result.certificate = {
       exact: exact && !timeLimited, trees, realised, solveMs: Date.now() - started, routerMs, sizingMs, rounds: feasibilityRounds, cuts: cutsLearnt,
       grouped, timeLimited,

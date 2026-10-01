@@ -68,7 +68,8 @@ function sheetOf(spec: DuctRunSpec, section: DuctLeg, settings: DuctDesignSettin
   }).sheetThicknessMm ?? 1;
 }
 
-function startAnchor(spec: DuctRunSpec): DuctAnchor | null {
+/** Where a run starts: its first point, the plan direction of its first leg, its level. */
+export function startAnchor(spec: DuctRunSpec): DuctAnchor | null {
   const a = spec.path[0];
   const b = spec.path[1];
   if (!a || !b) return null;
@@ -77,7 +78,7 @@ function startAnchor(spec: DuctRunSpec): DuctAnchor | null {
 }
 
 /** Where a branch now attaches on its (changed) parent; null when it no longer can. */
-function branchAnchor(parentSpec: DuctRunSpec, branchSpec: DuctRunSpec, settings: DuctDesignSettings): DuctAnchor | null {
+export function branchAnchor(parentSpec: DuctRunSpec, branchSpec: DuctRunSpec, settings: DuctDesignSettings): DuctAnchor | null {
   const start = branchSpec.start;
   const firstSection = branchSpec.legs[0];
   if (!firstSection) return null;
@@ -101,6 +102,81 @@ function branchAnchor(parentSpec: DuctRunSpec, branchSpec: DuctRunSpec, settings
 }
 
 const MOVED_EPSILON_MM = 0.01;
+
+export interface KeptEndReanchor {
+  spec: DuctRunSpec;
+  /** Where a point of the old run's leg `legIndex` now is (for the branches taken off it). */
+  mapPoint: (point: Point2D, legIndex: number) => Point2D;
+  /** Moved rigidly (the direction it leaves in changed, or a leg would vanish). */
+  rigid: boolean;
+}
+
+/**
+ * A branch re-anchored on its parent's changed wall, keeping where it goes:
+ * the start moves to the new anchor and the first straight (up to its first
+ * bend) slides sideways onto the new line, so only the legs either side of it
+ * change length; the rest of the run and the terminal at its end stay where
+ * they are (a flexible runout re-curves only if the straight moved sideways).
+ * Where the first leg would get shorter than `minFirstMm` (its collar and
+ * damper), the first straight moves whole instead. Where the direction it
+ * leaves in changed, or a leg would vanish, it moves rigidly, its runout
+ * still ending on the terminal.
+ */
+export function reanchorKeepingEnd(spec: DuctRunSpec, from: DuctAnchor, to: DuctAnchor, minFirstMm: number): KeptEndReanchor {
+  const flexTail = spec.end.kind === 'terminal' && spec.end.flex && spec.path.length >= 3;
+  const lastRigid = spec.path.length - (flexTail ? 2 : 1);
+  const shift = { x: to.point.x - from.point.x, y: to.point.y - from.point.y };
+  const dz = to.z - from.z;
+  const keepLip = (moved: DuctRunSpec): DuctRunSpec => (flexTail
+    ? { ...moved, path: [...moved.path.slice(0, -1), spec.path[spec.path.length - 1]!] }
+    : moved);
+  const rigidMove = (): KeptEndReanchor => {
+    const angle = Math.atan2(to.direction.y, to.direction.x) - Math.atan2(from.direction.y, from.direction.x);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const map = (point: Point2D): Point2D => {
+      const x = point.x - from.point.x;
+      const y = point.y - from.point.y;
+      return { x: to.point.x + x * cos - y * sin, y: to.point.y + x * sin + y * cos };
+    };
+    return { spec: keepLip(rigidTransformSpec(spec, from, to)), mapPoint: map, rigid: true };
+  };
+  const sameDirection = Math.hypot(to.direction.x - from.direction.x, to.direction.y - from.direction.y) < 1e-6;
+  if (!sameDirection || Math.abs(spec.path[1]!.z - spec.path[0]!.z) > 0.5) return rigidMove();
+  const d = to.direction;
+  const along = shift.x * d.x + shift.y * d.y;
+  // The first straight: the points on the line the run leaves on.
+  let straightEnd = 1;
+  while (straightEnd < lastRigid) {
+    const a = spec.path[straightEnd]!;
+    const b = spec.path[straightEnd + 1]!;
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length < 1e-6 || Math.abs(b.z - a.z) > 0.5 || Math.abs(((b.x - a.x) * d.y - (b.y - a.y) * d.x) / length) > 1e-6 || (b.x - a.x) * d.x + (b.y - a.y) * d.y <= 0) break;
+    straightEnd += 1;
+  }
+  const firstLength = Math.hypot(spec.path[1]!.x - spec.path[0]!.x, spec.path[1]!.y - spec.path[0]!.y);
+  // Too short for its collar and damper: the straight moves whole (the leg after it changes length).
+  const whole = firstLength - along < minFirstMm;
+  const slide = whole ? shift : { x: shift.x - d.x * along, y: shift.y - d.y * along };
+  if (straightEnd < lastRigid) {
+    const a = spec.path[straightEnd]!;
+    const b = spec.path[straightEnd + 1]!;
+    const before = Math.hypot(b.x - a.x, b.y - a.y);
+    const after = Math.hypot(b.x - a.x - slide.x, b.y - a.y - slide.y);
+    if (after < 50 || ((b.x - a.x - slide.x) * (b.x - a.x) + (b.y - a.y - slide.y) * (b.y - a.y)) <= 0 || before < 1e-6) return rigidMove();
+  }
+  const path = spec.path.map((point, index) => {
+    if (index > lastRigid) return point;
+    if (index === 0) return { x: to.point.x, y: to.point.y, z: point.z + dz };
+    if (index <= straightEnd) return { x: point.x + slide.x, y: point.y + slide.y, z: point.z + dz };
+    return { ...point, z: point.z + dz };
+  });
+  return {
+    spec: { ...spec, path },
+    mapPoint: (point, legIndex) => (legIndex < straightEnd ? { x: point.x + slide.x, y: point.y + slide.y } : point),
+    rigid: false,
+  };
+}
 
 function anchorsDiffer(a: DuctAnchor, b: DuctAnchor): boolean {
   return Math.hypot(a.point.x - b.point.x, a.point.y - b.point.y) > MOVED_EPSILON_MM

@@ -15,6 +15,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 
 import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
 import type { DuctJointSystem } from './ductSettings';
+import type { FanSpeed } from './ductSizing';
 
 export interface DuctPoint3 {
   x: number;
@@ -140,6 +141,30 @@ export interface DuctNodeOverride {
   vaneType?: DuctVaneType;
 }
 
+/**
+ * How a duct system is sized by constant friction (equal friction, ASHRAE
+ * Fundamentals ch. 21): the friction rate every section is sized at, linked to
+ * the main's velocity at the system airflow (the one set last drives the
+ * other), the velocity limits by part, and the airflow it was sized for. Kept
+ * on the run off the unit's collar; a system without it was sized by the
+ * life-cycle optimiser.
+ */
+export interface DuctSystemSizing {
+  method: 'constant-friction';
+  /** Which value the designer set: the other follows from it. */
+  drive: 'velocity' | 'friction';
+  /** Velocity in the main at the system airflow (m/s). */
+  mainVelocityMs: number;
+  frictionPaPerM: number;
+  /** Upper limits (noise) by part: trunk (two or more terminals), branch (one), runout (flex). */
+  maxVelocity: { trunk: number; branch: number; runout: number };
+  fanSpeed: FanSpeed;
+  /** Typed system airflow (m³/h); null = the unit's at the fan speed. */
+  airflowM3h: number | null;
+}
+
+const FAN_SPEED_KEYS: readonly FanSpeed[] = ['p-hi', 'hi', 'me', 'lo'];
+
 export interface DuctRunSpec {
   version: 1;
   service: DuctService;
@@ -160,6 +185,8 @@ export interface DuctRunSpec {
   /** Keyed by path node index. */
   nodeOverrides: Record<string, DuctNodeOverride>;
   locked: boolean;
+  /** The system's constant-friction basis (on the run off the unit's collar only). */
+  sizing?: DuctSystemSizing;
   /** Read from the old straight-stub format (no connector, no end cap). */
   legacy?: boolean;
 }
@@ -267,6 +294,32 @@ function readLeg(value: unknown, fallback: DuctLeg): DuctLeg {
   };
 }
 
+/** The stored sizing basis, or undefined when absent or unusable. */
+export function readDuctSystemSizing(value: unknown): DuctSystemSizing | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.method !== 'constant-friction') return undefined;
+  const positive = (raw: unknown, fallback: number, low: number, high: number) => {
+    const number = readNumber(raw, fallback);
+    return Math.min(high, Math.max(low, Number.isFinite(number) && number > 0 ? number : fallback));
+  };
+  const limits = (record.maxVelocity && typeof record.maxVelocity === 'object' ? record.maxVelocity : {}) as Record<string, unknown>;
+  const airflow = readNumber(record.airflowM3h, Number.NaN);
+  return {
+    method: 'constant-friction',
+    drive: record.drive === 'velocity' ? 'velocity' : 'friction',
+    mainVelocityMs: positive(record.mainVelocityMs, 4, 0.5, 20),
+    frictionPaPerM: positive(record.frictionPaPerM, 0.8, 0.05, 10),
+    maxVelocity: {
+      trunk: positive(limits.trunk, 5, 0.5, 20),
+      branch: positive(limits.branch, 4, 0.5, 20),
+      runout: positive(limits.runout, 3, 0.5, 20),
+    },
+    fanSpeed: FAN_SPEED_KEYS.includes(record.fanSpeed as FanSpeed) ? record.fanSpeed as FanSpeed : 'hi',
+    airflowM3h: Number.isFinite(airflow) && airflow > 0 ? airflow : null,
+  };
+}
+
 function readJointSystem(value: unknown): DuctJointSystem | null {
   return value === 'auto' || value === 'tdc' || value === 'ductmate' || value === 'angle-flange' ? value : null;
 }
@@ -337,6 +390,7 @@ export function readDuctRunSpec(
       overrides[key] = override;
     }
   }
+  const sizing = readDuctSystemSizing(record.sizing);
   return {
     version: 1,
     service: record.service === 'return' ? 'return' : 'supply',
@@ -351,6 +405,7 @@ export function readDuctRunSpec(
     end: readEnd(record.end),
     nodeOverrides: overrides,
     locked: record.locked === true,
+    ...(sizing ? { sizing } : {}),
   };
 }
 

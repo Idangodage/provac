@@ -129,6 +129,8 @@ export interface DuctDesignSettings {
   /** Optimiser: the round-main take-offs it may use, and whether a round main may end in a wye. */
   autoRoundMainStyles: DuctRoundMainTapStyle[];
   autoAllowWye: boolean;
+  /** How Auto duct sizes the sections: the life-cycle optimum, or constant friction (equal friction) at the card's basis. */
+  autoSizingMethod: 'life-cycle' | 'constant-friction';
   /**
    * Economics (auto duct optimiser), in `econCurrency`. First cost: galvanised
    * sheet by mass, fabrication and installation by sheet area (fittings at a
@@ -227,6 +229,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoChooseSpigotSide: true,
   autoRoundMainStyles: ['round-conical', 'round-tee', 'round-lateral'],
   autoAllowWye: true,
+  autoSizingMethod: 'life-cycle',
   econCurrency: 'USD',
   econSheetPerKg: 1.6,
   econFabricationRectPerM2: 14,
@@ -321,6 +324,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   autoChooseSpigotSide: practice('A symmetric face throws the same pattern whichever side its plenum box is fed from; the optimiser picks the side the duct reaches best. Linear slots keep theirs.'),
   autoRoundMainStyles: { sourceId: 'smacna-1995', reference: 'Fig. 3-4 (p.3.11), Fig. 3-5 (p.3.12)', verified: true, note: 'Which of the SMACNA round-main fittings the optimiser may choose; it picks per branch by cost and loss.' },
   autoAllowWye: { sourceId: 'smacna-1995', reference: 'Fig. 3-5 (p.3.12)', verified: true, note: 'A round main may end in a wye.' },
+  autoSizingMethod: practice('Constant friction is the equal-friction method (ASHRAE Fundamentals ch. 21); the life-cycle optimum trades first cost against fan energy.'),
   econCurrency: { sourceId: 'project-configuration', verified: false, note: 'Currency of the rates below.' },
   econSheetPerKg: practice('Placeholder: galvanised coil price per kg; enter the supplier\'s.'),
   econFabricationRectPerM2: practice('Placeholder: rectangular duct fabrication (brake, seams, flanges) per m² of sheet.'),
@@ -451,6 +455,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
       ? [...new Set((raw.autoRoundMainStyles as unknown[]).filter((style): style is DuctRoundMainTapStyle => (ROUND_MAIN_TAP_STYLES as readonly unknown[]).includes(style)))]
       : [...d.autoRoundMainStyles],
     autoAllowWye: bool(raw.autoAllowWye, d.autoAllowWye),
+    autoSizingMethod: oneOf(raw.autoSizingMethod, ['life-cycle', 'constant-friction'] as const, d.autoSizingMethod),
     econCurrency: typeof raw.econCurrency === 'string' && /^[A-Za-z]{3}$/.test(raw.econCurrency) ? raw.econCurrency.toUpperCase() : d.econCurrency,
     econSheetPerKg: clampNumber(raw.econSheetPerKg, d.econSheetPerKg, 0, 1e4),
     econFabricationRectPerM2: clampNumber(raw.econFabricationRectPerM2, d.econFabricationRectPerM2, 0, 1e5),

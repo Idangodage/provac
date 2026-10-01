@@ -21,7 +21,7 @@ import { maxRoundBranchMm, roundMainTapGeometry, roundReducerMinLengthMm, wyeLeg
 import { SMACNA_TABLE_3_1 } from '../ductRoundRules';
 import type { DuctDesignSettings } from '../ductSettings';
 import { frictionPaPerM, sizingLimits, velocityMs, velocityPressurePa } from '../ductSizing';
-import { isRoundLeg, isRoundMainTapStyle, roundLeg, type DuctLeg, type DuctSplitStyle, type DuctTapStyle } from '../ductTypes';
+import { isRoundLeg, isRoundMainTapStyle, roundLeg, type DuctConstruction, type DuctLeg, type DuctSplitStyle, type DuctTapStyle } from '../ductTypes';
 
 export type ShapeMode = 'rect' | 'round' | 'optimal';
 
@@ -367,6 +367,16 @@ export class SizingModel {
   flex(neckMm: number, airflowM3h: number, lengthMm: number): CostLoss {
     return { cost: flexCost(neckMm, lengthMm, this.settings), loss: this.friction(roundLeg(neckMm), airflowM3h, lengthMm, 'flex') };
   }
+}
+
+/**
+ * A model for the fitting geometry only (elbow reach, take-off windows,
+ * transition lengths, collars): those read nothing but the settings, so no
+ * terminals, obstacles or void are needed.
+ */
+export function geometryModel(settings: DuctDesignSettings, service: 'supply' | 'return', construction: DuctConstruction): SizingModel {
+  const ctx = { settings, service, construction, maxHeightMm: Number.POSITIVE_INFINITY } as unknown as ServiceCtx;
+  return new SizingModel(ctx, 'optimal', 1);
 }
 
 export function areaOf(leg: DuctLeg): number {

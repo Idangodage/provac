@@ -818,9 +818,15 @@ export function DrawingCanvas({
           turnedTerminals: (result.terminalUpdates ?? []).map((element) => ({ id: element.id, spigotSide: readDuctTerminalSpec(element)?.spigotSide ?? null })),
           issues: [...result.issues, ...result.services.flatMap((service) => service.issues)].map((issue) => `${issue.severity}:${issue.code}: ${issue.message}`),
           services: result.services.map((service) => ({
-            service: service.service, layout: service.layout, trunkSections: service.trunkSections, candidates: service.candidates,
+            service: service.service, layout: service.layout, label: service.label, trunkSections: service.trunkSections, candidates: service.candidates,
             terminals: service.terminals, indexPa: service.pressure?.indexPa ?? null,
+            sizing: service.sizingReport ? {
+              basis: service.sizingReport.basis, errors: service.sizingReport.errors, warnings: service.sizingReport.warnings,
+              sections: service.sizingReport.sections.map((section) => ({ run: section.runLabel, airflow: section.airflowM3h, size: section.section, velocity: section.velocityMs, friction: section.frictionPaPerM, setBy: section.setBy })),
+            } : null,
           })),
+          sizing: result.sizing,
+          runLegs: result.runs.map((run) => ({ id: run.id, legs: readDuctRunSpec(run)?.legs ?? [], sizing: readDuctRunSpec(run)?.sizing ?? null })),
         } : null;
       },
       applyAutoDuct: () => applyAutoDuctPreview(),

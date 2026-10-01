@@ -75,6 +75,8 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
   const approved = useCondensatePreviewStore((state) => state.approvedHopKeys);
   const toggleHop = useCondensatePreviewStore((state) => state.toggleHop);
   const condensateSettings = useSmartDrawingStore((state) => state.condensateSettings);
+  const ductSettings = useSmartDrawingStore((state) => state.ductSettings);
+  const setDuctSettings = useSmartDrawingStore((state) => state.setDuctSettings);
   const setCondensateSettings = useSmartDrawingStore((state) => state.setCondensateSettings);
   const [services, setServices] = useState<AutoRouteServices>(ALL_SERVICES);
   const [ductShape, setDuctShape] = useState<AutoDuctShape>('optimal');
@@ -242,6 +244,16 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
                     ))}
                   </div>
                 </div>
+                <label className="flex items-center justify-between gap-3 text-slate-600">
+                  <span>Sizing</span>
+                  <select value={ductSettings.autoSizingMethod} aria-label="Auto route duct sizing"
+                    onChange={(event) => setDuctSettings({ autoSizingMethod: event.target.value as typeof ductSettings.autoSizingMethod })}
+                    className="rounded-md border border-slate-200 p-1.5"
+                    title="Constant friction sizes at the project's friction rates and velocity limits (Duct Systems settings); the Auto duct card sets them per unit">
+                    <option value="life-cycle">Life-cycle optimum</option>
+                    <option value="constant-friction">Constant friction · {ductSettings.autoFrictionSupplyPaPerM.toFixed(2)} Pa/m</option>
+                  </select>
+                </label>
                 <label className="flex items-center justify-between gap-3 text-slate-600">
                   <span>Fan speed (airflow)</span>
                   <select value={ductFanSpeed} onChange={(event) => setDuctFanSpeed(event.target.value as FanSpeed)} aria-label="Auto route duct fan speed"

@@ -1,15 +1,28 @@
 /**
  * Store glue for the duct auto layout: which unit and terminals the selection
- * means, Generate (into the preview), Apply (one command, one undo) and Discard.
+ * means, Generate (into the preview), Apply (one command, one undo) and Discard;
+ * and constant-friction sizing after Generate — live on the preview (the shown
+ * design at once, the others after it), or on the drawing as one command.
  */
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
-import { terminalSpigotUpdates, type AutoDuctRequest } from './ductAutoLayout';
+import {
+  resizeAutoDuctDesign,
+  terminalSpigotUpdates,
+  terminalWithAirflow,
+  withAutoDuctDesigns,
+  type AutoDuctDesign,
+  type AutoDuctRequest,
+  type AutoDuctResult,
+  type AutoDuctSizingBases,
+} from './ductAutoLayout';
 import { useDuctAutoPreviewStore } from './ductAutoPreviewStore';
+import { toElementUpdate } from './ductFollow';
+import { ductSystemRootOf, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
 import { cancelAutoDuctWorker, runAutoDuctInWorker } from './optimizer/ductOptimizerClient';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
-import { isDuctElement, readDuctRunSpec } from './ductTypes';
+import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
 
 /** Distance within which unconnected terminals count as a unit's when none are selected (mm). */
 const NEARBY_TERMINALS_MM = 10000;
@@ -49,6 +62,7 @@ export function autoDuctSelection(selectedIds: readonly string[], scene: readonl
 export async function generateAutoDuctPreview(request: AutoDuctRequest): Promise<void> {
   const { hvacElements, ductSettings, walls } = useSmartDrawingStore.getState();
   const preview = useDuctAutoPreviewStore.getState();
+  cancelPreviewResize();
   preview.setRunning(request.unitId);
   try {
     // The drawing's walls come with it: the ducts stay in their room.
@@ -70,7 +84,108 @@ export function cancelAutoDuctPreview(): void {
 
 export function discardAutoDuctPreview(): void {
   cancelAutoDuctWorker();
+  cancelPreviewResize();
   useDuctAutoPreviewStore.getState().clear();
+}
+
+// ---- Constant friction on the preview ----
+
+let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+let resizeGeneration = 0;
+
+function cancelPreviewResize(): void {
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = null;
+  resizeGeneration += 1;
+}
+
+/** The terminals the preview's request serves, with the airflows the card set (only those that change). */
+function airflowUpdates(scene: readonly HvacElement[], terminalIds: readonly string[], airflows: AutoDuctRequest['terminalAirflows']): HvacElement[] {
+  return scene.filter((element) => terminalIds.includes(element.id) && isDuctTerminalElement(element))
+    .map((element) => terminalWithAirflow(element, airflows)).filter((element) => !scene.includes(element));
+}
+
+/**
+ * Sizes the preview by constant friction at `bases` now: the shown design,
+ * and with `all` every other one too (its picks found again). The drawing is
+ * untouched; Apply commits the sizes shown.
+ */
+export function resizeAutoDuctPreviewNow(bases: AutoDuctSizingBases, terminalAirflows?: Record<string, number | null>, options: { all?: boolean } = {}): AutoDuctResult | null {
+  const { result, request, scene } = useDuctAutoPreviewStore.getState();
+  const state = useSmartDrawingStore.getState();
+  if (!result || !request || !scene || scene !== state.hvacElements || !result.designs.length) return null;
+  const replaced = new Map<number, AutoDuctDesign>();
+  const indices = options.all ? result.designs.map((_, index) => index) : [result.selected];
+  for (const index of indices) replaced.set(index, resizeAutoDuctDesign(result, index, bases, terminalAirflows, scene, state.ductSettings));
+  const next = withAutoDuctDesigns(result, replaced, bases, airflowUpdates(scene, request.terminalIds, terminalAirflows));
+  useDuctAutoPreviewStore.getState().setPreview(next, { ...request, sizing: bases, ...(terminalAirflows ? { terminalAirflows } : {}) }, scene);
+  return next;
+}
+
+/**
+ * Live sizing while the designer types (debounced): the shown design at once,
+ * then the others one at a time so the canvas stays live; a newer change
+ * drops the older one's remaining work.
+ */
+export function resizeAutoDuctPreview(bases: AutoDuctSizingBases, terminalAirflows?: Record<string, number | null>, delayMs = 150): void {
+  cancelPreviewResize();
+  const generation = resizeGeneration;
+  resizeTimer = setTimeout(() => {
+    resizeTimer = null;
+    const shown = resizeAutoDuctPreviewNow(bases, terminalAirflows);
+    if (!shown) return;
+    const pending = shown.designs.map((_, index) => index).filter((index) => index !== shown.selected);
+    const step = () => {
+      if (generation !== resizeGeneration) return;
+      const { result, scene } = useDuctAutoPreviewStore.getState();
+      const state = useSmartDrawingStore.getState();
+      const index = pending.shift();
+      if (index === undefined || !result || !scene || scene !== state.hvacElements || !result.designs[index]) return;
+      const design = resizeAutoDuctDesign(result, index, bases, terminalAirflows, scene, state.ductSettings);
+      const request = useDuctAutoPreviewStore.getState().request;
+      if (request) useDuctAutoPreviewStore.getState().setPreview(withAutoDuctDesigns(result, new Map([[index, design]]), bases, result.terminalAirflowUpdates), request, scene);
+      if (pending.length) resizeTimer = setTimeout(step, 0);
+    };
+    if (pending.length) resizeTimer = setTimeout(step, 0);
+  }, delayMs);
+}
+
+// ---- Constant friction on the drawing ----
+
+/** The applied system of a unit's collar, its sections as drawn (nothing changes). */
+export function measureDuctSystem(unitId: string, service: DuctService, basis: DuctSystemSizing): DuctSystemSizingReport | null {
+  const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
+  const root = ductSystemRootOf(hvacElements, unitId, service);
+  return root ? sizeDuctSystem(hvacElements, root.id, { basis, measure: true }, ductSettings).report : null;
+}
+
+/**
+ * Sizes the ducts on a unit's collar by constant friction at `basis`, on the
+ * drawing, as one command (one undo): the resized runs, the branches that
+ * follow them, the terminals whose airflow changed, the basis kept on the
+ * run off the collar. Returns the report (null without such a system).
+ */
+export function resizeDuctSystemOnDrawing(
+  unitId: string,
+  service: DuctService,
+  basis: DuctSystemSizing,
+  terminalAirflows?: Record<string, number | null>,
+  action = `Duct sizing (${service})`,
+): DuctSystemSizingReport | null {
+  const state = useSmartDrawingStore.getState();
+  const root = ductSystemRootOf(state.hvacElements, unitId, service);
+  if (!root) return null;
+  const sized = sizeDuctSystem(state.hvacElements, root.id, { basis, ...(terminalAirflows ? { terminalAirflows } : {}) }, state.ductSettings);
+  const changed = new Set(sized.report.changedRunIds);
+  const updates = [
+    ...sized.runs.filter((run) => changed.has(run.id)).map(toElementUpdate),
+    ...sized.terminals.map((terminal) => ({ id: terminal.id, updates: { properties: terminal.properties } })),
+  ];
+  if (updates.length) {
+    state.commitHvacElementCommand(action, { updates });
+    state.setProcessingStatus(`${action}: ${changed.size} run${changed.size === 1 ? '' : 's'} resized${sized.terminals.length ? `, ${sized.terminals.length} terminal airflow${sized.terminals.length === 1 ? '' : 's'}` : ''}.`, false);
+  }
+  return sized.report;
 }
 
 /** Commits the preview as one command; returns what happened. */
@@ -83,9 +198,19 @@ export function applyAutoDuctPreview(): string {
     return 'The drawing changed since the preview; generate it again.';
   }
   if (!result.runs.length) return 'The preview has no ducts to add.';
+  cancelPreviewResize();
   const ids = result.runs.map((run) => run.id);
   const turned = result.terminalUpdates ?? [];
-  state.commitHvacElementCommand('Auto duct', { add: result.runs, removeIds: result.removeIds, updates: terminalSpigotUpdates(turned), selectedIds: ids });
+  // A terminal both turned and given an airflow: the turned one carries the airflow.
+  const airflow = new Map((result.terminalAirflowUpdates ?? []).map((element) => [element.id, element]));
+  const terminals = [
+    ...turned.map((element) => {
+      const set = airflow.get(element.id);
+      return set ? { ...element, properties: { ...element.properties, terminal: { ...(element.properties.terminal as object), designAirflowM3h: (set.properties.terminal as { designAirflowM3h?: number | null }).designAirflowM3h ?? null } } } : element;
+    }),
+    ...[...airflow.values()].filter((element) => !turned.some((entry) => entry.id === element.id)),
+  ];
+  state.commitHvacElementCommand('Auto duct', { add: result.runs, removeIds: result.removeIds, updates: terminalSpigotUpdates(terminals), selectedIds: ids });
   const message = `Auto duct: ${result.runs.length} run${result.runs.length === 1 ? '' : 's'} added${result.removeIds.length ? `, ${result.removeIds.length} replaced` : ''}`
     + `${turned.length ? `, ${turned.length} spigot${turned.length === 1 ? '' : 's'} turned` : ''}.`;
   useDuctAutoPreviewStore.getState().clear(message);

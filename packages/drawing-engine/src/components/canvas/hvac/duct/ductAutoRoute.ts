@@ -22,6 +22,7 @@ import { listAirPorts } from './ductAirPorts';
 import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuct, removalTree, type AutoDuctShape } from './ductAutoLayout';
 import type { DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
+import { defaultSizingBasis } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService } from './ductTypes';
 import { withReplaced } from './optimizer/designTree';
@@ -216,10 +217,18 @@ export function planAutoRouteDucts(
     onProgress({ stage: `${label} (${index + 1} of ${queue.length})`, completed: index, total: queue.length });
     const group = assigned.get(unit.id)!;
     const kinds = new Set(group.map((terminal) => terminalPorts.get(terminal.id)!.kind));
+    // The project's sizing method: constant friction at its friction rates and velocity limits, or the life-cycle optimum.
+    const constantFriction = options.settings.autoSizingMethod === 'constant-friction';
     const auto = generateAutoDuct(working, {
       unitId: unit.id, terminalIds: group.map((terminal) => terminal.id), fanSpeed: options.fanSpeed, layout: 'auto',
       services: { supply: kinds.has('supply'), return: kinds.has('return') }, rebuildExisting: options.rebuildExisting, shape: options.shape,
       ...(options.walls ? { walls: options.walls } : {}),
+      ...(constantFriction ? {
+        sizing: {
+          supply: defaultSizingBasis(options.settings, 'supply', null, options.fanSpeed),
+          return: defaultSizingBasis(options.settings, 'return', null, options.fanSpeed),
+        },
+      } : {}),
     }, options.settings);
     const design = auto.designs[auto.selected] ?? null;
     const messages = [...new Set([...auto.issues, ...auto.services.flatMap((service) => service.issues)]
@@ -231,7 +240,7 @@ export function planAutoRouteDucts(
     };
     unitResult.services = auto.services.filter((service) => service.runs.length).map((service) => ({
       service: service.service,
-      layout: service.layout ? AUTO_DUCT_LAYOUT_LABELS[service.layout] : '—',
+      layout: `${service.layout ? AUTO_DUCT_LAYOUT_LABELS[service.layout] : '—'}${auto.sizing?.[service.service] ? ` · constant friction ${auto.sizing[service.service]!.frictionPaPerM.toFixed(2)} Pa/m` : ''}`,
       trunk: sectionText(service.trunkSections[0]),
       terminals: service.terminals.length,
       indexPa: service.pressure?.indexPa ?? null,

@@ -8,21 +8,44 @@
  * of the verified designs with three picks — least first cost, least
  * life-cycle cost (shown on the canvas), least pressure — their costs, and the
  * design summary. Apply adds the design shown as one undo step.
+ *
+ * Sizing: the life-cycle optimum, or constant friction at a main velocity ⇄
+ * friction rate the designer sets (with the velocity limits and each
+ * terminal's airflow). Changed after Generate, the preview re-sizes live; on
+ * ducts already applied, each change re-sizes them on the drawing (one undo).
  */
-import { Circle, Coins, Fan, Gauge, LayoutGrid, Loader2, ShieldCheck, Sparkles, Square, Star, Wand2, Wind, X } from 'lucide-react';
-import { useMemo, useState, type ReactNode } from 'react';
+import { Circle, Coins, Fan, Gauge, LayoutGrid, Loader2, Ruler, ShieldCheck, Sparkles, Square, Star, Wand2, Wind, X } from 'lucide-react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
 
-import { applyAutoDuctPreview, autoDuctSelection, cancelAutoDuctPreview, discardAutoDuctPreview, generateAutoDuctPreview } from './ductAutoController';
-import { AUTO_DUCT_LAYOUT_LABELS, type AutoDuctLayoutChoice, type AutoDuctResult, type AutoDuctShape } from './ductAutoLayout';
+import {
+  applyAutoDuctPreview,
+  autoDuctSelection,
+  cancelAutoDuctPreview,
+  discardAutoDuctPreview,
+  generateAutoDuctPreview,
+  resizeAutoDuctPreview,
+} from './ductAutoController';
+import { AUTO_DUCT_LAYOUT_LABELS, type AutoDuctLayoutChoice, type AutoDuctResult, type AutoDuctShape, type AutoDuctSizingBases } from './ductAutoLayout';
 import { useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { formatCost, type DuctCostBreakdown } from './ductEconomics';
 import { DuctFrontierChart } from './DuctFrontierChart';
-import { FAN_SPEED_LABELS, FAN_SPEEDS, readUnitAirData, type FanSpeed } from './ductSizing';
+import {
+  AppliedSystemSizing,
+  BasisEditor,
+  ServiceTabs,
+  SizingMethodSwitch,
+  SizingTable,
+  TerminalAirflowList,
+  type SizingMethod,
+  type TerminalAirflows,
+} from './DuctSizingSection';
+import { FAN_SPEED_LABELS, FAN_SPEEDS, neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
+import { basisAirflowM3h, defaultSizingBasis, linkSizingBasis } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
-import { isDuctElement, readDuctRunSpec } from './ductTypes';
+import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
 
 const select = 'rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-xs';
 
@@ -75,9 +98,10 @@ function Designs({ result }: { result: AutoDuctResult }) {
       {certificate ? (
         <div className="flex items-center gap-1 text-[10px] text-slate-600" title="Exact: every tree came from the exact tree router within its terminal limit, and every size set is the catalogue optimum for its tree.">
           <ShieldCheck size={12} className={certificate.exact ? 'text-emerald-600' : 'text-slate-400'} />
-          <span className="font-medium">{certificate.exact ? 'Optimal on the model'
-            : certificate.grouped ? 'Grouped search (exact within groups)'
-              : certificate.timeLimited ? 'Best found in the time allowed' : 'Best of the candidates'}</span>
+          <span className="font-medium">{result.sizing ? 'Optimised routes · sized by constant friction'
+            : certificate.exact ? 'Optimal on the model'
+              : certificate.grouped ? 'Grouped search (exact within groups)'
+                : certificate.timeLimited ? 'Best found in the time allowed' : 'Best of the candidates'}</span>
           <span>· {result.designs.length} verified · {certificate.trees} trees sized · {(certificate.solveMs / 1000).toFixed(1)} s</span>
         </div>
       ) : null}
@@ -150,6 +174,7 @@ function Summary({ result }: { result: AutoDuctResult }) {
               {service.trunkSections.map(sectionText).join(' → ')}
             </div>
           ) : null}
+          {service.sizingReport ? <div className="mt-0.5"><SizingTable report={service.sizingReport} /></div> : null}
           <table className="mt-0.5 w-full text-[10px] text-slate-600">
             <tbody>
               {service.terminals.map((terminal) => (
@@ -212,7 +237,17 @@ export function DuctAutoCard() {
   const [shape, setShape] = useState<AutoDuctShape>('optimal');
   const [services, setServices] = useState({ supply: true, return: true });
   const [rebuild, setRebuild] = useState(false);
+  const { ductSettings, setDuctSettings } = useSmartDrawingStore((state) => ({ ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings }), shallow);
+  /** Constant-friction bases the designer changed (per service), and terminal airflows typed in the card. */
+  const [bases, setBases] = useState<Partial<Record<DuctService, DuctSystemSizing>>>({});
+  const [terminalAirflows, setTerminalAirflows] = useState<TerminalAirflows>({});
+  const [sizingTab, setSizingTab] = useState<DuctService>('supply');
   const selection = useMemo(() => autoDuctSelection(selectedElementIds, hvacElements), [selectedElementIds, hvacElements]);
+  const unitId = selection?.unit.id ?? null;
+  useEffect(() => {
+    setBases({});
+    setTerminalAirflows({});
+  }, [unitId]);
   if (!selection) return null;
   const { unit, terminals } = selection;
   const air = readUnitAirData(unit);
@@ -228,6 +263,46 @@ export function DuctAutoCard() {
   const typed = Number.parseFloat(airflowDraft);
   const airflowOverride = Number.isFinite(typed) && typed > 0 ? typed : null;
   const current = result && result.unitId === unit.id && scene === hvacElements ? result : null;
+  // ---- Sizing ----
+  const method: SizingMethod = ductSettings.autoSizingMethod;
+  const systemAirflow = basisAirflowM3h(unit, { airflowM3h: airflowOverride, fanSpeed }).airflowM3h;
+  const sizingServices = (['supply', 'return'] as const).filter((service) => services[service] && counts[service] > 0);
+  const tab: DuctService = sizingServices.includes(sizingTab) ? sizingTab : sizingServices[0] ?? 'supply';
+  const basisFor = (service: DuctService, from = bases): DuctSystemSizing => linkSizingBasis({
+    ...(from[service] ?? defaultSizingBasis(ductSettings, service, null, fanSpeed)), fanSpeed, airflowM3h: airflowOverride,
+  }, systemAirflow);
+  const allBases = (from = bases): AutoDuctSizingBases => Object.fromEntries(sizingServices.map((service) => [service, basisFor(service, from)]));
+  const airflowEntries = Object.keys(terminalAirflows).length ? terminalAirflows : undefined;
+  const updateBasis = (service: DuctService, next: DuctSystemSizing) => {
+    const nextBases = { ...bases, [service]: next };
+    setBases(nextBases);
+    if (current && method === 'constant-friction') resizeAutoDuctPreview(allBases(nextBases), airflowEntries);
+  };
+  const updateAirflow = (id: string, value: number | null) => {
+    const next = { ...terminalAirflows, [id]: value };
+    setTerminalAirflows(next);
+    if (current && method === 'constant-friction') resizeAutoDuctPreview(allBases(), next);
+  };
+  const changeMethod = (next: SizingMethod) => {
+    setDuctSettings({ autoSizingMethod: next });
+    if (next === 'constant-friction' && current) resizeAutoDuctPreview(allBases(), airflowEntries, 0);
+  };
+  const tabTerminals = terminals.filter((terminal) => readDuctTerminalSpec(terminal)?.service === tab);
+  const tabShares = shareAirflow(systemAirflow ?? 0, tabTerminals.map((terminal) => {
+    const spec = readDuctTerminalSpec(terminal)!;
+    const set = Object.prototype.hasOwnProperty.call(terminalAirflows, terminal.id) ? terminalAirflows[terminal.id] : spec.designAirflowM3h;
+    return { id: terminal.id, spec: { designAirflowM3h: set ?? null } };
+  }));
+  const airflowRows = tabTerminals.map((terminal, index) => {
+    const spec = readDuctTerminalSpec(terminal)!;
+    const share = tabShares[index]!;
+    return {
+      id: terminal.id, label: terminal.label || spec.kind, airflowM3h: share.airflowM3h, fixed: share.fixed,
+      neckMm: spec.neckDiameterMm, neckVelocityMs: neckVelocityMs(spec, share.airflowM3h),
+    };
+  });
+  const neckCap = tab === 'return' ? ductSettings.autoMaxNeckVelocityReturnMs : ductSettings.autoMaxNeckVelocitySupplyMs;
+  const lifeCycleAfterConstant = Boolean(current?.sizing) && method === 'life-cycle';
   const stale = result && result.unitId === unit.id && scene !== hvacElements;
   const busy = running === unit.id;
   const canGenerate = !busy && ((services.supply && counts.supply > 0) || (services.return && counts.return > 0));
@@ -235,6 +310,8 @@ export function DuctAutoCard() {
     void generateAutoDuctPreview({
       unitId: unit.id, terminalIds: terminals.map((terminal) => terminal.id), fanSpeed,
       airflowM3h: airflowOverride, layout, services, rebuildExisting: rebuild, shape,
+      sizing: method === 'constant-friction' ? allBases() : null,
+      ...(airflowEntries ? { terminalAirflows: airflowEntries } : {}),
     });
   };
   return (
@@ -281,6 +358,25 @@ export function DuctAutoCard() {
         <label className="flex items-center gap-1"><input type="checkbox" checked={services.supply} onChange={(event) => setServices({ ...services, supply: event.target.checked })} aria-label="Auto duct supply" /><span className="inline-block h-2 w-3 rounded-[2px] border-[1.5px] border-blue-700 bg-blue-500/15" aria-hidden="true" />Supply</label>
         <label className="ml-1 flex items-center gap-1"><input type="checkbox" checked={services.return} onChange={(event) => setServices({ ...services, return: event.target.checked })} aria-label="Auto duct return" /><span className="inline-block h-2 w-3 rounded-[2px] border-[1.5px] border-teal-700 bg-teal-500/15" aria-hidden="true" />Return</label>
       </Line>
+      {!occupied || rebuild || current ? (
+      <div className="space-y-1 border-t border-sky-100 pt-1" data-testid="duct-sizing">
+        <Line label="Sizing" icon={<Ruler size={12} />}>
+          <span className="text-[10px] text-slate-500">
+            {method === 'constant-friction' ? (current ? 'changes resize the preview live' : 'Generate sizes at this basis') : 'least first cost + fan energy'}
+          </span>
+        </Line>
+        <SizingMethodSwitch method={method} onChange={changeMethod} />
+        <ServiceTabs services={sizingServices} active={tab} onChange={setSizingTab} />
+        {method === 'constant-friction' && sizingServices.length ? (
+          <BasisEditor basis={basisFor(tab)} live onChange={(next) => updateBasis(tab, next)} />
+        ) : null}
+        <TerminalAirflowList rows={airflowRows} neckCapMs={neckCap} live onChange={(id, value) => updateAirflow(id, value)} />
+        {current && method === 'life-cycle' && Object.keys(terminalAirflows).length ? (
+          <p className="text-[10px] text-amber-700">Generate again to size the life-cycle optimum for the airflows set here.</p>
+        ) : null}
+        {lifeCycleAfterConstant ? <p className="text-[10px] text-amber-700">This preview is sized by constant friction: generate again for the life-cycle optimum.</p> : null}
+      </div>
+      ) : null}
       {occupied ? (
         <Line label="Rebuild existing">
           <input type="checkbox" checked={rebuild} onChange={(event) => setRebuild(event.target.checked)} aria-label="Auto duct rebuild existing" />
@@ -312,6 +408,7 @@ export function DuctAutoCard() {
       {!canGenerate && !busy ? <p className="text-[10px] text-slate-500">Select the diffusers (supply) and grilles (return) this unit serves.</p> : null}
       {stale ? <p className="text-[10px] text-amber-700">The drawing changed since the preview: generate again.</p> : null}
       {message && !current ? <p className="text-[10px] text-slate-600">{message}</p> : null}
+      {occupied && !current && !busy && !rebuild ? <AppliedSystemSizing unit={unit} /> : null}
       {current ? <Designs result={current} /> : null}
       {current ? <Summary result={current} /> : null}
     </div>
