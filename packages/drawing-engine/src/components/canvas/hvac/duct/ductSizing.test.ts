@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveDuctSettings } from './ductSettings';
 import {
   equivalentDiameterMm,
+  frictionFactor,
   frictionPaPerM,
   neckForAirflow,
   neckVelocityMs,
@@ -12,6 +13,7 @@ import {
   sizeRound,
   sizingLimits,
   velocityMs,
+  withinLimits,
 } from './ductSizing';
 
 const settings = resolveDuctSettings({});
@@ -19,6 +21,38 @@ const supplyTrunk = sizingLimits(settings, 'supply', 'trunk');
 const supplyRunout = sizingLimits(settings, 'supply', 'runout');
 
 describe('duct sizing (equal friction, practice limits)', () => {
+  it('uses laminar friction at low Reynolds numbers and stays continuous through transition', () => {
+    expect(frictionFactor(0.2, 1000, 0.00009)).toBeCloseTo(0.064, 10);
+    expect(frictionFactor(0.2, 1000, 0.003)).toBeCloseTo(0.064, 10);
+    expect(frictionFactor(0.2, 0, 0.00009)).toBe(0);
+    for (const boundary of [2300, 4000]) {
+      expect(Math.abs(frictionFactor(0.2, boundary - 0.001, 0.00009) - frictionFactor(0.2, boundary + 0.001, 0.00009))).toBeLessThan(1e-7);
+    }
+    // Hagen-Poiseuille: fully developed round laminar loss is linear in flow.
+    const round = { widthMm: 200, heightMm: 200, diameterMm: 200 };
+    expect(frictionPaPerM(round, 5)).toBeCloseTo(0.0006408639, 9);
+    expect(frictionPaPerM(round, 10)).toBeCloseTo(2 * frictionPaPerM(round, 5), 10);
+  });
+
+  it('rejects malformed sections and flow instead of reporting them within the targets', () => {
+    const limits = { frictionPaPerM: 1, maxVelocityMs: 5 };
+    expect(withinLimits({ widthMm: -200, heightMm: -200 }, 100, limits)).toBe(false);
+    expect(withinLimits({ widthMm: 200, heightMm: 200, diameterMm: -200 }, 100, limits)).toBe(false);
+    expect(withinLimits({ widthMm: 200, heightMm: 200 }, -100, limits)).toBe(false);
+    expect(withinLimits({ widthMm: 200, heightMm: 200 }, Infinity, limits)).toBe(false);
+    expect(withinLimits({ widthMm: 200, heightMm: 200 }, 100, { ...limits, maxVelocityMs: Infinity })).toBe(false);
+  });
+
+  it('rejects invalid sizing increments and never marks an aspect violation as successful', () => {
+    for (const stepMm of [0, -50, Number.NaN, Infinity]) {
+      expect(() => sizeRectangular(300, 200, supplyTrunk, { stepMm })).toThrow(RangeError);
+    }
+    expect(sizeRectangular(100, 100, supplyTrunk, { minWidthMm: 600, maxAspect: 4 }).capped).toBe(true);
+    const tall = sizeRectangular(1, 300, supplyTrunk, { maxAspect: 4 });
+    expect(tall.heightMm / tall.widthMm).toBeLessThanOrEqual(4);
+    expect(sizeRound(100000, supplyRunout, [300, Number.NaN, 100, 0, 200, Infinity])).toBe(300);
+  });
+
   it('matches the handbook equivalent diameter and friction rates', () => {
     // Huebscher: 600 × 200 → about 365 mm; a square duct a little over its side.
     expect(equivalentDiameterMm({ widthMm: 600, heightMm: 200 })).toBeCloseTo(365, 0);

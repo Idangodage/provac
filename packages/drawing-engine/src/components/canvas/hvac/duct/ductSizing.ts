@@ -26,22 +26,27 @@ export const AIR_KINEMATIC_VISCOSITY_M2_S = 1.51e-5;
 export const DUCT_ROUGHNESS_MM = { galvanised: 0.09, flex: 3 } as const;
 export type DuctMaterial = keyof typeof DUCT_ROUGHNESS_MM;
 
+const positiveFinite = (value: number): boolean => Number.isFinite(value) && value > 0;
+
 /** Huebscher equivalent diameter of a section (mm); a round section is its own. */
 export function equivalentDiameterMm(section: Pick<DuctLeg, 'widthMm' | 'heightMm' | 'diameterMm'>): number {
-  if (isRoundLeg(section as DuctLeg)) return section.diameterMm!;
+  if (isRoundLeg(section as DuctLeg)) return positiveFinite(section.diameterMm!) ? section.diameterMm! : Number.NaN;
   const a = section.widthMm;
   const b = section.heightMm;
+  if (!positiveFinite(a) || !positiveFinite(b)) return Number.NaN;
   return (1.3 * (a * b) ** 0.625) / (a + b) ** 0.25;
 }
 
 /** Free area of a section (m²). */
 export function sectionAreaM2(section: Pick<DuctLeg, 'widthMm' | 'heightMm' | 'diameterMm'>): number {
-  if (isRoundLeg(section as DuctLeg)) return (Math.PI * (section.diameterMm! / 1000) ** 2) / 4;
+  if (isRoundLeg(section as DuctLeg)) return positiveFinite(section.diameterMm!) ? (Math.PI * (section.diameterMm! / 1000) ** 2) / 4 : Number.NaN;
+  if (!positiveFinite(section.widthMm) || !positiveFinite(section.heightMm)) return Number.NaN;
   return (section.widthMm / 1000) * (section.heightMm / 1000);
 }
 
 /** Mean air velocity in the section (m/s). */
 export function velocityMs(section: Pick<DuctLeg, 'widthMm' | 'heightMm' | 'diameterMm'>, airflowM3h: number): number {
+  if (!Number.isFinite(airflowM3h) || airflowM3h < 0) return Number.NaN;
   return airflowM3h / 3600 / sectionAreaM2(section);
 }
 
@@ -49,10 +54,20 @@ export function velocityPressurePa(velocity: number): number {
   return (AIR_DENSITY_KG_M3 * velocity * velocity) / 2;
 }
 
-/** Altshul–Tsal friction factor (ASHRAE Fundamentals ch. 21). */
+/** Darcy factor: 64/Re for laminar flow, Altshul–Tsal for turbulent flow.
+ * Between Re 2300 and 4000, interpolate the factors continuously; this is an
+ * estimate for the unstable transition regime, not a fully turbulent result.
+ * https://handbook.ashrae.org/Handbooks/F21/SI/F21_Ch21/F21_Ch21_si.aspx
+ */
 export function frictionFactor(diameterM: number, reynolds: number, roughnessM: number): number {
-  const first = 0.11 * (roughnessM / diameterM + 68 / Math.max(reynolds, 1)) ** 0.25;
-  return first >= 0.018 ? first : 0.85 * first + 0.0028;
+  if (!positiveFinite(diameterM) || !Number.isFinite(reynolds) || reynolds < 0 || !Number.isFinite(roughnessM) || roughnessM < 0) return Number.NaN;
+  if (reynolds === 0) return 0;
+  const laminar = 64 / reynolds;
+  if (reynolds <= 2300) return laminar;
+  const first = 0.11 * (roughnessM / diameterM + 68 / reynolds) ** 0.25;
+  const turbulent = first >= 0.018 ? first : 0.85 * first + 0.0028;
+  if (reynolds >= 4000) return turbulent;
+  return laminar + ((reynolds - 2300) / 1700) * (turbulent - laminar);
 }
 
 /** Friction loss per metre of the section at the airflow (Pa/m). */
@@ -61,7 +76,8 @@ export function frictionPaPerM(
   airflowM3h: number,
   material: DuctMaterial = 'galvanised',
 ): number {
-  if (airflowM3h <= 0) return 0;
+  if (!Number.isFinite(airflowM3h) || airflowM3h < 0) return Number.NaN;
+  if (airflowM3h === 0) return 0;
   const diameter = equivalentDiameterMm(section) / 1000;
   const velocity = airflowM3h / 3600 / ((Math.PI * diameter * diameter) / 4);
   const reynolds = (velocity * diameter) / AIR_KINEMATIC_VISCOSITY_M2_S;
@@ -76,6 +92,8 @@ export interface DuctSizingLimits {
 
 /** Whether a section carries the airflow within both limits (a hair of tolerance on the rounding). */
 export function withinLimits(section: DuctLeg, airflowM3h: number, limits: DuctSizingLimits, material: DuctMaterial = 'galvanised'): boolean {
+  if (!Number.isFinite(limits.frictionPaPerM) || limits.frictionPaPerM < 0
+    || !Number.isFinite(limits.maxVelocityMs) || limits.maxVelocityMs < 0) return false;
   return frictionPaPerM(section, airflowM3h, material) <= limits.frictionPaPerM * 1.001
     && velocityMs(section, airflowM3h) <= limits.maxVelocityMs * 1.001;
 }
@@ -87,11 +105,12 @@ export function sizeRound(
   sizesMm: readonly number[],
   options: { minimumMm?: number; material?: DuctMaterial } = {},
 ): number {
-  const sizes = [...sizesMm].sort((a, b) => a - b).filter((size) => size >= (options.minimumMm ?? 0));
+  const stocked = [...new Set(sizesMm.filter(positiveFinite))].sort((a, b) => a - b);
+  const sizes = stocked.filter((size) => size >= (options.minimumMm ?? 0));
   for (const size of sizes) {
     if (withinLimits({ widthMm: size, heightMm: size, diameterMm: size }, airflowM3h, limits, options.material)) return size;
   }
-  return sizes[sizes.length - 1] ?? sizesMm[sizesMm.length - 1] ?? 200;
+  return sizes[sizes.length - 1] ?? stocked[stocked.length - 1] ?? 200;
 }
 
 export interface RectangularSize {
@@ -116,11 +135,18 @@ export function sizeRectangular(
   const maxAspect = options.maxAspect ?? 4;
   const maxHeight = Math.max(heightMm, options.maxHeightMm ?? heightMm);
   const minWidth = Math.max(step, options.minWidthMm ?? step);
+  if (!positiveFinite(step) || !positiveFinite(heightMm) || !positiveFinite(maxHeight)
+    || !positiveFinite(minWidth) || !Number.isFinite(maxAspect) || maxAspect < 1
+    || !Number.isFinite(maxHeight * maxAspect) || maxHeight + step === maxHeight || minWidth + step === minWidth) {
+    throw new RangeError('Duct sizing requires finite positive dimensions and a width step, and an aspect limit of at least 1.');
+  }
   let best: RectangularSize = { widthMm: minWidth, heightMm, capped: true };
   for (let height = heightMm; height <= maxHeight + 1e-6; height += step) {
     const widest = Math.max(minWidth, Math.floor((height * maxAspect) / step) * step);
-    for (let width = Math.ceil(minWidth / step) * step; width <= widest; width += step) {
-      if (withinLimits({ widthMm: width, heightMm: height }, airflowM3h, limits)) return { widthMm: width, heightMm: height, capped: false };
+    const narrowest = Math.ceil(Math.max(minWidth, height / maxAspect) / step) * step;
+    for (let width = narrowest; width <= widest; width += step) {
+      if (Math.max(width / height, height / width) <= maxAspect
+        && withinLimits({ widthMm: width, heightMm: height }, airflowM3h, limits)) return { widthMm: width, heightMm: height, capped: false };
     }
     best = { widthMm: widest, heightMm: height, capped: true };
   }

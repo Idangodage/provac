@@ -139,8 +139,9 @@ export interface ServicePressure {
 }
 
 function sectionOf(piece: DuctPiece, atEnd = false): DuctLeg {
-  if (piece.diameterMm !== undefined) {
-    const d = atEnd ? piece.endDiameterMm ?? piece.diameterMm : piece.diameterMm;
+  // On shape transitions an absent end diameter means a rectangular outlet.
+  const d = atEnd ? piece.endDiameterMm : piece.diameterMm;
+  if (d !== undefined) {
     return { widthMm: d, heightMm: d, diameterMm: d };
   }
   return atEnd ? { widthMm: piece.endWidthMm, heightMm: piece.endHeightMm } : { widthMm: piece.widthMm, heightMm: piece.heightMm };
@@ -162,7 +163,10 @@ function coefficientOf(piece: DuctPiece, fromPlenum: boolean): number {
       const shapeChange = (piece.diameterMm === undefined) !== (piece.endDiameterMm === undefined) ? c.shapeChange : 0;
       if (!info) return c.transition + shapeChange;
       const expanding = info.widthSense === 'expanding' || info.heightSense === 'expanding';
-      return transitionCoefficient(2 * Math.max(info.angleWidthDeg, info.angleHeightDeg), expanding) + shapeChange;
+      // Level pieces have a flat bottom, so the top angle is already the
+      // entire height divergence. Riser transitions taper on both sides.
+      const includedHeight = info.angleHeightDeg * (piece.vertical ? 2 : 1);
+      return transitionCoefficient(Math.max(2 * info.angleWidthDeg, includedHeight), expanding) + shapeChange;
     }
     case 'takeoff': return fromPlenum ? c.takeoffPlenum : c.takeoffTrunk;
     case 'damper': return c.damper;
@@ -213,14 +217,46 @@ export function systemPressure(
       node.attachMm = parentLength;
     }
   }
-  const total = (node: RunNode): number => {
-    node.airflowM3h = (node.terminalId ? airflow.get(node.terminalId) ?? 0 : 0) + node.children.reduce((sum, child) => sum + total(child), 0);
-    return node.airflowM3h;
-  };
-  for (const node of nodes.values()) if (!node.parentId || !nodes.has(node.parentId)) total(node);
+  // Resolve leaves first: avoids recursion depth limits and detects corrupt
+  // parent cycles, which otherwise make both walks run indefinitely.
+  const remaining = new Map<RunNode, number>();
+  const pending: RunNode[] = [];
+  for (const node of nodes.values()) {
+    node.airflowM3h = node.terminalId ? airflow.get(node.terminalId) ?? 0 : 0;
+    remaining.set(node, node.children.length);
+    if (node.children.length === 0) pending.push(node);
+  }
+  for (let index = 0; index < pending.length; index += 1) {
+    const node = pending[index]!;
+    const parent = node.parentId ? nodes.get(node.parentId) : undefined;
+    if (!parent) continue;
+    parent.airflowM3h += node.airflowM3h;
+    const left = remaining.get(parent)! - 1;
+    remaining.set(parent, left);
+    if (left === 0) pending.push(parent);
+  }
+  if (pending.length !== nodes.size) throw new Error('Cannot calculate duct pressure: cyclic run connections.');
+  const flowStations = new Map<RunNode, { stations: number[]; suffixFlows: number[] }>();
+  for (const node of nodes.values()) {
+    const children = [...node.children].sort((a, b) => a.attachMm - b.attachMm);
+    const suffixFlows = new Array<number>(children.length + 1).fill(0);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      suffixFlows[index] = suffixFlows[index + 1]! + children[index]!.airflowM3h;
+    }
+    flowStations.set(node, { stations: children.map((child) => child.attachMm), suffixFlows });
+  }
   /** Airflow in a run at a station: its own terminal and the children leaving further on. */
-  const flowAt = (node: RunNode, station: number) => (node.terminalId ? airflow.get(node.terminalId) ?? 0 : 0)
-    + node.children.filter((child) => child.attachMm > station + 1e-6).reduce((sum, child) => sum + child.airflowM3h, 0);
+  const flowAt = (node: RunNode, station: number): number => {
+    const { stations, suffixFlows } = flowStations.get(node)!;
+    let low = 0;
+    let high = stations.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (stations[mid]! <= station + 1e-6) low = mid + 1;
+      else high = mid;
+    }
+    return (node.terminalId ? airflow.get(node.terminalId) ?? 0 : 0) + suffixFlows[low]!;
+  };
 
   /** The section of `node` at a station along its path (the piece covering it). */
   const sectionAt = (node: RunNode, station: number): DuctLeg | null => {
@@ -239,8 +275,11 @@ export function systemPressure(
     return section ? velocityMs(section, flow) : 0;
   };
 
+  const pressureCache = new Map<RunNode, Map<RunNode | null, { friction: number; fittings: number }>>();
   /** Friction and fittings in `node` from its start up to `limitMm`; `child` = the run the path leaves by. */
   const along = (node: RunNode, limitMm: number, child: RunNode | null): { friction: number; fittings: number } => {
+    const cached = pressureCache.get(node)?.get(child);
+    if (cached) return cached;
     let friction = 0;
     let fittings = 0;
     const fromPlenum = node.plan.spec.start.kind === 'spigot';
@@ -252,32 +291,58 @@ export function systemPressure(
       fittings += mainPassageLossPa(velocityMs(section, flowAt(node, passed.attachMm + 1)), velocityMs(section, flowAt(node, passed.attachMm - 1)));
     }
     for (const piece of node.plan.pieces) {
-      if (piece.stationStartMm >= limitMm - 1e-6 && piece.kind !== 'split') continue;
-      const station = (piece.stationStartMm + Math.min(piece.stationEndMm, limitMm)) / 2;
-      const flow = flowAt(node, station);
-      if (flow <= 0) continue;
-      const length = Math.max(0, Math.min(piece.stationEndMm, limitMm) - piece.stationStartMm);
-      const section = sectionOf(piece);
-      friction += frictionPaPerM(section, flow, piece.kind === 'flex' ? 'flex' : 'galvanised') * (length / 1000);
-      if (piece.kind === 'split' && child) {
+      // Splits have zero station length and all flow leaves at that station.
+      // Account for them before sampling flow downstream of the outlets.
+      if (piece.kind === 'split') {
+        if (!child || child.plan.spec.start.kind !== 'split-branch' || piece.stationStartMm > limitMm + 1e-6) continue;
         const first = child.plan.pieces[0];
-        const style = piece.split?.style ?? 'y';
+        const style = piece.split?.style ?? (node.plan.spec.end.kind === 'split' ? node.plan.spec.end.style : 'y');
         const last = node.plan.spec.legs[node.plan.spec.legs.length - 1];
-        if (first) fittings += splitOutletLossPa(style, velocityMs(sectionOf(first), child.airflowM3h), last ? velocityMs(last, node.airflowM3h) : 0);
+        const combinedFlow = flowAt(node, piece.stationStartMm - 1e-3);
+        if (first && child.airflowM3h > 0) fittings += splitOutletLossPa(style, velocityMs(sectionOf(first), child.airflowM3h), last ? velocityMs(last, combinedFlow) : 0);
         continue;
       }
+      if (piece.stationStartMm >= limitMm - 1e-6) continue;
+      const end = Math.min(piece.stationEndMm, limitMm);
+      const span = piece.stationEndMm - piece.stationStartMm;
+      const section = sectionOf(piece);
+      // A fabricated straight can span several take-offs. Integrate each
+      // constant-flow interval instead of assigning its midpoint flow to all
+      // of it, and use developed length for elbows and offsets.
+      const stations = [piece.stationStartMm, ...flowStations.get(node)!.stations
+        .filter((station) => station > piece.stationStartMm && station < end), end];
+      for (let index = 1; index < stations.length; index += 1) {
+        const from = stations[index - 1]!;
+        const to = stations[index]!;
+        if (to <= from || span <= 0) continue;
+        const segmentFlow = flowAt(node, (from + to) / 2);
+        if (segmentFlow <= 0) continue;
+        const developedLength = piece.lengthMm * (to - from) / span;
+        friction += frictionPaPerM(section, segmentFlow, piece.kind === 'flex' ? 'flex' : 'galvanised') * (developedLength / 1000);
+      }
+      const flow = flowAt(node, (piece.stationStartMm + end) / 2);
+      if (flow <= 0) continue;
       if (piece.kind === 'takeoff' && !fromPlenum && node.plan.spec.start.kind === 'tap') {
         fittings += takeoffBranchLossPa(node.plan.spec.start.style, velocityMs(section, flow), mainVelocityAt(node));
         continue;
       }
       const coefficient = coefficientOf(piece, fromPlenum);
       if (coefficient > 0) {
-        // Take-offs and transitions on the downstream section, the rest on their own.
-        const reference = piece.kind === 'transition' ? sectionOf(piece, true) : section;
+        // The return path is stored from unit to terminal but air flows back
+        // to the unit. Plenum entry loses the inlet duct's velocity pressure.
+        const reference = piece.kind === 'transition' ? sectionOf(piece, service === 'supply')
+          : piece.kind === 'plenum' ? node.plan.spec.legs[piece.legIndex] ?? section : section;
         fittings += coefficient * velocityPressurePa(velocityMs(reference, flow));
       }
     }
-    return { friction, fittings };
+    const result = { friction, fittings };
+    let cache = pressureCache.get(node);
+    if (!cache) {
+      cache = new Map();
+      pressureCache.set(node, cache);
+    }
+    cache.set(child, result);
+    return result;
   };
 
   const terminals: TerminalPressure[] = [];

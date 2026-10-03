@@ -21,19 +21,26 @@ export interface DuctBranchRef {
   start: DuctTapStart | DuctSplitBranchStart | DuctSpigotStart;
 }
 
-const INDEX_CACHE = new WeakMap<readonly HvacElement[], Map<string, DuctBranchRef[]>>();
+interface DuctNetworkIndex {
+  elements: Map<string, HvacElement>;
+  branches: Map<string, DuctBranchRef[]>;
+}
 
-function indexOf(scene: readonly HvacElement[]): Map<string, DuctBranchRef[]> {
+// Scenes are immutable snapshots: both directions share one O(n) indexing pass.
+const INDEX_CACHE = new WeakMap<readonly HvacElement[], DuctNetworkIndex>();
+
+function indexOf(scene: readonly HvacElement[]): DuctNetworkIndex {
   let index = INDEX_CACHE.get(scene);
   if (index) return index;
-  index = new Map();
+  index = { elements: new Map(), branches: new Map() };
   for (const element of scene) {
     if (!isDuctElement(element)) continue;
+    index.elements.set(element.id, element);
     const spec = readDuctRunSpec(element);
     if (!spec || (spec.start.kind !== 'tap' && spec.start.kind !== 'split-branch' && spec.start.kind !== 'spigot')) continue;
-    const list = index.get(spec.start.parentRunId) ?? [];
+    const list = index.branches.get(spec.start.parentRunId) ?? [];
     list.push({ element, spec, start: spec.start });
-    index.set(spec.start.parentRunId, list);
+    index.branches.set(spec.start.parentRunId, list);
   }
   INDEX_CACHE.set(scene, index);
   return index;
@@ -41,13 +48,13 @@ function indexOf(scene: readonly HvacElement[]): Map<string, DuctBranchRef[]> {
 
 /** Branch runs taken off `parentId` (taps, split branches and plenum spigots). */
 export function ductBranchesOf(parentId: string, scene: readonly HvacElement[]): DuctBranchRef[] {
-  return indexOf(scene).get(parentId) ?? [];
+  return indexOf(scene).branches.get(parentId) ?? [];
 }
 
 export function ductParentOf(spec: DuctRunSpec, scene: readonly HvacElement[]): HvacElement | null {
   const parentId = ductParentRunId(spec);
   if (!parentId) return null;
-  return scene.find((element) => element.id === parentId && isDuctElement(element)) ?? null;
+  return indexOf(scene).elements.get(parentId) ?? null;
 }
 
 /**

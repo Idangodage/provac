@@ -27,7 +27,7 @@ import { findAirPort } from './ductAirPorts';
 import { branchStubMm, type AutoDuctIssue } from './ductAutoContext';
 import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorKeepingEnd, startAnchor } from './ductFollow';
-import { ductBranchesOf } from './ductNetwork';
+import { ductBranchesOf, ductParentOf } from './ductNetwork';
 import { systemPressure, type ServicePressure } from './ductPressure';
 import { maxRoundBranchMm } from './ductRoundFittings';
 import type { DuctDesignSettings } from './ductSettings';
@@ -320,10 +320,14 @@ function locateOn(points: readonly DuctPoint3[], point: Point2D): { leg: number;
 }
 
 function sectionAt(node: RunNode, station: number): DuctLeg {
-  for (let index = 0; index < node.rigid.length - 1; index += 1) {
-    if (station <= node.stations[index + 1]! + 1e-6) return node.spec.legs[index]!;
+  let low = 1;
+  let high = node.stations.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (station <= node.stations[middle]! + 1e-6) high = middle;
+    else low = middle + 1;
   }
-  return node.spec.legs[Math.max(0, node.rigid.length - 2)]!;
+  return node.spec.legs[Math.max(0, low - 1)]!;
 }
 
 /** Specs equal to within float noise (so an unchanged run is left as it is). */
@@ -360,7 +364,8 @@ export function sizeDuctSystem(
   input: DuctSystemSizingInput,
   settings: DuctDesignSettings,
 ): DuctSystemSizingResult {
-  const rootElement = scene.find((element) => element.id === rootRunId);
+  const elementsById = new Map(scene.map((element) => [element.id, element]));
+  const rootElement = elementsById.get(rootRunId);
   const rootSpec = rootElement ? readDuctRunSpec(rootElement) : null;
   if (!rootElement || !rootSpec || rootSpec.legacy) return emptyReport(rootRunId, input.basis, rootSpec?.service ?? 'supply', 'The duct run is not in the drawing.');
   const service = rootSpec.service;
@@ -368,11 +373,12 @@ export function sizeDuctSystem(
   const stubMm = branchStubMm(settings) + 200;
   const issues: AutoDuctIssue[] = [];
   const unitId = rootSpec.start.kind === 'unit-port' ? rootSpec.start.unitId : null;
-  const unit = unitId ? scene.find((element) => element.id === unitId) : undefined;
+  const unit = unitId ? elementsById.get(unitId) : undefined;
 
   // ---- The system: the root and every run hung off it ----
   const nodes: RunNode[] = [];
   const seen = new Set<string>();
+  let cyclic = false;
   const collect = (element: HvacElement, spec: DuctRunSpec, parent: RunNode | null): RunNode => {
     seen.add(element.id);
     const flexTail = spec.end.kind === 'terminal' && spec.end.flex && spec.path.length >= 3;
@@ -382,7 +388,7 @@ export function sizeDuctSystem(
     let terminal: RunNode['terminal'] = null;
     if (spec.end.kind === 'terminal') {
       const terminalId = spec.end.terminalId;
-      const terminalElement = scene.find((candidate) => candidate.id === terminalId);
+      const terminalElement = elementsById.get(terminalId);
       const terminalSpec = terminalElement ? readDuctTerminalSpec(terminalElement) : null;
       if (terminalElement && terminalSpec) terminal = { element: terminalElement, label: terminalElement.label || terminalSpec.kind, neckMm: terminalSpec.neckDiameterMm };
     }
@@ -393,12 +399,14 @@ export function sizeDuctSystem(
     };
     nodes.push(node);
     for (const branch of ductBranchesOf(element.id, scene)) {
-      if (seen.has(branch.element.id) || branch.spec.legacy) continue;
+      if (branch.spec.legacy) continue;
+      if (seen.has(branch.element.id)) { cyclic = true; continue; }
       node.children.push(collect(branch.element, branch.spec, node));
     }
     return node;
   };
   const root = collect(rootElement, rootSpec, null);
+  if (cyclic) return emptyReport(rootRunId, input.basis, service, 'The duct network contains cyclic run connections. Repair the connections before sizing it.');
 
   // The collar's own section up to a first turn stays (the run turned at the collar before its transition).
   if (rootSpec.start.kind === 'unit-port' && !root.fixed) {
@@ -420,7 +428,7 @@ export function sizeDuctSystem(
   }
 
   // ---- Airflow: each terminal's design airflow, else an equal share of the system's ----
-  const overrides = input.terminalAirflows ?? {};
+  const overrides = input.measure ? {} : input.terminalAirflows ?? {};
   const terminalNodes = nodes.filter((node) => node.terminal);
   const changedTerminals: HvacElement[] = [];
   const effective = terminalNodes.map((node) => {
@@ -472,12 +480,17 @@ export function sizeDuctSystem(
     const bounds = [0, ...node.taps.map((tap) => tap.station), node.total];
     const m = node.taps.length;
     const segments: Segment[] = [];
-    for (let k = 0; k <= m; k += 1) {
-      const downstream = node.taps.slice(k);
-      const airflow = endFlow + downstream.reduce((sum, tap) => sum + tap.child.airflow, 0);
-      const served = endServed + downstream.reduce((sum, tap) => sum + tap.child.served, 0);
+    // A suffix walk keeps long trunks linear in the number of take-offs.
+    let airflow = endFlow;
+    let served = endServed;
+    for (let k = m; k >= 0; k -= 1) {
+      if (k < m) {
+        airflow += node.taps[k]!.child.airflow;
+        served += node.taps[k]!.child.served;
+      }
       segments.push({ from: bounds[k]!, to: bounds[k + 1]!, airflow, terminals: served, part: served >= 2 ? 'trunk' : 'branch', section: node.spec.legs[0]!, setBy: 'locked' });
     }
+    segments.reverse();
     node.segments = segments;
     if (node.fixed) {
       for (const segment of segments) {
@@ -498,7 +511,7 @@ export function sizeDuctSystem(
     const minDiameter = neck?.diameterMm ?? 0;
 
     // ---- Each segment at the friction rate, under its velocity limit ----
-    segments.forEach((segment, k) => {
+    segments.forEach((segment) => {
       const mid = (segment.from + segment.to) / 2;
       const sample = sectionAt(node, varEnd - varStart > 2 ? Math.min(varEnd - 1, Math.max(varStart + 1, mid)) : mid);
       if (segment.airflow <= 0) {
@@ -620,8 +633,8 @@ export function sizeDuctSystem(
   // A fixed run's take-offs must still fit it: said, not changed.
   for (const node of nodes) {
     if (node.fixed !== 'locked') continue;
-    node.taps.forEach((tap, j) => {
-      const main = node.segments[j]!.section;
+    node.taps.forEach((tap) => {
+      const main = sectionAt(node, tap.station);
       const branch = firstSection(tap.child);
       const fits = isRoundLeg(main)
         ? isRoundLeg(branch) && branch.diameterMm! <= maxRoundBranchMm(main.diameterMm!) + 0.5
@@ -826,7 +839,11 @@ export function sizeDuctSystem(
     newSpecs.set(node.id, next);
     for (const child of node.children) rebuild(child, next);
   };
-  rebuild(root, null);
+  if (input.measure) {
+    // Inspection must preserve even an unanchored or invalid drawing, so the
+    // planner diagnoses the actual geometry instead of silently repairing it.
+    for (const node of nodes) newSpecs.set(node.id, node.spec);
+  } else rebuild(root, null);
 
   // ---- The runs as sized ----
   const changedRunIds: string[] = [];
@@ -841,9 +858,31 @@ export function sizeDuctSystem(
   const runLabel = (node: RunNode) => (!node.parent ? 'Main'
     : node.terminal ? `To ${node.terminal.label}`
       : node.spec.start.kind === 'split-branch' ? `Split outlet (${node.served})` : `Branch (${node.served})`);
-  const sections: DuctSizedSection[] = nodes.flatMap((node) => node.segments.map((segment) => ({
+  const reportSegments = (node: RunNode): Segment[] => {
+    if (!node.fixed) return node.segments;
+    // A locked or measured run may already have reducers between take-offs.
+    // Intersect flow intervals with its drawn legs instead of sampling their
+    // midpoint, which can hide an undersized section and its higher velocity.
+    const measured: Segment[] = [];
+    let legIndex = 0;
+    for (const segment of node.segments) {
+      while (legIndex + 1 < node.stations.length && node.stations[legIndex + 1]! <= segment.from + 1e-6) legIndex += 1;
+      for (let index = legIndex; index < node.rigid.length - 1 && node.stations[index]! < segment.to - 1e-6; index += 1) {
+        const from = Math.max(segment.from, node.stations[index]!);
+        const to = Math.min(segment.to, node.stations[index + 1]!);
+        if (to <= from + 1e-6) continue;
+        const section = node.spec.legs[index]!;
+        const previous = measured.at(-1);
+        if (previous && Math.abs(previous.to - from) < 1e-6 && previous.airflow === segment.airflow
+          && previous.part === segment.part && sameLeg(previous.section, section)) previous.to = to;
+        else measured.push({ ...segment, from, to, section });
+      }
+    }
+    return measured;
+  };
+  const sections: DuctSizedSection[] = nodes.flatMap((node) => reportSegments(node).map((segment) => ({
     runId: node.id, runLabel: runLabel(node), fromMm: Math.round(segment.from), toMm: Math.round(segment.to),
-    airflowM3h: Math.round(segment.airflow), part: node.fixed === 'stub' ? 'runout' as const : segment.part, section: segment.section,
+    airflowM3h: segment.airflow, part: node.fixed === 'stub' ? 'runout' as const : segment.part, section: segment.section,
     velocityMs: segment.airflow > 0 ? roundTo(velocityMs(segment.section, segment.airflow), 2) : 0,
     frictionPaPerM: segment.airflow > 0 ? roundTo(frictionPaPerM(segment.section, segment.airflow), 3) : 0,
     setBy: segment.setBy, ...(segment.note ? { note: segment.note } : {}),
@@ -865,13 +904,13 @@ export function sizeDuctSystem(
         message: `${node.terminal!.label}: ${neckVelocity.toFixed(1)} m/s in its Ø${node.terminal!.neckMm} neck and runout at ${Math.round(share.airflowM3h)} m³/h (limit ${Math.min(neckCap, basis.maxVelocity.runout)} m/s): a larger neck, or less airflow.` });
     }
     return {
-      terminalId: node.terminal!.element.id, label: node.terminal!.label, airflowM3h: Math.round(share.airflowM3h), fixed: share.fixed,
+      terminalId: node.terminal!.element.id, label: node.terminal!.label, airflowM3h: share.airflowM3h, fixed: share.fixed,
       neckMm: node.terminal!.neckMm, neckVelocityMs: roundTo(neckVelocity, 2), runId: node.id, throttlePa: null,
     };
   });
   const unitAir = unit ? readUnitAirData(unit) : null;
   const report: DuctSystemSizingReport = {
-    service, rootRunId, unitId, basis, airflowM3h: systemAirflow, airflowSource: air.airflowM3h ? air.source : null, terminalsAirflowM3h: Math.round(terminalsAirflow),
+    service, rootRunId, unitId, basis, airflowM3h: systemAirflow, airflowSource: air.airflowM3h ? air.source : null, terminalsAirflowM3h: terminalsAirflow,
     sections, terminals, plans: [], pressure: null, maxEspPa: unitAir?.maxEspPa ?? null, issues, errors: 0, warnings: 0, changedRunIds,
   };
   if (input.verify !== false) {
@@ -924,7 +963,7 @@ export function ductSystemRootOfRun(scene: readonly HvacElement[], runId: string
     const start = spec.start;
     if (start.kind === 'unit-port') return current;
     if (start.kind !== 'tap' && start.kind !== 'split-branch' && start.kind !== 'spigot') return null;
-    current = scene.find((element) => element.id === start.parentRunId) ?? null;
+    current = ductParentOf(spec, scene);
   }
   return null;
 }

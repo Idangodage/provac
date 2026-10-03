@@ -97,6 +97,8 @@ import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensa
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
 import { DuctOverlay, type DuctOverlayHandle } from "./canvas/hvac/duct/DuctOverlay";
 import { listAirPorts } from "./canvas/hvac/duct/ductAirPorts";
+import { generateAutoDuctPreview, applyAutoDuctPreview } from "./canvas/hvac/duct/ductAutoController";
+import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from "./canvas/hvac/duct/ductAutoPreviewStore";
 import { buildDuctBom, buildDuctFabricationSchedule } from "./canvas/hvac/duct/ductBom";
 import { splitOrigin, tapOrigin } from "./canvas/hvac/duct/ductBranchTargets";
 import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
@@ -106,8 +108,6 @@ import { moveDuctRuns, toElementUpdate } from "./canvas/hvac/duct/ductFollow";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
 import { getDuctSupportPlan } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
-import { generateAutoDuctPreview, applyAutoDuctPreview } from "./canvas/hvac/duct/ductAutoController";
-import { useDuctAutoPreviewStore } from "./canvas/hvac/duct/ductAutoPreviewStore";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
@@ -1659,7 +1659,7 @@ export function DrawingCanvas({
   const refrigerantPreview = useCondensatePreviewStore((state) => state.unified?.refrigerant ?? null);
   const ductRoutePreview = useCondensatePreviewStore((state) => state.unified?.ducts ?? null);
   // Terminals an Auto duct card preview turns the spigot of show turned in 3D until Apply or Discard.
-  const autoDuctTurned = useDuctAutoPreviewStore((state) => (state.result && state.scene === hvacElements && state.result.terminalUpdates?.length ? state.result.terminalUpdates : null));
+  const autoDuctTurned = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, ductSettings, walls) && state.result?.terminalUpdates?.length ? state.result.terminalUpdates : null));
   // An Auto route preview renders in 3D through the same transient path as a
   // pipe edit: new and changed pipes are previews; replaced ones become empty
   // placeholders so their committed meshes are hidden until Apply.
@@ -1899,7 +1899,7 @@ export function DrawingCanvas({
     hybridPipeInteractionRef.current?.setDraftPipes(elements);
   }, []);
   // Auto duct preview in 3D, through the same draft path the duct tool uses.
-  const autoDuctPreview = useDuctAutoPreviewStore((state) => (state.result && state.scene === hvacElements ? state.result : null));
+  const autoDuctPreview = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, ductSettings, walls) ? state.result : null));
   useEffect(() => {
     if (!autoDuctPreview?.runs.length) return undefined;
     hybridPipeInteractionRef.current?.setDraftPipes(autoDuctPreview.runs);
@@ -3239,6 +3239,7 @@ export function DrawingCanvas({
             hvacElements={hvacElements}
             selectedIds={selectedIds}
             settings={ductSettings}
+            walls={walls}
             showPorts={tool === "duct" && !projectionViewOnly}
             moveEnabled={tool === "select" && !projectionViewOnly && !isSpacePressed}
             onMoveCommit={commitDuctRunMove}

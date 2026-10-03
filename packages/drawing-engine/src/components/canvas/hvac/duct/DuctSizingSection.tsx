@@ -16,6 +16,7 @@ import { shallow } from 'zustand/shallow';
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
+import { DuctNumberInput } from './DuctNumberInput';
 import { measureDuctSystem, resizeDuctSystemOnDrawing } from './ductAutoController';
 import type { DuctDesignSettings } from './ductSettings';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, readUnitAirData, type FanSpeed } from './ductSizing';
@@ -38,42 +39,13 @@ const SERVICE_LABEL: Record<DuctService, string> = { supply: 'Supply', return: '
 const fixed = (value: number, digits: number) => (Number.isFinite(value) ? value.toFixed(digits) : '–');
 
 /** A number field with − / + steps: live (every valid keystroke) or committed on Enter / blur. */
-function StepNumber({ value, onChange, step, min, max, digits, label, live, derived }: {
-  value: number | null; onChange: (value: number | null) => void; step: number; min: number; max: number; digits: number;
-  label: string; live: boolean; derived?: boolean; placeholder?: string;
+function StepNumber({ value, onChange, step, min, max, label, live, derived, placeholder, allowEmpty = false }: {
+  value: number | null; onChange: (value: number | null) => void; step: number; min: number; max: number;
+  label: string; live: boolean; derived?: boolean; placeholder?: string; allowEmpty?: boolean;
 }) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const parse = (text: string): number | null | undefined => {
-    if (text.trim() === '') return null;
-    const parsed = Number.parseFloat(text);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  };
-  const commit = (next: number | null) => {
-    if (next === null) { if (value !== null) onChange(null); return; }
-    const clamped = Math.min(max, Math.max(min, Math.round(next / (step / 10)) * (step / 10)));
-    if (value === null || Math.abs(clamped - value) > 1e-9) onChange(clamped);
-  };
-  const nudge = (sign: 1 | -1) => commit(Math.round(((value ?? min) + sign * step) / step) * step);
   return (
-    <span className="inline-flex items-center rounded border border-slate-200 bg-white">
-      <button type="button" aria-label={`${label} down`} onClick={() => nudge(-1)} className="px-1 text-[11px] text-slate-500 hover:text-slate-900">−</button>
-      <input
-        type="number" step={step} min={min} max={max} aria-label={label}
-        value={draft ?? (value === null ? '' : value.toFixed(digits))}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          const parsed = parse(event.target.value);
-          if (live && parsed !== undefined && (parsed === null || (parsed >= min && parsed <= max))) commit(parsed);
-        }}
-        onBlur={() => {
-          if (draft !== null) { const parsed = parse(draft); if (parsed !== undefined) commit(parsed); }
-          setDraft(null);
-        }}
-        onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); }}
-        className={`w-14 border-x border-slate-200 px-1 text-right text-xs ${derived ? 'italic text-slate-500' : 'font-semibold text-slate-900'}`}
-      />
-      <button type="button" aria-label={`${label} up`} onClick={() => nudge(1)} className="px-1 text-[11px] text-slate-500 hover:text-slate-900">+</button>
-    </span>
+    <DuctNumberInput value={value} onChange={onChange} step={step} min={min} max={max} label={label}
+      live={live} derived={derived} steppers allowEmpty={allowEmpty} placeholder={placeholder} className="w-14" />
   );
 }
 
@@ -128,7 +100,7 @@ export function BasisEditor({ basis, live, onChange }: { basis: DuctSystemSizing
     : <span title="Follows from the other at the system airflow"><Link2 size={11} className="text-slate-400" /></span>);
   const limit = (part: 'trunk' | 'branch' | 'runout', label: string) => (
     <Row label={label}>
-      <StepNumber label={`${label} velocity limit`} value={basis.maxVelocity[part]} step={0.5} min={1} max={15} digits={1} live={live}
+      <StepNumber label={`${label} velocity limit`} value={basis.maxVelocity[part]} step={0.5} min={1} max={15} live={live}
         onChange={(value) => value !== null && onChange({ ...basis, maxVelocity: { ...basis.maxVelocity, [part]: value } }, `${part} limit ${fixed(basis.maxVelocity[part], 1)} → ${fixed(value, 1)} m/s`)} />
       <span className="w-8 text-[10px] text-slate-400">m/s</span>
     </Row>
@@ -137,13 +109,13 @@ export function BasisEditor({ basis, live, onChange }: { basis: DuctSystemSizing
     <div className="space-y-0.5" data-testid="duct-sizing-basis">
       <Row label="Main velocity" hint="Velocity in the main at the system airflow; the friction rate follows from it">
         {marker(drivesVelocity)}
-        <StepNumber label="Main velocity" value={basis.mainVelocityMs} step={0.1} min={1} max={15} digits={1} live={live} derived={!drivesVelocity}
+        <StepNumber label="Main velocity" value={basis.mainVelocityMs} step={0.1} min={1} max={15} live={live} derived={!drivesVelocity}
           onChange={(value) => value !== null && onChange({ ...basis, drive: 'velocity', mainVelocityMs: value }, `main velocity ${fixed(basis.mainVelocityMs, 1)} → ${fixed(value, 1)} m/s`)} />
         <span className="w-8 text-[10px] text-slate-400">m/s</span>
       </Row>
       <Row label="Friction rate" hint="Every section is sized at this friction loss per metre (equal friction)">
         {marker(!drivesVelocity)}
-        <StepNumber label="Friction rate" value={basis.frictionPaPerM} step={0.05} min={0.1} max={5} digits={2} live={live} derived={drivesVelocity}
+        <StepNumber label="Friction rate" value={basis.frictionPaPerM} step={0.05} min={0.1} max={5} live={live} derived={drivesVelocity}
           onChange={(value) => value !== null && onChange({ ...basis, drive: 'friction', frictionPaPerM: value }, `friction ${fixed(basis.frictionPaPerM, 2)} → ${fixed(value, 2)} Pa/m`)} />
         <span className="w-8 text-[10px] text-slate-400">Pa/m</span>
       </Row>
@@ -168,13 +140,24 @@ export interface TerminalAirflowRow {
 }
 
 /** Each terminal's airflow: typed, or blank for an equal share of the rest. */
-export function TerminalAirflowList({ rows, neckCapMs, live, onChange }: {
-  rows: TerminalAirflowRow[]; neckCapMs: number; live: boolean; onChange: (id: string, value: number | null, what: string) => void;
+export function TerminalAirflowList({ rows, neckCapMs, live, onChange, systemAirflowM3h }: {
+  rows: TerminalAirflowRow[]; neckCapMs: number; live: boolean; systemAirflowM3h?: number | null; onChange: (id: string, value: number | null, what: string) => void;
 }) {
   if (!rows.length) return null;
+  const allocated = rows.reduce((total, row) => total + row.airflowM3h, 0);
+  const difference = systemAirflowM3h === null || systemAirflowM3h === undefined ? 0 : allocated - systemAirflowM3h;
+  const mismatch = Math.abs(difference) > Math.max(0.01, (systemAirflowM3h ?? 0) * 1e-6);
+  const unserved = rows.filter((row) => row.airflowM3h <= 0).length;
   return (
     <details className="text-[10px] text-slate-600" open={rows.length <= 6} data-testid="duct-sizing-terminals">
       <summary className="flex cursor-pointer items-center gap-1 text-slate-500"><Wind size={11} />Terminal airflow ({rows.length}) · blank = equal share</summary>
+      {systemAirflowM3h !== null && systemAirflowM3h !== undefined ? (
+        <p className={`mt-1 ${mismatch || unserved ? 'text-amber-700' : 'text-slate-500'}`} role="status">
+          {Number(allocated.toFixed(2))} of {Number(systemAirflowM3h.toFixed(2))} m³/h allocated.
+          {mismatch ? ` ${Number(Math.abs(difference).toFixed(2))} m³/h ${difference > 0 ? 'over the system airflow: reduce fixed values or increase system airflow.' : 'unallocated: clear a fixed value to share the remainder.'}` : ''}
+          {unserved ? ` ${unserved} terminal${unserved === 1 ? ' has' : 's have'} no airflow; reduce fixed values or increase system airflow.` : ''}
+        </p>
+      ) : null}
       {/* Two lines a terminal: the panel is narrow. */}
       <ul className="mt-0.5 space-y-1">
         {rows.map((row) => (
@@ -187,7 +170,7 @@ export function TerminalAirflowList({ rows, neckCapMs, live, onChange }: {
               </span>
             </div>
             <div className="flex items-center gap-1">
-              <StepNumber label={`${row.label} airflow`} value={row.fixed ? row.airflowM3h : null} step={10} min={10} max={20000} digits={0} live={live}
+              <StepNumber label={`${row.label} airflow`} value={row.fixed ? row.airflowM3h : null} step={10} min={0.01} max={20000} live={live} placeholder="share" allowEmpty
                 onChange={(value) => onChange(row.id, value, `${row.label} airflow ${row.fixed ? Math.round(row.airflowM3h) : 'share'} → ${value === null ? 'share' : Math.round(value)} m³/h`)} />
               <span className="text-slate-400">m³/h</span>
               {!row.fixed ? <span className="text-slate-400" title="Equal share of the system airflow">(share {Math.round(row.airflowM3h)})</span> : null}
@@ -258,11 +241,11 @@ export function AppliedSystemSizing({ unit }: { unit: HvacElement }) {
   }), [hvacElements, unit.id]);
   const [tab, setTab] = useState<DuctService>('supply');
   const active = roots.find((entry) => entry.service === tab) ?? roots[0];
-  const basis = active ? basisForUnit(unit, active.service, ductSettings, active.spec.sizing) : null;
+  const basis = useMemo(() => active ? basisForUnit(unit, active.service, ductSettings, active.spec.sizing) : null,
+    [active, unit, ductSettings]);
   const report = useMemo(() => (active && basis ? measureDuctSystem(unit.id, active.service, basis) : null),
     // The drawing (and so the stored basis) is what the report follows.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hvacElements, active?.service, unit.id, JSON.stringify(basis)]);
+    [hvacElements, ductSettings, active, basis, unit.id]);
   if (!active || !basis) return null;
   const air = readUnitAirData(unit);
   const neckCap = active.service === 'return' ? ductSettings.autoMaxNeckVelocityReturnMs : ductSettings.autoMaxNeckVelocitySupplyMs;
@@ -291,13 +274,13 @@ export function AppliedSystemSizing({ unit }: { unit: HvacElement }) {
           </Row>
         ) : null}
         <Row label="Airflow" hint="System airflow the friction rate and the main velocity are linked at (blank = the fan speed's)">
-          <StepNumber label="Applied sizing airflow" value={basis.airflowM3h} step={10} min={10} max={50000} digits={0} live={false}
+          <StepNumber key={`${unit.id}:${active.service}`} label="Applied sizing airflow" value={basis.airflowM3h} step={10} min={0.01} max={50000} live={false} allowEmpty
             onChange={(value) => resize({ ...basis, airflowM3h: value }, `airflow ${airflow.airflowM3h ? Math.round(airflow.airflowM3h) : '–'} → ${value === null ? 'fan speed' : Math.round(value)} m³/h`)} />
           <span className="w-8 text-[10px] text-slate-400">{basis.airflowM3h ? 'm³/h' : `${airflow.airflowM3h ? Math.round(airflow.airflowM3h) : '–'}`}</span>
         </Row>
-        <BasisEditor basis={basis} live={false} onChange={(next, what) => resize(next, what)} />
+        <BasisEditor key={`${unit.id}:${active.service}`} basis={basis} live={false} onChange={(next, what) => resize(next, what)} />
         {report ? (
-          <TerminalAirflowList neckCapMs={neckCap} live={false}
+          <TerminalAirflowList neckCapMs={neckCap} live={false} systemAirflowM3h={airflow.airflowM3h}
             rows={report.terminals.map((terminal) => ({ id: terminal.terminalId, label: terminal.label, airflowM3h: terminal.airflowM3h, fixed: terminal.fixed, neckMm: terminal.neckMm, neckVelocityMs: terminal.neckVelocityMs }))}
             onChange={(id, value, what) => resize(basis, what, { [id]: value })} />
         ) : null}

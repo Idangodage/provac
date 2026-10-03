@@ -85,6 +85,9 @@ describe('auto duct: select, generate, apply as one undo', () => {
     expect(applyAutoDuctPreview()).toMatch(/added, 1 replaced/);
     expect(ducts().some((element) => element.id === 'old')).toBe(false);
     expect(ducts().some((element) => readDuctRunSpec(element)?.end.kind === 'terminal')).toBe(true);
+    // Rebuild discovers the terminals of this unit even when they are connected.
+    expect(autoDuctSelection(['fdum'], state().hvacElements)!.terminals.map((element) => element.id)).not.toContain('sd3');
+    expect(autoDuctSelection(['fdum'], state().hvacElements, { includeConnected: true })!.terminals.map((element) => element.id)).toContain('sd3');
     state().undo();
     expect(state().hvacElements).toEqual(before);
   });

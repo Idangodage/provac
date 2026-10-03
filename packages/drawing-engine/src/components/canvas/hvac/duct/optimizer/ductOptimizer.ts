@@ -38,8 +38,8 @@ export function verifyRuns(ctx: ServiceCtx, runs: readonly HvacElement[], notes:
   const scene = [...withReplaced(ctx.baseScene, terminalUpdates), ...runs];
   const plans = runs.map((run) => planDuctRunSpec(run.id, readDuctRunSpec(run)!, { settings: ctx.settings, scene }));
   const issues: AutoDuctIssue[] = [...notes];
-  let errors = 0;
-  let warnings = 0;
+  let errors = notes.filter((issue) => issue.severity === 'error').length;
+  let warnings = notes.filter((issue) => issue.severity === 'warning').length;
   for (const plan of plans) {
     for (const issue of plan.issues) {
       if (issue.severity === 'error') errors += 1;

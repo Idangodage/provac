@@ -115,8 +115,12 @@ describe('constant-friction sizing in the store', () => {
     const report = result.services[0]!.sizingReport!;
     for (const section of report.sections.filter((entry) => entry.setBy === 'friction')) expect(section.frictionPaPerM).toBeLessThanOrEqual(0.6 * 1.001);
     expect(result.terminalAirflowUpdates.map((element) => element.id)).toEqual(['sd0']);
+    // Adjusting only the friction basis must preserve the terminal flow already entered.
+    const resized = resizeAutoDuctPreviewNow({ supply: basisAt(0.5) })!;
+    expect(resized.terminalAirflowUpdates.map((element) => element.id)).toEqual(['sd0']);
+    expect(resized.services[0]!.sizingReport!.terminals.find((terminal) => terminal.terminalId === 'sd0')!.airflowM3h).toBe(450);
     applyAutoDuctPreview();
-    expect(rootSpec().sizing?.frictionPaPerM).toBe(0.6);
+    expect(rootSpec().sizing?.frictionPaPerM).toBe(0.5);
     expect(readDuctTerminalSpec(state().hvacElements.find((element) => element.id === 'sd0')!)!.designAirflowM3h).toBe(450);
     state().undo();
     expect(readDuctTerminalSpec(state().hvacElements.find((element) => element.id === 'sd0')!)!.designAirflowM3h ?? null).toBeNull();

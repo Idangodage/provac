@@ -15,22 +15,11 @@
  * ducts already applied, each change re-sizes them on the drawing (one undo).
  */
 import { Circle, Coins, Fan, Gauge, LayoutGrid, Loader2, Ruler, ShieldCheck, Sparkles, Square, Star, Wand2, Wind, X } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
 
-import {
-  applyAutoDuctPreview,
-  autoDuctSelection,
-  cancelAutoDuctPreview,
-  discardAutoDuctPreview,
-  generateAutoDuctPreview,
-  resizeAutoDuctPreview,
-} from './ductAutoController';
-import { AUTO_DUCT_LAYOUT_LABELS, type AutoDuctLayoutChoice, type AutoDuctResult, type AutoDuctShape, type AutoDuctSizingBases } from './ductAutoLayout';
-import { useDuctAutoPreviewStore } from './ductAutoPreviewStore';
-import { formatCost, type DuctCostBreakdown } from './ductEconomics';
 import { DuctFrontierChart } from './DuctFrontierChart';
 import {
   AppliedSystemSizing,
@@ -42,6 +31,19 @@ import {
   type SizingMethod,
   type TerminalAirflows,
 } from './DuctSizingSection';
+import {
+  applyAutoDuctPreview,
+  autoDuctSelection,
+  cancelAutoDuctPreview,
+  discardAutoDuctPreview,
+  generateAutoDuctPreview,
+  resizeAutoDuctPreview,
+} from './ductAutoController';
+import { AUTO_DUCT_LAYOUT_LABELS, type AutoDuctLayoutChoice, type AutoDuctRequest, type AutoDuctResult, type AutoDuctShape, type AutoDuctSizingBases } from './ductAutoLayout';
+import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
+import { sameAutoDuctInputs } from './ductAutoWorkflow';
+import { formatCost, type DuctCostBreakdown } from './ductEconomics';
+import { parseDuctNumber } from './ductNumericValue';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
 import { basisAirflowM3h, defaultSizingBasis, linkSizingBasis } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
@@ -225,14 +227,18 @@ function Summary({ result }: { result: AutoDuctResult }) {
 }
 
 export function DuctAutoCard() {
-  const { hvacElements, selectedElementIds } = useSmartDrawingStore((state) => ({
-    hvacElements: state.hvacElements, selectedElementIds: state.selectedElementIds,
+  const { hvacElements, selectedElementIds, walls } = useSmartDrawingStore((state) => ({
+    hvacElements: state.hvacElements, selectedElementIds: state.selectedElementIds, walls: state.walls,
   }), shallow);
-  const { result, scene, message, running } = useDuctAutoPreviewStore((state) => ({
+  const preview = useDuctAutoPreviewStore((state) => ({
     result: state.result, scene: state.scene, message: state.message, running: state.running,
+    request: state.request, inputs: state.inputs, resizing: state.resizing,
   }), shallow);
+  const { result, message, running, request, resizing } = preview;
+  const cardRef = useRef<HTMLDivElement>(null);
   const [fanSpeed, setFanSpeed] = useState<FanSpeed>('hi');
   const [airflowDraft, setAirflowDraft] = useState('');
+  const [airflowBadInput, setAirflowBadInput] = useState(false);
   const [layout, setLayout] = useState<AutoDuctLayoutChoice>('auto');
   const [shape, setShape] = useState<AutoDuctShape>('optimal');
   const [services, setServices] = useState({ supply: true, return: true });
@@ -242,11 +248,14 @@ export function DuctAutoCard() {
   const [bases, setBases] = useState<Partial<Record<DuctService, DuctSystemSizing>>>({});
   const [terminalAirflows, setTerminalAirflows] = useState<TerminalAirflows>({});
   const [sizingTab, setSizingTab] = useState<DuctService>('supply');
-  const selection = useMemo(() => autoDuctSelection(selectedElementIds, hvacElements), [selectedElementIds, hvacElements]);
+  const selection = useMemo(() => autoDuctSelection(selectedElementIds, hvacElements, { includeConnected: rebuild }), [selectedElementIds, hvacElements, rebuild]);
   const unitId = selection?.unit.id ?? null;
   useEffect(() => {
     setBases({});
     setTerminalAirflows({});
+    setAirflowDraft('');
+    setAirflowBadInput(false);
+    setRebuild(false);
   }, [unitId]);
   if (!selection) return null;
   const { unit, terminals } = selection;
@@ -256,16 +265,19 @@ export function DuctAutoCard() {
     const service = readDuctTerminalSpec(terminal)?.service;
     if (service) counts[service] += 1;
   }
-  const occupied = hvacElements.some((element) => {
-    const start = isDuctElement(element) ? readDuctRunSpec(element)?.start : null;
-    return start?.kind === 'unit-port' && start.unitId === unit.id;
-  });
-  const typed = Number.parseFloat(airflowDraft);
-  const airflowOverride = Number.isFinite(typed) && typed > 0 ? typed : null;
-  const current = result && result.unitId === unit.id && scene === hvacElements ? result : null;
+  const occupiedServices = new Set(hvacElements.flatMap((element) => {
+    const spec = isDuctElement(element) ? readDuctRunSpec(element) : null;
+    return spec?.start.kind === 'unit-port' && spec.start.unitId === unit.id ? [spec.service] : [];
+  }));
+  const occupied = occupiedServices.size > 0;
+  const airflowEntry = parseDuctNumber(airflowDraft, 0.01, 50000, true);
+  const airflowError = airflowBadInput ? 'Enter a valid airflow.' : airflowEntry.valid ? null : airflowEntry.message;
+  const airflowOverride = airflowEntry.valid ? airflowEntry.value : null;
+  const current = result?.unitId === unit.id && isAutoDuctPreviewCurrent(preview, hvacElements, ductSettings, walls) ? result : null;
   // ---- Sizing ----
   const method: SizingMethod = ductSettings.autoSizingMethod;
-  const systemAirflow = basisAirflowM3h(unit, { airflowM3h: airflowOverride, fanSpeed }).airflowM3h;
+  const defaultAirflow = basisAirflowM3h(unit, { airflowM3h: null, fanSpeed }).airflowM3h;
+  const systemAirflow = airflowError ? null : basisAirflowM3h(unit, { airflowM3h: airflowOverride, fanSpeed }).airflowM3h;
   const sizingServices = (['supply', 'return'] as const).filter((service) => services[service] && counts[service] > 0);
   const tab: DuctService = sizingServices.includes(sizingTab) ? sizingTab : sizingServices[0] ?? 'supply';
   const basisFor = (service: DuctService, from = bases): DuctSystemSizing => linkSizingBasis({
@@ -284,8 +296,7 @@ export function DuctAutoCard() {
     if (current && method === 'constant-friction') resizeAutoDuctPreview(allBases(), next);
   };
   const changeMethod = (next: SizingMethod) => {
-    setDuctSettings({ autoSizingMethod: next });
-    if (next === 'constant-friction' && current) resizeAutoDuctPreview(allBases(), airflowEntries, 0);
+    if (next !== method) setDuctSettings({ autoSizingMethod: next });
   };
   const tabTerminals = terminals.filter((terminal) => readDuctTerminalSpec(terminal)?.service === tab);
   const tabShares = shareAirflow(systemAirflow ?? 0, tabTerminals.map((terminal) => {
@@ -302,20 +313,40 @@ export function DuctAutoCard() {
     };
   });
   const neckCap = tab === 'return' ? ductSettings.autoMaxNeckVelocityReturnMs : ductSettings.autoMaxNeckVelocitySupplyMs;
-  const lifeCycleAfterConstant = Boolean(current?.sizing) && method === 'life-cycle';
-  const stale = result && result.unitId === unit.id && scene !== hvacElements;
+  const intendedRequest: AutoDuctRequest = {
+    unitId: unit.id, terminalIds: terminals.map((terminal) => terminal.id), fanSpeed,
+    airflowM3h: airflowOverride, layout, services, rebuildExisting: rebuild, shape,
+    sizing: method === 'constant-friction' ? allBases() : null,
+    ...(airflowEntries ? { terminalAirflows: airflowEntries } : {}),
+  };
+  const inputsChanged = Boolean(current && (!request || !sameAutoDuctInputs(request, intendedRequest)));
+  const stale = result?.unitId === unit.id && !current;
   const busy = running === unit.id;
-  const canGenerate = !busy && ((services.supply && counts.supply > 0) || (services.return && counts.return > 0));
+  const occupiedSelection = sizingServices.filter((service) => occupiedServices.has(service));
+  const generateProblem = airflowError ? `Airflow: ${airflowError}`
+    : !systemAirflow ? 'Enter this unit’s airflow in m³/h before generating ducts.'
+      : !services.supply && !services.return ? 'Choose Supply, Return, or both.'
+        : !sizingServices.length ? 'Select the diffusers (supply) and grilles (return) this unit serves.'
+          : !rebuild && occupiedSelection.length ? `The ${occupiedSelection.join(' and ')} duct is already connected. Enable Rebuild existing or turn off that service.` : null;
+  const canGenerate = !busy && !generateProblem;
+  const validFields = () => {
+    const invalid = cardRef.current?.querySelector<HTMLInputElement>('input[aria-invalid="true"]');
+    if (invalid) {
+      let parent = invalid.parentElement;
+      while (parent && parent !== cardRef.current) {
+        if (parent instanceof HTMLDetailsElement) parent.open = true;
+        parent = parent.parentElement;
+      }
+      invalid.focus();
+      return false;
+    }
+    return true;
+  };
   const generate = () => {
-    void generateAutoDuctPreview({
-      unitId: unit.id, terminalIds: terminals.map((terminal) => terminal.id), fanSpeed,
-      airflowM3h: airflowOverride, layout, services, rebuildExisting: rebuild, shape,
-      sizing: method === 'constant-friction' ? allBases() : null,
-      ...(airflowEntries ? { terminalAirflows: airflowEntries } : {}),
-    });
+    if (canGenerate && validFields()) void generateAutoDuctPreview(intendedRequest);
   };
   return (
-    <div className="mb-2 space-y-1.5 rounded-lg border border-sky-200 bg-sky-50/60 p-2" data-testid="duct-auto-card">
+    <div ref={cardRef} className="mb-2 space-y-1.5 rounded-lg border border-sky-200 bg-sky-50/60 p-2" data-testid="duct-auto-card" aria-busy={busy || resizing}>
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-sky-800"><Wand2 size={12} />Auto duct</span>
         <span className="text-[11px] text-slate-600" title={`${counts.supply} diffuser(s), ${counts.return} return grille(s)`}>
@@ -324,7 +355,9 @@ export function DuctAutoCard() {
       </div>
       {!selection.fromSelection ? (
         <p className="text-[10px] text-slate-500">
-          No terminals selected: using the {terminals.length} unconnected one{terminals.length === 1 ? '' : 's'} in this room. Shift-click or drag a box to choose.
+          {rebuild ? `Using ${terminals.length} terminals connected to this unit or available nearby.`
+            : `Using ${terminals.length} unconnected terminals in this room or within 10 m when room data is missing.`}
+          {' '}Shift-click or drag a box with the unit to choose specific terminals.
         </p>
       ) : null}
       <div className="grid grid-cols-3 gap-0.5 rounded-md border border-slate-200 bg-white p-0.5" role="radiogroup" aria-label="Auto duct shape">
@@ -340,13 +373,19 @@ export function DuctAutoCard() {
           <select value={fanSpeed} onChange={(event) => setFanSpeed(event.target.value as FanSpeed)} className={select} aria-label="Auto duct fan speed">
             {FAN_SPEEDS.map((speed) => <option key={speed} value={speed}>{FAN_SPEED_LABELS[speed]} · {Math.round(air.airflowM3h![speed])} m³/h</option>)}
           </select>
-        ) : <span className="text-[10px] text-amber-700">no airflow data: enter it below</span>}
+        ) : <span className={`text-[10px] ${defaultAirflow ? 'text-slate-500' : 'text-amber-700'}`}>{defaultAirflow ? 'using the unit’s airflow' : 'no airflow data: enter it below'}</span>}
       </Line>
       <Line label="Airflow" icon={<Wind size={12} />}>
-        <input type="number" step={10} min={0} value={airflowDraft} placeholder={air.airflowM3h ? String(Math.round(air.airflowM3h[fanSpeed])) : 'm³/h'}
-          onChange={(event) => setAirflowDraft(event.target.value)} className="w-20 rounded-md border border-slate-200 px-1 text-xs" aria-label="Auto duct airflow" />
+        <input type="number" step={10} min={0.01} max={50000} value={airflowDraft} placeholder={defaultAirflow ? String(Math.round(defaultAirflow)) : 'm³/h'}
+          onChange={(event) => { setAirflowDraft(event.target.value); setAirflowBadInput(event.target.validity.badInput); }}
+          onKeyDown={(event) => { if (event.key === 'Escape') { setAirflowDraft(''); setAirflowBadInput(false); event.stopPropagation(); } }}
+          className={`w-20 rounded-md border px-1 text-xs ${airflowError ? 'border-red-400' : 'border-slate-200'}`} aria-label="Auto duct airflow"
+          aria-invalid={Boolean(airflowError)} aria-describedby="duct-auto-airflow-help" />
         <span className="text-[10px] text-slate-400">m³/h</span>
       </Line>
+      <p id="duct-auto-airflow-help" className={`text-[10px] ${airflowError ? 'text-red-600' : 'text-slate-500'}`}>
+        {airflowError ?? (airflowDraft ? 'Manual airflow override. Clear to use the unit’s airflow.' : defaultAirflow ? `Using ${Math.round(defaultAirflow)} m³/h from the unit. Enter a value to override.` : 'Enter a positive airflow from the unit specification.')}
+      </p>
       <Line label="Layout" icon={<LayoutGrid size={12} />}>
         <select value={layout} onChange={(event) => setLayout(event.target.value as AutoDuctLayoutChoice)} className={select} aria-label="Auto duct layout">
           <option value="auto">Any (optimiser)</option>
@@ -368,34 +407,35 @@ export function DuctAutoCard() {
         <SizingMethodSwitch method={method} onChange={changeMethod} />
         <ServiceTabs services={sizingServices} active={tab} onChange={setSizingTab} />
         {method === 'constant-friction' && sizingServices.length ? (
-          <BasisEditor basis={basisFor(tab)} live onChange={(next) => updateBasis(tab, next)} />
+          <BasisEditor key={`${unit.id}:${tab}`} basis={basisFor(tab)} live onChange={(next) => updateBasis(tab, next)} />
         ) : null}
-        <TerminalAirflowList rows={airflowRows} neckCapMs={neckCap} live onChange={(id, value) => updateAirflow(id, value)} />
-        {current && method === 'life-cycle' && Object.keys(terminalAirflows).length ? (
-          <p className="text-[10px] text-amber-700">Generate again to size the life-cycle optimum for the airflows set here.</p>
-        ) : null}
-        {lifeCycleAfterConstant ? <p className="text-[10px] text-amber-700">This preview is sized by constant friction: generate again for the life-cycle optimum.</p> : null}
+        <TerminalAirflowList rows={airflowRows} neckCapMs={neckCap} systemAirflowM3h={systemAirflow} live onChange={(id, value) => updateAirflow(id, value)} />
       </div>
       ) : null}
       {occupied ? (
-        <Line label="Rebuild existing">
-          <input type="checkbox" checked={rebuild} onChange={(event) => setRebuild(event.target.checked)} aria-label="Auto duct rebuild existing" />
-        </Line>
+        <div>
+          <Line label="Rebuild existing">
+            <input type="checkbox" checked={rebuild} onChange={(event) => setRebuild(event.target.checked)} aria-label="Auto duct rebuild existing" />
+          </Line>
+          {rebuild ? <p className="text-[10px] text-slate-500">Apply replaces the selected services’ ducts and keeps the change in one undo step.</p> : null}
+        </div>
       ) : null}
       <div className="flex gap-1 pt-0.5">
         {busy ? (
-          <button type="button" onClick={cancelAutoDuctPreview}
+          <button type="button" onClick={cancelAutoDuctPreview} aria-label="Cancel duct generation"
             className="inline-flex flex-1 items-center justify-center gap-1 rounded-md bg-slate-700 px-2 py-1 text-xs font-medium text-white hover:bg-slate-800">
-            <Loader2 size={12} className="animate-spin" />Routing and sizing… <X size={12} />
+            <Loader2 size={12} className="animate-spin" />Routing and sizing… Cancel <X size={12} />
           </button>
         ) : (
           <button type="button" disabled={!canGenerate} onClick={generate}
             className="inline-flex flex-1 items-center justify-center gap-1 rounded-md bg-sky-700 px-2 py-1 text-xs font-medium text-white hover:bg-sky-800 disabled:opacity-40">
-            <Wand2 size={12} />Generate ducts
+            <Wand2 size={12} />{current || stale ? 'Regenerate ducts' : 'Generate ducts'}
           </button>
         )}
         {current && current.runs.length ? (
-          <button type="button" onClick={() => applyAutoDuctPreview()} className="rounded-md bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-800">
+          <button type="button" disabled={Boolean(running) || resizing || inputsChanged || Boolean(airflowError)}
+            onClick={() => { if (validFields()) applyAutoDuctPreview(); }}
+            className="rounded-md bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-40">
             Apply ducts
           </button>
         ) : null}
@@ -405,9 +445,11 @@ export function DuctAutoCard() {
           </button>
         ) : null}
       </div>
-      {!canGenerate && !busy ? <p className="text-[10px] text-slate-500">Select the diffusers (supply) and grilles (return) this unit serves.</p> : null}
-      {stale ? <p className="text-[10px] text-amber-700">The drawing changed since the preview: generate again.</p> : null}
-      {message && !current ? <p className="text-[10px] text-slate-600">{message}</p> : null}
+      {generateProblem && !busy ? <p className="text-[10px] text-amber-700" role="status">{generateProblem}</p> : null}
+      {resizing && current ? <p className="text-[10px] text-sky-700" role="status">Updating duct sizes and design costs…</p> : null}
+      {inputsChanged && !resizing ? <p className="text-[10px] text-amber-700" role="status">Inputs changed. Regenerate ducts to review and apply a matching design.</p> : null}
+      {stale ? <p className="text-[10px] text-amber-700" role="status">The drawing or duct settings changed since the preview. Regenerate ducts.</p> : null}
+      {message && !current ? <p className="text-[10px] text-slate-600" role="status">{message}</p> : null}
       {occupied && !current && !busy && !rebuild ? <AppliedSystemSizing unit={unit} /> : null}
       {current ? <Designs result={current} /> : null}
       {current ? <Summary result={current} /> : null}

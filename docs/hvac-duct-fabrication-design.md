@@ -33,6 +33,16 @@ Status: **Phases 1–3 complete** (GI runs with joints; branches, transitions, o
    - The **Duct systems** panel shows the settings (with source badges), the project BOM, and the fabrication schedule as CSV.
    - `DU_*` design checks appear in the shared design-check list.
 
+### Automatic layout and system sizing
+
+Select one ducted unit to open **Auto duct**. The card finds unconnected terminals in its room, or within 10 m when room data is missing. Select specific terminals with the unit to override that choice. **Rebuild existing** also includes terminals already served by that unit, and replaces its selected services in one undo step when applied.
+
+Review the airflow source, supply/return selection, layout and shape before **Generate ducts**. The card explains missing airflow or occupied collars. Numeric fields preserve entered precision and show invalid values; Enter commits a valid field, and Escape restores its current value. Terminal airflow summaries show fixed allocations and the remaining shared airflow.
+
+Generation creates a preview. **Apply ducts** is unavailable while generation or live resizing is pending, or when the card inputs no longer match the generated request. Changes to the drawing, walls or duct settings require regeneration. Cancelling generation prevents an older result from reappearing. Applying and rebuilding each remain one undo step.
+
+Constant-friction sizing can update the preview or an applied system. Measuring an applied system preserves its drawn geometry and reports each existing section, including reducers in locked runs. Pressure estimates integrate airflow on either side of take-offs, use developed fitting lengths, and include split outlet losses. Friction uses laminar and turbulent regimes with an estimated transition between them; fitting loss coefficients remain the documented practice estimates in `ductPressure.ts`.
+
 ## Engineering rules
 
 Defaults are editable; each carries provenance in `ductSettings.ts`. Rule IDs refer to the research doc.

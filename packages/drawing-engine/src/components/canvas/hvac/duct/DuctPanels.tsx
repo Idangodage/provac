@@ -15,6 +15,7 @@ import { shallow } from 'zustand/shallow';
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
+import { DuctNumberInput } from './DuctNumberInput';
 import { buildDuctBom, buildDuctFabricationSchedule, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
 import { findReattachTarget } from './ductBranchTargets';
 import { gaugeLabelForSheet } from './ductCatalog';
@@ -24,10 +25,10 @@ import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlann
 import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
 import { describeJoint } from './ductGauge';
 import { ductBranchesOf } from './ductNetwork';
-import { DUCT_RULE_SOURCES, DUCT_SUPPORTED_PRESSURE_CLASSES_PA, type DuctDesignSettings, type DuctJointSystem } from './ductSettings';
-import { DUCT_SOURCES, isPracticeSource } from './ductSources';
 import { defaultPlenumSize } from './ductPlenum';
+import { DUCT_RULE_SOURCES, DUCT_SUPPORTED_PRESSURE_CLASSES_PA, type DuctDesignSettings, type DuctJointSystem } from './ductSettings';
 import { neckVelocityMs } from './ductSizing';
+import { DUCT_SOURCES, isPracticeSource } from './ductSources';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
 import { ductSystemRootOfRun } from './ductSystemSizing';
 import { DUCT_TERMINAL_NECKS_MM, isDuctTerminalElement, readDuctTerminalSpec, TERMINAL_LABELS, typicalTerminalSpec, type DuctTerminalSpigotSide } from './ductTerminals';
@@ -147,22 +148,9 @@ function usePlans(): DuctFabricationPlan[] {
 function CommitNumber({ value, onCommit, step = 10, min = 50, max = 3000, label }: {
   value: number; onCommit: (value: number) => void; step?: number; min?: number; max?: number; label: string;
 }) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const commit = () => {
-    if (draft === null) return;
-    const parsed = Number.parseFloat(draft);
-    setDraft(null);
-    if (Number.isFinite(parsed) && Math.abs(parsed - value) > 1e-9) onCommit(Math.min(max, Math.max(min, parsed)));
-  };
   return (
-    <input
-      type="number" step={step} min={min} max={max} aria-label={label}
-      value={draft ?? String(Math.round(value * 100) / 100)}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={commit}
-      onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); }}
-      className="w-16 rounded border border-slate-200 px-1 text-xs"
-    />
+    <DuctNumberInput value={value} label={label} step={step} min={min} max={max}
+      onChange={(next) => { if (next !== null) onCommit(next); }} />
   );
 }
 
@@ -197,23 +185,9 @@ function legCaption(spec: DuctRunSpec, index: number): string {
 /** A diffuser or return grille: its size (typical catalog, practice), spigot and ceiling level. */
 /** A number that may be left blank (null); commits on Enter or blur. */
 function TerminalAirflowInput({ value, onCommit }: { value: number | null; onCommit: (value: number | null) => void }) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const commit = () => {
-    if (draft === null) return;
-    const parsed = Number.parseFloat(draft);
-    setDraft(null);
-    const next = draft.trim() === '' ? null : Number.isFinite(parsed) && parsed > 0 ? Math.min(20000, parsed) : value;
-    if (next !== value) onCommit(next);
-  };
   return (
-    <input
-      type="number" step={10} min={0} aria-label="Terminal design airflow" placeholder="share"
-      value={draft ?? (value === null ? '' : String(value))}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={commit}
-      onKeyDown={(event) => { if (event.key === 'Enter') commit(); }}
-      className="w-16 rounded border border-slate-200 px-1 text-xs"
-    />
+    <DuctNumberInput value={value} onChange={onCommit} step={10} min={0.01} max={20000}
+      label="Terminal design airflow" placeholder="share" allowEmpty />
   );
 }
 

@@ -27,7 +27,8 @@ import { MM_TO_PX } from '../../scale';
 import { useCondensatePreviewStore } from '../condensate/condensatePreviewStore';
 
 import { listAirPorts } from './ductAirPorts';
-import { useDuctAutoPreviewStore } from './ductAutoPreviewStore';
+import type { AutoDuctWall } from './ductAutoLayout';
+import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, type DuctEditResult } from './ductEdits';
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
 import { moveDuctRuns } from './ductFollow';
@@ -81,6 +82,7 @@ export interface DuctOverlayProps {
   hvacElements: HvacElement[];
   selectedIds: string[];
   settings: DuctDesignSettings;
+  walls?: readonly AutoDuctWall[];
   /** Show the units' air collars (duct tool active). */
   showPorts: boolean;
   /** Selected runs can be dragged (select tool). */
@@ -320,7 +322,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   // Auto duct preview: the proposed runs, dashed, over the drawing they were generated from (hiding the runs they replace).
-  const cardPreview = useDuctAutoPreviewStore((state) => (state.result && state.scene === hvacElements ? state.result : null));
+  const cardPreview = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, settings, props.walls) ? state.result : null));
   // The unified Auto route's duct proposal previews the same way.
   const routePreview = useCondensatePreviewStore((state) => state.unified?.ducts ?? null);
   const autoPreview = useMemo(() => {
