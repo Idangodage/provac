@@ -30,9 +30,9 @@
  * Time O(3^k·|V|), memory O(2^k·|V|): it runs up to the settings' limit.
  */
 import type { Point2D } from '../../../../../types';
+import { branchStubMm, flexClear, flexFit, flexOk, runoutPath, runoutStaysOut, simplifyCollinear, type AutoDuctIssue, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { maxRoundBranchMm } from '../ductRoundFittings';
 import { isRoundLeg, roundLeg, type DuctLeg, type DuctTapStyle } from '../ductTypes';
-import { branchStubMm, flexClear, flexFit, flexOk, runoutPath, runoutStaysOut, simplifyCollinear, type AutoDuctIssue, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 
 import { allRuns, computeFlows, runLengthMm, type DesignStart, type RunDesign, type ServiceDesign } from './designTree';
 import { DIRECTIONS, leftOf, rightOf, reverseOf, ROUTE_CLEARANCE_MM, terminalVariants, type RoutingGraph } from './routingGraph';
@@ -406,7 +406,9 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
   const terminals = ctx.terminals;
   const k = terminals.length;
   const groupMasks = options.groups && k > options.maxTerminals ? options.groups.map((group) => group.reduce((mask, index) => mask | (1 << index), 0)) : null;
-  if (!k || (k > options.maxTerminals && !groupMasks) || k > GROUPED_MAX_TERMINALS || !graph.roots.length || graph.leaves.some((leaves) => !leaves.length)) return null;
+  // A terminal without a rigid runout candidate can still be reached by an
+  // all-flex take-off. Its singleton layer tries both kinds of ending below.
+  if (!k || (k > options.maxTerminals && !groupMasks) || k > GROUPED_MAX_TERMINALS || !graph.roots.length) return null;
   /** The subsets routed: all of them, or (grouped) those inside one group and the unions of whole groups. */
   const inFamily = (S: number): boolean => !groupMasks
     || groupMasks.some((mask) => (S & ~mask) === 0)
@@ -849,14 +851,38 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
   const usages: Usage[] = [];
   const designs: ServiceDesign[] = [];
   const seen = new Set<string>();
+  // The collar straight and the short cap tail are not necessarily grid
+  // edges. Give them the same obstacle corridor check as the searched edges.
+  const corridorBoxes = (ctx.obstacles ?? []).filter((box) => box.id !== ctx.unitId
+    && box.zMax > ctx.bottomZ && box.zMin < ctx.bottomZ + Math.min(model.maxHeightMm, 350));
+  const straightCorridor = (a: Point2D, b: Point2D): number => {
+    const horizontal = Math.abs(a.y - b.y) < 0.5;
+    const lo = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
+    const hi = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
+    const at = horizontal ? a.y : a.x;
+    let free = INF;
+    for (const box of corridorBoxes) {
+      if (hi <= (horizontal ? box.minX : box.minY) || lo >= (horizontal ? box.maxX : box.maxY)) continue;
+      const low = horizontal ? box.minY : box.minX;
+      const high = horizontal ? box.maxY : box.maxX;
+      free = Math.min(free, at < low ? low - at : at > high ? at - high : 0);
+    }
+    return free;
+  };
   for (const { root, value, state, turn } of results.slice(0, ROOTS_KEPT)) {
     const usage: Usage = { edges: new Map(), nodes: new Map() };
+    const constrain = (run: RunDesign, halfWidthMm: number, lengthMm = 0) => {
+      const fromMm = runLengthMm(run);
+      run.corridorMm = Math.min(run.corridorMm ?? INF, halfWidthMm);
+      (run.corridors ??= []).push({ fromMm, toMm: fromMm + lengthMm, halfWidthMm });
+    };
     const use = (run: RunDesign, S: number, v: number, u: number) => {
       const key = edgeKey(v, u);
       usage.edges.set(key, [...(usage.edges.get(key) ?? []), S]);
-      // The narrowest corridor the run passes: the sizing may not choose a section wider than it.
+      // Keep where each corridor occurs: a narrow tail must not restrict a
+      // wider upstream section when a reducer fits before that tail.
       for (let d = 0; d < 4; d += 1) {
-        if (nb[v * 4 + d] === u) run.corridorMm = Math.min(run.corridorMm ?? INF, graph.corridor[v * 4 + d]!);
+        if (nb[v * 4 + d] === u) constrain(run, graph.corridor[v * 4 + d]!, graph.edgeLength[v * 4 + d]!);
       }
       const list = usage.nodes.get(u) ?? [];
       if (!list.some((entry) => entry.run === run.key)) list.push({ run: run.key, set: S, start: false });
@@ -902,7 +928,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
           const dir = choice - MOVE;
           const u = nb[v * 4 + dir]!;
           // A corner here: its room round the node limits the run's section too.
-          if (dir !== h) run.corridorMm = Math.min(run.corridorMm ?? INF, graph.nodeClear[v]!);
+          if (dir !== h) constrain(run, graph.nodeClear[v]!);
           use(run, S, v, u);
           const next = arrive(top, dir === h ? level : 0, graph.edgeLength[v * 4 + dir]!);
           s3 = (u * 4 + dir) * LEVELS + next;
@@ -932,7 +958,9 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
           run.taps.push({ station: runLengthMm(run), side, child });
           enter(child, S, v);
           const ahead = DIRECTIONS[h]!;
-          run.vertices.push({ x: p.x + ahead.x * STUB_END_RUN_ON_MM, y: p.y + ahead.y * STUB_END_RUN_ON_MM });
+          const capEnd = { x: p.x + ahead.x * STUB_END_RUN_ON_MM, y: p.y + ahead.y * STUB_END_RUN_ON_MM };
+          constrain(run, straightCorridor(p, capEnd), STUB_END_RUN_ON_MM);
+          run.vertices.push(capEnd);
           run.end = { kind: 'cap' };
           return;
         }
@@ -989,7 +1017,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
           minus.route = { kind: 'split', node: v, set: B, parentSet: S, tapNodes: [] };
           if (run.route) run.route.splitNode = v;
           run.end = { kind: 'split', children: [plus, minus] };
-          run.corridorMm = Math.min(run.corridorMm ?? INF, graph.nodeClear[v]!);
+          constrain(run, graph.nodeClear[v]!);
           if (choice === SPLIT_WYE) {
             const main = layers[S]!.best!;
             walkStraight(plus, A, v, leftOf(h), straightFirst(A, wyeRoom(main, layers[A]!.best)).land[v * 4 + leftOf(h)]!);
@@ -1004,7 +1032,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       }
     };
     /** A run that leaves `v` along `dir` straight to the state `landing` (a wye outlet), then goes on as the DP chose. */
-    function walkStraight(run: RunDesign, S: number, v: number, dir: number, landing: number): void {
+    const walkStraight = (run: RunDesign, S: number, v: number, dir: number, landing: number): void => {
       enter(run, S, v);
       const target = Math.floor(landing / LEVELS);
       let node = v;
@@ -1016,9 +1044,10 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
         push(run, node);
       }
       walk(run, S, landing, null);
-    }
+    };
     const rootRun = newRun({ kind: 'unit' }, { x: 0, y: 0 });
     rootRun.route = { kind: 'root', node: root.node, set: full, parentSet: full, tapNodes: [] };
+    constrain(rootRun, straightCorridor({ x: 0, y: 0 }, at(root.node)), root.outletMm);
     // The fan-outlet straight is the root's too.
     for (let node = 0; node < graph.nodeCount; node += 1) {
       if (Math.abs(graph.nodeY[node]!) < 1 && graph.nodeX[node]! < root.outletMm - 1) {
@@ -1028,6 +1057,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     enter(rootRun, full, root.node);
     if (turn) {
       push(rootRun, root.node);
+      constrain(rootRun, graph.nodeClear[root.node]!);
       walkStraight(rootRun, full, root.node, turn.dir, turn.land);
     } else {
       walk(rootRun, full, state, null);

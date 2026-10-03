@@ -21,57 +21,10 @@
 import type { HvacElement, Point2D } from '../../../../types';
 import { isCondensatePipe } from '../condensate/condensateTypes';
 import { listNetworkPipeLanes } from '../networkPipeClearance';
-import { findObstacleAwareOrthogonalRoute, type OrthogonalRouteObstacle } from '../obstacleAwareOrthogonalRoute';
+import { findObstacleAwareOrthogonalRoute } from '../obstacleAwareOrthogonalRoute';
 import { isRefrigerantPipeElementType } from '../refrigerantPipePairModel';
 
 import { listAirPorts, type DuctAirPort } from './ductAirPorts';
-import { spigotOrigin, splitOrigin, tapOrigin } from './ductBranchTargets';
-import { legNormal } from './ductBranches';
-import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from './ductDraft';
-import { energyPricePerPa, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
-import type { DuctFabricationPlan } from './ductFabricationPlanner';
-import { flexCurve } from './ductFlex';
-import { ductRunElementWithSpec } from './ductFollow';
-import { ductBranchesOf } from './ductNetwork';
-import { checkSpigotFit } from './ductPlenum';
-import type { ServicePressure } from './ductPressure';
-import { SMACNA_TABLE_3_1 } from './ductRoundRules';
-import type { DuctDesignSettings } from './ductSettings';
-import {
-  equivalentDiameterMm,
-  neckForAirflow,
-  neckVelocityMs,
-  readUnitAirData,
-  shareAirflow,
-  sizeRectangular,
-  sizeRound,
-  sizingLimits,
-  velocityMs,
-  velocityPressurePa,
-  type FanSpeed,
-} from './ductSizing';
-import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
-import { linkSizingBasis, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
-import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec, type DuctTerminalSpec } from './ductTerminals';
-import {
-  isDuctElement,
-  readDuctRunSpec,
-  roundLeg,
-  type DuctLeg,
-  type DuctService,
-  type DuctSide,
-  type DuctSpigotFace,
-  type DuctSplitStyle,
-  type DuctSystemSizing,
-} from './ductTypes';
-import { findDuctClashes, terminalBoxOf } from './ductVolumes';
-import { designFromRuns, withReplaced, type ServiceDesign } from './optimizer/designTree';
-import { optimiseService, verifyRuns, type ServiceOption, type TreeFailure } from './optimizer/ductOptimizer';
-import { buildRoutingGraph } from './optimizer/routingGraph';
-import { SizingModel, type ShapeMode } from './optimizer/sizingModel';
-import { explainBlockedCollar, explainNoCleanDesign } from './optimizer/failureMessages';
-import { cutsFromErrors, cutsFromFailures } from './optimizer/routerCuts';
-import { emptyCuts, GROUPED_MAX_TERMINALS, groupTerminals, layerMemoWorthKeeping, newLayerMemo, routeTrees, type LayerMemo } from './optimizer/steinerArborescence';
 import {
   ALL_FLEX_REACH_MM,
   RUNOUT_TARGETS_MM,
@@ -100,6 +53,52 @@ import {
   type ServiceCtx,
   type TerminalCtx,
 } from './ductAutoContext';
+import { spigotOrigin, splitOrigin, tapOrigin } from './ductBranchTargets';
+import { legNormal } from './ductBranches';
+import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from './ductDraft';
+import { energyPricePerPa, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
+import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
+import { ductRunElementWithSpec } from './ductFollow';
+import { ductBranchesOf } from './ductNetwork';
+import { checkSpigotFit } from './ductPlenum';
+import type { ServicePressure } from './ductPressure';
+import { SMACNA_TABLE_3_1 } from './ductRoundRules';
+import type { DuctDesignSettings } from './ductSettings';
+import {
+  equivalentDiameterMm,
+  neckForAirflow,
+  neckVelocityMs,
+  readUnitAirData,
+  shareAirflow,
+  sizeRectangular,
+  sizeRound,
+  sizingLimits,
+  velocityMs,
+  velocityPressurePa,
+  type FanSpeed,
+} from './ductSizing';
+import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
+import { linkSizingBasis, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
+import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
+import {
+  isDuctElement,
+  readDuctRunSpec,
+  roundLeg,
+  type DuctLeg,
+  type DuctService,
+  type DuctSide,
+  type DuctSpigotFace,
+  type DuctSplitStyle,
+  type DuctSystemSizing,
+} from './ductTypes';
+import { findDuctClashes, terminalBoxOf } from './ductVolumes';
+import { designFromRuns, withReplaced, type ServiceDesign } from './optimizer/designTree';
+import { optimiseService, verifyRuns, type ServiceOption, type TreeFailure } from './optimizer/ductOptimizer';
+import { explainBlockedCollar, explainNoCleanDesign } from './optimizer/failureMessages';
+import { cutsFromErrors, cutsFromFailures } from './optimizer/routerCuts';
+import { buildRoutingGraph } from './optimizer/routingGraph';
+import { SizingModel, type ShapeMode } from './optimizer/sizingModel';
+import { emptyCuts, GROUPED_MAX_TERMINALS, groupTerminals, layerMemoWorthKeeping, newLayerMemo, routeTrees, type LayerMemo } from './optimizer/steinerArborescence';
 
 export type { AutoDuctIssue, AutoDuctIssueCode } from './ductAutoContext';
 
@@ -292,6 +291,9 @@ interface Candidate {
   penalty?: number;
   terminalRuns: Map<string, string>;
   trunkSections: Array<{ widthMm: number; heightMm: number; airflowM3h: number }>;
+  /** Terminal sides used by this seed; its tree and checks use the same ports. */
+  terminals?: TerminalCtx[];
+  terminalUpdates?: HvacElement[];
 }
 
 // ---- Branches (shared by every layout) ----
@@ -335,6 +337,11 @@ function branchPath(
   const radius = ratio * terminal.branch + settings.elbowNeckMm;
   const zTop = z + terminal.branch;
   const obstacles = obstaclesFor(ctx, terminal.branch / 2 + 50, z, zTop, new Set([terminal.element.id]), build);
+  // The bend-aware router pads obstacles by its elbow setback as well. Leave
+  // enough straight beyond the damper to escape the parent's padded wall;
+  // starting at the damper itself can be inside that padding.
+  const routeStart = { x: stubEnd.x + out.x * radius, y: stubEnd.y + out.y * radius };
+  const clearExit = obstacles.every((box) => box.id === origin.parentRunId || !segmentHitsBox(stubEnd, routeStart, box));
   let route: Point2D[] | null = null;
   let reduce = terminal.branch !== terminal.neck;
   for (const withReducer of reduce ? [true, false] : [false]) {
@@ -343,12 +350,12 @@ function branchPath(
     for (const reach of RUNOUT_TARGETS_MM) {
       const end = { x: terminal.lip.x + terminal.normal.x * reach, y: terminal.lip.y + terminal.normal.y * reach };
       // From the end of the collar + damper, clear of the parent's wall.
-      const found = findObstacleAwareOrthogonalRoute({
-        start: stubEnd, startDirection: out, end, endDirection: terminal.normal,
+      const found = clearExit ? findObstacleAwareOrthogonalRoute({
+        start: routeStart, startDirection: out, end, endDirection: terminal.normal,
         startStraightMm: settings.elbowNeckMm, endStraightMm: endStraight, bendRadiusMm: radius,
         obstacles, clearanceMm: 0, bendPenaltyMm: 1500,
-      });
-      if (found) { route = simplifyCollinear([start, ...found.points]); break; }
+      }) : null;
+      if (found) { route = simplifyCollinear([start, stubEnd, ...found.points]); break; }
     }
     if (route) { reduce = withReducer; break; }
   }
@@ -390,6 +397,27 @@ function placed(origin: DuctDraftOrigin | null): PlacedOrigin | null {
 
 /** A branch from the origin `makeOrigin` gives for its first section (a spigot's height depends on it). */
 function buildBranch(ctx: ServiceCtx, makeOrigin: (first: DuctLeg) => DuctDraftOrigin | null, terminal: TerminalCtx, scene: HvacElement[], build: Build): HvacElement | null {
+  const choices = [terminal, ...(terminal.variants ?? []).filter((variant) => variant.spec.spigotSide !== terminal.spec.spigotSide)];
+  let best: { run: HvacElement; terminal: TerminalCtx; notes: AutoDuctIssue[]; errors: number; length: number } | null = null;
+  for (const choice of choices) {
+    const trial: Build = { extra: build.extra, notes: [] };
+    const run = buildBranchForSide(ctx, makeOrigin, choice, withReplaced(scene, [choice.element]), trial);
+    if (!run) continue;
+    const spec = readDuctRunSpec(run)!;
+    const plan = planDuctRunSpec(run.id, spec, { settings: ctx.settings, scene: [...withReplaced(scene, [choice.element]), run] });
+    const errors = plan.issues.filter((issue) => issue.severity === 'error').length;
+    const length = spec.path.slice(1).reduce((sum, point, index) => sum + Math.hypot(point.x - spec.path[index]!.x, point.y - spec.path[index]!.y), 0);
+    if (!best || errors < best.errors || (errors === best.errors && length < best.length)) best = { run, terminal: choice, notes: trial.notes, errors, length };
+    if (errors === 0) break;
+  }
+  if (!best) return null;
+  build.notes.push(...best.notes);
+  (build.terminals ??= new Map()).set(terminal.element.id, best.terminal);
+  addRunObstacles(ctx, build, best.run);
+  return best.run;
+}
+
+function buildBranchForSide(ctx: ServiceCtx, makeOrigin: (first: DuctLeg) => DuctDraftOrigin | null, terminal: TerminalCtx, scene: HvacElement[], build: Build): HvacElement | null {
   let origin = placed(makeOrigin(roundLeg(terminal.branch)));
   if (!origin) return null;
   const notes = build.notes.length;
@@ -408,8 +436,12 @@ function buildBranch(ctx: ServiceCtx, makeOrigin: (first: DuctLeg) => DuctDraftO
     construction: ctx.construction,
     end: { kind: 'terminal', terminalId: terminal.element.id, portId: terminal.port.portId, flex: true },
   }, ctx.ids(), scene).element;
-  addRunObstacles(ctx, build, branch);
   return branch;
+}
+
+function candidateTerminalSides(ctx: ServiceCtx, build: Build): Pick<Candidate, 'terminals' | 'terminalUpdates'> {
+  const terminals = ctx.terminals.map((terminal) => build.terminals?.get(terminal.element.id) ?? terminal);
+  return { terminals, terminalUpdates: terminals.filter((terminal) => terminal.turnedTo !== undefined).map((terminal) => terminal.element) };
 }
 
 // ---- Plenum + runouts ----
@@ -490,7 +522,7 @@ function plenumCandidate(ctx: ServiceCtx): Candidate | null {
     runs.push(branch);
     terminalRuns.set(spigot.terminal.element.id, branch.id);
   }
-  return { layout: 'plenum', runs, terminalRuns, notes: build.notes, obstacleHits: 0, trunkSections: [{ widthMm: width, heightMm: height, airflowM3h: ctx.airflowM3h }] };
+  return { layout: 'plenum', runs, terminalRuns, notes: build.notes, obstacleHits: 0, trunkSections: [{ widthMm: width, heightMm: height, airflowM3h: ctx.airflowM3h }], ...candidateTerminalSides(ctx, build) };
 }
 
 // ---- Trunks ----
@@ -720,7 +752,7 @@ function buildTrunkRun(
   end: 'end-cap' | DuctSplitStyle,
   build: Build,
   minFirstWidthMm = 0,
-): { run: HvacElement; branches: HvacElement[]; terminalRuns: Map<string, string>; sections: Array<{ widthMm: number; heightMm: number; airflowM3h: number }>; hits: number; notes: AutoDuctIssue[] } | null {
+): ({ run: HvacElement; branches: HvacElement[]; terminalRuns: Map<string, string>; sections: Array<{ widthMm: number; heightMm: number; airflowM3h: number }>; hits: number; notes: AutoDuctIssue[] } & Pick<Candidate, 'terminals' | 'terminalUpdates'>) | null {
   const airflow = plan.terminals.reduce((total, terminal) => total + terminal.airflowM3h, 0);
   const bottomZ = origin && origin.kind !== 'port' && origin.kind !== 'free' ? origin.bottomZ : ctx.bottomZ;
   const stubBlocked = (wall: Point2D, stubEnd: Point2D, terminal: TerminalCtx) => stretchBlocked(ctx, wall, stubEnd, terminal.branch, bottomZ, new Set([terminal.element.id, ctx.unitId]));
@@ -743,7 +775,7 @@ function buildTrunkRun(
     branches.push(branch);
     terminalRuns.set(tap.terminal.element.id, branch.id);
   }
-  return { run, branches, terminalRuns, sections: sized.sections, hits: trunkObstacleHits(ctx, sized.vertices, sized.sections[0]!.widthMm, heightMm), notes: build.notes };
+  return { run, branches, terminalRuns, sections: sized.sections, hits: trunkObstacleHits(ctx, sized.vertices, sized.sections[0]!.widthMm, heightMm), notes: build.notes, ...candidateTerminalSides(ctx, build) };
 }
 
 function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
@@ -756,7 +788,7 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
   const far = 1e5;
   const push = (layout: AutoDuctLayoutKind, built: ReturnType<typeof buildTrunkRun>) => {
     if (!built) return;
-    out.push({ layout, runs: [built.run, ...built.branches], terminalRuns: built.terminalRuns, notes: built.notes, obstacleHits: built.hits, trunkSections: built.sections });
+    out.push({ layout, runs: [built.run, ...built.branches], terminalRuns: built.terminalRuns, notes: built.notes, obstacleHits: built.hits, trunkSections: built.sections, terminals: built.terminals, terminalUpdates: built.terminalUpdates });
   };
   // Straight along the collar's normal.
   push('trunk-straight', buildTrunkRun(ctx, { vertices: [{ x: 0, y: 0 }, { x: far, y: 0 }], startClearMm: exit, terminals }, height, null, ctx.baseScene, 'end-cap', newBuild()));
@@ -770,8 +802,9 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
   }
   if (lines.length) lines.push(lines.reduce((total, value) => total + value, 0) / lines.length);
   const earliest = exit + turnSetback;
-  const nearest = Math.min(...terminals.map((terminal) => terminal.lip.x));
-  const rows = [...new Set(lines.map((x) => roundUp(Math.max(x, earliest))).filter((x) => x <= nearest - branchStubMm(settings) - 300 || terminals.every((terminal) => terminal.normal.x > 0.5)))].slice(0, 4);
+  // A trunk can sit between two terminal rows, with their spigots facing it
+  // from either side. The physical checks reject obstructed rows afterwards.
+  const rows = [...new Set(lines.map((x) => roundUp(Math.max(x, earliest))))].slice(0, 4);
   for (const row of rows) {
     for (const sign of [1, -1] as const) {
       if (!terminals.some((terminal) => Math.sign(terminal.lip.y) === sign)) continue;
@@ -817,7 +850,7 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
         hits += built.hits;
         scene = [...scene, built.run];
       }
-      if (ok) out.push({ layout: 'trunk-split', runs, terminalRuns, notes: build.notes, obstacleHits: hits, trunkSections: sections });
+      if (ok) out.push({ layout: 'trunk-split', runs, terminalRuns, notes: build.notes, obstacleHits: hits, trunkSections: sections, ...candidateTerminalSides(ctx, build) });
     }
   }
   return out;
@@ -847,6 +880,26 @@ function trunkCandidates(ctx: ServiceCtx): Candidate[] {
   return out;
 }
 
+/** A second, bounded set of seeds with symmetric spigots facing a shared cross-trunk. */
+function facingTrunkCandidates(ctx: ServiceCtx): Candidate[] {
+  if (!ctx.settings.autoChooseSpigotSide || ctx.terminals.length < 2) return [];
+  const centres = ctx.terminals.map((terminal) => {
+    const x = terminal.element.position.x + terminal.element.width / 2;
+    const y = terminal.element.position.y + terminal.element.depth / 2;
+    return toLocal(ctx.frame, { x, y }).x;
+  });
+  const row = (Math.min(...centres) + Math.max(...centres)) / 2;
+  const terminals = ctx.terminals.map((terminal, index) => {
+    const direction = centres[index]! < row ? 1 : -1;
+    const side = terminal.variants?.find((variant) => variant.normal.x === direction);
+    return side ? { ...side, variants: terminal.variants } : terminal;
+  });
+  const terminalUpdates = terminals.filter((terminal) => terminal.turnedTo !== undefined).map((terminal) => terminal.element);
+  if (!terminalUpdates.length) return [];
+  const alternate = { ...ctx, terminals, baseScene: withReplaced(ctx.baseScene, terminalUpdates) };
+  return trunkCandidates(alternate);
+}
+
 // ---- Scoring ----
 
 interface Scored {
@@ -860,7 +913,7 @@ interface Scored {
 }
 
 function score(ctx: ServiceCtx, candidate: Candidate): Scored {
-  const { plans, issues, errors, warnings, pressure } = verifyRuns(ctx, candidate.runs, candidate.notes);
+  const { plans, issues, errors, warnings, pressure } = verifyRuns(ctx, candidate.runs, candidate.notes, candidate.terminalUpdates);
   let sheet = 0;
   let fittings = 0;
   let flex = 0;
@@ -1378,17 +1431,18 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       const plenum = plenumCandidate(ctx);
       if (plenum) candidates.push(plenum);
     }
-    if (request.layout !== 'plenum') candidates.push(...trunkCandidates(ctx));
-    if (!candidates.length) {
-      serviceResult.issues.push({ code: 'DU_AUTO_NO_LAYOUT', severity: 'error', service, message: request.layout === 'plenum'
-        ? 'No plenum layout fits these terminals (at most four, two per face, within about 4 m); try Trunk.'
-        : 'No duct layout could be built for these terminals.' });
+    if (request.layout !== 'plenum') candidates.push(...trunkCandidates(ctx), ...facingTrunkCandidates(ctx));
+    // The obstacle-aware router can find routes that the legacy rectangular
+    // layouts cannot seed (including round mains in a shallow ceiling void).
+    if (!candidates.length && request.layout === 'plenum') {
+      serviceResult.issues.push({ code: 'DU_AUTO_NO_LAYOUT', severity: 'error', service,
+        message: 'No plenum layout fits these terminals (at most four, two per face, within about 4 m); try Trunk.' });
       result.staticServices.push(serviceResult);
       continue;
     }
     const seeds: ServiceDesign[] = [];
     for (const candidate of candidates) {
-      const design = designFromRuns(ctx, candidate.runs, AUTO_DUCT_LAYOUT_LABELS[candidate.layout], exitLengthMm(port), 0, candidate.notes);
+      const design = designFromRuns(candidate.terminals ? { ...ctx, terminals: candidate.terminals } : ctx, candidate.runs, AUTO_DUCT_LAYOUT_LABELS[candidate.layout], exitLengthMm(port), 0, candidate.notes);
       if (!design) continue;
       design.kind = candidate.layout;
       if (candidate.penalty) design.pressurePenaltyPa = fanOutletSystemEffectPa(port, total);
@@ -1503,17 +1557,17 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       const trees = routeRound([0.5, 2]);
       if (trees.length) sizeTrees(trees, loopShapes);
     }
-    if (shape !== 'round') {
+    if (shape !== 'round' && candidates.length) {
       // The reference: the v1 layout as it sizes it (equal friction, rectangular). A verified option like
       // any other, so the optimiser's choice is never worse than it.
-      const best = candidates.map((candidate) => score(ctx, candidate)).sort((a, b) => a.cost - b.cost)[0]!;
-      const verified = verifyRuns(ctx, best.candidate.runs, best.candidate.notes);
+      const best = candidates.map((candidate) => score(ctx, candidate)).sort((a, b) => a.errors - b.errors || a.cost - b.cost)[0]!;
+      const verified = verifyRuns(ctx, best.candidate.runs, best.candidate.notes, best.candidate.terminalUpdates);
       options = [...options, {
         key: `v1:${best.candidate.layout}`, label: `${AUTO_DUCT_LAYOUT_LABELS[best.candidate.layout]} (equal friction)`, source: 'v1', shape: 'rect',
         runs: best.candidate.runs, plans: verified.plans, terminalRuns: best.candidate.terminalRuns, trunkSections: best.candidate.trunkSections,
         pressure: verified.pressure, espPa: verified.pressure.indexPa,
-        cost: priceDuctPlans(verified.plans, settings, verified.hangers, verified.straps), errors: verified.errors, warnings: verified.warnings, issues: verified.issues,
-        modelCost: 0, modelPressurePa: verified.pressure.indexPa, exact: false, terminalUpdates: [],
+        cost: priceDuctPlans(verified.plans, settings, verified.hangers, verified.straps), errors: best.errors, warnings: best.warnings, issues: best.issues,
+        modelCost: 0, modelPressurePa: verified.pressure.indexPa, exact: false, terminalUpdates: best.candidate.terminalUpdates ?? [],
       }];
     }
     // Constant friction: every verified route sized again at the designer's basis, and verified again.

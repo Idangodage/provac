@@ -15,7 +15,10 @@ import { resolveDuctSettings } from '../ductSettings';
 import { readDuctTerminalSpec, terminalEnvelope, typicalTerminalSpec } from '../ductTerminals';
 import { readDuctRunSpec } from '../ductTypes';
 
-import { groupTerminals } from './steinerArborescence';
+import { allRuns } from './designTree';
+import { buildRoutingGraph } from './routingGraph';
+import { SizingModel } from './sizingModel';
+import { groupTerminals, routeTrees } from './steinerArborescence';
 
 const settings = resolveDuctSettings({});
 const unit: HvacElement = {
@@ -59,7 +62,8 @@ describe('spigot sides the optimiser may choose', () => {
     const ctx = contextOf([diffuser('a', S(3000, 1500), 0), diffuser('b', S(3000, -1500), 0)]);
     for (const terminal of ctx.terminals) {
       expect(terminal.variants!.length).toBeGreaterThanOrEqual(2);
-      expect(terminal.variants!.length).toBeLessThanOrEqual(2);
+      expect(terminal.variants!.length).toBeLessThanOrEqual(3);
+      expect(terminal.variants!.some((variant) => !variant.turnedTo)).toBe(true);
       // Off the collar's axis: the best side faces back towards it.
       expect(terminal.variants![0]!.normal.y * Math.sign(terminal.lip.y)).toBeLessThan(0);
     }
@@ -113,6 +117,40 @@ describe('the grouped router', () => {
     // A long row is cut into balanced runs across.
     const row = Array.from({ length: 10 }, (_, index) => ({ lip: { x: 3000, y: index * 1500 } })) as unknown as TerminalCtx[];
     expect(groupTerminals(row, 4).map((group) => group.length)).toEqual([3, 4, 3]);
+  });
+});
+
+describe('terminals reachable by flexible take-offs', () => {
+  it('routes a terminal even when it has no rigid runout candidates', () => {
+    const ctx = contextOf([diffuser('a', S(1800, 1500), 0)]);
+    const model = new SizingModel(ctx, 'rect', ctx.airflowM3h);
+    const graph = buildRoutingGraph(ctx, model, 1000, 600);
+    // A nearby terminal can have no usable grid leaf while a flex take-off
+    // from the trunk still reaches its spigot within the bend/length limits.
+    graph.leaves[0] = [];
+    const solution = routeTrees(ctx, model, graph, {
+      lambda: model.pricePerPa, label: 'Flex take-off', fanOutletMm: 1000,
+      shortOutletPenaltyPa: 0, maxTerminals: settings.autoExactTerminals,
+    });
+    expect(solution?.designs.length).toBeGreaterThan(0);
+    for (const design of solution!.designs) {
+      const ends = allRuns(design.root).filter((run) => run.end.kind === 'terminal');
+      expect(ends).toHaveLength(1);
+      expect(ends[0]!.allFlex).toBe(true);
+      expect(ends[0]!.end).toMatchObject({ kind: 'terminal', terminal: { element: { id: 'a' } } });
+    }
+  });
+
+  it('still refuses a terminal with neither a rigid route nor a permitted flex connection', () => {
+    const captured = contextOf([diffuser('a', S(1800, 1500), 0)]);
+    const ctx = { ...captured, settings: { ...captured.settings, flexMaxLengthMm: 1 } };
+    const model = new SizingModel(ctx, 'rect', ctx.airflowM3h);
+    const graph = buildRoutingGraph(ctx, model, 1000, 600);
+    expect(graph.leaves[0]).toHaveLength(0);
+    expect(routeTrees(ctx, model, graph, {
+      lambda: model.pricePerPa, label: 'No connection', fanOutletMm: 1000,
+      shortOutletPenaltyPa: 0, maxTerminals: settings.autoExactTerminals,
+    })).toBeNull();
   });
 });
 

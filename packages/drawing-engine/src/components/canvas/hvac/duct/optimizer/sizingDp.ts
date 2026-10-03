@@ -215,13 +215,32 @@ function dedupe(legs: DuctLeg[]): DuctLeg[] {
   return out;
 }
 
+/** The corridor alongside this section, including any corner or split at its ends. */
+function segmentCorridorMm(run: RunDesign, segment: RunSegment): number {
+  if (!run.corridors) return run.corridorMm ?? INF;
+  let corridor = INF;
+  for (const limit of run.corridors) {
+    const overlaps = limit.toMm > limit.fromMm
+      ? Math.min(segment.to, limit.toMm) - Math.max(segment.from, limit.fromMm) > 1e-6
+      : limit.fromMm >= segment.from - 1e-6 && limit.fromMm <= segment.to + 1e-6;
+    if (overlaps) corridor = Math.min(corridor, limit.halfWidthMm);
+  }
+  return corridor;
+}
+
+function fitsCorridor(leg: DuctLeg, corridorMm: number, model: SizingModel): boolean {
+  return !Number.isFinite(corridorMm)
+    || leg.widthMm / 2 + 1 + model.costContext.insulationMm <= corridorMm - ROUTE_CLEARANCE_MM + 1e-6;
+}
+
 function segmentOptions(run: RunDesign, segment: RunSegment, index: number, children: RunState[], model: SizingModel): DuctLeg[] {
+  const corridor = segmentCorridorMm(run, segment);
   if (run.end.kind === 'plenum') return [{ widthMm: model.ctx.port.widthMm, heightMm: model.ctx.port.heightMm }];
   const terminal = run.end.kind === 'terminal' ? run.end.terminal : null;
   if (run.allFlex && terminal) return [{ widthMm: terminal.neck, heightMm: terminal.neck, diameterMm: terminal.neck }];
   const oneTerminal = segment.tap === null && terminal !== null && Math.abs(segment.flowIn - terminal.airflowM3h) < 1e-6;
   if (oneTerminal && (run.start.kind === 'tap' || run.start.kind === 'spigot' || index > 0)) {
-    return model.branchOptions(segment.flowIn, terminal.neck);
+    return model.branchOptions(segment.flowIn, terminal.neck).filter((leg) => fitsCorridor(leg, corridor, model));
   }
   let options = model.trunkOptions(segment.flowIn);
   // A split outlet run to one terminal may also be a round branch (a wye outlet).
@@ -273,9 +292,7 @@ function segmentOptions(run: RunDesign, segment: RunSegment, index: number, chil
     }
   }
   // Only sections that fit the corridor the router ran the run through (its outer half and the clearance).
-  const corridor = run.corridorMm;
-  return dedupe(options).filter((leg) => corridor === undefined || !Number.isFinite(corridor)
-    || leg.widthMm / 2 + 1 + model.costContext.insulationMm <= corridor - ROUTE_CLEARANCE_MM + 1e-6);
+  return dedupe(options).filter((leg) => fitsCorridor(leg, corridor, model));
 }
 
 // ---- Compatibility ----
@@ -297,7 +314,7 @@ function tapStyles(main: DuctLeg, branch: DuctLeg, child: RunState, model: Sizin
 }
 
 /** A section may follow `from` downstream: never larger, a flat bottom (height not up), rectangular to round but not back. */
-function mayFollow(from: DuctLeg, to: DuctLeg, model: SizingModel): boolean {
+function mayFollow(from: DuctLeg, to: DuctLeg, _model: SizingModel): boolean {
   if (sameLeg(from, to)) return true;
   if (areaOf(to) > areaOf(from) + 1e-9) return false;
   if (isRoundLeg(from)) return isRoundLeg(to) && to.diameterMm! < from.diameterMm!;
@@ -512,7 +529,11 @@ function solveRun(run: RunDesign, solver: Solver): RunState {
   state.options = segments.map((segment, index) => segmentOptions(run, segment, index, children, model));
   // A section may always carry on past a take-off (a velocity under the economy band is no rule), so each
   // segment also offers the sections of the one before it; otherwise close take-offs leave no room to reduce.
-  for (let k = 1; k < state.options.length; k += 1) state.options[k] = dedupe([...state.options[k]!, ...state.options[k - 1]!]);
+  for (let k = 1; k < state.options.length; k += 1) {
+    const corridor = segmentCorridorMm(run, segments[k]!);
+    state.options[k] = dedupe([...state.options[k]!, ...state.options[k - 1]!])
+      .filter((leg) => fitsCorridor(leg, corridor, model));
+  }
   endFrontiers(state, solver);
   for (let k = segments.length - 1; k >= 0; k -= 1) {
     const segment = segments[k]!;
@@ -682,10 +703,11 @@ function explainInfeasible(state: RunState, model: SizingModel): SizingFailure {
     }
     if (run.end.kind === 'plenum') return { runKey: run.key, reason: 'end-plenum', detail: 'no spigot fits the plenum' };
   }
-  const corridor = run.corridorMm !== undefined && Number.isFinite(run.corridorMm) ? `; corridor ${Math.round(run.corridorMm)} mm` : '';
   for (let k = lastIndex; k >= 0; k -= 1) {
     if (state.G[k]!.some((frontier) => frontier.some(Number.isFinite))) continue;
     const segment = state.segments[k]!;
+    const corridorMm = segmentCorridorMm(run, segment);
+    const corridor = Number.isFinite(corridorMm) ? `; corridor ${Math.round(corridorMm)} mm` : '';
     const options = state.options[k]!;
     const alive = state.alive[k] ?? [];
     const sizes = `${options.length} section${options.length === 1 ? '' : 's'}${corridor}`;

@@ -91,6 +91,13 @@ export interface RunDesign {
    * fit. Unset where unknown (a layout read back from built runs).
    */
   corridorMm?: number;
+  /**
+   * Local corridor limits along a routed run, measured from its start. A
+   * zero-length interval constrains a corner or split at that station.
+   * When present, sizing applies these to each section instead of applying
+   * the run's narrowest corridor to every section upstream of it.
+   */
+  corridors?: Array<{ fromMm: number; toMm: number; halfWidthMm: number }>;
 }
 
 export interface ServiceDesign {

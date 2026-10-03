@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { HvacElement, Point2D } from '../../../../../types';
-import { flexFit, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { resolveUnitAirPorts } from '../ductAirPorts';
+import { flexFit, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { generateAutoDuct, inspectAutoDuctContexts, type AutoDuctRequest } from '../ductAutoLayout';
 import { legNormal } from '../ductBranches';
-import { energyPricePerPa, presentWorthFactor, sectionCostPerMetre } from '../ductEconomics';
 import { galvanisedSheetMassKgPerM2 } from '../ductCatalog';
+import { energyPricePerPa, presentWorthFactor, sectionCostPerMetre } from '../ductEconomics';
 import { maxRoundBranchMm } from '../ductRoundFittings';
 import { resolveDuctSettings, type DuctDesignSettings } from '../ductSettings';
 import { velocityPressurePa, velocityMs } from '../ductSizing';
@@ -166,6 +166,53 @@ describe('sizing DP: exact against brute force', () => {
       expect(chosen.index).toBeLessThanOrEqual(previous);
       previous = chosen.index;
     }
+  });
+
+  function designWithNarrowTail(halfWidthMm: number) {
+    const tailElement = terminal('tail', at(frame, 6500, 0), { x: -frame.n.x, y: -frame.n.y });
+    const narrowCtx = contextFor([unit, t1, tailElement], ['t1', 'tail'], settings);
+    const [branchTerminal, tailTerminal] = narrowCtx.terminals as [TerminalCtx, TerminalCtx];
+    const branch: RunDesign = {
+      ...child, end: { kind: 'terminal', terminal: branchTerminal },
+    };
+    const endMm = tailTerminal.lip.x - 700;
+    const main: RunDesign = {
+      ...root, vertices: [{ x: 0, y: 0 }, { x: endMm, y: 0 }],
+      taps: [{ station: 2000, side: 1, child: branch }],
+      end: { kind: 'terminal', terminal: tailTerminal }, corridorMm: halfWidthMm,
+      corridors: [
+        { fromMm: 0, toMm: 4500, halfWidthMm: Number.POSITIVE_INFINITY },
+        { fromMm: 4500, toMm: endMm, halfWidthMm },
+      ],
+    };
+    computeFlows(main);
+    return {
+      design: { ...design, root: main },
+      model: new SizingModel(narrowCtx, 'round', narrowCtx.airflowM3h),
+    };
+  }
+
+  it('keeps a wide main and reduces before a narrow downstream corridor', () => {
+    const narrow = designWithNarrowTail(160);
+    const frontier = sizeDesign(narrow.design, narrow.model, grid);
+    expect(frontier).not.toBeNull();
+    const points = frontierPoints(frontier!.cost);
+    expect(points.length).toBeGreaterThan(0);
+    for (const point of points) {
+      const main = frontier!.reconstruct(point.index)!.sizing.get('r')!;
+      expect(main.sections[0]!.diameterMm).toBeGreaterThanOrEqual(300);
+      expect(main.sections.at(-1)!.diameterMm).toBe(200);
+      const reducer = narrow.model.transition(main.sections[0]!, main.sections[1]!, narrow.model.ctx.terminals[1]!.airflowM3h);
+      expect(main.boundaries[0]! + reducer.lengthMm / 2).toBeLessThan(4500);
+    }
+    // A legacy run with only a global corridor still honours that bound.
+    const legacy = { ...narrow.design, root: { ...narrow.design.root, corridors: undefined } };
+    expect(sizeDesign(legacy, narrow.model, grid)).toBeNull();
+  });
+
+  it('rejects a tail too narrow even when a larger upstream section could carry on', () => {
+    const narrow = designWithNarrowTail(149);
+    expect(sizeDesign(narrow.design, narrow.model, grid)).toBeNull();
   });
 });
 

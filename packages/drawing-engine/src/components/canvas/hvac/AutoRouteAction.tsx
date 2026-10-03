@@ -7,13 +7,14 @@
  * condensate), previews the result with a cross-service clash list, and Apply
  * commits everything as a single undo step.
  */
-import { Check, Loader2, SlidersHorizontal, Wand2, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, Loader2, SlidersHorizontal, Wand2, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useSmartDrawingStore } from '../../../store';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 
 import { applyAutoRoutePreview, cancelAutoRoute, discardAutoRoutePreview, runAutoRoute } from './autoRouteController';
+import { autoRouteDuctFeedback } from './autoRouteDuctFeedback';
 import type { AutoRouteCostRates } from './autoRouteEvaluation';
 import {
   readStoredAutoRouteServices,
@@ -140,21 +141,29 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
   const hopClashes = unified?.clashes.filter((clash) => clash.resolvedByHop) ?? [];
   const refrigerantChanges = refrigerant ? refrigerant.elementsToAdd.length + refrigerant.removeElementIds.length + refrigerant.updates.length : 0;
   const condensateChanges = condensate ? condensate.elementsToAdd.length + condensate.removeElementIds.length : 0;
-  const ductChanges = ducts ? ducts.elementsToAdd.length + ducts.removeElementIds.length : 0;
+  const ductChanges = ducts ? ducts.elementsToAdd.length + ducts.removeElementIds.length + ducts.terminalUpdates.length : 0;
   const ductUnits = ducts?.units ?? [];
-  const designedUnits = ductUnits.filter((unit) => unit.status === 'designed');
+  const ductFeedback = autoRouteDuctFeedback(ducts);
+  const ductsNeedAttention = ductFeedback?.needsAttention ?? false;
+  const ductIssueSet = new Set(ducts?.issues ?? []);
+  const additionalNotes = unified?.issues.filter((issue) => !ductIssueSet.has(issue)) ?? [];
   const hasChanges = ductChanges + refrigerantChanges + condensateChanges > 0;
   const summary = unified ? [
-    ducts && ductUnits.length ? `ducts ${designedUnits.length}/${ductUnits.length}` : null,
-    ducts && !ductUnits.length && !ducts.issues.length ? 'no ducts to route' : null,
+    ductFeedback?.summary,
     refrigerant && !refrigerantChanges ? 'refrigerant unchanged' : null,
     refrigerant && refrigerantChanges ? `refrigerant ${refrigerant.connectedIndoorIds.length}/${refrigerant.connectedIndoorIds.length + refrigerant.unconnectedIndoorIds.length}` : null,
     condensate ? `drains ${condensate.metrics.unitsConnected}/${condensate.metrics.unitsTotal}${condensate.networks.length ? ` · ${formatFallRatio(Math.min(...condensate.networks.map((network) => network.mainSlopePercent)))}` : ''}` : null,
-    openClashes.length ? `${openClashes.length} clash${openClashes.length === 1 ? '' : 'es'}` : 'no clashes',
+    openClashes.length ? `${openClashes.length} clash${openClashes.length === 1 ? '' : 'es'}` : hasChanges && !ductsNeedAttention ? 'no clashes' : null,
     condensate?.hopProposals.length ? `${condensate.hopProposals.length} hop${condensate.hopProposals.length === 1 ? '' : 's'} to approve` : null,
   ].filter(Boolean).join(' · ') : null;
   // A message (e.g. why Apply was refused) outranks the preview summary until the next run.
   const status = running ? progress?.stage ?? 'Calculating…' : message ?? summary;
+
+  useEffect(() => {
+    if (!unified || running || !ductsNeedAttention) return;
+    setShowOptions(false);
+    setShowDetails(true);
+  }, [unified, running, ductsNeedAttention]);
 
   return (
     <div ref={anchorRef} className="relative flex flex-wrap items-center gap-1.5" data-testid="auto-route-action"
@@ -203,10 +212,14 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
         <SlidersHorizontal size={14} />
       </button>
       {status ? (
-        <button type="button" onClick={() => unified && setShowDetails(!showDetails)} aria-expanded={showDetails}
-          className={`max-w-[24rem] truncate px-1 text-left text-xs ${openClashes.length ? 'text-amber-800' : 'text-slate-600'} ${unified ? 'hover:underline' : ''}`} title={status}>
-          {status}
-        </button>
+        <span role="status" aria-live="polite" className="min-w-0">
+          <button type="button" onClick={() => { if (unified) { setShowOptions(false); setShowDetails(!showDetails); } }} aria-expanded={showDetails}
+            className={`flex max-w-[24rem] items-center gap-1 px-1 text-left text-xs ${openClashes.length || ductsNeedAttention ? 'text-amber-800' : 'text-slate-600'} ${unified ? 'hover:underline' : ''}`} title={status}>
+            {!running && ductsNeedAttention ? <AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> : null}
+            <span className="truncate">{status}</span>
+            {unified && !running ? <ChevronDown size={13} className="shrink-0" aria-hidden="true" /> : null}
+          </button>
+        </span>
       ) : null}
 
       {showOptions || showDetails ? (
@@ -339,10 +352,19 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
             </>
           ) : unified ? (
             <div className="space-y-2 leading-4 text-slate-600">
+              {ductsNeedAttention ? (
+                <div className="space-y-1 rounded-md border border-amber-200 bg-amber-50 p-2 text-amber-900">
+                  <p className="font-medium">{ductFeedback?.summary}</p>
+                  <p>{ductUnits.length
+                    ? 'Review the reasons below. Select Review unit to inspect its Auto duct settings, then choose Route again.'
+                    : 'Check the selected services, unit scope and available diffusers or return grilles, then choose Route again.'}</p>
+                </div>
+              ) : null}
               {ducts ? (
                 <div data-testid="auto-route-ducts">
                   <p className="font-medium text-slate-800">Ducts</p>
                   {!ductUnits.length ? <p>No ducted unit with free terminals to serve.</p> : null}
+                  {ductFeedback?.additionalIssues.map((issue) => <p key={issue} className="mt-1 text-amber-800">{issue}</p>)}
                   <ul className="mt-1 space-y-1">
                     {ductUnits.map((unit) => (
                       <li key={unit.unitId} className={`rounded-md border px-2 py-1.5 ${unit.status === 'designed' ? 'border-slate-200' : 'border-amber-200 bg-amber-50/60'}`}>
@@ -350,7 +372,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
                           <span className="font-medium text-slate-800">{unit.unitLabel}</span>
                           <button type="button" className="text-[11px] text-teal-700 hover:underline" title="Select the unit: the Auto duct card shows every design, the frontier and the cost breakdown"
                             onClick={() => useSmartDrawingStore.getState().setSelectedIds([unit.unitId])}>
-                            Study
+                            {unit.status === 'designed' ? 'Study' : 'Review unit'}
                           </button>
                         </div>
                         {unit.status === 'designed' ? (
@@ -370,7 +392,11 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
                             {unit.notes.map((note) => <p key={note} className="text-amber-800">⚠ {note}</p>)}
                           </>
                         ) : (
-                          <p className="text-amber-800">Kept as it is — {unit.notes[0] ?? 'no layout could be built.'}</p>
+                          <div className="mt-1 space-y-1 text-amber-800">
+                            <p className="font-medium">No ducts generated for this unit.</p>
+                            {(unit.notes.length ? unit.notes : ['No layout could be built. Check its terminals and Auto duct settings.'])
+                              .map((note, index) => <p key={`${index}:${note}`}>{note}</p>)}
+                          </div>
                         )}
                       </li>
                     ))}
@@ -395,7 +421,11 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
               ) : null}
               <div>
                 <p className="font-medium text-slate-800">Clashes between services</p>
-                {openClashes.length === 0 && hopClashes.length === 0 ? <p className="text-teal-800">None — everything new clears the rest.</p> : null}
+                {openClashes.length === 0 && hopClashes.length === 0 ? (
+                  <p className={hasChanges ? 'text-teal-800' : 'text-slate-500'}>
+                    {hasChanges ? 'No clashes in the generated routes.' : 'No new routes to check.'}
+                  </p>
+                ) : null}
                 {openClashes.map((clash, index) => <p key={`o${index}`} className="text-amber-800">⚠ {clash.message}</p>)}
                 {hopClashes.map((clash, index) => <p key={`h${index}`}>↑ {clash.message} Resolved when the proposed hop is approved.</p>)}
               </div>
@@ -410,9 +440,9 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
                   ))}
                 </div>
               ) : null}
-              {unified.issues.length ? (
-                <details><summary className="cursor-pointer text-teal-700">Notes ({unified.issues.length})</summary>
-                  {unified.issues.map((issue) => <p key={issue} className="mt-1">{issue}</p>)}
+              {additionalNotes.length ? (
+                <details><summary className="cursor-pointer text-teal-700">Notes ({additionalNotes.length})</summary>
+                  {additionalNotes.map((issue) => <p key={issue} className="mt-1">{issue}</p>)}
                 </details>
               ) : null}
             </div>

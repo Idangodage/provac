@@ -9,8 +9,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { HvacElement, Point2D } from '../../../../types';
 
 import { resolveUnitAirPorts } from './ductAirPorts';
-import { generateAutoDuct, type AutoDuctRequest } from './ductAutoLayout';
-import { splitOrigin } from './ductBranchTargets';
+import { splitOrigin, tapOrigin } from './ductBranchTargets';
 import { buildDuctRunDraftElement } from './ductDraft';
 import { branchAnchor, ductRunElementWithSpec, startAnchor } from './ductFollow';
 import { resolveDuctSettings } from './ductSettings';
@@ -24,7 +23,7 @@ import {
   velocityAtFriction,
   type DuctSystemSizingResult,
 } from './ductSystemSizing';
-import { terminalEnvelope, typicalTerminalSpec } from './ductTerminals';
+import { terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from './ductTerminals';
 import { buildDuctRunElement, isDuctElement, readDuctRunSpec, type DuctLeg, type DuctRunSpec, type DuctSystemSizing } from './ductTypes';
 import { areaOf } from './optimizer/sizingModel';
 
@@ -95,21 +94,33 @@ describe('the basis: main velocity ⇄ friction rate', () => {
 });
 
 describe('a rectangular trunk with four take-offs (1500 m³/h)', () => {
-  const terminals = [0, 1, 2, 3].map((k) => diffuser(`d${k}`, S(2500 + k * 1800, 1200)));
+  const terminals = [0, 1, 2, 3].map((k) => ({ ...diffuser(`d${k}`, S(2500 + k * 1800, 2000)), rotation: 270 }));
   let scene: HvacElement[] = [];
   let rootId = '';
 
   beforeAll(() => {
-    const request: AutoDuctRequest = {
-      unitId: 'u', terminalIds: terminals.map((terminal) => terminal.id), fanSpeed: 'hi', layout: 'auto',
-      services: { supply: true, return: false }, rebuildExisting: false, shape: 'rect', airflowM3h: 1500,
-    };
-    const result = generateAutoDuct([unit, ...terminals], request, settings);
-    expect(result.designs[result.selected]!.errors).toBe(0);
-    const turned = new Map(result.terminalUpdates.map((element) => [element.id, element]));
-    scene = [unit, ...terminals.map((element) => turned.get(element.id) ?? element), ...result.runs];
-    rootId = result.runs.find((run) => readDuctRunSpec(run)!.start.kind === 'unit-port')!.id;
-  }, 120000);
+    // These tests exercise sizing a capped main with four take-offs. Build
+    // that topology explicitly so the optimiser may choose other layouts.
+    rootId = 'four-tap-main';
+    const root = buildDuctRunDraftElement({ port, points: [S(9000)], legSizes: [{ widthMm: 250, heightMm: 250 }] }, rootId);
+    const branchSection: DuctLeg = { widthMm: 200, heightMm: 200, diameterMm: 200 };
+    const branches = terminals.map((terminal, index) => {
+      const origin = tapOrigin(root, settings, { legIndex: 0, stationMm: 2500 + index * 1800, side: 1, style: 'spin-in', vcd: true }, branchSection)!;
+      if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
+      const terminalPort = terminalSpigotPort(terminal)!;
+      return buildDuctRunDraftElement({
+        origin,
+        points: [
+          { x: origin.point.x + origin.direction.x * 400, y: origin.point.y + origin.direction.y * 400 },
+          { x: terminalPort.lip.x, y: terminalPort.lip.y, z: terminalPort.lip.z - terminalPort.heightMm / 2 },
+        ],
+        legSizes: [branchSection, branchSection],
+        end: { kind: 'terminal', terminalId: terminal.id, portId: terminalPort.portId, flex: true },
+      }, `branch-${terminal.id}`);
+    });
+    scene = [unit, ...terminals, root, ...branches];
+    expect(sizeDuctSystem(scene, rootId, { basis: basisAt(0.8), measure: true }, settings).report.errors).toBe(0);
+  });
 
   it('carries the airflow of the terminals downstream, stepping down at each take-off', () => {
     const { report } = sizeDuctSystem(scene, rootId, { basis: basisAt(0.8) }, settings);

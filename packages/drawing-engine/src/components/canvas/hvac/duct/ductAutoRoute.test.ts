@@ -2,16 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import type { HvacElement, Point2D } from '../../../../types';
 import type { AutoRouteNetworkResult } from '../autoRouteNetwork';
-import { auditDuctClashes, planUnifiedAutoRoute, routedServiceOf } from '../unifiedAutoRoute';
 import { resolveCondensateSettings } from '../condensate/condensateSettings';
 import { DEFAULT_PIPE_ROUTING_SETTINGS } from '../pipeRoutingSettings';
+import { auditDuctClashes, planUnifiedAutoRoute, routedServiceOf } from '../unifiedAutoRoute';
 
 import { resolveUnitAirPorts } from './ductAirPorts';
 import { applyDuctProposal, ductSourceSignature, ductWallCrossings, planAutoRouteDucts, type AutoRouteDuctOptions } from './ductAutoRoute';
 import { buildDuctRunDraftElement } from './ductDraft';
+import { planDuctRunSpec } from './ductFabricationPlanner';
 import { DEFAULT_DUCT_SETTINGS } from './ductSettings';
 import { terminalEnvelope, typicalTerminalSpec } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec } from './ductTypes';
+import { findDuctClashes } from './ductVolumes';
 
 function fdum(id: string, x: number, roomId = 'room-1'): HvacElement {
   return {
@@ -48,6 +50,33 @@ const servedBy = (runs: readonly HvacElement[]) => new Set(runs.flatMap((run) =>
 }));
 
 describe('Auto route: the duct step', () => {
+  it('serves staggered rows of eleven default-facing diffusers in a walled room, applying the selected spigot sides', () => {
+    const indoor = { ...fdum('indoor', 5458), position: { x: 5458, y: 3401.5 } };
+    const terminals = [
+      [1000, 1000], [3350, 1000], [5450, 1000], [7350, 1000], [9500, 1000], [10600, 1000],
+      [1450, 3350], [2700, 3400], [4300, 3600], [8300, 3000], [10700, 2800],
+    ].map(([x, y], index) => diffuser(`sd-${index}`, { x: x!, y: y! }, 0));
+    const walls = [
+      [0, 0, 11700, 0], [11700, 0, 11700, 5200], [11700, 5200, 0, 5200], [0, 5200, 0, 0],
+    ].map(([x, y, endX, endY], index) => ({
+      id: `wall-${index}`, startPoint: { x: x!, y: y! }, endPoint: { x: endX!, y: endY! }, thickness: 100,
+    }));
+    const scene = [indoor, ...terminals];
+    const result = planAutoRouteDucts(scene, { supply: true, return: true }, options({ shape: 'optimal', walls }));
+    expect(result.units).toHaveLength(1);
+    expect(result.units[0]!.status, result.units[0]!.notes.join('\n')).toBe('designed');
+    expect(servedBy(result.elementsToAdd)).toEqual(new Set(terminals.map((terminal) => terminal.id)));
+    expect(result.terminalUpdates.length).toBeGreaterThan(0);
+    const applied = applyDuctProposal(scene, result);
+    for (const update of result.terminalUpdates) expect(applied.find((element) => element.id === update.id)).toEqual(update);
+    for (const run of result.elementsToAdd) {
+      const plan = planDuctRunSpec(run.id, readDuctRunSpec(run)!, { scene: applied, settings: DEFAULT_DUCT_SETTINGS });
+      expect(plan.issues.filter((issue) => issue.severity === 'error')).toEqual([]);
+    }
+    expect(findDuctClashes(applied, DEFAULT_DUCT_SETTINGS, [])).toEqual([]);
+    expect(ductWallCrossings(result.elementsToAdd, walls).size).toBe(0);
+  }, 60000);
+
   it('designs each ducted unit for the free terminals in its room, with no errors', () => {
     const scene = [unit, sd1, sd2, sd3, elsewhere];
     const result = planAutoRouteDucts(scene, { supply: true, return: false }, options());

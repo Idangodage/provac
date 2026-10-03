@@ -13,8 +13,7 @@
  * errors is left as it is and reported, so it can be studied in the Auto duct
  * card, where every design and its issues are shown.
  *
- * The optimiser does not model walls; a proposed run that crosses one is
- * flagged on its unit (it needs a sleeve, or the unit / terminal moved).
+ * Walls are routing obstacles and are checked again on the finished geometry.
  */
 import type { HvacElement, Point2D, Wall } from '../../../../types';
 
@@ -45,7 +44,7 @@ export interface AutoRouteDuctOptions {
   /** Selected scope: the ducted units and the terminals picked (either may be empty). */
   unitIds?: readonly string[];
   terminalIds?: readonly string[];
-  /** Walls a proposed run is checked against (crossings are flagged, not avoided). */
+  /** Walls to avoid during routing and check against the finished geometry. */
   walls?: ReadonlyArray<Pick<Wall, 'id' | 'startPoint' | 'endPoint'> & { thickness?: number }>;
 }
 

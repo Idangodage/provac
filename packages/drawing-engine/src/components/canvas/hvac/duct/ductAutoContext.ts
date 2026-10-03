@@ -138,8 +138,10 @@ const SPIGOT_FRONT_MM = 400;
  * face: those with room in front of them (a runout can come in square — no
  * equipment, other terminals included, within the neck's half and a margin
  * for `SPIGOT_FRONT_MM`), the most promising first (facing the collar's axis,
- * where trunks run, or back towards the unit), at most two. The placed side
- * alone for other faces, or when no side has room.
+ * where trunks run, or back towards the unit), plus the placed side when it
+ * has room. Keeping that side matters near or behind the collar: the two
+ * preferred sides can both face away from the router's forward grid. The
+ * placed side alone for other faces, or when no side has room.
  */
 export function spigotVariants(frame: Frame, terminal: TerminalCtx, enabled: boolean, obstacles: ServiceCtx['obstacles'] = []): TerminalCtx[] {
   const placed = { ...terminal, variants: undefined, turnedTo: undefined };
@@ -160,10 +162,12 @@ export function spigotVariants(frame: Frame, terminal: TerminalCtx, enabled: boo
       || Math.max(a.x, b.x) + pad <= box.minX || Math.min(a.x, b.x) - pad >= box.maxX
       || Math.max(a.y, b.y) + pad <= box.minY || Math.min(a.y, b.y) - pad >= box.maxY);
   };
-  const sides = SIDES.flatMap((side) => terminalWithSide(frame, terminal, side) ?? [])
+  const available = SIDES.flatMap((side) => terminalWithSide(frame, terminal, side) ?? [])
     .filter(roomInFront)
-    .sort((a, b) => score(b.normal) - score(a.normal))
-    .slice(0, 2);
+    .sort((a, b) => score(b.normal) - score(a.normal));
+  const sides = available.slice(0, 2);
+  const placedAvailable = available.find((side) => !side.turnedTo);
+  if (placedAvailable && !sides.includes(placedAvailable)) sides.push(placedAvailable);
   return sides.length ? sides : [placed];
 }
 
@@ -190,6 +194,7 @@ export interface ServiceCtx {
 export interface Build {
   extra: Array<OrthogonalRouteObstacle & { zMin: number; zMax: number }>;
   notes: AutoDuctIssue[];
+  terminals?: Map<string, TerminalCtx>;
 }
 
 export function newBuild(): Build {
