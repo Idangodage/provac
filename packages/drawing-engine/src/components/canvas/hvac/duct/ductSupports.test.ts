@@ -7,12 +7,14 @@ import { addDuctRunMeshes } from '../three3d/ductMeshes';
 import { resolveUnitAirPorts } from './ductAirPorts';
 import { buildDuctBom } from './ductBom';
 import { tapOrigin } from './ductBranchTargets';
+import { tapAttachment } from './ductBranches';
 import { buildDuctRunDraftElement, buildDuctRunDraft, type DuctDraftPoint } from './ductDraft';
 import { planDuctRun, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { resolveDuctSettings } from './ductSettings';
 import { metricRodFor, table41Minimum, trapezeMemberFor } from './ductSupportTables';
-import { planDuctSupports, type DuctSupportPlan } from './ductSupports';
-import { roundLeg } from './ductTypes';
+import { getDuctSupportPlan, planDuctSupports, type DuctSupportPlan } from './ductSupports';
+import { terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from './ductTerminals';
+import { buildDuctRunElement, readDuctRunSpec, roundLeg, type DuctLeg, type DuctTapStyle } from './ductTypes';
 
 const settings = resolveDuctSettings({ soffitMm: 2900 });
 const unit: HvacElement = {
@@ -124,9 +126,103 @@ describe('duct supports', () => {
     expect(branchSupports.hangers[0]!.stationMm).toBeLessThanOrEqual(1220);
   });
 
+  it.each([
+    { style: 'shoe-45', section: { widthMm: 300, heightMm: 150 } },
+    { style: 'conical', section: roundLeg(150) },
+  ] satisfies Array<{ style: DuctTapStyle; section: DuctLeg }>)('keeps parent supports clear of $style collars on later legs', ({ style, section }) => {
+    const main = buildDuctRunDraftElement({ port: supply, points: [along(3000), along(3000, 7000)] }, 'main');
+    const request = { legIndex: 1, stationMm: 3500, side: 1 as const, style, vcd: true };
+    const origin = tapOrigin(main, settings, request, section)!;
+    if (origin.kind !== 'tap') throw new Error('expected a tap origin');
+    const branch = buildDuctRunDraft({ origin,
+      points: [{ x: origin.point.x + origin.direction.x * 2000, y: origin.point.y + origin.direction.y * 2000 }],
+      legSizes: [section],
+    }, 'branch', [unit, main]).element;
+    const { plan: mainPlan, supports: mainSupports } = supported(main, [unit, main, branch]);
+    const attachment = tapAttachment(mainPlan.spec, request, section, mainPlan.constructionByLeg[1]!.sheetThicknessMm!, settings)!;
+    const from = 3000 + attachment.openingFromMm - settings.hangerJointClearanceMm;
+    const to = 3000 + attachment.openingToMm + settings.hangerJointClearanceMm;
+    expect(mainSupports.issues).toEqual([]);
+    expect(mainSupports.hangers.some((hanger) => hanger.reasons.includes('branch') && Math.abs(hanger.stationMm - 6500) <= 1220)).toBe(true);
+    for (const hanger of mainSupports.hangers) {
+      expect(hanger.stationMm <= from || hanger.stationMm >= to).toBe(true);
+    }
+    expect(Math.max(...gaps(mainSupports, mainPlan))).toBeLessThanOrEqual(settings.hangerSpacingMm + 0.5);
+  });
+
+  it('reports an unavailable support instead of hanging through a crowded take-off', () => {
+    const main = buildDuctRunDraftElement({
+      origin: { kind: 'free', point: { x: 0, y: 0 }, bottomZ: 2500, service: 'supply' },
+      points: [{ x: 1000, y: 0 }], legSizes: [{ widthMm: 1000, heightMm: 300 }],
+    }, 'crowded');
+    const section = { widthMm: 800, heightMm: 200 };
+    const origin = tapOrigin(main, settings, { legIndex: 0, stationMm: 500, side: 1, style: 'straight', vcd: false }, section)!;
+    if (origin.kind !== 'tap') throw new Error('expected a tap origin');
+    const branch = buildDuctRunDraft({ origin, points: [{ x: origin.point.x, y: origin.point.y + 2000 }], legSizes: [section] }, 'wide-branch', [main]).element;
+    const result = supported(main, [main, branch]);
+    expect(result.supports.hangers).toEqual([]);
+    expect(result.supports.issues.some((issue) => issue.code === 'DU_SUPPORT_RULE' && issue.message.includes('take-offs'))).toBe(true);
+  });
+
+  it.each([true, false])('a collar-only flex branch delegates to a feasible parent hanger: %s', (parentCanHang) => {
+    const mainLength = parentCanHang ? 4000 : 400;
+    const main = buildDuctRunDraftElement({
+      origin: { kind: 'free', point: { x: 0, y: 0 }, bottomZ: 2500, service: 'supply' },
+      points: [{ x: mainLength, y: 0 }], legSizes: [{ widthMm: 400, heightMm: 250 }],
+    }, 'main-flex');
+    const origin = tapOrigin(main, settings, { legIndex: 0, stationMm: mainLength / 2, side: 1, style: 'spin-in', vcd: true }, roundLeg(200))!;
+    if (origin.kind !== 'tap') throw new Error('expected a tap origin');
+    const stub = settings.tapCollarMm + settings.vcdLengthMm;
+    const terminalSpec = typicalTerminalSpec('square-4way', 200);
+    const envelope = terminalEnvelope(terminalSpec);
+    const draft: HvacElement = { id: 'flex-diffuser', type: 'diffuser', position: { x: 0, y: 0 }, rotation: 0,
+      width: envelope.widthMm, depth: envelope.depthMm, height: envelope.heightMm,
+      elevation: origin.bottomZ + 100 - terminalSpec.faceHeightMm - terminalSpec.plenumHeightMm / 2,
+      mountType: 'ceiling', label: 'SD', supplyZoneRatio: 0.5, properties: { terminal: terminalSpec } };
+    const port = terminalSpigotPort(draft)!;
+    const terminal = { ...draft, position: { x: origin.point.x - port.lip.x, y: origin.point.y + stub + 900 - port.lip.y } };
+    const terminalPort = terminalSpigotPort(terminal)!;
+    const branch = buildDuctRunDraft({ origin,
+      points: [{ x: origin.point.x, y: origin.point.y + stub, z: origin.bottomZ },
+        { x: terminalPort.lip.x, y: terminalPort.lip.y, z: terminalPort.lip.z - 100 }],
+      legSizes: [roundLeg(200), roundLeg(200)], end: { kind: 'terminal', terminalId: terminal.id, portId: 'spigot', flex: true },
+    }, 'flex-branch', [main, terminal]).element;
+    const scene = [main, terminal, branch];
+    const result = supported(branch, scene);
+    expect(result.plan.status).toBe('ok');
+    expect(result.plan.pieces.map((piece) => piece.kind)).toEqual(['takeoff', 'damper', 'flex']);
+    expect(result.supports.hangers).toEqual([]);
+    const supportWarnings = result.supports.issues.filter((issue) => issue.code === 'DU_SUPPORT_RULE');
+    if (parentCanHang) {
+      expect(supportWarnings).toEqual([]);
+      // Parent support state is a scene dependency even when this child plan is retained.
+      expect(getDuctSupportPlan(result.plan, scene, settings).issues).toEqual([]);
+      const mainSpec = readDuctRunSpec(main)!;
+      const raisedMain = { ...main, properties: buildDuctRunElement({ ...mainSpec,
+        path: mainSpec.path.map((point) => ({ ...point, z: 3000 })),
+      }).properties! };
+      expect(getDuctSupportPlan(result.plan, [raisedMain, terminal, branch], settings).issues
+        .some((issue) => issue.code === 'DU_SUPPORT_RULE')).toBe(true);
+      const branchSpec = readDuctRunSpec(branch)!;
+      const rigidBranch = { ...branch, properties: buildDuctRunElement({ ...branchSpec,
+        end: { kind: 'terminal', terminalId: terminal.id, portId: 'spigot', flex: false },
+      }).properties! };
+      const withStub = supported(main, scene).supports;
+      const withoutStub = supported(main, [main, terminal, rigidBranch]).supports;
+      expect(withStub.hangers.map((hanger) => hanger.stationMm)).toEqual(withoutStub.hangers.map((hanger) => hanger.stationMm));
+      const load = (supports: DuctSupportPlan) => supports.hangers.reduce((sum, hanger) => sum + hanger.loadKg, 0);
+      expect(load(withStub) - load(withoutStub)).toBeGreaterThan(result.plan.pieces.filter((piece) => piece.kind !== 'flex').reduce((sum, piece) => sum + piece.massKg, 0));
+    } else {
+      expect(supportWarnings.length).toBeGreaterThan(0);
+      expect(supported(main, scene).supports.hangers).toEqual([]);
+    }
+  });
+
   it('flags a duct that reaches the soffit, and hangs a riser at the riser interval', () => {
     const low = supported(straight, [unit, straight], resolveDuctSettings({ soffitMm: 2550 }));
     expect(low.supports.issues.map((issue) => issue.code)).toContain('DU_SOFFIT');
+    const below = supported(straight, [unit, straight], resolveDuctSettings({ soffitMm: 1000 }));
+    expect(below.supports.hangers.every((hanger) => hanger.rods.every((rod) => rod.lengthMm >= 0))).toBe(true);
     const riser = buildDuctRunDraftElement({
       origin: { kind: 'free', point: { x: 0, y: 0 }, bottomZ: 9000, service: 'supply' },
       points: [{ x: 2000, y: 0 }, { x: 4000, y: 0, z: 4000 }], legSizes: [{ widthMm: 600, heightMm: 300 }],

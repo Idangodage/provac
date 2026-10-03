@@ -88,4 +88,22 @@ describe('air terminals (typical sizes, practice)', () => {
     // The spigot reaches the port lip on the back side.
     expect(Math.min(box.min.y, box.max.y)).toBeCloseTo(Math.min(port.lip.y, 2000), 0);
   });
+
+  it.each(['back', 'front', 'left', 'right'] as const)('keeps the %s spigot and its bead open into the plenum after rotation', (spigotSide) => {
+    const spec = { ...typicalTerminalSpec('square-4way', 200), spigotSide };
+    const element = terminal({ rotation: 37 }, spec);
+    const port = terminalSpigotPort(element)!;
+    const group = buildHvacElementMesh(element, { allElements: [element] })!;
+    group.updateMatrixWorld(true);
+    const normal = new THREE.Vector3(port.normal.x, port.normal.y, 0);
+    const lip = new THREE.Vector3(port.lip.x, port.lip.y, port.lip.z);
+    // This traverses the collar, its retention bead and the plenum side sheet.
+    const ray = new THREE.Raycaster(lip.clone().addScaledVector(normal, 10), normal.clone().negate(), 0, spec.spigotLengthMm + 20);
+    expect(ray.intersectObject(group, true)).toHaveLength(0);
+    // The surrounding metal still closes the plenum: test above the neck.
+    ray.ray.origin.z += spec.neckDiameterMm / 2 + 20;
+    expect(ray.intersectObject(group, true).length).toBeGreaterThan(0);
+    const roof = group.getObjectByName('terminal-plenum-roof')!;
+    expect(new THREE.Box3().setFromObject(roof).max.z).toBeCloseTo(element.elevation + spec.faceHeightMm + spec.plenumHeightMm, 6);
+  });
 });

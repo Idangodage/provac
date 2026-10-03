@@ -4,11 +4,12 @@
  * not be resolved — e.g. an unsupported pressure class — is not counted; it is
  * listed under Issues instead of being silently priced.
  */
-import { gaugeLabelForSheet } from './ductCatalog';
 import type { HvacElement } from '../../../../types';
 
+import { gaugeLabelForSheet } from './ductCatalog';
 import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
 import { VANE_RUNNER, type DuctVaneSpec } from './ductFittingRules';
+import { FLEX_HANGER_WIRE_DIAMETER_MM, FLEX_RULES } from './ductFlex';
 import { describeJoint } from './ductGauge';
 import type { DuctSupportPlan } from './ductSupports';
 import { readDuctTerminalSpec, TERMINAL_LABELS } from './ductTerminals';
@@ -152,9 +153,9 @@ function supportRows(supports: readonly DuctSupportPlan[]): DuctBomRow[] {
   for (const plan of supports) {
     for (const hanger of plan.hangers) {
       if (hanger.kind === 'strap') {
-        // Flexible runout (S3.36): a 25 mm strap, a galvanised wire to the soffit and its anchor.
-        add('Flex duct strap 25 mm', `Ø${Math.round(hanger.outerWidthMm)}`, 1, 'no.', 'SMACNA S3.35 / S3.36, Fig. 3-10');
-        add('Hanger wire Ø2.7 mm, galvanised', '—', hanger.rods.reduce((total, piece) => total + piece.lengthMm, 0) / 1000, 'm', 'project practice');
+        // The saddle width and quantity agree with the current flex support plan.
+        add(`Flex duct strap ${FLEX_RULES.minStrapWidthMm} mm`, `Ø${Math.round(hanger.outerWidthMm)}`, 1, 'no.', 'ASHRAE 2024 ch. 19 / ADC: support width ≥ 1.5 in and horizontal spacing ≤ 4 ft');
+        add(`Hanger wire Ø${FLEX_HANGER_WIRE_DIAMETER_MM} mm, galvanised`, '—', hanger.rods.reduce((total, piece) => total + piece.lengthMm, 0) / 1000, 'm', 'project practice');
         add('Soffit anchor (wire)', '—', 1, 'no.', 'project practice');
         continue;
       }
@@ -175,7 +176,7 @@ function supportRows(supports: readonly DuctSupportPlan[]): DuctBomRow[] {
       if (hanger.insert) add('Load-bearing insulation insert (under the bar)', `${Math.round(hanger.outerWidthMm)} mm`, 1, 'no.', 'insulation stays continuous at supports');
     }
     for (const wires of plan.terminalWires) {
-      add('Terminal hanger wire Ø2.7 mm, galvanised', '—', (wires.count * wires.lengthMm) / 1000, 'm', 'SMACNA S3.40 (terminal hung on its own)');
+      add(`Terminal hanger wire Ø${FLEX_HANGER_WIRE_DIAMETER_MM} mm, galvanised`, '—', (wires.count * wires.lengthMm) / 1000, 'm', 'SMACNA S3.40 (terminal hung on its own)');
       add('Soffit anchor (wire)', '—', wires.count, 'no.', 'project practice');
     }
     for (const riser of plan.risers) {

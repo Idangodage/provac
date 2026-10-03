@@ -86,10 +86,17 @@ describe('flexible runout geometry (SMACNA §3.5–3.7)', () => {
     expect(straight.minBendRadiusMm).toBeGreaterThan(1e6);
   });
 
-  it('places straps so no span exceeds 1.5 m (the connections count), and sags within 41.7 mm/m', () => {
+  it('keeps horizontal support spans within 1.2 m, with 40 mm saddles and sag within 41.7 mm/m', () => {
     expect(flexSupportStations(1200)).toEqual([]);
-    expect(flexSupportStations(1500)).toEqual([]);
+    expect(flexSupportStations(1500)).toEqual([750]);
     expect(flexSupportStations(2000)).toEqual([1000]);
+    expect(FLEX_RULES.minStrapWidthMm).toBeGreaterThanOrEqual(38.1);
+    for (const length of [1200, 1201, 1500, 2400, 2401, 5000]) {
+      const stations = [0, ...flexSupportStations(length), length];
+      for (let index = 1; index < stations.length; index += 1) {
+        expect(stations[index]! - stations[index - 1]!).toBeLessThanOrEqual(1200);
+      }
+    }
     const three = flexSupportStations(3100);
     expect(three).toHaveLength(2);
     expect(three[0]).toBeCloseTo(3100 / 3, 6);
@@ -148,7 +155,7 @@ describe('runs ending on air terminals', () => {
     expect(skewed.issues.map((issue) => issue.code)).toContain('DU_TERMINAL_ALIGN');
   });
 
-  it('straps a long runout at ≤ 1.5 m on hanger wire, and lists the flex, bands, straps and the terminal', () => {
+  it('straps a long runout at ≤ 1.2 m on hanger wire, and lists the flex, bands, straps and the terminal', () => {
     const far = diffuserAt('sd2', along(stubMm + 1800, 900), 200);
     const run = runoutTo('run2', far, [unit, main, far]);
     const farScene = [unit, main, far, run];
@@ -156,7 +163,7 @@ describe('runs ending on air terminals', () => {
     const flex = plan.pieces.at(-1)!;
     const supports = planDuctSupports(plan, farScene, settings, 3400);
     const straps = supports.hangers.filter((hanger) => hanger.kind === 'strap');
-    expect(straps).toHaveLength(Math.ceil(flex.lengthMm / 1500) - 1);
+    expect(straps).toHaveLength(Math.ceil(flex.lengthMm / 1200) - 1);
     expect(straps[0]!.rods[0]!.lengthMm).toBeGreaterThan(0);
     const bom = buildDuctBom([plan], [supports], farScene);
     const describe = (row: { description: string; size: string }) => `${row.description} | ${row.size}`;
@@ -165,7 +172,7 @@ describe('runs ending on air terminals', () => {
     expect(bom.find((row) => row.description.startsWith('Flexible duct'))!.quantity).toBeCloseTo(Math.round(flex.lengthMm / 10) / 100, 2);
     expect(bom.find((row) => row.description === 'Draw band (flex core)')!.quantity).toBe(2);
     expect(bom.find((row) => row.description === 'Draw band (flex jacket)')!.size).toBe('Ø250');
-    expect(bom.some((row) => row.category === 'Supports' && row.description === 'Flex duct strap 25 mm')).toBe(true);
+    expect(bom.some((row) => row.category === 'Supports' && row.description === 'Flex duct strap 40 mm')).toBe(true);
     expect(bom.filter((row) => row.category === 'Air terminals')).toHaveLength(1);
     const wired = planDuctSupports(plan, farScene, resolveDuctSettings({ soffitMm: 3400, terminalHangerWires: true }), 3400);
     expect(wired.terminalWires).toEqual([{ terminalId: 'sd2', count: 2, lengthMm: 3400 - (far.elevation + far.height) }]);

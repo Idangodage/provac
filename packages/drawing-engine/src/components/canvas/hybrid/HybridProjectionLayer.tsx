@@ -96,11 +96,7 @@ import {
   worldPointToModel,
 } from "../modelSpace";
 import { MM_TO_PX } from "../scale";
-import {
-  disposeOwnedMaterial,
-  disposeObject3DResources,
-  markMaterialOwned,
-} from "../threeResourceLifecycle";
+import { disposeObject3DResources } from "../threeResourceLifecycle";
 import { getWallSurfaceTexture } from "../wall/wallSurfaceTexture";
 import { createWallOutline } from "../wall/wallThreeVisual";
 import { buildWallChunkGeometry } from "../wallview/wallMeshBuilder";
@@ -113,7 +109,7 @@ import {
   resolveHybridPipeConstraintKey,
   type HybridPipeConstraintKey,
 } from "./hybridPipeEditing";
-import { composeHybridPipePreviewScene } from "./hybridPipePreviewScene";
+import { applyHybridPreviewMaterials, composeHybridPipePreviewScene } from "./hybridPipePreviewScene";
 import { measureUnrevealedContentBounds } from "./hybridScenePresentation";
 import {
   HybridViewportController,
@@ -1030,20 +1026,7 @@ function rebuildPipePreviewLayer(
     const mesh = buildHvacElementMesh(element, context);
     if (!mesh || mesh.children.length === 0) continue;
     tuneHvacMesh(mesh);
-    mesh.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      const materials = Array.isArray(child.material) ? child.material : [child.material];
-      const previewMaterials = materials.map((material) => {
-        const clone = markMaterialOwned(material.clone());
-        disposeOwnedMaterial(material);
-        clone.transparent = true;
-        clone.opacity = Math.min(clone.opacity, 0.72);
-        clone.depthWrite = false;
-        return clone;
-      });
-      child.material = Array.isArray(child.material) ? previewMaterials : previewMaterials[0]!;
-      child.renderOrder = Math.max(child.renderOrder, 880);
-    });
+    applyHybridPreviewMaterials(mesh, element);
     sceneState.pipePreviewLayer.add(mesh);
   }
   refreshSceneContentBounds(sceneState);

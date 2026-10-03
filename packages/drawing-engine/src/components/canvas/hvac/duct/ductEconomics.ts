@@ -21,8 +21,9 @@
  * Every rate is a setting (practice placeholder until the supplier's prices
  * are entered).
  */
-import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
 import { galvanisedSheetMassKgPerM2 } from './ductCatalog';
+import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
+import { flexSupportStations } from './ductFlex';
 import { resolveSectionConstruction } from './ductGauge';
 import type { DuctDesignSettings } from './ductSettings';
 import { isRoundLeg, type DuctConstruction, type DuctLeg, type DuctService } from './ductTypes';
@@ -211,9 +212,9 @@ export function damperCost(section: DuctLeg, settings: DuctEconomicsSettings): n
   return settings.econDamperEach * (girth / (Math.PI * REFERENCE_DIAMETER_MM));
 }
 
-/** A flexible runout's cost, its straps (S3.35: at ≤ 1.5 m, the connections counting) included. */
+/** A flexible runout's cost, including the straps in its installation support plan. */
 export function flexCost(diameterMm: number, lengthMm: number, settings: DuctEconomicsSettings): number {
-  const straps = Math.max(0, Math.ceil(lengthMm / 1500) - 1);
+  const straps = flexSupportStations(lengthMm).length;
   return (lengthMm / 1000) * settings.econFlexPerM * (diameterMm / REFERENCE_DIAMETER_MM) + straps * STRAP_SHARE_OF_HANGER * settings.econHangerEach;
 }
 

@@ -3,12 +3,16 @@ import { describe, expect, it } from 'vitest';
 
 import type { HvacElement } from '../../../../types';
 import { resolveUnitAirPorts } from '../duct/ductAirPorts';
-import { splitOrigin, tapOrigin } from '../duct/ductBranchTargets';
+import { spigotOrigin, splitOrigin, tapOrigin } from '../duct/ductBranchTargets';
 import { buildDuctRunDraftElement } from '../duct/ductDraft';
+import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
+import { FLEX_RULES } from '../duct/ductFlex';
 import { resolveDuctSettings } from '../duct/ductSettings';
-import { buildDuctRunElement, readDuctRunSpec } from '../duct/ductTypes';
+import { DUCT_BAND_RADIAL_OFFSET_MM, planDuctSupports } from '../duct/ductSupports';
+import { buildDuctRunElement, readDuctRunSpec, roundLeg } from '../duct/ductTypes';
 
 import { buildHvacElementMesh } from './buildHvacElementMesh';
+import { addDuctSupportMeshes } from './ductMeshes';
 
 const unit: HvacElement = {
   id: 'fdum', type: 'ducted-ac', position: { x: 1000, y: 2000 }, rotation: 0, width: 1084, depth: 697, height: 300,
@@ -32,6 +36,133 @@ function box(group: THREE.Object3D, name: string): THREE.Box3 {
 }
 
 describe('duct run 3D', () => {
+  it('cuts round and shoe takeoffs into opposite main walls while keeping the roof and neighbouring sheet closed', () => {
+    const settings = resolveDuctSettings({ showSupports: false });
+    const main = buildDuctRunDraftElement({ port: supply, points: [{ x: supply.lip.x, y: supply.lip.y - 8000 }],
+      legSizes: [{ widthMm: 600, heightMm: 300 }] }, 'opened-main');
+    const branches = ([{ side: 1, station: 2200, style: 'spin-in', section: roundLeg(200) },
+      { side: -1, station: 4200, style: 'shoe-45', section: { widthMm: 250, heightMm: 150 } },
+      { side: 1, station: 6200, style: 'conical', section: roundLeg(200) }] as const).map((request, index) => {
+      const origin = tapOrigin(main, settings, { legIndex: 0, stationMm: request.station, side: request.side, style: request.style, vcd: false }, request.section)!;
+      if (origin.kind !== 'tap') throw new Error('Expected tap');
+      return buildDuctRunDraftElement({ origin, points: [{ x: origin.point.x + origin.direction.x * 1000, y: origin.point.y + origin.direction.y * 1000 }],
+        legSizes: [request.section] }, `opened-branch-${index}`);
+    });
+    const scene = [unit, main, ...branches];
+    const group = meshOf(main, settings, scene);
+    const metal = group.getObjectByName('duct-metal')!;
+    for (const branch of branches) {
+      const plan = getDuctRunPlan(branch, scene, settings)!;
+      const tap = plan.tap!;
+      const d = new THREE.Vector3(tap.direction.x, tap.direction.y, 0);
+      const p = new THREE.Vector3(tap.wallPoint.x, tap.wallPoint.y,
+        tap.bottomZ + (tap.openingDiameterMm ?? plan.spec.legs[0]!.heightMm) / 2);
+      const ray = new THREE.Raycaster(p.clone().addScaledVector(d, 40), d.clone().negate(), 0, 80);
+      expect(ray.intersectObject(metal)).toHaveLength(0);
+      // Sheet next to the opening remains closed; no entire side is omitted.
+      ray.ray.origin.add(new THREE.Vector3(tap.parentDirection.x * 300, tap.parentDirection.y * 300, 0));
+      expect(ray.intersectObject(metal).length).toBeGreaterThan(0);
+      const roof = new THREE.Vector3(tap.wallPoint.x - d.x * 150, tap.wallPoint.y - d.y * 150, tap.bottomZ + 350);
+      expect(new THREE.Raycaster(roof, new THREE.Vector3(0, 0, -1), 0, 100).intersectObject(metal).length).toBeGreaterThan(0);
+    }
+    // A removed branch closes its parent's sheet again on the next rebuild.
+    const closed = meshOf(main, settings, [unit, main]);
+    const tap = getDuctRunPlan(branches[0]!, scene, settings)!.tap!;
+    const direction = new THREE.Vector3(tap.direction.x, tap.direction.y, 0);
+    const ray = new THREE.Raycaster(new THREE.Vector3(tap.wallPoint.x, tap.wallPoint.y, tap.bottomZ + 100).addScaledVector(direction, 40), direction.negate(), 0, 80);
+    expect(ray.intersectObject(closed.getObjectByName('duct-metal')!).length).toBeGreaterThan(0);
+  });
+
+  it.each(['left', 'right', 'end'] as const)('opens the %s plenum spigot through the parent sheet', (face) => {
+    const settings = resolveDuctSettings({ showSupports: false });
+    const main = buildDuctRunDraftElement({ port: supply, points: [{ x: supply.lip.x, y: supply.lip.y - 1500 }],
+      end: { kind: 'plenum', widthMm: 900, heightMm: 350, lengthMm: 600 } }, 'plenum-open');
+    const origin = spigotOrigin(main, settings, { face, alongMm: 300, acrossMm: 0, style: 'spin-in', vcd: false }, roundLeg(200))!;
+    if (origin.kind !== 'spigot') throw new Error('Expected spigot');
+    const branch = buildDuctRunDraftElement({ origin,
+      points: [{ x: origin.point.x + origin.direction.x * 1000, y: origin.point.y + origin.direction.y * 1000 }], legSizes: [roundLeg(200)] }, 'plenum-out');
+    const group = meshOf(main, settings, [unit, main, branch]);
+    const direction = new THREE.Vector3(origin.direction.x, origin.direction.y, 0);
+    const point = new THREE.Vector3(origin.point.x, origin.point.y, origin.bottomZ + 100);
+    const ray = new THREE.Raycaster(point.addScaledVector(direction, 40), direction.negate(), 0, 80);
+    expect(ray.intersectObject(group, true)).toHaveLength(0);
+  });
+
+  it('renders a flexible support strap at its specified width without blocking the airway', () => {
+    const group = new THREE.Group();
+    addDuctSupportMeshes({ elementId: 'flex', spacingMm: 1200, soffitZ: 3000, risers: [], terminalWires: [], issues: [], hangers: [{
+      id: 'strap', kind: 'strap', stationMm: 500, legIndex: 0, point: { x: 0, y: 0 }, direction: { x: 1, y: 0 }, reasons: ['spacing'],
+      outerWidthMm: 250, outerHeightMm: 250, supportZ: 2375, soffitZ: 3000, rods: [], rod: null, bar: null,
+      loadKg: 0, smacnaMinimum: 'project', insert: false,
+    }] }, (name, material, geometry) => {
+      if (geometry) {
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = name;
+        group.add(mesh);
+      }
+    });
+    group.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(group);
+    expect(bounds.max.x - bounds.min.x).toBeCloseTo(FLEX_RULES.minStrapWidthMm, 6);
+    expect(bounds.min.z).toBeLessThan(2375);
+    const ray = new THREE.Raycaster(new THREE.Vector3(-100, 0, 2500), new THREE.Vector3(1, 0, 0), 0, 200);
+    expect(ray.intersectObject(group, true)).toHaveLength(0);
+  });
+
+  it.each([
+    { name: 'horizontal', x: 1, y: 0, z: 0 },
+    { name: 'sloped', x: 0.36, y: 0.48, z: 0.8 },
+    { name: 'vertical up', x: 0, y: 0, z: 1 },
+    { name: 'vertical down', x: 0, y: 0, z: -1 },
+  ])('orients the strap and its wire outside a $name flex core', ({ x, y, z }) => {
+    const settings = resolveDuctSettings({ soffitMm: 7000 });
+    const run = buildDuctRunDraftElement({ origin: { kind: 'free', point: { x: 0, y: 0 }, bottomZ: 2900, service: 'supply' },
+      points: [{ x: 1600, y: 0 }], legSizes: [roundLeg(200)] }, 'strap-frame');
+    const base = getDuctRunPlan(run, [run], settings)!;
+    const template = base.pieces.find((piece) => piece.kind === 'straight')!;
+    const start = { x: 0, y: 0, z: 3000 };
+    const end = { x: 1600 * x, y: 1600 * y, z: 3000 + 1600 * z };
+    // Isolate the local runout segment: attachment fittings do not change the
+    // support frame at its midpoint, including the vertical limiting case.
+    const supports = planDuctSupports({ ...base, pieces: [{ ...template, kind: 'flex', start, end,
+      lengthMm: 1600, stationStartMm: 0, stationEndMm: 1600,
+      flex: { points: [start, end], stations: [0, 1600], minBendRadiusMm: Infinity, terminalId: 'terminal', type: 'nm-il', jacketMm: 25 },
+    }] }, [run], settings, 7000);
+    const strap = supports.hangers.find((hanger) => hanger.kind === 'strap')!;
+    expect(strap.strapFrame).toBeDefined();
+    const axis = new THREE.Vector3(x, y, z);
+    const centre = new THREE.Vector3(strap.strapFrame!.centre.x, strap.strapFrame!.centre.y, strap.strapFrame!.centre.z);
+    const wire = strap.rods[0]!;
+    const attachment = new THREE.Vector3(wire.point.x, wire.point.y, wire.bottomZ).sub(centre);
+    const radius = strap.outerWidthMm / 2 + DUCT_BAND_RADIAL_OFFSET_MM;
+    expect(attachment.dot(axis)).toBeCloseTo(0, 6);
+    expect(attachment.length()).toBeCloseTo(radius, 6);
+    // Every point above the attachment remains outside the cylindrical core.
+    for (const rise of [0, 100, wire.lengthMm]) {
+      const offset = attachment.clone().add(new THREE.Vector3(0, 0, rise));
+      const radial = offset.clone().addScaledVector(axis, -offset.dot(axis));
+      expect(radial.length()).toBeGreaterThanOrEqual(radius - 1e-6);
+    }
+    const parts: THREE.BufferGeometry[] = [];
+    addDuctSupportMeshes({ ...supports, hangers: [strap] }, (_name, _material, geometry) => { if (geometry) parts.push(geometry); });
+    const band = parts.at(-1)!;
+    const positions = band.getAttribute('position');
+    const along: number[] = [];
+    for (let index = 0; index < positions.count; index += 1) {
+      const offset = new THREE.Vector3().fromBufferAttribute(positions, index).sub(centre);
+      const station = offset.dot(axis);
+      along.push(station);
+      expect(offset.addScaledVector(axis, -station).length()).toBeCloseTo(radius, 3);
+    }
+    expect(Math.max(...along) - Math.min(...along)).toBeCloseTo(FLEX_RULES.minStrapWidthMm, 3);
+    const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(band, material);
+    mesh.updateMatrixWorld(true);
+    expect(new THREE.Raycaster(centre.clone().addScaledVector(axis, -100), axis, 0, 200).intersectObject(mesh)).toHaveLength(0);
+    parts.forEach((part) => part.dispose());
+    material.dispose();
+  });
+
   it('builds merged world-space meshes: metal, flanges, connector fabric and end cap', () => {
     const run = buildDuctRunDraftElement({ port: supply, points: [{ x: supply.lip.x, y: supply.lip.y - 3000 }, { x: supply.lip.x + 3000, y: supply.lip.y - 3000 }] }, 'r');
     const group = meshOf(run);

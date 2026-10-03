@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { planDuctRunSpec, type DuctFabricationPlan, type DuctPiece } from './ductFabricationPlanner';
-import { FITTING_LOSS_COEFFICIENTS, splitOutletLossPa, systemPressure, transitionCoefficient } from './ductPressure';
+import { flexCurve } from './ductFlex';
+import { FITTING_LOSS_COEFFICIENTS, flexBendLossPa, splitOutletLossPa, systemPressure, transitionCoefficient } from './ductPressure';
 import { resolveDuctSettings } from './ductSettings';
 import { frictionPaPerM, velocityMs, velocityPressurePa } from './ductSizing';
-import type { DuctEnd, DuctLeg, DuctService } from './ductTypes';
+import type { DuctEnd, DuctLeg, DuctPoint3, DuctService } from './ductTypes';
 
 const settings = { autoDiffuserDropPa: 15, autoGrilleDropPa: 10 };
 const rectangular: DuctLeg = { widthMm: 200, heightMm: 200 };
@@ -47,6 +48,64 @@ const tap = (parentRunId: string, stationMm: number): DuctEnd => ({
 });
 
 describe('pressure along duct paths', () => {
+  it('charges only developed-length friction for a straight flexible runout', () => {
+    const curve = flexCurve({ x: 0, y: 0, z: 100 }, { x: 1, y: 0, z: 0 }, { x: 1000, y: 0, z: 100 }, { x: 1, y: 0, z: 0 });
+    const flex = piece({
+      kind: 'flex', ...round, endDiameterMm: 200,
+      flex: { ...curve, terminalId: 'terminal', type: 'nm-il', jacketMm: 25 },
+    });
+    const pressure = systemPressure([plan('terminal', [flex], { section: round })], new Map([['terminal', 300]]), settings, 'supply');
+    expect(pressure.terminals[0]!.fittingsPa).toBe(0);
+    expect(pressure.terminals[0]!.frictionPa).toBeCloseTo(frictionPaPerM(round, 300, 'flex'), 10);
+  });
+
+  it.each([[1, 0.84], [2.5, 0.85], [4, 0.87]])('matches the published 90-degree flex bend at R/D %s without double-counting arc friction', (ratio, coefficient) => {
+    const diameterMm = 304.8; // The manufacturer's table was measured on 12-inch duct.
+    const radius = ratio * diameterMm;
+    const section = { widthMm: diameterMm, heightMm: diameterMm, diameterMm };
+    const points = Array.from({ length: 721 }, (_, index) => {
+      const angle = (index / 720) * Math.PI / 2;
+      return { x: radius * Math.sin(angle), y: radius * (1 - Math.cos(angle)), z: 100 };
+    });
+    const airflow = 1000;
+    const straightFriction = frictionPaPerM(section, airflow, 'flex') * radius * Math.PI / 2000;
+    const expectedTotal = coefficient * velocityPressurePa(velocityMs(section, airflow));
+    const total = flexBendLossPa(points, diameterMm, airflow) + straightFriction;
+    expect(Math.abs(total - expectedTotal) / expectedTotal).toBeLessThan(0.002);
+    // A bend in elevation carries the same loss as one in plan.
+    const vertical = points.map((point) => ({ x: point.x, y: point.z, z: point.y }));
+    expect(flexBendLossPa(vertical, diameterMm, airflow)).toBeCloseTo(total - straightFriction, 10);
+  });
+
+  it('adds pressure for opposing bends even when the inlet and outlet point in the same direction', () => {
+    const curve = flexCurve({ x: 0, y: 0, z: 100 }, { x: 1, y: 0, z: 0 }, { x: 1000, y: 400, z: 100 }, { x: 1, y: 0, z: 0 });
+    const flex = piece({
+      kind: 'flex', ...round, endDiameterMm: 200,
+      lengthMm: curve.lengthMm, stationEndMm: curve.lengthMm,
+      flex: { ...curve, terminalId: 'terminal', type: 'nm-il', jacketMm: 25 },
+    });
+    const flows = new Map([['terminal', 300]]);
+    const supply = systemPressure([plan('terminal', [flex], { section: round })], flows, settings, 'supply');
+    const entry = supply.terminals[0]!;
+    expect(entry.fittingsPa).toBeGreaterThan(0.5);
+    expect(entry.frictionPa).toBeCloseTo(frictionPaPerM(round, 300, 'flex') * curve.lengthMm / 1000, 10);
+    expect(entry.totalPa).toBeCloseTo(entry.frictionPa + entry.fittingsPa + settings.autoDiffuserDropPa, 10);
+    const returnPressure = systemPressure([plan('terminal', [flex], { section: round, service: 'return' })], flows, settings, 'return');
+    expect(returnPressure.terminals[0]!.fittingsPa).toBeCloseTo(entry.fittingsPa, 10);
+  });
+
+  it('does not create bend loss from duplicate points or change its result when flow reverses', () => {
+    const points: DuctPoint3[] = [
+      { x: 0, y: 0, z: 0 }, { x: 100, y: 0, z: 0 }, { x: 200, y: 100, z: 0 }, { x: 200, y: 200, z: 0 },
+    ];
+    const forward = flexBendLossPa(points, 200, 300);
+    expect(forward).toBeGreaterThan(0);
+    expect(flexBendLossPa([...points].reverse(), 200, 300)).toBeCloseTo(forward, 10);
+    expect(flexBendLossPa(points.flatMap((point) => [point, point]), 200, 300)).toBeCloseTo(forward, 10);
+    expect(flexBendLossPa(points, 200, 0)).toBe(0);
+    expect(flexBendLossPa(points.slice(0, 2), 200, 300)).toBe(0);
+  });
+
   it('integrates flow either side of a take-off independently of fabrication joints', () => {
     const main = plan('main', [piece()]);
     const branch = plan('branch', [piece()], { start: tap('main', 250) });

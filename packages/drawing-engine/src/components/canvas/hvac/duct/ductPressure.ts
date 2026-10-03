@@ -23,7 +23,7 @@ import type { DuctElbow, DuctFabricationPlan, DuctPiece } from './ductFabricatio
 import { ductLegs } from './ductGeometry';
 import type { DuctDesignSettings } from './ductSettings';
 import { frictionPaPerM, velocityMs, velocityPressurePa } from './ductSizing';
-import type { DuctLeg, DuctService, DuctSplitStyle, DuctTapStyle } from './ductTypes';
+import type { DuctLeg, DuctPoint3, DuctService, DuctSplitStyle, DuctTapStyle } from './ductTypes';
 
 /** Loss coefficients (on the velocity pressure of the section named). Practice. */
 export const FITTING_LOSS_COEFFICIENTS = {
@@ -117,6 +117,50 @@ export function transitionCoefficient(includedDeg: number, expanding: boolean): 
 export function splitOutletLossPa(style: DuctSplitStyle, outletVelocityMs: number, mainVelocityMs: number): number {
   if (style === 'wye') return takeoffBranchLossPa('wye', outletVelocityMs, mainVelocityMs);
   return (style === 'bullhead' ? FITTING_LOSS_COEFFICIENTS.bullhead : FITTING_LOSS_COEFFICIENTS.split) * velocityPressurePa(outletVelocityMs);
+}
+
+/**
+ * Additional loss of the bends in a flexible runout, above the straight-flex
+ * friction already charged against its full developed length.
+ *
+ * Reference: Thermaflex, Air Flow and Air Friction, p. 4, measured 90-degree
+ * bend coefficients for 12-inch M-KC / S-LP-10 / S-TL: R/D 1, 2.5, 4 give
+ * K 0.84, 0.85, 0.87. The published bend loss includes the bent section's
+ * friction, so subtract that component rather than charging it twice.
+ * https://www.thermaflex.net/wp-content/uploads/2016/03/Thermaflex-Air-Flow-and-Air-Friction-Brochure.pdf
+ *
+ * Using this reference for other products/diameters and scaling by angle are
+ * engineering estimates, not manufacturer ratings for the project's flex.
+ * Interpolate only within the measured R/D range; clamp outside it. Sum local
+ * absolute turns, since opposite bends in an S-runout do not cancel losses.
+ */
+export function flexBendLossPa(points: readonly DuctPoint3[], diameterMm: number, airflowM3h: number): number {
+  if (diameterMm <= 0 || airflowM3h <= 0) return 0;
+  const section = { widthMm: diameterMm, heightMm: diameterMm, diameterMm };
+  const velocityPressure = velocityPressurePa(velocityMs(section, airflowM3h));
+  const frictionPerMm = frictionPaPerM(section, airflowM3h, 'flex') / 1000;
+  const samples = points.filter((point, index) => index === 0
+    || Math.hypot(point.x - points[index - 1]!.x, point.y - points[index - 1]!.y, point.z - points[index - 1]!.z) > 1e-6);
+  let loss = 0;
+  for (let index = 1; index + 1 < samples.length; index += 1) {
+    const a = samples[index - 1]!;
+    const b = samples[index]!;
+    const c = samples[index + 1]!;
+    const u = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+    const v = { x: c.x - b.x, y: c.y - b.y, z: c.z - b.z };
+    const cross = Math.hypot(u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x);
+    const dot = u.x * v.x + u.y * v.y + u.z * v.z;
+    const angle = Math.atan2(cross, dot);
+    if (angle < 1e-9) continue;
+    const radius = cross > 1e-9
+      ? Math.hypot(c.x - a.x, c.y - a.y, c.z - a.z) * Math.hypot(u.x, u.y, u.z) * Math.hypot(v.x, v.y, v.z) / (2 * cross)
+      : 0;
+    const ratio = Math.max(1, Math.min(4, radius / diameterMm));
+    const coefficient90 = ratio <= 2.5 ? 0.84 + (ratio - 1) * (0.01 / 1.5) : 0.85 + (ratio - 2.5) * (0.02 / 1.5);
+    const bendLoss = coefficient90 * (angle / (Math.PI / 2)) * velocityPressure;
+    loss += Math.max(0, bendLoss - frictionPerMm * radius * angle);
+  }
+  return loss;
 }
 
 export interface TerminalPressure {
@@ -322,6 +366,10 @@ export function systemPressure(
       }
       const flow = flowAt(node, (piece.stationStartMm + end) / 2);
       if (flow <= 0) continue;
+      if (piece.kind === 'flex' && piece.flex) {
+        fittings += flexBendLossPa(piece.flex.points, piece.diameterMm ?? piece.widthMm, flow);
+        continue;
+      }
       if (piece.kind === 'takeoff' && !fromPlenum && node.plan.spec.start.kind === 'tap') {
         fittings += takeoffBranchLossPa(node.plan.spec.start.style, velocityMs(section, flow), mainVelocityAt(node));
         continue;

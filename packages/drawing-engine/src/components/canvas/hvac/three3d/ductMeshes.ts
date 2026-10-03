@@ -12,14 +12,16 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 import type { HvacElement, Point2D } from '../../../../types';
+import { tapAttachment } from '../duct/ductBranches';
 import type { DuctElbow, DuctFabricationPlan, DuctJoint, DuctPiece } from '../duct/ductFabricationPlanner';
 import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
-import { flexPointAt, flexSupportStations, saggedFlexPoints } from '../duct/ductFlex';
+import { FLEX_HANGER_WIRE_DIAMETER_MM, FLEX_RULES, flexPointAt, flexSupportStations, saggedFlexPoints } from '../duct/ductFlex';
 import { frameToWorld, sampleArc } from '../duct/ductGeometry';
+import { ductBranchesOf } from '../duct/ductNetwork';
 import { wyeLegLengthMm } from '../duct/ductRoundFittings';
 import { resolveDuctSettings, type DuctDesignSettings } from '../duct/ductSettings';
 import { squareToRoundTriangles, type SquareToRoundInput } from '../duct/ductSquareToRound';
-import { getDuctSupportPlan, type DuctSupportPlan } from '../duct/ductSupports';
+import { DUCT_BAND_RADIAL_OFFSET_MM, getDuctSupportPlan, type DuctSupportPlan } from '../duct/ductSupports';
 import type { DuctPoint3 } from '../duct/ductTypes';
 
 export const DUCT_3D_COLORS = {
@@ -86,7 +88,7 @@ export function sweepRectangularRings(rings: DuctSweepRing[]): THREE.BufferGeome
   return shellFromCorners(corners);
 }
 
-function shellFromCorners(rings: THREE.Vector3[][]): THREE.BufferGeometry {
+function shellFromCorners(rings: THREE.Vector3[][], faces = [0, 1, 2, 3]): THREE.BufferGeometry {
   const positions: number[] = [];
   const pushQuad = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3) => {
     positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z);
@@ -94,7 +96,7 @@ function shellFromCorners(rings: THREE.Vector3[][]): THREE.BufferGeometry {
   for (let index = 1; index < rings.length; index += 1) {
     const r0 = rings[index - 1]!;
     const r1 = rings[index]!;
-    for (let face = 0; face < 4; face += 1) {
+    for (const face of faces) {
       const next = (face + 1) % 4;
       pushQuad(r0[face]!, r0[next]!, r1[next]!, r1[face]!);
     }
@@ -103,6 +105,127 @@ function shellFromCorners(rings: THREE.Vector3[][]): THREE.BufferGeometry {
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.computeVertexNormals();
   return geometry;
+}
+
+export interface DuctPanelOpening {
+  /** Coordinates in the panel plane, relative to its centre. */
+  centre: Point2D;
+  widthMm: number;
+  heightMm: number;
+  round?: boolean;
+}
+
+/** A sheet in XY with actual openings, triangulated without a solid CSG model. */
+export function rectangularDuctPanel(widthMm: number, heightMm: number, openings: DuctPanelOpening[] = []): THREE.BufferGeometry {
+  const halfWidth = widthMm / 2;
+  const halfHeight = heightMm / 2;
+  const sheet = new THREE.Shape();
+  sheet.moveTo(-halfWidth, -halfHeight);
+  sheet.lineTo(halfWidth, -halfHeight);
+  sheet.lineTo(halfWidth, halfHeight);
+  sheet.lineTo(-halfWidth, halfHeight);
+  sheet.closePath();
+  const accepted: DuctPanelOpening[] = [];
+  for (const opening of openings) {
+    const { centre, widthMm: width, heightMm: height } = opening;
+    // Out-of-bounds fittings remain visible as their uncut parent;
+    // fabrication validation reports them instead of inventing a connection.
+    if (width <= 0 || height <= 0 || Math.abs(centre.x) + width / 2 >= halfWidth
+      || Math.abs(centre.y) + height / 2 >= halfHeight) continue;
+    if (accepted.some((other) => Math.abs(centre.x - other.centre.x) < (width + other.widthMm) / 2
+      && Math.abs(centre.y - other.centre.y) < (height + other.heightMm) / 2)) continue;
+    const hole = new THREE.Path();
+    if (opening.round) {
+      for (let index = 0; index < ROUND_SEGMENTS; index += 1) {
+        const angle = -index * Math.PI * 2 / ROUND_SEGMENTS;
+        const x = centre.x + Math.cos(angle) * width / 2;
+        const y = centre.y + Math.sin(angle) * height / 2;
+        if (index === 0) hole.moveTo(x, y);
+        else hole.lineTo(x, y);
+      }
+    } else {
+      hole.moveTo(centre.x - width / 2, centre.y - height / 2);
+      hole.lineTo(centre.x - width / 2, centre.y + height / 2);
+      hole.lineTo(centre.x + width / 2, centre.y + height / 2);
+      hole.lineTo(centre.x + width / 2, centre.y - height / 2);
+    }
+    hole.closePath();
+    sheet.holes.push(hole);
+    accepted.push(opening);
+  }
+  return new THREE.ShapeGeometry(sheet);
+}
+
+interface RectangularTakeoffOpening {
+  legIndex: number;
+  side: 1 | -1;
+  centre: Point2D;
+  centreZ: number;
+  widthMm: number;
+  heightMm: number;
+  round: boolean;
+}
+
+function rectangularTakeoffOpenings(plan: DuctFabricationPlan, scene: HvacElement[], settings: DuctDesignSettings): RectangularTakeoffOpening[] {
+  return ductBranchesOf(plan.elementId, scene).flatMap((branch) => {
+    if (branch.start.kind !== 'tap') return [];
+    const section = plan.spec.legs[branch.start.legIndex];
+    const child = branch.spec.legs[0];
+    if (!section || section.diameterMm !== undefined || !child) return [];
+    const sheet = plan.constructionByLeg[branch.start.legIndex]?.sheetThicknessMm ?? 1;
+    const tap = tapAttachment(plan.spec, branch.start, child, sheet, settings);
+    if (!tap) return [];
+    const width = tap.openingToMm - tap.openingFromMm;
+    const height = tap.openingDiameterMm ?? child.heightMm;
+    return [{
+      legIndex: branch.start.legIndex, side: branch.start.side,
+      centre: {
+        x: tap.wallPoint.x - tap.parentDirection.x * tap.leadInMm / 2,
+        y: tap.wallPoint.y - tap.parentDirection.y * tap.leadInMm / 2,
+      },
+      centreZ: tap.bottomZ + height / 2, widthMm: width, heightMm: height, round: tap.openingDiameterMm !== null,
+    }];
+  });
+}
+
+/** Keep the roof and floor, cutting only the side wall at a planned takeoff. */
+function rectangularStraightWithOpenings(piece: DuctPiece, t: number, openings: RectangularTakeoffOpening[]): THREE.BufferGeometry | null {
+  const d = piece.direction;
+  const n = { x: -d.y, y: d.x };
+  const mid = { x: (piece.start.x + piece.end.x) / 2, y: (piece.start.y + piece.end.y) / 2 };
+  const length = Math.hypot(piece.end.x - piece.start.x, piece.end.y - piece.start.y);
+  const local = openings.filter((opening) => opening.legIndex === piece.legIndex).map((opening) => ({
+    ...opening, along: (opening.centre.x - mid.x) * d.x + (opening.centre.y - mid.y) * d.y,
+  })).filter((opening) => Math.abs(opening.along) + opening.widthMm / 2 < length / 2
+    && Math.abs(opening.centreZ - piece.centreZ) + opening.heightMm / 2 < piece.heightMm / 2 + t);
+  if (!local.length) return null;
+  const halfWidth = piece.widthMm / 2 + t;
+  const halfHeight = piece.heightMm / 2 + t;
+  const rings = [piece.start, piece.end].map((point) => [
+    new THREE.Vector3(point.x + n.x * halfWidth, point.y + n.y * halfWidth, piece.centreZ + halfHeight),
+    new THREE.Vector3(point.x - n.x * halfWidth, point.y - n.y * halfWidth, piece.centreZ + halfHeight),
+    new THREE.Vector3(point.x - n.x * halfWidth, point.y - n.y * halfWidth, piece.centreZ - halfHeight),
+    new THREE.Vector3(point.x + n.x * halfWidth, point.y + n.y * halfWidth, piece.centreZ - halfHeight),
+  ]);
+  const parts = [shellFromCorners(rings, [0, 2])];
+  for (const side of [-1, 1] as const) {
+    const panel = rectangularDuctPanel(length, 2 * halfHeight, local.filter((opening) => opening.side === side).map((opening) => ({
+      centre: { x: -side * opening.along, y: opening.centreZ - piece.centreZ },
+      widthMm: opening.widthMm, heightMm: opening.heightMm, round: opening.round,
+    })));
+    const basis = new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(-side * d.x, -side * d.y, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(side * n.x, side * n.y, 0),
+    );
+    basis.setPosition(mid.x + side * n.x * halfWidth, mid.y + side * n.y * halfWidth, piece.centreZ);
+    panel.applyMatrix4(basis);
+    const flat = panel.toNonIndexed();
+    panel.dispose();
+    flat.deleteAttribute('uv');
+    parts.push(flat);
+  }
+  const merged = mergeGeometries(parts, false);
+  parts.forEach((part) => part.dispose());
+  return merged;
 }
 
 /**
@@ -643,7 +766,11 @@ export function addDuctSupportMeshes(supports: DuctSupportPlan, push: MeshPush):
   for (const hanger of supports.hangers) {
     const d = hanger.direction;
     const n = { x: -d.y, y: d.x };
-    for (const rod of hanger.rods) push('duct-supports', rodMaterial, rodGeometry(rod.point, rod.bottomZ, rod.lengthMm, hanger.rod?.diameterMm ?? 10));
+    for (const rod of hanger.rods) {
+      if (rod.lengthMm <= 0) continue;
+      push('duct-supports', rodMaterial, rodGeometry(rod.point, rod.bottomZ, rod.lengthMm,
+        hanger.rod?.diameterMm ?? (hanger.kind === 'strap' ? FLEX_HANGER_WIRE_DIAMETER_MM : 10)));
+    }
     if (hanger.bar) {
       // An equal angle under the duct: the flat leg bears on the duct, the upstand stiffens it.
       const { legMm, thicknessMm } = hanger.bar.member;
@@ -651,12 +778,20 @@ export function addDuctSupportMeshes(supports: DuctSupportPlan, push: MeshPush):
       push('duct-supports', steel, orientedBox(flat, n, hanger.bar.lengthMm, legMm, thicknessMm));
       const upstand = new THREE.Vector3(hanger.point.x + d.x * (legMm / 2 - thicknessMm / 2), hanger.point.y + d.y * (legMm / 2 - thicknessMm / 2), hanger.supportZ - legMm / 2);
       push('duct-supports', steel, orientedBox(upstand, n, hanger.bar.lengthMm, thicknessMm, legMm));
-    } else if (hanger.kind === 'band') {
-      const radius = hanger.outerWidthMm / 2 + 1.5;
+    } else if (hanger.kind === 'band' || hanger.kind === 'strap') {
+      const radius = hanger.outerWidthMm / 2 + DUCT_BAND_RADIAL_OFFSET_MM;
       const centreZ = hanger.supportZ + hanger.outerHeightMm / 2;
+      const halfBand = (hanger.kind === 'strap' ? FLEX_RULES.minStrapWidthMm : 25) / 2;
+      if (hanger.kind === 'strap' && hanger.strapFrame) {
+        const { centre, axis } = hanger.strapFrame;
+        push('duct-supports', steel, sweepCircularPath3([-halfBand, halfBand].map((distance) => ({
+          x: centre.x + axis.x * distance, y: centre.y + axis.y * distance, z: centre.z + axis.z * distance,
+        })), radius));
+        continue;
+      }
       push('duct-supports', steel, sweepCircularRings([
-        { point: { x: hanger.point.x - d.x * 12.5, y: hanger.point.y - d.y * 12.5 }, z: centreZ, radius },
-        { point: { x: hanger.point.x + d.x * 12.5, y: hanger.point.y + d.y * 12.5 }, z: centreZ, radius },
+        { point: { x: hanger.point.x - d.x * halfBand, y: hanger.point.y - d.y * halfBand }, z: centreZ, radius },
+        { point: { x: hanger.point.x + d.x * halfBand, y: hanger.point.y + d.y * halfBand }, z: centreZ, radius },
       ]));
     }
   }
@@ -718,13 +853,26 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
   }
   if (piece.kind === 'plenum' && piece.plenum) {
     // The box: its sides, the blank far face, and the back face round the duct inlet.
-    push('duct-metal', metal, sweepRectangularTube([piece.start, piece.end], piece.centreZ, halfWidth, halfHeight));
+    const n = { x: -piece.direction.y, y: piece.direction.x };
+    const sides: RectangularTakeoffOpening[] = piece.plenum.spigots.filter((spigot) => spigot.face !== 'end').map((spigot) => ({
+      legIndex: piece.legIndex, side: spigot.direction.x * n.x + spigot.direction.y * n.y > 0 ? 1 : -1,
+      centre: spigot.point, centreZ: spigot.centreZ, widthMm: spigot.openingMm, heightMm: spigot.openingMm, round: true,
+    }));
+    push('duct-metal', metal, rectangularStraightWithOpenings(piece, t, sides)
+      ?? sweepRectangularTube([piece.start, piece.end], piece.centreZ, halfWidth, halfHeight));
     const caps = material(DUCT_3D_COLORS.cap, 0.12, 0.55);
-    push('duct-caps', caps, orientedBox(new THREE.Vector3(piece.end.x, piece.end.y, piece.centreZ), piece.direction, 2, 2 * halfWidth, 2 * halfHeight));
+    const endPanel = rectangularDuctPanel(2 * halfWidth, 2 * halfHeight, piece.plenum.spigots.filter((spigot) => spigot.face === 'end').map((spigot) => ({
+      centre: { x: (spigot.point.x - piece.end.x) * n.x + (spigot.point.y - piece.end.y) * n.y, y: spigot.centreZ - piece.centreZ },
+      widthMm: spigot.openingMm, heightMm: spigot.openingMm, round: true,
+    })));
+    const endBasis = new THREE.Matrix4().makeBasis(new THREE.Vector3(n.x, n.y, 0), new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(piece.direction.x, piece.direction.y, 0));
+    endBasis.setPosition(piece.end.x, piece.end.y, piece.centreZ);
+    endPanel.applyMatrix4(endBasis);
+    push('duct-caps', caps, endPanel);
     const bottom = piece.centreZ - halfHeight;
     const inletW = Math.min(piece.plenum.inletWidthMm, 2 * halfWidth);
     const inletH = Math.min(piece.plenum.inletHeightMm, 2 * halfHeight);
-    const n = { x: -piece.direction.y, y: piece.direction.x };
     const back = (across: number, up: number, width: number, height: number) => {
       if (width < 1 || height < 1) return;
       push('duct-caps', caps, orientedBox(new THREE.Vector3(piece.start.x + n.x * across, piece.start.y + n.y * across, up), piece.direction, 2, width, height));
@@ -843,7 +991,8 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
 }
 /** Build the run's meshes into `group` (which must sit at the world origin). */
 export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, context: DuctMeshContext): DuctFabricationPlan | null {
-  const plan = getDuctRunPlan(element, context.allElements, context.ductSettings ?? DEFAULT_SETTINGS);
+  const settings = context.ductSettings ?? DEFAULT_SETTINGS;
+  const plan = getDuctRunPlan(element, context.allElements, settings);
   if (!plan) return null;
   const buckets = new Map<string, { material: THREE.Material; parts: THREE.BufferGeometry[] }>();
   const push = (name: string, mat: THREE.Material, geometry: THREE.BufferGeometry | null) => {
@@ -859,7 +1008,14 @@ export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, conte
   // Low metalness: the scene has no environment map, and a metallic material
   // without one renders near-black instead of galvanised grey.
   const metal = material(plan.status === 'error' ? DUCT_3D_COLORS.galvanisedError : DUCT_3D_COLORS.galvanised, 0.12, 0.5);
-  for (const piece of plan.pieces) addPieceMeshes(piece, piece.sheetThicknessMm ?? 1, metal, push);
+  const openings = rectangularTakeoffOpenings(plan, context.allElements, settings);
+  const addPiece = (piece: DuctPiece, thickness: number, mat: THREE.Material, emit: MeshPush) => {
+    const opened = piece.kind === 'straight' && piece.diameterMm === undefined && !piece.vertical && !piece.frame
+      ? rectangularStraightWithOpenings(piece, thickness, openings) : null;
+    if (opened) emit('duct-metal', mat, opened);
+    else addPieceMeshes(piece, thickness, mat, emit);
+  };
+  for (const piece of plan.pieces) addPiece(piece, piece.sheetThicknessMm ?? 1, metal, push);
   // NBR: a black skin at the insulation's outer face over every piece but the flexible connector.
   if (plan.insulationMm > 0) {
     const skin = material(DUCT_3D_COLORS.insulation, 0, 0.92);
@@ -870,7 +1026,7 @@ export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, conte
     for (const piece of plan.pieces) {
       // The connector must flex; a flexible runout carries its own jacket.
       if (piece.kind === 'connector' || piece.kind === 'split' || piece.kind === 'flex') continue;
-      addPieceMeshes(piece, (piece.sheetThicknessMm ?? 1) + plan.insulationMm, skin, skinPush);
+      addPiece(piece, (piece.sheetThicknessMm ?? 1) + plan.insulationMm, skin, skinPush);
     }
   }
   for (const joint of plan.joints) {
@@ -898,7 +1054,6 @@ export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, conte
     const frame = joint.vertical ? flatFlangeFrame(joint, flange.height, flange.thickness) : flangeFrame(joint, flange.height, flange.thickness);
     for (const part of frame) push('duct-flanges', mat, part);
   }
-  const settings = context.ductSettings ?? DEFAULT_SETTINGS;
   if (settings.showSupports) addDuctSupportMeshes(getDuctSupportPlan(plan, context.allElements, settings), push);
   for (const [name, bucket] of buckets) {
     const merged = bucket.parts.length === 1 ? bucket.parts[0]! : mergeGeometries(bucket.parts, false);

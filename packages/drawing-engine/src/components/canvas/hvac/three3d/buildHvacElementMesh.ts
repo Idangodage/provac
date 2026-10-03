@@ -40,7 +40,7 @@ import { getUnitPipePortSpec } from "../unitPipePortModel";
 
 import { addCondensateGullyMeshes, addCondensatePipeMeshes } from "./condensateMeshes";
 import { buildCopperSocketElbowMesh } from "./copperSocketElbowMesh";
-import { addDuctRunMeshes } from "./ductMeshes";
+import { addDuctRunMeshes, rectangularDuctPanel } from "./ductMeshes";
 import { instantiateGlbModel } from "./glbModelCache";
 import {
   buildCylinderGeometry,
@@ -1802,12 +1802,35 @@ function addAirTerminalMeshes(group: THREE.Group, element: HvacElement): void {
       }
     }
   }
-  // Plenum box above the ceiling.
-  group.add(createLocalBoxMesh(spec.plenumWidthMm, spec.plenumDepthMm, spec.plenumHeightMm, colors.plenum,
-    new THREE.Vector3(0, 0, fh + spec.plenumHeightMm / 2)));
-  // Side spigot (a collar ≥ 51 mm, SMACNA S3.30) with its bead.
+  // Closed plenum roof and sheet walls; the spigot opens into the box. A solid
+  // BoxGeometry here used to leave a plate blocking the air connection.
   const spigot = localTerminalSpigot(spec);
   const radius = spec.neckDiameterMm / 2;
+  const roof = createLocalBoxMesh(spec.plenumWidthMm, spec.plenumDepthMm, 1, colors.plenum,
+    new THREE.Vector3(0, 0, fh + spec.plenumHeightMm - 0.5));
+  roof.name = 'terminal-plenum-roof';
+  group.add(roof);
+  const plenumMaterial = markMaterialOwned(getSharedBoxMaterial(colors.plenum, 1, false).clone());
+  plenumMaterial.side = THREE.DoubleSide;
+  for (const normal of [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]) {
+    const onX = normal.x !== 0;
+    const sideWidth = onX ? spec.plenumDepthMm : spec.plenumWidthMm;
+    const sideOffset = (onX ? spec.plenumWidthMm : spec.plenumDepthMm) / 2;
+    const isSpigotWall = normal.x === spigot.normal.x && normal.y === spigot.normal.y;
+    const geometry = rectangularDuctPanel(sideWidth, spec.plenumHeightMm, isSpigotWall ? [{
+      centre: { x: 0, y: spigot.lip.z - fh - spec.plenumHeightMm / 2 },
+      widthMm: spec.neckDiameterMm, heightMm: spec.neckDiameterMm, round: true,
+    }] : []);
+    const basis = new THREE.Matrix4().makeBasis(new THREE.Vector3(-normal.y, normal.x, 0),
+      new THREE.Vector3(0, 0, 1), new THREE.Vector3(normal.x, normal.y, 0));
+    basis.setPosition(normal.x * sideOffset, normal.y * sideOffset, fh + spec.plenumHeightMm / 2);
+    geometry.applyMatrix4(basis);
+    const wall = new THREE.Mesh(geometry, plenumMaterial);
+    wall.name = isSpigotWall ? 'terminal-plenum-spigot-wall' : 'terminal-plenum-wall';
+    wall.renderOrder = 18;
+    group.add(wall);
+  }
+  // Side spigot (a collar ≥ 51 mm, SMACNA S3.30) with its open annular bead.
   const alongX = Math.abs(spigot.normal.x) > 0.5;
   const base = alongX ? spec.plenumWidthMm / 2 : spec.plenumDepthMm / 2;
   const centre = new THREE.Vector3(spigot.normal.x * (base + spec.spigotLengthMm / 2), spigot.normal.y * (base + spec.spigotLengthMm / 2), spigot.lip.z);
@@ -1815,7 +1838,7 @@ function addAirTerminalMeshes(group: THREE.Group, element: HvacElement): void {
   const rotation = new THREE.Euler(0, 0, alongX ? Math.PI / 2 : 0);
   group.add(createLocalCylinderMesh(radius, radius, spec.spigotLengthMm, colors.spigot, centre, { rotation, openEnded: true }));
   const bead = new THREE.Vector3(spigot.normal.x * (base + 25), spigot.normal.y * (base + 25), spigot.lip.z);
-  group.add(createLocalCylinderMesh(radius + 4, radius + 4, 8, colors.spigot, bead, { rotation }));
+  group.add(createLocalCylinderMesh(radius + 4, radius + 4, 8, colors.spigot, bead, { rotation, openEnded: true }));
 }
 
 export function buildHvacElementMesh(

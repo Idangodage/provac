@@ -8,20 +8,25 @@
  * bending", Fig. 3-9; 100 mm here, practice) and a cubic Bezier between them,
  * tangent to both. Bends are checked against one diameter (S3.24), the length
  * against the project maximum (institutional 1.5 m; S3.23 asks for the
- * minimum), supports placed at ≤ 1.5 m along it with the connections counting
- * as supports (S3.35), and the sag drawn within 41.7 mm per metre of span.
+ * minimum). Horizontal supports follow ASHRAE 2024 chapter 19 / ADC:
+ * ≤ 1.2 m spacing, ≥ 40 mm saddles (rounded conservatively from 4 ft and
+ * 1.5 in), and sag within 41.7 mm per metre of span. Connections count as
+ * supports; a selected product's stricter installation instructions apply.
  */
 import type { DuctPoint3 } from './ductTypes';
+
+/** Galvanised hanger wire diameter used by the model and BOM (project practice). */
+export const FLEX_HANGER_WIRE_DIAMETER_MM = 2.7;
 
 export const FLEX_RULES = {
   /** S3.24: bend centreline radius ≥ 1 duct diameter. */
   minBendDiameters: 1,
-  /** S3.35: supports at least every 1.5 m (mm). */
-  maxSupportSpacingMm: 1500,
-  /** S3.35: maximum sag per metre of support spacing (mm/m). */
+  /** ASHRAE 2024 ch. 19 / ADC: horizontal spacing ≤ 4 ft; conservative metric value. */
+  maxSupportSpacingMm: 1200,
+  /** ASHRAE 2024 ch. 19 / ADC: maximum sag 1/2 in per ft (mm/m). */
   maxSagMmPerM: 41.7,
-  /** S3.36: hanger or saddle at least this wide (mm). */
-  minStrapWidthMm: 25,
+  /** ASHRAE 2024 ch. 19 / ADC: support width ≥ 1.5 in; conservative metric value. */
+  minStrapWidthMm: 40,
   /** S3.30 / S3.31: collar length and insertion (mm). */
   minCollarMm: 51,
   minInsertionMm: 25,
@@ -124,7 +129,7 @@ export function flexPointAt(flex: Pick<DuctFlexGeometry, 'points' | 'stations'>,
 
 /**
  * Supports along the runout: the two connections count, so only the stations
- * between them that keep every span within the spacing (S3.35).
+ * between them that keep every span within the horizontal spacing limit.
  */
 export function flexSupportStations(lengthMm: number, spacingMm: number = FLEX_RULES.maxSupportSpacingMm): number[] {
   const spans = Math.max(1, Math.ceil(lengthMm / spacingMm - 1e-9));

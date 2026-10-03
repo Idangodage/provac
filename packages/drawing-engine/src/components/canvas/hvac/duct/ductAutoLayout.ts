@@ -61,7 +61,7 @@ import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlan
 import { ductRunElementWithSpec } from './ductFollow';
 import { ductBranchesOf } from './ductNetwork';
 import { checkSpigotFit } from './ductPlenum';
-import type { ServicePressure } from './ductPressure';
+import { systemPressure, type ServicePressure } from './ductPressure';
 import { SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';
 import {
@@ -397,18 +397,25 @@ function placed(origin: DuctDraftOrigin | null): PlacedOrigin | null {
 
 /** A branch from the origin `makeOrigin` gives for its first section (a spigot's height depends on it). */
 function buildBranch(ctx: ServiceCtx, makeOrigin: (first: DuctLeg) => DuctDraftOrigin | null, terminal: TerminalCtx, scene: HvacElement[], build: Build): HvacElement | null {
-  const choices = [terminal, ...(terminal.variants ?? []).filter((variant) => variant.spec.spigotSide !== terminal.spec.spigotSide)];
-  let best: { run: HvacElement; terminal: TerminalCtx; notes: AutoDuctIssue[]; errors: number; length: number } | null = null;
+  const choices = [terminal, ...(terminal.variants ?? []).filter((variant) => variant.spec.spigotSide !== terminal.spec.spigotSide)].slice(0, 3);
+  let best: { run: HvacElement; terminal: TerminalCtx; notes: AutoDuctIssue[]; errors: number; warnings: number; length: number; pressure: number } | null = null;
   for (const choice of choices) {
     const trial: Build = { extra: build.extra, notes: [] };
     const run = buildBranchForSide(ctx, makeOrigin, choice, withReplaced(scene, [choice.element]), trial);
     if (!run) continue;
     const spec = readDuctRunSpec(run)!;
     const plan = planDuctRunSpec(run.id, spec, { settings: ctx.settings, scene: [...withReplaced(scene, [choice.element]), run] });
-    const errors = plan.issues.filter((issue) => issue.severity === 'error').length;
-    const length = spec.path.slice(1).reduce((sum, point, index) => sum + Math.hypot(point.x - spec.path[index]!.x, point.y - spec.path[index]!.y), 0);
-    if (!best || errors < best.errors || (errors === best.errors && length < best.length)) best = { run, terminal: choice, notes: trial.notes, errors, length };
-    if (errors === 0) break;
+    const issues = [...plan.issues, ...trial.notes];
+    const errors = issues.filter((issue) => issue.severity === 'error').length;
+    const warnings = issues.filter((issue) => issue.severity === 'warning').length;
+    // A valid placed spigot can still force a curled runout. Compare every
+    // bounded side using actual fabricated length, including curved flex,
+    // rather than stopping at the first side without a fabrication error.
+    const length = plan.pieces.reduce((sum, piece) => sum + piece.lengthMm, 0);
+    const pressure = systemPressure([plan], new Map([[choice.element.id, choice.airflowM3h]]), ctx.settings, ctx.service).indexPa;
+    const better = !best || errors < best.errors || (errors === best.errors && (warnings < best.warnings
+      || (warnings === best.warnings && (length < best.length - 0.5 || (Math.abs(length - best.length) <= 0.5 && pressure < best.pressure - 1e-6)))));
+    if (better) best = { run, terminal: choice, notes: trial.notes, errors, warnings, length, pressure };
   }
   if (!best) return null;
   build.notes.push(...best.notes);
@@ -1474,25 +1481,25 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       exact = false;
     }
     // One routing round: every router at both prices of pressure, with what earlier rounds forbade.
-    const cuts = emptyCuts();
+    const cutsByRouter = new Map(routers.map((router) => [router.shape, emptyCuts()]));
     // Per router and price: the last solve's layers, reused where a round's cuts leave them unchanged.
     const memos = new Map<string, LayerMemo>();
     // One routing round: every router at the given prices of fan pressure (× the life-cycle price), with
     // what earlier rounds forbade.
-    const routeRound = (factors: readonly number[], only?: ReadonlySet<'rect' | 'round'>): ServiceDesign[] => {
+    const routeRound = (factors: readonly number[], only: ReadonlySet<'rect' | 'round'>, deadline: number): ServiceDesign[] => {
       const routerStarted = Date.now();
       const out: ServiceDesign[] = [];
       for (const router of routers) {
-        if (only && !only.has(router.shape)) continue;
+        if (!only.has(router.shape)) continue;
         for (const factor of factors) {
           const memoKey = `${router.shape}:${factor}`;
           if (!memos.has(memoKey) && layerMemoWorthKeeping(router.graph, terminals.length, groups)) memos.set(memoKey, newLayerMemo());
           const solution = routeTrees(ctx, router.model, router.graph, {
             lambda: factor * router.model.pricePerPa, label: AUTO_DUCT_LAYOUT_LABELS.tree, fanOutletMm: exitLengthMm(port),
             shortOutletPenaltyPa: fanOutletSystemEffectPa(port, total), maxTerminals: settings.autoExactTerminals,
-            rootTurnMinMm: router.turnOutletMm, cuts, ...(memos.has(memoKey) ? { memo: memos.get(memoKey)! } : {}), ...(groups ? { groups } : {}),
+            rootTurnMinMm: router.turnOutletMm, cuts: cutsByRouter.get(router.shape)!, ...(memos.has(memoKey) ? { memo: memos.get(memoKey)! } : {}), ...(groups ? { groups } : {}),
             // Conflict repairs stop at the time budget, and after a few seconds in any one call.
-            deadline: Math.min(started + settings.autoTimeBudgetMs, Date.now() + ROUTER_REPAIR_MS),
+            deadline: Math.min(deadline, Date.now() + ROUTER_REPAIR_MS),
           });
           routingInspector?.({ ctx, shape: router.shape, factor, graph: router.graph, solution, ms: solution ? Math.round(solution.seconds * 1000) : -1 });
           if (solution) out.push(...solution.designs.map((design) => ({ ...design, router: router.shape })));
@@ -1504,59 +1511,72 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
     // Size, build and verify: Optimal with the mixed catalogue and each shape's own, keeping every verified option.
     let options: ServiceOption[] = [];
     const failures: TreeFailure[] = [];
-    const sizeTrees = (designs: readonly ServiceDesign[], shapes: readonly ShapeMode[]): { options: ServiceOption[]; failures: TreeFailure[] } => {
+    const sizeTrees = (designs: readonly ServiceDesign[], shapes: readonly ShapeMode[]): { options: ServiceOption[]; failures: TreeFailure[]; failuresByShape: Map<ShapeMode, TreeFailure[]> } => {
       const sizingStarted = Date.now();
-      const round = { options: [] as ServiceOption[], failures: [] as TreeFailure[] };
+      const round = { options: [] as ServiceOption[], failures: [] as TreeFailure[], failuresByShape: new Map<ShapeMode, TreeFailure[]>() };
       for (const sizeShape of shapes) {
-        const optimised = optimiseService(ctx, designs, sizeShape, airflow, result.maxEspPa ?? 150);
+        // Each pure-shape pass must keep the pool that its standalone mode
+        // searches. The verifier intentionally stops after a few clean trees;
+        // trees from the other router must not crowd those options out.
+        const pool = shape === 'optimal' && sizeShape !== 'optimal'
+          ? designs.filter((design) => design.source === 'seed' || design.router === sizeShape)
+          : designs;
+        const optimised = optimiseService(ctx, pool, sizeShape, airflow, result.maxEspPa ?? 150);
         trees += optimised.frontiers;
         realised += optimised.realised;
         round.options.push(...optimised.options);
         round.failures.push(...optimised.failures);
+        round.failuresByShape.set(sizeShape, optimised.failures);
       }
       sizingMs += Date.now() - sizingStarted;
       options.push(...round.options);
       failures.push(...round.failures);
       return round;
     };
-    // Every tree is sized with each catalogue Optimal holds (the mixed one's optimum can fail to build where a
-    // pure one's does), so Optimal is never worse than Rectangular or Round alone.
+    // Retain each pure catalogue's own bounded search before mixed sizing.
+    // Its cuts and repair eligibility use its own node IDs and failures;
+    // optional pressure-price variants use session time within the shared
+    // overall unit deadline.
     const allShapes: readonly ShapeMode[] = shape === 'optimal' ? ['optimal', 'rect', 'round'] : [shape];
-    const loopShapes = allShapes;
-    // Routed at the life-cycle price of pressure while learning; the prices either side add variety at the end.
-    const firstTrees = routeRound([1]);
-    if (routers.length && !firstTrees.length) exact = false;
-    let round = sizeTrees([...seeds, ...firstTrees], allShapes);
-    // The feasibility loop: what the exact checks reject is forbidden to the router, which solves again,
-    // until the router's best remaining tree verifies clean — no failed tree it rates cheaper than the best
-    // clean one (or nothing new is learnt, or the time is up).
+    const firstTrees: ServiceDesign[] = [];
+    const searchedTrees: ServiceDesign[] = [];
     const routerCost = (design: ServiceDesign | undefined) => design?.modelCost ?? Number.POSITIVE_INFINITY;
-    for (let pass = 1; pass <= FEASIBILITY_ROUNDS && routers.length; pass += 1) {
-      const bestClean = Math.min(...options.filter((option) => option.source === 'steiner' && option.errors === 0).map((option) => routerCost(option.design)));
-      const bestFailed = Math.min(
-        ...round.failures.filter((failure) => failure.design.source === 'steiner').map((failure) => routerCost(failure.design)),
-        ...round.options.filter((option) => option.source === 'steiner' && option.errors > 0).map((option) => routerCost(option.design)),
-      );
-      if (!(bestFailed < bestClean - 1e-6)) break;
-      if (Date.now() - started > settings.autoTimeBudgetMs) { timeLimited = true; break; }
-      const learnt = cutsFromFailures(round.failures, cuts) + cutsFromErrors(round.options, cuts, ctx);
-      if (!learnt) break;
-      feasibilityRounds += 1;
-      cutsLearnt += learnt;
-      // Only the routers whose failed trees could still beat the best clean one route again.
-      const hopeful = new Set<'rect' | 'round'>([
-        ...round.failures.map((failure) => failure.design),
-        ...round.options.filter((option) => option.errors > 0).flatMap((option) => (option.design ? [option.design] : [])),
-      ].filter((design) => design.source === 'steiner' && design.router && routerCost(design) < bestClean - 1e-6).map((design) => design.router!));
-      const trees = routeRound([1], hopeful);
-      if (!trees.length) break;
-      round = sizeTrees(trees, loopShapes);
+    for (const router of routers) {
+      const sessionStarted = Date.now();
+      const deadline = started + settings.autoTimeBudgetMs;
+      const only = new Set([router.shape]);
+      const initial = routeRound([1], only, deadline);
+      if (!initial.length && Date.now() > deadline) timeLimited = true;
+      firstTrees.push(...initial);
+      searchedTrees.push(...initial);
+      let round = sizeTrees([...seeds, ...initial], [router.shape]);
+      for (let pass = 1; pass <= FEASIBILITY_ROUNDS; pass += 1) {
+        const own = (option: ServiceOption) => option.source === 'steiner' && option.design?.router === router.shape && option.shape === router.shape;
+        const bestClean = Math.min(...options.filter((option) => own(option) && option.errors === 0).map((option) => routerCost(option.design)));
+        const failedOptions = round.options.filter((option) => own(option) && option.errors > 0);
+        const failedTrees = (round.failuresByShape.get(router.shape) ?? []).filter((failure) => failure.design.router === router.shape);
+        const bestFailed = Math.min(...failedTrees.map((failure) => routerCost(failure.design)), ...failedOptions.map((option) => routerCost(option.design)));
+        if (!(bestFailed < bestClean - 1e-6)) break;
+        if (Date.now() > deadline) { timeLimited = true; break; }
+        const cuts = cutsByRouter.get(router.shape)!;
+        const learnt = cutsFromFailures(failedTrees, cuts) + cutsFromErrors(failedOptions, cuts, ctx);
+        if (!learnt) break;
+        feasibilityRounds += 1;
+        cutsLearnt += learnt;
+        const routed = routeRound([1], only, deadline);
+        if (!routed.length) { if (Date.now() > deadline) timeLimited = true; break; }
+        searchedTrees.push(...routed);
+        round = sizeTrees(routed, [router.shape]);
+      }
+      if (Date.now() < deadline && Date.now() - sessionStarted < settings.autoTimeBudgetMs / 4) {
+        const varied = routeRound([0.5, 2], only, deadline);
+        searchedTrees.push(...varied);
+        if (varied.length) sizeTrees(varied, [router.shape]);
+      }
     }
-    // Variety for the frontier (cheaper or quieter trees), with everything learnt, when the design came quickly.
-    if (routers.length && Date.now() - started < settings.autoTimeBudgetMs / 4) {
-      const trees = routeRound([0.5, 2]);
-      if (trees.length) sizeTrees(trees, loopShapes);
-    }
+    if (routers.length && !firstTrees.length) exact = false;
+    if (!routers.length) sizeTrees(seeds, allShapes);
+    else if (shape === 'optimal') sizeTrees([...seeds, ...searchedTrees], ['optimal']);
     if (shape !== 'round' && candidates.length) {
       // The reference: the v1 layout as it sizes it (equal friction, rectangular). A verified option like
       // any other, so the optimiser's choice is never worse than it.

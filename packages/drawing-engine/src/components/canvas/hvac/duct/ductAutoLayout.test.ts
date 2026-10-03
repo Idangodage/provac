@@ -6,6 +6,7 @@ import { resolveUnitAirPorts } from './ductAirPorts';
 import { generateAutoDuct, type AutoDuctRequest, type AutoDuctResult } from './ductAutoLayout';
 import { legNormal } from './ductBranches';
 import { buildDuctRunDraftElement } from './ductDraft';
+import { systemPressure } from './ductPressure';
 import { resolveDuctSettings } from './ductSettings';
 import { terminalEnvelope, typicalTerminalSpec, type DuctTerminalKind } from './ductTerminals';
 import { readDuctRunSpec } from './ductTypes';
@@ -116,10 +117,10 @@ describe('duct auto layout', () => {
     const [main, left, right] = split.trunkSections;
     expect(main!.widthMm).toBeGreaterThanOrEqual(left!.widthMm + right!.widthMm);
     expect(split.trunkSections.every((section) => section.heightMm >= 250)).toBe(true);
-    // …and the optimiser's tree beats it on life-cycle cost (the rectangular trunk still takes spin-ins: ≥ Ø200 + 50).
+    // The chosen topology may change as pressure estimates improve, but its
+    // verified life-cycle cost must still match or beat the reference.
     const service = result.services[0]!;
-    expect(service.layout).toBe('tree');
-    expect(result.designs[result.selected]!.lifeCycleCost).toBeLessThan(reference.lifeCycleCost);
+    expectNoWorseThanEqualFriction(result);
     for (const plan of service.plans) {
       for (const piece of plan.pieces) if (piece.kind === 'takeoff' && piece.takeoff?.style === 'spin-in') expect(piece.diameterMm).toBeLessThanOrEqual(200);
     }
@@ -133,8 +134,12 @@ describe('duct auto layout', () => {
     const result = generateAutoDuct([unit, ...row], request(row.map((element) => element.id)), resolveDuctSettings({ soffitMm: 2900 }));
     expect(errorsOf(result)).toEqual([]);
     const service = result.services[0]!;
-    expect(service.layout).toBe('trunk-split');
-    expect(service.issues.map((issue) => issue.code)).toContain('DU_AUTO_FAN_OUTLET');
+    // The split-trunk reference needs a shortened outlet here; a better
+    // automatic tree can use another outlet position without that warning.
+    const reference = result.designs.find((design) => design.label.includes('(equal friction)'))!.services[0]!;
+    expect(reference.layout).toBe('trunk-split');
+    expect(reference.issues.map((issue) => issue.code)).toContain('DU_AUTO_FAN_OUTLET');
+    expectNoWorseThanEqualFriction(result);
     for (const plan of service.plans) {
       for (const piece of plan.pieces.filter((candidate) => candidate.kind === 'flex')) expect(piece.flex!.minBendRadiusMm).toBeGreaterThanOrEqual(200);
     }
@@ -212,20 +217,21 @@ describe('duct auto layout', () => {
       expect(entry.frictionPa).toBeGreaterThan(0);
       expect(entry.fittingsPa).toBeGreaterThan(0);
       expect(pressure.throttlePa[entry.terminalId]).toBeGreaterThanOrEqual(0);
+      expect(entry.totalPa).toBeCloseTo(entry.frictionPa + entry.fittingsPa + entry.terminalPa, 6);
+      expect(pressure.throttlePa[entry.terminalId]).toBeCloseTo(index.totalPa - entry.totalPa, 6);
     }
-    // Slow air: the take-off losses dominate, and the tees nearest the split see the fastest
-    // main air (Idelchik form), so the inner branches lose most and one of them is the index.
-    const byId = (id: string) => pressure.terminals.find((entry) => entry.terminalId === id)!;
-    expect(byId('r3').fittingsPa).toBeGreaterThan(byId('r1').fittingsPa);
-    expect(byId('r4').fittingsPa).toBeGreaterThan(byId('r6').fittingsPa);
-    expect(['r3', 'r4']).toContain(pressure.indexTerminalId);
+    // The complete path determines the index, including curved-flex losses;
+    // it need not be the terminal whose take-off is closest to the split.
     expect(result.requiredEspPa).toBeCloseTo(pressure.indexPa, 6);
     // 600 m³/h over six runouts is slow air (about 1 m/s): the diffuser's own drop dominates.
     expect(result.requiredEspPa!).toBeGreaterThan(settings.autoDiffuserDropPa);
     expect(result.requiredEspPa!).toBeLessThan(result.maxEspPa!);
-    // More air, more pressure.
-    const faster = generateAutoDuct([unit, ...row], request(row.map((element) => element.id), { fanSpeed: 'p-hi' }), settings);
-    expect(faster.requiredEspPa!).toBeGreaterThan(result.requiredEspPa!);
+    // More air through the same geometry needs more pressure. Regenerating
+    // would also resize and reroute ducts, so it cannot test that relationship.
+    const service = result.services[0]!;
+    const faster = systemPressure(service.plans,
+      new Map(service.terminals.map((entry) => [entry.terminalId, entry.airflowM3h * 1.2])), settings, service.service);
+    expect(faster.indexPa).toBeGreaterThan(pressure.indexPa);
   });
 
   it('warns when the ducts need more static pressure than the fan gives', () => {

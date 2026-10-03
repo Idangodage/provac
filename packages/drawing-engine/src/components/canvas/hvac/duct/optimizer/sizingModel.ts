@@ -6,17 +6,19 @@
  * and the planned result agree to within the geometry the realiser settles.
  */
 import type { Point2D } from '../../../../../types';
-import { branchStubMm, flexClear, flexFit, flexOk, runoutStaysOut, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { branchStubMm, dirToWorld, flexClear, flexFit, flexOk, runoutStaysOut, toWorld, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { shoeLeadInMm } from '../ductBranches';
 import { damperCost, energyPricePerPa, fittingCost, flexCost, sectionCostPerMetre, type SectionCostContext } from '../ductEconomics';
+import { flexCurve, type DuctFlexGeometry } from '../ductFlex';
 import {
   elbowCoefficient,
   FITTING_LOSS_COEFFICIENTS,
+  flexBendLossPa,
   mainPassageLossPa,
   splitOutletLossPa,
   takeoffBranchLossPa,
   transitionCoefficient,
 } from '../ductPressure';
-import { shoeLeadInMm } from '../ductBranches';
 import { maxRoundBranchMm, roundMainTapGeometry, roundReducerMinLengthMm, wyeLegLengthMm } from '../ductRoundFittings';
 import { SMACNA_TABLE_3_1 } from '../ductRoundRules';
 import type { DuctDesignSettings } from '../ductSettings';
@@ -363,9 +365,33 @@ export class SizingModel {
     return fittingCost(box, lengthMm + box.heightMm, this.costContext, 2) + this.settings.econHangerEach;
   }
 
-  /** A flexible runout: its cost and friction. */
-  flex(neckMm: number, airflowM3h: number, lengthMm: number): CostLoss {
-    return { cost: flexCost(neckMm, lengthMm, this.settings), loss: this.friction(roundLeg(neckMm), airflowM3h, lengthMm, 'flex') };
+  /** The planner's curve, so routing can reject invalid fits before pricing their bends. */
+  flexRunoutCurve(start: Point2D, out: Point2D, terminal: TerminalCtx, bottomZ = this.ctx.bottomZ): DuctFlexGeometry & { radiusMm: number } {
+    const worldStart = toWorld(this.ctx.frame, start);
+    const direction = dirToWorld(this.ctx.frame, out);
+    const curve = flexCurve(
+      { ...worldStart, z: bottomZ + terminal.neck / 2 }, { ...direction, z: 0 },
+      terminal.port.lip, { x: -terminal.port.normal.x, y: -terminal.port.normal.y, z: 0 },
+    );
+    return { ...curve, radiusMm: curve.minBendRadiusMm };
+  }
+
+  /** Geometry and additional bend loss of the runout the fabrication planner draws. */
+  flexRunout(start: Point2D, out: Point2D, terminal: TerminalCtx, airflowM3h = terminal.airflowM3h, bottomZ = this.ctx.bottomZ): { lengthMm: number; radiusMm: number; bendLossPa: number } {
+    const curve = this.flexRunoutCurve(start, out, terminal, bottomZ);
+    return {
+      lengthMm: curve.lengthMm,
+      radiusMm: curve.minBendRadiusMm,
+      bendLossPa: flexBendLossPa(curve.points, terminal.neck, airflowM3h),
+    };
+  }
+
+  /** With no curve information, explicitly fall back to straight-flex friction. */
+  flex(neckMm: number, airflowM3h: number, lengthMm: number, bendLossPa = 0): CostLoss {
+    return {
+      cost: flexCost(neckMm, lengthMm, this.settings),
+      loss: this.friction(roundLeg(neckMm), airflowM3h, lengthMm, 'flex') + bendLossPa,
+    };
   }
 }
 

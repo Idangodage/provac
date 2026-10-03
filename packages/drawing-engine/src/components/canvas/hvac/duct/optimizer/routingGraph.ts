@@ -12,7 +12,8 @@
  * local frame is a rotation of the plan, so left is left in plan too).
  */
 import type { Point2D } from '../../../../../types';
-import { flexClear, flexFit, flexOk, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { flexClear, flexOk, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { flexBendLossPa } from '../ductPressure';
 
 import type { SizingModel } from './sizingModel';
 
@@ -36,6 +37,8 @@ export interface LeafCandidate {
   /** Heading the rigid branch arrives with (towards the terminal). */
   heading: number;
   flexLengthMm: number;
+  /** Additional curved-flex loss when geometry is known; absent on legacy/synthetic graphs. */
+  flexBendLossPa?: number;
   /** Which of the terminal's spigot sides it serves (index into `terminalVariants`). */
   variant: number;
 }
@@ -241,9 +244,11 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
       if (node < 0 || heading < 0) continue;
       const spigot = variants[variant]!;
       const end = { x: nodeXs[node]!, y: nodeYs[node]! };
-      const fit = flexFit(ctx, end, DIRECTIONS[heading]!, ctx.bottomZ, spigot);
+      const fit = model.flexRunoutCurve(end, DIRECTIONS[heading]!, spigot);
       if (!flexOk(fit, spigot, ctx.settings) || !flexClear(ctx, end, DIRECTIONS[heading]!, ctx.bottomZ, spigot)) continue;
-      if (!out.some((leaf) => leaf.node === node && leaf.heading === heading && leaf.variant === variant)) out.push({ node, heading, flexLengthMm: fit.lengthMm, variant });
+      if (!out.some((leaf) => leaf.node === node && leaf.heading === heading && leaf.variant === variant)) out.push({
+        node, heading, flexLengthMm: fit.lengthMm, flexBendLossPa: flexBendLossPa(fit.points, spigot.neck, spigot.airflowM3h), variant,
+      });
     }
     return out;
   });

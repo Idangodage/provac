@@ -30,7 +30,8 @@
  * Time O(3^k·|V|), memory O(2^k·|V|): it runs up to the settings' limit.
  */
 import type { Point2D } from '../../../../../types';
-import { branchStubMm, flexClear, flexFit, flexOk, runoutPath, runoutStaysOut, simplifyCollinear, type AutoDuctIssue, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { branchStubMm, flexClear, flexOk, runoutPath, runoutStaysOut, simplifyCollinear, type AutoDuctIssue, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { flexBendLossPa } from '../ductPressure';
 import { maxRoundBranchMm } from '../ductRoundFittings';
 import { isRoundLeg, roundLeg, type DuctLeg, type DuctTapStyle } from '../ductTypes';
 
@@ -340,40 +341,43 @@ const LEAF_STRAIGHT_MM = 400;
 /** Trees built from the best roots only (each is sized and verified; the rest cost more on the model). */
 const ROOTS_KEPT = 6;
 
-/** All-flex stub runouts per routing graph: they depend on geometry only, so every solve on the graph shares them. */
-const STUB_GEOMETRY = new WeakMap<RoutingGraph, Map<string, { length: Float64Array; variant: Int8Array }>>();
+interface StubRunoutSide { length: Float64Array; bendLossPa: Float64Array }
+
+/** All-flex runouts per side, geometry and fixed terminal flow, shared by every solve on the graph. */
+const STUB_GEOMETRY = new WeakMap<RoutingGraph, Map<string, StubRunoutSide[]>>();
 
 /**
  * Terminal `index`'s all-flex branch leaving each directed state with its stub end `reach` from the node:
- * the shortest runout over its spigot sides that bends within limits and runs clear (∞ where none does),
- * and that side. The shortest is also the cheapest at any price of pressure (cost and loss grow with it).
+ * each spigot side that bends within limits and runs clear (∞ where none does).
+ * Keep their bend losses as well as lengths: a shorter curved side need not
+ * be cheaper at every price of pressure.
  */
-function stubGeometry(ctx: ServiceCtx, graph: RoutingGraph, index: number, terminal: TerminalCtx, reach: number, mainHalfMm: number): { length: Float64Array; variant: Int8Array } {
+function stubGeometry(ctx: ServiceCtx, model: SizingModel, graph: RoutingGraph, index: number, terminal: TerminalCtx, reach: number, mainHalfMm: number): StubRunoutSide[] {
   let cache = STUB_GEOMETRY.get(graph);
   if (!cache) STUB_GEOMETRY.set(graph, (cache = new Map()));
   const key = `${index}:${reach}:${Math.round(mainHalfMm)}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const directed = graph.nodeCount * 4;
-  const length = new Float64Array(directed).fill(INF);
-  const variant = new Int8Array(directed);
-  terminalVariants(terminal).forEach((candidate, side) => {
+  const sides = terminalVariants(terminal).map((candidate) => {
+    const length = new Float64Array(directed).fill(INF);
+    const bendLossPa = new Float64Array(directed);
     for (let s = 0; s < directed; s += 1) {
       const v = s >> 2;
       const dirV = DIRECTIONS[s & 3]!;
       const end = { x: graph.nodeX[v]! + dirV.x * reach, y: graph.nodeY[v]! + dirV.y * reach };
       if (Math.hypot(candidate.lip.x - end.x, candidate.lip.y - end.y) > ctx.settings.flexMaxLengthMm) continue;
-      const fit = flexFit(ctx, end, dirV, ctx.bottomZ, candidate);
-      if (fit.lengthMm >= length[s]! || !flexOk(fit, candidate, ctx.settings) || !flexClear(ctx, end, dirV, ctx.bottomZ, candidate)) continue;
+      const fit = model.flexRunoutCurve(end, dirV, candidate);
+      if (!flexOk(fit, candidate, ctx.settings) || !flexClear(ctx, end, dirV, ctx.bottomZ, candidate)) continue;
       // Not back across the main it leaves.
       if (!runoutStaysOut(ctx, { x: graph.nodeX[v]!, y: graph.nodeY[v]! }, dirV, end, ctx.bottomZ, candidate, mainHalfMm)) continue;
       length[s] = fit.lengthMm;
-      variant[s] = side;
+      bendLossPa[s] = flexBendLossPa(fit.points, candidate.neck, candidate.airflowM3h);
     }
+    return { length, bendLossPa };
   });
-  const entry = { length, variant };
-  cache.set(key, entry);
-  return entry;
+  cache.set(key, sides);
+  return sides;
 }
 
 /** Most terminals the grouped router takes (its subset tables are indexed by bit mask). */
@@ -486,15 +490,19 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     const cached = stubCache.get(key);
     if (cached) return cached;
     const terminal = terminals[Math.log2(B)]!;
-    const geometry = stubGeometry(ctx, graph, Math.log2(B), terminal, Math.round(reach), mainHalf);
+    const sides = stubGeometry(ctx, model, graph, Math.log2(B), terminal, Math.round(reach), mainHalf);
     const value = new Float64Array(directed).fill(INF);
-    for (let s = 0; s < directed; s += 1) {
-      const length = geometry.length[s]!;
-      if (!Number.isFinite(length)) continue;
-      const runout = model.flex(terminal.neck, terminal.airflowM3h, length);
-      value[s] = runout.cost + lambda * runout.loss;
-    }
-    const entry = { value, variant: geometry.variant };
+    const variant = new Int8Array(directed);
+    sides.forEach((geometry, side) => {
+      for (let s = 0; s < directed; s += 1) {
+        const length = geometry.length[s]!;
+        if (!Number.isFinite(length)) continue;
+        const runout = model.flex(terminal.neck, terminal.airflowM3h, length, geometry.bendLossPa[s]!);
+        const price = runout.cost + lambda * runout.loss;
+        if (price < value[s]!) { value[s] = price; variant[s] = side; }
+      }
+    });
+    const entry = { value, variant };
     stubCache.set(key, entry);
     return entry;
   };
@@ -604,7 +612,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       const variantOf = new Int8Array(states);
       for (const leaf of graph.leaves[index]!) {
         if (bannedLeaves?.has(leaf.node * 4 + leaf.heading)) continue;
-        const runout = model.flex(terminal.neck, terminal.airflowM3h, leaf.flexLengthMm);
+        const runout = model.flex(terminal.neck, terminal.airflowM3h, leaf.flexLengthMm, leaf.flexBendLossPa);
         const value = runout.cost + lambda * runout.loss;
         for (let c = needed; c <= top; c += 1) {
           const s3 = (leaf.node * 4 + leaf.heading) * LEVELS + c;

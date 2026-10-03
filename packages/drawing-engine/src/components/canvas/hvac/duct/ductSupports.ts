@@ -18,13 +18,15 @@
 import type { HvacElement, Point2D } from '../../../../types';
 import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
 
-import type { DuctFabricationPlan, DuctIssue, DuctPiece } from './ductFabricationPlanner';
-import { flexPointAt, flexSupportStations } from './ductFlex';
+import { tapAttachment } from './ductBranches';
+import { getDuctRunPlan, type DuctFabricationPlan, type DuctIssue, type DuctPiece } from './ductFabricationPlanner';
+import { FLEX_RULES, flexPointAt, flexSupportStations } from './ductFlex';
 import { add, ductLegs, scale, sub } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
 import type { DuctDesignSettings } from './ductSettings';
 import {
   SUPPORT_RULES,
+  TABLE_4_3M_MEMBERS,
   metricRodFor,
   table41Minimum,
   table42For,
@@ -32,6 +34,7 @@ import {
   type MetricRod,
   type TrapezeMember,
 } from './ductSupportTables';
+import type { DuctPoint3 } from './ductTypes';
 
 export type DuctSupportReason = 'spacing' | 'elbow' | 'branch' | 'unit' | 'end';
 
@@ -46,7 +49,7 @@ export interface DuctHanger {
   id: string;
   /**
    * A trapeze (two rods and a bar under the duct), on a small round duct one
-   * rod and a band, or on a flexible runout a 25 mm strap on a hanger wire.
+   * rod and a band, or on a flexible runout a broad strap on a hanger wire.
    */
   kind: 'trapeze' | 'band' | 'strap';
   stationMm: number;
@@ -54,6 +57,8 @@ export interface DuctHanger {
   /** Plan point on the centreline, and the duct axis there. */
   point: Point2D;
   direction: Point2D;
+  /** Flexible straps are square to the local 3D centreline, including drops. */
+  strapFrame?: { centre: DuctPoint3; axis: DuctPoint3 };
   reasons: DuctSupportReason[];
   /** Outside size carried (sheet and insulation). */
   outerWidthMm: number;
@@ -101,6 +106,10 @@ const EPSILON = 0.5;
 const ROD_TAIL_MM = 30;
 /** Riser angles bear this far on the structure each side (mm). Practice. */
 const RISER_BEARING_MM = 150;
+/** Surface of the rendered thin band outside the duct/jacket (mm). */
+export const DUCT_BAND_RADIAL_OFFSET_MM = 1.5;
+/** Reserve the widest table angle's half length along the duct at take-offs. */
+const HANGER_HALF_LENGTH_MM = Math.max(...TABLE_4_3M_MEMBERS.map((member) => member.legMm)) / 2;
 
 interface Interval {
   from: number;
@@ -116,6 +125,23 @@ interface Requirement {
 
 function isBreak(piece: DuctPiece): boolean {
   return Boolean(piece.vertical || piece.frame || piece.kind === 'flex');
+}
+
+/** A directly attached collar/damper can be carried with its supported parent. */
+function attachedRunoutStub(plan: DuctFabricationPlan): DuctPiece[] | null {
+  const flex = plan.pieces.find((piece) => piece.kind === 'flex');
+  if (plan.spec.start.kind !== 'tap' || !flex || flex.stationStartMm > SUPPORT_RULES.branchMaxMm
+    || plan.pieces.some((piece) => piece.vertical || piece.frame || !['takeoff', 'damper', 'flex'].includes(piece.kind))) return null;
+  return plan.pieces.filter((piece) => piece.kind !== 'flex');
+}
+
+function insulationAllowanceKg(piece: DuctPiece): number {
+  const sheet = piece.sheetThicknessMm ?? 1;
+  const girth = piece.diameterMm !== undefined
+    ? Math.PI * (piece.diameterMm + 2 * sheet)
+    : 2 * (piece.widthMm + piece.heightMm + 4 * sheet);
+  return SUPPORT_RULES.insulationAllowanceKgPerM2 * (girth / 1000)
+    * Math.max(0, piece.stationEndMm - piece.stationStartMm) / 1000;
 }
 
 export function resolveSoffitZ(settings: Pick<DuctDesignSettings, 'soffitMm'>): number {
@@ -136,18 +162,57 @@ export function planDuctSupports(
   const pieces = plan.pieces;
   // A runout is carried by its own straps; the rigid run ends where it starts.
   const runEnd = pieces.find((piece) => piece.kind === 'flex')?.stationStartMm ?? plan.polylineLengthMm;
+  let legStart = 0;
+  const legStartStation = ductLegs(spec).map((leg) => {
+    const start = legStart;
+    legStart += leg.lengthMm;
+    return start;
+  });
+  const branches = ductBranchesOf(plan.elementId, scene);
+  const takeoffWindows: Array<{ from: number; to: number }> = [];
+  const attachedStubLoads: Array<{ station: number; kg: number; insulationKg: number }> = [];
+  for (const branch of branches) {
+    if (branch.start.kind !== 'tap' || !branch.spec.legs[0]) continue;
+    const attachment = tapAttachment(spec, branch.start, branch.spec.legs[0],
+      plan.constructionByLeg[branch.start.legIndex]?.sheetThicknessMm ?? 1, settings);
+    if (!attachment) continue;
+    const start = legStartStation[branch.start.legIndex]!;
+    // The parent rod passes beside the duct wall. Keep its whole support clear
+    // of the collar, including a shoe's upstream lead-in or a conical mouth.
+    // This is a geometry/project-clearance rule, not a new SMACNA spacing rule.
+    const clearance = Math.max(settings.hangerJointClearanceMm, settings.tapWindowMarginMm, HANGER_HALF_LENGTH_MM + insulation);
+    takeoffWindows.push({ from: start + attachment.openingFromMm - clearance, to: start + attachment.openingToMm + clearance });
+    const branchPlan = getDuctRunPlan(branch.element, scene, settings);
+    const stub = branchPlan && attachedRunoutStub(branchPlan);
+    if (stub) attachedStubLoads.push({
+      station: start + branch.start.stationMm,
+      kg: stub.reduce((sum, piece) => sum + piece.massKg, 0),
+      insulationKg: stub.reduce((sum, piece) => sum + insulationAllowanceKg(piece), 0),
+    });
+  }
 
-  // Where a hanger may go: level straights and transitions, clear of their joints.
+  // Where a hanger may go: level straights and transitions, clear of joints and take-offs.
   const allowed: Interval[] = [];
   for (const piece of pieces) {
     if (isBreak(piece) || (piece.kind !== 'straight' && piece.kind !== 'transition' && piece.kind !== 'plenum')) continue;
     const length = piece.stationEndMm - piece.stationStartMm;
     const clear = settings.hangerJointClearanceMm;
-    if (length >= 2 * clear + EPSILON) allowed.push({ from: piece.stationStartMm + clear, to: piece.stationEndMm - clear, piece });
+    let spans: Interval[] = [];
+    if (length >= 2 * clear + EPSILON) spans.push({ from: piece.stationStartMm + clear, to: piece.stationEndMm - clear, piece });
     else if (length >= 100) {
       const mid = (piece.stationStartMm + piece.stationEndMm) / 2;
-      allowed.push({ from: mid, to: mid, piece });
+      spans.push({ from: mid, to: mid, piece });
     }
+    for (const window of takeoffWindows) {
+      spans = spans.flatMap((span) => {
+        if (window.to < span.from || window.from > span.to) return [span];
+        const remaining: Interval[] = [];
+        if (span.from < window.from) remaining.push({ ...span, to: window.from });
+        if (span.to > window.to) remaining.push({ ...span, from: window.to });
+        return remaining;
+      });
+    }
+    allowed.push(...spans);
   }
   const nearestAllowed = (target: number, from: number, to: number): number | null => {
     let best: number | null = null;
@@ -160,6 +225,25 @@ export function planDuctSupports(
     }
     return best;
   };
+
+  let carriedByParent = false;
+  if (spec.start.kind === 'tap' && attachedRunoutStub(plan)) {
+    const parentId = spec.start.parentRunId;
+    const parent = scene.find((element) => element.id === parentId);
+    const parentPlan = parent && getDuctRunPlan(parent, scene, settings);
+    // A supporting parent must have a rigid hanger seat. This also prevents
+    // recursive delegation through malformed cycles of collar-only branches.
+    if (parentPlan?.status === 'ok' && parentPlan.pieces.some((piece) => !isBreak(piece)
+      && ['straight', 'transition', 'plenum'].includes(piece.kind))) {
+      const parentSupports = cachedSupports(parentPlan, scene, settings, soffitZ);
+      const station = ductLegs(parentPlan.spec).slice(0, spec.start.legIndex)
+        .reduce((sum, leg) => sum + leg.lengthMm, spec.start.stationMm);
+      carriedByParent = !parentSupports.issues.some((issue) => issue.severity === 'error')
+        && parentSupports.hangers.some((hanger) => hanger.kind !== 'strap'
+          && Math.abs(hanger.stationMm - station) <= SUPPORT_RULES.branchMaxMm
+          && hanger.rods.every((rod) => rod.lengthMm > 0));
+    }
+  }
 
   // ---- Required supports. ----
   const requirements: Requirement[] = [];
@@ -183,21 +267,15 @@ export function planDuctSupports(
       requirements.push({ reason: 'elbow', label: `offset ${piece.mark}`, windows: [within(b, b + elbowReach, b + 300)] });
     }
   }
-  let legStart = 0;
-  const legStartStation = ductLegs(spec).map((leg) => {
-    const start = legStart;
-    legStart += leg.lengthMm;
-    return start;
-  });
   const branchReach = SUPPORT_RULES.branchMaxMm;
-  for (const branch of ductBranchesOf(plan.elementId, scene)) {
+  for (const branch of branches) {
     if (branch.start.kind !== 'tap') continue;
     const station = (legStartStation[branch.start.legIndex] ?? 0) + branch.start.stationMm;
     requirements.push({ reason: 'branch', label: 'branch take-off', windows: [within(station - branchReach, station + branchReach, station)] });
   }
   if (spec.end.kind === 'split') {
     requirements.push({ reason: 'branch', label: 'split', windows: [within(runEnd - branchReach, runEnd, runEnd - 300)] });
-  } else {
+  } else if (!carriedByParent) {
     requirements.push({ reason: 'end', label: 'run end', windows: [within(runEnd - elbowReach, runEnd, runEnd - 300)] });
   }
   const startPiecesEnd = pieces.filter((piece) => piece.kind === 'connector' || piece.kind === 'takeoff' || piece.kind === 'damper')
@@ -205,9 +283,9 @@ export function planDuctSupports(
   if (spec.start.kind === 'unit-port') {
     requirements.push({ reason: 'unit', label: 'unit connection',
       windows: [within(startPiecesEnd, startPiecesEnd + elbowReach, startPiecesEnd + settings.hangerFromUnitMm)] });
-  } else if (spec.start.kind === 'tap' || spec.start.kind === 'split-branch') {
+  } else if ((spec.start.kind === 'tap' || spec.start.kind === 'split-branch') && !carriedByParent) {
     requirements.push({ reason: 'branch', label: 'branch start', windows: [within(0, branchReach, startPiecesEnd + 300)] });
-  } else {
+  } else if (!carriedByParent) {
     requirements.push({ reason: 'end', label: 'run start', windows: [within(0, elbowReach, 300)] });
   }
 
@@ -230,7 +308,7 @@ export function planDuctSupports(
     if (best === null) {
       const reach = requirement.reason === 'branch' ? branchReach : elbowReach;
       issues.push({ code: 'DU_SUPPORT_RULE', severity: 'warning',
-        message: `No straight within ${reach} mm of the ${requirement.label} to hang it from (${requirement.reason === 'unit' || requirement.reason === 'end' ? 'project practice' : 'SMACNA S4.1'}).` });
+        message: `No clear support position within ${reach} mm of the ${requirement.label}; check straight length, joints and take-offs (${requirement.reason === 'unit' || requirement.reason === 'end' ? 'project practice' : 'SMACNA S4.1'}).` });
       continue;
     }
     chosen.push({ station: best, reasons: new Set([requirement.reason]) });
@@ -321,11 +399,12 @@ export function planDuctSupports(
         : piece.stationStartMm >= from && piece.stationStartMm <= to ? 1 : 0;
       if (overlap <= 0) continue;
       kg += piece.massKg * overlap;
-      const sheet = piece.sheetThicknessMm ?? 1;
-      const girth = piece.diameterMm !== undefined
-        ? Math.PI * (piece.diameterMm + 2 * sheet)
-        : 2 * (piece.widthMm + piece.heightMm + 4 * sheet);
-      insulationKg += SUPPORT_RULES.insulationAllowanceKgPerM2 * (girth / 1000) * ((length > EPSILON ? length : 0) * overlap / 1000);
+      insulationKg += insulationAllowanceKg(piece) * overlap;
+    }
+    for (const stub of attachedStubLoads) {
+      if (stub.station < from || stub.station >= to) continue;
+      kg += stub.kg;
+      insulationKg += stub.insulationKg;
     }
     return { kg, insulationKg };
   };
@@ -357,7 +436,7 @@ export function planDuctSupports(
     let rods: DuctHangerRod[];
     if (band) {
       const top = supportZ + outerHeight;
-      rods = [{ point, bottomZ: top, lengthMm: soffitZ - top }];
+      rods = [{ point, bottomZ: top, lengthMm: Math.max(0, soffitZ - top) }];
     } else {
       const span = outerWidth + 2 * settings.hangerRodOffsetMm;
       const lengthMm = span + 2 * settings.trapezeOverhangMm;
@@ -374,7 +453,7 @@ export function planDuctSupports(
       rods = [1, -1].map((side) => ({
         point: add(point, scale(n, side * span / 2)),
         bottomZ: barBottom - ROD_TAIL_MM,
-        lengthMm: soffitZ - (barBottom - ROD_TAIL_MM),
+        lengthMm: Math.max(0, soffitZ - (barBottom - ROD_TAIL_MM)),
       }));
     }
     const perRod = loadKg / rods.length;
@@ -404,23 +483,36 @@ export function planDuctSupports(
     };
   });
 
-  // ---- Runouts: a 25 mm strap on a hanger wire at ≤ 1.5 m, the connections counting (S3.35, S3.36). ----
+  // ---- Runouts: broad straps at the shared flex support spacing, connections counting. ----
   for (const piece of pieces) {
     if (piece.kind !== 'flex' || !piece.flex) continue;
     const flex = piece.flex;
     const radius = piece.widthMm / 2 + flex.jacketMm;
     for (const station of flexSupportStations(piece.lengthMm)) {
       const at = flexPointAt(flex, station);
+      const behind = flexPointAt(flex, Math.max(0, station - 10));
       const ahead = flexPointAt(flex, Math.min(piece.lengthMm, station + 10));
-      const heading = { x: ahead.x - at.x, y: ahead.y - at.y };
-      const length = Math.hypot(heading.x, heading.y) || 1;
-      const top = at.z + radius;
+      const delta = { x: ahead.x - behind.x, y: ahead.y - behind.y, z: ahead.z - behind.z };
+      const length = Math.hypot(delta.x, delta.y, delta.z);
+      const axis = length > 1e-6
+        ? { x: delta.x / length, y: delta.y / length, z: delta.z / length } : { x: 1, y: 0, z: 0 };
+      const planLength = Math.hypot(axis.x, axis.y);
+      const direction = planLength > 1e-6 ? { x: axis.x / planLength, y: axis.y / planLength } : { x: 1, y: 0 };
+      // Highest point in the strap plane. A vertical drop has no unique top;
+      // attach at its side so the vertical wire stays outside the flex core.
+      const up = planLength > 1e-6
+        ? { x: -axis.z * direction.x, y: -axis.z * direction.y, z: planLength }
+        : { x: 1, y: 0, z: 0 };
+      const bandRadius = radius + DUCT_BAND_RADIAL_OFFSET_MM;
+      const wirePoint = { x: at.x + up.x * bandRadius, y: at.y + up.y * bandRadius };
+      const top = at.z + up.z * bandRadius;
       hangers.push({
         id: `${plan.elementId}:H${hangers.length + 1}`, kind: 'strap', stationMm: piece.stationStartMm + station, legIndex: piece.legIndex,
-        point: { x: at.x, y: at.y }, direction: { x: heading.x / length, y: heading.y / length }, reasons: ['spacing'],
-        outerWidthMm: 2 * radius, outerHeightMm: 2 * radius, supportZ: at.z - radius, soffitZ,
-        rods: [{ point: { x: at.x, y: at.y }, bottomZ: top, lengthMm: Math.max(0, soffitZ - top) }],
-        rod: null, bar: null, loadKg: 0, smacnaMinimum: 'S3.35/S3.36: strap ≥ 25 mm at ≤ 1.5 m', insert: false,
+        point: { x: at.x, y: at.y }, direction, strapFrame: { centre: at, axis }, reasons: ['spacing'],
+        outerWidthMm: 2 * radius, outerHeightMm: 2 * radius, supportZ: at.z - radius * planLength, soffitZ,
+        rods: [{ point: wirePoint, bottomZ: top, lengthMm: Math.max(0, soffitZ - top) }],
+        rod: null, bar: null, loadKg: 0,
+        smacnaMinimum: `ADC: strap ≥ ${FLEX_RULES.minStrapWidthMm} mm at ≤ ${FLEX_RULES.maxSupportSpacingMm / 1000} m`, insert: false,
       });
     }
   }
@@ -455,14 +547,17 @@ export function planDuctSupports(
   return { elementId: plan.elementId, spacingMm: spacing, soffitZ, hangers, risers, terminalWires, issues };
 }
 
-const SUPPORT_CACHE = new WeakMap<DuctFabricationPlan, { settings: DuctDesignSettings; soffitZ: number; supports: DuctSupportPlan }>();
+const SUPPORT_CACHE = new WeakMap<DuctFabricationPlan, { scene: readonly HvacElement[]; settings: DuctDesignSettings; soffitZ: number; supports: DuctSupportPlan }>();
 
-/** Memoised per plan (a plan already changes with its branches), settings and soffit. */
+/** Include the scene: a runout's supporting parent can change without changing its own plan. */
 export function getDuctSupportPlan(plan: DuctFabricationPlan, scene: readonly HvacElement[], settings: DuctDesignSettings): DuctSupportPlan {
-  const soffitZ = resolveSoffitZ(settings);
+  return cachedSupports(plan, scene, settings, resolveSoffitZ(settings));
+}
+
+function cachedSupports(plan: DuctFabricationPlan, scene: readonly HvacElement[], settings: DuctDesignSettings, soffitZ: number): DuctSupportPlan {
   const cached = SUPPORT_CACHE.get(plan);
-  if (cached && cached.settings === settings && cached.soffitZ === soffitZ) return cached.supports;
+  if (cached && cached.scene === scene && cached.settings === settings && cached.soffitZ === soffitZ) return cached.supports;
   const supports = planDuctSupports(plan, scene, settings, soffitZ);
-  SUPPORT_CACHE.set(plan, { settings, soffitZ, supports });
+  SUPPORT_CACHE.set(plan, { scene, settings, soffitZ, supports });
   return supports;
 }

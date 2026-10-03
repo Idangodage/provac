@@ -6,6 +6,7 @@
 
 export type DuctSourceId =
   | 'smacna-1995'
+  | 'ashrae-2024-flex'
   | 'ductmate-spec'
   | 'institutional-specs'
   | 'fabricator-practice'
@@ -22,6 +23,10 @@ export interface DuctSource {
 }
 
 export const DUCT_SOURCES: Record<DuctSourceId, DuctSource> = {
+  'ashrae-2024-flex': {
+    document: 'ASHRAE Handbook 2024, chapter 19: flexible duct hangers, supports and installation (ADC guidance)',
+    url: 'https://handbook.ashrae.org/Handbooks/S24/IP/S24_Ch19/S24_Ch19_ip.aspx',
+  },
   'smacna-1995': {
     document: 'SMACNA HVAC Duct Construction Standards, Metal and Flexible, 2nd ed. 1995 (Addendum 1, 1997)',
     url: 'https://law.resource.org/pub/us/cfr/ibr/005/smacna.duct.1995.html',

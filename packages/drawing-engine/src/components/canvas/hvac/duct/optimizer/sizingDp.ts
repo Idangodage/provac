@@ -24,7 +24,7 @@
  * life-cycle cost, least pressure) and reconstructs their sizes.
  */
 import type { Point2D } from '../../../../../types';
-import { flexFit, type TerminalCtx } from '../ductAutoContext';
+import type { TerminalCtx } from '../ductAutoContext';
 import { FITTING_LOSS_COEFFICIENTS } from '../ductPressure';
 import { maxRoundBranchMm } from '../ductRoundFittings';
 import { velocityMs, velocityPressurePa } from '../ductSizing';
@@ -369,15 +369,15 @@ function segmentCost(segment: RunSegment, leg: DuctLeg, model: SizingModel): num
     + [...segment.bendsBefore, ...segment.bendsAfter].reduce((total, angle) => total + model.elbow(leg, angle, segment.flowIn).cost, 0);
 }
 
-/** The flexible runout's length from the run's end into its terminal, curved as the planner will draw it. */
-function runoutLengthMm(run: RunDesign, model: SizingModel): number {
-  if (run.end.kind !== 'terminal') return 0;
+/** The terminal runout, including the bend loss from its actual curve. */
+function runoutFit(run: RunDesign, model: SizingModel, airflowM3h: number): ReturnType<SizingModel['flexRunout']> | null {
+  if (run.end.kind !== 'terminal') return null;
   const terminal = run.end.terminal;
   const last = run.vertices[run.vertices.length - 1]!;
   const before = run.vertices[run.vertices.length - 2] ?? last;
   const length = Math.hypot(last.x - before.x, last.y - before.y) || 1;
   const out = { x: (last.x - before.x) / length, y: (last.y - before.y) / length };
-  return flexFit(model.ctx, last, out, model.ctx.bottomZ, terminal).lengthMm;
+  return model.flexRunout(last, out, terminal, airflowM3h);
 }
 
 /** Loss where the duct enters a plenum box: its velocity pressure. */
@@ -392,6 +392,7 @@ function endFrontiers(state: RunState, solver: Solver): void {
   const last = state.segments[lastIndex]!;
   const options = state.options[lastIndex]!;
   const flow = last.flowOut;
+  const fit = runoutFit(run, model, flow);
   state.end = options.map(() => null);
   state.argEnd = options.map(() => null);
   options.forEach((leg, x) => {
@@ -405,7 +406,7 @@ function endFrontiers(state: RunState, solver: Solver): void {
         if (lastLeg < END_TRANSITION_MIN_LEG_MM) return;
         transition = model.transition(leg, neck, flow);
       }
-      const runout = model.flex(terminal.neck, flow, runoutLengthMm(run, model));
+      const runout = model.flex(terminal.neck, flow, fit!.lengthMm, fit!.bendLossPa);
       const frontier = filled(grid, INF);
       minShiftedInto(frontier, null, filled(grid, 0), transition.cost + runout.cost, steps(transition.loss + runout.loss + model.terminalDropPa, grid), 0);
       state.end[x] = frontier;
