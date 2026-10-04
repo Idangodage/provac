@@ -4,8 +4,8 @@
 
 "use client";
 
-import { ChevronDown, ChevronUp, X } from "lucide-react";
-import React, { useEffect, useMemo, useState } from "react";
+import { AlignHorizontalJustifyCenter, Box, BrickWall, ChevronDown, Droplets, Fan, Layers, LayoutGrid, MousePointer2, Route, Ruler, SlidersHorizontal, Thermometer, Wind, X, type LucideIcon } from "lucide-react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { shallow } from "zustand/shallow";
 
 import {
@@ -37,6 +37,7 @@ import {
   MIN_WALL_HEIGHT,
   MIN_WALL_THICKNESS,
 } from "../types/wall";
+import type { ManufacturerRuleProfile } from "../vrf/rules";
 
 import { NetworkRiserUpgradeAction } from "./canvas/hvac/NetworkRiserUpgradeAction";
 import { CondensateDrainageSection } from "./canvas/hvac/condensate/CondensateDrainageSection";
@@ -65,6 +66,7 @@ import {
   squareMeetingFootprintMm,
 } from "./canvas/object/three3d/geometry/meeting-tables";
 import { fromMillimeters, toMillimeters } from "./canvas/scale";
+import { InspectorEmptyState, InspectorTabs, InspectorTiles, type InspectorTab } from "./properties/InspectorNavigation";
 
 type PropertyUnit = "mm" | "in" | "ft";
 const COMPASS_DIRECTIONS: CompassDirection[] = [
@@ -88,6 +90,7 @@ const MIN_WINDOW_HEIGHT_MM = 300;
 export interface PropertiesPanelProps {
   className?: string;
   onClose?: () => void;
+  vrfRuleProfile?: ManufacturerRuleProfile;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -140,9 +143,9 @@ function PropertyRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 py-2 border-b border-amber-100/70 last:border-0">
-      <span className="text-sm text-slate-600">{label}</span>
-      <div className="flex items-center gap-2">{children}</div>
+    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-slate-100 py-2 last:border-0">
+      <span className="text-xs text-slate-600">{label}</span>
+      <div className="ml-auto flex max-w-full min-w-0 flex-wrap items-center justify-end gap-2 [&_input]:max-w-full [&_select]:max-w-full [&_textarea]:max-w-full">{children}</div>
     </div>
   );
 }
@@ -192,10 +195,11 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded border px-2 py-1 text-xs ${
+      aria-pressed={active}
+      className={`min-h-8 rounded-md border px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
         active
-          ? "border-amber-400 bg-amber-200 text-amber-900"
-          : "border-amber-200/80 bg-white text-slate-600 hover:bg-amber-50"
+          ? "border-teal-200 bg-teal-50 font-medium text-teal-800"
+          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
       }`}
     >
       {label}
@@ -286,33 +290,47 @@ function LineModeSegmented({
 
 function CollapsibleSection({
   title,
+  icon: Icon = SlidersHorizontal,
   defaultOpen = true,
   children,
 }: {
   title: string;
+  icon?: LucideIcon;
   defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const id = useId();
   return (
-    <div className="rounded-lg border border-amber-200/70 bg-white/80">
+    <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <h4>
       <button
         type="button"
+        id={`${id}-heading`}
+        aria-expanded={open}
+        aria-controls={`${id}-content`}
         onClick={() => setOpen((prev) => !prev)}
-        className="w-full flex items-center justify-between px-3 py-2 text-left"
+        className="flex min-h-11 w-full items-center gap-2.5 px-3 py-2.5 text-left hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
       >
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <Icon size={16} className="shrink-0 text-teal-700" aria-hidden="true" />
+        <span className="flex-1 text-xs font-semibold text-slate-700">
           {title}
         </span>
-        {open ? (
-          <ChevronUp size={14} className="text-slate-500" />
-        ) : (
-          <ChevronDown size={14} className="text-slate-500" />
-        )}
+        <ChevronDown size={14} aria-hidden="true" className={`shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
-      {open && <div className="px-3 pb-3">{children}</div>}
-    </div>
+      </h4>
+      <div id={`${id}-content`} aria-labelledby={`${id}-heading`} hidden={!open}>
+        {open && <div className="border-t border-slate-100 px-3 pb-3 pt-2">{children}</div>}
+      </div>
+    </section>
   );
+}
+
+/** Mount settings on first visit, then preserve form state between tabs. */
+function InspectorContent({ active, children }: { active: boolean; children: React.ReactNode }) {
+  const [visited, setVisited] = useState(active);
+  useEffect(() => { if (active) setVisited(true); }, [active]);
+  return <div hidden={!active} className="space-y-3">{(active || visited) && children}</div>;
 }
 
 function UnitSelector({
@@ -330,30 +348,35 @@ function UnitSelector({
     shallow,
   );
   return (
-    <div className="rounded-lg border border-amber-200/70 bg-white/80 p-3 space-y-2">
-      <PropertyRow label="Display Unit">
+    <div className="grid grid-cols-2 gap-3 border-t border-slate-200 bg-white px-3 py-2.5">
+      <label className="flex min-w-0 items-center gap-2 text-[11px] text-slate-500" title="Units shown on the drawing">
+        <Ruler size={13} className="shrink-0" aria-hidden="true" />
+        <span>Display</span>
         <select
+          aria-label="Display unit"
           value={displayUnit}
           onChange={(e) => setDisplayUnit(e.target.value as DisplayUnit)}
-          className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
+          className="ml-auto min-h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-slate-50 px-1 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-teal-500"
         >
           <option value="mm">mm</option>
           <option value="cm">cm</option>
           <option value="m">m</option>
-          <option value="ft-in">ft</option>
+          <option value="ft-in">ft/in</option>
         </select>
-      </PropertyRow>
-      <PropertyRow label="Property Unit">
+      </label>
+      <label className="flex min-w-0 items-center gap-2 text-[11px] text-slate-500" title="Units used when editing property values">
+        <span>Input</span>
         <select
+          aria-label="Property unit"
           value={propertyUnit}
           onChange={(e) => onPropertyUnitChange(e.target.value as PropertyUnit)}
-          className="w-24 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
+          className="ml-auto min-h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-slate-50 px-1 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-teal-500"
         >
           <option value="mm">mm</option>
           <option value="in">in</option>
           <option value="ft">ft</option>
         </select>
-      </PropertyRow>
+      </label>
     </div>
   );
 }
@@ -4052,6 +4075,7 @@ function SelectionAlignSection() {
 export function PropertiesPanel({
   className = "",
   onClose,
+  vrfRuleProfile,
 }: PropertiesPanelProps) {
   const {
     selectedElementIds,
@@ -4076,6 +4100,28 @@ export function PropertiesPanel({
     shallow,
   );
   const [propertyUnit, setPropertyUnit] = useState<PropertyUnit>("mm");
+  const [tab, setTab] = useState<InspectorTab>("inspect");
+  const [systemPage, setSystemPage] = useState("ducts");
+  const [drawingPage, setDrawingPage] = useState("rooms");
+  const idPrefix = useId();
+  const scrollArea = useRef<HTMLDivElement>(null);
+  const selectionKey = JSON.stringify(selectedElementIds);
+
+  // A new canvas selection or drawing tool brings its controls into view.
+  // Editing properties leaves the user's current navigation in place.
+  useEffect(() => { setTab("inspect"); }, [selectionKey, activeTool]);
+  useEffect(() => {
+    if (scrollArea.current) scrollArea.current.scrollTop = 0;
+  }, [tab, systemPage, drawingPage, selectionKey, activeTool]);
+  useEffect(() => {
+    const inspect = () => setTab("inspect");
+    window.addEventListener("smart-drawing:open-room-properties", inspect);
+    window.addEventListener("smart-drawing:open-properties-panel", inspect);
+    return () => {
+      window.removeEventListener("smart-drawing:open-room-properties", inspect);
+      window.removeEventListener("smart-drawing:open-properties-panel", inspect);
+    };
+  }, []);
   const selectedLookup = useMemo(
     () => new Set(selectedElementIds),
     [selectedElementIds],
@@ -4101,132 +4147,109 @@ export function PropertiesPanel({
     [dimensions, selectedLookup],
   );
 
-  const handleClose = () => {
-    clearSelection();
-    onClose?.();
-  };
+  const selectedHvac = hvacElements.find((element) => selectedLookup.has(element.id));
+  const selectedRoom = rooms.find((room) => selectedLookup.has(room.id));
+  const selectedWallCount = walls.filter((wall) => selectedLookup.has(wall.id)).length;
+  const hvacTitle = selectedHvac?.type === "duct" ? "Duct"
+    : selectedHvac?.type === "diffuser" ? "Diffuser"
+      : selectedHvac?.type === "return-grille" ? "Return grille"
+        : selectedHvac?.type === "refrigerant-pipe" ? "Refrigerant pipe"
+          : selectedHvac?.type === "condensate-pipe" ? "Drain pipe"
+            : selectedHvac?.type === "condensate-gully" ? "Drain outlet" : "Equipment";
+  const HvacIcon = selectedHvac?.type.startsWith("condensate-") ? Droplets
+    : selectedHvac?.type === "refrigerant-pipe" ? Route
+      : selectedHvac && ["duct", "diffuser", "return-grille"].includes(selectedHvac.type) ? Wind : Fan;
+  const SelectionIcon = hasSelectedHvac ? HvacIcon
+    : hasSelectedWall ? BrickWall : hasSelectedRoom ? LayoutGrid : hasSelectedObject ? Box
+      : hasSelectedDimension ? Ruler : MousePointer2;
+  const selectionTitle = selectedElementIds.length > 1 ? `${selectedElementIds.length} elements selected`
+    : hasSelectedHvac ? hvacTitle : hasSelectedWall ? "Wall" : hasSelectedRoom ? "Room"
+      : hasSelectedObject ? "Object" : hasSelectedDimension ? "Dimension" : "Drawing overview";
+  const hasInspector = hasSelectedWall || hasSelectedRoom || hasSelectedObject || hasSelectedHvac || hasSelectedDimension;
+  const hasTool = ["wall", "partition-wall", "refrigerant-pipe", "duct", "dimension"].includes(activeTool);
+  const systemItems = [
+    { id: "ducts", label: "Ducts", icon: Wind, count: hvacElements.filter((element) => element.type === "duct").length, description: "Duct defaults, sizing and quantities" },
+    { id: "pipes", label: "Pipes", icon: Route, count: hvacElements.filter((element) => element.type === "refrigerant-pipe").length, description: "Refrigerant routing and clearances" },
+    { id: "drainage", label: "Drainage", icon: Droplets, count: hvacElements.filter((element) => element.type === "condensate-pipe" || element.type === "condensate-gully").length, description: "Drainage settings and route review" },
+    { id: "design", label: "HVAC design", icon: Thermometer, description: "Design conditions and room loads" },
+  ];
+  const drawingItems = [
+    { id: "rooms", label: "Rooms", icon: LayoutGrid, count: rooms.length, description: "Find a room or export its schedule" },
+    { id: "walls", label: "Walls", icon: BrickWall, count: walls.length, description: "Wall drawing defaults" },
+    { id: "elevations", label: "Elevations", icon: Layers, description: "Wall heights and levels" },
+    { id: "dimensions", label: "Dimensions", icon: Ruler, count: dimensions.length, description: "Dimension style and placement" },
+  ];
 
   return (
-    <div
-      className={`flex flex-col rounded-lg border border-amber-200/50 bg-white/95 shadow-sm backdrop-blur-sm ${className}`}
-    >
-      <div className="flex items-center justify-between border-b border-amber-100/70 px-3 py-2">
-        <h3 className="text-xs font-semibold text-slate-700">Properties</h3>
-        <button
-          onClick={handleClose}
-          className="p-1 rounded hover:bg-amber-50 text-slate-400 hover:text-slate-600 transition-colors"
-        >
-          <X size={14} />
-        </button>
+    <div className={`flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 text-slate-700 ${className}`}>
+      <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3 py-2">
+        <h3 className="flex items-center gap-2 text-sm font-semibold"><SlidersHorizontal size={16} className="text-teal-700" aria-hidden="true" />Properties</h3>
+        {onClose && <button type="button" onClick={onClose} aria-label="Close properties" title="Close properties"
+          className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"><X size={16} aria-hidden="true" /></button>}
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto px-3 py-2">
-        <div className="rounded-lg border border-amber-200/70 bg-white/80 p-2">
-          <PropertyRow label="Selected">
-            <span className="text-sm text-slate-600">
-              {selectedElementIds.length} element(s)
-            </span>
-          </PropertyRow>
+      <div className="flex shrink-0 items-center gap-3 bg-white px-3 py-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700"><SelectionIcon size={18} aria-hidden="true" /></div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-semibold" title={selectionTitle}>{selectionTitle}</p>
+          <p className="mt-0.5 truncate text-[11px] text-slate-500">{selectedElementIds.length ? selectedHvac?.label || selectedRoom?.name || "Canvas selection" : "No element selected"}</p>
+        </div>
+        {selectedElementIds.length > 0 && <button type="button" onClick={clearSelection} aria-label="Clear selection" title="Clear selection"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"><X size={14} aria-hidden="true" /></button>}
+      </div>
+
+      <div className="shrink-0 border-b border-slate-200 bg-white px-3 pb-3">
+        <InspectorTabs value={tab} onChange={setTab} idPrefix={idPrefix} />
+      </div>
+
+      <div ref={scrollArea} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3">
+        <div id={`${idPrefix}-inspect-panel`} role="tabpanel" aria-labelledby={`${idPrefix}-inspect-tab`} hidden={tab !== "inspect"} tabIndex={0}
+          className="space-y-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
+          <React.Fragment key={selectionKey}>
+            {!hasInspector && !hasTool && <InspectorEmptyState counts={{ walls: walls.length, rooms: rooms.length, equipment: hvacElements.length }} onNavigate={(next) => {
+              setTab(next);
+              document.getElementById(`${idPrefix}-${next}-tab`)?.focus();
+            }} />}
+            {hasSelectedWall && <CollapsibleSection title="Wall properties" icon={BrickWall}><WallSection propertyUnit={propertyUnit} /></CollapsibleSection>}
+            {hasSelectedObject && <CollapsibleSection title="Object properties" icon={Box}><ObjectSection propertyUnit={propertyUnit} /></CollapsibleSection>}
+            {hasSelectedHvac && <CollapsibleSection title={`${hvacTitle} properties`} icon={SelectionIcon}><DuctAutoCard /><AcEquipmentSection propertyUnit={propertyUnit} /></CollapsibleSection>}
+            {hasSelectedRoom && <CollapsibleSection title="Room properties" icon={LayoutGrid}><RoomSection propertyUnit={propertyUnit} /></CollapsibleSection>}
+            {(hasSelectedDimension || activeTool === "dimension") && <CollapsibleSection title={hasSelectedDimension ? "Dimension properties" : "Dimension tool"} icon={Ruler}><DimensionSection /></CollapsibleSection>}
+            {selectedWallCount > 1 && <CollapsibleSection title="Align selected walls" icon={AlignHorizontalJustifyCenter}><SelectionAlignSection /></CollapsibleSection>}
+            {(activeTool === "wall" || activeTool === "partition-wall") && <CollapsibleSection title="Wall tool" icon={BrickWall}><WallToolSection /></CollapsibleSection>}
+            {activeTool === "refrigerant-pipe" && <CollapsibleSection title="Pipe tool" icon={Route}><RefrigerantPipeToolSection /></CollapsibleSection>}
+            {activeTool === "duct" && <CollapsibleSection title="Duct tool" icon={Wind}><DuctToolSection /></CollapsibleSection>}
+          </React.Fragment>
         </div>
 
-        <UnitSelector
-          propertyUnit={propertyUnit}
-          onPropertyUnitChange={setPropertyUnit}
-        />
+        <div id={`${idPrefix}-systems-panel`} role="tabpanel" aria-labelledby={`${idPrefix}-systems-tab`} hidden={tab !== "systems"} tabIndex={0}
+          className="space-y-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
+          <InspectorContent active={tab === "systems"}>
+            <InspectorTiles items={systemItems} value={systemPage} onChange={setSystemPage} label="System settings" />
+            <CollapsibleSection key={systemPage} title={systemItems.find((item) => item.id === systemPage)!.label} icon={systemItems.find((item) => item.id === systemPage)!.icon}>
+              {systemPage === "ducts" && <DuctSystemsSection />}
+              {systemPage === "pipes" && <RefrigerantPipeToolSection />}
+              {systemPage === "drainage" && <CondensateDrainageSection profile={vrfRuleProfile} />}
+              {systemPage === "design" && <HvacDesignSection />}
+            </CollapsibleSection>
+          </InspectorContent>
+        </div>
 
-        <CollapsibleSection
-          title="Wall Properties"
-          defaultOpen={
-            hasSelectedWall ||
-            activeTool === "wall" ||
-            activeTool === "partition-wall"
-          }
-        >
-          <WallSection propertyUnit={propertyUnit} />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="Object Properties"
-          defaultOpen={hasSelectedObject}
-        >
-          <ObjectSection propertyUnit={propertyUnit} />
-        </CollapsibleSection>
-
-        <CollapsibleSection title="AC Equipment" defaultOpen={hasSelectedHvac}>
-          <DuctAutoCard />
-          <AcEquipmentSection propertyUnit={propertyUnit} />
-        </CollapsibleSection>
-
-        {hvacElements.some((element) => element.type === "condensate-gully" || element.type === "condensate-pipe") && (
-          <CollapsibleSection title="Condensate Drainage" defaultOpen>
-            <CondensateDrainageSection />
-          </CollapsibleSection>
-        )}
-
-        {(activeTool === "duct" || hvacElements.some((element) => element.type === "duct")) && (
-          <CollapsibleSection title="Duct Systems" defaultOpen={activeTool === "duct"}>
-            <DuctSystemsSection />
-          </CollapsibleSection>
-        )}
-
-        <CollapsibleSection
-          title="Room Properties"
-          defaultOpen={hasSelectedRoom}
-        >
-          <RoomSection propertyUnit={propertyUnit} />
-        </CollapsibleSection>
-
-        {rooms.length > 0 && (
-          <CollapsibleSection title="Room List" defaultOpen={false}>
-            <RoomListSection />
-          </CollapsibleSection>
-        )}
-
-        {(hasSelectedRoom || rooms.length > 0) && (
-          <CollapsibleSection title="HVAC Design" defaultOpen={false}>
-            <HvacDesignSection />
-          </CollapsibleSection>
-        )}
-
-        {walls.length > 0 && (
-          <CollapsibleSection title="Elevations" defaultOpen={false}>
-            <ElevationSection />
-          </CollapsibleSection>
-        )}
-
-        {(activeTool === "wall" ||
-          activeTool === "partition-wall" ||
-          hasSelectedWall) && (
-          <CollapsibleSection title="Wall Tool" defaultOpen={false}>
-            <WallToolSection />
-          </CollapsibleSection>
-        )}
-
-        {activeTool === "refrigerant-pipe" && (
-          <CollapsibleSection title="Refrigerant Pipe Tool" defaultOpen>
-            <RefrigerantPipeToolSection />
-          </CollapsibleSection>
-        )}
-
-        {activeTool === "duct" && (
-          <CollapsibleSection title="Duct Tool" defaultOpen>
-            <DuctToolSection />
-          </CollapsibleSection>
-        )}
-
-        <CollapsibleSection
-          title="Dimensions"
-          defaultOpen={hasSelectedDimension}
-        >
-          <DimensionSection />
-        </CollapsibleSection>
-
-        {selectedElementIds.length > 1 && (
-          <CollapsibleSection title="Selection Align" defaultOpen={false}>
-            <SelectionAlignSection />
-          </CollapsibleSection>
-        )}
+        <div id={`${idPrefix}-drawing-panel`} role="tabpanel" aria-labelledby={`${idPrefix}-drawing-tab`} hidden={tab !== "drawing"} tabIndex={0}
+          className="space-y-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
+          <InspectorContent active={tab === "drawing"}>
+            <InspectorTiles items={drawingItems} value={drawingPage} onChange={setDrawingPage} label="Drawing settings" />
+            <CollapsibleSection key={drawingPage} title={drawingItems.find((item) => item.id === drawingPage)!.label} icon={drawingItems.find((item) => item.id === drawingPage)!.icon}>
+              {drawingPage === "rooms" && <RoomListSection />}
+              {drawingPage === "walls" && <WallToolSection />}
+              {drawingPage === "elevations" && (walls.length ? <ElevationSection /> : <p className="py-3 text-xs text-slate-500">Add walls to configure elevations.</p>)}
+              {drawingPage === "dimensions" && <DimensionSection />}
+            </CollapsibleSection>
+          </InspectorContent>
+        </div>
       </div>
+
+      <UnitSelector propertyUnit={propertyUnit} onPropertyUnitChange={setPropertyUnit} />
     </div>
   );
 }

@@ -1515,8 +1515,11 @@ export function SmartDrawingEditor({
         </div>
 
         <button
+          type="button"
           onClick={() => setShowRightPanel(!showRightPanel)}
-          className="flex w-6 items-center justify-center border-l border-amber-200/70 bg-[#f2e3c3] transition-colors hover:bg-amber-200"
+          aria-label={showRightPanel ? 'Hide properties' : 'Show properties'}
+          aria-expanded={showRightPanel}
+          className="flex w-6 shrink-0 items-center justify-center border-l border-slate-200 bg-slate-100 transition-colors hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
           title={showRightPanel ? 'Hide properties' : 'Show properties'}
         >
           <PanelRightClose
@@ -1526,10 +1529,8 @@ export function SmartDrawingEditor({
         </button>
 
         {showRightPanel && (
-          <aside className="flex w-72 flex-col overflow-hidden border-l border-amber-200/70 bg-[#fbf7ee]">
-            <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain scrollbar-thin scrollbar-thumb-amber-300">
-              <PropertiesPanel className="!w-full !border-l-0" />
-            </div>
+          <aside aria-label="Drawing properties" className="flex min-h-0 w-80 shrink-0 flex-col overflow-hidden border-l border-slate-200 bg-slate-50">
+            <PropertiesPanel className="w-full" onClose={() => setShowRightPanel(false)} vrfRuleProfile={vrfRuleProfile} />
           </aside>
         )}
       </div>

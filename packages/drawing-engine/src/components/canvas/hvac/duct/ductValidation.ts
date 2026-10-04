@@ -62,6 +62,7 @@ export function validateDuctRuns(
     const other = byId.get(clash.otherId);
     const otherName = clash.kind === 'duct' ? `duct run ${other?.label || clash.otherId}`
       : clash.kind === 'terminal' ? `air terminal ${other?.label || clash.otherId}`
+        : clash.kind === 'equipment' ? `equipment ${other?.label || clash.otherId}`
         : `${SERVICE_NAMES[clash.service ?? ''] ?? 'pipe'} ${other?.label || clash.otherId}`;
     const subject = duct && !isDuctElement(duct) ? duct.label || 'Air terminal' : duct?.label || 'Duct run';
     issues.push({
@@ -71,6 +72,7 @@ export function validateDuctRuns(
       entityId: clash.ductId,
       message: `${subject}: ${clash.mark} clashes with the ${otherName} at (${Math.round(clash.point.x)}, ${Math.round(clash.point.y)}, z ${Math.round(clash.point.z)}).`,
       suggestedFix: clash.kind === 'pipe' ? 'Re-route the pipe over or under the duct, or change the duct level.'
+        : clash.kind === 'equipment' ? 'Route the duct clear of the equipment casing and preserve access to its connections.'
         : clash.kind === 'terminal' ? 'Move the terminal or re-route the run round its box.' : 'Change one run\'s level or route.',
     });
   }

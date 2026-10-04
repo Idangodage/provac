@@ -19,7 +19,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { findNewNetworkPipeClashes } from '../networkPipeClearance';
 import { pipeDesignSkeleton, pipeWithEditedNodes, validatePipeBendSpace } from '../pipeEditModel';
 import { splitPipeRoute3dAtPlanInterval, type PipeRouteNode3D } from '../pipeRoute3d';
-import { getActivePipeRoutingSettings, type PipeRoutingSettings } from '../pipeRoutingSettings';
+import { getActivePipeRoutingSettings, setActivePipeRoutingSettings, type PipeRoutingSettings } from '../pipeRoutingSettings';
 import { resolveRefrigerantPipeSpec, type RefrigerantPipeMaterial } from '../refrigerantPipePairModel';
 
 import { closestOnSegment, distance } from './condensateGeometry';
@@ -105,7 +105,7 @@ interface HopSpan {
   proposals: RefrigerantHopProposal[];
 }
 
-function spliceHop(span: HopSpan, riseMm: number, scene: readonly HvacElement[]): { element?: HvacElement; reason?: string } {
+function spliceHop(span: HopSpan, riseMm: number, scene: readonly HvacElement[]): { element?: HvacElement; reason?: string; heightDependent?: boolean } {
   const { site } = span;
   const half = (span.to - span.from) / 2;
   const centre = (span.from + span.to) / 2;
@@ -152,16 +152,20 @@ function spliceHop(span: HopSpan, riseMm: number, scene: readonly HvacElement[])
     properties: { ...edited.properties, startConnection: null, endConnection: null, segmentMaterials: local3d.slice(1).map(() => 'hard') },
   };
   const bendIssue = validatePipeBendSpace(detached, local3d, []);
-  if (bendIssue) return { reason: `The hop does not leave room for its elbows: ${bendIssue}` };
+  if (bendIssue) return { reason: `The hop does not leave room for its elbows: ${bendIssue}`, heightDependent: true };
   return { element: edited };
 }
 
 /** Smallest rise ≥ `requiredRise` whose two elbows fit, or null if none fits under `maxRise`. */
-function constructibleRise(span: HopSpan, requiredRise: number, maxRise: number, scene: readonly HvacElement[]): number | null {
+function constructibleRise(span: HopSpan, requiredRise: number, maxRise: number, scene: readonly HvacElement[]): { riseMm: number | null; reason?: string } {
   for (let rise = Math.max(1, requiredRise); rise <= maxRise + 1e-6; rise += RISE_STEP_MM) {
-    if (spliceHop(span, rise, scene).element) return rise;
+    const trial = spliceHop(span, rise, scene);
+    if (trial.element) return { riseMm: rise };
+    // A protected port stub or failed split cannot be repaired by trying a
+    // higher hop. Keep its actual explanation instead of blaming the soffit.
+    if (!trial.heightDependent) return { riseMm: null, reason: trial.reason };
   }
-  return null;
+  return { riseMm: null };
 }
 
 function withHopRecord(element: HvacElement, proposals: readonly RefrigerantHopProposal[], riseMm: number): HvacElement {
@@ -179,11 +183,17 @@ function withHopRecord(element: HvacElement, proposals: readonly RefrigerantHopP
 export function buildRefrigerantHop(
   scene: readonly HvacElement[],
   proposal: RefrigerantHopProposal,
-  routing: Pick<PipeRoutingSettings, 'ceilingLimitMm'>,
+  routing: Pick<PipeRoutingSettings, 'ceilingLimitMm'> & Partial<PipeRoutingSettings>,
 ): RefrigerantHopResult {
-  const group = buildHopGroup(scene, [proposal], routing);
-  if (group.reason) return { reason: group.reason };
-  return { element: group.elements[0], riseMm: group.riseMm };
+  const previous = getActivePipeRoutingSettings();
+  setActivePipeRoutingSettings({ ...previous, ...routing });
+  try {
+    const group = buildHopGroup(scene, [proposal], routing);
+    if (group.reason) return { reason: group.reason };
+    return { element: group.elements[0], riseMm: group.riseMm };
+  } finally {
+    setActivePipeRoutingSettings(previous);
+  }
 }
 
 function buildHopGroup(
@@ -216,8 +226,8 @@ function buildHopGroup(
   if (rise > maxRise) return { elements: [], reason: 'No room above the refrigerant run for a hop within the soffit.' };
   for (const span of groupSpans) {
     const buildable = constructibleRise(span, rise, maxRise, scene);
-    if (buildable === null) return { elements: [], reason: 'No room above the refrigerant run for a buildable hop (elbows need more height than the soffit allows).' };
-    rise = Math.max(rise, buildable);
+    if (buildable.riseMm === null) return { elements: [], reason: buildable.reason ?? 'No room above the refrigerant run for a buildable hop (elbows need more height than the soffit allows).' };
+    rise = Math.max(rise, buildable.riseMm);
   }
   const elements: HvacElement[] = [];
   for (const span of groupSpans) {
@@ -225,12 +235,10 @@ function buildHopGroup(
     if (!spliced.element) return { elements: [], reason: spliced.reason };
     elements.push(withHopRecord(spliced.element, span.proposals, rise));
   }
-  // Lines hopping together keep their relative geometry by construction (a pair
-  // that already nearly touches stays exactly as it was); only a contact with a
-  // run OUTSIDE the group is a new clash.
-  const members = new Set(elements.map((element) => element.id));
-  const clashes = findNewNetworkPipeClashes([...scene], elements, [])
-    .filter((clash) => !(members.has(clash.elementIds[0]) && members.has(clash.elementIds[1])));
+  // The clearance engine already preserves unchanged contacts. Group members
+  // can have different hop spans, so a shared rise is not a blanket exemption
+  // for a new crossing between their risers or elbows.
+  const clashes = findNewNetworkPipeClashes([...scene], elements, []);
   if (clashes.length) return { elements: [], reason: 'The hop would clash with another refrigerant run.' };
   return { elements, riseMm: rise };
 }
@@ -240,8 +248,20 @@ export function buildRefrigerantHopUpdates(
   scene: HvacElement[],
   proposals: readonly RefrigerantHopProposal[],
   _settings: CondensateDesignSettings,
-  routing: Pick<PipeRoutingSettings, 'ceilingLimitMm'>,
+  routing: Pick<PipeRoutingSettings, 'ceilingLimitMm'> & Partial<PipeRoutingSettings>,
 ): { updates: Array<{ id: string; updates: Partial<HvacElement> }>; rejected: Array<{ key: string; reason: string }> } {
+  const previous = getActivePipeRoutingSettings();
+  setActivePipeRoutingSettings({ ...previous, ...routing });
+  try {
+    return buildHopUpdatesWithSettings(scene, proposals, routing);
+  } finally {
+    setActivePipeRoutingSettings(previous);
+  }
+}
+
+function buildHopUpdatesWithSettings(
+  scene: HvacElement[], proposals: readonly RefrigerantHopProposal[], routing: Pick<PipeRoutingSettings, 'ceilingLimitMm'>,
+): ReturnType<typeof buildRefrigerantHopUpdates> {
   // Cluster proposals whose crossings sit within one hop's reach of each other
   // (a pair crossed once, or several drains crossing the same stretch).
   const parent = proposals.map((_, index) => index);

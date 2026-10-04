@@ -41,9 +41,14 @@ function dependencyReader(context: HvacBuildSceneContext, modelRevision: number)
       // collar or parent run it starts from, and the branches taken off it
       // (their openings move its joints; its split grows their elbows).
       dependencies.push(context.ductSettings, ...connectorSources(element, byId));
-      const start = (element.properties.ductRun as { start?: { unitId?: unknown; parentRunId?: unknown } } | undefined)?.start;
+      const run = element.properties.ductRun as {
+        start?: { unitId?: unknown; parentRunId?: unknown };
+        end?: { terminalId?: unknown };
+      } | undefined;
+      const start = run?.start;
       if (typeof start?.unitId === 'string') dependencies.push(byId.get(start.unitId));
       if (typeof start?.parentRunId === 'string') dependencies.push(byId.get(start.parentRunId));
+      if (typeof run?.end?.terminalId === 'string') dependencies.push(byId.get(run.end.terminalId));
       for (const branch of ductBranchesOf(element.id, context.allElements)) dependencies.push(branch.element);
     } else if (element.type === 'refrigerant-branch-kit') {
       dependencies.push(settings);
@@ -81,15 +86,20 @@ export function createHybridHvacScene<Mesh>(lifecycle: {
   const entries = new Map<string, { dependencies: unknown[]; mesh: Mesh | null }>();
   let currentModelRevision = 0;
   return {
-    update(context: HvacBuildSceneContext, modelRevision: number): void {
-      const currentIds = new Set(context.allElements.map(element => element.id));
+    get modelRevision(): number { return currentModelRevision; },
+    /** A preview renders only its replacements, using the complete scene for connections. */
+    update(context: HvacBuildSceneContext, modelRevision: number,
+      renderedElements: readonly HvacElement[] = context.allElements): boolean {
+      const currentIds = new Set(renderedElements.map(element => element.id));
       const dependenciesFor = dependencyReader(context, modelRevision);
+      let changed = false;
       for (const [id, entry] of entries) {
         if (currentIds.has(id)) continue;
         if (entry.mesh !== null) lifecycle.dispose(entry.mesh);
         entries.delete(id);
+        changed = true;
       }
-      for (const element of context.allElements) {
+      for (const element of renderedElements) {
         const dependencies = dependenciesFor(element);
         const previous = entries.get(element.id);
         if (unchanged(previous?.dependencies, dependencies)) continue;
@@ -98,8 +108,10 @@ export function createHybridHvacScene<Mesh>(lifecycle: {
         if (previous?.mesh != null) lifecycle.dispose(previous.mesh);
         if (mesh !== null) lifecycle.attach(mesh);
         entries.set(element.id, { dependencies, mesh });
+        changed = true;
       }
       currentModelRevision = modelRevision;
+      return changed;
     },
     /** Resolve every affected preview, including an unchanged joined-chain head,
      * without changing committed mesh ownership or creating an undo boundary. */

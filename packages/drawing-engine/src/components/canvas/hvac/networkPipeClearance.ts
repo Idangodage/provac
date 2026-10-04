@@ -1,9 +1,12 @@
 import type { HvacElement, Point2D } from '../../../types';
 
+import { getIndoorUnitDrainPort } from './condensate/condensatePorts';
+import { condensateSocketExitLength } from './condensate/condensateSocketClearance';
+import { readCondensatePipeSpec, type CondensateConnection } from './condensate/condensateTypes';
 import { compileCopperSocketElbowRoute } from './copperSocketElbowRoute';
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from './copperSocketElbows';
 import { getActiveDuctSettings } from './duct/ductSettings';
-import { ductBoxesInScene, segmentBoxDistance, type DuctBox } from './duct/ductVolumes';
+import { segmentBoxDistance, solidBoxesInScene, type DuctBox } from './duct/ductVolumes';
 import { resolveFieldPipeBendRadiusMm } from './fieldPipeBends';
 import type { PipeBypass } from './pipeBypass';
 import { liftPipePlanRouteTo3d, normalizePipeRouteNodes3d, type PipeRouteNode3D } from './pipeRoute3d';
@@ -12,6 +15,7 @@ import { getActivePipeRoutingSettings } from './pipeRoutingSettings';
 import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipePhysicalPath,
+  getRefrigerantPipeBundleSnapTargets,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeConnection,
@@ -40,6 +44,8 @@ interface PipeLane {
   total: number;
   start: { point: Vec3; connection: RefrigerantPipeConnection | null };
   end: { point: Vec3; connection: RefrigerantPipeConnection | null };
+  /** Declared rolled wye: the branch ends at the main's crown, above its axis. */
+  drainSockets?: Array<{ end: 'start' | 'end'; nodeId: string; centre: Vec3; radius: number }>;
 }
 
 export interface NetworkPipeClash {
@@ -359,11 +365,25 @@ function condensateLane(element: HvacElement, nodes: Vec3[]): PipeLane[] {
   const properties = element.properties;
   const outer = typeof properties.outerDiameterMm === 'number' && Number.isFinite(properties.outerDiameterMm) ? properties.outerDiameterMm : 32;
   const insulation = typeof properties.insulationThicknessMm === 'number' && Number.isFinite(properties.insulationThicknessMm) ? properties.insulationThicknessMm : 0;
-  const start = properties.drainStart as { kind?: unknown; unitId?: unknown; point?: Point2D; z?: unknown } | undefined;
-  const startConnection: RefrigerantPipeConnection | null = start?.kind === 'unit-drain' && typeof start.unitId === 'string' && start.point && typeof start.z === 'number'
-    ? { connectionKind: 'unit-port', sourceElementId: start.unitId, portPoint: start.point, direction: { x: 0, y: 0 }, elevationMm: start.z }
-    : null;
-  const lane = makeLane(element, 'drain', outer / 2 + insulation, nodes, startConnection, null);
+  const spec = readCondensatePipeSpec(element);
+  const connection = (end: CondensateConnection | null | undefined): RefrigerantPipeConnection | null => end ? {
+    connectionKind: end.kind === 'unit-drain' || end.kind === 'gully' ? 'unit-port' : 'field-pipe',
+    sourceElementId: end.kind === 'unit-drain' ? end.unitId : end.kind === 'gully' ? end.gullyId : undefined,
+    nodeId: end.kind === 'junction' ? end.nodeId : undefined,
+    portPoint: end.point, direction: { x: 0, y: 0 }, elevationMm: end.z,
+  } : null;
+  const lane = makeLane(element, 'drain', outer / 2 + insulation, nodes, connection(spec?.drainStart), connection(spec?.drainEnd));
+  if (lane) {
+    lane.drainSockets = (['start', 'end'] as const).flatMap(end => {
+      const binding = end === 'start' ? spec.drainStart : spec.drainEnd;
+      if (binding?.kind !== 'junction' || !binding.nodeId) return [];
+      const point = lane[end].point;
+      return spec.fittings.filter(fitting => fitting.kind === 'wye'
+        && Math.hypot(point.x - fitting.point.x, point.y - fitting.point.y) <= TOLERANCE_MM
+        && Math.abs(point.z - fitting.point.z - fitting.outerDiameterMm / 2) <= TOLERANCE_MM)
+        .map(fitting => ({ end, nodeId: binding.nodeId!, centre: fitting.point, radius: fitting.outerDiameterMm / 2 }));
+    });
+  }
   return lane ? [lane] : [];
 }
 
@@ -443,8 +463,13 @@ function baselineLanes(scene: HvacElement[]): PipeLane[] {
 }
 
 function boundTogether(a: PipeLane, endA: 'start' | 'end', b: PipeLane, endB: 'start' | 'end'): boolean {
-  if (a.service !== b.service || distance(a[endA].point, b[endB].point) > TOLERANCE_MM) return false;
+  if (a.service !== b.service) return false;
   const ca = a[endA].connection; const cb = b[endB].connection;
+  if (distance(a[endA].point, b[endB].point) > TOLERANCE_MM) {
+    if (a.service !== 'drain' || !ca?.nodeId || ca.nodeId !== cb?.nodeId) return false;
+    const anchor = (lane: PipeLane, end: 'start' | 'end') => lane.drainSockets?.find(socket => socket.end === end && socket.nodeId === ca.nodeId)?.centre ?? lane[end].point;
+    if (distance(anchor(a, endA), anchor(b, endB)) > TOLERANCE_MM) return false;
+  }
   const sameSource = !ca?.sourceElementId || !cb?.sourceElementId || ca.sourceElementId === cb.sourceElementId;
   if (sameSource && ((ca?.nodeId && ca.nodeId === cb?.nodeId) || (ca?.portId && ca.portId === cb?.portId))) return true;
   const refersTo = (connection: RefrigerantPipeConnection | null, target: PipeLane) => connection?.connectionKind === 'field-pipe'
@@ -459,6 +484,98 @@ function clipSegment(segment: Segment, minimum: number, maximum: number, radius:
   const a = lerp(segment.a, segment.b, (from - segment.from) / (segment.to - segment.from));
   const b = lerp(segment.a, segment.b, (to - segment.from) / (segment.to - segment.from));
   return { ...segment, a, b, from, to, bounds: boundsOf([a, b], radius) };
+}
+
+/** Finite socket allowance: only a straight, outward departure from the live
+ * equipment port may cross its casing envelope. Later re-entry is checked. */
+function equipmentSocketTrim(lane: PipeLane, body: DuctBox, end: 'start' | 'end',
+  ports: ReadonlyMap<string, RefrigerantPipeBundleConnection>, elements: ReadonlyMap<string, HvacElement>): number {
+  const connection = lane[end].connection;
+  if (body.mark !== 'equipment casing' || connection?.connectionKind !== 'unit-port' || connection.sourceElementId !== body.elementId) return 0;
+  const element = elements.get(body.elementId);
+  if (!element) return 0;
+  const drainPort = lane.service === 'drain' ? getIndoorUnitDrainPort(element) : null;
+  if (drainPort) {
+    const points = [lane.segments[0]!.a, ...lane.segments.map(segment => segment.b)];
+    return condensateSocketExitLength(drainPort, body, lane.radius, end === 'start' ? points : points.reverse());
+  }
+  const refrigerantPort = lane.service !== 'drain' ? ports.get(body.elementId) : null;
+  const gas = lane.service === 'gas';
+  const point = refrigerantPort ? {
+    ...(gas ? refrigerantPort.gasPoint : refrigerantPort.liquidPoint),
+    z: gas ? refrigerantPort.gasElevationMm : refrigerantPort.liquidElevationMm,
+  } : null;
+  const direction = refrigerantPort ?
+    (gas ? refrigerantPort.gasDirection : refrigerantPort.liquidDirection) ?? refrigerantPort.direction : null;
+  if (!point || !direction || distance(point, lane[end].point) > 0.5) return 0;
+  const length = Math.hypot(direction.x, direction.y);
+  if (length < EPS) return 0;
+  const normal = { x: direction.x / length, y: direction.y / length, z: 0 };
+  const axes = [body.axisT, body.axisN, body.axisU];
+  const halves = [body.halfLength, body.halfWidth, body.halfHeight];
+  let exit = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < axes.length; i += 1) {
+    const coordinate = dot(subtract(point, body.centre), axes[i]!);
+    const extent = halves[i]! + lane.radius;
+    if (Math.abs(coordinate) > extent + TOLERANCE_MM) return 0;
+    const advance = dot(normal, axes[i]!);
+    if (Math.abs(advance) > EPS) exit = Math.min(exit, (Math.sign(advance) * extent - coordinate) / advance);
+  }
+  if (!Number.isFinite(exit) || exit < 0) return 0;
+  const oriented = end === 'start' ? lane.segments : [...lane.segments].reverse().map(segment => ({
+    ...segment, a: segment.b, b: segment.a, from: lane.total - segment.to, to: lane.total - segment.from,
+  }));
+  let permitted = 0;
+  for (const segment of oriented) {
+    const delta = subtract(segment.b, segment.a);
+    const segmentLength = distance(segment.a, segment.b);
+    if (dot(delta, normal) < segmentLength * (1 - 1e-8)) break;
+    permitted = Math.min(segment.to, exit + TOLERANCE_MM);
+    if (segment.to >= exit) break;
+  }
+  return permitted;
+}
+
+/** Subtract only collinear geometry already present in the baseline, preserving
+ * unchanged contacts while still checking extensions and moved intersections. */
+function unpreservedSegments(segment: Segment, lane: PipeLane, predecessors: readonly PipeLane[]): Segment[] {
+  if (predecessors.some(old => old.segments === lane.segments && old.radius >= lane.radius - TOLERANCE_MM)) return [];
+  const length = segment.to - segment.from;
+  const delta = subtract(segment.b, segment.a);
+  const normSquared = dot(delta, delta);
+  const coverage: Array<[number, number]> = [];
+  for (const old of predecessors) {
+    if (old.radius < lane.radius - TOLERANCE_MM) continue;
+    for (const previous of old.segments) {
+      const oldDelta = subtract(previous.b, previous.a);
+      if (Math.abs(dot(delta, oldDelta)) / Math.max(EPS, Math.sqrt(normSquared * dot(oldDelta, oldDelta))) < 1 - 1e-8) continue;
+      const projectT = (point: Vec3) => dot(subtract(point, segment.a), delta) / Math.max(EPS, normSquared);
+      const ta = projectT(previous.a); const tb = projectT(previous.b);
+      if (distance(previous.a, lerp(segment.a, segment.b, ta)) > TOLERANCE_MM
+        || distance(previous.b, lerp(segment.a, segment.b, tb)) > TOLERANCE_MM) continue;
+      const low = Math.max(0, Math.min(ta, tb)); const high = Math.min(1, Math.max(ta, tb));
+      if (high > low) coverage.push([low, high]);
+    }
+  }
+  if (!coverage.length) return [segment];
+  coverage.sort((a, b) => a[0] - b[0]);
+  const result: Segment[] = [];
+  let cursor = 0;
+  const append = (from: number, to: number) => {
+    const clipped = clipSegment(segment, segment.from + from * length, segment.from + to * length, lane.radius);
+    if (clipped) result.push(clipped);
+  };
+  for (const [low, high] of coverage) {
+    if (low > cursor + EPS) append(cursor, low);
+    cursor = Math.max(cursor, high);
+  }
+  if (cursor < 1 - EPS) append(cursor, 1);
+  return result;
+}
+
+function solidGeometryKey(body: DuctBox): string {
+  return JSON.stringify([body.elementId, body.mark, body.centre, body.axisT, body.axisN, body.axisU,
+    body.halfLength, body.halfWidth, body.halfHeight]);
 }
 
 interface AdapterRegion { aEnd: 'start' | 'end'; bEnd: 'start' | 'end'; aLength: number; bLength: number }
@@ -667,13 +784,23 @@ function findNetworkPipeClashes(scene: HvacElement[], proposed: HvacElement[], r
   const overrides = new Map(proposed.map(element => [element.id, element]));
   const afterElements = scene.filter(element => !removed.has(element.id) && !proposedIds.has(element.id)).concat([...overrides.values()]);
   const after = physicalLanes(afterElements).sort((a, b) => a.bounds.minX - b.bounds.minX || a.key.localeCompare(b.key));
-  const before = baselineLanes(scene);
-  const oldByKey = new Map(before.map(lane => [lane.key, lane]));
+  // Most trial routes have no nonexempt contact. Only those that do need the
+  // old physical geometry and its mutation-safe full-scene signature.
+  let baseline: { lanes: PipeLane[]; byKey: Map<string, PipeLane> } | undefined;
+  const previousByKey = new Map<string, PipeLane[]>();
   const predecessors = (lane: PipeLane): PipeLane[] => {
-    const old = oldByKey.get(lane.key);
-    return old ? [old] : before.filter(previous => removed.has(previous.id) && previous.service === lane.service && overlaps(previous.bounds, lane.bounds));
+    const cached = previousByKey.get(lane.key);
+    if (cached) return cached;
+    if (!baseline) {
+      const lanes = baselineLanes(scene);
+      baseline = { lanes, byKey: new Map(lanes.map(previous => [previous.key, previous])) };
+    }
+    const old = baseline.byKey.get(lane.key);
+    const previous = old ? [old] : baseline.lanes.filter(prior => removed.has(prior.id)
+      && prior.service === lane.service && overlaps(prior.bounds, lane.bounds));
+    previousByKey.set(lane.key, previous);
+    return previous;
   };
-  const previousByKey = new Map(after.map(lane => [lane.key, predecessors(lane)]));
   const preservationSegments = new Map<string, WeakMap<Segment, Array<{ key: string; segments: Segment[] }>>>();
   const preservedAt = (lane: PipeLane, segment: Segment, point: Vec3): string[] => {
     let laneCandidates = preservationSegments.get(lane.key);
@@ -684,7 +811,7 @@ function findNetworkPipeClashes(scene: HvacElement[], proposed: HvacElement[], r
     let candidates = laneCandidates.get(segment);
     if (!candidates) {
       const direction = subtract(segment.b, segment.a); const directionLength = Math.hypot(direction.x, direction.y, direction.z);
-      candidates = (previousByKey.get(lane.key) ?? []).flatMap(previous => {
+      candidates = predecessors(lane).flatMap(previous => {
         if (previous.radius < lane.radius - TOLERANCE_MM) return [];
         const segments = previous.segments.filter(old => {
           if (!overlaps(old.bounds, segment.bounds)) return false;
@@ -709,8 +836,21 @@ function findNetworkPipeClashes(scene: HvacElement[], proposed: HvacElement[], r
       const trimA = { start: 0, end: a.total }; const trimB = { start: 0, end: b.total };
       for (const endA of ['start', 'end'] as const) for (const endB of ['start', 'end'] as const) {
         if (!boundTogether(a, endA, b, endB)) continue;
-        trimA[endA] = endA === 'start' ? required : a.total - required;
-        trimB[endB] = endB === 'start' ? required : b.total - required;
+        let jointReach = required;
+        if (a.service === 'drain' && b.service === 'drain') {
+          const heading = (lane: PipeLane, end: 'start' | 'end') => {
+            const segment = end === 'start' ? lane.segments[0]! : lane.segments.at(-1)!;
+            const delta = end === 'start' ? subtract(segment.b, segment.a) : subtract(segment.a, segment.b);
+            const magnitude = Math.sqrt(dot(delta, delta));
+            return { x: delta.x / magnitude, y: delta.y / magnitude, z: delta.z / magnitude };
+          };
+          // Two declared wye arms diverging by theta cease touching at
+          // station (r1+r2)/(2*sin(theta/2)); cap the allowance for a malformed
+          // parallel junction so a long duplicated run is still a clash.
+          jointReach = required / Math.max(0.25, Math.sqrt(Math.max(0, 2 - 2 * dot(heading(a, endA), heading(b, endB)))));
+        }
+        trimA[endA] = endA === 'start' ? jointReach : a.total - jointReach;
+        trimB[endB] = endB === 'start' ? jointReach : b.total - jointReach;
       }
       let newDistance = Number.POSITIVE_INFINITY;
       visitLaneContacts(a, b, trimA, trimB, contact => {
@@ -731,27 +871,41 @@ function findNetworkPipeClashes(scene: HvacElement[], proposed: HvacElement[], r
       }
     }
   }
-  // Ducts are obstacles: a new pipe route may not pass through a duct body (a box, not a tube).
-  const ducts = ductBoxesInScene(afterElements, getActiveDuctSettings());
-  if (ducts.length) {
-    const clashWith = (lane: PipeLane, duct: DuctBox): number => {
+  // All services share the same physical solid envelopes, including equipment
+  // and terminal faces/necks. A screen-space crossing alone is not a clash.
+  const solids = solidBoxesInScene(afterElements, getActiveDuctSettings());
+  if (solids.length) {
+    const oldSolids = new Set(solidBoxesInScene(scene, getActiveDuctSettings()).map(solidGeometryKey));
+    const preservedBodies = new Set(solids.filter(body => oldSolids.has(solidGeometryKey(body))));
+    const equipmentIds = new Set(solids.filter(body => body.mark === 'equipment casing').map(body => body.elementId));
+    const equipment = afterElements.filter(element => equipmentIds.has(element.id));
+    const ports = new Map(getRefrigerantPipeBundleSnapTargets(equipment).filter(port => port.connectionKind === 'unit-port' && port.sourceElementId)
+      .map(port => [port.sourceElementId!, port]));
+    const elementsById = new Map(afterElements.map(element => [element.id, element]));
+    const clashWith = (lane: PipeLane, body: DuctBox): number => {
       let nearest = Number.POSITIVE_INFINITY;
-      if (!overlaps(lane.bounds, duct.bounds)) return nearest;
-      for (const segment of lane.segments) {
-        if (!overlaps(segment.bounds, duct.bounds)) continue;
-        const hit = segmentBoxDistance(segment.a, segment.b, duct).distance;
-        if (hit < lane.radius - TOLERANCE_MM) nearest = Math.min(nearest, hit);
+      if (!overlaps(lane.bounds, body.bounds)) return nearest;
+      const trimStart = equipmentSocketTrim(lane, body, 'start', ports, elementsById);
+      const trimEnd = lane.total - equipmentSocketTrim(lane, body, 'end', ports, elementsById);
+      for (const raw of lane.segments) {
+        const clipped = clipSegment(raw, trimStart, trimEnd, lane.radius);
+        if (!clipped || !overlaps(clipped.bounds, body.bounds)) continue;
+        const rawHit = segmentBoxDistance(clipped.a, clipped.b, body).distance;
+        if (rawHit >= lane.radius - TOLERANCE_MM) continue;
+        const old = preservedBodies.has(body) ? predecessors(lane) : [];
+        for (const segment of unpreservedSegments(clipped, lane, old)) {
+          const hit = segment === clipped ? rawHit : segmentBoxDistance(segment.a, segment.b, body).distance;
+          if (hit < lane.radius - TOLERANCE_MM) nearest = Math.min(nearest, hit);
+        }
       }
       return nearest;
     };
     for (const lane of after) {
-      if (!proposedIds.has(lane.id)) continue;
-      for (const duct of ducts) {
-        const hit = clashWith(lane, duct);
+      for (const body of solids) {
+        if ((!proposedIds.has(lane.id) && !proposedIds.has(body.elementId)) || body.elementId === lane.id) continue;
+        const hit = clashWith(lane, body);
         if (!Number.isFinite(hit)) continue;
-        // A contact the lane already had with this duct is not new.
-        if ((previousByKey.get(lane.key) ?? []).some((previous) => Number.isFinite(clashWith(previous, duct)))) continue;
-        const ids = [lane.id, duct.elementId].sort() as [string, string];
+        const ids = [lane.id, body.elementId].sort() as [string, string];
         if (stopAtFirst) return [{ elementIds: ids, distanceMm: hit, requiredMm: lane.radius }];
         const key = ids.join('\u0000');
         const previous = found.get(key);

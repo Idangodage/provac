@@ -60,6 +60,9 @@ export class HybridViewportController {
   private el: HTMLElement | null = null;
   private capHandlers: Array<[string, EventListener]> = [];
   private windowHandlers: Array<[string, EventListener]> = [];
+  private documentHandlers: Array<[string, EventListener]> = [];
+  private readonly navigationPointers = new Set<number>();
+  private rotatePointerId: number | null = null;
   private planeZ = 0;
   private viewport = { width: 2, height: 2 };
   private readonly contentBounds = new THREE.Box3();
@@ -135,6 +138,9 @@ export class HybridViewportController {
     // horizontal two-finger scroll trucks.
     this.cap(el, 'pointerdown', (ev) => {
       const e = ev as PointerEvent;
+      if (e.pointerType === 'touch' || e.button === 1 || e.button === 2) {
+        this.navigationPointers.add(e.pointerId);
+      }
       if (e.button === 1 || e.button === 2) this.interruptViewTransition();
       if (e.button !== 2) return;
       if (e.shiftKey) {
@@ -142,6 +148,7 @@ export class HybridViewportController {
         return;
       }
       this.rotateGestureActive = true;
+      this.rotatePointerId = e.pointerId;
       controls.mouseButtons.right = A.ROTATE;
       // Preserve the established PLAN->TILT limit, but do not clamp an
       // explicit front/side elevation the instant RMB orbit begins.
@@ -154,13 +161,38 @@ export class HybridViewportController {
     // camera-controls may have pointer capture) — only THEN may plan back-snap.
     const endRotateGesture = (ev: Event): void => {
       const e = ev as PointerEvent;
-      if (e.type === 'pointerup' && e.button !== 2) return;
-      if (!this.rotateGestureActive) return;
-      this.rotateGestureActive = false;
+      // Mouse buttons share a pointer ID. Releasing another button must not
+      // discard the orbit/pan owner while a navigation button remains held.
+      if (e.pointerType !== 'touch' && (e.buttons & 6) !== 0) return;
+      if (!this.navigationPointers.delete(e.pointerId)) return;
+      if (this.rotatePointerId === e.pointerId) {
+        this.rotateGestureActive = false;
+        this.rotatePointerId = null;
+      }
+      // Document-level pointerup can be intercepted by a tool. Finish the
+      // final navigation pointer in capture phase, retaining normal damping.
+      if (this.navigationPointers.size === 0) controls.cancel();
       this.planBackSnap();
     };
     this.capWindow('pointerup', endRotateGesture);
-    this.capWindow('pointercancel', endRotateGesture);
+    const cancelPointer = (ev: Event): void => {
+      if (this.navigationPointers.has((ev as PointerEvent).pointerId)) this.cancelNavigation();
+    };
+    this.capWindow('pointercancel', cancelPointer);
+    this.cap(el, 'lostpointercapture', cancelPointer);
+    this.capWindow('blur', () => this.cancelNavigation());
+    this.capWindow('pointermove', (ev) => {
+      const e = ev as PointerEvent;
+      // A release outside the window may have no pointerup here. Recover
+      // before camera-controls sees a buttons=0 move and forgets its action.
+      if (e.pointerType !== 'touch' && (e.buttons & 6) === 0
+        && this.navigationPointers.has(e.pointerId)) this.cancelNavigation();
+    });
+    const cancelHiddenNavigation = (): void => {
+      if (el.ownerDocument.hidden) this.cancelNavigation();
+    };
+    el.ownerDocument.addEventListener('visibilitychange', cancelHiddenNavigation);
+    this.documentHandlers.push(['visibilitychange', cancelHiddenNavigation]);
     this.cap(el, 'wheel', (ev) => {
       const e = ev as WheelEvent;
       this.interruptViewTransition();
@@ -428,12 +460,17 @@ export class HybridViewportController {
 
   dispose(): void {
     this.viewTransition = null;
+    this.navigationPointers.clear();
+    this.rotatePointerId = null;
+    this.rotateGestureActive = false;
     for (const [name, fn] of this.capHandlers) this.el?.removeEventListener(name, fn, true);
     this.capHandlers = [];
     if (typeof window !== 'undefined') {
       for (const [name, fn] of this.windowHandlers) window.removeEventListener(name, fn, true);
     }
     this.windowHandlers = [];
+    for (const [name, fn] of this.documentHandlers) this.el?.ownerDocument.removeEventListener(name, fn);
+    this.documentHandlers = [];
     this.controls?.dispose();
     this.controls = null;
     this.el = null;
@@ -449,6 +486,20 @@ export class HybridViewportController {
       target: this.controls!.getTarget(new THREE.Vector3(), false),
       focalOffset: this.controls!.getFocalOffset(new THREE.Vector3(), false),
     };
+  }
+
+  private cancelNavigation(): void {
+    if (!this.controls || this.navigationPointers.size === 0) return;
+    const pose = this.capturePose();
+    this.navigationPointers.clear();
+    this.rotatePointerId = null;
+    // Suppress plan magnetics while cancel() emits controlend. An interrupted
+    // gesture must stay at the visible pose, without jumping to its old target.
+    this.rotateGestureActive = true;
+    this.controls.cancel();
+    this.applyPose(pose);
+    this.rotateGestureActive = false;
+    this.onChange?.();
   }
 
   private applyPose(pose: HybridViewTransitionPose): void {

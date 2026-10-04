@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
+import type { ManufacturerRuleProfile } from '../../../../vrf/rules';
 import { applyAutoRoutePreview, discardAutoRoutePreview, runAutoRoute } from '../autoRouteController';
 
 import { buildCondensateBom, condensateBomToCsv } from './condensateBom';
@@ -68,7 +69,7 @@ function SettingRow({ label, value, unit, step, modified, source, onCommit }: {
   );
 }
 
-export function CondensateDrainageSection() {
+export function CondensateDrainageSection({ profile }: { profile?: ManufacturerRuleProfile } = {}) {
   const { settings, setSettings, hvacElements, routing, rooms } = useSmartDrawingStore((state) => ({
     settings: state.condensateSettings,
     setSettings: state.setCondensateSettings,
@@ -77,6 +78,7 @@ export function CondensateDrainageSection() {
     rooms: state.rooms,
   }), shallow);
   const preview = useCondensatePreviewStore((state) => state.result);
+  const blockingIssue = useCondensatePreviewStore((state) => state.unified?.blockingIssues?.[0]);
   const running = useCondensatePreviewStore((state) => state.running);
   const message = useCondensatePreviewStore((state) => state.message);
   const approved = useCondensatePreviewStore((state) => state.approvedHopKeys);
@@ -88,6 +90,8 @@ export function CondensateDrainageSection() {
   const committedBom = useMemo(() => buildCondensateBom(hvacElements.filter(isCondensateElement), settings), [hvacElements, settings]);
   const bom = preview?.bom ?? committedBom;
   const gullyCount = hvacElements.filter((element) => element.type === 'condensate-gully').length;
+  const applyIssue = blockingIssue ?? (preview?.hopProposals.some((hop) => !approved.includes(hop.key))
+    ? 'Review and approve the required refrigerant hops before applying.' : undefined);
 
   return (
     <div className="space-y-3 text-sm">
@@ -95,33 +99,35 @@ export function CondensateDrainageSection() {
         <p className="font-medium">Ceiling void {Math.round(envelope.ceilingPlaneMm)}–{Math.round(envelope.soffitMm)} mm</p>
         <p className="text-sky-800/80">{envelope.derivation}</p>
         <div className="mt-1.5 grid grid-cols-2 gap-2">
-          <label className="flex items-center gap-1">Ceiling
+          <label className="flex min-w-0 flex-col gap-1">Ceiling
             <input type="number" step={10} placeholder="auto" value={settings.ceilingPlaneMm ?? ''}
               onChange={(event) => setSettings({ ceilingPlaneMm: event.target.value.trim() === '' ? null : Number.parseFloat(event.target.value) })}
-              className="w-20 rounded border border-sky-200 bg-white px-1.5 py-0.5 text-right" />
+              className="min-w-0 w-full rounded border border-sky-200 bg-white px-1.5 py-0.5 text-right" />
           </label>
-          <label className="flex items-center gap-1">Soffit
+          <label className="flex min-w-0 flex-col gap-1">Soffit
             <input type="number" step={10} placeholder="auto" value={settings.soffitMm ?? ''}
               onChange={(event) => setSettings({ soffitMm: event.target.value.trim() === '' ? null : Number.parseFloat(event.target.value) })}
-              className="w-20 rounded border border-sky-200 bg-white px-1.5 py-0.5 text-right" />
+              className="min-w-0 w-full rounded border border-sky-200 bg-white px-1.5 py-0.5 text-right" />
           </label>
         </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <button type="button" disabled={running || !gullyCount} onClick={() => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope: 'drawing' })}
+        <button type="button" disabled={running || !gullyCount} onClick={() => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope: 'drawing', profile })}
           className="rounded-lg bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-800 disabled:opacity-40">
           {running ? 'Calculating…' : preview ? 'Regenerate' : 'Generate network'}
         </button>
         {preview ? (
           <>
-            <button type="button" onClick={() => applyAutoRoutePreview()} className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-800">Apply</button>
+            <button type="button" onClick={() => applyAutoRoutePreview()} disabled={Boolean(applyIssue)} title={applyIssue}
+              className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-800 disabled:opacity-40">Apply</button>
             <button type="button" onClick={discardAutoRoutePreview} className="rounded-lg px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100">Discard</button>
           </>
         ) : null}
       </div>
       {!gullyCount ? <p className="text-xs text-slate-500">Place a floor gully, stack connection or external discharge from the Condensate Drainage palette first.</p> : null}
       {message ? <p role="status" className="rounded-md bg-slate-50 p-2 text-xs leading-4 text-slate-700">{message}</p> : null}
+      {applyIssue && !message ? <p role="status" className="rounded-md bg-amber-50 p-2 text-xs text-amber-900">{applyIssue}</p> : null}
 
       {preview ? (
         <div className="space-y-2">

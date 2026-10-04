@@ -274,7 +274,7 @@ export function validateCondensateNetwork(scene: readonly HvacElement[], options
 
 /**
  * Condensate ↔ refrigerant contacts (insulated surfaces touching), one entry
- * per drain pipe (its first contact). A unit's drain and its own refrigerant
+ * per drain/refrigerant pair. A unit's drain and its own refrigerant
  * stubs share the manufacturer's connection zone around the drain outlet —
  * the same exemption the generator applies.
  */
@@ -289,8 +289,8 @@ export function findCondensateRefrigerantClashes(scene: readonly HvacElement[]):
     const spec = readCondensatePipeSpec(pipe);
     const radius = condensateInsulatedRadiusMm(spec);
     const ownUnit = spec.drainStart?.kind === 'unit-drain' ? spec.drainStart : null;
-    let clash: string | null = null;
     for (const lane of lanes) {
+      let clash = false;
       const sharesZone = ownUnit?.unitId ? connectedUnitIdsOf(byId.get(lane.elementId)).includes(ownUnit.unitId) : false;
       for (const segment of lane.segments) {
         for (let index = 1; index < spec.routeNodes3d.length && !clash; index += 1) {
@@ -301,13 +301,14 @@ export function findCondensateRefrigerantClashes(scene: readonly HvacElement[]):
             if (!clipped) continue;
             a = clipped;
           }
-          if (segmentDistance3(a, b, segment.a, segment.b) < radius + lane.radiusMm - 0.5) clash = lane.elementId;
+          if (segmentDistance3(a, b, segment.a, segment.b) < radius + lane.radiusMm - 0.5) clash = true;
         }
         if (clash) break;
       }
-      if (clash) break;
+      if (clash && !clashes.some((entry) => entry.condensateId === pipe.id && entry.refrigerantId === lane.elementId)) {
+        clashes.push({ condensateId: pipe.id, refrigerantId: lane.elementId });
+      }
     }
-    if (clash) clashes.push({ condensateId: pipe.id, refrigerantId: clash });
   }
   return clashes;
 }

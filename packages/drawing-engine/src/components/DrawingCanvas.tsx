@@ -781,7 +781,7 @@ export function DrawingCanvas({
       getCondensatePreview: () => useCondensatePreviewStore.getState().result,
       getSelectedIds: () => [...useSmartDrawingStore.getState().selectedIds],
       select: (ids: string[]) => setSelectedIds(ids),
-      generateCondensate: (scope: 'drawing' | 'selection' = 'drawing') => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope }),
+      generateCondensate: (scope: 'drawing' | 'selection' = 'drawing') => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope, profile: vrfRuleProfile }),
       /** One Auto route for the ticked services (preview; apply with applyAutoRoute). */
       autoRoute: (services: { gas: boolean; liquid: boolean; condensate: boolean; supplyDuct?: boolean; returnDuct?: boolean }, scope: 'drawing' | 'selection' = 'drawing',
         duct?: { shape: 'rect' | 'round' | 'optimal'; fanSpeed: 'p-hi' | 'hi' | 'me' | 'lo'; rebuildExisting: boolean }) =>
@@ -1697,6 +1697,12 @@ export function DrawingCanvas({
   const planSheetRef = useRef<HTMLDivElement | null>(null);
   const hybridControllerRef = useRef<HybridViewportController | null>(null);
   const [pipeEditPreview, setPipeEditPreview] = useState<HvacElement[] | null>(null);
+  const hybridEditPreviewElements = useMemo(
+    () => autoRoutePreviewElements
+      ? [...(pipeEditPreview ?? []), ...autoRoutePreviewElements]
+      : pipeEditPreview,
+    [pipeEditPreview, autoRoutePreviewElements],
+  );
   const [activePipeWorkplane, setActivePipeWorkplane] = useState<PipeDrawingPlane | null>(null);
   const pipeDisplayElements = useMemo(() => {
     // The plan pipe studio paints the refrigerant part of an Auto route preview.
@@ -2224,7 +2230,7 @@ export function DrawingCanvas({
     (issue: VrfValidationIssue) => {
       if (issue.fix?.kind === "regenerate-condensate") {
         // Condensate fixes re-run the generator; the user reviews and applies.
-        runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope: "drawing" });
+        runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope: "drawing", profile: vrfRuleProfile });
         return;
       }
       const command = buildVrfValidationFixCommand(issue, hvacElements);
@@ -2235,7 +2241,7 @@ export function DrawingCanvas({
         selectedIds: target ? [target.id] : undefined,
       });
     },
-    [commitHvacElementCommand, hvacElements],
+    [commitHvacElementCommand, hvacElements, vrfRuleProfile],
   );
 
   // Global close effect is inside useContextMenuHandlers hook.
@@ -3400,7 +3406,7 @@ export function DrawingCanvas({
           symbols={symbols}
           objectDefinitions={objectDefinitions}
           hvacElements={hvacElements}
-          pipeEditPreviewElements={autoRoutePreviewElements ? [...(pipeEditPreview ?? []), ...autoRoutePreviewElements] : pipeEditPreview}
+          pipeEditPreviewElements={hybridEditPreviewElements}
           activePipeWorkplane={activePipeWorkplane}
           onWebglUnavailable={handleHybridWebglUnavailable}
           selectedIds={selectedIds}

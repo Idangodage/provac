@@ -1,0 +1,148 @@
+{
+  "date": "2026-10-04",
+  "fixture": "Synthetic UI regression with real FDUM22KXE6F-W and FDT28KXZE1 dimensions. The blocked case intentionally introduces a body collision; the ready case is actual coordinated output.",
+  "productionComponents": [
+    "AutoRouteAction",
+    "AutoRouteResultPanel",
+    "DrawingCanvas",
+    "applyAutoRoutePreview"
+  ],
+  "actualPlanner": {
+    "ductedUnit": "MHI FDUM22KXE6F-W",
+    "cassetteUnits": "4 × MHI FDT28KXZE1",
+    "airTerminals": "3 ×595mm square supply diffusers, Ø200mm neck",
+    "ductStatus": [
+      "designed"
+    ],
+    "ductRuns": 4,
+    "drainMetrics": {
+      "unitsTotal": 5,
+      "unitsConnected": 5,
+      "pumpedUnits": 4,
+      "networks": 1,
+      "pipeLengthMm": 25102.722887601143,
+      "fittingCount": 35,
+      "crossings": 0,
+      "hops": 0
+    },
+    "blockingIssues": [],
+    "clashes": 0
+  },
+  "checks": [
+    {
+      "name": "Blocked coverage is proposed, not approval",
+      "pass": true
+    },
+    {
+      "name": "One physical issue per entity pair despite duplicate legacy notes",
+      "pass": true
+    },
+    {
+      "name": "Failed layout does not claim unapplied terminal rotation",
+      "pass": true
+    },
+    {
+      "name": "Constraint disclosure works from keyboard",
+      "pass": true
+    },
+    {
+      "name": "Inspect focuses existing equipment and opens properties",
+      "pass": true
+    },
+    {
+      "name": "360px review and all five service controls fit viewport",
+      "pass": true,
+      "details": {
+        "panel": {
+          "x": 12,
+          "y": 124.5,
+          "width": 336,
+          "height": 648.375,
+          "right": 348,
+          "bottom": 772.875
+        },
+        "documentWidth": 360,
+        "documentClientWidth": 360,
+        "serviceControls": [
+          {
+            "name": "Route supply ducts",
+            "x": 49.4375,
+            "right": 124.9375,
+            "y": 13.75
+          },
+          {
+            "name": "Route return ducts",
+            "x": 126.6875,
+            "right": 201.25,
+            "y": 13.75
+          },
+          {
+            "name": "Route gas pipes",
+            "x": 43.28125,
+            "right": 98.390625,
+            "y": 43.75
+          },
+          {
+            "name": "Route liquid pipes",
+            "x": 100.140625,
+            "right": 166.578125,
+            "y": 43.75
+          },
+          {
+            "name": "Route condensate pipes",
+            "x": 168.328125,
+            "right": 261.484375,
+            "y": 43.75
+          }
+        ]
+      }
+    },
+    {
+      "name": "Escape closes review without modifying drawing",
+      "pass": true
+    },
+    {
+      "name": "Actual coordinated proposal is ready with complete coverage",
+      "pass": true
+    },
+    {
+      "name": "Ready Apply commits one undoable coordinated change",
+      "pass": true
+    },
+    {
+      "name": "Undo restores exact initial HVAC scene",
+      "pass": true
+    },
+    {
+      "name": "Hop approval changes Apply readiness without model edits",
+      "pass": true
+    },
+    {
+      "name": "Changing selected services discards obsolete preview",
+      "pass": true
+    },
+    {
+      "name": "No browser or WebGL shader errors",
+      "pass": true
+    }
+  ],
+  "readyApply": {
+    "message": "Auto route applied: 4 duct runs for 1 unit, 5 drains. One undo reverts it.",
+    "historySteps": 1
+  },
+  "browserErrors": [],
+  "consoleErrors": [],
+  "screenshots": [
+    "auto-route-recovery-blocked.png",
+    "auto-route-recovery-ready.png",
+    "auto-route-recovery-narrow.png"
+  ],
+  "boundaries": [
+    "Synthetic positions exercise real catalog dimensions; they do not reconstruct an unavailable project document.",
+    "The blocked screenshot deliberately introduces a cassette/drain body intersection and repeats diagnostic strings to test review deduplication.",
+    "The ready case is real coordinated duct/drain output. Refrigerant routing is covered separately by integration tests, not by this UI fixture.",
+    "A synthetic hop proposal tests approval controls only; the actual Apply test uses the real no-hop route.",
+    "Manufacturer performance verification, installation review and commissioning remain project requirements.",
+    "Headless Chrome uses software rendering; this is a functional UI check, not a hardware performance benchmark."
+  ]
+}

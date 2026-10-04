@@ -18,6 +18,7 @@
 import type { HvacElement, Point2D, Wall } from '../../../../types';
 
 import { listAirPorts } from './ductAirPorts';
+import type { AutoDuctIssue } from './ductAutoContext';
 import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuct, removalTree, type AutoDuctShape } from './ductAutoLayout';
 import type { DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
@@ -72,6 +73,9 @@ export interface AutoRouteDuctUnit {
   /** Every tree was searched exactly. */
   exact: boolean | null;
   notes: string[];
+  /** Selected candidate checks retain severity and references for actionable review. */
+  diagnostics?: AutoDuctIssue[];
+  terminalIds?: string[];
 }
 
 export interface AutoRouteDuctResult {
@@ -81,6 +85,8 @@ export interface AutoRouteDuctResult {
   terminalUpdates: HvacElement[];
   units: AutoRouteDuctUnit[];
   issues: string[];
+  /** Explicitly selected, unserved terminals with no assignable unit/collar. */
+  unservedTerminalIds?: string[];
 }
 
 export interface AutoRouteDuctProgress {
@@ -156,8 +162,15 @@ export function planAutoRouteDucts(
   const pickedTerminals = options.scope === 'selection' && options.terminalIds?.length ? new Set(options.terminalIds) : null;
   if (options.scope === 'selection' && !pickedUnits && !pickedTerminals) return result;
   const units = pickedUnits ? allUnits.filter((unit) => pickedUnits.has(unit.id)) : allUnits;
+  const terminalPorts = new Map(listTerminalPorts(scene).map((port) => [port.unitId, port]));
   if (!units.length) {
-    if (pickedTerminals) result.issues.push('Ducts: no ducted unit to serve the selected terminals — select the unit as well.');
+    if (pickedTerminals) {
+      const alreadyServed = servedTerminals(scene, new Set());
+      result.unservedTerminalIds = scene.filter(element => isDuctTerminalElement(element)
+        && pickedTerminals.has(element.id) && !alreadyServed.has(element.id)
+        && wanted.includes(terminalPorts.get(element.id)?.kind as DuctService)).map(element => element.id);
+      if (result.unservedTerminalIds.length) result.issues.push('Ducts: no ducted unit to serve the selected terminals — select the unit as well.');
+    }
     return result;
   }
 
@@ -181,11 +194,11 @@ export function planAutoRouteDucts(
     }
   }
 
-  // Terminals to serve: the selected ones, else every one no kept duct serves.
+  // Kept duct connections already satisfy the selection. Rebuild removes
+  // their served status through `replaced`; never connect one terminal twice.
   const served = servedTerminals(scene, replaced);
-  const terminalPorts = new Map(listTerminalPorts(scene).map((port) => [port.unitId, port]));
   const terminals = scene.filter((element) => isDuctTerminalElement(element)
-    && (pickedTerminals ? pickedTerminals.has(element.id) : !served.has(element.id))
+    && !served.has(element.id) && (!pickedTerminals || pickedTerminals.has(element.id))
     && wanted.includes(terminalPorts.get(element.id)?.kind as DuctService));
   const assigned = new Map<string, HvacElement[]>();
   let orphans = 0;
@@ -199,7 +212,11 @@ export function planAutoRouteDucts(
       const sameRoom = unit.roomId && terminal.roomId ? unit.roomId === terminal.roomId : distance <= NEARBY_TERMINALS_MM;
       if (sameRoom && (!best || distance < best.distance)) best = { unitId: unit.id, distance };
     }
-    if (!best) { orphans += 1; continue; }
+    if (!best) {
+      orphans += 1;
+      if (pickedTerminals) (result.unservedTerminalIds ??= []).push(terminal.id);
+      continue;
+    }
     assigned.set(best.unitId, [...(assigned.get(best.unitId) ?? []), terminal]);
   }
   if (occupied.length && (pickedUnits || terminals.length > [...assigned.values()].flat().length)) {
@@ -230,12 +247,18 @@ export function planAutoRouteDucts(
       } : {}),
     }, options.settings);
     const design = auto.designs[auto.selected] ?? null;
-    const messages = [...new Set([...auto.issues, ...auto.services.flatMap((service) => service.issues)]
+    const canPropose = Boolean(design && auto.runs.length && design.errors === 0);
+    const diagnostics = [...new Map([...auto.issues, ...auto.services.flatMap((service) => service.issues)]
+      // A rejected candidate has not turned any terminal. Do not report its
+      // speculative spigot adjustments as completed changes.
+      .filter((issue) => canPropose || issue.code !== 'DU_AUTO_SPIGOT')
+      .map((issue) => [`${issue.code}|${issue.severity}|${issue.message}`, issue])).values()];
+    const messages = [...new Set(diagnostics
       .filter((issue) => issue.severity !== 'info' || issue.code === 'DU_AUTO_SPIGOT').map((issue) => issue.message))];
     const unitResult: AutoRouteDuctUnit = {
       unitId: unit.id, unitLabel: label, status: 'kept', services: [], requiredEspPa: auto.requiredEspPa, maxEspPa: auto.maxEspPa,
       firstCost: design?.firstCost ?? null, lifeCycleCost: design?.lifeCycleCost ?? null, currency: auto.currency, runIds: [],
-      exact: auto.certificate?.exact ?? null, notes: messages,
+      exact: auto.certificate?.exact ?? null, notes: messages, diagnostics, terminalIds: group.map(terminal => terminal.id),
     };
     unitResult.services = auto.services.filter((service) => service.runs.length).map((service) => ({
       service: service.service,
@@ -276,10 +299,11 @@ export function applyDuctProposal(scene: readonly HvacElement[], result: AutoRou
 
 /**
  * What the duct proposal was designed against: the whole drawing (everything
- * in it is an obstacle) and the duct settings. Apply refuses a changed one.
+ * in it is an obstacle), wall geometry and duct settings. Apply refuses changes.
  */
-export function ductSourceSignature(scene: readonly HvacElement[], settings: DuctDesignSettings): string {
-  const text = JSON.stringify([scene, settings]);
+export function ductSourceSignature(scene: readonly HvacElement[], settings: DuctDesignSettings, walls: AutoRouteDuctOptions['walls'] = []): string {
+  const geometry = walls.map(wall => [wall.id, wall.startPoint, wall.endPoint, wall.thickness]);
+  const text = JSON.stringify([scene, settings, geometry]);
   // FNV-1a, 32-bit, plus the length: a cheap fingerprint, not a security hash.
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index += 1) {

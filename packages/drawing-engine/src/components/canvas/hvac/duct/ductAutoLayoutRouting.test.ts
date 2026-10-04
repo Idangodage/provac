@@ -7,6 +7,7 @@ import { generateAutoDuct } from './ductAutoLayout';
 import { resolveDuctSettings } from './ductSettings';
 import { readDuctTerminalSpec, terminalEnvelope, typicalTerminalSpec } from './ductTerminals';
 import { readDuctRunSpec } from './ductTypes';
+import { findDuctClashes } from './ductVolumes';
 
 describe('automatic routing independent of rectangular seed layouts', () => {
   it('chooses a direct spigot side even when the placed side already has a valid route', () => {
@@ -51,6 +52,7 @@ describe('automatic routing independent of rectangular seed layouts', () => {
     const fixed = generateAutoDuct(scene, request, { ...settings, autoChooseSpigotSide: false });
     const fixedReference = fixed.designs.find((design) => design.label.includes('(equal friction)'))!;
     expect(fixedReference.errors).toBe(0);
+    expect(findDuctClashes([...scene, ...fixedReference.runs], settings, [])).toEqual([]);
     expect(fixedReference.services[0]!.terminalUpdates).toEqual([]);
     const fixedBranches = fixedReference.services[0]!.plans.filter((plan) => plan.spec.end.kind === 'terminal');
     expect(fixedBranches).toHaveLength(2);

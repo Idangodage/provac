@@ -145,6 +145,29 @@ function replaceableNetworkIds(scene: HvacElement[], system: System): string[] {
   }
   return removable;
 }
+
+function needsBranchSelector(element: HvacElement): boolean {
+  const properties = element.properties;
+  const arrangement = ['arrangement', 'refrigerantArrangement', 'systemArrangement', 'systemType', 'refrigerantSystemType', 'pipingArrangement']
+    .map(key => String(properties[key] ?? '').toLowerCase().replace(/[ _]/g, '-'));
+  return properties.refrigerantPipeCount === 3
+    || arrangement.some(value => ['heat-recovery', 'three-pipe', '3-pipe'].includes(value));
+}
+
+/** Generated circuits eligible for an explicitly requested rebuild, using the
+ * same scope, retained-edit and external-connection rules as the network planner.
+ * This only reserves space for coordination; the final proposal must still
+ * actually replace these elements before any conflicting route can be applied. */
+export function replaceableGeneratedRefrigerantIds(
+  scene: HvacElement[],
+  options: Pick<AutoRouteNetworkOptions, 'selectedIds' | 'rebuildExisting'>,
+): string[] {
+  if (!options.rebuildExisting) return [];
+  const { systems } = resolveSystems(scene, options.selectedIds, []);
+  return [...new Set(systems.filter(system => !needsBranchSelector(system.outdoor.element))
+    .flatMap(system => replaceableNetworkIds(scene, system)))];
+}
+
 function replaceableExistingCircuit(scene: HvacElement[], system: System, options: AutoRouteNetworkOptions): { ids: string[]; indoorIds: string[] } {
   const none = { ids: [], indoorIds: [] };
   if (!options.rebuildExisting) return none;
@@ -374,7 +397,7 @@ function supportedIncumbentGeometry(members: HvacElement[], scene: HvacElement[]
   }
   return members.every(element => element.type === 'refrigerant-pipe' || element.type === 'refrigerant-branch-kit');
 }
-function aggregateMetrics(evaluations: Evaluation[]): Evaluation['metrics'] | null {
+export function aggregateAutoRouteMetrics(evaluations: Evaluation[]): Evaluation['metrics'] | null {
   if (!evaluations.length) return null;
   const values = evaluations.map(item => item.metrics);
   const sum = (key: keyof Evaluation['metrics']) => values.reduce((total, value) => total + Number(value[key] ?? 0), 0);
@@ -736,10 +759,7 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
       return port && [port.point.x, port.point.y, port.gasElevationMm, port.liquidElevationMm].every(Number.isFinite) ? [{ element, port }] : [];
     });
     for (const system of systems) {
-      const properties = system.outdoor.element.properties;
-      const arrangement = ['arrangement', 'refrigerantArrangement', 'systemArrangement', 'systemType', 'refrigerantSystemType', 'pipingArrangement']
-        .map(key => String(properties[key] ?? '').toLowerCase().replace(/[ _]/g, '-'));
-      if (properties.refrigerantPipeCount === 3 || arrangement.some(value => ['heat-recovery', 'three-pipe', '3-pipe'].includes(value))) {
+      if (needsBranchSelector(system.outdoor.element)) {
         issues.push(`${system.outdoor.element.label || system.outdoor.element.id}: this heat-recovery or three-pipe system needs its manufacturer branch-selector arrangement; the two-pipe planner did not modify it.`);
         continue;
       }
@@ -840,7 +860,7 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
     result.unconnectedIndoorIds = requested.filter(id => !result.connectedIndoorIds.includes(id));
     result.complete = requested.length > 0 && result.unconnectedIndoorIds.length === 0;
     result.evaluatedCandidates = searchStats.evaluatedCandidates;
-    result.metrics = aggregateMetrics(result.evaluations);
+    result.metrics = aggregateAutoRouteMetrics(result.evaluations);
     if (result.unconnectedIndoorIds.length && result.connectedIndoorIds.length) issues.push(`${result.unconnectedIndoorIds.length} indoor unit(s) could not be connected within the available fitting and clearance constraints. The connected network has no open branch ends.`);
     if (!result.complete) issues.push(...searchStats.rejectedReasons);
     result.issues = [...new Set(issues)];

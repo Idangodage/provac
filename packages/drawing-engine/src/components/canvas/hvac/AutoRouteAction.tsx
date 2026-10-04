@@ -13,9 +13,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSmartDrawingStore } from '../../../store';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 
+import { AutoRouteResultPanel } from './AutoRouteResultPanel';
 import { applyAutoRoutePreview, cancelAutoRoute, discardAutoRoutePreview, runAutoRoute } from './autoRouteController';
 import { autoRouteDuctFeedback } from './autoRouteDuctFeedback';
 import type { AutoRouteCostRates } from './autoRouteEvaluation';
+import { buildAutoRouteReview } from './autoRouteReview';
 import {
   readStoredAutoRouteServices,
   storeAutoRouteServices,
@@ -24,7 +26,6 @@ import {
 import { formatFallRatio } from './condensate/condensateSettings';
 import { AUTO_DUCT_SHAPE_OPTIONS } from './duct/DuctAutoCard';
 import type { AutoDuctShape } from './duct/ductAutoLayout';
-import { formatCost } from './duct/ductEconomics';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, type FanSpeed } from './duct/ductSizing';
 import { wantsDucts, type AutoRouteServices } from './unifiedAutoRoute';
 
@@ -111,6 +112,10 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
     const next = { ...services, [key]: !services[key] };
     setServices(next);
     storeAutoRouteServices(next);
+    if (unified) {
+      discardAutoRoutePreview();
+      setMessage('Services changed. Run Auto route to update the preview.');
+    }
   };
   const ductsTicked = wantsDucts(services);
   const nothingTicked = !services.gas && !services.liquid && !services.condensate && !ductsTicked;
@@ -137,33 +142,32 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
   const ducts = unified?.ducts ?? null;
   const refrigerant = unified?.refrigerant ?? null;
   const condensate = unified?.condensate ?? null;
-  const openClashes = unified?.clashes.filter((clash) => !clash.resolvedByHop) ?? [];
-  const hopClashes = unified?.clashes.filter((clash) => clash.resolvedByHop) ?? [];
   const refrigerantChanges = refrigerant ? refrigerant.elementsToAdd.length + refrigerant.removeElementIds.length + refrigerant.updates.length : 0;
   const condensateChanges = condensate ? condensate.elementsToAdd.length + condensate.removeElementIds.length : 0;
   const ductChanges = ducts ? ducts.elementsToAdd.length + ducts.removeElementIds.length + ducts.terminalUpdates.length : 0;
-  const ductUnits = ducts?.units ?? [];
   const ductFeedback = autoRouteDuctFeedback(ducts);
   const ductsNeedAttention = ductFeedback?.needsAttention ?? false;
-  const ductIssueSet = new Set(ducts?.issues ?? []);
-  const additionalNotes = unified?.issues.filter((issue) => !ductIssueSet.has(issue)) ?? [];
   const hasChanges = ductChanges + refrigerantChanges + condensateChanges > 0;
+  const pendingHops = condensate?.hopProposals.filter((proposal) => !approved.includes(proposal.key)).length ?? 0;
+  const review = unified ? buildAutoRouteReview(unified, approved) : null;
+  const applyReason = review?.applyReason ?? null;
   const summary = unified ? [
+    review?.state === 'blocked' ? 'Needs review' : review?.state === 'ready' ? 'Preview ready' : 'No new routes',
     ductFeedback?.summary,
     refrigerant && !refrigerantChanges ? 'refrigerant unchanged' : null,
     refrigerant && refrigerantChanges ? `refrigerant ${refrigerant.connectedIndoorIds.length}/${refrigerant.connectedIndoorIds.length + refrigerant.unconnectedIndoorIds.length}` : null,
     condensate ? `drains ${condensate.metrics.unitsConnected}/${condensate.metrics.unitsTotal}${condensate.networks.length ? ` · ${formatFallRatio(Math.min(...condensate.networks.map((network) => network.mainSlopePercent)))}` : ''}` : null,
-    openClashes.length ? `${openClashes.length} clash${openClashes.length === 1 ? '' : 'es'}` : hasChanges && !ductsNeedAttention ? 'no clashes' : null,
-    condensate?.hopProposals.length ? `${condensate.hopProposals.length} hop${condensate.hopProposals.length === 1 ? '' : 's'} to approve` : null,
+    pendingHops ? `${pendingHops} hop${pendingHops === 1 ? '' : 's'} to approve` : null,
   ].filter(Boolean).join(' · ') : null;
   // A message (e.g. why Apply was refused) outranks the preview summary until the next run.
   const status = running ? progress?.stage ?? 'Calculating…' : message ?? summary;
 
   useEffect(() => {
-    if (!unified || running || !ductsNeedAttention) return;
+    if (!unified) { setShowDetails(false); return; }
+    if (running || (!ductsNeedAttention && !applyReason)) return;
     setShowOptions(false);
     setShowDetails(true);
-  }, [unified, running, ductsNeedAttention]);
+  }, [unified, running, ductsNeedAttention, applyReason]);
 
   return (
     <div ref={anchorRef} className="relative flex flex-wrap items-center gap-1.5" data-testid="auto-route-action"
@@ -174,7 +178,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
         if (running) cancelAutoRoute();
         else { setShowOptions(false); setShowDetails(false); }
       }}>
-      <span className="flex items-center gap-1" role="group" aria-label="Services to route">
+      <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1" role="group" aria-label="Services to route">
         <span className="flex items-center gap-0.5 rounded-lg bg-slate-50 p-0.5" role="group" aria-label="Ducts">
           <span className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400" aria-hidden="true">Duct</span>
           {DUCT_TICKS.map((tick) => (
@@ -196,8 +200,8 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
       </button>
       {unified && !running ? (
         <>
-          <button type="button" onClick={() => applyAutoRoutePreview()} disabled={!hasChanges}
-            title={hasChanges ? 'Commit every ticked service (and the approved hops) as one undo step' : 'Nothing to apply — open the status for the reason'}
+          <button type="button" onClick={() => applyAutoRoutePreview()} disabled={!hasChanges || Boolean(applyReason)}
+            title={applyReason ?? (hasChanges ? 'Commit every ticked service (and the approved hops) as one undo step' : 'Nothing to apply — open the status for the reason')}
             className="inline-flex items-center gap-1 rounded-lg bg-sky-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-800 disabled:opacity-40">
             <Check size={13} /> Apply
           </button>
@@ -214,8 +218,8 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
       {status ? (
         <span role="status" aria-live="polite" className="min-w-0">
           <button type="button" onClick={() => { if (unified) { setShowOptions(false); setShowDetails(!showDetails); } }} aria-expanded={showDetails}
-            className={`flex max-w-[24rem] items-center gap-1 px-1 text-left text-xs ${openClashes.length || ductsNeedAttention ? 'text-amber-800' : 'text-slate-600'} ${unified ? 'hover:underline' : ''}`} title={status}>
-            {!running && ductsNeedAttention ? <AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> : null}
+            className={`flex max-w-[24rem] items-center gap-1 px-1 text-left text-xs ${applyReason || ductsNeedAttention ? 'text-amber-800' : 'text-slate-600'} ${unified ? 'hover:underline' : ''}`} title={status}>
+            {!running && (applyReason || ductsNeedAttention) ? <AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> : null}
             <span className="truncate">{status}</span>
             {unified && !running ? <ChevronDown size={13} className="shrink-0" aria-hidden="true" /> : null}
           </button>
@@ -224,8 +228,8 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
 
       {showOptions || showDetails ? (
         <div ref={panelRef} style={{ left: panelLeft }}
-          className="absolute top-full z-30 mt-2 max-h-[min(65vh,540px)] w-[360px] max-w-[calc(100vw-48px)] space-y-3 overflow-auto rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-lg">
-          <div className="flex items-center justify-between font-semibold text-slate-800">
+          className="absolute top-full z-30 mt-2 max-h-[min(78vh,720px)] w-[400px] max-w-[calc(100vw-24px)] space-y-3 overflow-auto rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-lg">
+          <div className="sticky -top-3 z-10 -mx-3 -mt-3 flex items-center justify-between border-b border-slate-100 bg-white px-3 py-2 font-semibold text-slate-800">
             {showOptions ? 'Auto route options' : 'Auto route result'}
             <button type="button" aria-label="Close" onClick={() => { setShowOptions(false); setShowDetails(false); }} className="p-1 text-slate-400"><X size={14} /></button>
           </div>
@@ -351,101 +355,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
               <button type="button" onClick={route} disabled={nothingTicked} className="w-full rounded-lg bg-teal-700 py-2 font-medium text-white hover:bg-teal-800 disabled:opacity-40">Auto route</button>
             </>
           ) : unified ? (
-            <div className="space-y-2 leading-4 text-slate-600">
-              {ductsNeedAttention ? (
-                <div className="space-y-1 rounded-md border border-amber-200 bg-amber-50 p-2 text-amber-900">
-                  <p className="font-medium">{ductFeedback?.summary}</p>
-                  <p>{ductUnits.length
-                    ? 'Review the reasons below. Select Review unit to inspect its Auto duct settings, then choose Route again.'
-                    : 'Check the selected services, unit scope and available diffusers or return grilles, then choose Route again.'}</p>
-                </div>
-              ) : null}
-              {ducts ? (
-                <div data-testid="auto-route-ducts">
-                  <p className="font-medium text-slate-800">Ducts</p>
-                  {!ductUnits.length ? <p>No ducted unit with free terminals to serve.</p> : null}
-                  {ductFeedback?.additionalIssues.map((issue) => <p key={issue} className="mt-1 text-amber-800">{issue}</p>)}
-                  <ul className="mt-1 space-y-1">
-                    {ductUnits.map((unit) => (
-                      <li key={unit.unitId} className={`rounded-md border px-2 py-1.5 ${unit.status === 'designed' ? 'border-slate-200' : 'border-amber-200 bg-amber-50/60'}`}>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium text-slate-800">{unit.unitLabel}</span>
-                          <button type="button" className="text-[11px] text-teal-700 hover:underline" title="Select the unit: the Auto duct card shows every design, the frontier and the cost breakdown"
-                            onClick={() => useSmartDrawingStore.getState().setSelectedIds([unit.unitId])}>
-                            {unit.status === 'designed' ? 'Study' : 'Review unit'}
-                          </button>
-                        </div>
-                        {unit.status === 'designed' ? (
-                          <>
-                            {unit.services.map((service) => (
-                              <p key={service.service} className="flex items-center gap-1.5">
-                                <span className={`inline-block h-2 w-3 shrink-0 rounded-[2px] border-[1.5px] ${service.service === 'supply' ? 'border-blue-700 bg-blue-500/15' : 'border-teal-700 bg-teal-500/15'}`} aria-hidden="true" />
-                                <span>{service.layout} · {service.trunk} · {service.terminals} terminal{service.terminals === 1 ? '' : 's'}</span>
-                              </p>
-                            ))}
-                            <p className="text-slate-500">
-                              {unit.requiredEspPa !== null ? `${Math.round(unit.requiredEspPa)}${unit.maxEspPa !== null ? ` / ${unit.maxEspPa}` : ''} Pa` : ''}
-                              {unit.firstCost !== null ? ` · ${formatCost(unit.firstCost, unit.currency)} first` : ''}
-                              {unit.lifeCycleCost !== null ? ` · ${formatCost(unit.lifeCycleCost, unit.currency)} life-cycle` : ''}
-                              {unit.exact === false ? ' · heuristic' : ''}
-                            </p>
-                            {unit.notes.map((note) => <p key={note} className="text-amber-800">⚠ {note}</p>)}
-                          </>
-                        ) : (
-                          <div className="mt-1 space-y-1 text-amber-800">
-                            <p className="font-medium">No ducts generated for this unit.</p>
-                            {(unit.notes.length ? unit.notes : ['No layout could be built. Check its terminals and Auto duct settings.'])
-                              .map((note, index) => <p key={`${index}:${note}`}>{note}</p>)}
-                          </div>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              {refrigerant ? (
-                <div>
-                  <p className="font-medium text-slate-800">Refrigerant{unified.services.gas && unified.services.liquid ? '' : unified.services.gas ? ' (gas line)' : ' (liquid line)'}</p>
-                  {refrigerantChanges ? (
-                    <p>{refrigerant.connectedIndoorIds.length} unit{refrigerant.connectedIndoorIds.length === 1 ? '' : 's'} connected{refrigerant.unconnectedIndoorIds.length ? `, ${refrigerant.unconnectedIndoorIds.length} not connected` : ''}{refrigerant.metrics ? ` · ${(refrigerant.metrics.pipeLengthMm / 1000).toFixed(1)} m · ${refrigerant.metrics.branchPairCount} branch pairs` : ''}</p>
-                  ) : (
-                    <p>Kept as it is — the notes say why.</p>
-                  )}
-                </div>
-              ) : null}
-              {condensate ? (
-                <div>
-                  <p className="font-medium text-slate-800">Condensate</p>
-                  <p>{condensate.metrics.unitsConnected} of {condensate.metrics.unitsTotal} drains · {(condensate.metrics.pipeLengthMm / 1000).toFixed(1)} m{condensate.metrics.pumpedUnits ? ` · ${condensate.metrics.pumpedUnits} pumped` : ''} · {condensate.crossings.length} refrigerant crossing{condensate.crossings.length === 1 ? '' : 's'}</p>
-                </div>
-              ) : null}
-              <div>
-                <p className="font-medium text-slate-800">Clashes between services</p>
-                {openClashes.length === 0 && hopClashes.length === 0 ? (
-                  <p className={hasChanges ? 'text-teal-800' : 'text-slate-500'}>
-                    {hasChanges ? 'No clashes in the generated routes.' : 'No new routes to check.'}
-                  </p>
-                ) : null}
-                {openClashes.map((clash, index) => <p key={`o${index}`} className="text-amber-800">⚠ {clash.message}</p>)}
-                {hopClashes.map((clash, index) => <p key={`h${index}`}>↑ {clash.message} Resolved when the proposed hop is approved.</p>)}
-              </div>
-              {condensate?.hopProposals.length ? (
-                <div className="space-y-1 rounded-md border border-fuchsia-200 bg-fuchsia-50 p-2 text-fuchsia-900">
-                  <p className="font-medium">Refrigerant hops (gravity drainage has priority)</p>
-                  {condensate.hopProposals.map((hop) => (
-                    <label key={hop.key} className="flex items-center gap-2">
-                      <input type="checkbox" checked={approved.includes(hop.key)} disabled={!hop.withinSoffit} onChange={() => toggleHop(hop.key)} />
-                      <span>Raise {hop.refrigerantElementId.slice(-6)} to ≥ {Math.round(hop.requiredCentrelineZ)} mm{hop.withinSoffit ? '' : ' (no room below soffit)'}</span>
-                    </label>
-                  ))}
-                </div>
-              ) : null}
-              {additionalNotes.length ? (
-                <details><summary className="cursor-pointer text-teal-700">Notes ({additionalNotes.length})</summary>
-                  {additionalNotes.map((issue) => <p key={issue} className="mt-1">{issue}</p>)}
-                </details>
-              ) : null}
-            </div>
+            <AutoRouteResultPanel result={unified} approved={approved} toggleHop={toggleHop} />
           ) : null}
         </div>
       ) : null}

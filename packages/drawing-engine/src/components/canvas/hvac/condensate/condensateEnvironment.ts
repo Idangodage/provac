@@ -10,7 +10,8 @@
  * overridden in the condensate settings.
  */
 import type { HvacElement, Point2D, Room, Wall } from '../../../../types';
-import { ductRunLegFootprintsMm } from '../duct/ductTypes';
+import { getActiveDuctSettings } from '../duct/ductSettings';
+import { solidBoxesInScene, type DuctBox } from '../duct/ductVolumes';
 import { listNetworkPipeLanes } from '../networkPipeClearance';
 import type { PipeRoutingSettings } from '../pipeRoutingSettings';
 
@@ -63,6 +64,8 @@ export interface PlanObstacle {
   minY: number;
   maxX: number;
   maxY: number;
+  minZ: number;
+  maxZ: number;
   /** Clearance applies (equipment) or the raw box is used (the source unit's own body). */
   kind: 'equipment' | 'source-body' | 'stack';
 }
@@ -107,6 +110,8 @@ export interface CondensateEnvironment {
   sources: IndoorDrainPort[];
   sinks: CondensateSink[];
   obstacles: PlanObstacle[];
+  /** Insulated physical bodies shared with the final coordination check. */
+  solids: DuctBox[];
   walls: WallBarrier[];
   services: ServiceSegment[];
   /** Units whose drains belong to a locked / hand-edited network; never regenerated. */
@@ -228,16 +233,6 @@ export function buildCondensateSink(element: HvacElement, settings: CondensateDe
   };
 }
 
-const BODY_TYPES: ReadonlySet<HvacElement['type']> = new Set<HvacElement['type']>([
-  ...CONDENSATE_INDOOR_UNIT_TYPES,
-  'outdoor-unit',
-  'refrigerant-branch-kit',
-  'duct',
-  'filter',
-  'accessory',
-  'control-panel',
-]);
-
 function isProtectedCondensatePipe(element: HvacElement): boolean {
   const spec = readCondensatePipeSpec(element);
   if (spec.locked) return true;
@@ -256,6 +251,9 @@ function replaceableCondensatePipeIdsFor(
   unitScope: ReadonlySet<string> | null,
   gullyScope: ReadonlySet<string> | null,
 ): string[] {
+  // An explicit empty unit selection is not drawing scope, even if a selected
+  // gully happens to receive other units' existing networks.
+  if (unitScope && sourceIds.size === 0) return [];
   const ids: string[] = [];
   for (const element of scene) {
     if (!isCondensatePipe(element) || isProtectedCondensatePipe(element)) continue;
@@ -274,7 +272,7 @@ export function replaceableCondensatePipeIds(
   settings: Pick<CondensateDesignSettings, 'defaultPumpMaxLiftMm'>,
   scope: { unitIds?: readonly string[]; gullyIds?: readonly string[] } = {},
 ): string[] {
-  const unitScope = scope.unitIds?.length ? new Set(scope.unitIds) : null;
+  const unitScope = scope.unitIds ? new Set(scope.unitIds) : null;
   const gullyScope = scope.gullyIds?.length ? new Set(scope.gullyIds) : null;
   const protectedUnitIds = new Set(scene.filter((element) => isCondensatePipe(element) && isProtectedCondensatePipe(element))
     .flatMap((element) => readCondensatePipeSpec(element).upstreamUnitIds));
@@ -294,7 +292,7 @@ export function buildCondensateEnvironment(
   const { settings } = options;
   const walls = options.walls ?? [];
   const envelope = deriveCondensateEnvelope(scene, settings, options.routingSettings, options.rooms ?? []);
-  const unitScope = options.unitIds?.length ? new Set(options.unitIds) : null;
+  const unitScope = options.unitIds ? new Set(options.unitIds) : null;
   const gullyScope = options.gullyIds?.length ? new Set(options.gullyIds) : null;
 
   const protectedUnitIds = new Set<string>();
@@ -309,10 +307,6 @@ export function buildCondensateEnvironment(
     const spec = readCondensatePipeSpec(element);
     if (isProtectedCondensatePipe(element)) {
       spec.upstreamUnitIds.forEach((id) => protectedUnitIds.add(id));
-      const radius = condensateInsulatedRadiusMm(spec);
-      for (let index = 1; index < spec.routeNodes3d.length; index += 1) {
-        services.push({ elementId: element.id, service: 'drain', a: spec.routeNodes3d[index - 1]!, b: spec.routeNodes3d[index]!, radiusMm: radius, connectedUnitIds: spec.upstreamUnitIds });
-      }
     }
   }
   const skipped: CondensateEnvironment['skipped'] = [];
@@ -334,34 +328,43 @@ export function buildCondensateEnvironment(
   sources.sort((a, b) => a.unitId.localeCompare(b.unitId));
   const sourceIds = new Set(sources.map((source) => source.unitId));
   replaceableElementIds.push(...new Set([...replaceableCondensatePipeIdsFor(scene, sourceIds, unitScope, gullyScope), ...editedPipeIds]));
+  // Every surviving drain is a solid service, including generated networks
+  // outside a selected regeneration scope. Only replaced pipes disappear.
+  const replaced = new Set(replaceableElementIds);
+  for (const element of scene) {
+    if (!isCondensatePipe(element) || replaced.has(element.id)) continue;
+    const spec = readCondensatePipeSpec(element);
+    const radius = condensateInsulatedRadiusMm(spec);
+    for (let index = 1; index < spec.routeNodes3d.length; index += 1) {
+      services.push({ elementId: element.id, service: 'drain', a: spec.routeNodes3d[index - 1]!, b: spec.routeNodes3d[index]!, radiusMm: radius, connectedUnitIds: spec.upstreamUnitIds });
+    }
+  }
 
   const sinks = scene
     .filter((element) => isCondensateGully(element) && (!gullyScope || gullyScope.has(element.id)))
     .map((element) => buildCondensateSink(element, settings, walls))
     .sort((a, b) => a.gullyId.localeCompare(b.gullyId));
 
-  const obstacles: PlanObstacle[] = [];
+  const solids = solidBoxesInScene(scene, getActiveDuctSettings());
+  const obstacles: PlanObstacle[] = solids.map((solid) => ({
+    id: solid.elementId, ...solid.bounds,
+    kind: sourceIds.has(solid.elementId) ? 'source-body' : 'equipment',
+  }));
   for (const element of scene) {
+    // Branch kits have their own tube model rather than an equipment box.
+    // Retain the conservative placement keepout until that model is queried.
+    if (element.type === 'refrigerant-branch-kit') {
+      obstacles.push({ id: element.id, ...unitFootprintBoundsMm(element),
+        minZ: element.elevation, maxZ: element.elevation + element.height, kind: 'equipment' });
+      continue;
+    }
     if (isCondensateGully(element)) {
       if (readCondensateGullySpec(element).terminationKind === 'stack-connection') {
         const b = unitFootprintBoundsMm(element);
-        obstacles.push({ id: element.id, ...b, kind: 'stack' });
+        obstacles.push({ id: element.id, ...b, minZ: element.elevation, maxZ: element.elevation + element.height, kind: 'stack' });
       }
       continue;
     }
-    if (!BODY_TYPES.has(element.type)) continue;
-    const bottom = element.elevation;
-    const top = element.elevation + element.height;
-    // Only bodies that occupy the ceiling-void band obstruct a void run.
-    if (top < envelope.voidFloorMm - 1 || bottom > envelope.soffitMm) continue;
-    // A drawn duct run blocks its legs, not the empty corners of its bounding box.
-    const ductLegs = element.type === 'duct' ? ductRunLegFootprintsMm(element) : null;
-    if (ductLegs) {
-      for (const leg of ductLegs) obstacles.push({ id: element.id, ...leg, kind: 'equipment' });
-      continue;
-    }
-    const bounds = unitFootprintBoundsMm(element);
-    obstacles.push({ id: element.id, ...bounds, kind: sourceIds.has(element.id) ? 'source-body' : 'equipment' });
   }
 
   const wallBarriers: WallBarrier[] = walls
@@ -387,6 +390,7 @@ export function buildCondensateEnvironment(
     sources,
     sinks,
     obstacles,
+    solids,
     walls: wallBarriers,
     services,
     protectedUnitIds,

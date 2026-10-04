@@ -23,6 +23,7 @@ class TestElement extends EventTarget {
 
 describe('HybridViewportController view motion', () => {
   let controller: HybridViewportController;
+  let element: TestElement;
   const viewport = { width: 1200, height: 800 };
 
   beforeEach(() => {
@@ -31,7 +32,8 @@ describe('HybridViewportController view motion', () => {
       matchMedia: vi.fn(() => ({ matches: false })),
     }));
     controller = new HybridViewportController();
-    controller.attach(new TestElement() as unknown as HTMLElement, viewport.width, viewport.height);
+    element = new TestElement();
+    controller.attach(element as unknown as HTMLElement, viewport.width, viewport.height);
     controller.setBoardView(0.15, 4200, -2300);
     controller.update(0);
     controller.setContentBounds(new THREE.Box3(
@@ -46,6 +48,11 @@ describe('HybridViewportController view motion', () => {
   });
 
   const navigation = (): CameraControls => Reflect.get(controller, 'controls') as CameraControls;
+  const pointer = (type: string, values: Partial<PointerEvent> = {}): Event => Object.assign(
+    new Event(type, { cancelable: true }),
+    { pointerId: 1, pointerType: 'mouse', button: 2, buttons: 2,
+      clientX: 600, clientY: 400, movementX: 0, movementY: 0, ...values },
+  );
 
   it('eases plan to iso in a bounded half second and keeps the requested toolbar view', () => {
     const changed = vi.fn();
@@ -219,5 +226,74 @@ describe('HybridViewportController view motion', () => {
     const endpoint = controller.camera.position.clone();
     controller.update(1 / fps);
     expect(controller.camera.position.distanceTo(endpoint)).toBeLessThan(1e-6);
+  });
+
+  it.each(['blur', 'pointercancel', 'lostpointercapture', 'visibilitychange'])(
+    'releases native orbit listeners on %s and permits the next gesture', (reason) => {
+      controller.setIsometricView(false);
+      element.dispatchEvent(pointer('pointerdown'));
+      element.ownerDocument.dispatchEvent(pointer('pointermove', { clientX: 680, clientY: 430 }));
+      controller.update(1 / 60);
+      expect(navigation().currentAction).not.toBe(0);
+      if (reason === 'visibilitychange') {
+        Object.assign(element.ownerDocument, { hidden: true });
+        element.ownerDocument.dispatchEvent(new Event(reason));
+      } else if (reason === 'lostpointercapture') {
+        element.dispatchEvent(pointer(reason));
+      } else {
+        window.dispatchEvent(reason === 'blur' ? new Event(reason) : pointer(reason));
+      }
+      expect(navigation().currentAction).toBe(0);
+      const position = controller.camera.position.clone();
+      const detachedMove = pointer('pointermove', { clientX: 1000 });
+      element.ownerDocument.dispatchEvent(detachedMove);
+      expect(detachedMove.defaultPrevented).toBe(false);
+      for (let frame = 0; frame < 30; frame += 1) controller.update(1 / 60);
+      expect(controller.camera.position.distanceTo(position)).toBeLessThan(1e-6);
+
+      element.dispatchEvent(pointer('pointerdown', { clientX: 600 }));
+      element.ownerDocument.dispatchEvent(pointer('pointermove', { clientX: 520, clientY: 380 }));
+      controller.update(1 / 60);
+      expect(controller.camera.position.distanceTo(position)).toBeGreaterThan(1);
+    },
+  );
+
+  it('recovers a pan when the button was released outside the window', () => {
+    controller.setIsometricView(false);
+    element.dispatchEvent(pointer('pointerdown', { button: 1, buttons: 4 }));
+    element.ownerDocument.dispatchEvent(pointer('pointermove', { button: -1, buttons: 4, clientX: 650 }));
+    controller.update(1 / 60);
+    window.dispatchEvent(pointer('pointermove', { button: -1, buttons: 0, clientX: 650 }));
+    expect(navigation().currentAction).toBe(0);
+    const position = controller.camera.position.clone();
+    const hover = pointer('pointermove', { buttons: 0, clientX: 900 });
+    element.ownerDocument.dispatchEvent(hover);
+    expect(hover.defaultPrevented).toBe(false);
+    controller.update(0.1);
+    expect(controller.camera.position.distanceTo(position)).toBeLessThan(1e-6);
+  });
+
+  it('ignores unrelated capture loss and completes a release intercepted before document', () => {
+    controller.setIsometricView(false);
+    element.dispatchEvent(pointer('pointerdown'));
+    element.dispatchEvent(pointer('lostpointercapture', { pointerId: 2 }));
+    expect(navigation().currentAction).not.toBe(0);
+    window.dispatchEvent(pointer('pointerup', { buttons: 0 }));
+    expect(navigation().currentAction).toBe(0);
+    const hover = pointer('pointermove', { buttons: 0 });
+    element.ownerDocument.dispatchEvent(hover);
+    expect(hover.defaultPrevented).toBe(false);
+  });
+
+  it.each([2, 4])('retains mouse navigation while button mask %i remains held', (buttons) => {
+    controller.setIsometricView(false);
+    element.dispatchEvent(pointer('pointerdown', { button: buttons === 2 ? 2 : 1, buttons }));
+    window.dispatchEvent(pointer('pointerup', { button: 0, buttons }));
+    expect(navigation().currentAction).not.toBe(0);
+    window.dispatchEvent(new Event('blur'));
+    expect(navigation().currentAction).toBe(0);
+    const hover = pointer('pointermove', { buttons: 0 });
+    element.ownerDocument.dispatchEvent(hover);
+    expect(hover.defaultPrevented).toBe(false);
   });
 });

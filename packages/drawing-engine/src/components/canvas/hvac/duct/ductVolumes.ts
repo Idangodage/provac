@@ -13,7 +13,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { getDuctRunPlan, type DuctFabricationPlan, type DuctPiece } from './ductFabricationPlanner';
 import { frameToWorld, sampleArc } from './ductGeometry';
 import type { DuctDesignSettings } from './ductSettings';
-import { isDuctTerminalElement, readDuctTerminalSpec } from './ductTerminals';
+import { isDuctTerminalElement, readDuctTerminalSpec, terminalSpigotPort } from './ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec, type DuctPoint3 } from './ductTypes';
 
 export interface Vec3 { x: number; y: number; z: number }
@@ -144,13 +144,49 @@ export function terminalBoxOf(element: HvacElement): DuctBox | null {
     spec.plenumDepthMm / 2, spec.plenumHeightMm / 2, axisY);
 }
 
+/** Terminal face, plenum and projecting neck share the renderer's local frame. */
+export function terminalBoxesOf(element: HvacElement): DuctBox[] {
+  const spec = readDuctTerminalSpec(element);
+  const plenum = terminalBoxOf(element);
+  if (!spec || !plenum) return [];
+  const centre = { ...plenum.centre, z: element.elevation + spec.faceHeightMm / 2 };
+  const half = spec.faceWidthMm / 2;
+  const face = box(element.id, 'terminal face', add(centre, scale(plenum.axisT, -half)),
+    add(centre, scale(plenum.axisT, half)), spec.faceDepthMm / 2, spec.faceHeightMm / 2, plenum.axisN);
+  const port = terminalSpigotPort(element);
+  const neck = port ? box(element.id, 'terminal neck',
+    { x: port.lip.x - port.normal.x * spec.spigotLengthMm, y: port.lip.y - port.normal.y * spec.spigotLengthMm, z: port.lip.z },
+    port.lip, spec.neckDiameterMm / 2, spec.neckDiameterMm / 2) : null;
+  return [plenum, ...face ? [face] : [], ...neck ? [neck] : []];
+}
+
+/** Equipment casing envelope in world mm, rotated about its footprint centre.
+ * Port fittings, service-access zones and branch-kit fittings need their own
+ * geometry; a branch kit's nominal placement box is not its physical body. */
+export function equipmentBoxOf(element: HvacElement): DuctBox | null {
+  if (['duct', 'diffuser', 'return-grille', 'refrigerant-pipe', 'refrigerant-pipe-pair',
+    'condensate-pipe', 'condensate-gully', 'refrigerant-branch-kit'].includes(element.type)) return null;
+  if (![element.width, element.depth, element.height, element.elevation, element.position.x, element.position.y].every(Number.isFinite)
+    || element.width <= 0 || element.depth <= 0 || element.height <= 0) return null;
+  const angle = (element.rotation ?? 0) * Math.PI / 180;
+  const along = { x: Math.cos(angle), y: Math.sin(angle), z: 0 };
+  const across = { x: -along.y, y: along.x };
+  const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2,
+    z: element.elevation + element.height / 2 };
+  return box(element.id, 'equipment casing', add(centre, scale(along, -element.width / 2)),
+    add(centre, scale(along, element.width / 2)), element.depth / 2, element.height / 2, across);
+}
+
+export function equipmentBoxesInScene(elements: readonly HvacElement[]): DuctBox[] {
+  return elements.flatMap(element => { const body = equipmentBoxOf(element); return body ? [body] : []; });
+}
+
 /** Every duct body and air-terminal box in the scene (the pipe engine's obstacles). */
 export function ductBoxesInScene(elements: readonly HvacElement[], settings: DuctDesignSettings): DuctBox[] {
   const boxes: DuctBox[] = [];
   for (const element of elements) {
     if (isDuctTerminalElement(element)) {
-      const body = terminalBoxOf(element);
-      if (body) boxes.push(body);
+      boxes.push(...terminalBoxesOf(element));
       continue;
     }
     if (!isDuctElement(element)) continue;
@@ -160,41 +196,62 @@ export function ductBoxesInScene(elements: readonly HvacElement[], settings: Duc
   return boxes;
 }
 
+/** Shared physical envelopes for pipe, drain and duct coordination. */
+export function solidBoxesInScene(elements: readonly HvacElement[], settings: DuctDesignSettings): DuctBox[] {
+  return [...ductBoxesInScene(elements, settings), ...equipmentBoxesInScene(elements)];
+}
+
 function boundsOverlap(a: DuctBox['bounds'], b: DuctBox['bounds'], margin = 0): boolean {
   return a.minX <= b.maxX + margin && b.minX <= a.maxX + margin && a.minY <= b.maxY + margin && b.minY <= a.maxY + margin
     && a.minZ <= b.maxZ + margin && b.minZ <= a.maxZ + margin;
 }
 
 /** Distance from a point to the box (0 inside). */
-function pointBoxDistance(point: Vec3, target: DuctBox): number {
+export function pointBoxDistance(point: Vec3, target: DuctBox): number {
   const d = sub(point, target.centre);
   const outside = (value: number, half: number) => Math.max(0, Math.abs(value) - half);
   return Math.hypot(outside(dot(d, target.axisT), target.halfLength), outside(dot(d, target.axisN), target.halfWidth), outside(dot(d, target.axisU), target.halfHeight));
 }
 
 /**
- * Distance from a segment to a box: the distance to a convex set is convex
- * along a line, so a golden-section search over the segment finds it.
+ * Exact distance from a segment to an oriented box. In box coordinates the
+ * squared distance is sum(max(abs(a_i + t*d_i) - h_i, 0)^2). Its active terms
+ * change only at the six slab crossings. On each interval its derivative is
+ * linear, so its stationary point and endpoints give the exact minimum.
  */
 export function segmentBoxDistance(a: Vec3, b: Vec3, target: DuctBox): { distance: number; point: Vec3 } {
-  const at = (s: number) => add(a, scale(sub(b, a), s));
-  const ratio = (Math.sqrt(5) - 1) / 2;
-  let lo = 0;
-  let hi = 1;
-  let x1 = hi - ratio * (hi - lo);
-  let x2 = lo + ratio * (hi - lo);
-  let f1 = pointBoxDistance(at(x1), target);
-  let f2 = pointBoxDistance(at(x2), target);
-  for (let step = 0; step < 48 && hi - lo > 1e-6; step += 1) {
-    if (f1 <= f2) {
-      hi = x2; x2 = x1; f2 = f1; x1 = hi - ratio * (hi - lo); f1 = pointBoxDistance(at(x1), target);
-    } else {
-      lo = x1; x1 = x2; f1 = f2; x2 = lo + ratio * (hi - lo); f2 = pointBoxDistance(at(x2), target);
+  const axes = [target.axisT, target.axisN, target.axisU];
+  const half = [target.halfLength, target.halfWidth, target.halfHeight];
+  const origin = axes.map(axis => dot(sub(a, target.centre), axis));
+  const delta = axes.map(axis => dot(sub(b, a), axis));
+  const cuts = [0, 1];
+  for (let axis = 0; axis < 3; axis += 1) {
+    if (Math.abs(delta[axis]!) < 1e-12) continue;
+    for (const sign of [-1, 1]) {
+      const t = (sign * half[axis]! - origin[axis]!) / delta[axis]!;
+      if (t > 0 && t < 1) cuts.push(t);
     }
   }
-  const candidates = [0, 1, (lo + hi) / 2].map((s) => ({ s, d: pointBoxDistance(at(s), target) }));
-  const best = candidates.reduce((min, candidate) => (candidate.d < min.d ? candidate : min));
-  return { distance: best.d, point: at(best.s) };
+  cuts.sort((x, y) => x - y);
+  let bestT = 0;
+  let bestSquared = Number.POSITIVE_INFINITY;
+  const consider = (t: number) => {
+    const squared = origin.reduce((sum, value, axis) => sum + Math.max(0, Math.abs(value + t * delta[axis]!) - half[axis]!) ** 2, 0);
+    if (squared < bestSquared) { bestSquared = squared; bestT = t; }
+  };
+  cuts.forEach(consider);
+  for (let index = 1; index < cuts.length; index += 1) {
+    const lo = cuts[index - 1]!; const hi = cuts[index]!; const middle = (lo + hi) / 2;
+    let numerator = 0; let denominator = 0;
+    for (let axis = 0; axis < 3; axis += 1) {
+      const value = origin[axis]! + middle * delta[axis]!;
+      if (Math.abs(value) <= half[axis]!) continue;
+      numerator += delta[axis]! * (origin[axis]! - Math.sign(value) * half[axis]!);
+      denominator += delta[axis]! ** 2;
+    }
+    if (denominator > 0) consider(Math.max(lo, Math.min(hi, -numerator / denominator)));
+  }
+  return { distance: Math.sqrt(bestSquared), point: add(a, scale(sub(b, a), bestT)) };
 }
 
 /** Separating-axis overlap of two boxes (penetration beyond `toleranceMm`). */
@@ -219,26 +276,58 @@ export function boxesOverlap(a: DuctBox, b: DuctBox, toleranceMm = 1): boolean {
 }
 
 export interface DuctClash {
-  /** The duct run (or, for a pipe through a terminal's box, the air terminal). */
+  /** The duct run or air terminal whose solid envelope is obstructed. */
   ductId: string;
   mark: string;
   otherId: string;
-  kind: 'pipe' | 'duct' | 'terminal';
+  kind: 'pipe' | 'duct' | 'terminal' | 'equipment';
   service?: string;
   point: Vec3;
 }
 
-/** Runs that meet by design (a branch and its parent) never clash with each other. */
-function connected(a: HvacElement, b: HvacElement): boolean {
-  const specA = readDuctRunSpec(a);
-  const specB = readDuctRunSpec(b);
-  return (specA ? ductParentRunId(specA) === b.id : false) || (specB ? ductParentRunId(specB) === a.id : false);
+/** Only the planned attachment may overlap its parent; downstream loops remain solid. */
+function attachmentContact(plan: DuctFabricationPlan, candidate: DuctBox, parentId: string): boolean {
+  if (ductParentRunId(plan.spec) !== parentId || !plan.tap) return false;
+  const piece = plan.pieces.find(item => item.mark === candidate.mark);
+  const start = plan.spec.path[0];
+  return piece?.kind === 'takeoff' && !!start
+    && Math.hypot(start.x - plan.tap.wallPoint.x, start.y - plan.tap.wallPoint.y) <= 5;
+}
+
+/** Carve only the initial straight collar corridor out of its owning casing.
+ * A connected run coming back through that same unit is still an obstruction. */
+function afterUnitCollar(candidate: DuctBox, plan: DuctFabricationPlan, body: DuctBox): DuctBox | null {
+  const port = plan.startPort;
+  if (!port || port.unitId !== body.elementId || plan.spec.start.kind !== 'unit-port') return candidate;
+  const piece = plan.pieces.find(item => item.mark === candidate.mark);
+  if (piece?.legIndex !== 0 || piece.widthMm > port.widthMm + 1 || piece.heightMm > port.heightMm + 1) return candidate;
+  const normal = { ...port.normal, z: 0 };
+  if (dot(candidate.axisT, normal) < 1 - 1e-8) return candidate;
+  const start = add(candidate.centre, scale(candidate.axisT, -candidate.halfLength));
+  const startStation = dot(sub(start, port.lip), normal);
+  if (startStation < -1 || norm(sub(sub(start, port.lip), scale(normal, startStation))) > 1) return candidate;
+  const axes = [body.axisT, body.axisN, body.axisU];
+  const halves = [body.halfLength, body.halfWidth, body.halfHeight];
+  let exit = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < axes.length; index += 1) {
+    const coordinate = dot(sub(port.lip, body.centre), axes[index]!);
+    if (Math.abs(coordinate) > halves[index]! + 1) return candidate;
+    const advance = dot(normal, axes[index]!);
+    if (Math.abs(advance) > 1e-8) exit = Math.min(exit, (Math.sign(advance) * halves[index]! - coordinate) / advance);
+  }
+  // A stored port buried deeper than its actual collar is not an intentional
+  // connection through the casing, even when it belongs to this unit.
+  if (!Number.isFinite(exit) || exit > port.collarDepthMm + 1 || exit <= startStation) return candidate;
+  const trim = Math.min(candidate.halfLength * 2, exit - startStation);
+  return box(candidate.elementId, candidate.mark, add(start, scale(normal, trim)),
+    add(candidate.centre, scale(candidate.axisT, candidate.halfLength)), candidate.halfWidth, candidate.halfHeight, candidate.axisN);
 }
 
 /**
  * Every duct body clash in the scene: against the pipe engine's insulated
  * tubes (refrigerant and condensate), against other duct runs, and against
- * the air terminals' boxes (a run and the terminal it serves never clash).
+ * terminal and equipment bodies. Explicit connections receive local socket
+ * allowances, never a blanket exemption for the connected elements.
  */
 export function findDuctClashes(
   elements: readonly HvacElement[],
@@ -246,20 +335,20 @@ export function findDuctClashes(
   pipeLanes: ReadonlyArray<{ elementId: string; service: string; radiusMm: number; segments: ReadonlyArray<{ a: Vec3; b: Vec3 }> }>,
 ): DuctClash[] {
   const ducts = elements.filter(isDuctElement);
-  const terminals = new Map<string, DuctBox>();
+  const terminals = new Map<string, DuctBox[]>();
   for (const element of elements) {
-    const body = isDuctTerminalElement(element) ? terminalBoxOf(element) : null;
-    if (body) terminals.set(element.id, body);
+    if (isDuctTerminalElement(element)) terminals.set(element.id, terminalBoxesOf(element));
   }
   if (ducts.length === 0 && terminals.size === 0) return [];
   const boxesByRun = new Map<string, DuctBox[]>();
+  const plansByRun = new Map<string, DuctFabricationPlan>();
   for (const duct of ducts) {
     const plan = getDuctRunPlan(duct, elements, settings);
-    if (plan) boxesByRun.set(duct.id, ductBoxesOf(plan));
+    if (plan) { boxesByRun.set(duct.id, ductBoxesOf(plan)); plansByRun.set(duct.id, plan); }
   }
   const clashes: DuctClash[] = [];
   const seen = new Set<string>();
-  const bodies: Array<[string, DuctBox[]]> = [...boxesByRun, ...[...terminals].map(([id, body]): [string, DuctBox[]] => [id, [body]])];
+  const bodies: Array<[string, DuctBox[]]> = [...boxesByRun, ...terminals];
   for (const [ductId, boxes] of bodies) {
     for (const lane of pipeLanes) {
       const key = `${ductId}|${lane.elementId}`;
@@ -287,9 +376,9 @@ export function findDuctClashes(
     for (let j = i + 1; j < runs.length; j += 1) {
       const a = ducts.find((duct) => duct.id === runs[i])!;
       const b = ducts.find((duct) => duct.id === runs[j])!;
-      if (connected(a, b)) continue;
       search: for (const boxA of boxesByRun.get(a.id)!) {
         for (const boxB of boxesByRun.get(b.id)!) {
+          if (attachmentContact(plansByRun.get(a.id)!, boxA, b.id) || attachmentContact(plansByRun.get(b.id)!, boxB, a.id)) continue;
           if (boxesOverlap(boxA, boxB)) {
             clashes.push({ ductId: a.id, mark: boxA.mark, otherId: b.id, kind: 'duct', point: scale(add(boxA.centre, boxB.centre), 0.5) });
             break search;
@@ -300,10 +389,36 @@ export function findDuctClashes(
   }
   for (const [runId, boxes] of boxesByRun) {
     const end = readDuctRunSpec(ducts.find((duct) => duct.id === runId)!)?.end;
-    for (const [terminalId, body] of terminals) {
-      if (end?.kind === 'terminal' && end.terminalId === terminalId) continue;
-      const hit = boxes.find((candidate) => boxesOverlap(candidate, body));
-      if (hit) clashes.push({ ductId: runId, mark: hit.mark, otherId: terminalId, kind: 'terminal', point: scale(add(hit.centre, body.centre), 0.5) });
+    for (const [terminalId, terminalBodies] of terminals) {
+      const serves = end?.kind === 'terminal' && end.terminalId === terminalId;
+      for (const body of terminalBodies) {
+        // The run meets the projecting socket, not the entire plenum or face.
+        // Its final centreline ends at the neck lip, so only the final piece
+        // (including a flexible runout) may share that connection envelope.
+        const lastMark = plansByRun.get(runId)?.pieces.at(-1)?.mark;
+        const hit = boxes.find(candidate => !(serves && body.mark === 'terminal neck' && candidate.mark === lastMark) && boxesOverlap(candidate, body));
+        if (hit) { clashes.push({ ductId: runId, mark: hit.mark, otherId: terminalId, kind: 'terminal', point: scale(add(hit.centre, body.centre), 0.5) }); break; }
+      }
+    }
+  }
+  const equipment = equipmentBoxesInScene(elements);
+  for (const [runId, boxes] of boxesByRun) {
+    for (const body of equipment) {
+      const plan = plansByRun.get(runId)!;
+      const hit = boxes.find(candidate => { const outside = afterUnitCollar(candidate, plan, body); return outside && boxesOverlap(outside, body); });
+      if (hit) clashes.push({ ductId: runId, mark: hit.mark, otherId: body.elementId, kind: 'equipment', point: scale(add(hit.centre, body.centre), 0.5) });
+    }
+  }
+  const terminalEntries = [...terminals];
+  for (let index = 0; index < terminalEntries.length; index += 1) {
+    const [terminalId, boxes] = terminalEntries[index]!;
+    const otherBodies: Array<[string, DuctBox[], 'equipment' | 'terminal']> = [
+      ...equipment.map((body): [string, DuctBox[], 'equipment'] => [body.elementId, [body], 'equipment']),
+      ...terminalEntries.slice(index + 1).map(([id, bodies]): [string, DuctBox[], 'terminal'] => [id, bodies, 'terminal']),
+    ];
+    for (const [otherId, bodies, kind] of otherBodies) {
+      const hit = boxes.find(candidate => bodies.some(body => boxesOverlap(candidate, body)));
+      if (hit) clashes.push({ ductId: terminalId, mark: hit.mark, otherId, kind, point: hit.centre });
     }
   }
   return clashes;

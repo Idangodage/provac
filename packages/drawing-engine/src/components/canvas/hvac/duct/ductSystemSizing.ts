@@ -928,7 +928,7 @@ export function sizeDuctSystem(
       if (!ids.has(clash.ductId) && !ids.has(clash.otherId)) continue;
       issues.push({
         code: 'DU_CLASH', severity: 'error', service, point: { x: clash.point.x, y: clash.point.y }, runId: ids.has(clash.ductId) ? clash.ductId : clash.otherId,
-        message: `${clash.mark} clashes with ${clash.kind === 'pipe' ? `a ${clash.service ?? 'pipe'}` : clash.kind === 'terminal' ? 'an air terminal' : 'another duct'}.`,
+        message: `${clash.mark} clashes with ${clash.kind === 'pipe' ? `a ${clash.service ?? 'pipe'}` : clash.kind === 'terminal' ? 'an air terminal' : clash.kind === 'equipment' ? 'an equipment casing' : 'another duct'}.`,
       });
     }
     report.pressure = systemPressure(report.plans, new Map(shares.map((share) => [share.terminalId, share.airflowM3h])), settings, service);

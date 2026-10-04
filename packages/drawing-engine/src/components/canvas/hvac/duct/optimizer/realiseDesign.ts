@@ -22,11 +22,15 @@ import type { HvacElement, Point2D } from '../../../../../types';
 import {
   branchStubMm,
   dirToLocal,
+  flexClear,
+  flexOk,
   simplifyCollinear,
+  stretchBlocked,
   toLocal,
   toWorld,
   type AutoDuctIssue,
   type ServiceCtx,
+  type TerminalCtx,
 } from '../ductAutoContext';
 import { spigotOrigin, splitOrigin, tapOrigin } from '../ductBranchTargets';
 import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from '../ductDraft';
@@ -144,6 +148,40 @@ export function spreadWindows(items: ReadonlyArray<{ desired: number; half: numb
   return out;
 }
 
+/**
+ * A routing-grid endpoint can fall inside the last elbow's fabricated neck.
+ * Spend some of the flexible runout on straight rigid duct when it safely
+ * provides that setback. The terminal, elbow, and upstream route stay put.
+ */
+export function extendTerminalApproach(
+  ctx: ServiceCtx,
+  model: SizingModel,
+  points: Point2D[],
+  terminal: TerminalCtx,
+  section: DuctLeg,
+  bottomZ: number,
+): void {
+  if (points.length < 3 || !sameLeg(section, roundLeg(terminal.neck))) return;
+  const a = points[points.length - 3]!;
+  const corner = points[points.length - 2]!;
+  const end = points[points.length - 1]!;
+  const length = Math.hypot(end.x - corner.x, end.y - corner.y);
+  const before = Math.hypot(corner.x - a.x, corner.y - a.y);
+  if (length < 1 || before < 1) return;
+  const out = { x: (end.x - corner.x) / length, y: (end.y - corner.y) / length };
+  const cos = ((corner.x - a.x) * out.x + (corner.y - a.y) * out.y) / before;
+  const angle = Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI;
+  if (angle < 1 || angle > 135) return;
+  const need = model.elbowSetbackMm(section, angle) + ctx.settings.elbowNeckMm + 25;
+  if (length >= need) return;
+  const next = { x: corner.x + out.x * need, y: corner.y + out.y * need };
+  if ((next.x - terminal.lip.x) * terminal.normal.x + (next.y - terminal.lip.y) * terminal.normal.y <= terminal.neck) return;
+  if (stretchBlocked(ctx, end, next, terminal.neck, bottomZ, new Set([terminal.element.id]))) return;
+  if (!flexOk(model.flexRunoutCurve(next, out, terminal, bottomZ), terminal, ctx.settings)
+    || !flexClear(ctx, next, out, bottomZ, terminal)) return;
+  points[points.length - 1] = next;
+}
+
 /** Why a sized design could not be built: the run, what did not fit, and the take-off concerned. */
 export interface RealiseFailure {
   runKey: string;
@@ -228,6 +266,9 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
     }
     const biggest = sections.reduce((best, section) => (section.widthMm * section.heightMm > best.widthMm * best.heightMm ? section : best), first);
     const end = run.end;
+    if (end.kind === 'terminal' && !run.allFlex) {
+      extendTerminalApproach(ctx, model, polyline, end.terminal, sections[sections.length - 1]!, origin ? origin.bottomZ : ctx.bottomZ);
+    }
     const endClear = end.kind === 'terminal' ? 450 : end.kind === 'split' ? settings.elbowNeckMm + Math.max(biggest.widthMm, 250) + 50
       : end.kind === 'plenum' ? end.lengthMm + 100 : 100;
     // A split's outlets leave its fitting past the run's end (splitLeadMm), but the design joins them at its

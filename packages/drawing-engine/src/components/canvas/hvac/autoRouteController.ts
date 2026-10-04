@@ -9,7 +9,8 @@ import type { HvacElement } from '../../../types';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 
 import { autoRouteSourceSignature, prepareAutoRouteCommand } from './autoRouteCommand';
-import type { AutoRouteCostRates } from './autoRouteEvaluation';
+import { incompleteServiceRouteRefusal } from './autoRouteCompleteness';
+import { effectiveAutoRouteSettings, type AutoRouteCostRates } from './autoRouteEvaluation';
 import { condensateSourceSignature, prepareCondensateCommand, type CondensateCommandSource } from './condensate/condensateCommand';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
@@ -17,8 +18,8 @@ import { terminalSpigotUpdates, type AutoDuctShape } from './duct/ductAutoLayout
 import { ductSourceSignature } from './duct/ductAutoRoute';
 import type { FanSpeed } from './duct/ductSizing';
 import { isDuctTerminalElement } from './duct/ductTerminals';
+import { applyServiceRouteCommand, serviceRouteCommitIssues } from './serviceRouteValidation';
 import {
-  applyRefrigerantProposal,
   foldRefrigerantHopUpdates,
   planUnifiedAutoRoute,
   wantsDucts,
@@ -95,7 +96,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
   const signatures = {
     refrigerant: services.gas || services.liquid ? autoRouteSourceSignature(refrigerantSource(options.profile)) : null,
     condensate: services.condensate ? condensateSourceSignature(condensateSource()) : null,
-    ducts: wantsDucts(services) ? ductSourceSignature(state.hvacElements, state.ductSettings) : null,
+    ducts: wantsDucts(services) ? ductSourceSignature(state.hvacElements, state.ductSettings, state.walls) : null,
   };
   const request: UnifiedAutoRouteRequest = {
     type: 'route',
@@ -186,6 +187,11 @@ export function applyAutoRoutePreview(): string {
     preview.setMessage(message);
     return message;
   };
+  const incomplete = incompleteServiceRouteRefusal(unified);
+  if (incomplete) return refuse(incomplete);
+  if (unified.condensate?.hopProposals.some((proposal) => !preview.approvedHopKeys.includes(proposal.key))) {
+    return refuse('Review and approve the required refrigerant hops before applying. Nothing was changed.');
+  }
   let add: HvacElement[] = [];
   const removeIds: string[] = [];
   let updates: HvacElementUpdate[] = [];
@@ -193,7 +199,7 @@ export function applyAutoRoutePreview(): string {
   const ducts = unified.ducts;
   if (ducts && signatures.ducts && (ducts.elementsToAdd.length || ducts.removeElementIds.length || ducts.terminalUpdates?.length)) {
     const state = useSmartDrawingStore.getState();
-    if (ductSourceSignature(state.hvacElements, state.ductSettings) !== signatures.ducts) {
+    if (ductSourceSignature(state.hvacElements, state.ductSettings, state.walls) !== signatures.ducts) {
       return refuse('The drawing or duct settings changed since the preview. Run Auto route again.');
     }
     add.push(...ducts.elementsToAdd);
@@ -214,12 +220,15 @@ export function applyAutoRoutePreview(): string {
     const latest = condensateSource();
     const approved = unified.condensate.hopProposals.filter((proposal) => preview.approvedHopKeys.includes(proposal.key));
     // Hops land on the refrigerant as it will be after this apply (new runs included).
-    const virtual = applyRefrigerantProposal(latest.scene, unified.refrigerant);
-    const hops = buildRefrigerantHopUpdates(virtual, approved, latest.settings, latest.routingSettings);
+    const virtual = applyServiceRouteCommand(latest.scene, { add, removeIds, updates });
+    const hops = buildRefrigerantHopUpdates(virtual, approved, latest.settings,
+      effectiveAutoRouteSettings(previewProfile, latest.routingSettings, virtual));
+    if (hops.rejected.length) return refuse(`Nothing was applied. ${hops.rejected[0]!.reason}`);
     const folded = foldRefrigerantHopUpdates(add, updates, hops.updates);
     add = folded.add;
     updates = folded.updates;
-    const prepared = prepareCondensateCommand(signatures.condensate, latest, unified.condensate, folded.existing);
+    const coordinated = applyServiceRouteCommand(latest.scene, { add, removeIds, updates });
+    const prepared = prepareCondensateCommand(signatures.condensate, latest, unified.condensate, folded.existing, coordinated);
     if (prepared.issue && (unified.condensate.elementsToAdd.length || unified.condensate.removeElementIds.length)) return refuse(prepared.issue);
     add.push(...(prepared.command?.add ?? []));
     removeIds.push(...(prepared.command?.removeIds ?? []));
@@ -231,7 +240,13 @@ export function applyAutoRoutePreview(): string {
   }
 
   if (!add.length && !removeIds.length && !updates.length) return refuse('Nothing to apply — the existing layout is already the best found.');
-  useSmartDrawingStore.getState().commitHvacElementCommand('Auto route', { add, removeIds, updates, selectedIds: [] });
+  const state = useSmartDrawingStore.getState();
+  const issues = serviceRouteCommitIssues(state.hvacElements, { add, removeIds, updates }, {
+    condensate: state.condensateSettings, routing: state.pipeRoutingSettings, ducts: state.ductSettings,
+    profile: previewProfile, walls: state.walls,
+  });
+  if (issues.length) return refuse(`Nothing was applied. ${issues[0]}`);
+  state.commitHvacElementCommand('Auto route', { add, removeIds, updates, selectedIds: [] });
   const refrigerantUnits = unified.refrigerant?.connectedIndoorIds.length ?? 0;
   const refrigerantChanged = Boolean(unified.refrigerant && (unified.refrigerant.elementsToAdd.length
     || unified.refrigerant.removeElementIds.length || unified.refrigerant.updates.length));

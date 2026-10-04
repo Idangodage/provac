@@ -19,26 +19,35 @@
  *  2. Condensate — on the scene WITH the new refrigerant, with gravity
  *     priority: below a refrigerant run, else above it, else a refrigerant hop
  *     is proposed for approval.
- *  3. Audit — every new pipe is checked in 3D against everything else;
- *     remaining contacts are reported, never silently dropped.
+ *  3. Audit the assembled services and actual proposed hops. If coordination
+ *     fails, compare one drainage-first alternative with the same duct layout.
+ *     Physical validity and coverage precede normalized installation preference.
  */
 import type { HvacElement, Room, Wall } from '../../../types';
 
 import { incompleteAutoRouteRefusal } from './autoRouteCommand';
-import { planAutoRouteNetwork, type AutoRouteNetworkOptions, type AutoRouteNetworkResult } from './autoRouteNetwork';
+import { incompleteServiceRouteRefusal } from './autoRouteCompleteness';
+import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork } from './autoRouteEvaluation';
+import { aggregateAutoRouteMetrics, planAutoRouteNetwork, replaceableGeneratedRefrigerantIds, type AutoRouteNetworkOptions, type AutoRouteNetworkResult } from './autoRouteNetwork';
+import { incompleteCondensateRefusal } from './condensate/condensateCommand';
 import { replaceableCondensatePipeIds } from './condensate/condensateEnvironment';
 import { generateCondensateNetwork, type CondensateGenerationResult } from './condensate/condensateGenerator';
 import type { CondensateDesignSettings } from './condensate/condensateSettings';
 import { isCondensatePipe } from './condensate/condensateTypes';
 import { findCondensateRefrigerantClashes } from './condensate/condensateValidation';
+import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
+import { terminalSpigotUpdates } from './duct/ductAutoLayout';
 import { applyDuctProposal, planAutoRouteDucts, type AutoRouteDuctOptions, type AutoRouteDuctResult } from './duct/ductAutoRoute';
 import { setActiveDuctSettings } from './duct/ductSettings';
 import { isDuctElement, readDuctRunSpec } from './duct/ductTypes';
 import { findDuctClashes } from './duct/ductVolumes';
 import { findNewNetworkPipeClashes, listNetworkPipeLanes } from './networkPipeClearance';
 import { getAutoRouteOwnership, retainGeneratedPipeEdit } from './pipeEditRetention';
+import { getActivePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { isRefrigerantBranchKitElement, resolveRefrigerantBranchKitLineSelection } from './refrigerantBranchKitModel';
 import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
+import { rankServiceRouteCandidates } from './serviceRouteObjective';
+import { applyServiceRouteCommand, serviceRouteCommitDiagnostics, type ServiceRouteCommand, type ServiceRouteIssue } from './serviceRouteValidation';
 
 export interface AutoRouteServices {
   gas: boolean;
@@ -95,6 +104,11 @@ export interface UnifiedAutoRouteResult {
   condensate: CondensateGenerationResult | null;
   clashes: ServiceClash[];
   issues: string[];
+  /** Hard failures after auditing the assembled services and every proposed hop. */
+  blockingIssues?: string[];
+  /** Entity references retained for focusing conflicts from the review. */
+  blockingDetails?: ServiceRouteIssue[];
+  coordination?: { strategy: 'refrigerant-first' | 'drainage-first'; candidatesEvaluated: number };
 }
 
 export function routedServiceOf(element: HvacElement | undefined): RoutedService {
@@ -256,6 +270,66 @@ export function applyRefrigerantProposal(scene: readonly HvacElement[], result: 
   ];
 }
 
+/** Compose before checking: terminal moves and approved hops affect other services. */
+export function unifiedRouteCommand(result: Pick<UnifiedAutoRouteResult, 'ducts' | 'refrigerant' | 'condensate'>): ServiceRouteCommand {
+  return {
+    add: [...(result.ducts?.elementsToAdd ?? []), ...(result.refrigerant?.elementsToAdd ?? []), ...(result.condensate?.elementsToAdd ?? [])],
+    removeIds: [...(result.ducts?.removeElementIds ?? []), ...(result.refrigerant?.removeElementIds ?? []), ...(result.condensate?.removeElementIds ?? [])],
+    updates: [...terminalSpigotUpdates(result.ducts?.terminalUpdates ?? []), ...(result.refrigerant?.updates ?? []).map((element) => ({ id: element.id, updates: element }))],
+  };
+}
+
+export { incompleteDuctRouteRefusal, incompleteServiceRouteRefusal } from './autoRouteCompleteness';
+
+function auditUnifiedCandidate(originalScene: HvacElement[], result: UnifiedAutoRouteResult, options: UnifiedAutoRouteOptions): UnifiedAutoRouteResult {
+  const previous = getActivePipeRoutingSettings();
+  const settings = effectiveAutoRouteSettings(options.refrigerant.profile, options.refrigerant.settings,
+    applyServiceRouteCommand(originalScene, unifiedRouteCommand(result)));
+  setActivePipeRoutingSettings(settings);
+  try {
+    return auditCandidateWithSettings(originalScene, result, { ...options, refrigerant: { ...options.refrigerant, settings } });
+  } finally {
+    setActivePipeRoutingSettings(previous);
+  }
+}
+
+function auditCandidateWithSettings(originalScene: HvacElement[], result: UnifiedAutoRouteResult, options: UnifiedAutoRouteOptions): UnifiedAutoRouteResult {
+  const command = unifiedRouteCommand(result);
+  const assembled = applyServiceRouteCommand(originalScene, command);
+  const hops = buildRefrigerantHopUpdates(assembled, result.condensate?.hopProposals ?? [], options.condensate.settings, options.refrigerant.settings);
+  const folded = foldRefrigerantHopUpdates([...(command.add ?? [])], [...(command.updates ?? [])], hops.updates);
+  const withHops = { ...command, add: folded.add, updates: [...folded.updates, ...folded.existing] };
+  const hoppedScene = applyServiceRouteCommand(originalScene, withHops);
+  const blockingDetails = serviceRouteCommitDiagnostics(originalScene, withHops, { condensate: options.condensate.settings, routing: options.refrigerant.settings,
+    ducts: options.duct?.settings, profile: options.refrigerant.profile, walls: options.refrigerant.walls });
+  const blockingIssues = [...new Set([
+    ...blockingDetails.map(issue => issue.message),
+    ...hops.rejected.map((entry) => entry.reason),
+    ...(result.condensate ? [incompleteCondensateRefusal(originalScene, result.condensate)].filter((issue): issue is string => Boolean(issue)) : []),
+    ...[incompleteServiceRouteRefusal(result)].filter((issue): issue is string => Boolean(issue)),
+  ])];
+  const clashes = [
+    ...auditServiceClashes(applyDuctProposal(originalScene, result.ducts), result.refrigerant, result.condensate, hoppedScene),
+    ...(options.duct ? auditDuctClashes(originalScene, result.ducts, result.refrigerant, result.condensate, options.duct,
+      { scene: hoppedScene, changedIds: hops.updates.map((entry) => entry.id) }) : []),
+  ];
+  let refrigerant = result.refrigerant;
+  if (refrigerant && hops.updates.length) {
+    // Compare the material, bends and risers of the actual proposed assembly,
+    // including conditional hops; never rank their shorter pre-hop routes.
+    const evaluations = refrigerant.evaluations.map((evaluation) => {
+      const outdoorUnitId = evaluation.paths[0]?.outdoorUnitId;
+      if (!outdoorUnitId) return evaluation;
+      return evaluateAutoRouteNetwork({ elements: hoppedScene, outdoorUnitId,
+        indoorUnitIds: [...new Set(evaluation.paths.map((path) => path.indoorUnitId))],
+        profile: options.refrigerant.profile, rates: options.refrigerant.rates,
+        objective: options.refrigerant.objective, walls: options.refrigerant.walls });
+    });
+    refrigerant = { ...refrigerant, evaluations, metrics: aggregateAutoRouteMetrics(evaluations) };
+  }
+  return { ...result, refrigerant, clashes, blockingIssues, blockingDetails, issues: [...new Set([...result.issues, ...blockingIssues])] };
+}
+
 export async function planUnifiedAutoRoute(originalScene: HvacElement[], options: UnifiedAutoRouteOptions): Promise<UnifiedAutoRouteResult> {
   const { services } = options;
   const progress = options.onProgress ?? (() => undefined);
@@ -268,20 +342,27 @@ export async function planUnifiedAutoRoute(originalScene: HvacElement[], options
   // Pipes are clash-checked against duct bodies planned with the document's duct settings (also in the worker).
   if (options.duct) setActiveDuctSettings(options.duct.settings);
 
+  // Reserve only routes this operation is explicitly allowed to replace.
+  // Otherwise an obsolete generated pipe can block the fixed duct collar before
+  // the pipe planners get a chance to coordinate its replacement. Manual,
+  // retained, locked and out-of-scope services remain real obstacles.
+  const replacedDrains = services.condensate
+    ? new Set(replaceableCondensatePipeIds(originalScene, options.condensate.settings, options.condensate))
+    : new Set<string>();
+  const replaceableRefrigerant = services.gas && services.liquid
+    ? new Set(replaceableGeneratedRefrigerantIds(originalScene, options.refrigerant))
+    : new Set<string>();
+  const ductScene = originalScene.filter(element => !replacedDrains.has(element.id) && !replaceableRefrigerant.has(element.id));
+
   let ducts: AutoRouteDuctResult | null = null;
   if (routeDucts) {
     progress({ stage: 'Designing ducts', completed: 0, total: 0 });
-    ducts = planAutoRouteDucts(originalScene, { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) }, options.duct!,
+    ducts = planAutoRouteDucts(ductScene, { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) }, options.duct!,
       (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total }));
     issues.push(...ducts.issues);
   }
   // Every later step sees the new ducts as part of the drawing.
   const scene = applyDuctProposal(originalScene, ducts);
-
-  // Drains this run will regenerate must not shape the refrigerant layout.
-  const replacedDrains = services.condensate
-    ? new Set(replaceableCondensatePipeIds(scene, options.condensate.settings, options.condensate))
-    : new Set<string>();
 
   let refrigerant: AutoRouteNetworkResult | null = null;
   if (wantsRefrigerant) {
@@ -332,13 +413,44 @@ export async function planUnifiedAutoRoute(originalScene: HvacElement[], options
   }
 
   progress({ stage: 'Checking clashes between services', completed: 0, total: 0 });
-  const clashes = [
-    ...auditServiceClashes(scene, refrigerant, condensate),
-    ...(options.duct ? auditDuctClashes(originalScene, ducts, refrigerant, condensate, options.duct) : []),
-  ];
-  const open = clashes.filter((clash) => !clash.resolvedByHop).length;
-  if (open) issues.push(`${open} clash${open === 1 ? '' : 'es'} between services remain — see the clash list.`);
-  return { services, ducts, refrigerant, condensate, clashes, issues };
+  const baseline = auditUnifiedCandidate(originalScene, { services, ducts, refrigerant, condensate, clashes: [], issues }, options);
+  const candidates = [{ key: 'refrigerant-first', result: baseline }];
+  // A second, bounded order reserves the less flexible gravity route first.
+  // Ducts are held fixed; compare complete final assemblies, never independently
+  // optimized service scores that ignore each other's physical space.
+  const retry = wantsRefrigerant && condensate && (baseline.blockingIssues?.length
+    || baseline.clashes.some(clash => !clash.resolvedByHop)
+    || condensate.hopProposals.length || condensate.metrics.unitsConnected < condensate.metrics.unitsTotal
+    || (refrigerant && !refrigerant.complete) || options.refrigerant.objective === 'cost');
+  if (retry) {
+    progress({ stage: 'Comparing a drainage-first layout', completed: 0, total: 1 });
+    const replacedRefrigerant = new Set([...replaceableRefrigerant, ...(refrigerant?.removeElementIds ?? [])]);
+    const drainBase = scene.filter((element) => !replacedDrains.has(element.id) && !replacedRefrigerant.has(element.id));
+    const alternateDrains = generateCondensateNetwork(drainBase, {
+      ...options.condensate, routingSettings: options.refrigerant.settings,
+      onProgress: (step) => progress({ ...step, stage: `Drainage-first: ${step.stage}` }),
+    });
+    // Preserve the original drain removal scope even though replaced drains
+    // were excluded from the routing scene above.
+    alternateDrains.removeElementIds = [...replacedDrains];
+    const reservedScene = [...scene.filter((element) => !replacedDrains.has(element.id)), ...alternateDrains.elementsToAdd];
+    const paired = await planAutoRouteNetwork(reservedScene, {
+      ...options.refrigerant,
+      onProgress: (step) => progress({ ...step, stage: `Drainage-first refrigerant: ${step.stage}` }),
+    });
+    const alternateRefrigerant = services.gas && services.liquid ? paired
+      : reduceRefrigerantResultToLine(paired, reservedScene, services.gas ? 'gas' : 'liquid');
+    // Incomplete destructive rebuilds remain diagnostics; they cannot win or
+    // replace the protected baseline network.
+    if (!incompleteAutoRouteRefusal(alternateRefrigerant)) {
+      candidates.push({ key: 'drainage-first', result: auditUnifiedCandidate(originalScene, {
+        services, ducts, refrigerant: alternateRefrigerant, condensate: alternateDrains, clashes: [],
+        issues: [...(ducts?.issues ?? []), ...alternateRefrigerant.issues, ...alternateDrains.issues],
+      }, options) });
+    }
+  }
+  const selected = rankServiceRouteCandidates(candidates, { objective: options.refrigerant.objective, baselineKey: 'refrigerant-first' })[0]!;
+  return { ...selected.result, coordination: { strategy: selected.key as 'refrigerant-first' | 'drainage-first', candidatesEvaluated: candidates.length } };
 }
 
 const SERVICE_NAMES: Record<RoutedService, string> = {
@@ -348,8 +460,8 @@ const SERVICE_NAMES: Record<RoutedService, string> = {
 
 /**
  * New duct contacts once everything is applied: new ducts against anything,
- * and new or changed pipes against any duct. Contacts the drawing already had
- * are not new and are not listed (the duct validation shows them).
+ * and new or changed pipes against any duct. Unchanged existing pairs are
+ * ignored; changing either body requires checking the pair again.
  */
 export function auditDuctClashes(
   originalScene: readonly HvacElement[],
@@ -357,26 +469,27 @@ export function auditDuctClashes(
   refrigerant: AutoRouteNetworkResult | null,
   condensate: CondensateGenerationResult | null,
   options: Pick<AutoRouteDuctOptions, 'settings'>,
+  resolved?: { scene: readonly HvacElement[]; changedIds: readonly string[] },
 ): ServiceClash[] {
   const changed = new Set([
     ...(ducts?.elementsToAdd ?? []).map((element) => element.id),
+    ...(ducts?.terminalUpdates ?? []).map((element) => element.id),
     ...(refrigerant ? [...refrigerant.elementsToAdd, ...refrigerant.updates].map((element) => element.id) : []),
     ...(condensate?.elementsToAdd ?? []).map((element) => element.id),
+    ...(resolved?.changedIds ?? []),
   ]);
   if (!changed.size) return [];
   const afterDucts = applyDuctProposal(originalScene, ducts);
   const afterRefrigerant = applyRefrigerantProposal(afterDucts, refrigerant);
   const removedDrains = new Set(condensate?.removeElementIds ?? []);
-  const finalScene = [...afterRefrigerant.filter((element) => !removedDrains.has(element.id)), ...(condensate?.elementsToAdd ?? [])];
-  if (!finalScene.some(isDuctElement)) return [];
+  const finalScene = resolved ? [...resolved.scene] : [...afterRefrigerant.filter((element) => !removedDrains.has(element.id)), ...(condensate?.elementsToAdd ?? [])];
   const byId = new Map(finalScene.map((element) => [element.id, element]));
   const key = (clash: { ductId: string; otherId: string }) => [clash.ductId, clash.otherId].sort().join('|');
-  const before = new Set(findDuctClashes(originalScene, options.settings, listNetworkPipeLanes([...originalScene])).map(key));
   const clashes: ServiceClash[] = [];
   const seen = new Set<string>();
   for (const clash of findDuctClashes(finalScene, options.settings, listNetworkPipeLanes(finalScene))) {
     const pair = key(clash);
-    if (seen.has(pair) || before.has(pair) || (!changed.has(clash.ductId) && !changed.has(clash.otherId))) continue;
+    if (seen.has(pair) || (!changed.has(clash.ductId) && !changed.has(clash.otherId))) continue;
     seen.add(pair);
     const duct = byId.get(clash.ductId);
     const other = byId.get(clash.otherId);
@@ -407,6 +520,7 @@ export function auditServiceClashes(
   scene: readonly HvacElement[],
   refrigerant: AutoRouteNetworkResult | null,
   condensate: CondensateGenerationResult | null,
+  hoppedScene?: readonly HvacElement[],
 ): ServiceClash[] {
   const clashes: ServiceClash[] = [];
   const afterRefrigerant = applyRefrigerantProposal(scene, refrigerant);
@@ -434,8 +548,13 @@ export function auditServiceClashes(
       });
     }
   }
-  const hopTargets = new Set((condensate?.hopProposals ?? []).map((proposal) => proposal.refrigerantElementId));
+  const remaining = hoppedScene ? new Set(findCondensateRefrigerantClashes(hoppedScene).map((clash) => `${clash.condensateId}|${clash.refrigerantId}`)) : null;
+  const changed = new Set([
+    ...(refrigerant?.elementsToAdd ?? []).map((element) => element.id), ...(refrigerant?.updates ?? []).map((element) => element.id),
+    ...(condensate?.elementsToAdd ?? []).map((element) => element.id),
+  ]);
   for (const clash of findCondensateRefrigerantClashes(finalScene)) {
+    if (!changed.has(clash.condensateId) && !changed.has(clash.refrigerantId)) continue;
     const service = routedServiceOf(byId.get(clash.refrigerantId));
     clashes.push({
       elementIds: [clash.condensateId, clash.refrigerantId],
@@ -443,7 +562,7 @@ export function auditServiceClashes(
       distanceMm: null,
       requiredMm: null,
       message: `Condensate pipe touches the ${service === 'gas' || service === 'liquid' ? `${service} ` : ''}refrigerant run ${byId.get(clash.refrigerantId)?.label ?? clash.refrigerantId}.`,
-      resolvedByHop: hopTargets.has(clash.refrigerantId),
+      resolvedByHop: remaining !== null && !remaining.has(`${clash.condensateId}|${clash.refrigerantId}`),
     });
   }
   return clashes;

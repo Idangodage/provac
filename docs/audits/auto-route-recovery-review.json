@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-04",
+  "branch": "main",
+  "scope": "Duct-generation failures, cassette drain clearance, coordinated replacement and the Auto route result workflow",
+  "rootCauses": [
+    {
+      "issue": "A rigid terminal approach could end inside the fabricated elbow neck, leaving an invalid flexible connection.",
+      "change": "Extend the final straight only when the terminal clearance, full duct envelope and actual remaining flex curve pass the existing checks. Reject obstructed or tight alternatives."
+    },
+    {
+      "issue": "Duct planning treated generated pipes scheduled for replacement as permanent obstacles at the unit collar.",
+      "change": "Reserve only generated routes that the selected operation is authorized to replace. Manual, retained, locked, unticked and out-of-scope services remain obstacles."
+    },
+    {
+      "issue": "The FDT28 catalog envelope contains part of its drain socket. A validator that required a perfectly horizontal departure falsely rejected a falling gravity drain.",
+      "change": "Share a bounded outward socket allowance between planning and final validation. Check the connecting hose as well as its riser, and use the rotated source casing. Upward, sideways and returning casing penetrations remain blocked."
+    },
+    {
+      "issue": "Connected-unit totals could obscure failed requested services, and a duct preview did not detect wall changes.",
+      "change": "Use a shared completeness check for candidate review and Apply, retain selected unserved terminals as obligations, and include wall geometry in the duct preview signature."
+    },
+    {
+      "issue": "The result panel repeated long messages, mixed advisory data with physical blockers, and could describe spigot changes from rejected candidates.",
+      "change": "Use service coverage cards, distinct routing constraints, expandable unit diagnostics and installation/manufacturer checks. Inspect selects existing objects and opens properties. Service changes discard stale previews; narrow toolbars wrap."
+    }
+  ],
+  "reproductions": [
+    "FDUM22 with eleven 595 mm / diameter 200 mm terminals: every terminal served, selected design has zero errors, no physical clashes, all flexible bend radii at least 200 mm and within configured length limits.",
+    "FDUM22 plus four FDT28 cassettes, three terminals and an obsolete generated CD32 drain at the supply collar: all terminals and five drains proposed, four pumped and one gravity, with zero final blockers. Retaining the old drain correctly keeps it as an obstacle.",
+    "Real-catalog cassette cases cover cardinal and arbitrary rotation, nearby bodies, an obstructed outlet, forbidden socket departures and returning paths."
+  ],
+  "validation": {
+    "note": "Test groups overlap and counts should not be added.",
+    "condensateAndNetworkSuites": "139 passed across 20 selected suites",
+    "ductOptimizerDenseLayoutAndVolumes": "41 passed; 39 opt-in benchmark tests skipped",
+    "ductFabricationChecksFlexAndPressure": "51 passed",
+    "routingReviewFeedbackTerminalApproachAndController": "41 passed before the final added review case",
+    "finalReviewSuite": "10 passed",
+    "typescript": "drawing-engine and web passed",
+    "lint": "targeted changed-file ESLint passed",
+    "whitespace": "git diff --check passed",
+    "browserEvidence": "auto-route-recovery-browser.json"
+  },
+  "engineeringBoundaries": [
+    "These are reconstructed fixtures using catalog data, not the user's saved project file.",
+    "Manufacturer capacity indices are not inferred from kW, BTU or a model name. Verified model rules and fitting allowances are still required for manufacturer compliance.",
+    "Ceiling-space, shared-main separation and wall-opening coordination advisories remain visible; a clash-free preview is not fabrication approval.",
+    "The bounded route search preserves physical feasibility ahead of coverage and cost. It does not prove a globally optimal route."
+  ],
+  "primaryReferences": [
+    "https://flexibleduct.org/images/ADC~IR5E.pdf",
+    "https://handbook.ashrae.org/Handbooks/S24/IP/S24_Ch19/S24_Ch19_ip.aspx",
+    "https://mhi-hvac.co.uk/wp-content/uploads/fdt-kxze1_m_installation_in.pdf"
+  ]
+}

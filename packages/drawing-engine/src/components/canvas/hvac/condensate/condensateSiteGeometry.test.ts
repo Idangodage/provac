@@ -122,6 +122,7 @@ describe('condensate drains built like site practice', () => {
     const scene = [unit, liquid, gas, gully('fg', port.point.x - 2500, port.point.y + 3500)];
     const settings = resolveCondensateSettings({ soffitMm: 3500 });
     const result = run(scene, { soffitMm: 3500 });
+    expect(result.metrics.unitsConnected, JSON.stringify(result.perUnit)).toBe(1);
     const { spec } = unitBranch(result, 'c-1');
     const [, foot, top] = spec.routeNodes3d as [Point3, Point3, Point3];
     expect(spec.pumped).toBe(true);

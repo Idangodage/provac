@@ -1,0 +1,130 @@
+{
+  "title": "Isometric interaction review — synthetic responsiveness fixture",
+  "capturedAt": "2026-10-03T23:11:03.188Z",
+  "implementation": "Production DrawingCanvas, HybridProjectionLayer, HybridViewportController, HVAC geometry and route-preview store",
+  "fixture": {
+    "hvacElements": 46,
+    "walls": 3,
+    "includes": [
+      "ducted indoor AC",
+      "outdoor AC",
+      "ducts",
+      "diffusers",
+      "return grille",
+      "gas and liquid pipes",
+      "branch kits",
+      "gravity drain",
+      "manual pipe"
+    ],
+    "purpose": "Interaction and rendering regression. Extra pipes are intentionally unconnected; visible VRF warnings are expected. This fixture is not a compliance-approved design."
+  },
+  "environment": {
+    "browser": "Chrome headless",
+    "renderer": "SwiftShader software WebGL",
+    "viewport": {
+      "width": 1250,
+      "height": 900
+    },
+    "notes": "Absolute frame rate and driver/shader initialization cost do not represent a hardware-accelerated user workstation."
+  },
+  "baseline": "Captured before pointer coalescing, cancellation/release-coordinate fixes, incremental preview-cache update and outline optimization. Stable combined preview memo was already present.",
+  "input": "Real CDP mouse/key gestures for orbit, pan, wall and pipe drags; deterministic PointerEvent bursts, pointercancel, unrelated-pointer release and blur signals exercise event-handler edge cases.",
+  "pass": true,
+  "checks": [
+    {
+      "name": "Pointer burst picks once per animation frame",
+      "pass": true,
+      "picks": 1
+    },
+    {
+      "name": "Wall commits final release coordinates",
+      "pass": true,
+      "actual": {
+        "x": 431.62635690835214,
+        "y": 1365.3763579508523
+      },
+      "expected": {
+        "x": 431.62635690835214,
+        "y": 1365.3763579508523
+      }
+    },
+    {
+      "name": "Wall commits one undo",
+      "pass": true
+    },
+    {
+      "name": "Wall Escape cancels without commit",
+      "pass": true
+    },
+    {
+      "name": "Wall blur cancels without commit",
+      "pass": true
+    },
+    {
+      "name": "Wall pointercancel cancels without commit",
+      "pass": true
+    },
+    {
+      "name": "Wall missedRelease cancels without commit",
+      "pass": true
+    },
+    {
+      "name": "Unrelated pointer up preserves owner; fresh drag commits once",
+      "pass": true
+    },
+    {
+      "name": "Pipe handle commits valid edit once",
+      "pass": true
+    },
+    {
+      "name": "No JavaScript or WebGL shader errors",
+      "pass": true
+    },
+    {
+      "name": "Active route preview navigation retains meshes and model",
+      "pass": true,
+      "meshRoots": 10,
+      "geometries": 90
+    }
+  ],
+  "measuredPostfxRenderCalls": {
+    "firstWallDrag": {
+      "before": {
+        "calls": 3,
+        "medianMs": 457,
+        "maxMs": 688.9
+      },
+      "after": {
+        "calls": 2,
+        "medianMs": 250.8,
+        "maxMs": 250.8
+      }
+    },
+    "validPipeDrag": {
+      "before": {
+        "calls": 14,
+        "medianMs": 21.7,
+        "maxMs": 52
+      },
+      "after": {
+        "calls": 17,
+        "medianMs": 10.4,
+        "maxMs": 26.5
+      }
+    }
+  },
+  "resourceChecks": {
+    "navigationCommittedBuilds": 0,
+    "previewRootsRetained": 10,
+    "previewGeometryIdentitiesRetained": 90,
+    "previewNavigationSceneUpdates": 0,
+    "previewNavigationModelChanges": 0,
+    "previewNavigationGeometryDisposals": 0
+  },
+  "limitations": [
+    "Fresh-context first outline activation still produced a 695 ms postfx/shader/driver stall in the software renderer; warm median was 13 ms. This audit does not establish that every first-use GPU stall is eliminated.",
+    "Mesh-build timing instrumentation covers committed meshes in the old bundle and both committed/preview cache meshes in the new bundle; those raw counts are not compared directly.",
+    "Screenshot is a synthetic responsiveness fixture, not a construction or regulatory compliance deliverable."
+  ],
+  "screenshot": "docs/audits/isometric-drag-synthetic-fixture.png"
+}

@@ -134,7 +134,8 @@ describe('condensate micro-editing engine', () => {
     const branchId = session.model.unitBranchOf.get('c-2')!;
     const route = session.model.routes.get(branchId)!;
     const port = getIndoorUnitDrainPort(scene.find((element) => element.id === 'c-2')!, settings)!;
-    const target = { x: port.point.x + 900, y: port.point.y - 900 };
+    // The hose must leave the socket outward before it can turn aside.
+    const target = { x: port.point.x + 900, y: port.point.y - 300 };
     const moved = moveRiserFoot(route, target, settings.liftMaxHorizontalMm);
     expect(planRun(moved[1]!, port.point)).toBeCloseTo(settings.liftMaxHorizontalMm, 3);
     const result = session.solve({ routes: new Map([[branchId, moved]]) });
@@ -143,6 +144,11 @@ describe('condensate micro-editing engine', () => {
     expect(planRun(nodes[1]!, moved[1]!)).toBeLessThan(0.6);
     expect(planRun(nodes[1]!, nodes[2]!)).toBeLessThan(0.6);
     expect(nodes[2]!.z).toBeGreaterThan(nodes[1]!.z + 100);
+
+    const sideways = moveRiserFoot(route, { x: port.point.x + 900, y: port.point.y - 900 }, settings.liftMaxHorizontalMm);
+    const blocked = session.solve({ routes: new Map([[branchId, sideways]]) });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.message).toContain('no unobstructed connection from the drain outlet');
   });
 
   it('refuses edits that cannot drain, run through equipment, or change a locked run — with the reason', () => {

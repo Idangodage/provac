@@ -68,9 +68,9 @@ function describeEnd(spec: DuctRunSpec): string {
 
 function Row({ label, children, title }: { label: string; children: React.ReactNode; title?: string }) {
   return (
-    <div className="flex items-start justify-between gap-2 py-1 text-sm" title={title}>
-      <span className="text-slate-500">{label}</span>
-      <span className="text-right text-slate-800">{children}</span>
+    <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-2 gap-y-1 py-1 text-sm" title={title}>
+      <span className="min-w-0 flex-[1_1_6rem] break-words text-slate-500">{label}</span>
+      <span className="ml-auto min-w-0 max-w-full break-words text-right text-slate-800 [&_input]:max-w-full [&_select]:min-w-0 [&_select]:max-w-full">{children}</span>
     </div>
   );
 }
@@ -106,12 +106,12 @@ function SettingNumber({ settingKey, label, step, min, max, unit = 'mm' }: {
 function BomTable({ rows }: { rows: DuctBomRow[] }) {
   if (rows.length === 0) return <p className="text-xs text-slate-500">Nothing to schedule.</p>;
   return (
-    <table className="w-full text-[11px]">
+    <table className="w-full table-fixed text-[11px]">
       <tbody>
         {rows.map((row, index) => (
           <tr key={index} className={row.category === 'Issues' ? 'text-red-700' : 'text-slate-700'}>
-            <td className="py-0.5 pr-1 align-top">{row.description}{row.size !== '—' ? <span className="text-slate-400"> · {row.size}</span> : null}</td>
-            <td className="whitespace-nowrap py-0.5 text-right align-top">{row.quantity} {row.unit}</td>
+            <td className="break-words py-0.5 pr-2 align-top">{row.description}{row.size !== '—' ? <span className="text-slate-400"> · {row.size}</span> : null}</td>
+            <td className="w-20 break-words py-0.5 text-right align-top">{row.quantity} {row.unit}</td>
           </tr>
         ))}
       </tbody>
@@ -195,7 +195,7 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
   const updateHvacElement = useSmartDrawingStore((state) => state.updateHvacElement);
   const spec = readDuctTerminalSpec(element);
   if (!spec) return null;
-  const select = 'rounded border border-slate-200 px-1 py-0.5 text-xs';
+  const select = 'min-w-0 max-w-full rounded border border-slate-200 px-1 py-0.5 text-xs';
   const reshape = (neckDiameterMm: number) => ({
     ...typicalTerminalSpec(spec.kind, neckDiameterMm, {
       mount: spec.mount, ...(spec.slots !== undefined ? { slots: spec.slots } : {}),
@@ -312,7 +312,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
     commit({ ...spec, nodeOverrides }, `Duct elbow ${node}`);
   };
   const elbows = plan.pieces.filter((piece) => piece.kind === 'elbow' && piece.nodeIndex !== undefined);
-  const select = 'rounded border border-slate-200 px-1 py-0.5 text-xs';
+  const select = 'min-w-0 max-w-full rounded border border-slate-200 px-1 py-0.5 text-xs';
   return (
     <div className="space-y-1" data-testid="duct-run-inspector">
       <Row label="Label">
@@ -362,7 +362,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
         <div className="rounded border border-slate-100 px-2 py-1" data-testid="duct-leg-sizes">
           <div className="text-xs text-slate-500">Clear section per leg (W × H mm; a change adds a transition)</div>
           {spec.legs.map((leg, index) => (
-            <div key={index} className="flex items-center justify-between py-0.5 text-xs">
+            <div key={index} className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 py-0.5 text-xs">
               <span className="text-slate-500">
                 {legCaption(spec, index)}
                 {riseOf(spec, index) !== null ? (
@@ -375,7 +375,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
                   </span>
                 ) : null}
               </span>
-              <span>
+              <span className="ml-auto max-w-full">
                 <CommitNumber label={`Leg ${index + 1} width`} value={leg.widthMm} onCommit={(widthMm) => setLeg(index, { widthMm })} />
                 {' × '}
                 <CommitNumber label={`Leg ${index + 1} height`} value={leg.heightMm} onCommit={(heightMm) => setLeg(index, { heightMm })} />
@@ -884,7 +884,7 @@ export function DuctSystemsSection() {
       <details open>
         <summary className="cursor-pointer text-xs font-medium text-slate-700">Project duct BOM ({plans.length} run{plans.length === 1 ? '' : 's'})</summary>
         <BomTable rows={bom} />
-        <div className="flex gap-2 pt-1">
+        <div className="flex flex-wrap gap-2 pt-1">
           <CopyButton text={ductBomToCsv(bom)} label="Copy BOM CSV" />
           <CopyButton text={ductScheduleToCsv(schedule)} label="Copy schedule CSV" />
         </div>

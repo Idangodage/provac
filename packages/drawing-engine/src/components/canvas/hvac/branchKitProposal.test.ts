@@ -877,9 +877,12 @@ describe('nearest feasible station on a paired main', () => {
 
   it('searches beyond both failed one-step nudges when nearby fitting stations are physically obstructed', () => {
     const main = makeFlowHostScene(false, 8000);
+    // The enclosure blocks fitting bodies beside the main while both insulated
+    // host pipes remain clear. Enclosing the main would also obstruct the
+    // liquid line's required level change, making every insertion infeasible.
     const obstacle: HvacElement = {
       ...main[0]!, id: 'equipment-enclosure', type: 'ducted-ac', category: 'indoor-unit',
-      position: { x: 3000, y: -300 }, rotation: 0, width: 4000, depth: 600,
+      position: { x: 3000, y: 100 }, rotation: 0, width: 4000, depth: 400,
       elevation: 0, height: 4000, properties: {},
     };
     const scene = [...main, obstacle];
@@ -899,6 +902,22 @@ describe('nearest feasible station on a paired main', () => {
     expect(new Set(insertion!.removeElementIds)).toEqual(new Set(['host-gas', 'host-liquid']));
     expect(findNewNetworkPipeClashes(scene,
       [...(insertion!.updates ?? []), ...insertion!.elementsToAdd], insertion!.removeElementIds)).toEqual([]);
+  });
+
+  it('refuses re-leveling a host pipe through a solid enclosure even when the fitting station itself is clear', () => {
+    const main = makeFlowHostScene(false, 8000);
+    const clear = proposeBranchKit(main, indoorStartBundle, { x: 1900, y: 20 }, { maxRecoveryStations: 0 });
+    expect(clear?.validity, clear?.violations.join(' ')).not.toBe('invalid');
+    const enclosure: HvacElement = {
+      ...main[0]!, id: 'equipment-enclosure', type: 'ducted-ac', category: 'indoor-unit',
+      position: { x: 3000, y: -300 }, rotation: 0, width: 4000, depth: 600,
+      elevation: 0, height: 4000, properties: {},
+    };
+    const scene = [...main, enclosure];
+    const proposal = proposeBranchKit(scene, indoorStartBundle, { x: 1900, y: 20 }, { maxRecoveryStations: 0 });
+    expect(proposal).not.toBeNull();
+    expect(proposal!.validity).toBe('invalid');
+    expect(buildBranchKitInsertion(proposal!, indoorStartBundle, scene)).toBeNull();
   });
 
   it('chooses the nearer feasible side instead of the first direction searched', () => {

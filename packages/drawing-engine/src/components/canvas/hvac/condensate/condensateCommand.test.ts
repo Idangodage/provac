@@ -50,6 +50,7 @@ describe('prepareCondensateCommand', () => {
     const signature = condensateSourceSignature(source(scene));
     const result = generateCondensateNetwork(scene, { settings });
     const prepared = prepareCondensateCommand(signature, source(scene), result);
+    expect(prepared.issue).toBeUndefined();
     expect(prepared.command?.add?.length).toBeGreaterThan(0);
     const before = useSmartDrawingStore.getState().hvacElements;
     useSmartDrawingStore.getState().saveToHistory('baseline');
@@ -57,6 +58,27 @@ describe('prepareCondensateCommand', () => {
     expect(useSmartDrawingStore.getState().hvacElements.filter(isCondensatePipe)).toHaveLength(result.elementsToAdd.length);
     useSmartDrawingStore.getState().undo();
     expect(useSmartDrawingStore.getState().hvacElements.map((element) => element.id)).toEqual(before.map((element) => element.id));
+  });
+
+  it('refuses a generated drain changed to rise in the direction of flow', () => {
+    const result = generateCondensateNetwork(scene, { settings });
+    const pipe = result.elementsToAdd.find((element) => element.properties.segmentRole === 'main') ?? result.elementsToAdd[0]!;
+    const nodes = pipe.properties.routeNodes3d as Array<{ x: number; y: number; z: number }>;
+    const altered = { ...pipe, properties: { ...pipe.properties, pumped: false,
+      routeNodes3d: nodes.map((node, index) => ({ ...node, z: nodes[0]!.z + index * 100 })) } };
+    result.elementsToAdd = result.elementsToAdd.map((element) => element.id === pipe.id ? altered : element);
+    const prepared = prepareCondensateCommand(condensateSourceSignature(source(scene)), source(scene), result);
+    expect(prepared.command).toBeUndefined();
+    expect(prepared.issue).toMatch(/applied/);
+  });
+
+  it('refuses unresolved crossing metadata instead of silently applying the preview', () => {
+    const result = generateCondensateNetwork(scene, { settings });
+    result.crossings = [{ key: 'blocked', serviceElementId: 'gas', serviceElementIds: ['gas'], point: { x: 4000, y: 0 },
+      relation: 'unresolved', condensateZ: 2500, serviceZMin: 2490, serviceZMax: 2510, requiredClearanceMm: 60, networkId: 'n' }];
+    const prepared = prepareCondensateCommand(condensateSourceSignature(source(scene)), source(scene), result);
+    expect(prepared.command).toBeUndefined();
+    expect(prepared.issue).toMatch(/unresolved crossing/);
   });
 });
 

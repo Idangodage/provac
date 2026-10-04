@@ -5,9 +5,12 @@ import { findNewNetworkPipeClashes } from '../networkPipeClearance';
 import type { PipeRouteNode3D } from '../pipeRoute3d';
 
 import { resolveUnitAirPorts } from './ductAirPorts';
+import { tapOrigin } from './ductBranchTargets';
 import { buildDuctRunDraftElement } from './ductDraft';
 import { getDuctRunPlan } from './ductFabricationPlanner';
 import { getActiveDuctSettings, resolveDuctSettings, setActiveDuctSettings } from './ductSettings';
+import { terminalSpigotPort } from './ductTerminals';
+import { roundLeg } from './ductTypes';
 import { validateDuctRuns } from './ductValidation';
 import { boxesOverlap, ductBoxesOf, segmentBoxDistance } from './ductVolumes';
 
@@ -95,5 +98,48 @@ describe('duct design checks', () => {
     expect(findNewNetworkPipeClashes([unit, duct], [under])).toEqual([]);
     // An existing contact kept as it is, is not new.
     expect(findNewNetworkPipeClashes([unit, duct, through], [through])).toEqual([]);
+  });
+
+  it('checks downstream branch loops against their own parent while allowing the intended takeoff', () => {
+    const origin = tapOrigin(duct, settings, { legIndex: 0, stationMm: 2500, side: 1, style: 'spin-in', vcd: true }, roundLeg(150))!;
+    if (origin.kind !== 'tap') throw new Error('Expected a takeoff');
+    const start = origin.point;
+    const straight = buildDuctRunDraftElement({ origin, points: [{ x: start.x + 2000, y: start.y }], legSizes: [roundLeg(150)] }, 'branch');
+    expect(validateDuctRuns([unit, duct, straight], settings).issues.filter(issue => issue.code === 'DU_CLASH')).toEqual([]);
+    const loop = buildDuctRunDraftElement({ origin, points: [{ x: start.x + 2000, y: start.y },
+      { x: start.x + 2000, y: start.y - 1500 }, { x: start.x - 2000, y: start.y - 1500 }], legSizes: [roundLeg(150)] }, 'branch');
+    expect(validateDuctRuns([unit, duct, loop], settings).issues.filter(issue => issue.code === 'DU_CLASH')).toHaveLength(1);
+  });
+
+  it('does not exempt a served terminal plenum from a run looping through its body', () => {
+    const terminal: HvacElement = { ...unit, id: 'terminal', type: 'diffuser', width: 595, depth: 595, elevation: 2400, properties: {} };
+    const port = terminalSpigotPort(terminal)!;
+    const centre = { x: terminal.width / 2, y: terminal.depth / 2 };
+    const loop = buildDuctRunDraftElement({ origin: { kind: 'free', point: { x: centre.x - 2000, y: centre.y },
+      bottomZ: port.lip.z - 100, service: 'supply' }, points: [{ x: centre.x + 2000, y: centre.y },
+      { x: centre.x + 2000, y: port.lip.y - 600 }, { x: port.lip.x, y: port.lip.y - 600 }, port.lip],
+    legSizes: [roundLeg(200)], end: { kind: 'terminal', terminalId: terminal.id, portId: port.portId, flex: false } }, 'loop');
+    expect(validateDuctRuns([terminal, loop], settings).issues.filter(issue => issue.code === 'DU_CLASH'))
+      .toEqual([expect.objectContaining({ message: expect.stringContaining('air terminal') })]);
+  });
+
+  it('rejects a duct crossing another equipment casing but permits its own source collar and a clear overhead body', () => {
+    const obstacle: HvacElement = { ...unit, id: 'other-unit', position: { x: supply.lip.x - 200, y: crossY - 200 },
+      width: 400, depth: 400, height: 400, elevation: z0 - 50, properties: {} };
+    expect(validateDuctRuns([unit, duct, obstacle], settings).issues.filter(issue => issue.code === 'DU_CLASH'))
+      .toEqual([expect.objectContaining({ message: expect.stringContaining('equipment') })]);
+    expect(validateDuctRuns([unit, duct, { ...obstacle, elevation: 3100 }], settings).issues.filter(issue => issue.code === 'DU_CLASH')).toEqual([]);
+  });
+
+  it('reports a moved or extended pipe contact with a duct even if those same elements already touched', () => {
+    const moved = pipe(through.id, [{ x: supply.lip.x - 1500, y: crossY + 500, z: supply.lip.z },
+      { x: supply.lip.x + 1500, y: crossY + 500, z: supply.lip.z }]);
+    expect(findNewNetworkPipeClashes([unit, duct, through], [moved])).toHaveLength(1);
+    const original = pipe('parallel', [{ x: supply.lip.x, y: crossY, z: supply.lip.z },
+      { x: supply.lip.x, y: crossY - 500, z: supply.lip.z }]);
+    const longer = pipe('parallel', [{ x: supply.lip.x, y: crossY, z: supply.lip.z },
+      { x: supply.lip.x, y: crossY - 1500, z: supply.lip.z }]);
+    expect(findNewNetworkPipeClashes([unit, duct, original], [original])).toEqual([]);
+    expect(findNewNetworkPipeClashes([unit, duct, original], [longer])).toHaveLength(1);
   });
 });

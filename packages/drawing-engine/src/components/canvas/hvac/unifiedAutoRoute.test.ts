@@ -179,7 +179,7 @@ describe('unified auto route — pure steps', () => {
     expect(folded.existing.map((entry) => entry.id)).toEqual(['untouched']);
   });
 
-  it('reports a drain touching a refrigerant run, and marks it resolved when a hop is proposed for that run', () => {
+  it('requires geometrically cleared contacts before marking a proposed hop resolved', () => {
     const scene = [indoor('u', 0), gully('fg', 5000, 300)];
     const condensate = generateCondensateNetwork(scene, { settings: condensateSettings });
     // Cross the longest horizontal leg of the generated drain at its midpoint.
@@ -208,7 +208,17 @@ describe('unified auto route — pure steps', () => {
       ...condensate,
       hopProposals: [{ key: 'hop-1', refrigerantElementId: 'gas-x' } as RefrigerantHopProposal],
     };
-    expect(auditServiceClashes(world, null, withHop).find((entry) => entry.elementIds.includes('gas-x'))!.resolvedByHop).toBe(true);
+    expect(auditServiceClashes(world, null, withHop).find((entry) => entry.elementIds.includes('gas-x'))!.resolvedByHop).toBe(false);
+    const raised = pipe('gas-x', 'gas', through.properties.routePoints as Array<{ x: number; y: number }>, mid.z + 500);
+    const cleared = [...scene, raised, ...condensate.elementsToAdd];
+    expect(auditServiceClashes(world, null, withHop, cleared).find((entry) => entry.elementIds.includes('gas-x'))!.resolvedByHop).toBe(true);
+    // A second refrigerant lane crossing the same drain must also be reported.
+    const second = { ...through, id: 'gas-y' };
+    const both = [...world, second];
+    const partiallyCleared = [...cleared, second];
+    const audit = auditServiceClashes(both, null, withHop, partiallyCleared);
+    expect(audit.find((entry) => entry.elementIds.includes('gas-x'))!.resolvedByHop).toBe(true);
+    expect(audit.find((entry) => entry.elementIds.includes('gas-y'))!.resolvedByHop).toBe(false);
   });
 });
 

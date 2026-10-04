@@ -7,7 +7,6 @@ import { buildStraightGiDuctElement } from '../giDuctModel';
 import { DEFAULT_PIPE_ROUTING_SETTINGS } from '../pipeRoutingSettings';
 
 import { buildCondensateEnvironment } from './condensateEnvironment';
-import { unitFootprintBoundsMm } from './condensatePorts';
 import { resolveCondensateSettings } from './condensateSettings';
 
 const settings = resolveCondensateSettings({});
@@ -24,7 +23,7 @@ function ductObstacles(scene: HvacElement[], ductId: string) {
 }
 
 describe('condensate routing around ducts', () => {
-  it('an old straight duct stub is still one bounding-box obstacle, exactly as before', () => {
+  it('retains the physical body and elevation of an old straight duct stub', () => {
     const stub = {
       id: 'old', rotation: 0, supplyZoneRatio: 0,
       ...buildStraightGiDuctElement([{ x: 400, y: 0 }, { x: 400, y: -1200 }], {
@@ -32,7 +31,12 @@ describe('condensate routing around ducts', () => {
       }),
     } as HvacElement;
     const obstacles = ductObstacles([unit, stub], 'old');
-    expect(obstacles).toEqual([{ id: 'old', ...unitFootprintBoundsMm(stub), kind: 'equipment' }]);
+    expect(obstacles).toHaveLength(1);
+    expect(obstacles[0]).toMatchObject({ id: 'old', minY: -1200, maxY: 0, kind: 'equipment' });
+    expect((obstacles[0]!.minX + obstacles[0]!.maxX) / 2).toBe(400);
+    expect(obstacles[0]!.maxX - obstacles[0]!.minX).toBeGreaterThan(395);
+    expect(obstacles[0]!.minZ).toBeCloseTo(stub.elevation, 0);
+    expect(obstacles[0]!.maxZ).toBeGreaterThan(stub.elevation);
   });
 
   it('an L-shaped run blocks its two legs, not the empty corner of its bounding box', () => {
@@ -41,7 +45,7 @@ describe('condensate routing around ducts', () => {
       port: supply, points: [{ x: supply.lip.x, y: supply.lip.y - 3000 }, { x: supply.lip.x + 4000, y: supply.lip.y - 3000 }],
     }, 'run');
     const obstacles = ductObstacles([unit, run], 'run');
-    expect(obstacles).toHaveLength(2);
+    expect(obstacles.length).toBeGreaterThanOrEqual(2);
     const emptyCorner = { x: supply.lip.x + 3000, y: supply.lip.y - 800 };
     const blocked = obstacles.some((box) => emptyCorner.x >= box.minX && emptyCorner.x <= box.maxX && emptyCorner.y >= box.minY && emptyCorner.y <= box.maxY);
     expect(blocked).toBe(false);
@@ -52,5 +56,16 @@ describe('condensate routing around ducts', () => {
   it('a scene without ducts builds the same obstacles as before', () => {
     const environment = buildCondensateEnvironment([unit], { settings, routingSettings });
     expect(environment.obstacles.every((obstacle) => obstacle.id === 'fdum')).toBe(true);
+  });
+
+  it.each(['diffuser', 'return-grille'] as const)('includes the actual %s plenum and neck above its face', (type) => {
+    const terminal: HvacElement = {
+      ...unit, id: type, type, position: { x: 3000, y: 0 }, width: 595, depth: 595,
+      height: 20, elevation: 2400, properties: {},
+    };
+    const environment = buildCondensateEnvironment([unit, terminal], { settings, routingSettings });
+    const boxes = environment.obstacles.filter((obstacle) => obstacle.id === type);
+    expect(boxes.length).toBeGreaterThan(0);
+    expect(Math.max(...boxes.map((box) => box.maxZ))).toBeGreaterThan(terminal.elevation + terminal.height);
   });
 });

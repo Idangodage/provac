@@ -1,25 +1,21 @@
 /**
- * Post-processing for the hybrid scene — faithful port of the reference app's
- * `engine/renderer/postfx.ts`: EffectComposer (MSAA 4) with a RenderPass and
- * ONE EffectPass hosting two OutlineEffects. Hover reads soft (edgeStrength
- * 2.5 @ 50% opacity), selection strong (edgeStrength 6); both use the shared
- * accent 0x4f8cff with xRay so outlines read through occluders.
+ * One solid scene render and a shared-depth outline composite. Hover and
+ * selection draw only their proxies; neither redraws the full model for depth.
  */
 import {
-  BlendFunction,
   EffectComposer,
   EffectPass,
-  OutlineEffect,
   RenderPass,
 } from "postprocessing";
 import * as THREE from "three";
+
+import { HybridOutlineEffect } from './hybridOutlineEffect';
 
 export const SELECTION_ACCENT = 0x4f8cff;
 
 export class HybridPostFX {
   private readonly composer: EffectComposer;
-  private readonly hoverOutline: OutlineEffect;
-  private readonly selectionOutline: OutlineEffect;
+  private readonly outline: HybridOutlineEffect;
   private hoverCount = 0;
   private selectionCount = 0;
 
@@ -36,44 +32,18 @@ export class HybridPostFX {
     this.composer = new EffectComposer(renderer, { multisampling: 4 });
     this.composer.addPass(new RenderPass(scene, camera));
 
-    this.hoverOutline = new OutlineEffect(scene, camera, {
-      blendFunction: BlendFunction.SCREEN,
-      edgeStrength: 3.5,
-      visibleEdgeColor: SELECTION_ACCENT,
-      hiddenEdgeColor: SELECTION_ACCENT,
-      // FULL-resolution outline buffer (default 0.5 half-res upscales into
-      // broken/aliased thin lines) + MSAA so the edge stays sharp & continuous.
-      resolutionScale: 1,
-      multisampling: 4,
-      blur: false,
-      xRay: false,
-    });
-    this.hoverOutline.blendMode.opacity.value = 0.55;
-
-    this.selectionOutline = new OutlineEffect(scene, camera, {
-      blendFunction: BlendFunction.SCREEN,
-      edgeStrength: 8,
-      visibleEdgeColor: SELECTION_ACCENT,
-      hiddenEdgeColor: SELECTION_ACCENT,
-      resolutionScale: 1,
-      multisampling: 4,
-      blur: false,
-      // xRay off → ONE solid silhouette (no visible/hidden split that breaks
-      // the line where the wall self-occludes at grazing angles).
-      xRay: false,
-    });
-
-    this.composer.addPass(new EffectPass(camera, this.hoverOutline, this.selectionOutline));
+    this.outline = new HybridOutlineEffect(scene, camera, SELECTION_ACCENT);
+    this.composer.addPass(new EffectPass(camera, this.outline));
   }
 
   setHover(objects: THREE.Object3D[]): void {
     this.hoverCount = objects.length;
-    this.hoverOutline.selection.set(objects);
+    this.outline.hover.set(objects);
   }
 
   setSelection(objects: THREE.Object3D[]): void {
     this.selectionCount = objects.length;
-    this.selectionOutline.selection.set(objects);
+    this.outline.selected.set(objects);
   }
 
   setSize(width: number, height: number): void {

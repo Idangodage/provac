@@ -22,6 +22,7 @@
  * Pure and deterministic (injectable id factory); safe to run in a worker.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { segmentBoxDistance } from '../duct/ductVolumes';
 import { getActivePipeRoutingSettings, resolvePipeRoutingSettings, setActivePipeRoutingSettings, type PipeRoutingSettings } from '../pipeRoutingSettings';
 
 import {
@@ -37,8 +38,10 @@ import { add, closestOnSegment, distance, dot, normalize, pointToSegmentDistance
 import { selectCondensatePipeSize, type CondensatePipeSize } from './condensatePipeCatalog';
 import type { IndoorDrainPort } from './condensatePorts';
 import { maxFeasibleSlope, solveProfile, type ProfileNode, type ProfileSolution } from './condensateProfileSolver';
+import { condensateSegmentDistance, riserTopBelowPipe } from './condensateRiserClearance';
 import { routeCondensateBranch, type RouteTarget, type RouterBox, type RouterServiceLine, type RouterTreeSegment } from './condensateRouter';
 import type { CondensateDesignSettings } from './condensateSettings';
+import { condensateSocketExitLength } from './condensateSocketClearance';
 
 // ---------------------------------------------------------------------------
 // Public result shapes
@@ -220,7 +223,21 @@ interface RouterContext {
 function buildRouterContext(environment: CondensateEnvironment, defaultRadius: number): RouterContext {
   const { settings } = environment;
   const inflate = settings.equipmentClearanceMm + defaultRadius;
+  const casings = new Map(environment.solids.filter(solid => solid.mark === 'equipment casing').map(solid => [solid.elementId, solid]));
+  const sourceBox = (raw: RouterBox): RouterBox => {
+    const casing = casings.get(raw.id);
+    if (!casing) return { ...raw, minX: raw.minX - 2, minY: raw.minY - 2, maxX: raw.maxX + 2, maxY: raw.maxY + 2 };
+    const halfLength = casing.halfLength + defaultRadius + 0.5;
+    const halfWidth = casing.halfWidth + defaultRadius + 0.5;
+    const extentX = Math.abs(casing.axisT.x) * halfLength + Math.abs(casing.axisN.x) * halfWidth;
+    const extentY = Math.abs(casing.axisT.y) * halfLength + Math.abs(casing.axisN.y) * halfWidth;
+    return { id: raw.id, minX: casing.centre.x - extentX, maxX: casing.centre.x + extentX,
+      minY: casing.centre.y - extentY, maxY: casing.centre.y + extentY,
+      oriented: { centre: casing.centre, axis: casing.axisT, halfLength, halfWidth } };
+  };
   const inflated = environment.obstacles.map((obstacle) => ({
+    minZ: obstacle.minZ,
+    maxZ: obstacle.maxZ,
     raw: { id: obstacle.id, minX: obstacle.minX, minY: obstacle.minY, maxX: obstacle.maxX, maxY: obstacle.maxY },
     padded: {
       id: obstacle.id,
@@ -241,9 +258,17 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
     });
   });
   return {
-    obstaclesFor: (unitId, gullyId) => inflated
-      .filter(({ raw }) => raw.id !== gullyId)
-      .map(({ raw, padded }) => (raw.id === unitId ? { ...raw, minX: raw.minX - 2, minY: raw.minY - 2, maxX: raw.maxX + 2, maxY: raw.maxY + 2 } : padded)),
+    obstaclesFor: (unitId, gullyId) => {
+      const source = environment.sources.find((candidate) => candidate.unitId === unitId);
+      const voidFloor = environment.envelope.voidFloorMm + defaultRadius;
+      const exposed = source !== undefined && source.z < voidFloor - 1;
+      const lower = exposed ? getActivePipeRoutingSettings().floorLimitMm + defaultRadius : voidFloor;
+      const pumpLift = source?.hasDrainPump && !exposed && settings.pumpPolicy !== 'never' ? source.pumpMaxLiftMm : 0;
+      const upper = source ? Math.min(environment.envelope.voidTopMm - defaultRadius, source.z + pumpLift) : environment.envelope.voidTopMm;
+      return inflated
+        .filter(({ raw, minZ, maxZ }) => raw.id !== gullyId && (raw.id === unitId || maxZ + inflate > lower && minZ - inflate < upper))
+        .map(({ raw, padded }) => (raw.id === unitId ? sourceBox(raw) : padded));
+    },
     services,
     walls: environment.walls.map((wall) => ({ id: wall.id, a: wall.a, b: wall.b })),
   };
@@ -260,6 +285,7 @@ interface UnitPlan {
   headTopZ: number;
   stubEnd: Point2D;
   stubLength: number;
+  failureReason?: string;
 }
 
 interface CandidateRoute {
@@ -351,12 +377,11 @@ class NetBuilder {
 const RISER_FOOT_OFFSETS: ReadonlyArray<readonly [number, number]> = (() => {
   const offsets: Array<[number, number]> = [];
   for (const along of [150, 100, 60, 220, 280]) {
-    for (const across of [0, 110, -110, 160, -160, 220, -220, 260, -260]) offsets.push([along, across]);
+    for (const across of [0, 25, -25, 60, -60, 110, -110, 160, -160, 220, -220, 260, -260]) offsets.push([along, across]);
   }
   return offsets.sort((a, b) => Math.hypot(a[0] - 150, a[1]) - Math.hypot(b[0] - 150, b[1])
     || Math.abs(a[1]) - Math.abs(b[1]) || b[1] - a[1]);
 })();
-const RISER_SAMPLE_MM = 20;
 
 /**
  * Highest centreline level a plumb riser at `foot` can reach from `baseZ`
@@ -372,30 +397,62 @@ function clearRiserTop(
   environment: CondensateEnvironment,
 ): number | null {
   let top = topZ;
+  const start = { ...foot, z: baseZ };
+  // Exact capsule-to-solid clearance, including terminal plenums and curved
+  // duct fabrication pieces. A riser must stop before the first body it meets.
+  for (const solid of environment.solids) {
+    if (segmentBoxDistance(start, { ...foot, z: top }, solid).distance >= radius) continue;
+    if (segmentBoxDistance(start, start, solid).distance < radius) return null;
+    let clear = baseZ;
+    let blocked = top;
+    for (let iteration = 0; iteration < 35; iteration += 1) {
+      const mid = (clear + blocked) / 2;
+      if (segmentBoxDistance(start, { ...foot, z: mid }, solid).distance < radius) blocked = mid;
+      else clear = mid;
+    }
+    top = Math.min(top, clear);
+  }
   for (const service of environment.services) {
     const required = service.radiusMm + radius + environment.settings.refrigerantClearanceMm;
     if (pointToSegmentDistance(foot, service.a, service.b) >= required) continue;
-    const span = Math.hypot(service.b.x - service.a.x, service.b.y - service.a.y, service.b.z - service.a.z);
-    const samples = Math.max(1, Math.ceil(span / RISER_SAMPLE_MM));
-    for (let index = 0; index <= samples; index += 1) {
-      const t = index / samples;
-      const x = service.a.x + (service.b.x - service.a.x) * t;
-      const y = service.a.y + (service.b.y - service.a.y) * t;
-      const plan = Math.hypot(x - foot.x, y - foot.y);
-      if (plan >= required) continue;
-      const z = service.a.z + (service.b.z - service.a.z) * t;
-      const reach = Math.sqrt(required * required - plan * plan);
-      if (z + reach <= baseZ) continue; // passes below the riser
-      if (z - reach <= baseZ + 0.5) return null; // at the riser foot
-      top = Math.min(top, z - reach);
-    }
+    const allowed = riserTopBelowPipe(foot, baseZ, top, service.a, service.b, required);
+    if (allowed === null) return null;
+    top = Math.min(top, allowed);
   }
   return top;
 }
 
-function insideObstacle(point: Point2D, environment: CondensateEnvironment, margin: number): boolean {
-  return environment.obstacles.some((box) => point.x > box.minX - margin && point.x < box.maxX + margin
-    && point.y > box.minY - margin && point.y < box.maxY + margin);
+function insideObstacle(point: Point2D, z: number, environment: CondensateEnvironment, margin: number): boolean {
+  const centre = { ...point, z };
+  return environment.solids.some((solid) => segmentBoxDistance(centre, centre, solid).distance < margin);
+}
+
+/** Check the actual outlet-to-foot connection as well as the vertical riser.
+ * A clear foot alone does not prove that its connecting hose misses a casing.
+ * Only the source's live socket receives the same bounded allowance as the
+ * final scene validator. Other equipment and services remain solid. */
+function departureIsClear(source: IndoorDrainPort, foot: Point2D, environment: CondensateEnvironment, radius: number): boolean {
+  const start = { ...source.point, z: source.z };
+  const length = distance(source.point, foot);
+  const falls = [0, length * environment.settings.preferredSlopePercent / 100];
+  for (const fall of falls) {
+    const end = { ...foot, z: source.z - fall };
+    const arcLength = Math.hypot(length, fall);
+    for (const solid of environment.solids) {
+      const allowance = condensateSocketExitLength(source, solid, radius, [start, end]);
+      const fraction = arcLength > 0 ? Math.min(1, allowance / arcLength) : 0;
+      const trimmed = { x: start.x + (end.x - start.x) * fraction,
+        y: start.y + (end.y - start.y) * fraction, z: start.z + (end.z - start.z) * fraction };
+      if (segmentBoxDistance(trimmed, end, solid).distance < radius - 1e-6) return false;
+    }
+    for (const service of environment.services) {
+      // Manufacturer sockets can be closer than the general service gap. Their
+      // short connecting hoses still need their full physical outer radii.
+      const gap = service.connectedUnitIds.includes(source.unitId) ? 0 : environment.settings.refrigerantClearanceMm;
+      if (condensateSegmentDistance(start, end, service.a, service.b) < radius + service.radiusMm + gap - 1e-6) return false;
+    }
+  }
+  return true;
 }
 
 function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironment, defaultRadius: number, searchRiserFoot = true): UnitPlan {
@@ -411,9 +468,6 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
     return { x: Math.round(end.x * 2) / 2, y: Math.round(end.y * 2) / 2 };
   };
   const gravityFoot = footAt(Math.min(STUB_LENGTH_MM, settings.liftMaxHorizontalMm), 0);
-  if (!pumped) {
-    return { source, exposed, pumped, headTopZ: source.z, stubEnd: gravityFoot, stubLength: distance(source.point, gravityFoot) };
-  }
   // Site practice: the drain rises plumb beside the unit to its high point —
   // the pump head or the soffit, and below any service over the riser.
   const headLimit = Math.max(source.z, Math.min(source.z + source.pumpMaxLiftMm, voidUpper));
@@ -425,11 +479,13 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
   for (const [along, across] of RISER_FOOT_OFFSETS) {
     if (Math.hypot(along, across) > settings.liftMaxHorizontalMm + 1e-6) continue;
     const foot = footAt(along, across);
-    if (insideObstacle(foot, environment, defaultRadius)) continue;
-    const top = clearRiserTop(foot, source.z, headLimit, defaultRadius, environment);
+    if (!departureIsClear(source, foot, environment, defaultRadius)) continue;
+    if (insideObstacle(foot, source.z, environment, defaultRadius)) continue;
+    const top = pumped ? clearRiserTop(foot, source.z, headLimit, defaultRadius, environment) : source.z;
     if (top === null) continue;
     // Prefer the nearest foot unless another one climbs meaningfully higher.
     if (!best || top > best.top + 10) best = { foot, top };
+    if (!pumped) break;
   }
   const chosen = best ?? { foot: gravityFoot, top: source.z };
   return {
@@ -439,6 +495,7 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
     headTopZ: Math.max(source.z, chosen.top),
     stubEnd: chosen.foot,
     stubLength: distance(source.point, chosen.foot),
+    ...(!best ? { failureReason: 'no unobstructed connection from the drain outlet' } : {}),
   };
 }
 
@@ -458,11 +515,14 @@ function withRiserFoot(
     const voidUpper = environment.envelope.voidTopMm - defaultRadius;
     const headLimit = Math.max(source.z, Math.min(source.z + source.pumpMaxLiftMm, voidUpper));
     const top = plan.pumped ? clearRiserTop(snapped, source.z, headLimit, defaultRadius, environment) : null;
+    const clear = departureIsClear(source, snapped, environment, defaultRadius)
+      && (!plan.pumped || top !== null);
     next = {
       ...plan,
       stubEnd: snapped,
       stubLength: distance(source.point, snapped),
       headTopZ: plan.pumped ? Math.max(source.z, top ?? source.z) : source.z,
+      failureReason: clear ? undefined : 'no unobstructed connection from the drain outlet',
     };
   }
   if (next.pumped && liftLimitMm !== undefined && Number.isFinite(liftLimitMm)) {
@@ -864,7 +924,7 @@ function findCrossingWindows(
 ): CrossingWindow[] {
   // A unit's drain and its OWN refrigerant stubs share the manufacturer's
   // connection zone; coordination clearances start outside it.
-  const inOwnConnectionZone = (service: ServiceSegment, point: Point2D) => service.connectedUnitIds.some((unitId) => {
+  const inOwnConnectionZone = (service: ServiceSegment, point: Point2D) => service.service !== 'drain' && service.connectedUnitIds.some((unitId) => {
     const port = unitPorts.get(unitId);
     return port !== undefined && distance(port, point) <= UNIT_CONNECTION_ZONE_MM;
   });
@@ -1082,6 +1142,9 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
 
   const defaultRadius = radiusOf(DEFAULT_NOMINAL, settings);
   const router = buildRouterContext(environment, defaultRadius);
+  // The environment may be cached by an edit session. Keep coordination state
+  // local, and publish each solved sink network to subsequent searches.
+  const coordinatedServices = [...environment.services];
   const costs = {
     bendPenaltyMm: settings.bendPenaltyMm,
     wallPenaltyMm: settings.wallPenetrationPenaltyMm,
@@ -1105,6 +1168,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
   const candidates = new Map<string, CandidateRoute[]>();
   unitPlans.forEach((unitPlan, index) => {
     progress({ stage: 'Routing units to terminations', completed: index, total: unitPlans.length });
+    if (unitPlan.failureReason) { candidates.set(unitPlan.source.unitId, []); return; }
     const ranked = [...environment.sinks]
       .sort((a, b) => (Math.abs(a.point.x - unitPlan.stubEnd.x) + Math.abs(a.point.y - unitPlan.stubEnd.y))
         - (Math.abs(b.point.x - unitPlan.stubEnd.x) + Math.abs(b.point.y - unitPlan.stubEnd.y)) || a.gullyId.localeCompare(b.gullyId))
@@ -1166,7 +1230,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         liftMm: 0,
         ...(best ? { shortfallMm: Math.round(best.shortfallMm) } : {}),
         reason: !best
-          ? 'no plan route to any termination'
+          ? unitPlan.failureReason ?? 'no plan route to any termination'
           : best.feasibleGravity || best.feasiblePumped
             ? 'termination capacity limit reached'
             : `lacks ${Math.round(best.shortfallMm)} mm of fall to ${best.sink.label}${unitPlan.pumped ? ' even with the drain pump' : unitPlan.source.hasDrainPump ? '' : ' (no drain pump)'}`,
@@ -1191,7 +1255,9 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
   const groupKeys = [...groups.keys()].sort();
   groupKeys.forEach((key, groupIndex) => {
     progress({ stage: 'Growing drainage trees', completed: groupIndex, total: groupKeys.length });
-    const members = groups.get(key)!;
+    const members = groups.get(key)!.map((member) => plan.networks.length
+      ? makeUnitPlan(member.source, { ...environment, services: coordinatedServices }, defaultRadius)
+      : member);
     const sink = assignment.get(members[0]!.source.unitId)!.sink;
     const exposed = members[0]!.exposed;
     const lengthOf = (unitPlan: UnitPlan) => assignment.get(unitPlan.source.unitId)!.lengthMm;
@@ -1259,6 +1325,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
   /** Routes one unit onto the network (or to the termination) so it can still fall to it. */
   function routeIntoNet(net: NetBuilder, unitPlan: UnitPlan, sink: CondensateSink, exposed: boolean):
     { route: NonNullable<ReturnType<typeof routeCondensateBranch>> } | { failure: { points: Point2D[]; shortfallMm: number | null; reason: string } } {
+    if (unitPlan.failureReason) return { failure: { points: [unitPlan.source.point], shortfallMm: null, reason: unitPlan.failureReason } };
     {
       const sizes = new Map<string, CondensatePipeSize>();
       const upstream = upstreamUnitsByNode(net);
@@ -1337,6 +1404,10 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
       const unitPlan = route.reroute
         ? withRiserFoot(makeUnitPlan(base.source, environment, defaultRadius), undefined, fixed.liftLimitMm?.[route.unitId], environment, defaultRadius)
         : withRiserFoot(base, route.points[1] ?? base.stubEnd, fixed.liftLimitMm?.[route.unitId], environment, defaultRadius, true);
+      if (unitPlan.failureReason) {
+        fail(route.unitId, unitPlan.source.label, unitPlan.failureReason, route.points);
+        continue;
+      }
       if (exposed === null) exposed = unitPlan.exposed;
       const obstacles = router.obstaclesFor(unitPlan.source.unitId, sink.gullyId);
       if (route.reroute) {
@@ -1434,7 +1505,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
     // Far end of each edge first: a split always lands between the edge's up node
     // and the windows already inserted further downstream.
     const unitPorts = new Map(net.units.map((unit) => [unit.plan.source.unitId, unit.plan.source.point]));
-    const windows = findCrossingWindows(net, environment.services, base.sizes, settings, unitPorts)
+    const windows = findCrossingWindows(net, coordinatedServices, base.sizes, settings, unitPorts)
       .sort((a, b) => a.upId.localeCompare(b.upId) || b.t1 - a.t1);
     const initial = solved.solution;
     for (const window of windows) {
@@ -1453,8 +1524,10 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         const zDown = initial.zHigh.get(window.downId) ?? zUp;
         return zUp + (zDown - zUp) * ((window.t1 + window.t2) / 2);
       })();
-      const serviceLabel = elementIds.length > 1 ? `refrigerant runs ${elementIds.join(', ')}` : `refrigerant ${elementIds[0]}`;
-      const isDrain = window.services.every((service) => service.service === 'drain');
+      const includesDrain = window.services.some((service) => service.service === 'drain');
+      const serviceKind = window.services.every((service) => service.service === 'drain') ? 'drain'
+        : includesDrain ? 'service' : 'refrigerant';
+      const serviceLabel = elementIds.length > 1 ? `${serviceKind} runs ${elementIds.join(', ')}` : `${serviceKind} ${elementIds[0]}`;
       const below = window.zMin - window.requiredMm;
       const above = window.zMax + window.requiredMm;
       const tryBound = (bound: { upper?: number; lower?: number; reason: string }) => {
@@ -1487,7 +1560,9 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         base.upstreamUnits = upstreamUnitsByNode(net);
         const reset = solveNetwork(net, base);
         if (!('failure' in reset)) solved = reset;
-        relation = isDrain ? 'unresolved' : 'hop';
+        // Gravity drains cannot take a refrigerant hop, including a merged
+        // crossing window containing both a drain and refrigerant lines.
+        relation = includesDrain ? 'unresolved' : 'hop';
       }
       const zHere = (() => {
         const zs = ids.map((id) => (solved as NetworkSolveResult).solution.zHigh.get(id) ?? currentZ);
@@ -1550,6 +1625,9 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
     for (const node of net.nodes.values()) {
       if (node.edge === 'run' || node.edge === 'stub') slopes.set(node.id, final.slopes.get(node.id) ?? final.mainSlope);
     }
+    const feasible = !crossings.some((crossing) => crossing.relation === 'unresolved')
+      && !plan.hopProposals.some((proposal) => proposal.networkId === net.networkId && !proposal.withinSoffit);
+    if (!feasible) issues.push(`${net.sink.label}: a service crossing has no feasible clearance; move the route or change the available level before applying.`);
     const solvedUnits: SolvedUnit[] = net.units.map((unit) => {
       const lift = final.lifts.get(unit.plan.source.unitId) ?? 0;
       const pumped = unit.plan.pumped && lift > 0;
@@ -1559,7 +1637,8 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         unitId: unit.plan.source.unitId,
         label: unit.plan.source.label,
         gullyId: net.sink.gullyId,
-        status: pumped ? 'pumped' : 'gravity',
+        status: feasible ? pumped ? 'pumped' : 'gravity' : 'infeasible',
+        ...(!feasible ? { reason: 'a service crossing has no feasible clearance' } : {}),
         lengthMm: unit.routeLengthMm,
         fallUsedMm: Math.max(0, top.z - root.z),
         headMarginMm: Math.max(0, net.nodes.get(unit.liftTopId)!.slackMm),
@@ -1590,8 +1669,24 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
       mainSlopePercent: final.mainSlope,
       wallCrossings: net.wallCrossings,
       crossings,
-      feasible: true,
+      feasible,
     });
+    for (const node of net.nodes.values()) {
+      if (!node.down || node.edge === 'none') continue;
+      const down = net.nodes.get(node.down);
+      if (!down) continue;
+      const radiusMm = radiusOf(base.sizes.get(node.id) ?? DEFAULT_NOMINAL, settings);
+      const service: ServiceSegment = {
+        elementId: `${net.networkId}:${node.id}`, service: 'drain',
+        a: { ...node.point, z: node.z }, b: { ...down.point, z: down.z }, radiusMm,
+        connectedUnitIds: [],
+      };
+      coordinatedServices.push(service);
+      if (distance(service.a, service.b) > 1) router.services.push({
+        id: service.elementId, a: service.a, b: service.b,
+        halfWidthMm: radiusMm + defaultRadius + settings.refrigerantClearanceMm,
+      });
+    }
   }
 
   function removeUnit(net: NetBuilder, unitId: string) {

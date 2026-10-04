@@ -11,7 +11,7 @@ import { applyDuctProposal, ductSourceSignature, ductWallCrossings, planAutoRout
 import { buildDuctRunDraftElement } from './ductDraft';
 import { planDuctRunSpec } from './ductFabricationPlanner';
 import { DEFAULT_DUCT_SETTINGS } from './ductSettings';
-import { terminalEnvelope, typicalTerminalSpec } from './ductTerminals';
+import { terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec } from './ductTypes';
 import { findDuctClashes } from './ductVolumes';
 
@@ -154,6 +154,45 @@ describe('Auto route: the duct step', () => {
     expect(ductSourceSignature([...scene], DEFAULT_DUCT_SETTINGS)).toBe(signature);
     expect(ductSourceSignature([unit, { ...sd1, position: { x: sd1.position.x + 1, y: sd1.position.y } }], DEFAULT_DUCT_SETTINGS)).not.toBe(signature);
     expect(ductSourceSignature(scene, { ...DEFAULT_DUCT_SETTINGS, econSheetPerKg: DEFAULT_DUCT_SETTINGS.econSheetPerKg + 1 })).not.toBe(signature);
+    expect(ductSourceSignature(scene, DEFAULT_DUCT_SETTINGS, [])).toBe(signature);
+    const wall = { id: 'wall', startPoint: { x: 0, y: 0 }, endPoint: { x: 1000, y: 0 }, thickness: 100 };
+    const walled = ductSourceSignature(scene, DEFAULT_DUCT_SETTINGS, [wall]);
+    expect(walled).not.toBe(signature);
+    expect(ductSourceSignature(scene, DEFAULT_DUCT_SETTINGS, [{ ...wall, endPoint: { x: 1200, y: 0 } }])).not.toBe(walled);
+    expect(ductSourceSignature(scene, DEFAULT_DUCT_SETTINGS, [{ ...wall, thickness: 150 }])).not.toBe(walled);
+    expect(ductSourceSignature(scene, DEFAULT_DUCT_SETTINGS, [{ ...wall }])).toBe(walled);
+  });
+
+  it('reports explicitly selected terminals that cannot be assigned without treating other rooms as obligations', () => {
+    const selected = planAutoRouteDucts([unit, elsewhere], { supply: true, return: false },
+      options({ scope: 'selection', unitIds: [unit.id], terminalIds: [elsewhere.id] }));
+    expect(selected.unservedTerminalIds).toEqual([elsewhere.id]);
+    expect(selected.units).toEqual([]);
+    expect(selected.issues.join(' ')).toMatch(/selected terminal/);
+    const drawing = planAutoRouteDucts([unit, elsewhere], { supply: true, return: false }, options());
+    expect(drawing.unservedTerminalIds ?? []).toEqual([]);
+    expect(drawing.issues).toEqual([]);
+    const noUnit = planAutoRouteDucts([elsewhere], { supply: true, return: false },
+      options({ scope: 'selection', terminalIds: [elsewhere.id] }));
+    expect(noUnit.unservedTerminalIds).toEqual([elsewhere.id]);
+    expect(noUnit.issues.join(' ')).toMatch(/no ducted unit/);
+  });
+
+  it('retains an already-served selected terminal while identifying an unserved selection behind its occupied collar', () => {
+    const port = terminalSpigotPort(sd1)!;
+    const old = buildDuctRunDraftElement({ port: supply, points: [port.lip],
+      end: { kind: 'terminal', terminalId: sd1.id, portId: port.portId, flex: true } }, 'old');
+    const scene = [unit, old, sd1, sd2];
+    const kept = planAutoRouteDucts(scene, { supply: true, return: false },
+      options({ scope: 'selection', unitIds: [unit.id], terminalIds: [sd1.id] }));
+    expect(kept.unservedTerminalIds ?? []).toEqual([]);
+    expect(kept.elementsToAdd).toEqual([]);
+    expect(kept.removeElementIds).toEqual([]);
+    expect(kept.units).toEqual([]);
+    const incomplete = planAutoRouteDucts(scene, { supply: true, return: false },
+      options({ scope: 'selection', unitIds: [unit.id], terminalIds: [sd1.id, sd2.id] }));
+    expect(incomplete.unservedTerminalIds).toEqual([sd2.id]);
+    expect(incomplete.elementsToAdd).toEqual([]);
   });
 });
 

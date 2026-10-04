@@ -109,7 +109,8 @@ import {
   resolveHybridPipeConstraintKey,
   type HybridPipeConstraintKey,
 } from "./hybridPipeEditing";
-import { applyHybridPreviewMaterials, composeHybridPipePreviewScene } from "./hybridPipePreviewScene";
+import { clearHybridPipePreviewScene, updateHybridPipePreviewScene } from "./hybridPipePreviewScene";
+import { createHybridPointerMoveQueue } from "./hybridPointerMoveQueue";
 import { measureUnrevealedContentBounds } from "./hybridScenePresentation";
 import {
   HybridViewportController,
@@ -985,51 +986,23 @@ function rebuildPipePreviewLayer(
   buildRenderContext: ReturnType<typeof createPipeRenderStateCache>,
   ductSettings?: DuctDesignSettings,
 ): void {
-  clearGroup(sceneState.pipePreviewLayer);
-  const { previews, allElements, hiddenIds } = composeHybridPipePreviewScene(
-    committedElements, draftPipes, [...(externalEdits ?? []), ...(editPipe ? [editPipe] : [])],
-  );
+  const { hiddenIds, changed } = updateHybridPipePreviewScene(sceneState.pipePreviewLayer, {
+    committedScene: sceneState.hvacScene,
+    committed: committedElements,
+    drafts: draftPipes,
+    edits: [...(externalEdits ?? []), ...(editPipe ? [editPipe] : [])],
+    buildRenderContext,
+    ductSettings,
+  }, (element, context) => {
+    const mesh = buildHvacElementMesh(element, context);
+    if (mesh) tuneHvacMesh(mesh);
+    return mesh;
+  });
   sceneState.root.children.forEach((child) => {
     const elementId = child.userData.hvacElementId as string | undefined;
-    const elementType = child.userData.hvacElementType as HvacElement["type"] | undefined;
-    if (elementId && elementType && (isRefrigerantPipeElementType(elementType)
-      || elementType === "refrigerant-branch-kit" || elementType === "condensate-pipe" || elementType === "duct")) {
-      child.visible = !hiddenIds.has(elementId);
-    }
+    if (elementId) child.visible = !hiddenIds.has(elementId);
   });
-  if (previews.length === 0) {
-    refreshSceneContentBounds(sceneState);
-    return;
-  }
-  const renderState = buildRenderContext(allElements);
-  const previewIds = new Set(previews.map(element => element.id));
-  for (const element of sceneState.hvacScene.changedElements(renderState)) {
-    if (previewIds.has(element.id) || (!isRefrigerantPipeElementType(element.type)
-      && element.type !== "refrigerant-branch-kit")) continue;
-    previews.push(element);
-    previewIds.add(element.id);
-    hiddenIds.add(element.id);
-  }
-  sceneState.root.children.forEach(child => {
-    if (hiddenIds.has(child.userData.hvacElementId as string)) child.visible = false;
-  });
-  const context = {
-    ...renderState,
-    // Duct drafts (and their re-planned parents) fabricate with the project's duct settings.
-    ...(ductSettings ? { ductSettings } : {}),
-    // Straight targets orient branch-kit bodies. Pipe meshes do not consume
-    // them, so local pipe previews avoid compiling the entire network twice.
-    ...(previews.some(element => element.type === "refrigerant-branch-kit")
-      ? { pipeTargets: getVisibleRefrigerantPipeStraightSegmentTargets(allElements) } : {}),
-  };
-  for (const element of previews) {
-    const mesh = buildHvacElementMesh(element, context);
-    if (!mesh || mesh.children.length === 0) continue;
-    tuneHvacMesh(mesh);
-    applyHybridPreviewMaterials(mesh, element);
-    sceneState.pipePreviewLayer.add(mesh);
-  }
-  refreshSceneContentBounds(sceneState);
+  if (changed) refreshSceneContentBounds(sceneState);
 }
 
 export function HybridProjectionLayer({
@@ -1297,6 +1270,7 @@ export function HybridProjectionLayer({
     // per-vertex entityIndex attribute.
     const raycaster = new THREE.Raycaster();
     const pickState: {
+      pointerId: number | null;
       downX: number;
       downY: number;
       downHandled: boolean;
@@ -1327,6 +1301,7 @@ export function HybridProjectionLayer({
       leaderAnchors: Array<[number, number]>;
       ghostLeaders: THREE.LineSegments | null;
     } = {
+      pointerId: null,
       downX: 0,
       downY: 0,
       downHandled: false,
@@ -1363,7 +1338,8 @@ export function HybridProjectionLayer({
       const rect = interactionElement.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
+      if (pickState.pointerId !== e.pointerId
+        && (x < 0 || y < 0 || x > rect.width || y > rect.height)) return null;
       return { x, y };
     };
     const viewportSize = () => ({
@@ -1972,7 +1948,14 @@ export function HybridProjectionLayer({
         new THREE.Vector2((point.x / w) * 2 - 1, 1 - (point.y / h) * 2),
         controller.camera,
       );
-      const hits = raycaster.intersectObject(s.root, true);
+      // Pipe picking never consumes architecture/equipment hits. Excluding
+      // those roots avoids testing detailed casings, ducts and wall triangles
+      // on every hover; a hidden committed preview must not be selectable.
+      const pipes = s.root.children.filter((object) => {
+        const type = object.userData.hvacElementType as HvacElement["type"] | undefined;
+        return object.visible && type && (isRefrigerantPipeElementType(type) || type === "condensate-pipe");
+      });
+      const hits = raycaster.intersectObjects(pipes, true);
       for (const hit of hits) {
         const root = objectAncestry(hit.object).find((candidate) => {
           const type = candidate.userData.hvacElementType as HvacElement["type"] | undefined;
@@ -2003,20 +1986,21 @@ export function HybridProjectionLayer({
       const s = sceneStateRef.current;
       if (!s || !pickState.drag) return;
       const anchors = pickState.drag.anchors;
-      const positions = new Float32Array(anchors.length * 6);
-      anchors.forEach(([ax, ay], i) => {
-        positions.set([ax, ay, 5, model.x, model.y, 5], i * 6);
-      });
       if (!pickState.ghost) {
-        pickState.ghost = new THREE.LineSegments(new THREE.BufferGeometry(), GHOST_MATERIAL_3D);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(anchors.length * 6), 3)
+          .setUsage(THREE.DynamicDrawUsage));
+        pickState.ghost = new THREE.LineSegments(geometry, GHOST_MATERIAL_3D);
         pickState.ghost.renderOrder = 890;
         pickState.ghost.frustumCulled = false;
         s.viewBasis.add(pickState.ghost);
       }
-      pickState.ghost.geometry.setAttribute(
-        "position",
-        new THREE.BufferAttribute(positions, 3),
-      );
+      const positions = pickState.ghost.geometry.getAttribute("position") as THREE.BufferAttribute;
+      anchors.forEach(([ax, ay], i) => {
+        positions.setXYZ(i * 2, ax, ay, 5);
+        positions.setXYZ(i * 2 + 1, model.x, model.y, 5);
+      });
+      positions.needsUpdate = true;
     };
 
     // Body-drag ghost: a translucent copy of the moved wall(s) (triangles +
@@ -2058,7 +2042,12 @@ export function HybridProjectionLayer({
       pickState.ghostBody = mesh;
 
       pickState.leaderAnchors = anchors;
-      const leaders = new THREE.LineSegments(new THREE.BufferGeometry(), LEADER_MATERIAL);
+      const leaderGeometry = new THREE.BufferGeometry();
+      leaderGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(anchors.length * 6), 3)
+        .setUsage(THREE.DynamicDrawUsage));
+      leaderGeometry.setAttribute("lineDistance", new THREE.BufferAttribute(new Float32Array(anchors.length * 2), 1)
+        .setUsage(THREE.DynamicDrawUsage));
+      const leaders = new THREE.LineSegments(leaderGeometry, LEADER_MATERIAL);
       leaders.renderOrder = 896;
       leaders.frustumCulled = false;
       s.viewBasis.add(leaders);
@@ -2069,13 +2058,18 @@ export function HybridProjectionLayer({
       const leaders = pickState.ghostLeaders;
       if (!leaders) return;
       const anchors = pickState.leaderAnchors;
-      const positions = new Float32Array(anchors.length * 6);
+      const positions = leaders.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const distances = leaders.geometry.getAttribute("lineDistance") as THREE.BufferAttribute;
+      const length = Math.hypot(delta.x, delta.y);
       anchors.forEach(([ax, ay], i) => {
         // original corner → moved preview corner (both on the wall base plane)
-        positions.set([ax, ay, 6, ax + delta.x, ay + delta.y, 6], i * 6);
+        positions.setXYZ(i * 2, ax, ay, 6);
+        positions.setXYZ(i * 2 + 1, ax + delta.x, ay + delta.y, 6);
+        distances.setX(i * 2, i * length);
+        distances.setX(i * 2 + 1, (i + 1) * length);
       });
-      leaders.geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      leaders.computeLineDistances(); // required for LineDashedMaterial
+      positions.needsUpdate = true;
+      distances.needsUpdate = true;
       // Keep the dash cadence roughly screen-consistent across zoom.
       const mmPerPx = 1 / Math.max(controller.camera.zoom, 1e-9);
       LEADER_MATERIAL.dashSize = 8 * mmPerPx;
@@ -2227,9 +2221,8 @@ export function HybridProjectionLayer({
       ));
     };
 
-    const handlePointerMove3D = (ev: Event): void => {
-      const e = ev as PointerEvent;
-      if (isPipeEditorTarget(e.target)) return;
+    const processPointerMove3D = (e: PointerEvent): void => {
+      if (pickState.pointerId !== null && pickState.pointerId !== e.pointerId) return;
       const s = sceneStateRef.current;
       if (!s || controller.isTransitioning
         || (controller.isFlatView(FLAT_SHEET_POLAR)
@@ -2238,8 +2231,6 @@ export function HybridProjectionLayer({
         return;
       }
       if (pickState.pipeDrag) {
-        e.preventDefault();
-        e.stopPropagation();
         updatePipeVertexDrag(e);
         request();
         return;
@@ -2299,8 +2290,34 @@ export function HybridProjectionLayer({
       onHoverWallRef.current?.(raycastPipeElementId(point) ?? raycastWallId(point));
     };
 
+    const pointerMoves = createHybridPointerMoveQueue(processPointerMove3D);
+    const handlePointerMove3D = (ev: Event): void => {
+      const e = ev as PointerEvent;
+      if (pickState.pointerId !== null && pickState.pointerId !== e.pointerId) return;
+      if (pickState.pointerId === null && isPipeEditorTarget(e.target)) return;
+      // Decide ownership synchronously, then project/pick only the latest input
+      // per frame, independently of the mouse's hardware polling rate.
+      if (pickState.pointerId === e.pointerId) {
+        // An OS/window boundary can swallow pointerup. A returning mouse with
+        // no primary button ends the abandoned edit without committing it.
+        if (e.pointerType !== "touch" && (e.buttons & 1) === 0) {
+          cancelModelDrag();
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+      } else if (e.buttons !== 0 && pipePlacementState.pointerId !== e.pointerId) {
+        pointerMoves.cancel();
+        hideSmartDraftingHud();
+        return;
+      }
+      pointerMoves.push(e);
+    };
+
     const handlePointerDown3D = (ev: Event): void => {
       const e = ev as PointerEvent;
+      pointerMoves.cancel();
+      if (pickState.pointerId !== null) return;
       if (isPipeEditorTarget(e.target)) return;
       if (e.button !== 0) {
         if (pipeToolActiveRef.current) hideSmartDraftingHud();
@@ -2341,6 +2358,7 @@ export function HybridProjectionLayer({
         e.preventDefault();
         e.stopPropagation();
         if (beginPipeVertexDrag(handle, e)) {
+          pickState.pointerId = e.pointerId;
           s.handleLayer.setState(handle.id, "active");
           interactionElement.setPointerCapture?.(e.pointerId);
           request();
@@ -2358,6 +2376,7 @@ export function HybridProjectionLayer({
           else if (wall.graph?.b === handle.entityId) anchors.push([wall.startPoint.x, wall.startPoint.y]);
         }
         pickState.drag = { nodeId: handle.entityId, handleId: handle.id, anchors };
+        pickState.pointerId = e.pointerId;
         pickState.lastModel = null;
         s.handleLayer.setState(handle.id, "active");
         interactionElement.setPointerCapture?.(e.pointerId);
@@ -2368,6 +2387,7 @@ export function HybridProjectionLayer({
       // past a 4px threshold; a pure click falls through to select on up).
       const pipeId = raycastPipeElementId(point);
       if (pipeId) {
+        pickState.pointerId = e.pointerId;
         pickState.downHandled = true;
         pickState.pipePressedId = pipeId;
         e.preventDefault();
@@ -2394,6 +2414,7 @@ export function HybridProjectionLayer({
         pressedId: wallId,
       };
       pickState.lastModel = { x: downModel.x, y: downModel.y };
+      pickState.pointerId = e.pointerId;
       interactionElement.setPointerCapture?.(e.pointerId);
     };
 
@@ -2414,7 +2435,14 @@ export function HybridProjectionLayer({
 
     const handlePointerUp3D = (ev: Event): void => {
       const e = ev as PointerEvent;
-      if (isPipeEditorTarget(e.target)) return;
+      if (e.button !== 0) return;
+      if (pickState.pointerId !== null && pickState.pointerId !== e.pointerId) return;
+      if (pipePlacementState.pointerId !== null && pipePlacementState.pointerId !== e.pointerId) return;
+      if (pickState.pointerId === null && isPipeEditorTarget(e.target)) return;
+      if (pickState.pipeDrag || pickState.drag || pickState.bodyDrag) pointerMoves.finish(e);
+      else pointerMoves.cancel();
+      // Clear ownership before releasePointerCapture can dispatch lostcapture.
+      pickState.pointerId = null;
       const s = sceneStateRef.current;
       const releaseCapture = (): void => {
         try {
@@ -2431,7 +2459,6 @@ export function HybridProjectionLayer({
       if (pickState.pipeDrag) {
         if (pickState.pipeDrag.drag.pointerId !== null
           && pickState.pipeDrag.drag.pointerId !== e.pointerId) return;
-        updatePipeVertexDrag(e);
         const pipeDrag = pickState.pipeDrag;
         pickState.pipeDrag = null;
         editPipePreviewRef.current = null;
@@ -2514,15 +2541,15 @@ export function HybridProjectionLayer({
     interactionElement.addEventListener("pointerup", handlePointerUp3D, true);
     const handlePipeConstraintKeyDown = (e: KeyboardEvent): void => {
       if (isPipeEditorTarget(e.target)) return;
-      if (e.key === "Escape" && pickState.pipeDrag) {
+      if (e.key === "Escape" && pickState.pointerId !== null) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        cancelPipeVertexDrag();
+        cancelModelDrag();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && !["Control", "Meta"].includes(e.key)) {
         // Let undo/redo and application shortcuts retain their meaning.
-        if (pickState.pipeDrag && ["z", "y"].includes(e.key.toLowerCase())) cancelPipeVertexDrag();
+        if (pickState.pointerId !== null && ["z", "y"].includes(e.key.toLowerCase())) cancelModelDrag();
         return;
       }
       const target = e.target;
@@ -2549,20 +2576,29 @@ export function HybridProjectionLayer({
     };
     window.addEventListener("keydown", handlePipeConstraintKeyDown, true);
     window.addEventListener("keyup", handlePipeConstraintKeyUp);
-    const cancelPipeVertexDrag = (): void => {
-      if (pickState.pipeDrag || pickState.pipePressedId) {
+    const cancelModelDrag = (): void => {
+      pointerMoves.cancel();
+      const pointerId = pickState.pointerId;
+      pickState.pointerId = null;
+      if (pickState.pipeDrag || pickState.pipePressedId || pickState.drag || pickState.bodyDrag) {
         const cancelledDrag = pickState.pipeDrag;
         if (cancelledDrag) restorePipeDragHandle(cancelledDrag);
         pickState.pipeDrag = null;
         pickState.pipePressedId = null;
+        pickState.drag = null;
+        pickState.bodyDrag = null;
+        pickState.lastModel = null;
+        pickState.downHandled = true;
+        removeGhost();
+        removeBodyGhost();
         activePipeConstraintKey = "free";
         editPipePreviewRef.current = null;
         sceneStateRef.current?.handleLayer.setState("", "idle");
         schedulePreviewRebuild();
         request();
-        if (cancelledDrag?.drag.pointerId != null) {
+        if (pointerId !== null) {
           try {
-            interactionElement.releasePointerCapture?.(cancelledDrag.drag.pointerId);
+            interactionElement.releasePointerCapture?.(pointerId);
           } catch { /* pointer already released */ }
         }
       }
@@ -2570,9 +2606,9 @@ export function HybridProjectionLayer({
     };
     const handlePointerCancel3D = (ev: Event): void => {
       const e = ev as PointerEvent;
-      if (pickState.pipeDrag?.drag.pointerId != null
-        && pickState.pipeDrag.drag.pointerId !== e.pointerId) return;
-      cancelPipeVertexDrag();
+      if (pickState.pointerId !== null && pickState.pointerId !== e.pointerId) return;
+      if (pipePlacementState.pointerId !== null && pipePlacementState.pointerId !== e.pointerId) return;
+      cancelModelDrag();
       try {
         interactionElement.releasePointerCapture?.(e.pointerId);
       } catch {
@@ -2585,10 +2621,18 @@ export function HybridProjectionLayer({
     };
     interactionElement.addEventListener("pointercancel", handlePointerCancel3D);
     const handleLostPointerCapture = (event: PointerEvent): void => {
-      if (pickState.pipeDrag?.drag.pointerId === event.pointerId) cancelPipeVertexDrag();
+      if (pickState.pointerId === event.pointerId) cancelModelDrag();
     };
     interactionElement.addEventListener("lostpointercapture", handleLostPointerCapture);
-    window.addEventListener("blur", cancelPipeVertexDrag);
+    const handleWindowBlur = (): void => {
+      cancelModelDrag();
+      const pointerId = pipePlacementState.pointerId;
+      pipePlacementState.pointerId = null;
+      if (pointerId !== null) {
+        try { interactionElement.releasePointerCapture?.(pointerId); } catch { /* already released */ }
+      }
+    };
+    window.addEventListener("blur", handleWindowBlur);
 
     // Continue a live multi-click route even if the pointer briefly leaves the
     // host. Avoid duplicating events that already bubbled from the host.
@@ -2601,8 +2645,7 @@ export function HybridProjectionLayer({
         hideSmartDraftingHud();
         return;
       }
-      const resolved = resolvePipePointer(e, false);
-      if (resolved) onPipePointerMoveRef.current?.(resolved.point);
+      pointerMoves.push(e);
     };
     window.addEventListener("pointermove", handleWindowPipeMove);
 
@@ -2809,6 +2852,7 @@ export function HybridProjectionLayer({
     const handleVisibilityChange = (): void => {
       lastTs = performance.now();
       if (!document.hidden) request();
+      else cancelModelDrag();
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     controller.onChange = request;
@@ -2830,7 +2874,7 @@ export function HybridProjectionLayer({
       interactionElement.removeEventListener("pointerup", handlePointerUp3D, true);
       interactionElement.removeEventListener("pointercancel", handlePointerCancel3D);
       interactionElement.removeEventListener("lostpointercapture", handleLostPointerCapture);
-      window.removeEventListener("blur", cancelPipeVertexDrag);
+      window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("pointermove", handleWindowPipeMove);
       window.removeEventListener("keydown", handlePipeConstraintKeyDown, true);
       window.removeEventListener("keyup", handlePipeConstraintKeyUp);
@@ -2841,6 +2885,7 @@ export function HybridProjectionLayer({
       editPipePreviewRef.current = null;
       resetPipePlacementRef.current = null;
       setPipeAnchorRef.current = null;
+      pointerMoves.cancel();
       removeGhost();
       removeBodyGhost();
       if (raf != null && typeof window !== "undefined") window.cancelAnimationFrame(raf);
@@ -2862,7 +2907,7 @@ export function HybridProjectionLayer({
       sceneState.hvacScene.clear();
       clearGroup(sceneState.root);
       clearGroup(sceneState.surfaceLayer);
-      clearGroup(sceneState.pipePreviewLayer);
+      clearHybridPipePreviewScene(sceneState.pipePreviewLayer);
       clearGroup(sceneState.proxyLayer);
       const groundGrid = sceneState.viewBasis.getObjectByName("hybrid-ground-grid");
       if (groundGrid instanceof THREE.Mesh) groundGrid.geometry.dispose();
@@ -2937,7 +2982,8 @@ export function HybridProjectionLayer({
     if (!sceneState) return;
     const sceneContext = {
       ...buildPreviewRenderContext(hvacElements),
-      pipeTargets: hvacElements.some(element => element.type === "refrigerant-branch-kit")
+      pipeTargets: hvacElements.some(element => element.type === "refrigerant-branch-kit"
+        && element.properties.branchKitPlacementMode === "inline-pipe-run")
         ? getVisibleRefrigerantPipeStraightSegmentTargets(hvacElements) : [],
       ductSettings,
     };

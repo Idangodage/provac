@@ -53,7 +53,7 @@ export function verifyRuns(ctx: ServiceCtx, runs: readonly HvacElement[], notes:
     if (!newIds.has(clash.ductId) && !newIds.has(clash.otherId)) continue;
     errors += 1;
     issues.push({
-      code: 'DU_CLASH', severity: 'error', message: `${clash.mark} clashes with ${clash.kind === 'pipe' ? `a ${clash.service ?? 'pipe'}` : clash.kind === 'terminal' ? 'an air terminal' : 'another duct'}.`,
+      code: 'DU_CLASH', severity: 'error', message: `${clash.mark} clashes with ${clash.kind === 'pipe' ? `a ${clash.service ?? 'pipe'}` : clash.kind === 'terminal' ? 'an air terminal' : clash.kind === 'equipment' ? 'an equipment casing' : 'another duct'}.`,
       service: ctx.service, point: { x: clash.point.x, y: clash.point.y }, runId: newIds.has(clash.ductId) ? clash.ductId : clash.otherId,
     });
   }

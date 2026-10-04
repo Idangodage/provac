@@ -51,9 +51,9 @@ function StepNumber({ value, onChange, step, min, max, label, live, derived, pla
 
 function Row({ label, hint, children }: { label: ReactNode; hint?: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-2 py-0.5 text-xs" title={hint}>
-      <span className="flex items-center gap-1 text-slate-500">{label}</span>
-      <span className="flex items-center gap-1 text-slate-800">{children}</span>
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 py-0.5 text-xs" title={hint}>
+      <span className="flex min-w-0 items-center gap-1 text-slate-500">{label}</span>
+      <span className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1 text-slate-800">{children}</span>
     </div>
   );
 }

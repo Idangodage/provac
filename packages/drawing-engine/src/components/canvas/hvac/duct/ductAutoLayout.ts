@@ -91,7 +91,7 @@ import {
   type DuctSplitStyle,
   type DuctSystemSizing,
 } from './ductTypes';
-import { findDuctClashes, terminalBoxOf } from './ductVolumes';
+import { boxesOverlap, ductBoxesOf, findDuctClashes, terminalBoxOf } from './ductVolumes';
 import { designFromRuns, withReplaced, type ServiceDesign } from './optimizer/designTree';
 import { optimiseService, verifyRuns, type ServiceOption, type TreeFailure } from './optimizer/ductOptimizer';
 import { explainBlockedCollar, explainNoCleanDesign } from './optimizer/failureMessages';
@@ -333,14 +333,15 @@ function branchPath(
   const fit = flexFit(ctx, stubEnd, out, z, terminal);
   if (inFront && reachToLip <= ALL_FLEX_REACH_MM && flexOk(fit, terminal, settings)) return allFlex();
   const ratio = SMACNA_TABLE_3_1[settings.roundVelocityBand]?.ratio ?? 1.5;
-  // Elbow setback: its centreline radius plus the flange neck.
-  const radius = ratio * terminal.branch + settings.elbowNeckMm;
+  // The router reserves the straight flange neck separately; adding it to
+  // the bend radius too would discard buildable corridors twice.
+  const bendRadius = ratio * terminal.branch;
   const zTop = z + terminal.branch;
-  const obstacles = obstaclesFor(ctx, terminal.branch / 2 + 50, z, zTop, new Set([terminal.element.id]), build);
+  const obstacles = obstaclesFor(ctx, terminal.branch / 2 + 50, z, zTop, new Set(), build);
   // The bend-aware router pads obstacles by its elbow setback as well. Leave
   // enough straight beyond the damper to escape the parent's padded wall;
   // starting at the damper itself can be inside that padding.
-  const routeStart = { x: stubEnd.x + out.x * radius, y: stubEnd.y + out.y * radius };
+  const routeStart = { x: stubEnd.x + out.x * bendRadius, y: stubEnd.y + out.y * bendRadius };
   const clearExit = obstacles.every((box) => box.id === origin.parentRunId || !segmentHitsBox(stubEnd, routeStart, box));
   let route: Point2D[] | null = null;
   let reduce = terminal.branch !== terminal.neck;
@@ -352,7 +353,7 @@ function branchPath(
       // From the end of the collar + damper, clear of the parent's wall.
       const found = clearExit ? findObstacleAwareOrthogonalRoute({
         start: routeStart, startDirection: out, end, endDirection: terminal.normal,
-        startStraightMm: settings.elbowNeckMm, endStraightMm: endStraight, bendRadiusMm: radius,
+        startStraightMm: settings.elbowNeckMm, endStraightMm: endStraight, bendRadiusMm: bendRadius,
         obstacles, clearanceMm: 0, bendPenaltyMm: 1500,
       }) : null;
       if (found) { route = simplifyCollinear([start, stubEnd, ...found.points]); break; }
@@ -406,7 +407,9 @@ function buildBranch(ctx: ServiceCtx, makeOrigin: (first: DuctLeg) => DuctDraftO
     const spec = readDuctRunSpec(run)!;
     const plan = planDuctRunSpec(run.id, spec, { settings: ctx.settings, scene: [...withReplaced(scene, [choice.element]), run] });
     const issues = [...plan.issues, ...trial.notes];
-    const errors = issues.filter((issue) => issue.severity === 'error').length;
+    const ownPlenum = terminalBoxOf(choice.element);
+    const crossesOwnPlenum = ownPlenum && ductBoxesOf(plan).some(body => boxesOverlap(body, ownPlenum));
+    const errors = issues.filter((issue) => issue.severity === 'error').length + (crossesOwnPlenum ? 1 : 0);
     const warnings = issues.filter((issue) => issue.severity === 'warning').length;
     // A valid placed spigot can still force a curled runout. Compare every
     // bounded side using actual fabricated length, including curved flex,
@@ -558,6 +561,7 @@ function placeTaps(
   widthMm: number,
   settings: DuctDesignSettings,
   stubBlocked: (wall: Point2D, end: Point2D, terminal: TerminalCtx) => boolean = () => false,
+  alternateStations: (start: Point2D, direction: Point2D, terminal: TerminalCtx) => number[] = () => [],
 ): { taps: TapPlan[]; vertices: Point2D[] } | null {
   const { vertices } = plan;
   const legs = vertices.slice(1).map((end, index) => {
@@ -580,18 +584,21 @@ function placeTaps(
       const { from, to } = intervals[legIndex]!;
       if (to - from < tapWindowMm(terminal, settings)) return;
       const along = dot(sub(front, leg.start), leg.direction);
-      const station = Math.min(Math.max(along, from + tapWindowMm(terminal, settings) / 2), to - tapWindowMm(terminal, settings) / 2);
-      const point = { x: leg.start.x + leg.direction.x * station, y: leg.start.y + leg.direction.y * station };
-      const across = dot(sub(terminal.lip, point), legNormal(leg.direction));
-      // A spigot facing away from the trunk needs the branch to go round it.
-      const facing = dot(terminal.normal, legNormal(leg.direction)) * Math.sign(across || 1) < 0 ? 0 : 1500;
-      const side = across >= 0 ? 1 : -1;
-      const normal = legNormal(leg.direction);
-      const wall = { x: point.x + normal.x * side * (widthMm / 2), y: point.y + normal.y * side * (widthMm / 2) };
-      const stubEnd = { x: wall.x + normal.x * side * branchStubMm(settings), y: wall.y + normal.y * side * branchStubMm(settings) };
-      const blocked = stubBlocked(wall, stubEnd, terminal) ? 20000 : 0;
-      const cost = Math.abs(along - station) + Math.abs(across) + facing + blocked;
-      if (!best || cost < best.cost) best = { tap: { terminal, legIndex, station, side: across >= 0 ? 1 : -1 }, cost };
+      const bounded = (value: number) => Math.min(Math.max(value, from + tapWindowMm(terminal, settings) / 2), to - tapWindowMm(terminal, settings) / 2);
+      const stations = [...new Set([bounded(along), ...alternateStations(leg.start, leg.direction, terminal).map(bounded)])];
+      for (const station of stations) {
+        const point = { x: leg.start.x + leg.direction.x * station, y: leg.start.y + leg.direction.y * station };
+        const across = dot(sub(terminal.lip, point), legNormal(leg.direction));
+        // A spigot facing away from the trunk needs the branch to go round it.
+        const facing = dot(terminal.normal, legNormal(leg.direction)) * Math.sign(across || 1) < 0 ? 0 : 1500;
+        const side = across >= 0 ? 1 : -1;
+        const normal = legNormal(leg.direction);
+        const wall = { x: point.x + normal.x * side * (widthMm / 2), y: point.y + normal.y * side * (widthMm / 2) };
+        const stubEnd = { x: wall.x + normal.x * side * branchStubMm(settings), y: wall.y + normal.y * side * branchStubMm(settings) };
+        const blocked = stubBlocked(wall, stubEnd, terminal) ? 20000 : 0;
+        const cost = Math.abs(along - station) + Math.abs(across) + facing + blocked;
+        if (!best || cost < best.cost) best = { tap: { terminal, legIndex, station, side: across >= 0 ? 1 : -1 }, cost };
+      }
     });
     if (!best) return null;
     taps.push((best as { tap: TapPlan }).tap);
@@ -630,6 +637,35 @@ function placeTaps(
         if (high > 0) positions = positions.map((position) => position - high);
       }
       cluster.taps.forEach((tap, index) => { tap.station = positions[index]!; });
+    }
+    // Equal spacing can move a previously clear takeoff back behind its own
+    // terminal. Translate the packed cluster within its neighbouring windows
+    // to the nearest clear visibility event; preserve every internal gap.
+    const leg = legs[legIndex]!;
+    const normal = legNormal(leg.direction);
+    const blockedAt = (tap: TapPlan, station: number) => {
+      const wall = { x: leg.start.x + leg.direction.x * station + normal.x * tap.side * widthMm / 2,
+        y: leg.start.y + leg.direction.y * station + normal.y * tap.side * widthMm / 2 };
+      const end = { x: wall.x + normal.x * tap.side * branchStubMm(settings), y: wall.y + normal.y * tap.side * branchStubMm(settings) };
+      return stubBlocked(wall, end, tap.terminal);
+    };
+    for (const cluster of clusters) {
+      if (!cluster.taps.some(tap => blockedAt(tap, tap.station))) continue;
+      const first = cluster.taps[0]!; const last = cluster.taps.at(-1)!;
+      const previous = onLeg[onLeg.indexOf(first) - 1]; const next = onLeg[onLeg.indexOf(last) + 1];
+      const low = Math.max(from + tapWindowMm(first.terminal, settings) / 2,
+        previous ? previous.station + gapOf(previous, first) : -Infinity) - first.station;
+      const high = Math.min(to - tapWindowMm(last.terminal, settings) / 2,
+        next ? next.station - gapOf(last, next) : Infinity) - last.station;
+      const shifts = [...new Set([0, ...cluster.taps.flatMap(tap => alternateStations(leg.start, leg.direction, tap.terminal).map(station => station - tap.station))])]
+        .filter(shift => shift >= low - 1e-6 && shift <= high + 1e-6);
+      let best = { shift: 0, cost: Infinity };
+      for (const shift of shifts) {
+        const blocked = cluster.taps.filter(tap => blockedAt(tap, tap.station + shift)).length;
+        const cost = blocked * 20000 + Math.abs(shift) * cluster.taps.length;
+        if (cost < best.cost) best = { shift, cost };
+      }
+      for (const tap of cluster.taps) tap.station += best.shift;
     }
     if (onLeg.some((tap) => tap.station - tapWindowMm(tap.terminal, settings) / 2 < from - 1
       || (Number.isFinite(to) && tap.station + tapWindowMm(tap.terminal, settings) / 2 > to + 1))) return null;
@@ -762,8 +798,33 @@ function buildTrunkRun(
 ): ({ run: HvacElement; branches: HvacElement[]; terminalRuns: Map<string, string>; sections: Array<{ widthMm: number; heightMm: number; airflowM3h: number }>; hits: number; notes: AutoDuctIssue[] } & Pick<Candidate, 'terminals' | 'terminalUpdates'>) | null {
   const airflow = plan.terminals.reduce((total, terminal) => total + terminal.airflowM3h, 0);
   const bottomZ = origin && origin.kind !== 'port' && origin.kind !== 'free' ? origin.bottomZ : ctx.bottomZ;
-  const stubBlocked = (wall: Point2D, stubEnd: Point2D, terminal: TerminalCtx) => stretchBlocked(ctx, wall, stubEnd, terminal.branch, bottomZ, new Set([terminal.element.id, ctx.unitId]));
-  const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked);
+  const stubBlocked = (wall: Point2D, stubEnd: Point2D, terminal: TerminalCtx) => {
+    const ignored = new Set([ctx.unitId]);
+    if (stretchBlocked(ctx, wall, stubEnd, terminal.branch, bottomZ, ignored)) return true;
+    const delta = sub(stubEnd, wall);
+    const length = Math.hypot(delta.x, delta.y) || 1;
+    const out = { x: delta.x / length, y: delta.y / length };
+    if (dot(sub(stubEnd, terminal.lip), terminal.normal) > terminal.neck
+      && flexOk(flexFit(ctx, stubEnd, out, bottomZ, terminal), terminal, ctx.settings)) return false;
+    const radius = (SMACNA_TABLE_3_1[ctx.settings.roundVelocityBand]?.ratio ?? 1.5) * terminal.branch + ctx.settings.elbowNeckMm;
+    const routeStart = { x: stubEnd.x + out.x * radius, y: stubEnd.y + out.y * radius };
+    return obstaclesFor(ctx, terminal.branch / 2 + 50 + radius, bottomZ, bottomZ + terminal.branch, ignored)
+      .some(body => segmentHitsBox(stubEnd, routeStart, body));
+  };
+  // Takeoff stations are visibility events at solid boundaries. A terminal's
+  // own plenum must remain an obstacle: a short stub aimed at its centre can
+  // otherwise pierce the box before the route has room for its first elbow.
+  const alternateStations = (start: Point2D, direction: Point2D, terminal: TerminalCtx) => {
+    const radius = (SMACNA_TABLE_3_1[ctx.settings.roundVelocityBand]?.ratio ?? 1.5) * terminal.branch + ctx.settings.elbowNeckMm;
+    const pad = terminal.branch / 2 + 51 + radius;
+    return ctx.obstacles.filter(body => body.id !== ctx.unitId && body.zMax > bottomZ && body.zMin < bottomZ + terminal.branch)
+      .flatMap(body => {
+        const stations = [{ x: body.minX, y: body.minY }, { x: body.minX, y: body.maxY },
+          { x: body.maxX, y: body.minY }, { x: body.maxX, y: body.maxY }].map(point => dot(sub(point, start), direction));
+        return [Math.min(...stations) - pad, Math.max(...stations) + pad];
+      });
+  };
+  const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked, alternateStations);
   if (!placed) return null;
   const sized = sizeTrunk(ctx, placed.vertices, placed.taps, heightMm, airflow, minFirstWidthMm);
   const points = sized.vertices.slice(1).map((point) => ({ ...toWorld(ctx.frame, point), z: origin && origin.kind !== 'port' && origin.kind !== 'free' ? origin.bottomZ : ctx.bottomZ }));

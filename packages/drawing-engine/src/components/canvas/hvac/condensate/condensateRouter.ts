@@ -25,6 +25,8 @@ export interface RouterBox {
   minY: number;
   maxX: number;
   maxY: number;
+  /** Exact rotated source footprint; the bounds above still supply grid stations. */
+  oriented?: { centre: Point2D; axis: Point2D; halfLength: number; halfWidth: number };
 }
 
 export interface RouterWall {
@@ -158,6 +160,24 @@ function insideBox(point: Point2D, box: RouterBox): boolean {
 
 /** True when the open axis-aligned segment passes through a box interior. */
 function segmentHitsBox(a: Point2D, b: Point2D, box: RouterBox): boolean {
+  if (box.oriented) {
+    const { centre, axis, halfLength, halfWidth } = box.oriented;
+    let enter = 0; let leave = 1;
+    for (const [x, y, half] of [[axis.x, axis.y, halfLength], [-axis.y, axis.x, halfWidth]]) {
+      const start = (a.x - centre.x) * x! + (a.y - centre.y) * y!;
+      const advance = (b.x - a.x) * x! + (b.y - a.y) * y!;
+      const extent = half! - EPS;
+      if (Math.abs(advance) <= EPS) {
+        if (Math.abs(start) >= extent) return false;
+        continue;
+      }
+      const near = (-extent - start) / advance; const far = (extent - start) / advance;
+      enter = Math.max(enter, Math.min(near, far));
+      leave = Math.min(leave, Math.max(near, far));
+      if (leave <= enter + EPS) return false;
+    }
+    return leave > enter + EPS;
+  }
   if (Math.abs(a.y - b.y) <= EPS) {
     const y = a.y;
     if (y <= box.minY + EPS || y >= box.maxY - EPS) return false;
