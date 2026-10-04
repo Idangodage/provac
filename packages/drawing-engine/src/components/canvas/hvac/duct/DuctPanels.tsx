@@ -19,7 +19,7 @@ import { DuctNumberInput } from './DuctNumberInput';
 import { buildDuctBom, buildDuctFabricationSchedule, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
 import { findReattachTarget } from './ductBranchTargets';
 import { gaugeLabelForSheet } from './ductCatalog';
-import { commitDuctRunEdit, commitDuctRunSpec, commitDuctTerminalEdit, reattachDuctRun } from './ductEditController';
+import { commitDuctRunEdit, commitDuctRunSpec, commitDuctTerminalEdit, commitDuctTerminalRetype, isTerminalConnected, reattachDuctRun } from './ductEditController';
 import { setDuctRiserRise } from './ductEdits';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
@@ -31,7 +31,20 @@ import { neckVelocityMs } from './ductSizing';
 import { DUCT_SOURCES, isPracticeSource } from './ductSources';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
 import { ductSystemRootOfRun } from './ductSystemSizing';
-import { DUCT_TERMINAL_NECKS_MM, isDuctTerminalElement, readDuctTerminalSpec, TERMINAL_LABELS, typicalTerminalSpec, type DuctTerminalSpigotSide } from './ductTerminals';
+import {
+  DUCT_TERMINAL_FILTER_CLASSES,
+  DUCT_TERMINAL_NECKS_MM,
+  isDuctTerminalElement,
+  readDuctTerminalSpec,
+  TERMINAL_FACE_LABELS,
+  TERMINAL_FILTER_LABELS,
+  terminalFilterDropPa,
+  terminalLabel,
+  typicalTerminalSpec,
+  type DuctTerminalFilterClass,
+  type DuctTerminalKind,
+  type DuctTerminalSpigotSide,
+} from './ductTerminals';
 import { tapStyleFor, useDuctToolStore } from './ductToolStore';
 import { isDuctElement, isRoundLeg, readDuctRunSpec, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
 
@@ -191,18 +204,34 @@ function TerminalAirflowInput({ value, onCommit }: { value: number | null; onCom
   );
 }
 
+/** The faces offered for each service (in ceilings a louvred or egg-crate face is a return grille). */
+const TERMINAL_FACES: Record<'supply' | 'return', readonly DuctTerminalKind[]> = {
+  supply: ['square-4way', 'round', 'linear-slot', 'perforated'],
+  return: ['return-egg-crate', 'louvred', 'perforated', 'square-4way', 'round', 'linear-slot'],
+};
+
 export function DuctTerminalInspector({ element }: { element: HvacElement }) {
-  const updateHvacElement = useSmartDrawingStore((state) => state.updateHvacElement);
+  const { updateHvacElement, hvacElements, ductSettings } = useSmartDrawingStore((state) => ({
+    updateHvacElement: state.updateHvacElement, hvacElements: state.hvacElements, ductSettings: state.ductSettings,
+  }), shallow);
+  const connected = useMemo(() => isTerminalConnected(hvacElements, element.id), [hvacElements, element.id]);
   const spec = readDuctTerminalSpec(element);
   if (!spec) return null;
   const select = 'min-w-0 max-w-full rounded border border-slate-200 px-1 py-0.5 text-xs';
+  // A new neck keeps everything the designer set: the side, the airflow and the filter.
   const reshape = (neckDiameterMm: number) => ({
     ...typicalTerminalSpec(spec.kind, neckDiameterMm, {
-      mount: spec.mount, ...(spec.slots !== undefined ? { slots: spec.slots } : {}),
+      service: spec.service, mount: spec.mount, filter: spec.filter ?? null, ...(spec.slots !== undefined ? { slots: spec.slots } : {}),
       ...(spec.kind === 'linear-slot' ? { lengthMm: spec.faceWidthMm } : {}),
     }),
     spigotSide: spec.spigotSide,
+    designAirflowM3h: spec.designAirflowM3h ?? null,
   });
+  const faces = TERMINAL_FACES[spec.service].includes(spec.kind) ? TERMINAL_FACES[spec.service] : [spec.kind, ...TERMINAL_FACES[spec.service]];
+  const filterDrop = spec.filter && spec.designAirflowM3h ? terminalFilterDropPa(spec, spec.designAirflowM3h, ductSettings) : null;
+  const serviceHint = connected
+    ? 'A duct is connected to this terminal: delete or re-route its runout to change supply ⇄ return.'
+    : 'Supply air from its unit, or return air back to it.';
   return (
     <div className="space-y-1" data-testid="duct-terminal-inspector">
       <Row label="Label">
@@ -210,9 +239,40 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
           className="w-36 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400" />
       </Row>
       <Row label="Terminal">
-        <span className="text-xs">{TERMINAL_LABELS[spec.kind]} · {spec.mount} · {spec.service}</span>
+        <span className="text-xs">{terminalLabel(spec)} · {spec.mount}</span>
         <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-600" title="Typical catalog size; SMACNA gives none. Replace with the supplier's data.">practice</span>
       </Row>
+      <Row label="Service" title={serviceHint}>
+        <span className="inline-flex overflow-hidden rounded-md border border-slate-200" role="radiogroup" aria-label="Terminal service">
+          {(['supply', 'return'] as const).map((service) => (
+            <button key={service} type="button" role="radio" aria-checked={spec.service === service} disabled={connected && spec.service !== service}
+              title={serviceHint}
+              onClick={() => commitDuctTerminalRetype(element, { service }, service === 'return' ? 'Terminal to return' : 'Terminal to supply')}
+              className={`px-1.5 py-0.5 text-[11px] disabled:opacity-40 ${spec.service === service
+                ? (service === 'supply' ? 'bg-blue-700 text-white' : 'bg-teal-700 text-white') : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
+              {service === 'supply' ? 'Supply' : 'Return'}
+            </button>
+          ))}
+        </span>
+      </Row>
+      <Row label="Face">
+        <select value={spec.kind} aria-label="Terminal face" className={select}
+          onChange={(event) => commitDuctTerminalRetype(element, { kind: event.target.value as DuctTerminalKind }, 'Terminal face')}>
+          {faces.map((kind) => <option key={kind} value={kind}>{TERMINAL_FACE_LABELS[kind]}</option>)}
+        </select>
+      </Row>
+      {spec.service === 'return' ? (
+        <Row label="Filter" title="Filter panel behind a hinged face, changed from the room. ASHRAE 62.1 §5.8 asks for MERV 8 (≈ M5) upstream of a wet cooling coil unless the unit filters the air itself.">
+          <select value={spec.filter ?? ''} aria-label="Terminal filter" className={select}
+            onChange={(event) => commitDuctTerminalEdit(element, { spec: { ...spec, filter: (event.target.value || null) as DuctTerminalFilterClass | null } }, 'Terminal filter')}>
+            <option value="">None</option>
+            {DUCT_TERMINAL_FILTER_CLASSES.map((filter) => (
+              <option key={filter} value={filter}>{TERMINAL_FILTER_LABELS[filter].label} ({TERMINAL_FILTER_LABELS[filter].equivalent})</option>
+            ))}
+          </select>
+          {filterDrop !== null ? <span className="ml-1 text-[10px] text-slate-500">≈ {Math.round(filterDrop)} Pa at its airflow</span> : null}
+        </Row>
+      ) : null}
       <Row label="Spigot Ø">
         <select value={spec.neckDiameterMm} aria-label="Terminal spigot diameter" className={select}
           onChange={(event) => commitDuctTerminalEdit(element, { spec: reshape(Number(event.target.value)) }, 'Terminal spigot size')}>
@@ -769,17 +829,21 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="autoMaxVelocityRunoutMs" label="Max velocity, runout" step={0.5} min={1} max={8} unit="m/s" />
       <SettingNumber settingKey="autoMaxNeckVelocitySupplyMs" label="Max neck velocity, diffuser" step={0.5} min={1} max={8} unit="m/s" />
       <SettingNumber settingKey="autoMaxNeckVelocityReturnMs" label="Max neck velocity, grille" step={0.5} min={1} max={8} unit="m/s" />
-      <SettingNumber settingKey="autoDiffuserDropPa" label="Diffuser pressure drop" step={1} min={0} max={150} unit="Pa" />
-      <SettingNumber settingKey="autoGrilleDropPa" label="Grille pressure drop" step={1} min={0} max={150} unit="Pa" />
+      <SettingNumber settingKey="autoDiffuserDropPa" label="Supply terminal pressure drop" step={1} min={0} max={150} unit="Pa" />
+      <SettingNumber settingKey="autoGrilleDropPa" label="Return terminal pressure drop" step={1} min={0} max={150} unit="Pa" />
+      <SettingNumber settingKey="filterG4RatedDropPa" label="G4 filter, clean drop" step={1} min={0} max={500} unit="Pa" />
+      <SettingNumber settingKey="filterM5RatedDropPa" label="M5 filter, clean drop" step={1} min={0} max={500} unit="Pa" />
+      <SettingNumber settingKey="filterRatedVelocityMs" label="… at face velocity" step={0.1} min={0.5} max={5} unit="m/s" />
+      <SettingNumber settingKey="filterDesignFactor" label="Filter mid-life factor" step={0.1} min={1} max={3} unit="×" />
       <SettingNumber settingKey="autoReducerStepMm" label="Reduce the trunk from" step={50} min={0} max={500} />
       <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Optimiser</div>
       <SettingNumber settingKey="autoExactTerminals" label="Exact tree search up to" step={1} min={1} max={10} unit="terminals" />
       <SettingNumber settingKey="autoTimeBudgetMs" label="Time per unit" step={1000} min={1000} max={60000} unit="ms" />
-      <Row label="Turn diffuser spigots">
+      <Row label="Turn terminal spigots">
         <label className="flex items-center gap-1 text-xs">
           <input type="checkbox" checked={ductSettings.autoChooseSpigotSide} aria-label="Let the optimiser choose the spigot side"
             onChange={(event) => setDuctSettings({ autoChooseSpigotSide: event.target.checked })} />
-          Square, round, egg-crate
+          Square-box faces, round
         </label>
         <SourceBadge settingKey="autoChooseSpigotSide" />
       </Row>

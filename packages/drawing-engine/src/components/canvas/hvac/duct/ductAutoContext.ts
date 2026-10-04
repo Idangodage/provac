@@ -11,7 +11,7 @@ import type { DuctAirPort } from './ductAirPorts';
 import { flexCurve } from './ductFlex';
 import type { DuctDesignSettings } from './ductSettings';
 import type { DuctTerminalSpigotSide } from './ductTerminalCatalog';
-import { readDuctTerminalSpec, terminalSpigotPort, type DuctTerminalSpec } from './ductTerminals';
+import { readDuctTerminalSpec, SQUARE_BOX_TERMINAL_KINDS, terminalSpigotPort, type DuctTerminalSpec } from './ductTerminals';
 import { readDuctRunSpec, type DuctService } from './ductTypes';
 
 export type AutoDuctIssueCode =
@@ -102,6 +102,8 @@ export interface TerminalCtx {
   fixed: boolean;
   neck: number;
   branch: number;
+  /** The terminal's own pressure drop at its airflow (Pa; a filter included); absent = the service's placeholder. */
+  dropPa?: number;
   /**
    * The spigot sides the optimiser may give the terminal's plenum box (each a
    * full context: the element with that side, its spigot port), placed side
@@ -112,8 +114,8 @@ export interface TerminalCtx {
   turnedTo?: DuctTerminalSpigotSide;
 }
 
-/** Symmetric faces: the plenum box's spigot may go on any side without changing what the room sees. */
-const TURNABLE: ReadonlySet<DuctTerminalSpec['kind']> = new Set(['square-4way', 'round', 'return-egg-crate']);
+/** Square-box faces and round ones: the plenum box's spigot may go on any side without changing what the room sees. */
+const TURNABLE: ReadonlySet<DuctTerminalSpec['kind']> = SQUARE_BOX_TERMINAL_KINDS;
 const SIDES: readonly DuctTerminalSpigotSide[] = ['back', 'front', 'left', 'right'];
 
 /** The terminal with its plenum box's spigot on `side`: the element as it would be, and its spigot in the local frame. */

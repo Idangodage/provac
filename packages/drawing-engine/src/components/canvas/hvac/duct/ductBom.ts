@@ -12,7 +12,7 @@ import { VANE_RUNNER, type DuctVaneSpec } from './ductFittingRules';
 import { FLEX_HANGER_WIRE_DIAMETER_MM, FLEX_RULES } from './ductFlex';
 import { describeJoint } from './ductGauge';
 import type { DuctSupportPlan } from './ductSupports';
-import { readDuctTerminalSpec, TERMINAL_LABELS } from './ductTerminals';
+import { readDuctTerminalSpec, TERMINAL_FILTER_LABELS, TERMINAL_FILTER_THICKNESS_MM, terminalLabel } from './ductTerminals';
 
 export type DuctBomCategory = 'Sheet metal' | 'Fabricated pieces' | 'Accessories' | 'Joints' | 'Connections' | 'Insulation' | 'Air terminals' | 'Flexible duct' | 'Supports' | 'Issues';
 
@@ -200,16 +200,27 @@ function terminalAndFlexRows(plans: readonly DuctFabricationPlan[], terminals: r
   const rows: DuctBomRow[] = [];
   const served = new Set(plans.flatMap((plan) => (plan.spec.end.kind === 'terminal' ? [plan.spec.end.terminalId] : [])));
   const byKind = new Map<string, number>();
+  const filters = new Map<string, number>();
   for (const terminal of terminals) {
     if (!served.has(terminal.id)) continue;
     const spec = readDuctTerminalSpec(terminal);
     if (!spec) continue;
-    const key = `${TERMINAL_LABELS[spec.kind]} ${Math.round(spec.faceWidthMm)}${spec.kind === 'round' ? '' : `×${Math.round(spec.faceDepthMm)}`}, ${spec.mount}, with plenum box ${Math.round(spec.plenumWidthMm)}×${Math.round(spec.plenumDepthMm)}×${Math.round(spec.plenumHeightMm)}|Ø${Math.round(spec.neckDiameterMm)} side spigot`;
+    const face = `${Math.round(spec.faceWidthMm)}${spec.kind === 'round' ? '' : `×${Math.round(spec.faceDepthMm)}`}`;
+    const key = `${terminalLabel(spec)} ${face}, ${spec.mount}, with plenum box ${Math.round(spec.plenumWidthMm)}×${Math.round(spec.plenumDepthMm)}×${Math.round(spec.plenumHeightMm)}|Ø${Math.round(spec.neckDiameterMm)} side spigot`;
     byKind.set(key, (byKind.get(key) ?? 0) + 1);
+    if (spec.filter) {
+      const filter = TERMINAL_FILTER_LABELS[spec.filter];
+      const filterKey = `Filter panel ${filter.label} (${filter.equivalent}), behind a hinged face|${face}×${TERMINAL_FILTER_THICKNESS_MM}`;
+      filters.set(filterKey, (filters.get(filterKey) ?? 0) + 1);
+    }
   }
   for (const [key, count] of [...byKind].sort((a, b) => a[0].localeCompare(b[0]))) {
     const [description, size] = key.split('|') as [string, string];
     rows.push({ category: 'Air terminals', description, size, quantity: count, unit: 'no.', basis: 'typical catalog size (practice)' });
+  }
+  for (const [key, count] of [...filters].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const [description, size] = key.split('|') as [string, string];
+    rows.push({ category: 'Air terminals', description, size, quantity: count, unit: 'no.', basis: 'one panel per filter grille; spare sets by the maintenance contract (practice)' });
   }
   const flex = new Map<string, { quantity: number; unit: DuctBomRow['unit']; basis: string }>();
   const add = (description: string, size: string, quantity: number, unit: DuctBomRow['unit'], basis: string) => {

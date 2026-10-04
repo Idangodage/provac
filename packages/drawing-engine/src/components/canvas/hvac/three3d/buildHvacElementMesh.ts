@@ -8,7 +8,7 @@ import { buildCeilingCassetteModel } from "../ceilingCassetteModel";
 import { compileCopperSocketElbowRoute } from "../copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "../copperSocketElbows";
 import type { DuctDesignSettings } from "../duct/ductSettings";
-import { localTerminalSpigot, readDuctTerminalSpec } from "../duct/ductTerminals";
+import { localTerminalSpigot, readDuctTerminalSpec, TERMINAL_FILTER_THICKNESS_MM } from "../duct/ductTerminals";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
@@ -1764,12 +1764,13 @@ function buildLabelAnchor(
   };
 }
 
-const AIR_TERMINAL_COLORS = { face: "#f4f4f2", frame: "#d6d8d6", slot: "#1f2937", plenum: "#b9c3cc", spigot: "#a6b1bb" } as const;
+const AIR_TERMINAL_COLORS = { face: "#f4f4f2", frame: "#d6d8d6", slot: "#1f2937", plenum: "#b9c3cc", spigot: "#a6b1bb", filter: "#e7dfc4" } as const;
 
 /**
  * An air terminal in its local frame (z from the ceiling plane): the face with
- * its pattern (stepped frames, rings, slots or an egg-crate grid), the plenum
- * box above the ceiling and the side spigot with its bead.
+ * its pattern (stepped frames, rings, slots, an egg-crate grid, louvre blades
+ * or a perforated plate), a filter panel behind the face where there is one,
+ * the plenum box above the ceiling and the side spigot with its bead.
  */
 function addAirTerminalMeshes(group: THREE.Group, element: HvacElement): void {
   const spec = readDuctTerminalSpec(element);
@@ -1794,6 +1795,20 @@ function addAirTerminalMeshes(group: THREE.Group, element: HvacElement): void {
         const y = -fd / 2 + 25 + 20 * (index + 0.5);
         group.add(createLocalBoxMesh(fw - 30, 12, 4, colors.slot, new THREE.Vector3(0, y, -2), { renderOrder: 19 }));
       }
+    } else if (spec.kind === "louvred") {
+      // Fixed blades in one direction, each a thin slat seen edge-on from below.
+      for (let index = 1; index < 10; index += 1) {
+        const slat = createLocalBoxMesh(fw - 40, 4, 8, colors.frame, new THREE.Vector3(0, -fd / 2 + (fd * index) / 10, -4), { renderOrder: 19 });
+        slat.name = "terminal-louvre-blade";
+        group.add(slat);
+      }
+    } else if (spec.kind === "perforated") {
+      // A border frame round the perforated plate, and the plate's hole pattern as a fine grid.
+      group.add(createLocalBoxMesh(fw * 0.86, fd * 0.86, 3, colors.frame, new THREE.Vector3(0, 0, -1.5), { renderOrder: 19 }));
+      for (let index = 1; index < 12; index += 1) {
+        group.add(createLocalBoxMesh(1, fd * 0.8, 3, colors.slot, new THREE.Vector3(-fw * 0.4 + (fw * 0.8 * index) / 12, 0, -2.5), { renderOrder: 20 }));
+        group.add(createLocalBoxMesh(fw * 0.8, 1, 3, colors.slot, new THREE.Vector3(0, -fd * 0.4 + (fd * 0.8 * index) / 12, -2.5), { renderOrder: 20 }));
+      }
     } else {
       // Egg-crate grid.
       for (let index = 1; index < 8; index += 1) {
@@ -1801,6 +1816,13 @@ function addAirTerminalMeshes(group: THREE.Group, element: HvacElement): void {
         group.add(createLocalBoxMesh(fw - 20, 2, 6, colors.frame, new THREE.Vector3(0, -fd / 2 + (fd * index) / 8, -3), { renderOrder: 19 }));
       }
     }
+  }
+  if (spec.filter) {
+    // Filter panel behind the hinged face, inside the plenum box.
+    const filter = createLocalBoxMesh(Math.min(fw, spec.plenumWidthMm) - 10, Math.min(fd, spec.plenumDepthMm) - 10, TERMINAL_FILTER_THICKNESS_MM, colors.filter,
+      new THREE.Vector3(0, 0, fh + TERMINAL_FILTER_THICKNESS_MM / 2 + 2));
+    filter.name = "terminal-filter";
+    group.add(filter);
   }
   // Closed plenum roof and sheet walls; the spigot opens into the box. A solid
   // BoxGeometry here used to leave a plate blocking the air connection.

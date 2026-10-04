@@ -44,8 +44,8 @@ type ServiceKey = keyof AutoRouteServices;
 interface ServiceTick { key: ServiceKey; label: string; aria: string; hint: string; swatch: string }
 /** Ducts: a duct-section swatch in the plan colour of the service. */
 const DUCT_TICKS: ServiceTick[] = [
-  { key: 'supplyDuct', label: 'Supply', aria: 'Route supply ducts', hint: 'Supply ducts from each ducted unit to its diffusers — the optimiser\'s best life-cycle design', swatch: 'border-blue-700 bg-blue-500/15' },
-  { key: 'returnDuct', label: 'Return', aria: 'Route return ducts', hint: 'Return ducts from each ducted unit to its return grilles', swatch: 'border-teal-700 bg-teal-500/15' },
+  { key: 'supplyDuct', label: 'Supply', aria: 'Route supply ducts', hint: 'Supply ducts from each ducted unit to its supply terminals — the optimiser\'s best life-cycle design', swatch: 'border-blue-700 bg-blue-500/15' },
+  { key: 'returnDuct', label: 'Return', aria: 'Route return ducts', hint: 'Return ducts from each ducted unit\'s return terminals (grilles and return diffusers) back to its return collar', swatch: 'border-teal-700 bg-teal-500/15' },
 ];
 /** Pipes: a dot in the plan colour of the line. */
 const PIPE_TICKS: ServiceTick[] = [

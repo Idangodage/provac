@@ -66,13 +66,15 @@ describe('air terminals (typical sizes, practice)', () => {
     const spec = readDuctTerminalSpec(terminal())!;
     const markup = airTerminalMarkup(terminal(), spec, 0.5, true);
     expect(markup).toContain('data-duct-terminal="sd1"');
-    expect(markup).toContain('>SD 595 · Ø200</text>');
+    // Its own short tag, the face and the neck.
+    expect(markup).toContain('>SD-1 · 595 · Ø200</text>');
     expect(markup).toContain('stroke-dasharray="4 3"');
     // Face, two frames and four diagonals for the 4-way throw.
     expect((markup.match(/<path /g) ?? []).length).toBe(1 + 2 + 4 + 1);
     const grille = typicalTerminalSpec('return-egg-crate', 250);
-    const returnMarkup = airTerminalMarkup(terminal({ id: 'rg1', type: 'return-grille' }, grille), grille, 0.5, true);
-    expect(returnMarkup).toContain('>RG 595 · Ø250</text>');
+    // A terminal still carrying a long library name shows its type tag instead.
+    const returnMarkup = airTerminalMarkup(terminal({ id: 'rg1', type: 'return-grille', label: 'Egg-crate Return Grille 595 — Ø250' }, grille), grille, 0.5, true);
+    expect(returnMarkup).toContain('>RAG · 595 · Ø250</text>');
     expect(returnMarkup).toContain('#0f766e');
     expect(airTerminalMarkup(terminal(), spec, 0.5, false)).not.toContain('<text');
   });

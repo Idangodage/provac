@@ -42,6 +42,7 @@ export class SizingModel {
   readonly costContext: SectionCostContext;
   /** Clear bottom to soffit less the sheet, insulation and a hanger allowance (mm). */
   readonly maxHeightMm: number;
+  /** The service's placeholder terminal drop (a terminal without its own figure). */
   readonly terminalDropPa: number;
   readonly returnFlow: boolean;
   /** Currency per pascal of fan pressure (present worth of the energy). */
@@ -56,6 +57,11 @@ export class SizingModel {
     this.terminalDropPa = ctx.service === 'return' ? ctx.settings.autoGrilleDropPa : ctx.settings.autoDiffuserDropPa;
     this.returnFlow = ctx.service === 'return';
     this.pricePerPa = energyPricePerPa(unitAirflowM3h, ctx.settings);
+  }
+
+  /** A terminal's own drop at its airflow (a filter grille's media included), else the service's. */
+  terminalDrop(terminal: { dropPa?: number }): number {
+    return terminal.dropPa ?? this.terminalDropPa;
   }
 
   // ---- Catalogues ----

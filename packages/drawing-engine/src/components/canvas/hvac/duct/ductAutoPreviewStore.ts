@@ -16,7 +16,9 @@ export interface AutoDuctPreviewInputs {
   walls: readonly AutoDuctWall[];
 }
 
-const DISPLAY_SETTINGS = new Set(['showSizeTags', 'showJointTicks', 'showPieceMarks', 'showSupports']);
+/** Settings a duct design does not depend on: display, and the air-system assignment and placement checks. */
+const DISPLAY_SETTINGS = new Set(['showSizeTags', 'showJointTicks', 'showPieceMarks', 'showSupports', 'showAirSystems',
+  'returnSupplyMinGapMm', 'autoAssignWallPenaltyMm', 'autoAssignOverloadMm']);
 const SETTINGS_KEYS = new WeakMap<DuctDesignSettings, string>();
 
 function designSettingsKey(settings: DuctDesignSettings): string {

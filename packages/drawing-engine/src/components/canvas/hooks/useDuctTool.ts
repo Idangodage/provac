@@ -462,7 +462,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
   const terminalLabel = useCallback((draft: DuctRunDraft, port: DuctAirPort): string => {
     const { hvacElements: stored, ductSettings: settings } = sceneRef.current;
     const terminal = stored.find((element) => element.id === port.unitId);
-    const name = terminal?.label || (terminal?.type === "return-grille" ? "return grille" : "diffuser");
+    const name = terminal?.label || (terminal?.type === "return-grille" ? "return terminal" : "supply terminal");
     const spec = readDuctRunSpec(draft.element);
     if (!spec || spec.end.kind !== "terminal" || !spec.end.flex) return `Rigid duct into the ${name} spigot Ø${Math.round(port.diameterMm ?? port.widthMm)}`;
     const replaced = new Map(draft.changed.map((element) => [element.id, element]));
@@ -588,7 +588,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     const connection = end?.flex ? "by a flexible runout" : "in rigid duct";
     setProcessingStatus(
       terminal
-        ? `${service} ${start.kind === "port" || start.kind === "free" ? "run" : "branch"} committed to the ${terminal.kind === "return" ? "grille" : "diffuser"} ${connection}.`
+        ? `${service} ${start.kind === "port" || start.kind === "free" ? "run" : "branch"} committed to ${sceneRef.current.hvacElements.find((element) => element.id === terminal.unitId)?.label || `the ${terminal.kind} terminal`} ${connection}.`
         : start.kind === "port"
           ? `${service} duct committed: ${points.length} leg(s).`
           : start.kind === "free"

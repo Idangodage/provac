@@ -4151,8 +4151,8 @@ export function PropertiesPanel({
   const selectedRoom = rooms.find((room) => selectedLookup.has(room.id));
   const selectedWallCount = walls.filter((wall) => selectedLookup.has(wall.id)).length;
   const hvacTitle = selectedHvac?.type === "duct" ? "Duct"
-    : selectedHvac?.type === "diffuser" ? "Diffuser"
-      : selectedHvac?.type === "return-grille" ? "Return grille"
+    : selectedHvac?.type === "diffuser" ? "Supply terminal"
+      : selectedHvac?.type === "return-grille" ? "Return terminal"
         : selectedHvac?.type === "refrigerant-pipe" ? "Refrigerant pipe"
           : selectedHvac?.type === "condensate-pipe" ? "Drain pipe"
             : selectedHvac?.type === "condensate-gully" ? "Drain outlet" : "Equipment";

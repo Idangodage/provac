@@ -12,6 +12,7 @@ export type EquipmentIconKind =
   | 'cassette' | 'wall-unit' | 'ceiling-suspended' | 'ducted' | 'outdoor'
   | 'branch-kit' | 'floor-gully' | 'stack' | 'wall-discharge' | 'drop'
   | 'diffuser-square' | 'diffuser-round' | 'diffuser-linear' | 'return-grille'
+  | 'grille-louvred' | 'diffuser-perforated' | 'grille-filter'
   | 'controller' | 'remote' | 'filter' | 'generic';
 
 const PATHS: Record<EquipmentIconKind, ReactElement> = {
@@ -118,6 +119,28 @@ const PATHS: Record<EquipmentIconKind, ReactElement> = {
       <path d="M6.6 3v18M10.2 3v18M13.8 3v18M17.4 3v18M3 6.6h18M3 10.2h18M3 13.8h18M3 17.4h18" strokeWidth="0.9" />
     </>
   ),
+  'grille-louvred': (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="1.5" />
+      <path d="M6 9l3-3M6 13l7-7M6 17l11-11M9 18l9-9M13 18l5-5" strokeWidth="1.1" />
+    </>
+  ),
+  'diffuser-perforated': (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="1.5" />
+      <rect x="6" y="6" width="12" height="12" rx="0.6" strokeWidth="1" />
+      {[8.25, 12, 15.75].flatMap((x) => [8.25, 12, 15.75].map((y) => (
+        <circle key={`${x}-${y}`} cx={x} cy={y} r="0.85" fill="currentColor" stroke="none" />
+      )))}
+    </>
+  ),
+  'grille-filter': (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="1.5" />
+      <path d="M8.4 3v18M15.6 3v18M3 8.4h18M3 15.6h18" strokeWidth="0.9" />
+      <path d="M5 13.5l1.75-3 1.75 3 1.75-3 1.75 3 1.75-3 1.75 3 1.75-3 1.75 3" strokeWidth="1.3" />
+    </>
+  ),
   controller: (
     <>
       <rect x="5" y="3" width="14" height="18" rx="2" />
@@ -165,7 +188,7 @@ export function EquipmentIcon({ kind, size = 24, strokeWidth = 1.5, ...rest }: E
 }
 
 /** The icon a library entry reads as. */
-export function equipmentIconKind(definition: Pick<AcEquipmentDefinition, 'type' | 'subtype'>): EquipmentIconKind {
+export function equipmentIconKind(definition: Pick<AcEquipmentDefinition, 'type' | 'subtype'> & Partial<Pick<AcEquipmentDefinition, 'defaultProperties'>>): EquipmentIconKind {
   switch (definition.type) {
     case 'ceiling-cassette-ac': return 'cassette';
     case 'wall-mounted-ac': return 'wall-unit';
@@ -176,8 +199,18 @@ export function equipmentIconKind(definition: Pick<AcEquipmentDefinition, 'type'
     case 'condensate-gully':
       return definition.subtype === 'stack-connection' ? 'stack' : definition.subtype === 'external-discharge' ? 'wall-discharge' : 'floor-gully';
     case 'diffuser':
-      return definition.subtype === 'round' ? 'diffuser-round' : definition.subtype === 'linear-slot' ? 'diffuser-linear' : 'diffuser-square';
-    case 'return-grille': return 'return-grille';
+    case 'return-grille': {
+      const terminal = definition.defaultProperties?.terminal as { filter?: string | null } | undefined;
+      if (terminal?.filter) return 'grille-filter';
+      switch (definition.subtype) {
+        case 'round': return 'diffuser-round';
+        case 'linear-slot': return 'diffuser-linear';
+        case 'louvred': return 'grille-louvred';
+        case 'perforated': return 'diffuser-perforated';
+        case 'square-4way': return 'diffuser-square';
+        default: return definition.type === 'return-grille' ? 'return-grille' : 'diffuser-square';
+      }
+    }
     case 'control-panel': return 'controller';
     case 'remote-controller': return 'remote';
     case 'filter': return 'filter';
@@ -192,4 +225,5 @@ export const EQUIPMENT_CATEGORY_ICONS: Record<AcEquipmentLibraryCategory, Equipm
   accessories: 'branch-kit',
   drainage: 'drop',
   'air-terminals': 'diffuser-square',
+  'return-air-terminals': 'return-grille',
 };

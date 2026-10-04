@@ -11,9 +11,10 @@
  */
 
 import {
-  TERMINAL_LABELS,
+  terminalLabel,
   typicalTerminalSpec,
   type DuctTerminalKind,
+  type TypicalTerminalOptions,
 } from "../components/canvas/hvac/duct/ductTerminalCatalog";
 import type {
   HvacElementCategory,
@@ -27,7 +28,8 @@ export type AcEquipmentLibraryCategory =
   | "controls"
   | "accessories"
   | "drainage"
-  | "air-terminals";
+  | "air-terminals"
+  | "return-air-terminals";
 
 export type AcEquipmentPlacementMode = "room" | "wall" | "outdoor";
 
@@ -68,31 +70,38 @@ export const AC_EQUIPMENT_CATEGORY_LABELS: Record<
   controls: "Controls",
   accessories: "Accessories",
   drainage: "Condensate Drainage",
-  "air-terminals": "Air Terminals",
+  "air-terminals": "Supply Air Terminals",
+  "return-air-terminals": "Return Air Terminals",
 };
 
 /**
- * A ceiling air terminal (diffuser or return grille) at a typical catalog size
- * (practice-flagged; SMACNA gives none): face flush with the ceiling plane, its
- * plenum box and side spigot above it (duct/ductTerminalCatalog.ts).
+ * A ceiling air terminal at a typical catalog size (practice-flagged; SMACNA
+ * gives none): face flush with the ceiling plane, its plenum box and side
+ * spigot above it (duct/ductTerminalCatalog.ts). The service decides the
+ * element type and the toolbox section: supply terminals are `diffuser`
+ * elements, return terminals `return-grille` elements, whatever their face.
  */
 function airTerminal(
   id: string,
   name: string,
   kind: DuctTerminalKind,
   neckDiameterMm: number,
-  options: { slots?: number; lengthMm?: number } = {},
+  options: TypicalTerminalOptions = {},
 ): AcEquipmentDefinition {
   const spec = typicalTerminalSpec(kind, neckDiameterMm, options);
   const isReturn = spec.service === "return";
+  const label = terminalLabel(spec);
+  const filterNote = spec.filter
+    ? ` A ${spec.filter} filter panel sits behind the hinged face, changed from the room; its drop is added to the return path.`
+    : "";
   return {
     id,
     name,
-    category: "air-terminals",
+    category: isReturn ? "return-air-terminals" : "air-terminals",
     equipmentCategory: "air-terminal",
     type: isReturn ? "return-grille" : "diffuser",
     subtype: kind,
-    modelLabel: `${TERMINAL_LABELS[kind]} Ø${neckDiameterMm}`,
+    modelLabel: `${label} Ø${neckDiameterMm}`,
     placementMode: "room",
     mountType: "ceiling",
     widthMm: spec.faceWidthMm,
@@ -100,8 +109,8 @@ function airTerminal(
     heightMm: spec.faceHeightMm + spec.plenumHeightMm,
     elevationMm: DEFAULT_CEILING_ELEVATION_MM,
     supplyZoneRatio: 0.5,
-    description: `${TERMINAL_LABELS[kind]} with a plenum box and a Ø${neckDiameterMm} side spigot for a flexible runout (SMACNA Fig. 2-15). Typical catalog size, flagged practice until the supplier's data replaces it.`,
-    tags: ["air-terminal", isReturn ? "return" : "supply", kind, "ceiling", "duct"],
+    description: `${label} (${isReturn ? "return air, back to its unit's return collar" : "supply air, from its unit's supply collar"}) with a plenum box and a Ø${neckDiameterMm} side spigot for a flexible runout (SMACNA Fig. 2-15).${filterNote} Typical catalog size, flagged practice until the supplier's data replaces it.`,
+    tags: ["air-terminal", isReturn ? "return" : "supply", kind, "ceiling", "duct", ...(spec.filter ? ["filter"] : [])],
     defaultProperties: { terminal: spec, source: "terminal-catalog-typical" },
   };
 }
@@ -391,12 +400,19 @@ export const DEFAULT_AC_EQUIPMENT_LIBRARY: AcEquipmentDefinition[] = [
     },
   }),
 
-  // --- Air terminals (typical sizes, practice-flagged; see duct/ductTerminalCatalog.ts) ---
+  // --- Supply air terminals (typical sizes, practice-flagged; see duct/ductTerminalCatalog.ts) ---
   airTerminal("terminal-square-595-200", "Square Ceiling Diffuser 595 — Ø200", "square-4way", 200),
   airTerminal("terminal-square-595-250", "Square Ceiling Diffuser 595 — Ø250", "square-4way", 250),
   airTerminal("terminal-round-200", "Round Ceiling Diffuser — Ø200", "round", 200),
   airTerminal("terminal-linear-2slot-1200-150", "Linear Slot Diffuser 2-slot 1200 — Ø150", "linear-slot", 150, { slots: 2, lengthMm: 1200 }),
+
+  // --- Return air terminals (each ducted back to its unit's return collar) ---
   airTerminal("terminal-return-eggcrate-595-250", "Egg-crate Return Grille 595 — Ø250", "return-egg-crate", 250),
+  airTerminal("terminal-return-louvred-595-250", "Louvred Return Grille 595 — Ø250", "louvred", 250, { service: "return" }),
+  airTerminal("terminal-return-perforated-595-250", "Perforated Return Diffuser 595 — Ø250", "perforated", 250, { service: "return" }),
+  airTerminal("terminal-return-square-595-250", "Square Return Diffuser 595 — Ø250", "square-4way", 250, { service: "return" }),
+  airTerminal("terminal-return-linear-2slot-1200-200", "Linear Slot Return 2-slot 1200 — Ø200", "linear-slot", 200, { service: "return", slots: 2, lengthMm: 1200 }),
+  airTerminal("terminal-return-filter-595-250", "Filter Return Grille 595 — Ø250 · G4", "return-egg-crate", 250, { service: "return", filter: "G4" }),
 ];
 
 
@@ -417,6 +433,7 @@ export function groupAcEquipmentByCategory(
       accessories: [],
       drainage: [],
       "air-terminals": [],
+      "return-air-terminals": [],
     },
   );
 }

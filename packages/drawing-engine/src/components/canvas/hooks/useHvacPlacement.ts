@@ -9,7 +9,7 @@ import { useCallback, useMemo } from 'react';
 import type { AcEquipmentDefinition } from '../../../data';
 import type { HvacElement, Point2D, Room } from '../../../types';
 import { GeometryEngine } from '../../../utils/geometry-engine';
-import { terminalCeilingPlane } from '../hvac/duct/ductTerminals';
+import { nextTerminalTag, readDuctTerminalSpec, terminalCeilingPlane } from '../hvac/duct/ductTerminals';
 import {
     buildRefrigerantBranchKitViewModel,
     isRefrigerantBranchKitType,
@@ -587,6 +587,12 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
             return false;
         }
 
+        // Air terminals (supply or return) take a short instance tag ("RAG-3") and sit in the ceiling plane.
+        const isAirTerminal = pendingPlacementEquipmentDefinition.category === 'air-terminals'
+            || pendingPlacementEquipmentDefinition.category === 'return-air-terminals';
+        const terminalSpec = isAirTerminal
+            ? readDuctTerminalSpec({ type: pendingPlacementEquipmentDefinition.type, properties: pendingPlacementEquipmentDefinition.defaultProperties ?? {} })
+            : null;
         const elementId = addHvacElement({
             type: pendingPlacementEquipmentDefinition.type,
             category: pendingPlacementEquipmentDefinition.equipmentCategory,
@@ -598,11 +604,11 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
             depth: placement.depthMm,
             height: placement.heightMm,
             // An air terminal's face sits in the ceiling plane the ceiling units already use.
-            elevation: pendingPlacementEquipmentDefinition.category === 'air-terminals'
+            elevation: isAirTerminal
                 ? terminalCeilingPlane(hvacElements)
                 : resolvePlacementSpec(pendingPlacementEquipmentDefinition, placementRotationDeg).elevationMm,
             mountType: pendingPlacementEquipmentDefinition.mountType,
-            label: pendingPlacementEquipmentDefinition.name,
+            label: terminalSpec ? nextTerminalTag(hvacElements, terminalSpec) : pendingPlacementEquipmentDefinition.name,
             roomId: placement.roomId ?? undefined,
             wallId: placement.wallId ?? undefined,
             supplyZoneRatio: pendingPlacementEquipmentDefinition.supplyZoneRatio ?? 0.5,

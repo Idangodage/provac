@@ -44,7 +44,7 @@ import {
   type FanSpeed,
 } from './ductSizing';
 import { resolveSoffitZ } from './ductSupports';
-import { readDuctTerminalSpec } from './ductTerminals';
+import { readDuctTerminalSpec, terminalDropLookup } from './ductTerminals';
 import {
   isRoundLeg,
   isRoundMainTapStyle,
@@ -931,7 +931,8 @@ export function sizeDuctSystem(
         message: `${clash.mark} clashes with ${clash.kind === 'pipe' ? `a ${clash.service ?? 'pipe'}` : clash.kind === 'terminal' ? 'an air terminal' : clash.kind === 'equipment' ? 'an equipment casing' : 'another duct'}.`,
       });
     }
-    report.pressure = systemPressure(report.plans, new Map(shares.map((share) => [share.terminalId, share.airflowM3h])), settings, service);
+    report.pressure = systemPressure(report.plans, new Map(shares.map((share) => [share.terminalId, share.airflowM3h])), settings, service,
+      terminalDropLookup(nextScene, settings));
     for (const terminal of terminals) terminal.throttlePa = Math.round(report.pressure.throttlePa[terminal.terminalId] ?? 0);
     if (report.maxEspPa !== null && report.pressure.indexPa > report.maxEspPa) {
       issues.push({ code: 'DU_AUTO_ESP', severity: 'warning', service,

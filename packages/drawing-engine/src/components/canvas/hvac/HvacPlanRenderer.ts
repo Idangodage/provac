@@ -3051,12 +3051,42 @@ export class HvacPlanRenderer {
             const y = -halfD * 0.6 + (1.2 * halfD * (index + 0.5)) / slots;
             line(-halfW * 0.94, y, halfW * 0.94, y, 1.4);
           }
+        } else if (terminal.kind === "louvred") {
+          // Fixed blades in one direction.
+          box(halfW * 0.9, halfD * 0.9);
+          for (let index = 1; index < 8; index += 1) {
+            const y = -halfD * 0.9 + (1.8 * halfD * index) / 8;
+            line(-halfW * 0.9, y, halfW * 0.9, y, 0.8);
+          }
+        } else if (terminal.kind === "perforated") {
+          // Perforated plate in its border: a dot grid.
+          box(halfW * 0.86, halfD * 0.86);
+          const dot = Math.min(halfW, halfD) * 0.035;
+          for (let i = 0; i < 5; i += 1) {
+            for (let j = 0; j < 5; j += 1) {
+              detail(new fabric.Circle({
+                left: -halfW * 0.64 + (1.28 * halfW * i) / 4, top: -halfD * 0.64 + (1.28 * halfD * j) / 4, radius: dot,
+                originX: "center", originY: "center", fill: palette.detail, strokeWidth: 0, selectable: false, evented: false,
+              }));
+            }
+          }
         } else {
           // Egg-crate return: the grid.
           for (let index = 1; index < 5; index += 1) {
             line(-halfW + (2 * halfW * index) / 5, -halfD, -halfW + (2 * halfW * index) / 5, halfD, 0.7);
             line(-halfW, -halfD + (2 * halfD * index) / 5, halfW, -halfD + (2 * halfD * index) / 5, 0.7);
           }
+        }
+        if (terminal.filter) {
+          // Filter media behind the face: the zig-zag symbol.
+          const teeth = 8;
+          const reach = terminal.kind === "round" ? halfW * 0.7 : halfW * 0.8;
+          const amplitude = Math.min(halfW, halfD) * 0.12;
+          const zig = Array.from({ length: teeth * 2 + 1 }, (_, index) => ({ x: -reach + (2 * reach * index) / (teeth * 2), y: index % 2 ? -amplitude : amplitude }));
+          detail(new fabric.Polyline(zig, {
+            left: 0, top: 0, originX: "center", originY: "center",
+            fill: "transparent", stroke: palette.detail, strokeWidth: 1.3, selectable: false, evented: false,
+          }));
         }
         // Spigot stub from the plenum box (hidden above the ceiling).
         const spigot = localTerminalSpigot(terminal);

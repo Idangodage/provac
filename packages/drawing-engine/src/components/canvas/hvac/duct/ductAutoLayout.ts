@@ -79,7 +79,7 @@ import {
 } from './ductSizing';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
 import { linkSizingBasis, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
-import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
+import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec, terminalPressureDropPa } from './ductTerminals';
 import {
   isDuctElement,
   readDuctRunSpec,
@@ -1437,7 +1437,7 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
       const branch = sizeRound(share.airflowM3h, sizingLimits(settings, service, 'branch'), settings.autoRoundSizesMm, { minimumMm: neck });
       const placed: TerminalCtx = {
         element, spec, port: tport, lip: toLocal(frame, tport.lip), normal: cardinal(dirToLocal(frame, tport.normal)),
-        airflowM3h: share.airflowM3h, fixed: share.fixed, neck, branch,
+        airflowM3h: share.airflowM3h, fixed: share.fixed, neck, branch, dropPa: terminalPressureDropPa(spec, share.airflowM3h, settings),
       };
       return [placed];
     });

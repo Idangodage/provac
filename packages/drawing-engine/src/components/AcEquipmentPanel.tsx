@@ -58,10 +58,15 @@ interface TileText {
   tone: Tone;
 }
 
-function terminalOf(definition: AcEquipmentDefinition): { neckDiameterMm?: number; service?: string } | null {
+function terminalOf(definition: AcEquipmentDefinition): { neckDiameterMm?: number; service?: string; filter?: string | null } | null {
   const terminal = definition.defaultProperties?.terminal;
-  return terminal && typeof terminal === 'object' ? terminal as { neckDiameterMm?: number; service?: string } : null;
+  return terminal && typeof terminal === 'object' ? terminal as { neckDiameterMm?: number; service?: string; filter?: string | null } : null;
 }
+
+const SUPPLY_TILE_TITLES: Record<string, string> = { round: 'Round', 'linear-slot': 'Linear slot' };
+const RETURN_TILE_TITLES: Record<string, string> = {
+  'return-egg-crate': 'Egg-crate', louvred: 'Louvred', perforated: 'Perforated', 'square-4way': 'Square', round: 'Round', 'linear-slot': 'Linear slot',
+};
 
 /** The model code of a unit (its label without the brand). */
 function modelCode(definition: AcEquipmentDefinition): string {
@@ -87,12 +92,15 @@ export function equipmentTileText(definition: AcEquipmentDefinition): TileText {
           : { title: 'Floor gully', caption: 'Tundish', tone: null };
     case 'diffuser':
     case 'return-grille': {
+      // The section header says supply or return; the tile names the face.
       const terminal = terminalOf(definition);
       const neck = terminal?.neckDiameterMm ? `Ø${terminal.neckDiameterMm}` : '';
-      const tone: Tone = definition.type === 'return-grille' ? 'return' : 'supply';
-      const title = definition.type === 'return-grille' ? 'Return grille'
-        : definition.subtype === 'round' ? 'Round' : definition.subtype === 'linear-slot' ? 'Linear slot' : 'Square';
-      return { title, caption: neck, tone };
+      const isReturn = definition.type === 'return-grille';
+      const tone: Tone = isReturn ? 'return' : 'supply';
+      const title = terminal?.filter ? 'Filter grille'
+        : isReturn ? RETURN_TILE_TITLES[definition.subtype] ?? 'Return grille'
+          : SUPPLY_TILE_TITLES[definition.subtype] ?? 'Square';
+      return { title, caption: terminal?.filter ? `${neck} · ${terminal.filter}` : neck, tone };
     }
     default: return { title: definition.name, caption: definition.modelLabel, tone: null };
   }

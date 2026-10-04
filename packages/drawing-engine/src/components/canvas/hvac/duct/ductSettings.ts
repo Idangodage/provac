@@ -116,6 +116,18 @@ export interface DuctDesignSettings {
   /** Auto layout: pressure drop across a terminal at its design airflow (Pa). */
   autoDiffuserDropPa: number;
   autoGrilleDropPa: number;
+  /** Filter grilles: each class's clean drop at the rated face velocity, and the mid-life design factor. */
+  filterG4RatedDropPa: number;
+  filterM5RatedDropPa: number;
+  filterRatedVelocityMs: number;
+  filterDesignFactor: number;
+  /** Air systems: the closest a return terminal's face may come to a supply face in the same room before air short-circuits (mm). */
+  returnSupplyMinGapMm: number;
+  /** Air systems, auto-assign: the price of a wall between a collar and a terminal, and of each terminal past a unit's fair share (mm of duct). */
+  autoAssignWallPenaltyMm: number;
+  autoAssignOverloadMm: number;
+  /** Show every air system on the plan (tethers, rings, unit tags), not only the selected one. */
+  showAirSystems: boolean;
   /** Auto layout: round duct sizes to choose from (mm). */
   autoRoundSizesMm: number[];
   /** Auto layout: a trunk reduces only when its width drops by at least this much (mm). */
@@ -124,7 +136,7 @@ export interface DuctDesignSettings {
   autoExactTerminals: number;
   /** Optimiser: time for one unit's design, after which the best verified design so far is kept (ms). */
   autoTimeBudgetMs: number;
-  /** Optimiser: it may turn the spigot of a symmetric terminal (square 4-way, round, egg-crate) to the side the duct reaches best. */
+  /** Optimiser: it may turn the spigot of a terminal on a square or round plenum box (not a linear slot) to the side the duct reaches best. */
   autoChooseSpigotSide: boolean;
   /** Optimiser: the round-main take-offs it may use, and whether a round main may end in a wye. */
   autoRoundMainStyles: DuctRoundMainTapStyle[];
@@ -222,6 +234,14 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoMaxNeckVelocityReturnMs: 3.5,
   autoDiffuserDropPa: 15,
   autoGrilleDropPa: 10,
+  filterG4RatedDropPa: 40,
+  filterM5RatedDropPa: 60,
+  filterRatedVelocityMs: 2.5,
+  filterDesignFactor: 1.5,
+  returnSupplyMinGapMm: 1500,
+  autoAssignWallPenaltyMm: 4000,
+  autoAssignOverloadMm: 2500,
+  showAirSystems: false,
   autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500],
   autoReducerStepMm: 100,
   autoExactTerminals: 8,
@@ -317,6 +337,14 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   autoMaxNeckVelocityReturnMs: practice('Return grille neck velocity; check the supplier\'s data.'),
   autoDiffuserDropPa: practice('Placeholder terminal pressure drop until the supplier\'s data is entered.'),
   autoGrilleDropPa: practice('Placeholder terminal pressure drop until the supplier\'s data is entered.'),
+  filterG4RatedDropPa: practice('Clean drop of a 25 mm G4 panel at the rated face velocity; the supplier\'s curve replaces it.'),
+  filterM5RatedDropPa: practice('Clean drop of a 25 mm M5 panel (≈ MERV 8, the ASHRAE 62.1 §5.8 minimum upstream of a wet coil) at the rated face velocity.'),
+  filterRatedVelocityMs: practice('Face velocity the clean drops are quoted at; the drop scales linearly with the grille\'s own face velocity.'),
+  filterDesignFactor: practice('Mid-life allowance between the clean drop and the change-out drop.'),
+  returnSupplyMinGapMm: practice('Keep a return inlet out of a supply outlet\'s primary jet so conditioned air does not go straight back to the unit (ASHRAE Fundamentals ch. 20 principle; the distance is practice).'),
+  autoAssignWallPenaltyMm: practice('Auto-assign: a wall between a collar and a terminal costs this much duct (a sleeve and coordination).'),
+  autoAssignOverloadMm: practice('Auto-assign: each terminal past a unit\'s fair share (by airflow) costs this much duct, so units share the room.'),
+  showAirSystems: { sourceId: 'project-configuration', verified: false, note: 'Display only.' },
   autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex).' },
   autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
@@ -445,6 +473,14 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     autoMaxNeckVelocityReturnMs: clampNumber(raw.autoMaxNeckVelocityReturnMs, d.autoMaxNeckVelocityReturnMs, 1, 8),
     autoDiffuserDropPa: clampNumber(raw.autoDiffuserDropPa, d.autoDiffuserDropPa, 0, 150),
     autoGrilleDropPa: clampNumber(raw.autoGrilleDropPa, d.autoGrilleDropPa, 0, 150),
+    filterG4RatedDropPa: clampNumber(raw.filterG4RatedDropPa, d.filterG4RatedDropPa, 0, 500),
+    filterM5RatedDropPa: clampNumber(raw.filterM5RatedDropPa, d.filterM5RatedDropPa, 0, 500),
+    filterRatedVelocityMs: clampNumber(raw.filterRatedVelocityMs, d.filterRatedVelocityMs, 0.5, 5),
+    filterDesignFactor: clampNumber(raw.filterDesignFactor, d.filterDesignFactor, 1, 3),
+    returnSupplyMinGapMm: clampNumber(raw.returnSupplyMinGapMm, d.returnSupplyMinGapMm, 0, 10000),
+    autoAssignWallPenaltyMm: clampNumber(raw.autoAssignWallPenaltyMm, d.autoAssignWallPenaltyMm, 0, 100000),
+    autoAssignOverloadMm: clampNumber(raw.autoAssignOverloadMm, d.autoAssignOverloadMm, 0, 100000),
+    showAirSystems: bool(raw.showAirSystems, d.showAirSystems),
     autoRoundSizesMm: Array.isArray(raw.autoRoundSizesMm) && raw.autoRoundSizesMm.every((size) => typeof size === 'number' && size >= 50 && size <= 2000)
       ? [...new Set(raw.autoRoundSizesMm as number[])].sort((a, b) => a - b) : [...d.autoRoundSizesMm],
     autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),

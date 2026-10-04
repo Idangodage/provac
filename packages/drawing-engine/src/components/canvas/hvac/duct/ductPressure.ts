@@ -233,13 +233,16 @@ interface RunNode {
 /**
  * Every terminal path of one service's system. `plans` are the system's runs
  * (a run from the unit collar and everything taken off it); `airflow` maps a
- * terminal id to its design airflow (m³/h).
+ * terminal id to its design airflow (m³/h). `terminalDropPa` gives a
+ * terminal's own drop at its airflow (a filter grille's media included);
+ * without it, or where it returns null, the service's placeholder drop is used.
  */
 export function systemPressure(
   plans: readonly DuctFabricationPlan[],
   airflow: ReadonlyMap<string, number>,
   settings: Pick<DuctDesignSettings, 'autoDiffuserDropPa' | 'autoGrilleDropPa'>,
   service: DuctService,
+  terminalDropPa?: (terminalId: string, airflowM3h: number) => number | null,
 ): ServicePressure {
   const nodes = new Map<string, RunNode>();
   for (const plan of plans) {
@@ -394,9 +397,10 @@ export function systemPressure(
   };
 
   const terminals: TerminalPressure[] = [];
-  const terminalDrop = service === 'return' ? settings.autoGrilleDropPa : settings.autoDiffuserDropPa;
+  const serviceDrop = service === 'return' ? settings.autoGrilleDropPa : settings.autoDiffuserDropPa;
   for (const node of nodes.values()) {
     if (!node.terminalId) continue;
+    const terminalDrop = terminalDropPa?.(node.terminalId, airflow.get(node.terminalId) ?? 0) ?? serviceDrop;
     let friction = 0;
     let fittings = 0;
     let current: RunNode | undefined = node;

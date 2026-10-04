@@ -9,7 +9,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import type { DuctAirPort } from './ductAirPorts';
 import type { DuctPlanPresentation } from './ductPlanPresentation';
 import type { DuctSupportPlan } from './ductSupports';
-import { localTerminalSpigot, type DuctTerminalSpec } from './ductTerminals';
+import { localTerminalSpigot, TERMINAL_TAG_PATTERN, terminalTypeTag, type DuctTerminalSpec } from './ductTerminals';
 
 export interface DuctMarkupStyle {
   /** Screen pixels per model millimetre. */
@@ -152,18 +152,22 @@ export function ductSupportMarkup(supports: DuctSupportPlan, k: number): string 
   return parts.join('');
 }
 
-const TERMINAL_TAG: Record<DuctTerminalSpec['kind'], string> = {
-  'square-4way': 'SD', round: 'RD', 'linear-slot': 'LSD', 'return-egg-crate': 'RG',
-};
+/** The tag a terminal shows: its own short label ("RAG-3"), else its type ("RAG"). */
+export function terminalDisplayTag(element: Partial<Pick<HvacElement, 'label'>>, spec: Pick<DuctTerminalSpec, 'kind' | 'service'>): string {
+  const label = (element.label ?? '').trim();
+  return TERMINAL_TAG_PATTERN.test(label) ? label : terminalTypeTag(spec);
+}
 
 /**
  * An air terminal as a ceiling plan shows it: the face with its pattern (the
- * 4-way throw, rings, slots or the egg-crate grid), its spigot above the
- * ceiling (dashed) and a tag such as "SD 595 · Ø200". The plan's 3D top view
- * sees only the plenum box, so the symbol is drawn here, over it.
+ * 4-way throw, rings, slots, the egg-crate grid, louvre blades or the
+ * perforation), a zig-zag where a filter sits behind the face, its spigot above
+ * the ceiling (dashed) and a tag such as "RAG-2 · 595 · Ø250 · G4" in the
+ * service's colour. The plan's 3D top view sees only the plenum box, so the
+ * symbol is drawn here, over it.
  */
 export function airTerminalMarkup(
-  element: Pick<HvacElement, 'id' | 'position' | 'width' | 'depth' | 'rotation'>,
+  element: Pick<HvacElement, 'id' | 'position' | 'width' | 'depth' | 'rotation'> & Partial<Pick<HvacElement, 'label'>>,
   spec: DuctTerminalSpec,
   k: number,
   showTags: boolean,
@@ -197,6 +201,23 @@ export function airTerminalMarkup(
         const y = -hd + 25 + 20 * (index + 0.5);
         parts.push(line(at(-hw + 15, y), at(hw - 15, y), 1.4));
       }
+    } else if (spec.kind === 'louvred') {
+      // Fixed blades, one direction (sight-proof): parallel lines across the core.
+      parts.push(outline(rect(hw * 0.9, hd * 0.9)));
+      for (let index = 1; index < 8; index += 1) {
+        const y = -hd * 0.9 + (1.8 * hd * index) / 8;
+        parts.push(line(at(-hw * 0.9, y), at(hw * 0.9, y), 0.8));
+      }
+    } else if (spec.kind === 'perforated') {
+      // Perforated plate inside its border: a dot grid.
+      parts.push(outline(rect(hw * 0.86, hd * 0.86)));
+      const dot = Math.min(hw, hd) * 0.035;
+      for (let i = 0; i < 5; i += 1) {
+        for (let j = 0; j < 5; j += 1) {
+          const p = at(-hw * 0.64 + (1.28 * hw * i) / 4, -hd * 0.64 + (1.28 * hd * j) / 4);
+          parts.push(`<circle cx="${f(p.x)}" cy="${f(p.y)}" r="${f(dot)}" fill="${color.stroke}" stroke="none"/>`);
+        }
+      }
     } else {
       for (let index = 1; index < 5; index += 1) {
         const x = -hw + (2 * hw * index) / 5;
@@ -204,6 +225,14 @@ export function airTerminalMarkup(
         parts.push(line(at(x, -hd), at(x, hd), 0.6), line(at(-hw, y), at(hw, y), 0.6));
       }
     }
+  }
+  if (spec.filter) {
+    // Filter media behind the face: the usual zig-zag symbol across the core.
+    const teeth = 8;
+    const reach = (spec.kind === 'round' ? hw * 0.7 : hw * 0.8);
+    const amplitude = Math.min(hd, hw) * 0.12;
+    const zig = Array.from({ length: teeth * 2 + 1 }, (_, index) => at(-reach + (2 * reach * index) / (teeth * 2), index % 2 ? -amplitude : amplitude));
+    parts.push(`<path d="${pathData(zig)}" fill="none" stroke="${color.stroke}" stroke-width="1.3" vector-effect="non-scaling-stroke" stroke-linejoin="round" data-terminal-filter="${spec.filter}"/>`);
   }
   // The spigot, above the ceiling: dashed from the plenum box to its lip.
   const spigot = localTerminalSpigot(spec);
@@ -216,7 +245,8 @@ export function airTerminalMarkup(
     const size = spec.kind === 'round' ? `Ø${Math.round(spec.faceWidthMm)}`
       : spec.kind === 'linear-slot' ? `${Math.round(spec.faceWidthMm)}×${spec.slots ?? 2} slots` : `${Math.round(spec.faceWidthMm)}`;
     const reach = Math.max(hw, hd);
-    parts.push(textMarkup({ x: centre.x, y: centre.y + reach + px(12) }, `${TERMINAL_TAG[spec.kind]} ${size} · Ø${Math.round(spec.neckDiameterMm)}`, px(11), color.stroke));
+    const filter = spec.filter ? ` · ${spec.filter}` : '';
+    parts.push(textMarkup({ x: centre.x, y: centre.y + reach + px(12) }, `${terminalDisplayTag(element, spec)} · ${size} · Ø${Math.round(spec.neckDiameterMm)}${filter}`, px(11), color.stroke));
   }
   parts.push('</g>');
   return parts.join('');

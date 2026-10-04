@@ -408,7 +408,7 @@ function endFrontiers(state: RunState, solver: Solver): void {
       }
       const runout = model.flex(terminal.neck, flow, fit!.lengthMm, fit!.bendLossPa);
       const frontier = filled(grid, INF);
-      minShiftedInto(frontier, null, filled(grid, 0), transition.cost + runout.cost, steps(transition.loss + runout.loss + model.terminalDropPa, grid), 0);
+      minShiftedInto(frontier, null, filled(grid, 0), transition.cost + runout.cost, steps(transition.loss + runout.loss + model.terminalDrop(terminal), grid), 0);
       state.end[x] = frontier;
     } else if (run.end.kind === 'cap') {
       state.end[x] = filled(grid, model.capCost(leg));

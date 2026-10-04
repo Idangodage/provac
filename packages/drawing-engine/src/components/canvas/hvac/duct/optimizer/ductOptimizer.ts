@@ -12,6 +12,7 @@ import { priceDuctPlans, type DuctCostBreakdown } from '../ductEconomics';
 import { planDuctRunSpec, type DuctFabricationPlan } from '../ductFabricationPlanner';
 import { systemPressure, type ServicePressure } from '../ductPressure';
 import { getDuctSupportPlan } from '../ductSupports';
+import { terminalDropLookup } from '../ductTerminals';
 import type { DuctSystemSizingReport } from '../ductSystemSizing';
 import { readDuctRunSpec } from '../ductTypes';
 import { findDuctClashes } from '../ductVolumes';
@@ -71,7 +72,8 @@ export function verifyRuns(ctx: ServiceCtx, runs: readonly HvacElement[], notes:
       });
     }
   }
-  const pressure = systemPressure(plans, new Map(ctx.terminals.map((terminal) => [terminal.element.id, terminal.airflowM3h])), ctx.settings, ctx.service);
+  const pressure = systemPressure(plans, new Map(ctx.terminals.map((terminal) => [terminal.element.id, terminal.airflowM3h])), ctx.settings, ctx.service,
+    terminalDropLookup(scene, ctx.settings));
   let hangers = 0;
   let straps = 0;
   for (const plan of plans) {

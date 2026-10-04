@@ -8,7 +8,14 @@ import { legNormal } from './ductBranches';
 import { buildDuctRunDraftElement } from './ductDraft';
 import { systemPressure } from './ductPressure';
 import { resolveDuctSettings } from './ductSettings';
-import { terminalEnvelope, typicalTerminalSpec, type DuctTerminalKind } from './ductTerminals';
+import {
+  readDuctTerminalSpec,
+  terminalEnvelope,
+  terminalFilterDropPa,
+  typicalTerminalSpec,
+  type DuctTerminalKind,
+  type TypicalTerminalOptions,
+} from './ductTerminals';
 import { readDuctRunSpec } from './ductTypes';
 
 const settings = resolveDuctSettings({ soffitMm: 3000 });
@@ -37,8 +44,8 @@ const at = (frame: Frame, along: number, across: number): Point2D => ({
 const minus = (v: Point2D): Point2D => ({ x: -v.x, y: -v.y });
 
 /** A terminal centred at `centre`, its spigot facing `facing` (world). */
-function terminal(id: string, centre: Point2D, facing: Point2D, kind: DuctTerminalKind = 'square-4way', neck = 200): HvacElement {
-  const spec = typicalTerminalSpec(kind, neck);
+function terminal(id: string, centre: Point2D, facing: Point2D, kind: DuctTerminalKind = 'square-4way', neck = 200, options: TypicalTerminalOptions = {}): HvacElement {
+  const spec = typicalTerminalSpec(kind, neck, options);
   const envelope = terminalEnvelope(spec);
   const rotation = (((Math.atan2(facing.x, -facing.y) * 180) / Math.PI) + 360) % 360;
   return {
@@ -174,6 +181,25 @@ describe('duct auto layout', () => {
     expect(errorsOf(result)).toEqual([]);
     expect(result.services.map((service) => service.service)).toEqual(['return']);
     expectServed(result, ['rg1']);
+  });
+
+  it('ducts return diffusers back to the return collar, a filter grille\'s media on the return path', () => {
+    const unit = fdum();
+    const { ret } = frames(unit);
+    const squareReturn = terminal('rad1', at(ret, 2600, -900), minus(ret.n), 'square-4way', 250, { service: 'return' });
+    const filterGrille = terminal('rag1', at(ret, 2600, 900), minus(ret.n), 'return-egg-crate', 250, { filter: 'G4' });
+    const result = generateAutoDuct([unit, squareReturn, filterGrille], request(['rad1', 'rag1']), settings);
+    expect(errorsOf(result)).toEqual([]);
+    // Both are return terminals, though one has a diffuser's face: nothing goes to the supply collar.
+    expect(result.services.map((service) => service.service)).toEqual(['return']);
+    expectServed(result, ['rad1', 'rag1']);
+    const pressure = result.services[0]!.pressure!;
+    const square = pressure.terminals.find((entry) => entry.terminalId === 'rad1')!;
+    const filtered = pressure.terminals.find((entry) => entry.terminalId === 'rag1')!;
+    expect(square.terminalPa).toBe(settings.autoGrilleDropPa);
+    const airflow = result.services[0]!.terminals.find((entry) => entry.terminalId === 'rag1')!.airflowM3h;
+    expect(filtered.terminalPa).toBeCloseTo(settings.autoGrilleDropPa + terminalFilterDropPa(readDuctTerminalSpec(filterGrille)!, airflow, settings), 6);
+    expect(filtered.terminalPa).toBeGreaterThan(square.terminalPa);
   });
 
   it('works in the collar\'s own frame whatever the unit\'s rotation', () => {

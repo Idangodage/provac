@@ -14,9 +14,15 @@
 import type { HvacElement, Point2D } from '../../../../types';
 
 import { toWorldAirPort, type DuctAirPort, type LocalAirPortSpec } from './ductAirPorts';
+import type { DuctDesignSettings } from './ductSettings';
 import type { DuctRuleProvenance } from './ductSources';
 import {
+  DUCT_TERMINAL_FILTER_CLASSES,
+  DUCT_TERMINAL_KINDS,
+  TERMINAL_TAG_PATTERN,
+  terminalTypeTag,
   typicalTerminalSpec,
+  type DuctTerminalFilterClass,
   type DuctTerminalKind,
   type DuctTerminalSpec,
   type DuctTerminalSpigotSide,
@@ -40,17 +46,23 @@ function finite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-const KINDS: readonly DuctTerminalKind[] = ['square-4way', 'round', 'linear-slot', 'return-egg-crate'];
 const SIDES: readonly DuctTerminalSpigotSide[] = ['back', 'front', 'left', 'right'];
 
-/** Tolerant reader: an old diffuser or grille without a spec gets the typical one of its type. */
+/**
+ * Tolerant reader: an old diffuser or grille without a spec gets the typical
+ * one of its type. The element type carries the service whatever the face, so
+ * a square face on a `return-grille` element is a return diffuser.
+ */
 export function readDuctTerminalSpec(element: Pick<HvacElement, 'type' | 'properties'>): DuctTerminalSpec | null {
   if (!isDuctTerminalElement(element)) return null;
   const raw = element.properties.terminal as Record<string, unknown> | undefined;
-  const fallbackKind: DuctTerminalKind = element.type === 'return-grille' ? 'return-egg-crate' : 'square-4way';
-  const kind = KINDS.includes(raw?.kind as DuctTerminalKind) ? (raw!.kind as DuctTerminalKind) : fallbackKind;
-  const neck = finite(raw?.neckDiameterMm) ? raw!.neckDiameterMm : kind === 'return-egg-crate' ? 250 : 200;
+  const service = element.type === 'return-grille' ? 'return' : 'supply';
+  const fallbackKind: DuctTerminalKind = service === 'return' ? 'return-egg-crate' : 'square-4way';
+  const kind = DUCT_TERMINAL_KINDS.includes(raw?.kind as DuctTerminalKind) ? (raw!.kind as DuctTerminalKind) : fallbackKind;
+  const neck = finite(raw?.neckDiameterMm) ? raw!.neckDiameterMm : service === 'return' ? 250 : 200;
+  const filter = DUCT_TERMINAL_FILTER_CLASSES.includes(raw?.filter as DuctTerminalFilterClass) ? raw!.filter as DuctTerminalFilterClass : null;
   const base = typicalTerminalSpec(kind, neck, {
+    service,
     mount: raw?.mount === 'surface' ? 'surface' : 'lay-in',
     ...(finite(raw?.slots) ? { slots: raw!.slots } : {}),
     ...(finite(raw?.faceWidthMm) && kind === 'linear-slot' ? { lengthMm: raw!.faceWidthMm } : {}),
@@ -66,8 +78,70 @@ export function readDuctTerminalSpec(element: Pick<HvacElement, 'type' | 'proper
     plenumHeightMm: read('plenumHeightMm', 100),
     spigotLengthMm: read('spigotLengthMm', 51),
     spigotSide: SIDES.includes(raw?.spigotSide as DuctTerminalSpigotSide) ? (raw!.spigotSide as DuctTerminalSpigotSide) : base.spigotSide,
-    service: element.type === 'return-grille' ? 'return' : 'supply',
+    service,
     designAirflowM3h: finite(raw?.designAirflowM3h) && (raw!.designAirflowM3h as number) > 0 ? raw!.designAirflowM3h as number : null,
+    ...(filter ? { filter } : {}),
+  };
+}
+
+/**
+ * The next instance tag for a terminal of this type, e.g. "RAG-3": one past the
+ * highest number already used with the prefix, so a deleted terminal's tag is
+ * never handed to another (schedules and site marks stay unambiguous).
+ */
+export function nextTerminalTag(scene: ReadonlyArray<Pick<HvacElement, 'label'>>, spec: Pick<DuctTerminalSpec, 'kind' | 'service'>): string {
+  const prefix = terminalTypeTag(spec);
+  let highest = 0;
+  for (const element of scene) {
+    const match = TERMINAL_TAG_PATTERN.exec((element.label ?? '').trim());
+    if (match && match[1] === prefix) highest = Math.max(highest, Number(match[2]));
+  }
+  return `${prefix}-${highest + 1}`;
+}
+
+/** What a terminal's pressure drop is worked from (Duct systems settings). */
+export type TerminalDropSettings = Pick<DuctDesignSettings,
+  'autoDiffuserDropPa' | 'autoGrilleDropPa' | 'filterG4RatedDropPa' | 'filterM5RatedDropPa' | 'filterRatedVelocityMs' | 'filterDesignFactor'>;
+
+/** The face area the air (and a filter behind it) passes through (m²). */
+export function terminalFaceAreaM2(spec: Pick<DuctTerminalSpec, 'kind' | 'faceWidthMm' | 'faceDepthMm'>): number {
+  const area = spec.kind === 'round' ? (Math.PI / 4) * spec.faceWidthMm ** 2 : spec.faceWidthMm * spec.faceDepthMm;
+  return Math.max(area, 1) / 1e6;
+}
+
+/**
+ * The drop across a filter grille's media at an airflow (Pa, practice): the
+ * class's clean drop at its rated face velocity, scaled linearly with the face
+ * velocity (panel media run laminar at these speeds) and by the mid-life
+ * design factor between clean and change-out.
+ */
+export function terminalFilterDropPa(spec: Pick<DuctTerminalSpec, 'kind' | 'faceWidthMm' | 'faceDepthMm' | 'filter'>, airflowM3h: number, settings: TerminalDropSettings): number {
+  if (!spec.filter || !(airflowM3h > 0)) return 0;
+  const faceVelocityMs = airflowM3h / 3600 / terminalFaceAreaM2(spec);
+  const rated = spec.filter === 'M5' ? settings.filterM5RatedDropPa : settings.filterG4RatedDropPa;
+  return rated * (faceVelocityMs / Math.max(settings.filterRatedVelocityMs, 0.1)) * settings.filterDesignFactor;
+}
+
+/**
+ * The pressure across a terminal at its airflow (Pa): the service's placeholder
+ * drop for the face (supply diffuser, return grille) and its filter, if any.
+ * One formula for the optimiser's model and for the verified pressure.
+ */
+export function terminalPressureDropPa(spec: Pick<DuctTerminalSpec, 'kind' | 'service' | 'faceWidthMm' | 'faceDepthMm' | 'filter'>, airflowM3h: number, settings: TerminalDropSettings): number {
+  const base = spec.service === 'return' ? settings.autoGrilleDropPa : settings.autoDiffuserDropPa;
+  return base + terminalFilterDropPa(spec, airflowM3h, settings);
+}
+
+/** Each terminal's drop in a scene, for `systemPressure` (null for an id that is not a terminal). */
+export function terminalDropLookup(scene: readonly HvacElement[], settings: TerminalDropSettings): (terminalId: string, airflowM3h: number) => number | null {
+  const specs = new Map<string, DuctTerminalSpec>();
+  for (const element of scene) {
+    const spec = isDuctTerminalElement(element) ? readDuctTerminalSpec(element) : null;
+    if (spec) specs.set(element.id, spec);
+  }
+  return (terminalId, airflowM3h) => {
+    const spec = specs.get(terminalId);
+    return spec ? terminalPressureDropPa(spec, airflowM3h, settings) : null;
   };
 }
 
