@@ -5,9 +5,15 @@
  * before it. The refrigerant and condensate steps then run on that scene.
  *
  * Which terminals a unit serves:
- *  - the selected ones (Selected scope), else the ones no duct serves yet;
- *  - each goes to the nearest unit in its room that has a free collar of its
- *    service (a collar with a duct counts as free only with Rebuild ticked).
+ *  - the selected ones (Selected scope; they bring their own units), else the
+ *    ones no duct serves yet;
+ *  - a terminal in a unit's air system goes to that unit (its assignment, or
+ *    the unit whose duct it was on before a rebuild), never to another;
+ *  - the rest are shared out among the units in scope with a free collar of
+ *    their service (a collar with a duct counts as free only with Rebuild
+ *    ticked), balanced by airflow and kept short (airSystemAssignment.ts), and
+ *    join that unit's air system when the proposal is applied;
+ *  - units are designed largest airflow first.
  *
  * Only a design with no errors is proposed. A unit whose best design still has
  * errors is left as it is and reported, so it can be studied in the Auto duct
@@ -17,18 +23,18 @@
  */
 import type { HvacElement, Point2D, Wall } from '../../../../types';
 
+import { assignmentOptions, assignmentProblemFromScene, solveAirSystemAssignment } from './airSystemAssignment';
 import { listAirPorts } from './ductAirPorts';
+import { airSystemTags, analyseAirSystems, readAirSystemAssignment, servingUnits, withSystemAssignments } from './ductAirSystems';
 import type { AutoDuctIssue } from './ductAutoContext';
 import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuct, removalTree, type AutoDuctShape } from './ductAutoLayout';
-import type { DuctDesignSettings } from './ductSettings';
+import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
-import { defaultSizingBasis } from './ductSystemSizing';
+import { basisAirflowM3h, defaultSizingBasis } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService } from './ductTypes';
 import { withReplaced } from './optimizer/designTree';
 
-/** Terminals without a room count as a unit's within this distance of its collar (mm), as in the Auto duct card. */
-const NEARBY_TERMINALS_MM = 10000;
 
 export interface AutoRouteDuctServices {
   supply: boolean;
@@ -47,6 +53,8 @@ export interface AutoRouteDuctOptions {
   terminalIds?: readonly string[];
   /** Walls to avoid during routing and check against the finished geometry. */
   walls?: ReadonlyArray<Pick<Wall, 'id' | 'startPoint' | 'endPoint'> & { thickness?: number }>;
+  /** Room outlines: which room each unit and terminal is in. */
+  rooms?: ReadonlyArray<{ id: string; vertices: Point2D[] }>;
 }
 
 export interface AutoRouteDuctServiceSummary {
@@ -76,6 +84,10 @@ export interface AutoRouteDuctUnit {
   /** Selected candidate checks retain severity and references for actionable review. */
   diagnostics?: AutoDuctIssue[];
   terminalIds?: string[];
+  /** The unit's air-system tag, and the supply and return terminals designed for it. */
+  tag?: string;
+  supplyTerminals?: number;
+  returnTerminals?: number;
 }
 
 export interface AutoRouteDuctResult {
@@ -158,10 +170,15 @@ export function planAutoRouteDucts(
   const wanted = (['supply', 'return'] as const).filter((service) => services[service]);
   if (!wanted.length) return result;
   const allUnits = scene.filter((element) => element.type === 'ducted-ac');
-  const pickedUnits = options.scope === 'selection' && options.unitIds?.length ? new Set(options.unitIds) : null;
   const pickedTerminals = options.scope === 'selection' && options.terminalIds?.length ? new Set(options.terminalIds) : null;
+  // Selected terminals bring the units whose air systems hold them.
+  const systemsBefore = analyseAirSystems(scene, options.rooms);
+  const ownersOfPicked = pickedTerminals ? [...pickedTerminals].map((id) => systemsBefore.byTerminal.get(id)?.unitId).filter((id): id is string => Boolean(id)) : [];
+  const pickedUnits = options.scope === 'selection' && (options.unitIds?.length || ownersOfPicked.length)
+    ? new Set([...(options.unitIds ?? []), ...ownersOfPicked]) : null;
   if (options.scope === 'selection' && !pickedUnits && !pickedTerminals) return result;
-  const units = pickedUnits ? allUnits.filter((unit) => pickedUnits.has(unit.id)) : allUnits;
+  // The units with the most air are designed first: their ducts are the largest and the least free to move.
+  const units = (pickedUnits ? allUnits.filter((unit) => pickedUnits.has(unit.id)) : allUnits);
   const terminalPorts = new Map(listTerminalPorts(scene).map((port) => [port.unitId, port]));
   if (!units.length) {
     if (pickedTerminals) {
@@ -200,33 +217,52 @@ export function planAutoRouteDucts(
   const terminals = scene.filter((element) => isDuctTerminalElement(element)
     && !served.has(element.id) && (!pickedTerminals || pickedTerminals.has(element.id))
     && wanted.includes(terminalPorts.get(element.id)?.kind as DuctService));
+  // Which unit serves each terminal: the one its air system names (its assignment, else the unit whose duct
+  // it was on before a rebuild); the rest are shared out among the units in scope, balanced by airflow.
   const assigned = new Map<string, HvacElement[]>();
-  let orphans = 0;
+  const tags = airSystemTags(scene);
+  const inScope = new Set(units.map((unit) => unit.id));
+  const unitIds = new Set(allUnits.map((unit) => unit.id));
+  const formerly = servingUnits(scene);
+  const collarBusy: string[] = [];
+  const pending: HvacElement[] = [];
   for (const terminal of terminals) {
-    const port = terminalPorts.get(terminal.id)!;
-    let best: { unitId: string; distance: number } | null = null;
-    for (const unit of units) {
-      const collar = collars.get(`${unit.id}|${port.kind}`);
-      if (!collar) continue;
-      const distance = Math.hypot(port.lip.x - collar.lip.x, port.lip.y - collar.lip.y);
-      const sameRoom = unit.roomId && terminal.roomId ? unit.roomId === terminal.roomId : distance <= NEARBY_TERMINALS_MM;
-      if (sameRoom && (!best || distance < best.distance)) best = { unitId: unit.id, distance };
-    }
-    if (!best) {
-      orphans += 1;
-      if (pickedTerminals) (result.unservedTerminalIds ??= []).push(terminal.id);
+    const service = terminalPorts.get(terminal.id)!.kind;
+    const assignedTo = readAirSystemAssignment(terminal);
+    const owner = assignedTo && unitIds.has(assignedTo) ? assignedTo : formerly.get(terminal.id)?.unitId ?? null;
+    if (!owner) { pending.push(terminal); continue; }
+    // Another unit's terminal, and that unit is not being designed: left for it.
+    if (!inScope.has(owner)) continue;
+    if (!collars.has(`${owner}|${service}`)) {
+      collarBusy.push(`${terminal.label} (${tags.get(owner) ?? 'its unit'} ${service})`);
       continue;
     }
-    assigned.set(best.unitId, [...(assigned.get(best.unitId) ?? []), terminal]);
+    assigned.set(owner, [...(assigned.get(owner) ?? []), terminal]);
   }
-  if (occupied.length && (pickedUnits || terminals.length > [...assigned.values()].flat().length)) {
+  let orphans = 0;
+  if (pending.length) {
+    const problem = assignmentProblemFromScene(scene, options.rooms ?? [], options.walls ?? [], { unitIds: [...inScope], terminalIds: pending.map((terminal) => terminal.id) });
+    // Only collars this run may take ducts on.
+    for (const candidate of problem.units) {
+      for (const service of ['supply', 'return'] as const) if (!collars.has(`${candidate.id}|${service}`)) delete candidate.collars[service];
+    }
+    // Automatic: never another room's terminals unasked (cross-room service is the designer's assignment).
+    const solved = solveAirSystemAssignment(problem.units, problem.terminals, problem.walls, { ...assignmentOptions(options.settings), adoptRoomsWithoutUnit: false });
+    const byId = new Map(pending.map((terminal) => [terminal.id, terminal]));
+    for (const entry of solved.assignments) assigned.set(entry.unitId, [...(assigned.get(entry.unitId) ?? []), byId.get(entry.terminalId)!]);
+    orphans = solved.unassignable.length;
+    if (pickedTerminals) for (const entry of solved.unassignable) (result.unservedTerminalIds ??= []).push(entry.terminalId);
+  }
+  if (occupied.length && (pickedUnits || collarBusy.length || orphans)) {
     result.issues.push(`Ducts: ${occupied.join(', ')} already ${occupied.length === 1 ? 'has' : 'have'} a duct — tick Rebuild existing ducts to replace ${occupied.length === 1 ? 'it' : 'them'}.`);
   }
   if (orphans && pickedTerminals) {
-    result.issues.push(`Ducts: ${orphans} selected terminal${orphans === 1 ? ' has' : 's have'} no ducted unit with a free collar of its service in the same room.`);
+    result.issues.push(`Ducts: ${orphans} selected terminal${orphans === 1 ? ' has' : 's have'} no ducted unit with a free collar of its service to serve it.`);
   }
 
-  const queue = units.filter((unit) => assigned.has(unit.id));
+  const airflowOf = (unit: HvacElement) => basisAirflowM3h(unit, { airflowM3h: null, fanSpeed: options.fanSpeed }).airflowM3h ?? 0;
+  const queue = units.filter((unit) => assigned.has(unit.id))
+    .sort((a, b) => airflowOf(b) - airflowOf(a) || assigned.get(b.id)!.length - assigned.get(a.id)!.length || a.id.localeCompare(b.id));
   let working: HvacElement[] = [...scene];
   queue.forEach((unit, index) => {
     const label = unit.label || unit.modelLabel || 'Unit';
@@ -239,6 +275,7 @@ export function planAutoRouteDucts(
       unitId: unit.id, terminalIds: group.map((terminal) => terminal.id), fanSpeed: options.fanSpeed, layout: 'auto',
       services: { supply: kinds.has('supply'), return: kinds.has('return') }, rebuildExisting: options.rebuildExisting, shape: options.shape,
       ...(options.walls ? { walls: options.walls } : {}),
+      ...(options.rooms ? { rooms: options.rooms } : {}),
       ...(constantFriction ? {
         sizing: {
           supply: defaultSizingBasis(options.settings, 'supply', null, options.fanSpeed),
@@ -259,6 +296,9 @@ export function planAutoRouteDucts(
       unitId: unit.id, unitLabel: label, status: 'kept', services: [], requiredEspPa: auto.requiredEspPa, maxEspPa: auto.maxEspPa,
       firstCost: design?.firstCost ?? null, lifeCycleCost: design?.lifeCycleCost ?? null, currency: auto.currency, runIds: [],
       exact: auto.certificate?.exact ?? null, notes: messages, diagnostics, terminalIds: group.map(terminal => terminal.id),
+      tag: tags.get(unit.id) ?? label,
+      supplyTerminals: group.filter((terminal) => terminalPorts.get(terminal.id)!.kind === 'supply').length,
+      returnTerminals: group.filter((terminal) => terminalPorts.get(terminal.id)!.kind === 'return').length,
     };
     unitResult.services = auto.services.filter((service) => service.runs.length).map((service) => ({
       service: service.service,
@@ -277,11 +317,13 @@ export function planAutoRouteDucts(
       for (const [service, count] of ductWallCrossings(auto.runs, options.walls)) {
         unitResult.notes.unshift(`The ${service} duct crosses a wall ${count === 1 ? 'once' : `${count} times`}: it needs a sleeve there, or move the unit or its terminals so it stays in the room.`);
       }
+      // The terminals its ducts serve that no system held join its air system, with the runs (one undo).
+      const terminalUpdates = withSystemAssignments(auto.terminalUpdates, auto.runs, working, unit.id);
       result.elementsToAdd.push(...auto.runs);
       result.removeElementIds.push(...auto.removeIds);
-      result.terminalUpdates.push(...auto.terminalUpdates);
+      result.terminalUpdates.push(...terminalUpdates);
       const removed = new Set(auto.removeIds);
-      working = [...withReplaced(working.filter((element) => !removed.has(element.id)), auto.terminalUpdates), ...auto.runs];
+      working = [...withReplaced(working.filter((element) => !removed.has(element.id)), terminalUpdates), ...auto.runs];
     }
     result.units.push(unitResult);
     for (const note of unitResult.notes) result.issues.push(`${label}: ${note}`);
@@ -303,7 +345,8 @@ export function applyDuctProposal(scene: readonly HvacElement[], result: AutoRou
  */
 export function ductSourceSignature(scene: readonly HvacElement[], settings: DuctDesignSettings, walls: AutoRouteDuctOptions['walls'] = []): string {
   const geometry = walls.map(wall => [wall.id, wall.startPoint, wall.endPoint, wall.thickness]);
-  const text = JSON.stringify([scene, settings, geometry]);
+  // Display settings (and the air-system checks) do not change a design: toggling them keeps the proposal.
+  const text = JSON.stringify([scene, ductDesignSettingsKey(settings), geometry]);
   // FNV-1a, 32-bit, plus the length: a cheap fingerprint, not a security hash.
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index += 1) {

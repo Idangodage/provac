@@ -16,6 +16,8 @@ import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
 import { DuctNumberInput } from './DuctNumberInput';
+import { assignTerminalsToUnit, unassignTerminals } from './airSystemController';
+import { analyseAirSystems, readAirSystemAssignment } from './ductAirSystems';
 import { buildDuctBom, buildDuctFabricationSchedule, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
 import { findReattachTarget } from './ductBranchTargets';
 import { gaugeLabelForSheet } from './ductCatalog';
@@ -103,7 +105,7 @@ type NumericSettingKey = {
 }[keyof DuctDesignSettings];
 
 /** One numeric project setting, committed on blur, with its source badge. */
-function SettingNumber({ settingKey, label, step, min, max, unit = 'mm' }: {
+export function SettingNumber({ settingKey, label, step, min, max, unit = 'mm' }: {
   settingKey: NumericSettingKey; label: string; step: number; min: number; max: number; unit?: string;
 }) {
   const { value, setDuctSettings } = useSmartDrawingStore((state) => ({ value: state.ductSettings[settingKey], setDuctSettings: state.setDuctSettings }), shallow);
@@ -132,7 +134,7 @@ function BomTable({ rows }: { rows: DuctBomRow[] }) {
   );
 }
 
-function CopyButton({ text, label }: { text: string; label: string }) {
+export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -204,6 +206,35 @@ function TerminalAirflowInput({ value, onCommit }: { value: number | null; onCom
   );
 }
 
+/**
+ * The ducted unit a terminal is dedicated to ("served by"), as a select: the
+ * air systems in the drawing, or none. A terminal no one assigned but a duct
+ * reaches shows the unit its duct comes from.
+ */
+function ServedByRow({ element }: { element: HvacElement }) {
+  const { hvacElements, rooms } = useSmartDrawingStore((state) => ({ hvacElements: state.hvacElements, rooms: state.rooms }), shallow);
+  const analysis = useMemo(() => analyseAirSystems(hvacElements, rooms), [hvacElements, rooms]);
+  const assigned = readAirSystemAssignment(element);
+  const entry = analysis.byTerminal.get(element.id);
+  const system = entry?.unitId ? analysis.byUnit.get(entry.unitId) : undefined;
+  const state = entry?.member?.mismatch ? 'ducted from another unit'
+    : entry?.member?.connection ? 'ducted' : system ? 'not ducted yet' : 'in no system';
+  return (
+    <Row label="Served by" title="The ducted unit this terminal is dedicated to: Auto duct and Auto route connect it to that unit only.">
+      <span className="flex items-center gap-1">
+        {system ? <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: system.color }} aria-hidden="true" /> : null}
+        <select value={assigned && analysis.byUnit.has(assigned) ? assigned : ''} aria-label="Served by unit"
+          className="min-w-0 max-w-full rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => (event.target.value ? assignTerminalsToUnit(event.target.value, [element.id]) : unassignTerminals([element.id]))}>
+          <option value="">{!assigned && system ? `${system.tag} (by its duct)` : '— none —'}</option>
+          {analysis.systems.map((candidate) => <option key={candidate.unit.id} value={candidate.unit.id}>{candidate.tag}</option>)}
+        </select>
+      </span>
+      <span className={`block text-[10px] ${entry?.member?.mismatch ? 'text-red-600' : 'text-slate-500'}`}>{state}</span>
+    </Row>
+  );
+}
+
 /** The faces offered for each service (in ceilings a louvred or egg-crate face is a return grille). */
 const TERMINAL_FACES: Record<'supply' | 'return', readonly DuctTerminalKind[]> = {
   supply: ['square-4way', 'round', 'linear-slot', 'perforated'],
@@ -255,6 +286,7 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
           ))}
         </span>
       </Row>
+      <ServedByRow element={element} />
       <Row label="Face">
         <select value={spec.kind} aria-label="Terminal face" className={select}
           onChange={(event) => commitDuctTerminalRetype(element, { kind: event.target.value as DuctTerminalKind }, 'Terminal face')}>

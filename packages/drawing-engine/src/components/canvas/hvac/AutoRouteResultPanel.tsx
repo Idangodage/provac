@@ -78,7 +78,8 @@ export function AutoRouteResultPanel({ result, approved, toggleHop }: {
         const designed = unit.status === 'designed';
         const details = ductUnitReview(unit);
         return <details key={unit.unitId} open={!designed} className={`rounded-lg border p-2 ${designed ? 'border-slate-200' : 'border-amber-200'}`}>
-          <summary className="cursor-pointer text-slate-800"><span className="font-medium">{unit.unitLabel}</span>
+          <summary className="cursor-pointer text-slate-800"><span className="font-medium">{unit.tag ?? unit.unitLabel}</span>
+            {unit.supplyTerminals !== undefined ? <span className="ml-1 text-[11px] text-slate-500" data-testid="auto-route-unit-terminals">· supply {unit.supplyTerminals} · return {unit.returnTerminals}</span> : null}
             <span className={`ml-1.5 inline-block rounded px-1.5 text-[10px] ${designed ? 'bg-teal-50 text-teal-800' : 'bg-amber-100 text-amber-900'}`}>{designed ? 'Proposed' : 'Needs layout'}</span></summary>
           <div className="mt-2 space-y-2">
             {designed && unit.services.map(service => <div key={service.service} className="flex items-start gap-2 text-[11px]">

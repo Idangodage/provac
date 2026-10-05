@@ -5,8 +5,9 @@
  * design at once, the others after it), or on the drawing as one command.
  */
 import { useSmartDrawingStore } from '../../../../store';
-import type { HvacElement } from '../../../../types';
+import type { HvacElement, Room } from '../../../../types';
 
+import { airSystemMembers, airSystemTags, analyseAirSystems, isAirSystemUnit, readAirSystemAssignment, roomIdOf, withSystemAssignments } from './ductAirSystems';
 import {
   resizeAutoDuctDesign,
   terminalSpigotUpdates,
@@ -19,76 +20,111 @@ import {
 } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { toElementUpdate } from './ductFollow';
-import { ductBranchesOf } from './ductNetwork';
 import { ductSystemRootOf, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
-import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
+import type { DuctService, DuctSystemSizing } from './ductTypes';
 import { cancelAutoDuctWorker, runAutoDuctInWorker } from './optimizer/ductOptimizerClient';
 
 /** Distance within which unconnected terminals count as a unit's when none are selected (mm). */
 const NEARBY_TERMINALS_MM = 10000;
 
+/**
+ * Where the card's terminals come from: the ones selected with the unit, the
+ * unit's air system (the terminals dedicated to it), or — while nothing is
+ * dedicated to it yet — the unassigned free terminals in its room.
+ */
+export type AutoDuctSelectionSource = 'selection' | 'system' | 'room';
+
 export interface AutoDuctSelection {
   unit: HvacElement;
-  /** The terminals chosen: the selected ones, else the unconnected ones in the unit's room. */
+  /** The terminals the design serves. */
   terminals: HvacElement[];
+  source: AutoDuctSelectionSource;
   fromSelection: boolean;
+  /** Terminals of the request in no system yet: Apply dedicates them to the unit. */
+  unassignedIds: string[];
+  /** Terminals left out because another unit's system holds them (or another unit's duct serves them). */
+  otherSystems: Array<{ terminal: HvacElement; unitId: string }>;
+  /** System source: unassigned terminals of its room taken too (the unit is the only ducted one there). */
+  roomExtras?: number;
 }
 
-/** The ducted unit and terminals a selection means, or null when it holds no single ducted unit. */
-export function autoDuctSelection(selectedIds: readonly string[], scene: readonly HvacElement[], options: { includeConnected?: boolean } = {}): AutoDuctSelection | null {
+/**
+ * The ducted unit and the terminals a selection means, or null when it holds
+ * no single ducted unit. Never a terminal of another unit's system: a unit
+ * designs for its own terminals only.
+ */
+export function autoDuctSelection(
+  selectedIds: readonly string[],
+  scene: readonly HvacElement[],
+  options: { includeConnected?: boolean; rooms?: ReadonlyArray<Pick<Room, 'id' | 'vertices'>> } = {},
+): AutoDuctSelection | null {
   const selectedSet = new Set(selectedIds);
   const selected = scene.filter((element) => selectedSet.has(element.id));
-  const units = selected.filter((element) => element.type === 'ducted-ac');
+  const units = selected.filter(isAirSystemUnit);
   if (units.length !== 1) return null;
   const unit = units[0]!;
+  const analysis = analyseAirSystems(scene, options.rooms);
+  const ownerOf = (terminal: HvacElement) => analysis.byTerminal.get(terminal.id)?.unitId ?? null;
+  const otherSystems: AutoDuctSelection['otherSystems'] = [];
+  const keep = (terminal: HvacElement) => {
+    const owner = ownerOf(terminal);
+    if (owner && owner !== unit.id) {
+      otherSystems.push({ terminal, unitId: owner });
+      return false;
+    }
+    return true;
+  };
+  const unassignedOf = (terminals: readonly HvacElement[]) => terminals.filter((terminal) => !readAirSystemAssignment(terminal)).map((terminal) => terminal.id);
   const picked = selected.filter(isDuctTerminalElement);
-  if (picked.length) return { unit, terminals: picked, fromSelection: true };
-  const served = new Set<string>();
-  const ownTerminals = new Set<string>();
-  const ownRuns = new Set<string>();
-  const pending: HvacElement[] = [];
-  for (const element of scene) {
-    const spec = isDuctElement(element) ? readDuctRunSpec(element) : null;
-    const end = spec?.end;
-    if (end?.kind === 'terminal') served.add(end.terminalId);
-    if (options.includeConnected && spec?.start.kind === 'unit-port' && spec.start.unitId === unit.id) pending.push(element);
+  if (picked.length) {
+    const terminals = picked.filter(keep);
+    return { unit, terminals, source: 'selection', fromSelection: true, unassignedIds: unassignedOf(terminals), otherSystems };
   }
-  while (pending.length) {
-    const run = pending.pop()!;
-    if (ownRuns.has(run.id)) continue;
-    ownRuns.add(run.id);
-    const end = readDuctRunSpec(run)?.end;
-    if (end?.kind === 'terminal') ownTerminals.add(end.terminalId);
-    for (const branch of ductBranchesOf(run.id, scene)) pending.push(branch.element);
-  }
+  // The unassigned free terminals in its room (within 10 m without room data).
+  const unitRoom = roomIdOf(unit, options.rooms);
   const centre = { x: unit.position.x + unit.width / 2, y: unit.position.y + unit.depth / 2 };
   const ports = new Map(listTerminalPorts(scene).map((port) => [port.unitId, port]));
-  const terminals = scene.filter((element) => {
-    if (!isDuctTerminalElement(element)) return false;
-    if (ownTerminals.has(element.id)) return true;
-    if (served.has(element.id)) return false;
-    if (unit.roomId && element.roomId) return element.roomId === unit.roomId;
-    const port = ports.get(element.id);
+  const roomUnassigned = () => analysis.unassigned.filter((terminal) => {
+    const room = roomIdOf(terminal, options.rooms);
+    if (unitRoom && room) return room === unitRoom;
+    const port = ports.get(terminal.id);
     return Boolean(port) && Math.hypot(port!.lip.x - centre.x, port!.lip.y - centre.y) <= NEARBY_TERMINALS_MM;
   });
-  return { unit, terminals, fromSelection: false };
+  // The unit's own system: its free terminals, and with Rebuild those its ducts already serve. Alone in its
+  // room, the unassigned ones there are plainly its too; sharing a room, they wait to be dedicated.
+  const system = analysis.byUnit.get(unit.id);
+  const members = system ? airSystemMembers(system) : [];
+  if (members.length) {
+    const own = members.filter((member) => !member.connection || (options.includeConnected && member.connection.unitId === unit.id))
+      .map((member) => member.terminal);
+    for (const member of members) if (member.mismatch && member.connection) otherSystems.push({ terminal: member.terminal, unitId: member.connection.unitId });
+    const alone = Boolean(unitRoom) && !scene.some((element) => isAirSystemUnit(element) && element.id !== unit.id && roomIdOf(element, options.rooms) === unitRoom);
+    const extra = alone ? roomUnassigned() : [];
+    const terminals = [...own, ...extra];
+    return { unit, terminals, source: 'system', fromSelection: false, unassignedIds: unassignedOf(terminals), otherSystems, roomExtras: extra.length };
+  }
+  // Nothing dedicated to it yet: the unassigned free terminals in its room.
+  const terminals = roomUnassigned();
+  return { unit, terminals, source: 'room', fromSelection: false, unassignedIds: terminals.map((terminal) => terminal.id), otherSystems };
 }
+
 
 let previewGeneration = 0;
 
 /** Routes, sizes and verifies the designs in the worker; the preview shows the best life-cycle one. */
 export async function generateAutoDuctPreview(request: AutoDuctRequest): Promise<void> {
   const generation = ++previewGeneration;
-  const { hvacElements, ductSettings, walls } = useSmartDrawingStore.getState();
+  const { hvacElements, ductSettings, walls, rooms } = useSmartDrawingStore.getState();
   const preview = useDuctAutoPreviewStore.getState();
   cancelPreviewResize();
   preview.clear();
   preview.setRunning(request.unitId);
   try {
-    // The drawing's walls come with it: the ducts stay in their room.
+    // The drawing's walls and rooms come with it: the ducts stay in their rooms.
     const withWalls: AutoDuctRequest = {
       ...request, walls: request.walls ?? walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
+      rooms: request.rooms ?? rooms.map((room) => ({ id: room.id, vertices: room.vertices })),
     };
     const result = await runAutoDuctInWorker(hvacElements, withWalls, ductSettings);
     if (generation !== previewGeneration) return;
@@ -262,9 +298,17 @@ export function applyAutoDuctPreview(): string {
     }),
     ...[...airflow.values()].filter((element) => !turned.some((entry) => entry.id === element.id)),
   ];
-  state.commitHvacElementCommand('Auto duct', { add: result.runs, removeIds: result.removeIds, updates: terminalSpigotUpdates(terminals), selectedIds: ids });
+  // The terminals it serves that no system held join the unit's air system, in the same command.
+  const assigned = withSystemAssignments(terminals, result.runs, state.hvacElements, result.unitId);
+  const joined = assigned.filter((element) => readAirSystemAssignment(element) === result.unitId
+    && !readAirSystemAssignment(state.hvacElements.find((candidate) => candidate.id === element.id) ?? element)).length;
+  const unit = state.hvacElements.find((element) => element.id === result.unitId);
+  const unitTagged = typeof unit?.properties.airSystemTag === 'string' && unit.properties.airSystemTag.trim();
+  const tag = airSystemTags(state.hvacElements).get(result.unitId) ?? 'its unit';
+  const tagUpdates = unit && !unitTagged && joined ? [{ id: unit.id, updates: { properties: { airSystemTag: tag } } }] : [];
+  state.commitHvacElementCommand('Auto duct', { add: result.runs, removeIds: result.removeIds, updates: [...terminalSpigotUpdates(assigned), ...tagUpdates], selectedIds: ids });
   const message = `Auto duct: ${result.runs.length} run${result.runs.length === 1 ? '' : 's'} added${result.removeIds.length ? `, ${result.removeIds.length} replaced` : ''}`
-    + `${turned.length ? `, ${turned.length} spigot${turned.length === 1 ? '' : 's'} turned` : ''}.`;
+    + `${turned.length ? `, ${turned.length} spigot${turned.length === 1 ? '' : 's'} turned` : ''}${joined ? `, ${joined} terminal${joined === 1 ? '' : 's'} joined ${tag}` : ''}.`;
   useDuctAutoPreviewStore.getState().clear(message);
   state.setProcessingStatus(message, false);
   return message;

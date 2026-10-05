@@ -37,8 +37,8 @@ import type { HvacElementCommand } from "../../../store";
 import type { HvacElement, Point2D } from "../../../types";
 import type { DuctOverlayHandle } from "../hvac/duct/DuctOverlay";
 import { listAirPorts, type DuctAirPort } from "../hvac/duct/ductAirPorts";
+import { airSystemTags, analyseAirSystems } from "../hvac/duct/ductAirSystems";
 import { clampBranchSection, findBranchTarget, findReattachTarget, spigotOrigin, splitOrigin, splitStyleFor, tapOrigin, type DuctBranchTarget } from "../hvac/duct/ductBranchTargets";
-import { roundMainTapGeometry } from "../hvac/duct/ductRoundFittings";
 import {
   buildDuctRunDraft,
   constrainDuctLeg,
@@ -53,11 +53,13 @@ import {
   type DuctDraftPoint,
   type DuctRunDraft,
 } from "../hvac/duct/ductDraft";
-import { defaultPlenumSize } from "../hvac/duct/ductPlenum";
 import { commitDuctRunSpec, reattachDuctRun } from "../hvac/duct/ductEditController";
 import { planDuctRunSpec } from "../hvac/duct/ductFabricationPlanner";
 import { ductRunElementWithSpec } from "../hvac/duct/ductFollow";
+import { defaultPlenumSize } from "../hvac/duct/ductPlenum";
+import { roundMainTapGeometry } from "../hvac/duct/ductRoundFittings";
 import type { DuctDesignSettings } from "../hvac/duct/ductSettings";
+import { ductSystemRootOfRun } from "../hvac/duct/ductSystemSizing";
 import { listTerminalPorts } from "../hvac/duct/ductTerminals";
 import { tapStyleFor, useDuctToolStore } from "../hvac/duct/ductToolStore";
 import {
@@ -202,6 +204,8 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
   const lastCursorRef = useRef<Point2D | null>(null);
   const lastPressRef = useRef<{ at: number; point: Point2D } | null>(null);
   const sceneRef = useRef({ hvacElements, ductSettings });
+  /** The terminal of another air system last reported under the cursor (reported once, not per move). */
+  const blockedTerminalRef = useRef<string | null>(null);
   sceneRef.current = { hvacElements, ductSettings };
 
   const ports = useMemo(() => listAirPorts(hvacElements), [hvacElements]);
@@ -424,24 +428,62 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     return parentOf(start)?.spec.service ?? null;
   }, [continuedRun, parentOf]);
 
-  /** A free air-terminal spigot of the draft's service under the cursor: the run can finish on it. */
+  /** The ducted unit the draft belongs to: its collar, or the collar its parent's (or extended run's) tree starts from. */
+  const draftUnitId = useCallback((start: DuctToolStart): string | null => {
+    if (start.kind === "port") return start.port.unitId;
+    const runId = start.kind === "continue" ? start.runId : start.kind === "free" ? null : start.parentId;
+    const root = runId ? ductSystemRootOfRun(sceneRef.current.hvacElements, runId) : null;
+    const rootStart = root ? readDuctRunSpec(root)?.start : null;
+    return rootStart?.kind === "unit-port" ? rootStart.unitId : null;
+  }, []);
+
+  /** The unit whose air system a terminal belongs to, when it is not the draft's (it may not be ducted from here). */
+  const otherSystemOf = useCallback((start: DuctToolStart, terminalId: string): string | null => {
+    const unitId = draftUnitId(start);
+    if (!unitId) return null;
+    const owner = analyseAirSystems(sceneRef.current.hvacElements).byTerminal.get(terminalId)?.unitId ?? null;
+    return owner && owner !== unitId ? owner : null;
+  }, [draftUnitId]);
+
+  /** A free air-terminal spigot of the draft's service (and its system) under the cursor: the run can finish on it. */
   const findTerminal = useCallback((point: Point2D): DuctAirPort | null => {
     const start = startRef.current;
     const service = start ? draftService(start) : null;
-    if (!service) return null;
+    if (!start || !service) return null;
     let best: DuctAirPort | null = null;
     let bestDistance = Infinity;
+    let blocked: { port: DuctAirPort; owner: string; distance: number } | null = null;
     for (const port of terminalPorts) {
       if (port.kind !== service || servedTerminals.has(portKey(port))) continue;
       const distance = Math.hypot(point.x - port.lip.x, point.y - port.lip.y);
       const reach = Math.max(thresholdMm * 1.5, (port.diameterMm ?? port.widthMm) / 2 + thresholdMm);
-      if (distance <= reach && distance < bestDistance) {
+      if (distance > reach) continue;
+      // A terminal dedicated to another unit is that unit's to serve.
+      const owner = otherSystemOf(start, port.unitId);
+      if (owner) {
+        if (!blocked || distance < blocked.distance) blocked = { port, owner, distance };
+        continue;
+      }
+      if (distance < bestDistance) {
         best = port;
         bestDistance = distance;
       }
     }
+    if (!best && blocked) {
+      const key = `${blocked.port.unitId}:${blocked.owner}`;
+      if (blockedTerminalRef.current !== key) {
+        blockedTerminalRef.current = key;
+        const scene = sceneRef.current.hvacElements;
+        const tags = airSystemTags(scene);
+        const terminal = scene.find((element) => element.id === blocked!.port.unitId);
+        const draftUnit = draftUnitId(start);
+        setProcessingStatus(`${terminal?.label || "This terminal"} belongs to ${tags.get(blocked.owner) ?? "another unit"}: assign it to ${draftUnit ? tags.get(draftUnit) ?? "this unit" : "this unit"} first, or draw it from ${tags.get(blocked.owner) ?? "its unit"}.`, false);
+      }
+    } else {
+      blockedTerminalRef.current = null;
+    }
     return best;
-  }, [draftService, servedTerminals, terminalPorts, thresholdMm]);
+  }, [draftService, draftUnitId, otherSystemOf, servedTerminals, setProcessingStatus, terminalPorts, thresholdMm]);
 
   /** The draft's points when it finishes on `port`: the clicks (or the collar stub of an all-runout branch), then the spigot. */
   const terminalPoints = useCallback((port: DuctAirPort): DuctDraftPoint[] => {

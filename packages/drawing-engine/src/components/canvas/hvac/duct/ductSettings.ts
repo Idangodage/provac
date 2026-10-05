@@ -374,6 +374,18 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
 
 export const DUCT_SUPPORTED_PRESSURE_CLASSES_PA = [125, 250, 500] as const;
 
+/** Settings a duct design does not depend on: display, and the air-system assignment and placement checks. */
+export const DUCT_NON_DESIGN_SETTINGS: ReadonlySet<keyof DuctDesignSettings> = new Set<keyof DuctDesignSettings>([
+  'showSizeTags', 'showJointTicks', 'showPieceMarks', 'showSupports', 'showAirSystems',
+  'returnSupplyMinGapMm', 'autoAssignWallPenaltyMm', 'autoAssignOverloadMm',
+]);
+
+/** The settings a duct design depends on, as a stable key (a proposal is current while it is unchanged). */
+export function ductDesignSettingsKey(settings: DuctDesignSettings): string {
+  return JSON.stringify(Object.entries(settings).filter(([name]) => !DUCT_NON_DESIGN_SETTINGS.has(name as keyof DuctDesignSettings))
+    .sort(([a], [b]) => a.localeCompare(b)));
+}
+
 // The document's duct settings, mirrored for engines that are not handed them
 // (the pipe clash check plans ducts as obstacles). Defaults until set.
 let activeDuctSettings: DuctDesignSettings | null = null;

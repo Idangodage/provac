@@ -7,8 +7,12 @@
 import { useCallback, useMemo } from 'react';
 
 import type { AcEquipmentDefinition } from '../../../data';
+import type { HvacElementCommand } from '../../../store';
 import type { HvacElement, Point2D, Room } from '../../../types';
+import { generateId } from '../../../utils/geometry';
 import { GeometryEngine } from '../../../utils/geometry-engine';
+import { useAirSystemUiStore } from '../hvac/duct/airSystemUiStore';
+import { airSystemTagOf, isAirSystemUnit, nextAirSystemTag } from '../hvac/duct/ductAirSystems';
 import { nextTerminalTag, readDuctTerminalSpec, terminalCeilingPlane } from '../hvac/duct/ductTerminals';
 import {
     buildRefrigerantBranchKitViewModel,
@@ -56,6 +60,8 @@ export interface UseHvacPlacementOptions {
     setSelectedIds: (ids: string[]) => void;
     setProcessingStatus: (message: string, loading: boolean) => void;
     onEquipmentPlaced?: (definitionId: string) => void;
+    /** One undoable HVAC command (a terminal placed for a unit, with the unit's tag). */
+    commitHvacElementCommand?: (action: string, command: HvacElementCommand) => string[];
 }
 
 type PlacementSource =
@@ -346,6 +352,7 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
         setSelectedIds,
         setProcessingStatus,
         onEquipmentPlaced,
+        commitHvacElementCommand,
     } = options;
 
     const definitionsById = useMemo(
@@ -593,7 +600,10 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
         const terminalSpec = isAirTerminal
             ? readDuctTerminalSpec({ type: pendingPlacementEquipmentDefinition.type, properties: pendingPlacementEquipmentDefinition.defaultProperties ?? {} })
             : null;
-        const elementId = addHvacElement({
+        // Placing for a ducted unit (the Air system card, or a tile picked with the unit selected): the terminal joins its system.
+        const target = isAirTerminal ? useAirSystemUiStore.getState().placementTarget : null;
+        const targetUnit = target ? hvacElements.find((element) => element.id === target.unitId && isAirSystemUnit(element)) : undefined;
+        const element = {
             type: pendingPlacementEquipmentDefinition.type,
             category: pendingPlacementEquipmentDefinition.equipmentCategory,
             subtype: pendingPlacementEquipmentDefinition.subtype,
@@ -616,13 +626,32 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
                 definitionId: pendingPlacementEquipmentDefinition.id,
                 ...pendingPlacementEquipmentDefinition.defaultProperties,
                 ...(placement.placementProperties ?? {}),
+                ...(targetUnit ? { airSystem: { unitId: targetUnit.id } } : {}),
+                // A ducted unit heads an air system: it takes the next free tag ("DU-3").
+                ...(isAirSystemUnit(pendingPlacementEquipmentDefinition) ? { airSystemTag: nextAirSystemTag(hvacElements) } : {}),
             },
-        });
+        };
+        if (targetUnit && commitHvacElementCommand) {
+            // One undo: the terminal, and the unit's tag written down if it only had a derived one.
+            const tagged = typeof targetUnit.properties.airSystemTag === 'string' && targetUnit.properties.airSystemTag.trim();
+            const unitTag = airSystemTagOf(targetUnit, hvacElements);
+            commitHvacElementCommand('Add AC equipment', {
+                add: [{ ...element, id: generateId() } as HvacElement],
+                updates: tagged ? [] : [{ id: targetUnit.id, updates: { properties: { airSystemTag: unitTag } } }],
+                // The unit stays selected, so its card and tethers grow with each terminal.
+                selectedIds: [targetUnit.id],
+            });
+            setProcessingStatus(`${element.label} placed for ${unitTag}.`, false);
+            onEquipmentPlaced?.(pendingPlacementEquipmentDefinition.id);
+            return true;
+        }
+        const elementId = addHvacElement(element);
         setSelectedIds([elementId]);
         onEquipmentPlaced?.(pendingPlacementEquipmentDefinition.id);
         return true;
     }, [
         addHvacElement,
+        commitHvacElementCommand,
         computeHvacPlacement,
         hvacElements,
         onEquipmentPlaced,

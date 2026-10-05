@@ -15,7 +15,7 @@
  */
 import { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 
-import type { HvacElement, Point2D } from '../../../../types';
+import type { HvacElement, Point2D, Room } from '../../../../types';
 import {
   affineMatrixToSvg,
   canvasTransformToSvgMatrix,
@@ -26,7 +26,9 @@ import {
 import { MM_TO_PX } from '../../scale';
 import { useCondensatePreviewStore } from '../condensate/condensatePreviewStore';
 
+import { AirSystemLayer } from './AirSystemLayer';
 import { listAirPorts } from './ductAirPorts';
+import { analyseAirSystems, isAirSystemUnit, NO_ROOMS } from './ductAirSystems';
 import type { AutoDuctWall } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, type DuctEditResult } from './ductEdits';
@@ -83,6 +85,8 @@ export interface DuctOverlayProps {
   selectedIds: string[];
   settings: DuctDesignSettings;
   walls?: readonly AutoDuctWall[];
+  /** Room outlines (air systems place terminals without a room id by them). */
+  rooms?: ReadonlyArray<Pick<Room, 'id' | 'vertices'>>;
   /** Show the units' air collars (duct tool active). */
   showPorts: boolean;
   /** Selected runs can be dragged (select tool). */
@@ -321,6 +325,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   });
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  // Air systems: the selected units' systems, and those of the selected terminals, are in focus.
+  const rooms = props.rooms ?? NO_ROOMS;
+  const airSystems = useMemo(() => analyseAirSystems(hvacElements, rooms), [hvacElements, rooms]);
+  const focusUnitIds = useMemo(() => {
+    const focus = new Set<string>();
+    for (const element of hvacElements) {
+      if (!selectedSet.has(element.id)) continue;
+      if (isAirSystemUnit(element)) focus.add(element.id);
+      const unitId = airSystems.byTerminal.get(element.id)?.unitId;
+      if (unitId) focus.add(unitId);
+    }
+    return focus;
+  }, [hvacElements, selectedSet, airSystems]);
   // Auto duct preview: the proposed runs, dashed, over the drawing they were generated from (hiding the runs they replace).
   const cardPreview = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, settings, props.walls) ? state.result : null));
   // The unified Auto route's duct proposal previews the same way.
@@ -405,6 +422,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
               />
             ))}
           </g>
+          <AirSystemLayer analysis={airSystems} hvacElements={hvacElements} k={k} focusUnitIds={focusUnitIds}
+            showAll={settings.showAirSystems} showTags={style.showTags} />
           <g data-testid="duct-auto-preview" dangerouslySetInnerHTML={{ __html: previewMarkup }} />
           <g ref={portsRef} data-testid="duct-ports" />
           <g ref={targetRef} data-testid="duct-branch-target" />

@@ -9,22 +9,19 @@ import { create } from 'zustand';
 import type { HvacElement } from '../../../../types';
 
 import { selectAutoDuctDesign, type AutoDuctRequest, type AutoDuctResult, type AutoDuctWall } from './ductAutoLayout';
-import type { DuctDesignSettings } from './ductSettings';
+import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 
 export interface AutoDuctPreviewInputs {
   settings: DuctDesignSettings;
   walls: readonly AutoDuctWall[];
 }
 
-/** Settings a duct design does not depend on: display, and the air-system assignment and placement checks. */
-const DISPLAY_SETTINGS = new Set(['showSizeTags', 'showJointTicks', 'showPieceMarks', 'showSupports', 'showAirSystems',
-  'returnSupplyMinGapMm', 'autoAssignWallPenaltyMm', 'autoAssignOverloadMm']);
 const SETTINGS_KEYS = new WeakMap<DuctDesignSettings, string>();
 
 function designSettingsKey(settings: DuctDesignSettings): string {
   let key = SETTINGS_KEYS.get(settings);
   if (key === undefined) {
-    key = JSON.stringify(Object.entries(settings).filter(([name]) => !DISPLAY_SETTINGS.has(name)).sort(([a], [b]) => a.localeCompare(b)));
+    key = ductDesignSettingsKey(settings);
     SETTINGS_KEYS.set(settings, key);
   }
   return key;

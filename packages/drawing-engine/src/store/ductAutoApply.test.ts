@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveUnitAirPorts } from '../components/canvas/hvac/duct/ductAirPorts';
+import { readAirSystemAssignment } from '../components/canvas/hvac/duct/ductAirSystems';
 import { applyAutoDuctPreview, autoDuctSelection, generateAutoDuctPreview } from '../components/canvas/hvac/duct/ductAutoController';
 import { useDuctAutoPreviewStore } from '../components/canvas/hvac/duct/ductAutoPreviewStore';
 import { buildDuctRunDraftElement } from '../components/canvas/hvac/duct/ductDraft';
@@ -59,6 +60,32 @@ describe('auto duct: select, generate, apply as one undo', () => {
     const room = autoDuctSelection(['fdum'], state().hvacElements)!;
     expect(room.terminals.map((element) => element.id)).toEqual(['sd1', 'sd2', 'sd3']);
     expect(room.fromSelection).toBe(false);
+  });
+
+  it('designs a unit for its own air system, never another unit\'s terminal, and Apply dedicates what it serves', async () => {
+    const other: HvacElement = { ...unit, id: 'fdum-b', position: { x: 9000, y: 0 }, label: 'FDUM22 B' };
+    const mine = { ...sd3, properties: { ...sd3.properties, airSystem: { unitId: 'fdum' } } };
+    const theirs = { ...sd1, properties: { ...sd1.properties, airSystem: { unitId: 'fdum-b' } } };
+    useDrawingStore.setState({ hvacElements: [unit, other, theirs, sd2, mine] });
+    state().clearHistory();
+    // Its system holds sd3; sd2 is in no system and the room is shared with fdum-b, so it waits to be dedicated.
+    const system = autoDuctSelection(['fdum'], state().hvacElements)!;
+    expect(system.source).toBe('system');
+    expect(system.terminals.map((element) => element.id)).toEqual(['sd3']);
+    // Selected with the unit: another unit's terminal is left out (and named), an unassigned one is taken.
+    const picked = autoDuctSelection(['fdum', 'sd1', 'sd2'], state().hvacElements)!;
+    expect(picked.terminals.map((element) => element.id)).toEqual(['sd2']);
+    expect(picked.otherSystems.map((entry) => [entry.terminal.id, entry.unitId])).toEqual([['sd1', 'fdum-b']]);
+    expect(picked.unassignedIds).toEqual(['sd2']);
+    // Apply: the runs, and sd2 joining DU-1, as one command.
+    await generateAutoDuctPreview({ unitId: 'fdum', terminalIds: ['sd2', 'sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: false });
+    expect(applyAutoDuctPreview()).toMatch(/1 terminal joined DU-1/);
+    const assignment = (id: string) => readAirSystemAssignment(state().hvacElements.find((element) => element.id === id)!);
+    expect(assignment('sd2')).toBe('fdum');
+    expect(state().hvacElements.find((element) => element.id === 'fdum')!.properties.airSystemTag).toBe('DU-1');
+    state().undo();
+    expect(assignment('sd2')).toBeNull();
+    expect(ducts()).toEqual([]);
   });
 
   it('previews without touching the drawing, applies as one command, and one undo removes it all', async () => {

@@ -16,7 +16,10 @@ import {
   type AcEquipmentDefinition,
   type AcEquipmentLibraryCategory,
 } from '../data';
+import { useSmartDrawingStore } from '../store';
 
+import { useAirSystemUiStore } from './canvas/hvac/duct/airSystemUiStore';
+import { airSystemTags } from './canvas/hvac/duct/ductAirSystems';
 import { EQUIPMENT_CATEGORY_ICONS, EquipmentIcon, equipmentIconKind } from './canvas/hvac/equipmentIcons';
 
 export interface AcEquipmentPanelProps {
@@ -184,6 +187,11 @@ export function AcEquipmentPanel({
   const grouped = useMemo(() => groupAcEquipmentByCategory(equipment), [equipment]);
   const totalPlaced = Object.values(placedCountByType).reduce((sum, count) => sum + count, 0);
   const pending = pendingEquipmentId ? equipment.find((definition) => definition.id === pendingEquipmentId) ?? null : null;
+  // Air terminals being placed for a ducted unit join its air system.
+  const placementTarget = useAirSystemUiStore((state) => state.placementTarget);
+  const setPlacementTarget = useAirSystemUiStore((state) => state.setPlacementTarget);
+  const hvacElements = useSmartDrawingStore((state) => state.hvacElements);
+  const targetTag = placementTarget ? airSystemTags(hvacElements).get(placementTarget.unitId) ?? null : null;
   const [hover, setHover] = useState<HoverState | null>(null);
   const [roomsOpen, setRoomsOpen] = useState(false);
   const timer = useRef<number | null>(null);
@@ -247,12 +255,25 @@ export function AcEquipmentPanel({
         </div>
 
         {pending ? (
-          <div className="flex items-center gap-2 rounded-xl border border-amber-400 bg-amber-100/80 px-2.5 py-1.5 text-xs text-amber-900" role="status">
-            <EquipmentIcon kind={equipmentIconKind(pending)} size={18} />
-            <span className="min-w-0 flex-1 truncate">Placing <span className="font-medium">{equipmentTileText(pending).title}</span> — click the canvas{pending.placementMode === 'wall' ? ' near a wall' : ''}</span>
-            <button type="button" onClick={onCancelPlacement} aria-label="Stop placing" className="rounded p-0.5 text-amber-800 hover:bg-amber-200/70">
-              <X size={14} />
-            </button>
+          <div className="rounded-xl border border-amber-400 bg-amber-100/80 px-2.5 py-1.5 text-xs text-amber-900" role="status" data-testid="placement-banner">
+            <div className="flex items-center gap-2">
+              <EquipmentIcon kind={equipmentIconKind(pending)} size={18} />
+              <span className="min-w-0 flex-1 truncate">Placing <span className="font-medium">{equipmentTileText(pending).title}</span> — click the canvas{pending.placementMode === 'wall' ? ' near a wall' : ''}</span>
+              <button type="button" onClick={onCancelPlacement} aria-label="Stop placing" className="rounded p-0.5 text-amber-800 hover:bg-amber-200/70">
+                <X size={14} />
+              </button>
+            </div>
+            {placementTarget && targetTag ? (
+              <div className="mt-1 flex items-center gap-1 text-[11px]" data-testid="placement-target">
+                <span>for</span>
+                <span className="rounded-full bg-white/80 px-1.5 font-semibold text-slate-800 ring-1 ring-amber-300">{targetTag}</span>
+                <span className="text-amber-800/80">· each joins its air system</span>
+                <button type="button" onClick={() => setPlacementTarget(null)} aria-label="Place without a unit" title="Place without a unit (unassigned)"
+                  className="ml-auto rounded p-0.5 text-amber-800 hover:bg-amber-200/70">
+                  <X size={12} />
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 

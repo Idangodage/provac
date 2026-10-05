@@ -132,6 +132,8 @@ export interface AutoDuctRequest {
   shape?: AutoDuctShape;
   /** The drawing's walls: the ducts stay clear of them (a duct through a wall needs a sleeve and a reason). */
   walls?: ReadonlyArray<AutoDuctWall>;
+  /** Room outlines: which room the unit and each terminal are in. */
+  rooms?: ReadonlyArray<AutoDuctRoom>;
   /** Size by constant friction at these bases (per service); absent or null = the life-cycle optimum. */
   sizing?: AutoDuctSizingBases | null;
   /** Airflow per terminal set in the card (m³/h; null = an equal share), written to the terminals with the runs. */
@@ -149,6 +151,12 @@ export function terminalWithAirflow(element: HvacElement, airflows: Readonly<Rec
   const next = value !== null && value !== undefined && value > 0 ? value : null;
   if ((spec.designAirflowM3h ?? null) === next) return element;
   return { ...element, properties: { ...element.properties, terminal: { ...spec, designAirflowM3h: next } } };
+}
+
+/** A room as the auto layout sees it: its outline (mm). */
+export interface AutoDuctRoom {
+  id: string;
+  vertices: Point2D[];
 }
 
 /** A wall as the auto layout sees it: its centre line and thickness (mm). */
@@ -1678,7 +1686,7 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
   }
 
   if (!work.length && !result.staticServices.length) {
-    result.issues.push({ code: 'DU_AUTO_NO_LAYOUT', severity: 'error', message: 'Select the diffusers and grilles this unit serves (supply to diffusers, return to grilles).' });
+    result.issues.push({ code: 'DU_AUTO_NO_LAYOUT', severity: 'error', message: 'No terminals to serve: dedicate supply or return terminals to this unit (its air system), or select them with it.' });
   }
   result.baseIssues = [...result.issues];
   // Whole designs: every combination of the services' shortlisted options, re-checked for clashes between them.

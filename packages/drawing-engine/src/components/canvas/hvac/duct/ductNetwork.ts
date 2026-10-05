@@ -57,6 +57,16 @@ export function ductParentOf(spec: DuctRunSpec, scene: readonly HvacElement[]): 
   return indexOf(scene).elements.get(parentId) ?? null;
 }
 
+/** Terminals assigned to a deleted ducted unit become unassigned (the same step; undo restores both). */
+function withoutDeletedAirSystems(kept: HvacElement[], elements: readonly HvacElement[], removedIds: ReadonlySet<string>): HvacElement[] {
+  const removedUnits = new Set(elements.filter((element) => removedIds.has(element.id) && element.type === 'ducted-ac').map((element) => element.id));
+  if (!removedUnits.size) return kept;
+  return kept.map((element) => {
+    const assigned = (element.properties.airSystem as { unitId?: unknown } | null | undefined)?.unitId;
+    return typeof assigned === 'string' && removedUnits.has(assigned) ? { ...element, properties: { ...element.properties, airSystem: null } } : element;
+  });
+}
+
 /**
  * Remove `removedIds` from the scene, keeping the network consistent in the
  * same step: branches of a removed run keep their geometry but start open
@@ -64,7 +74,7 @@ export function ductParentOf(spec: DuctRunSpec, scene: readonly HvacElement[]): 
  * run whose air terminal is removed ends open.
  */
 export function expandDuctDeletion(elements: readonly HvacElement[], removedIds: ReadonlySet<string>): HvacElement[] {
-  const kept = elements.filter((element) => !removedIds.has(element.id));
+  const kept = withoutDeletedAirSystems(elements.filter((element) => !removedIds.has(element.id)), elements, removedIds);
   const removedDucts = elements.filter((element) => removedIds.has(element.id) && (isDuctElement(element) || element.type === 'diffuser' || element.type === 'return-grille'));
   if (removedDucts.length === 0) return kept;
   const survivingParents = new Set<string>();

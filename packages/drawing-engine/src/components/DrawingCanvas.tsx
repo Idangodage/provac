@@ -95,8 +95,12 @@ import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePr
 import { fixedPrefixLength, translateRouteInterior } from "./canvas/hvac/condensate/condensateRouteOps";
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
+import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
 import { DuctOverlay, type DuctOverlayHandle } from "./canvas/hvac/duct/DuctOverlay";
+import { assignTerminalsToUnit, autoAssignTerminals, unassignTerminals } from "./canvas/hvac/duct/airSystemController";
+import { useAirSystemUiStore } from "./canvas/hvac/duct/airSystemUiStore";
 import { listAirPorts } from "./canvas/hvac/duct/ductAirPorts";
+import { airTerminalSchedule, analyseAirSystems, type AirSystemMember } from "./canvas/hvac/duct/ductAirSystems";
 import { generateAutoDuctPreview, applyAutoDuctPreview } from "./canvas/hvac/duct/ductAutoController";
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from "./canvas/hvac/duct/ductAutoPreviewStore";
 import { buildDuctBom, buildDuctFabricationSchedule } from "./canvas/hvac/duct/ductBom";
@@ -738,7 +742,7 @@ export function DrawingCanvas({
   const projectionViewOnly = hybridViewOnly;
   const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile);
   const condensateValidationReport = useCondensateLiveValidation(hvacElements, condensateSettings, pipeRoutingSettings);
-  const ductValidationReport = useDuctLiveValidation(hvacElements, ductSettings);
+  const ductValidationReport = useDuctLiveValidation(hvacElements, ductSettings, rooms);
   useEffect(() => {
     hvacRendererRef.current?.setDuctSettings(ductSettings);
     // The pipe clash check plans ducts as obstacles with the document's settings.
@@ -830,6 +834,30 @@ export function DrawingCanvas({
         } : null;
       },
       applyAutoDuct: () => applyAutoDuctPreview(),
+      /** Air systems: each ducted unit's supply and return terminals, the unassigned ones, and the assignment commands. */
+      getAirSystems: () => {
+        const state = useSmartDrawingStore.getState();
+        const analysis = analyseAirSystems(state.hvacElements, state.rooms);
+        const member = (entry: AirSystemMember) => ({
+          id: entry.terminal.id, tag: entry.tag, source: entry.source, mismatch: entry.mismatch, serviceMismatch: entry.serviceMismatch,
+          connectedTo: entry.connection?.unitId ?? null, airflowM3h: Math.round(entry.airflowM3h), roomId: entry.roomId,
+        });
+        return {
+          systems: analysis.systems.map((system) => ({
+            unitId: system.unit.id, tag: system.tag, color: system.color, airflowM3h: system.airflowM3h, roomIds: system.roomIds,
+            supply: system.supply.members.map(member), return: system.return.members.map(member),
+          })),
+          unassigned: analysis.unassigned.map((terminal) => terminal.id),
+        };
+      },
+      assignTerminals: (unitId: string, terminalIds: string[]) => assignTerminalsToUnit(unitId, terminalIds),
+      unassignTerminals: (terminalIds: string[]) => unassignTerminals(terminalIds),
+      autoAssignTerminals: (unitId?: string) => autoAssignTerminals(unitId ? { unitId } : {}),
+      setAirSystemPick: (unitId: string | null) => useAirSystemUiStore.getState().setPickUnit(unitId),
+      getTerminalSchedule: () => {
+        const state = useSmartDrawingStore.getState();
+        return airTerminalSchedule(analyseAirSystems(state.hvacElements, state.rooms), state.ductSettings, new Map(state.rooms.map((room) => [room.id, room.name])));
+      },
       /** Room outlines (scripted placement of room-mounted equipment). */
       getRooms: () => useSmartDrawingStore.getState().rooms.map((room) => ({ id: room.id, name: room.name, vertices: room.vertices })),
       /** Wall centre lines and thicknesses (scripted auto-layout checks). */
@@ -1586,6 +1614,7 @@ export function DrawingCanvas({
     setSelectedIds,
     setProcessingStatus,
     onEquipmentPlaced,
+    commitHvacElementCommand,
   });
 
   const {
@@ -3246,11 +3275,16 @@ export function DrawingCanvas({
             selectedIds={selectedIds}
             settings={ductSettings}
             walls={walls}
+            rooms={rooms}
             showPorts={tool === "duct" && !projectionViewOnly}
             moveEnabled={tool === "select" && !projectionViewOnly && !isSpacePressed}
             onMoveCommit={commitDuctRunMove}
             onEditCommit={commitDuctRunEdit}
           />
+          {/* Air-system pick mode: its chip above every canvas overlay. */}
+          <div className="pointer-events-none absolute left-0 top-0 z-[30]" style={{ width: hostWidth, height: hostHeight }}>
+            <AirSystemPickChip />
+          </div>
           <CondensateOverlay
             ref={condensateOverlayRef}
             enabled

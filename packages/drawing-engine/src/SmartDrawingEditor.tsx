@@ -43,6 +43,7 @@ import {
   CoordinatesDisplay,
   AcEquipmentPanel,
 } from './components';
+import { useAirSystemUiStore } from './components/canvas/hvac/duct/airSystemUiStore';
 import {
   boardSettingsToCanvasProps,
   boardValueFromMm,
@@ -1061,17 +1062,43 @@ export function SmartDrawingEditor({
     setPendingPlacementObjectId(null);
   }, []);
 
-  const handleStartEquipmentPlacement = useCallback((definition: AcEquipmentDefinition) => {
+  const handleStartEquipmentPlacement = useCallback((definition: AcEquipmentDefinition, options: { forUnitId?: string } = {}) => {
     if (readOnly) return;
     setLeftPanelMode('ac-equipment');
     setPendingPlacementObjectId(null);
     setPendingPlacementEquipmentId(definition.id);
     setTool('select');
+    // Air terminals placed while one ducted unit is selected join its air system.
+    const isAirTerminal = definition.category === 'air-terminals' || definition.category === 'return-air-terminals';
+    let target = options.forUnitId ?? null;
+    if (!target && isAirTerminal) {
+      const { hvacElements: elements, selectedElementIds } = useSmartDrawingStore.getState();
+      const selected = new Set(selectedElementIds);
+      const units = elements.filter((element) => selected.has(element.id) && element.type === 'ducted-ac');
+      target = units.length === 1 ? units[0]!.id : null;
+    }
+    useAirSystemUiStore.getState().setPlacementTarget(isAirTerminal ? target : null);
   }, [readOnly, setTool]);
 
   const handleCancelEquipmentPlacement = useCallback(() => {
     setPendingPlacementEquipmentId(null);
+    useAirSystemUiStore.getState().setPlacementTarget(null);
   }, []);
+
+  // A panel asked to place a terminal for a unit (the Air system card).
+  const placementRequest = useAirSystemUiStore((state) => state.placementRequest);
+  const handledPlacementRequest = useRef(0);
+  useEffect(() => {
+    if (!placementRequest || placementRequest.nonce === handledPlacementRequest.current) return;
+    handledPlacementRequest.current = placementRequest.nonce;
+    const definition = DEFAULT_AC_EQUIPMENT_LIBRARY.find((entry) => entry.id === placementRequest.definitionId);
+    if (definition) handleStartEquipmentPlacement(definition, { forUnitId: placementRequest.unitId });
+  }, [placementRequest, handleStartEquipmentPlacement]);
+
+  // Placing stopped (tool change, Esc, another entry): the target goes with it.
+  useEffect(() => {
+    if (!pendingPlacementEquipmentId) useAirSystemUiStore.getState().setPlacementTarget(null);
+  }, [pendingPlacementEquipmentId]);
 
   const handleObjectPlaced = useCallback((definitionId: string) => {
     setRecentObjectUsage((prev) => ({

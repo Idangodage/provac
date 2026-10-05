@@ -4470,7 +4470,9 @@ export const useDrawingStore = create<DrawingState>()(
           },
           properties: isRefrigerantPipeElementType(existing.type)
             ? translateRefrigerantPipeElementProperties(existing.type, existing.properties, duplicateOffset)
-            : existing.properties,
+            // A copied ducted unit heads a new air system: it takes a fresh tag (derived until written).
+            : existing.type === 'ducted-ac' ? { ...existing.properties, airSystemTag: undefined }
+              : existing.properties,
         });
         set((state) => ({
           hvacElements: [...state.hvacElements, clone],

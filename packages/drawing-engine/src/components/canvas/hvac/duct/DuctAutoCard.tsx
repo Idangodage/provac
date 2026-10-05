@@ -31,6 +31,8 @@ import {
   type SizingMethod,
   type TerminalAirflows,
 } from './DuctSizingSection';
+import { assignTerminalsToUnit } from './airSystemController';
+import { airSystemTags } from './ductAirSystems';
 import {
   applyAutoDuctPreview,
   autoDuctSelection,
@@ -248,7 +250,9 @@ export function DuctAutoCard() {
   const [bases, setBases] = useState<Partial<Record<DuctService, DuctSystemSizing>>>({});
   const [terminalAirflows, setTerminalAirflows] = useState<TerminalAirflows>({});
   const [sizingTab, setSizingTab] = useState<DuctService>('supply');
-  const selection = useMemo(() => autoDuctSelection(selectedElementIds, hvacElements, { includeConnected: rebuild }), [selectedElementIds, hvacElements, rebuild]);
+  const rooms = useSmartDrawingStore((state) => state.rooms);
+  const selection = useMemo(() => autoDuctSelection(selectedElementIds, hvacElements, { includeConnected: rebuild, rooms }), [selectedElementIds, hvacElements, rebuild, rooms]);
+  const systemTag = selection ? airSystemTags(hvacElements).get(selection.unit.id) ?? (selection.unit.label || 'Unit') : '';
   const unitId = selection?.unit.id ?? null;
   useEffect(() => {
     setBases({});
@@ -326,7 +330,7 @@ export function DuctAutoCard() {
   const generateProblem = airflowError ? `Airflow: ${airflowError}`
     : !systemAirflow ? 'Enter this unit’s airflow in m³/h before generating ducts.'
       : !services.supply && !services.return ? 'Choose Supply, Return, or both.'
-        : !sizingServices.length ? 'Select the diffusers (supply) and grilles (return) this unit serves.'
+        : !sizingServices.length ? `Add supply or return terminals to ${systemTag}'s air system (the card above), or select them with the unit.`
           : !rebuild && occupiedSelection.length ? `The ${occupiedSelection.join(' and ')} duct is already connected. Enable Rebuild existing or turn off that service.` : null;
   const canGenerate = !busy && !generateProblem;
   const validFields = () => {
@@ -349,15 +353,26 @@ export function DuctAutoCard() {
     <div ref={cardRef} className="mb-2 space-y-1.5 rounded-lg border border-sky-200 bg-sky-50/60 p-2" data-testid="duct-auto-card" aria-busy={busy || resizing}>
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-sky-800"><Wand2 size={12} />Auto duct</span>
-        <span className="text-[11px] text-slate-600" title={`${counts.supply} diffuser(s), ${counts.return} return grille(s)`}>
-          {unit.label || 'Unit'} · {counts.supply} diffuser{counts.supply === 1 ? '' : 's'} · {counts.return} grille{counts.return === 1 ? '' : 's'}
+        <span className="text-[11px] text-slate-600" title={`${counts.supply} supply and ${counts.return} return terminal(s)`} data-testid="duct-auto-counts">
+          {systemTag} · {counts.supply} supply · {counts.return} return
         </span>
       </div>
-      {!selection.fromSelection ? (
-        <p className="text-[10px] text-slate-500">
-          {rebuild ? `Using ${terminals.length} terminals connected to this unit or available nearby.`
-            : `Using ${terminals.length} unconnected terminals in this room or within 10 m when room data is missing.`}
-          {' '}Shift-click or drag a box with the unit to choose specific terminals.
+      <p className="text-[10px] text-slate-500" data-testid="duct-auto-source">
+        {selection.source === 'selection' ? `Using the ${terminals.length} terminal${terminals.length === 1 ? '' : 's'} selected with the unit.`
+          : selection.source === 'system' && !terminals.length ? `Every terminal of ${systemTag}'s air system is ducted. Tick Rebuild existing to design them again.`
+          : selection.source === 'system' ? `Designing ${systemTag}'s own terminals (its air system)${rebuild ? ', those its ducts serve included' : ''}${selection.roomExtras ? ` and the ${selection.roomExtras} unassigned in its room` : ''}.`
+            : `Nothing is dedicated to ${systemTag} yet: using the ${terminals.length} unassigned terminal${terminals.length === 1 ? '' : 's'} in its room.`}
+        {selection.source !== 'selection' ? ' Shift-click terminals with the unit to design for those only.' : ''}
+      </p>
+      {selection.source === 'room' && selection.unassignedIds.length ? (
+        <button type="button" onClick={() => assignTerminalsToUnit(unit.id, selection.unassignedIds)}
+          className="w-full rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50">
+          Dedicate them to {systemTag}
+        </button>
+      ) : null}
+      {selection.otherSystems.length ? (
+        <p className="text-[10px] text-amber-700" data-testid="duct-auto-other-systems">
+          Left out (another unit&apos;s): {selection.otherSystems.map(({ terminal, unitId }) => `${terminal.label} (${airSystemTags(hvacElements).get(unitId) ?? 'another unit'})`).join(', ')}.
         </p>
       ) : null}
       <div className="grid grid-cols-3 gap-0.5 rounded-md border border-slate-200 bg-white p-0.5" role="radiogroup" aria-label="Auto duct shape">

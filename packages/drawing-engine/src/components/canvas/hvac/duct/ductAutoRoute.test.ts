@@ -7,6 +7,7 @@ import { DEFAULT_PIPE_ROUTING_SETTINGS } from '../pipeRoutingSettings';
 import { auditDuctClashes, planUnifiedAutoRoute, routedServiceOf } from '../unifiedAutoRoute';
 
 import { resolveUnitAirPorts } from './ductAirPorts';
+import { readAirSystemAssignment, servingUnits } from './ductAirSystems';
 import { applyDuctProposal, ductSourceSignature, ductWallCrossings, planAutoRouteDucts, type AutoRouteDuctOptions } from './ductAutoRoute';
 import { buildDuctRunDraftElement } from './ductDraft';
 import { planDuctRunSpec } from './ductFabricationPlanner';
@@ -109,6 +110,42 @@ describe('Auto route: the duct step', () => {
     // All run ids are unique across the two units.
     expect(new Set(result.elementsToAdd.map((run) => run.id)).size).toBe(result.elementsToAdd.length);
   });
+
+  it('serves each unit\'s own air system: an assigned terminal stays with its unit even beside the other', () => {
+    const other = fdum('fdum-b', 4500);
+    const otherLip = resolveUnitAirPorts(other).find((port) => port.kind === 'supply')!.lip;
+    // sd-a sits in front of fdum-b but belongs to fdum; sd-b and sd-c are in no system yet.
+    const mine = diffuser('sd-a', at(2600, -700, otherLip), 180);
+    const a = { ...mine, properties: { ...mine.properties, airSystem: { unitId: 'fdum' } } };
+    const b = diffuser('sd-b', at(2600, 700, otherLip), 180);
+    const c = diffuser('sd-c', at(2600, 0), 180);
+    const scene = [unit, other, a, b, c];
+    const result = planAutoRouteDucts(scene, { supply: true, return: false }, options());
+    expect(result.units.map((entry) => [entry.unitId, entry.status, entry.tag, entry.supplyTerminals])).toEqual([
+      // Equal airflow: the unit with more terminals goes first.
+      ['fdum', 'designed', 'DU-1', 2], ['fdum-b', 'designed', 'DU-2', 1],
+    ]);
+    const serving = servingUnits(applyDuctProposal(scene, result));
+    expect(serving.get('sd-a')?.unitId).toBe('fdum');
+    expect(serving.get('sd-c')?.unitId).toBe('fdum');
+    expect(serving.get('sd-b')?.unitId).toBe('fdum-b');
+    // The terminals that joined a system on Apply carry it; sd-a already had it.
+    const joined = new Map(result.terminalUpdates.map((element) => [element.id, readAirSystemAssignment(element)]));
+    expect(joined.get('sd-b')).toBe('fdum-b');
+    expect(joined.get('sd-c')).toBe('fdum');
+  }, 90000);
+
+  it('never takes another unit\'s terminal: a unit not designed keeps its terminals for later', () => {
+    const other = fdum('fdum-b', 9000);
+    const theirs = { ...sd3, properties: { ...sd3.properties, airSystem: { unitId: 'fdum-b' } } };
+    const result = planAutoRouteDucts([unit, other, sd1, sd2, theirs], { supply: true, return: false },
+      options({ scope: 'selection', unitIds: ['fdum'] }));
+    expect([...servedBy(result.elementsToAdd)].sort()).toEqual(['sd1', 'sd2']);
+    // Selecting that terminal brings its own unit into the run.
+    const withTerminal = planAutoRouteDucts([unit, other, sd1, sd2, theirs], { supply: true, return: false },
+      options({ scope: 'selection', terminalIds: ['sd3'] }));
+    expect(withTerminal.units.map((entry) => entry.unitId)).toEqual(['fdum-b']);
+  }, 90000);
 
   it('leaves a collar that already has a duct unless Rebuild is ticked, then replaces it in the same step', () => {
     const old = buildDuctRunDraftElement({ port: supply, points: [at(1500, 0)] }, 'old');
