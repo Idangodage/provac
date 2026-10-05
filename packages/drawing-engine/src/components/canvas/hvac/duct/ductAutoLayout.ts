@@ -25,6 +25,7 @@ import { findObstacleAwareOrthogonalRoute } from '../obstacleAwareOrthogonalRout
 import { isRefrigerantPipeElementType } from '../refrigerantPipePairModel';
 
 import { listAirPorts, type DuctAirPort } from './ductAirPorts';
+import { roomIdOf } from './ductAirSystems';
 import {
   ALL_FLEX_REACH_MM,
   RUNOUT_TARGETS_MM,
@@ -55,11 +56,13 @@ import {
 } from './ductAutoContext';
 import { spigotOrigin, splitOrigin, tapOrigin } from './ductBranchTargets';
 import { legNormal } from './ductBranches';
+import { ductWallsFromInputs, withActiveDuctBuilding, type DuctRoomOutline, type DuctWall, type DuctWallInput } from './ductBuilding';
 import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from './ductDraft';
-import { energyPricePerPa, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
+import { EMPTY_COST, energyPricePerPa, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
 import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductRunElementWithSpec } from './ductFollow';
 import { ductBranchesOf } from './ductNetwork';
+import { wallCrossingRule } from './ductPenetrations';
 import { checkSpigotFit } from './ductPlenum';
 import { systemPressure, type ServicePressure } from './ductPressure';
 import { SMACNA_TABLE_3_1 } from './ductRoundRules';
@@ -159,13 +162,12 @@ export interface AutoDuctRoom {
   vertices: Point2D[];
 }
 
-/** A wall as the auto layout sees it: its centre line and thickness (mm). */
-export interface AutoDuctWall {
-  id: string;
-  startPoint: Point2D;
-  endPoint: Point2D;
-  thickness?: number;
-}
+/**
+ * A wall as the auto layout sees it: its centre line and thickness, the
+ * height band it occupies and its construction (mm). Without a band it is full
+ * height, as walls were before they had one.
+ */
+export type AutoDuctWall = DuctWallInput;
 
 export interface AutoDuctTerminalReport {
   terminalId: string;
@@ -1117,7 +1119,7 @@ function shortlist(options: readonly ServiceOption[], pricePerPa: number, limit:
 }
 
 function addCosts(parts: readonly DuctCostBreakdown[]): DuctCostBreakdown {
-  const out: DuctCostBreakdown = { sheet: 0, fabrication: 0, fittings: 0, install: 0, insulation: 0, flex: 0, dampers: 0, joints: 0, hangers: 0, total: 0 };
+  const out: DuctCostBreakdown = { ...EMPTY_COST };
   for (const part of parts) for (const key of Object.keys(out) as Array<keyof DuctCostBreakdown>) out[key] += part[key];
   return out;
 }
@@ -1316,7 +1318,18 @@ const ROUTER_REPAIR_MS = 6000;
 /** Terminals per group when there are more than the exact search takes (a row, or a run of one). */
 const ROUTER_GROUP_SIZE = 4;
 
+/**
+ * Routes, sizes and verifies a unit's ducts. The request's walls and rooms are
+ * the building its plans read while it works (set and restored, so a worker
+ * plans against the building it was sent).
+ */
 export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings): AutoDuctResult {
+  const walls = ductWallsFromInputs(request.walls ?? []);
+  const rooms: readonly DuctRoomOutline[] = request.rooms ?? [];
+  return withActiveDuctBuilding(walls, rooms, () => designUnitDucts(scene, request, settings, walls, rooms));
+}
+
+function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings, walls: readonly DuctWall[], rooms: readonly DuctRoomOutline[]): AutoDuctResult {
   const started = Date.now();
   const unit = scene.find((element) => element.id === request.unitId);
   let counter = 0;
@@ -1480,10 +1493,15 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
         obstacles.push({ ...box, zMin: Math.min(a.z, b.z), zMax: Math.max(a.z, b.z) + leg.heightMm });
       });
     }
-    // Walls, full height: a duct keeps its clearance off them like any other obstacle.
-    for (const wall of request.walls ?? []) {
-      obstacles.push({ ...boxToLocal(frame, [wall.startPoint, wall.endPoint], Math.max(1, wall.thickness ?? 100) / 2, wall.id), zMin: -1e6, zMax: 1e6 });
+    // Walls in their own height band (a duct above a wall's top passes over it): a duct keeps its clearance off
+    // them like any other obstacle, unless the system may pass through them (below).
+    for (const wall of walls) {
+      obstacles.push({ ...boxToLocal(frame, [wall.a, wall.b], wall.thicknessMm / 2, wall.id), zMin: wall.baseZ, zMax: wall.topZ });
     }
+    // A system whose unit and terminals are in different rooms may pass through the interior walls between
+    // them, each crossing priced (a sleeve; a fire damper where the policy puts one). A one-room system never.
+    const unitRoom = roomIdOf(unit, rooms);
+    const spansRooms = rooms.length > 0 && free.some((element) => roomIdOf(element, rooms) !== unitRoom);
     for (const lane of listNetworkPipeLanes([...baseScene])) {
       for (const segment of lane.segments) {
         obstacles.push({
@@ -1497,7 +1515,9 @@ export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuc
     for (const terminal of terminals) terminal.variants = spigotVariants(frame, terminal, settings.autoChooseSpigotSide, obstacles);
     const ctx: ServiceCtx = {
       service, unitId: unit.id, frame, port, bottomZ, terminals, airflowM3h: total, baseScene, settings, obstacles, maxHeightMm,
-      ...(request.walls?.length ? { walls: request.walls } : {}),
+      ...(walls.length ? { walls } : {}),
+      ...(rooms.length ? { rooms } : {}),
+      ...(spansRooms ? { crossing: wallCrossingRule(rooms, settings) } : {}),
       construction: settings.defaultConstruction, ids,
     };
     contextInspector?.(ctx);

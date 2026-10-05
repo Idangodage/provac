@@ -21,13 +21,14 @@
  *
  * Walls are routing obstacles and are checked again on the finished geometry.
  */
-import type { HvacElement, Point2D, Wall } from '../../../../types';
+import type { HvacElement, Point2D } from '../../../../types';
 
 import { assignmentOptions, assignmentProblemFromScene, solveAirSystemAssignment } from './airSystemAssignment';
 import { listAirPorts } from './ductAirPorts';
 import { airSystemTags, analyseAirSystems, readAirSystemAssignment, servingUnits, withSystemAssignments } from './ductAirSystems';
 import type { AutoDuctIssue } from './ductAutoContext';
 import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuct, removalTree, type AutoDuctShape } from './ductAutoLayout';
+import type { DuctWallInput } from './ductBuilding';
 import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
 import { basisAirflowM3h, defaultSizingBasis } from './ductSystemSizing';
@@ -51,8 +52,8 @@ export interface AutoRouteDuctOptions {
   /** Selected scope: the ducted units and the terminals picked (either may be empty). */
   unitIds?: readonly string[];
   terminalIds?: readonly string[];
-  /** Walls to avoid during routing and check against the finished geometry. */
-  walls?: ReadonlyArray<Pick<Wall, 'id' | 'startPoint' | 'endPoint'> & { thickness?: number }>;
+  /** Walls with their height bands and construction: obstacles, or (a unit serving several rooms) passed through by sleeve. */
+  walls?: readonly DuctWallInput[];
   /** Room outlines: which room each unit and terminal is in. */
   rooms?: ReadonlyArray<{ id: string; vertices: Point2D[] }>;
 }
@@ -314,8 +315,13 @@ export function planAutoRouteDucts(
     } else {
       unitResult.status = 'designed';
       unitResult.runIds = auto.runs.map((run) => run.id);
-      for (const [service, count] of ductWallCrossings(auto.runs, options.walls)) {
-        unitResult.notes.unshift(`The ${service} duct crosses a wall ${count === 1 ? 'once' : `${count} times`}: it needs a sleeve there, or move the unit or its terminals so it stays in the room.`);
+      // The walls its ducts pass through (a unit serving several rooms): each a sleeve, and a fire damper where one goes.
+      for (const service of auto.services) {
+        const penetrations = service.plans.flatMap((plan) => plan.penetrations);
+        if (!penetrations.length) continue;
+        const dampers = penetrations.filter((penetration) => penetration.fireDamper).length;
+        unitResult.notes.unshift(`The ${service.service} duct passes through ${penetrations.length === 1 ? 'a wall' : `${penetrations.length} walls`}: `
+          + `${penetrations.length === 1 ? 'a sleeve' : `${penetrations.length} sleeves`}${dampers ? `, ${dampers === 1 ? 'a fire damper' : `${dampers} fire dampers`}` : ', no fire dampers'} (see the penetration schedule).`);
       }
       // The terminals its ducts serve that no system held join its air system, with the runs (one undo).
       const terminalUpdates = withSystemAssignments(auto.terminalUpdates, auto.runs, working, unit.id);
@@ -344,7 +350,7 @@ export function applyDuctProposal(scene: readonly HvacElement[], result: AutoRou
  * in it is an obstacle), wall geometry and duct settings. Apply refuses changes.
  */
 export function ductSourceSignature(scene: readonly HvacElement[], settings: DuctDesignSettings, walls: AutoRouteDuctOptions['walls'] = []): string {
-  const geometry = walls.map(wall => [wall.id, wall.startPoint, wall.endPoint, wall.thickness]);
+  const geometry = walls.map(wall => [wall.id, wall.startPoint, wall.endPoint, wall.thickness, wall.baseZ, wall.topZ, wall.structural, wall.material]);
   // Display settings (and the air-system checks) do not change a design: toggling them keeps the proposal.
   const text = JSON.stringify([scene, ductDesignSettingsKey(settings), geometry]);
   // FNV-1a, 32-bit, plus the length: a cheap fingerprint, not a security hash.

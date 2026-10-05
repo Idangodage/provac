@@ -46,6 +46,7 @@ import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
 import type { DuctDesignSettings } from "../hvac/duct/ductSettings";
+import { useDuctBuilding } from "../hvac/duct/useDuctBuilding";
 import { constrainPipeDraftDelta, resolvePipeDraftAngleMode } from "../hvac/pipeDraftingPolicy";
 import { editablePipeNodes, pipeEditControlIndices } from "../hvac/pipeEditModel";
 import {
@@ -1050,6 +1051,8 @@ export function HybridProjectionLayer({
 }: HybridProjectionLayerProps) {
   const routingSettings = useSmartDrawingStore(state => state.pipeRoutingSettings);
   const ductSettings = useSmartDrawingStore(state => state.ductSettings);
+  // The walls ducts pass through (sleeves, fire dampers): a moved wall rebuilds the runs it crosses.
+  const ductBuilding = useDuctBuilding();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pipeDiagnosticRef = useRef<HTMLPreElement | null>(null);
   const smartDraftingHudRef = useRef<HTMLDivElement | null>(null);
@@ -2992,7 +2995,7 @@ export function HybridProjectionLayer({
     controllerRef.current?.setContentBounds(sceneState.contentBounds);
     requestFrameRef.current?.();
     schedulePreviewRebuild();
-  }, [interactionElement, rendererRevision, glbLoadRevision, routingSettings, ductSettings,
+  }, [interactionElement, rendererRevision, glbLoadRevision, routingSettings, ductSettings, ductBuilding,
     hvacElements, buildPreviewRenderContext, schedulePreviewRebuild]);
 
   // Hover / selection → outline proxies (reference refreshProxies wiring).

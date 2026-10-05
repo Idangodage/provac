@@ -5,15 +5,16 @@
  * planned, clash-checked and re-priced from their plans. Only verified
  * numbers leave this module.
  */
-import type { HvacElement, Point2D } from '../../../../../types';
+import type { HvacElement } from '../../../../../types';
 import { listNetworkPipeLanes } from '../../networkPipeClearance';
 import type { AutoDuctIssue, ServiceCtx } from '../ductAutoContext';
 import { priceDuctPlans, type DuctCostBreakdown } from '../ductEconomics';
 import { planDuctRunSpec, type DuctFabricationPlan } from '../ductFabricationPlanner';
+import { crossingAllowed } from '../ductPenetrations';
 import { systemPressure, type ServicePressure } from '../ductPressure';
 import { getDuctSupportPlan } from '../ductSupports';
-import { terminalDropLookup } from '../ductTerminals';
 import type { DuctSystemSizingReport } from '../ductSystemSizing';
+import { terminalDropLookup } from '../ductTerminals';
 import { readDuctRunSpec } from '../ductTypes';
 import { findDuctClashes } from '../ductVolumes';
 
@@ -33,16 +34,28 @@ export interface VerifiedRuns {
   straps: number;
 }
 
-/** Plans, clash checks and the pressure of every terminal path, for runs built for one service. */
+/**
+ * Plans, clash checks and the pressure of every terminal path, for runs built
+ * for one service. The plans find each run's wall penetrations: through an
+ * interior wall of a system spanning rooms they are the planner's to judge
+ * (sleeve, fire damper, a straight through the wall); any other crossing is a
+ * run through a wall it may not pass (one DU_AUTO_WALL per leg).
+ */
 export function verifyRuns(ctx: ServiceCtx, runs: readonly HvacElement[], notes: readonly AutoDuctIssue[] = [], terminalUpdates: readonly HvacElement[] = []): VerifiedRuns {
   // Terminals whose spigot the design turns are checked as they will be.
   const scene = [...withReplaced(ctx.baseScene, terminalUpdates), ...runs];
-  const plans = runs.map((run) => planDuctRunSpec(run.id, readDuctRunSpec(run)!, { settings: ctx.settings, scene }));
+  const building = { walls: ctx.walls ?? [], rooms: ctx.rooms ?? [] };
+  const plans = runs.map((run) => planDuctRunSpec(run.id, readDuctRunSpec(run)!, { settings: ctx.settings, scene, building }));
   const issues: AutoDuctIssue[] = [...notes];
   let errors = notes.filter((issue) => issue.severity === 'error').length;
   let warnings = notes.filter((issue) => issue.severity === 'warning').length;
+  const disallowed = (plan: DuctFabricationPlan) => new Set(plan.penetrations
+    .filter((penetration) => !(ctx.crossing && crossingAllowed(penetration))).map((penetration) => penetration.key));
   for (const plan of plans) {
+    const refused = disallowed(plan);
     for (const issue of plan.issues) {
+      // A crossing it may not make is reported once, below, not again for its sleeve.
+      if (issue.penetrationKey && refused.has(issue.penetrationKey)) continue;
       if (issue.severity === 'error') errors += 1;
       else if (issue.severity === 'warning') warnings += 1;
       else continue;
@@ -58,17 +71,18 @@ export function verifyRuns(ctx: ServiceCtx, runs: readonly HvacElement[], notes:
       service: ctx.service, point: { x: clash.point.x, y: clash.point.y }, runId: newIds.has(clash.ductId) ? clash.ductId : clash.otherId,
     });
   }
-  // A run through a wall (the walls are obstacles to the router, not to the layout seeds).
-  for (const run of runs) {
-    const path = readDuctRunSpec(run)?.path ?? [];
-    for (let index = 1; index < path.length; index += 1) {
-      const a = path[index - 1]!;
-      const b = path[index]!;
-      if (!(ctx.walls ?? []).some((wall) => segmentsCross(a, b, wall.startPoint, wall.endPoint))) continue;
+  // A run through a wall it may not pass (the walls are obstacles to the router, not to the layout seeds).
+  for (const plan of plans) {
+    const refused = disallowed(plan);
+    const legs = new Set<number>();
+    for (const penetration of plan.penetrations) {
+      if (!refused.has(penetration.key) || legs.has(penetration.legIndex)) continue;
+      legs.add(penetration.legIndex);
       errors += 1;
       issues.push({
-        code: 'DU_AUTO_WALL', severity: 'error', message: 'The duct passes through a wall.', service: ctx.service,
-        point: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, runId: run.id,
+        code: 'DU_AUTO_WALL', severity: 'error', service: ctx.service, point: { x: penetration.point.x, y: penetration.point.y }, runId: plan.elementId,
+        message: !ctx.crossing ? 'The duct passes through a wall.'
+          : penetration.exterior ? 'The duct passes through an exterior wall.' : 'The duct passes through a wall that does not divide two rooms.',
       });
     }
   }
@@ -83,16 +97,6 @@ export function verifyRuns(ctx: ServiceCtx, runs: readonly HvacElement[], notes:
     }
   }
   return { plans, issues, errors, warnings, pressure, hangers, straps };
-}
-
-/** Proper crossing of two plan segments (touching ends do not count). */
-function segmentsCross(a: Point2D, b: Point2D, c: Point2D, d: Point2D): boolean {
-  const cross = (o: Point2D, p: Point2D, q: Point2D) => (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
-  const d1 = cross(c, d, a);
-  const d2 = cross(c, d, b);
-  const d3 = cross(a, b, c);
-  const d4 = cross(a, b, d);
-  return ((d1 > 1e-6 && d2 < -1e-6) || (d1 < -1e-6 && d2 > 1e-6)) && ((d3 > 1e-6 && d4 < -1e-6) || (d3 < -1e-6 && d4 > 1e-6));
 }
 
 export interface ServiceOption {

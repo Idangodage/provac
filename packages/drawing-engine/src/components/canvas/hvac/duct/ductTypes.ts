@@ -165,6 +165,23 @@ export interface DuctSystemSizing {
 
 const FAN_SPEED_KEYS: readonly FanSpeed[] = ['p-hi', 'hi', 'me', 'lo'];
 
+/** A run's choice at one wall penetration: a fire damper there or not (absent = the project policy). */
+export interface DuctPenetrationOverride {
+  fireDamper?: boolean;
+}
+
+/** The stored overrides, or undefined when there are none. */
+export function readDuctPenetrationOverrides(value: unknown): Record<string, DuctPenetrationOverride> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: Record<string, DuctPenetrationOverride> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^.+:\d+$/.test(key) || !entry || typeof entry !== 'object') continue;
+    const fireDamper = (entry as { fireDamper?: unknown }).fireDamper;
+    if (typeof fireDamper === 'boolean') out[key] = { fireDamper };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 export interface DuctRunSpec {
   version: 1;
   service: DuctService;
@@ -187,6 +204,13 @@ export interface DuctRunSpec {
   locked: boolean;
   /** The system's constant-friction basis (on the run off the unit's collar only). */
   sizing?: DuctSystemSizing;
+  /**
+   * The run's own choices at its wall penetrations, keyed `${wallId}:${n}` (the
+   * n-th time it crosses that wall). Only overrides are kept: a crossing not
+   * listed follows the project's fire-damper policy. The penetrations
+   * themselves are derived from the walls every time the run is planned.
+   */
+  penetrations?: Record<string, DuctPenetrationOverride>;
   /** Read from the old straight-stub format (no connector, no end cap). */
   legacy?: boolean;
 }
@@ -391,6 +415,7 @@ export function readDuctRunSpec(
     }
   }
   const sizing = readDuctSystemSizing(record.sizing);
+  const penetrations = readDuctPenetrationOverrides(record.penetrations);
   return {
     version: 1,
     service: record.service === 'return' ? 'return' : 'supply',
@@ -406,6 +431,7 @@ export function readDuctRunSpec(
     nodeOverrides: overrides,
     locked: record.locked === true,
     ...(sizing ? { sizing } : {}),
+    ...(penetrations ? { penetrations } : {}),
   };
 }
 

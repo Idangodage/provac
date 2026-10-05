@@ -24,6 +24,7 @@ import {
   type SplitFittingGeometry,
   type TapAttachment,
 } from './ductBranches';
+import { getActiveDuctBuilding, type DuctBuilding } from './ductBuilding';
 import { galvanisedSheetMassKgPerM2 } from './ductCatalog';
 import {
   ELBOW_RULES,
@@ -37,6 +38,7 @@ import {
   type DuctDamperLayout,
   type DuctVaneSpec,
 } from './ductFittingRules';
+import { FLEX_RULES, flexCurve } from './ductFlex';
 import { resolveSectionConstruction, type SectionConstruction } from './ductGauge';
 import {
   TURN_EPSILON_DEG,
@@ -56,14 +58,22 @@ import {
 import { ductInsulationThicknessMm, insulationTakeoff, type DuctInsulationTakeoff } from './ductInsulation';
 import { jointHardware, roundTakeoffHardware, slipOverHardware, takeoffHardware, type JointHardware } from './ductJoints';
 import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
-import { FLEX_RULES, flexCurve } from './ductFlex';
-import { checkSpigotFit, plenumGeometry, spigotAttachment } from './ductPlenum';
-import { findTerminalPort } from './ductTerminals';
 import { jogOffset, tightestOgee, type DuctOffsetGeometry } from './ductOffsets';
+import {
+  PENETRATION_JOINT_MARGIN_MM,
+  PENETRATION_MAX_ANGLE_DEG,
+  ductWallCrossings,
+  penetrationHasFireDamper,
+  sleeveOpeningMm,
+  type DuctPenetration,
+  type DuctWallCrossing,
+} from './ductPenetrations';
+import { checkSpigotFit, plenumGeometry, spigotAttachment } from './ductPlenum';
 import { maxRoundBranchMm, roundReducerMinLengthMm, wyeLegLengthMm, ROUND_FITTING_RULES } from './ductRoundFittings';
 import { goredElbowPieces, SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';
 import { squareToRoundAreaMm2 } from './ductSquareToRound';
+import { findTerminalPort } from './ductTerminals';
 import {
   isRoundLeg,
   isRoundMainTapStyle,
@@ -110,7 +120,12 @@ export type DuctIssueCode =
   | 'DU_FLEX_DROP'
   | 'DU_TERMINAL_SIZE'
   | 'DU_TERMINAL_ALIGN'
-  | 'DU_OPEN_END';
+  | 'DU_OPEN_END'
+  | 'DU_PENETRATION_FLEX'
+  | 'DU_PENETRATION_FITTING'
+  | 'DU_PENETRATION_JOINT'
+  | 'DU_PENETRATION_ANGLE'
+  | 'DU_PENETRATION_EXTERIOR';
 
 export interface DuctIssue {
   code: DuctIssueCode;
@@ -119,9 +134,12 @@ export interface DuctIssue {
   legIndex?: number;
   nodeIndex?: number;
   point?: Point2D;
+  /** A wall penetration's issue: its key on the run (`${wallId}:${n}`). */
+  penetrationKey?: string;
 }
 
-export type DuctPieceKind = 'connector' | 'takeoff' | 'damper' | 'straight' | 'elbow' | 'offset' | 'transition' | 'split' | 'plenum' | 'flex' | 'end-cap';
+/** 'fire-damper': a curtain fire damper in its sleeve, centred in a wall the run passes through (bought in, not fabricated). */
+export type DuctPieceKind = 'connector' | 'takeoff' | 'damper' | 'straight' | 'elbow' | 'offset' | 'transition' | 'split' | 'plenum' | 'flex' | 'end-cap' | 'fire-damper';
 
 /** A flexible runout to an air terminal (SMACNA §3.5–3.7): its 3D centreline and what it serves. */
 export interface DuctFlexPiece {
@@ -247,6 +265,8 @@ export interface DuctPiece {
   connectorMetalMm?: number;
   /** Damper: blade layout per SMACNA Fig. 2-12/2-13. */
   damper?: DuctDamperLayout;
+  /** Fire damper: the wall penetration it sits in (its key on the run). */
+  penetrationKey?: string;
   sheetThicknessMm: number | null;
   sheetAreaM2: number;
   fabricAreaM2: number;
@@ -286,6 +306,8 @@ export interface DuctFabricationPlan {
   pieces: DuctPiece[];
   joints: DuctJoint[];
   issues: DuctIssue[];
+  /** Where the run passes through walls: each sleeve, and its fire damper where it has one (derived from the walls). */
+  penetrations: DuctPenetration[];
   polylineLengthMm: number;
   totals: { sheetAreaM2: number; fabricAreaM2: number; massKg: number };
   /** Rules this plan used whose values are not verified against their source. */
@@ -319,7 +341,13 @@ const PRACTICE = {
   split: 'Split neck and tee depth (types per Fig. 2-5)',
   roundTap: 'Round-main tap stub and lateral collar lengths (Fig. 3-4 leaves them undimensioned)',
   wye: 'Wye leg 3A/2 read as the centreline length to the outlet',
+  penetration: 'Wall penetrations: a plain straight through the wall, joints 50 mm clear of its faces, the sleeve clearance',
+  fireDamper: 'Fire damper sleeve 1.2 mm, its mass × 1.5 for the frame, curtain and retaining angles; breakaway joints at the sleeve ends',
 } as const;
+
+/** A fire damper's sleeve sheet and the allowance for its frame, curtain and retaining angles (mass factor), practice. */
+const FIRE_DAMPER_SLEEVE_MM = 1.2;
+const FIRE_DAMPER_MASS_FACTOR = 1.5;
 
 /** The clear section at a piece's start or end, round pieces keeping their diameter. */
 function pieceSection(piece: DuctPiece, at: 'start' | 'end'): DuctLeg {
@@ -692,6 +720,20 @@ export function layoutSections(
 export interface PlanDuctRunOptions {
   settings: DuctDesignSettings;
   scene: readonly HvacElement[];
+  /** The walls and rooms the run passes through (default: the active building, which the drawing keeps current). */
+  building?: Pick<DuctBuilding, 'walls' | 'rooms'>;
+}
+
+/** A rigid leg's wall crossing as the planner lays the leg out: its zone (a fire damper's sleeve reaches further) and what it found. */
+interface LegCrossing {
+  crossing: DuctWallCrossing;
+  fireDamper: boolean;
+  /** Along the leg (mm from its start): the wall's zone, or the damper's sleeve. */
+  from: number;
+  to: number;
+  /** It falls on a fitting or a take-off (reported once). */
+  fitting: boolean;
+  damperMark?: string;
 }
 
 export function planDuctRun(element: HvacElement, options: PlanDuctRunOptions): DuctFabricationPlan | null {
@@ -775,6 +817,29 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         message: `Leg ${leg.index + 1} both runs and climbs: a duct is level or vertical. Make the level change a riser or a drop (drawn level here).` });
     }
   });
+
+  // ---- Wall penetrations: derived from the walls each time (a moved wall never leaves a stale sleeve). ----
+  const insulationMm = ductInsulationThicknessMm(spec, settings);
+  const building = options.building ?? getActiveDuctBuilding();
+  const crossings = building.walls.length ? ductWallCrossings(plannedSpec, building.walls, building.rooms) : [];
+  if (crossings.length) practice.add(PRACTICE.penetration);
+  const crossingsByLeg = new Map<number, LegCrossing[]>();
+  for (const crossing of crossings) {
+    // The runout's crossings are flexible duct through a wall (reported below); the rigid legs carry the rest.
+    if (crossing.onFlex || crossing.legIndex >= legs.length) continue;
+    const fireDamper = penetrationHasFireDamper(crossing, plannedSpec.penetrations, settings.fireDamperPolicy);
+    const extra = fireDamper ? settings.fireDamperSleeveExtensionMm : 0;
+    const entry: LegCrossing = { crossing, fireDamper, from: crossing.zoneFromMm - extra, to: crossing.zoneToMm + extra, fitting: false };
+    crossingsByLeg.set(crossing.legIndex, [...(crossingsByLeg.get(crossing.legIndex) ?? []), entry]);
+  }
+  // PN-01 …: the run's own penetration marks (P-nn is the plenum box's piece mark).
+  const markOf = (crossing: DuctWallCrossing) => `PN-${String(crossings.indexOf(crossing) + 1).padStart(2, '0')}`;
+  const fittingInWall = (entry: LegCrossing, legIndex: number, message: string) => {
+    if (entry.fitting) return;
+    entry.fitting = true;
+    issues.push({ code: 'DU_PENETRATION_FITTING', severity: 'error', legIndex, point: entry.crossing.point, penetrationKey: entry.crossing.key,
+      message: `${markOf(entry.crossing)}: ${message}` });
+  };
   if (legs[0]?.vertical && spec.start.kind !== 'open') {
     issues.push({ code: 'DU_SLOPED_LEG', severity: 'error', legIndex: 0, point: spec.path[0],
       message: 'The first leg must leave its collar or parent level; add a level leg before the riser.' });
@@ -968,6 +1033,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       };
     };
     const endFitting = fittings.get(legIndex + 1);
+    const legCrossings = crossingsByLeg.get(legIndex) ?? [];
     if (leg.vertical && (windowsByLeg.get(legIndex) ?? []).length > 0) {
       issues.push({ code: 'DU_TAP_CLASH', severity: 'error', legIndex, point: at(0),
         message: 'A take-off sits on a riser; take-offs are made on level straights.' });
@@ -976,6 +1042,9 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       if ((windowsByLeg.get(legIndex) ?? []).length > 0) {
         issues.push({ code: 'DU_TAP_CLASH', severity: 'error', legIndex, point: at(leg.lengthMm / 2),
           message: 'A take-off sits on a leg that is now part of an offset; move it onto a straight section.' });
+      }
+      for (const entry of legCrossings) {
+        fittingInWall(entry, legIndex, 'the duct passes through this wall inside an offset; a wall needs a plain straight through it. Make the jog on one side of the wall.');
       }
       station += leg.lengthMm;
       return;
@@ -1097,11 +1166,22 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
           message: clashesWindow ? 'Two take-offs overlap on this leg.' : 'A take-off overlaps an elbow, transition or connector; move it along the run.' });
       }
     });
+    // A wall needs a plain straight through it: no fitting, no take-off, and a fire damper's whole sleeve.
+    for (const entry of legCrossings) {
+      if (windows.some((window) => window.from < entry.to && window.to > entry.from)) {
+        fittingInWall(entry, legIndex, 'a take-off sits in the wall the duct passes through. Move the take-off clear of the wall.');
+      } else if (entry.from < straightFrom - STATION_EPSILON_MM || entry.to > straightTo + STATION_EPSILON_MM) {
+        fittingInWall(entry, legIndex, entry.fireDamper
+          ? `the fire damper needs ${Math.round(entry.to - entry.from)} mm of straight through the wall (its sleeve stands ${Math.round(settings.fireDamperSleeveExtensionMm)} mm out of each face); a fitting is in the way. Move the fitting or the wall.`
+          : 'the duct passes through the wall at a fitting (an elbow, transition, connector or damper); a wall needs a plain straight through it. Move the fitting or the wall.');
+      }
+    }
     const sectionLength = isRoundLeg(section) && settings.roundSeam === 'spiral' ? settings.roundSectionLengthMm : settings.sectionLengthMm;
     // A remainder too short to be a section is taken up in an elbow neck: the next elbow's, or the one just made.
     const remainder = straightTo - straightFrom;
     let stretchNextElbowMm = 0;
-    if (remainder > STATION_EPSILON_MM && remainder < settings.minMakeUpPieceMm - STATION_EPSILON_MM && windows.length === 0) {
+    // (Not through a wall: the straight in it stays a straight.)
+    if (remainder > STATION_EPSILON_MM && remainder < settings.minMakeUpPieceMm - STATION_EPSILON_MM && windows.length === 0 && legCrossings.length === 0) {
       const previous = pieces[pieces.length - 1];
       if (endFitting?.elbow) {
         stretchNextElbowMm = remainder;
@@ -1120,14 +1200,38 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       }
       if (cursor > straightFrom || stretchNextElbowMm > 0) practice.add(PRACTICE.neckStretch);
     }
-    const lengths = stretchNextElbowMm > 0 || cursor > straightFrom
-      ? [] : layoutSections(straightFrom, straightTo, sectionLength, settings.minMakeUpPieceMm, windows);
-    lengths.forEach((length, index) => {
-      pieces.push(straightPiece('straight', 'S', cursor, cursor + length, section, {
-        isMakeUp: length < sectionLength - STATION_EPSILON_MM && (index >= lengths.length - 2),
-      }));
-      cursor += length;
-    });
+    if (!(stretchNextElbowMm > 0 || cursor > straightFrom)) {
+      // Joints keep clear of the take-off openings and of the walls the run passes through (a fire damper's sleeve
+      // brings its own breakaway joints, beyond the wall faces).
+      const jointWindows = [...windows, ...legCrossings.filter((entry) => !entry.fireDamper)
+        .map((entry) => ({ from: entry.from - PENETRATION_JOINT_MARGIN_MM, to: entry.to + PENETRATION_JOINT_MARGIN_MM }))]
+        .sort((a, b) => a.from - b.from);
+      const straights = (to: number) => {
+        const lengths = layoutSections(cursor, to, sectionLength, settings.minMakeUpPieceMm, jointWindows);
+        lengths.forEach((length, index) => {
+          pieces.push(straightPiece('straight', 'S', cursor, cursor + length, section, {
+            isMakeUp: length < sectionLength - STATION_EPSILON_MM && (index >= lengths.length - 2),
+          }));
+          cursor += length;
+        });
+      };
+      // A fire damper in its sleeve, centred in the wall: bought in (no sheet of the run's), its mass for the supports.
+      for (const entry of legCrossings.filter((candidate) => candidate.fireDamper).sort((a, b) => a.from - b.from)) {
+        const from = Math.max(cursor, entry.from - cursor <= STATION_EPSILON_MM ? cursor : entry.from);
+        const to = Math.min(entry.to, straightTo);
+        if (to - from < STATION_EPSILON_MM) continue;
+        if (from > cursor + STATION_EPSILON_MM) straights(from);
+        cursor = from;
+        const piece = straightPiece('fire-damper', 'FD', cursor, to, section, { penetrationKey: entry.crossing.key });
+        const length = to - cursor;
+        const massKg = (girthOf(section, sheetOf(section)) / 1000) * (length / 1000) * galvanisedSheetMassKgPerM2(FIRE_DAMPER_SLEEVE_MM) * FIRE_DAMPER_MASS_FACTOR;
+        pieces.push({ ...piece, sheetAreaM2: 0, fabricAreaM2: 0, massKg, seamLengthMm: 0 });
+        entry.damperMark = piece.mark;
+        practice.add(PRACTICE.fireDamper);
+        cursor = to;
+      }
+      if (straightTo > cursor + STATION_EPSILON_MM) straights(straightTo);
+    }
 
     if (endFitting?.offset) {
       const offset = endFitting.offset;
@@ -1466,7 +1570,61 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     });
   }
 
-  const insulationMm = ductInsulationThicknessMm(spec, settings);
+  // ---- Wall penetrations: each sleeve (the opening a builder leaves), and the rules each keeps. ----
+  const legStarts: number[] = [];
+  legs.reduce((start, leg) => { legStarts.push(start); return start + leg.lengthMm; }, 0);
+  const penetrations: DuctPenetration[] = crossings.map((crossing) => {
+    const mark = markOf(crossing);
+    const entry = crossingsByLeg.get(crossing.legIndex)?.find((candidate) => candidate.crossing === crossing) ?? null;
+    const flexSection = plannedSpec.legs[crossing.legIndex]!;
+    const a = plannedSpec.path[crossing.legIndex]!;
+    const b = plannedSpec.path[crossing.legIndex + 1]!;
+    const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const direction = { x: (b.x - a.x) / length, y: (b.y - a.y) / length };
+    const issue = (code: DuctIssueCode, severity: DuctIssue['severity'], message: string) => issues.push({
+      code, severity, message: `${mark}: ${message}`, point: crossing.point, penetrationKey: crossing.key, ...(entry ? { legIndex: crossing.legIndex } : {}),
+    });
+    if (!entry) {
+      // Flexible duct through a wall: never (it is not a fire or smoke barrier, and it crushes in the sleeve).
+      const diameter = flexSection.diameterMm ?? flexSection.widthMm;
+      const outerDiameter = diameter + 2 * (settings.flexType === 'nm-il' ? settings.flexJacketMm : 0);
+      issue('DU_PENETRATION_FLEX', 'error', 'the flexible runout passes through a wall. Flexible duct may not pass through walls (UL 181 / NFPA 90A practice): bring the rigid duct through the wall and start the runout beyond it.');
+      return {
+        ...crossing, mark, fireDamper: false,
+        stationMm: polylineLengthMm + crossing.legStationMm, fromStationMm: polylineLengthMm + crossing.zoneFromMm, toStationMm: polylineLengthMm + crossing.zoneToMm,
+        widthMm: diameter, heightMm: diameter, diameterMm: diameter, outerWidthMm: outerDiameter, outerHeightMm: outerDiameter,
+        opening: sleeveOpeningMm(outerDiameter, outerDiameter, settings.penetrationClearanceMm, true),
+        bottomZ: Math.min(a.z, b.z), direction,
+      };
+    }
+    const section = spec.legs[crossing.legIndex]!;
+    const round = isRoundLeg(section);
+    // The insulation runs through a plain sleeve; it stops at a fire damper's (the damper's sleeve is fire-stopped bare).
+    const skin = (sheetOf(section) ?? 1) + (entry.fireDamper ? 0 : insulationMm);
+    const outerWidthMm = section.widthMm + 2 * skin;
+    const outerHeightMm = section.heightMm + 2 * skin;
+    const start = legStarts[crossing.legIndex] ?? 0;
+    const penetration: DuctPenetration = {
+      ...crossing, mark, fireDamper: entry.fireDamper, ...(entry.damperMark ? { damperMark: entry.damperMark } : {}),
+      stationMm: start + crossing.legStationMm, fromStationMm: start + crossing.zoneFromMm, toStationMm: start + crossing.zoneToMm,
+      widthMm: section.widthMm, heightMm: section.heightMm, ...(round ? { diameterMm: section.diameterMm } : {}),
+      outerWidthMm, outerHeightMm, opening: sleeveOpeningMm(outerWidthMm, outerHeightMm, settings.penetrationClearanceMm, round),
+      bottomZ: spec.path[crossing.legIndex]!.z, direction,
+    };
+    if (crossing.angleDeg > PENETRATION_MAX_ANGLE_DEG) {
+      issue('DU_PENETRATION_ANGLE', 'warning', `the duct crosses the wall ${Math.round(crossing.angleDeg)}° off square. A sleeve is set square to the wall (within ${PENETRATION_MAX_ANGLE_DEG}°, practice): cross it square.`);
+    }
+    if (crossing.exterior) {
+      issue('DU_PENETRATION_EXTERIOR', 'warning', 'the duct passes through an exterior wall: the opening needs weatherproofing, and the wall\'s fire and acoustic rating checked.');
+    }
+    // A joint in the wall (or within the margin of its faces) cannot be made up there.
+    if (!entry.fitting && !entry.fireDamper && joints.some((joint) => joint.stationMm > penetration.fromStationMm - PENETRATION_JOINT_MARGIN_MM + STATION_EPSILON_MM
+      && joint.stationMm < penetration.toStationMm + PENETRATION_JOINT_MARGIN_MM - STATION_EPSILON_MM)) {
+      issue('DU_PENETRATION_JOINT', 'warning', `a transverse joint falls in the wall or within ${PENETRATION_JOINT_MARGIN_MM} mm of its faces, where it cannot be made up. Lengthen the straight through the wall.`);
+    }
+    return penetration;
+  });
+
   if (insulationMm > 0) practice.add(PRACTICE.insulation);
   const totals = pieces.reduce((sum, piece) => ({
     sheetAreaM2: sum.sheetAreaM2 + piece.sheetAreaM2,
@@ -1485,6 +1643,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     pieces,
     joints,
     issues,
+    penetrations,
     polylineLengthMm: polylineLengthMm + flexLength,
     totals,
     unverifiedRules: [...unverified],
@@ -1526,18 +1685,19 @@ function planDependencies(element: HvacElement, spec: DuctRunSpec | null, scene:
   return dependencies;
 }
 
-/** Memoised plans: keyed by the element object, the settings object and the plan's dependencies. */
-const PLAN_CACHE = new WeakMap<HvacElement, { settings: DuctDesignSettings; dependencies: unknown[]; plan: DuctFabricationPlan | null }>();
+/** Memoised plans: keyed by the element object, the settings object, the building (its walls) and the plan's dependencies. */
+const PLAN_CACHE = new WeakMap<HvacElement, { settings: DuctDesignSettings; building: DuctBuilding; dependencies: unknown[]; plan: DuctFabricationPlan | null }>();
 
 export function getDuctRunPlan(element: HvacElement, scene: readonly HvacElement[], settings: DuctDesignSettings): DuctFabricationPlan | null {
   const spec = readDuctRunSpec(element);
   const dependencies = planDependencies(element, spec, scene);
+  const building = getActiveDuctBuilding();
   const cached = PLAN_CACHE.get(element);
-  if (cached && cached.settings === settings && cached.dependencies.length === dependencies.length
+  if (cached && cached.settings === settings && cached.building === building && cached.dependencies.length === dependencies.length
     && cached.dependencies.every((value, index) => value === dependencies[index])) {
     return cached.plan;
   }
-  const plan = spec ? planDuctRunSpec(element.id, spec, { settings, scene }) : null;
-  PLAN_CACHE.set(element, { settings, dependencies, plan });
+  const plan = spec ? planDuctRunSpec(element.id, spec, { settings, scene, building }) : null;
+  PLAN_CACHE.set(element, { settings, building, dependencies, plan });
   return plan;
 }

@@ -42,6 +42,7 @@ import type { DuctDesignSettings } from './ductSettings';
 import { getDuctSupportPlan } from './ductSupports';
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec } from './ductTypes';
+import { useDuctBuilding } from './useDuctBuilding';
 
 export interface DuctOverlayDraft {
   element: HvacElement;
@@ -327,6 +328,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   // Air systems: the selected units' systems, and those of the selected terminals, are in focus.
   const rooms = props.rooms ?? NO_ROOMS;
+  // The walls the runs pass through: a moved wall re-plans their sleeves and fire dampers.
+  const building = useDuctBuilding();
   const airSystems = useMemo(() => analyseAirSystems(hvacElements, rooms), [hvacElements, rooms]);
   const focusUnitIds = useMemo(() => {
     const focus = new Set<string>();
@@ -364,15 +367,16 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const scene = [...hvacElements.filter((element) => !replacedIds.has(element.id)).map((element) => turned.get(element.id) ?? element), ...autoPreview.runs];
     return autoPreview.runs.map((run) => {
       const spec = readDuctRunSpec(run);
-      return spec ? ductRunMarkup(buildDuctPlanPresentation(planDuctRunSpec(run.id, spec, { settings, scene })), {
+      return spec ? ductRunMarkup(buildDuctPlanPresentation(planDuctRunSpec(run.id, spec, { settings, scene, building })), {
         k, draft: true, showTags: true, showJointTicks: true, showMarks: false,
       }) : '';
     }).join('');
-  }, [autoPreview, hvacElements, replacedIds, settings, k]);
+  }, [autoPreview, hvacElements, replacedIds, settings, building, k]);
   const runs = useMemo(() => hvacElements
     .filter(isDuctElement)
     .map((element) => getDuctRunPlan(element, hvacElements, settings))
-    .filter((plan): plan is NonNullable<typeof plan> => plan !== null), [hvacElements, settings]);
+    // (The plans read the active building, which `building` tracks.)
+    .filter((plan): plan is NonNullable<typeof plan> => plan !== null), [hvacElements, settings, building]);
   const hitAreas = useMemo(() => (moveEnabled ? runs.filter((plan) => selectedSet.has(plan.elementId)) : [])
     .flatMap((plan) => getDuctPlanPresentation(plan).piecePolygons.map((piece) => piece.polygon)), [moveEnabled, runs, selectedSet]);
   // Handles on the run when it alone is selected (legs that start on a collar or parent wall stay put).

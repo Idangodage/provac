@@ -853,6 +853,166 @@ Your decisions (28 September 2026):
 - `duct/ductSystemSizing.test.ts`: the link round-trips within 1 %; airflow 1500 → 1125 → 750 → 375 along a trunk with four take-offs; free sections within R and their limit at their kept height and equal to `sizeRectangular`; the main at or under the velocity set; a higher rate never gives a larger section; reducers placed, every branch on its main's wall, every runout end on its terminal, no planner error; idempotent; locked runs kept; measure changes nothing; a terminal's airflow from the card; a main drawn too low raised for its take-offs (conical → spin-in reported); a Y main as wide as its outlets.
 - `store/ductSystemSizing.test.ts`: the preview re-sized without touching the drawing and Apply commits those sizes (one undo); applied ducts re-sized as one command, a terminal airflow in the same command, undo back through each; sizing again at the same basis commits nothing; Generate by constant friction keeps the basis and writes the terminal airflows with the runs.
 
+## Air systems: supply and return terminals per ducted unit, ducted through walls (4–5 October 2026)
+
+**The request:** place supply and return diffusers separately; give each its duct path and accessories, returns included; dedicate terminals to selected ducted units (one or more units in a room, a unit serving several rooms).
+
+**Your decisions (4 October 2026):**
+- A unit may serve terminals in other rooms. Its ducts pass interior walls through sleeves, with a fire damper where one is set.
+- A return terminal may carry a filter: G4, or M5 (≈ MERV 8).
+
+### Supply and return terminals
+
+- **The service comes from the element type:** `diffuser` is supply and `return-grille` is return, with any face (square 4-way, round, linear slot, egg-crate, perforated, louvred). Old drawings read exactly as before.
+- **Tags:** SAD, SAG and LSD for supply; RAD, RAG and LRG for return. Placing one takes the next free number; numbers are never reused.
+- **Toolbox:** separate *Supply air terminals* and *Return air terminals* sections, each tile with a service dot. The inspector has Service (locked while a duct is connected), Face and Filter (return only).
+- **Pressure:** a terminal's drop is the service's base plus a filter's drop: rated ΔP × face velocity ÷ rated velocity × the mid-life factor (practice). The sizing model and the verified pressure use this one formula; without a filter the figures are as before.
+- **BOM:** terminals are described by service and face, with a filter panel row per filter grille.
+
+### Air systems: terminals dedicated to a unit
+
+- **Stored:** `properties.airSystem = { unitId }` on a terminal, and `properties.airSystemTag` ("DU-1") on a ducted unit. A unit gets its tag when placed; older units get a derived one.
+- **Derived:** a terminal's system is the unit it is assigned to, else the unit its duct tree starts from. A disagreement between the two is a check (below).
+- **Auto-assign:** an exact min-cost flow per service (successive shortest paths), checked against brute force.
+  - A pairing costs the collar-to-spigot distance, plus the depth behind the collar, plus each wall between them × `autoAssignWallPenaltyMm`.
+  - Each unit takes its airflow share free, then `autoAssignOverloadMm` per terminal over it.
+  - A room that has a unit with the right collar keeps its terminals to its own units.
+- **UI:**
+  - The **Air system card** (one ducted unit selected): members with their airflow and neck velocity, the balance, the rooms served, and its actions: place supply or return terminals for the unit, pick on canvas, assign the selection, auto-assign, remove.
+  - A **Served by** row in the terminal inspector.
+  - **Systems → Air systems:** every system, the unassigned terminals and the air terminal schedule (CSV).
+  - **On the plan:** tethers from each collar in the system's colour, rings and unit badges, for the systems in focus or all of them.
+- **Commands:** each command is one undo step. Deleting a unit clears its terminals' assignment; a copied unit drops its tag. The duct tool refuses to end a run on another system's terminal.
+
+### Auto duct and Auto route per system
+
+- **The Auto duct card** designs, in order of precedence:
+  - the terminals selected with the unit;
+  - otherwise the unit's system (both services, any room);
+  - otherwise, while nothing is assigned yet, the unassigned terminals in its room.
+
+  It never takes another unit's terminal. Apply dedicates the unassigned terminals it served, in the same undo step as the runs.
+- **The unified Auto route** groups terminals by system. It balances the unassigned ones across the units in scope (the same solver), and designs the units in order of system airflow. It never adopts another room's free terminals: dedicate a terminal to the unit to serve it from there.
+
+### Wall penetrations
+
+**The building ducts see** (`ductBuilding.ts`):
+- the walls: centre line, thickness, height band (`properties3D`), construction (brick, concrete or partition; structural);
+- the rooms.
+
+Plans derive the penetrations every time they are made, so a moved wall never leaves a stale sleeve. The canvas keeps the active building current (`useDuctBuilding`); the auto layout sets and restores it around its own work, so it is safe in a worker.
+
+**A crossing** (`ductPenetrations.ts`):
+- It is a level leg passing through a wall's centre line where their height bands overlap. A duct over a wall that stops below it passes over it.
+- Its zone along the leg is the thickness ÷ cos(angle).
+- The rooms either side make it interior or exterior.
+
+**The planner:**
+- **Plain straight:** the duct is a plain straight through the wall. Transverse joints are moved 50 mm clear of its faces (the take-off window rule). A fitting, take-off or transition in the zone, or a flexible runout through a wall, is an error.
+- **Fire damper:** each crossing has one under the project policy (`fireDamperPolicy`: none, masonry and concrete walls, or every wall) or the run's own choice (`ductRun.penetrations["wall:n"]`). It is an inline `fire-damper` piece:
+  - centred in the wall, the wall's depth + 2 × `fireDamperSleeveExtensionMm` long;
+  - breakaway joints at its sleeve ends;
+  - bought in (no fabricated sheet), its mass carried for the supports;
+  - ζ 0.12 (curtain type B);
+  - the insulation stops at its sleeve.
+- **Sleeve:** the opening is the duct's outer size (the insulation runs through a plain sleeve) + 2 × `penetrationClearanceMm`.
+- **Supports:** no hanger sits in a wall.
+- **BOM,** under *Wall penetrations*:
+  - sleeves by opening and wall thickness;
+  - mineral wool and acoustic sealant (plain) or fire-stop (fire damper), by the opening's perimeter;
+  - fire dampers by size, and their access doors.
+- **Penetration schedule** for the builder (WP-01 …, CSV, Systems → Ducts): run and mark, wall, construction and thickness, duct and opening sizes, centre, duct bottom, angle, fire damper, exterior.
+- **Economics:** `econPenetrationEach` and `econFireDamperEach` (at Ø200, scaled by the girth) and `econAccessDoorEach`.
+- **Plan:** the opening is drawn dashed across the wall ("PN-01 · SLV 725×265"), and a fire damper as its box with a diagonal ("FD FD-01").
+- **3D:** sleeve collars at both faces; a fire damper as its sleeve, casing band and access door.
+- **Run inspector:** each penetration is listed with a fire damper switch (one undo each). A choice that matches the policy is not kept.
+
+**The router** passes through walls only for a system whose unit and terminals are in different rooms; a one-room system never does (its graph is unchanged, and a test shows crossings only add edges).
+- **Edges:** an edge through one interior wall (a room either side at that point), square to it and blocked by nothing else, crosses it. Its corridor is capped by the wall's length, so the duct goes through the wall, not past its end.
+- **Price:** the crossing's sleeve, and a fire damper and access door where the policy puts one.
+- **Fittings off the wall:** the wall counts as a fitting. The duct may enter it only with a fitting's reach (+ 50 mm) clear of the near face, and leaves it as if a fitting had just ended at the far face. The four pricing sites and the walk that rebuilds the tree use this one rule.
+- **The realiser and the constant-friction resizer** keep take-off windows, reducers and the neck fitting out of a wall's zone, a fire damper's sleeve included.
+- **The verifier** plans every run with the walls:
+  - a crossing through an interior wall of a spanning system is the planner's to judge;
+  - any other crossing is `DU_AUTO_WALL`, one per leg, as before.
+- **Auto route** reports, e.g., "The supply duct passes through a wall: a sleeve, no fire dampers (see the penetration schedule)".
+
+### Design checks added
+
+| Code | Level | Rule |
+|---|---|---|
+| `DU_SYSTEM_MISMATCH` | error | Assigned to one unit, its duct comes from another |
+| `DU_SERVICE_MISMATCH` | error | A return terminal on a supply duct, or the reverse |
+| `DU_SYSTEM_NO_COLLAR` | error | Assigned to a unit with no collar for its service |
+| `DU_SYSTEM_AIRFLOW` | warning | A service's fixed airflows more than 10 % off the unit's (TAB tolerance, practice) |
+| `DU_SHORT_CIRCUIT` | warning | A return face within `returnSupplyMinGapMm` of a supply face in the same room |
+| `DU_ROOM_RETURN_PATH` | warning | A room the unit supplies has none of its returns, though it has ducted returns elsewhere (door undercuts and transfer grilles are not modelled) |
+| `DU_TERMINAL_UNASSIGNED` | info | The terminal is in no system |
+| `DU_PENETRATION_FLEX` | error | Flexible duct through a wall (UL 181 / NFPA 90A practice) |
+| `DU_PENETRATION_FITTING` | error | A fitting, take-off or a fire damper's sleeve that does not fit, in a wall |
+| `DU_PENETRATION_JOINT` | warning | A joint that could not be moved out of a wall |
+| `DU_PENETRATION_ANGLE` | warning | More than 10° off square to the wall |
+| `DU_PENETRATION_EXTERIOR` | warning | Through an exterior wall |
+
+### Settings added
+
+| Setting | Default | Basis |
+|---|---|---|
+| `filterG4RatedDropPa` / `filterM5RatedDropPa` at `filterRatedVelocityMs`; `filterDesignFactor` | 40 / 60 Pa at 2.5 m/s; × 1.5 | practice |
+| `returnSupplyMinGapMm` | 1500 | practice |
+| `autoAssignWallPenaltyMm` / `autoAssignOverloadMm` | 4000 / 2500 | practice |
+| `showAirSystems` | off | display |
+| `penetrationClearanceMm` | 25 | practice |
+| `fireDamperPolicy` | none | project (the walls carry no fire rating) |
+| `fireDamperSleeveExtensionMm` | 100 (50–152) | practice (UL 555 installations: ≤ 6 in) |
+| `econPenetrationEach` / `econFireDamperEach` / `econAccessDoorEach` | 40 / 160 / 45 | placeholders |
+
+### Verified
+
+**Verified (5 October 2026):**
+- **Unit tests:**
+  - terminals and their readers, old drawings included (`ductTerminals`, `ductReturnTerminals`);
+  - air systems, the assignment solver against brute force, and the checks (`ductAirSystems`, `airSystemAssignment`, `ductAirSystemChecks`, `store/airSystems`);
+  - per-system Auto duct and Auto route (`ductAutoRoute`, `store/ductAutoApply`).
+- **`ductPenetrations.test.ts`** (17 tests):
+  - crossings by height band, angle and occurrence, with the rooms either side;
+  - the fire-damper policy and a run's own choice;
+  - a sleeve through the wall with every joint clear of it, or reported (property test);
+  - the fire-damper piece, centred and contiguous;
+  - every code;
+  - BOM, cost, schedule, supports, plan and 3D.
+- **`ductCrossRoom.test.ts`** (5 tests):
+  - a unit serving a room beyond a partition designs clean through one sleeve;
+  - the same layout as a one-room system never crosses (`DU_AUTO_WALL`, and the reason names the terminal);
+  - the policy puts a fire damper in the partition;
+  - crossings only add edges to the routing graph;
+  - the unified Auto route serves a dedicated terminal in the other room and reports the sleeve.
+- **Full suite and checks:** the full drawing-engine suite (227 files, 1987 tests); `tsc` and `eslint` clean.
+- **Benchmark** (`DUCT_BENCHMARK=1`): 39/39 in 392 s, the one-room layouts unchanged.
+- **On canvas** (Playwright against the dev server, project restored exactly each time): Phase 1 25/25, Phase 2 23/23, Phase 3 14/14, and Phase 4 `duct-cross-room.mjs` 18/18:
+  - Two rooms: the room tool, then a partition committed through the store's wall action.
+  - DU-1 placed, with SAD-1, SAD-2 (beyond the partition) and RAG-1 placed from its Air system card.
+  - The Auto duct card's design: clean in 6 s, through the partition by one sleeve (Ø251 for the Ø200 duct).
+  - In plan: the dashed opening and "PN-01 · SLV Ø251".
+  - The run inspector's switch adds FD-01 in its sleeve, with its symbol (one undo).
+  - The BOM's wall-penetration rows: sleeve, fire damper, access door, 0.79 m of fire-stop.
+  - The penetration schedule: WP-01, partition 100, BOD 2470.
+  - The 3D view.
+- **Regression drivers:**
+  - On this code: `air-p1` 25/25, `air-p2` 23/23, `air-p3` 14/14.
+  - The older duct drivers fail on the project as it now is: duct-p4 20/21 (a clash with the cassette since placed in the test room), duct-sizing 20/26, duct-many 3/8, duct-auto at its setup. The room now holds a cassette and refrigerant pipes at duct level, and its test spots are taken.
+  - They fail identically on the committed code before this phase (A/B, 5 October 2026). They need re-staging for the current project.
+
+### Known limits
+
+- The tree router works in front of a collar. A terminal behind a unit's collar plane may be out of reach: turn the unit, or draw that run by hand.
+- One level per service: a duct does not rise over a wall. A diagonal wall stays a hard obstacle to the router; a hand-drawn duct can cross it (with the angle warning).
+- Walls carry no fire rating: fire dampers come from the project policy and each crossing's switch. Smoke dampers, combination dampers and ratings are not modelled.
+- **Room detection and the canvas wall tools:** a wall drawn on the canvas to divide a room splits the walls it meets at a T, and room detection then loses the rooms either side. A system there is then seen as being in no room, so it is treated as one-room and its ducts may not cross the dividing wall. The store's own wall commit (no split) keeps both rooms. Found on 5 October 2026; it is in the walls rebuild, outside this work.
+- Door undercuts and transfer grilles are not modelled; the return-path check says so.
+- An edge crosses one wall at a time. Two walls closer together than the grid's lines block, as a single wall does without a spanning system.
+- Terminal, filter and fire-damper pressure drops are practice values until the supplier's data is entered. The router prices a crossing at the reference size; the verified plan prices the real one.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
@@ -874,7 +1034,7 @@ Your decisions (28 September 2026):
 - The design-check chip is still titled "VRF checks" though it lists condensate and duct checks too.
 - The NBR skin in 3D does not box the flanges, so a 30 mm TDC flange shows through a 25 mm skin.
 - Duct-to-duct clash skips a branch and its own parent.
-- Auto duct designs one level per service and adds no risers. It keeps clear of walls (as obstacles; there are no beams or storeys in the model); the unified Auto route still flags a run that crosses one. Units are designed one after another (each around the ones before), not jointly.
+- Auto duct designs one level per service and adds no risers. A one-room system keeps clear of walls (obstacles in their own height band; there are no beams or storeys in the model); a system spanning rooms passes interior walls by sleeve (see Air systems above). Units are designed one after another (each around the ones before), not jointly.
 - Auto duct's pressure figures are estimates with practice loss coefficients, not a certified duct calculation.
 - Terminal sizes are typical catalog values (practice) until a supplier's data is entered.
 - A rigid connection to a terminal is checked, not routed: its last leg has to be drawn straight into the spigot.

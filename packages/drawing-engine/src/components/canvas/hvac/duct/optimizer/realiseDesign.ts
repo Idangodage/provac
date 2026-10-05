@@ -17,6 +17,10 @@
  * A branch's first leg leaves its origin (square, or at 45° for a lateral or a
  * wye); the design's next vertex is moved onto that line, which only changes
  * the length of the leg after it.
+ *
+ * A run through a wall (a system spanning rooms) keeps a plain straight in it:
+ * no take-off window, reducer or neck fitting in the wall's zone (its fire
+ * damper's sleeve and the joint margin included).
  */
 import type { HvacElement, Point2D } from '../../../../../types';
 import {
@@ -35,6 +39,7 @@ import {
 import { spigotOrigin, splitOrigin, tapOrigin } from '../ductBranchTargets';
 import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from '../ductDraft';
 import { ductRunElementWithSpec } from '../ductFollow';
+import { polylinePenetrationZones } from '../ductPenetrations';
 import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctTapStyle } from '../ductTypes';
 
 import { pointAlong, turnedTerminals, withReplaced, type RunDesign } from './designTree';
@@ -91,6 +96,18 @@ function insertAt(polyline: Point2D[], station: number): void {
     }
     start += length;
   }
+}
+
+/** [from, to] less the zones: the stretches left, in order. */
+function stretchesBetween(from: number, to: number, zones: ReadonlyArray<[number, number]>): Array<[number, number]> {
+  let parts: Array<[number, number]> = to > from ? [[from, to]] : [];
+  for (const [a, b] of zones) {
+    parts = parts.flatMap(([x, y]): Array<[number, number]> => (b <= x || a >= y ? [[x, y]] : [
+      ...(a > x ? [[x, a] as [number, number]] : []),
+      ...(b < y ? [[b, y] as [number, number]] : []),
+    ]));
+  }
+  return parts;
 }
 
 function stationsOf(polyline: readonly Point2D[]): number[] {
@@ -266,6 +283,11 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
     }
     const biggest = sections.reduce((best, section) => (section.widthMm * section.heightMm > best.widthMm * best.heightMm ? section : best), first);
     const end = run.end;
+    // The walls this run passes through (a system spanning rooms), as zones along it.
+    const wallZonesOf = (points: readonly Point2D[]): Array<[number, number]> => (ctx.crossing && ctx.walls?.length
+      ? polylinePenetrationZones(points.map((point) => toWorld(ctx.frame, point)), origin ? origin.bottomZ : ctx.bottomZ,
+        biggest.diameterMm ?? biggest.heightMm, ctx.walls, settings).map((zone): [number, number] => [zone.from, zone.to])
+      : []);
     if (end.kind === 'terminal' && !run.allFlex) {
       extendTerminalApproach(ctx, model, polyline, end.terminal, sections[sections.length - 1]!, origin ? origin.bottomZ : ctx.bottomZ);
     }
@@ -288,8 +310,10 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
       const b = polyline[n - 1]!;
       const length = Math.hypot(b.x - a.x, b.y - a.y);
       const along = { x: (b.x - a.x) / (length || 1), y: (b.y - a.y) / (length || 1) };
-      // Take-off windows on the last leg keep the split's reserve behind them.
+      // Take-off windows on the last leg keep the split's reserve behind them, and so do the walls it passes through.
       let tapsKeep = 0;
+      const lastLegFrom = stationsOf(polyline)[n - 2]!;
+      for (const [, to] of wallZonesOf(polyline)) if (to > lastLegFrom) tapsKeep = Math.max(tapsKeep, to - lastLegFrom + endClear);
       for (let j = 0; j < run.taps.length; j += 1) {
         const point = pointAlong(run, run.taps[j]!.station).point;
         const offset = (point.x - a.x) * along.x + (point.y - a.y) * along.y;
@@ -319,6 +343,8 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
     }
     const stations = stationsOf(polyline);
     const total = stations[stations.length - 1]!;
+    const wallZones = wallZonesOf(polyline);
+    const inWall = (station: number, half: number) => wallZones.some(([a, b]) => station + half > a && station - half < b);
     // Elbow zones: each bend takes its setback and neck either side (on the biggest section, conservatively).
     // A radius elbow where its legs hold it; where a leg needs the room for its take-offs, a 90° turn on a
     // rectangular section is specified as a square vaned elbow (setback W/2), and the planner is told so.
@@ -391,8 +417,30 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
         }
         return [from, to];
       };
+      /** The windows spread along [from, to], each kept to the stretch between walls it wants (the nearer when it wants a wall). */
+      const spread = (from: number, to: number): number[] | null => {
+        if (!wallZones.length) return spreadWindows(items, from, to);
+        const parts = stretchesBetween(from, to, wallZones);
+        if (!parts.length) return null;
+        const distance = (value: number, [a, b]: [number, number]) => (value < a ? a - value : value > b ? value - b : 0);
+        const groups = parts.map(() => [] as number[]);
+        items.forEach((item, index) => {
+          let best = 0;
+          parts.forEach((part, k) => { if (distance(item.desired, part) < distance(item.desired, parts[best]!)) best = k; });
+          groups[best]!.push(index);
+        });
+        const out = new Array<number>(items.length);
+        for (let k = 0; k < parts.length; k += 1) {
+          const group = groups[k]!;
+          if (!group.length) continue;
+          const placed = spreadWindows(group.map((index) => items[index]!), parts[k]![0], parts[k]![1]);
+          if (!placed) return null;
+          group.forEach((index, n) => { out[index] = placed[n]!; });
+        }
+        return out;
+      };
       let [from, to] = limits();
-      let positions = spreadWindows(items, from, to);
+      let positions = spread(from, to);
       if (!positions) {
         // The leg's take-offs need the room a radius elbow takes: square vaned elbows at its ends instead.
         const ends = bends.filter((bend) => (bend.index === leg || bend.index === leg + 1) && !bend.square && canSquare(bend));
@@ -400,7 +448,7 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
           for (const bend of ends) bend.square = true;
           bendZones = bends.map(zoneOf);
           [from, to] = limits();
-          positions = spreadWindows(items, from, to);
+          positions = spread(from, to);
         }
       }
       if (!positions) {
@@ -421,7 +469,7 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
         const reach = Math.max(Math.abs(item.desired - low), Math.abs(item.desired - high));
         for (let offset = 0; offset <= reach && found === null; offset += 25) {
           for (const candidate of offset ? [item.desired - offset, item.desired + offset] : [item.desired]) {
-            if (candidate < low - 1e-6 || candidate > high + 1e-6 || !stubFits(item.j, candidate)) continue;
+            if (candidate < low - 1e-6 || candidate > high + 1e-6 || inWall(candidate, item.half) || !stubFits(item.j, candidate)) continue;
             found = candidate;
             break;
           }
@@ -441,7 +489,7 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
       const gapTo = k < run.taps.length ? tapPositions[k]! - tapHalves[k]! : total - endClear;
       let best: [number, number] | null = null;
       let cursor = gapFrom;
-      for (const [a, b] of [...bendZones.filter(([a, b]) => b > gapFrom && a < gapTo).sort((m, n) => m[0] - n[0]), [gapTo, gapTo] as [number, number]]) {
+      for (const [a, b] of [...[...bendZones, ...wallZones].filter(([a, b]) => b > gapFrom && a < gapTo).sort((m, n) => m[0] - n[0]), [gapTo, gapTo] as [number, number]]) {
         const until = Math.min(a, gapTo);
         if (until - cursor >= length + 20 && (!best || until - cursor > best[1] - best[0])) best = [cursor, until];
         cursor = Math.max(cursor, b);
@@ -454,9 +502,12 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
     const neck: DuctLeg | null = terminal ? roundLeg(terminal.neck) : null;
     if (neck && !run.allFlex && !sameLeg(current, neck)) {
       const length = model.transitionLengthMm(current, neck).lengthMm;
-      const at = total - Math.max(400, length + 100);
+      let at = total - Math.max(400, length + 100);
+      // Not in a wall: before it, when the wall is where the fitting would be.
+      const walled = wallZones.filter(([a, b]) => b > at && a < at + length);
+      if (walled.length) at = Math.min(...walled.map(([a]) => a)) - length - 20;
       const lastTapEnd = run.taps.length ? tapPositions[run.taps.length - 1]! + tapHalves[run.taps.length - 1]! : startClear;
-      if (at < lastTapEnd || bendZones.some(([a, b]) => b > at && a < total)) {
+      if (at < lastTapEnd || bendZones.some(([a, b]) => b > at && a < total) || wallZones.some(([a, b]) => b > at && a < at + length)) {
         return fail(run.key, 'neck-transition', `the fitting down to the Ø${terminal!.neck} neck (${Math.round(length)} mm) has no straight before the runout`);
       }
       changes.push({ at, section: neck });

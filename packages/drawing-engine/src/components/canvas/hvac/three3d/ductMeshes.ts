@@ -2,7 +2,9 @@
  * 3D meshes for a duct run, read from the same fabrication plan the plan view
  * and the BOM use: every straight section, elbow and connector as a
  * rectangular sweep, a flange frame at every joint (TDC, Ductmate or angle),
- * the fabric band of the flexible connector and the end cap.
+ * the fabric band of the flexible connector and the end cap, each fire damper
+ * (its sleeve, casing and access door) and the sleeve collars at the faces of
+ * every wall the run passes through.
  *
  * World space (model millimetres, z up), like the condensate meshes; no CSG.
  * Geometry is merged per material so a run is a handful of meshes; materials
@@ -36,6 +38,9 @@ export const DUCT_3D_COLORS = {
   support: '#6d5a45',
   rod: '#8a8f96',
   insulation: '#1f2226',
+  fireDamper: '#c2410c',
+  sleeve: '#78716c',
+  accessDoor: '#94a3b8',
 } as const;
 
 const MATERIALS = new Map<string, THREE.MeshStandardMaterial>();
@@ -825,10 +830,42 @@ function addFlexMeshes(piece: DuctPiece, push: MeshPush): void {
     sweepCircularPath3(points, radii, across));
 }
 
+/**
+ * A fire damper in its sleeve: the sleeve, the damper's casing band at the
+ * wall's centre plane and the access door on the duct just upstream of it.
+ */
+function addFireDamperMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push: MeshPush): void {
+  const d = piece.direction;
+  const along = (distance: number) => ({ x: piece.start.x + d.x * distance, y: piece.start.y + d.y * distance });
+  const mid = piece.lengthMm / 2;
+  const accent = material(DUCT_3D_COLORS.fireDamper, 0.2, 0.55);
+  const z = piece.centreZ;
+  if (piece.diameterMm !== undefined) {
+    const radius = piece.diameterMm / 2 + t;
+    push('duct-metal', metal, sweepCircularRings([{ point: piece.start, z, radius: radius + 3 }, { point: piece.end, z, radius: radius + 3 }]));
+    push('duct-accessories', accent, sweepCircularRings([{ point: along(mid - 30), z, radius: radius + 25 }, { point: along(mid + 30), z, radius: radius + 25 }]));
+  } else {
+    const halfWidth = piece.widthMm / 2 + t;
+    const halfHeight = piece.heightMm / 2 + t;
+    push('duct-metal', metal, sweepRectangularTube([piece.start, piece.end], z, halfWidth + 3, halfHeight + 3));
+    push('duct-accessories', accent, sweepRectangularTube([along(mid - 30), along(mid + 30)], z, halfWidth + 25, halfHeight + 25));
+  }
+  const n = { x: -d.y, y: d.x };
+  const half = (piece.diameterMm ?? piece.widthMm) / 2 + t;
+  const doorHeight = Math.max(80, Math.min(250, (piece.diameterMm ?? piece.heightMm) - 20));
+  const door = along(-160);
+  push('duct-accessories', material(DUCT_3D_COLORS.accessDoor, 0.2, 0.5),
+    orientedBox(new THREE.Vector3(door.x + n.x * (half + 4), door.y + n.y * (half + 4), z), d, 200, 8, doorHeight));
+}
+
 /** One piece's sheet metal and its accessories, with the sheet `t` thick (grown by the insulation for its skin). */
 function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push: MeshPush): void {
   if (piece.kind === 'flex' && piece.flex) {
     addFlexMeshes(piece, push);
+    return;
+  }
+  if (piece.kind === 'fire-damper') {
+    addFireDamperMeshes(piece, t, metal, push);
     return;
   }
   const path3 = piecePath3(piece);
@@ -1024,8 +1061,8 @@ export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, conte
       else geometry?.dispose();
     };
     for (const piece of plan.pieces) {
-      // The connector must flex; a flexible runout carries its own jacket.
-      if (piece.kind === 'connector' || piece.kind === 'split' || piece.kind === 'flex') continue;
+      // The connector must flex; a flexible runout carries its own jacket; a fire damper's sleeve is fire-stopped bare.
+      if (piece.kind === 'connector' || piece.kind === 'split' || piece.kind === 'flex' || piece.kind === 'fire-damper') continue;
       addPiece(piece, (piece.sheetThicknessMm ?? 1) + plan.insulationMm, skin, skinPush);
     }
   }
@@ -1053,6 +1090,19 @@ export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, conte
     const mat = material(flange.angle ? DUCT_3D_COLORS.angle : DUCT_3D_COLORS.flange, 0.15, 0.5);
     const frame = joint.vertical ? flatFlangeFrame(joint, flange.height, flange.thickness) : flangeFrame(joint, flange.height, flange.thickness);
     for (const part of frame) push('duct-flanges', mat, part);
+  }
+  // Wall sleeves: a collar of the opening's size at each face of every wall the run passes through.
+  const sleeve = material(DUCT_3D_COLORS.sleeve, 0.15, 0.6);
+  for (const penetration of plan.penetrations) {
+    const half = (penetration.toStationMm - penetration.fromStationMm) / 2;
+    const centreZ = penetration.bottomZ + (penetration.diameterMm ?? penetration.heightMm) / 2;
+    for (const side of [-1, 1]) {
+      const face = { x: penetration.point.x + penetration.direction.x * side * half, y: penetration.point.y + penetration.direction.y * side * half };
+      const out = { x: face.x + penetration.direction.x * side * 12, y: face.y + penetration.direction.y * side * 12 };
+      push('duct-sleeves', sleeve, penetration.opening.round
+        ? sweepCircularRings([{ point: face, z: centreZ, radius: penetration.opening.widthMm / 2 }, { point: out, z: centreZ, radius: penetration.opening.widthMm / 2 }])
+        : sweepRectangularTube([face, out], centreZ, penetration.opening.widthMm / 2, penetration.opening.heightMm / 2));
+    }
   }
   if (settings.showSupports) addDuctSupportMeshes(getDuctSupportPlan(plan, context.allElements, settings), push);
   for (const [name, bucket] of buckets) {

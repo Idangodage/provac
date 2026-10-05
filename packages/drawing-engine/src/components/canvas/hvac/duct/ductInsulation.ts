@@ -74,8 +74,8 @@ export function insulationTakeoff(
   let areaMm2 = 0;
   let tapeMm = 0;
   for (const piece of plan.pieces) {
-    // The connector must flex, and a flexible runout comes insulated.
-    if (piece.kind === 'connector' || piece.kind === 'flex') continue;
+    // The connector must flex; a runout has its own jacket; a fire damper's sleeve is fire-stopped bare.
+    if (piece.kind === 'connector' || piece.kind === 'flex' || piece.kind === 'fire-damper') continue;
     const size = outside(piece);
     const girth = midGirth(size, thicknessMm);
     if (piece.kind === 'end-cap') {

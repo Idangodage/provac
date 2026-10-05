@@ -43,6 +43,8 @@ export const FITTING_LOSS_COEFFICIENTS = {
   takeoffPlenum: 0.7,
   /** Volume damper, wide open. */
   damper: 0.2,
+  /** Curtain fire damper, type B (the curtain out of the airstream), open. */
+  fireDamper: 0.12,
   /** Duct into a plenum box: the velocity pressure is lost. */
   plenumEntry: 1.0,
   /** Y split, on each outlet's velocity. */
@@ -214,6 +216,7 @@ function coefficientOf(piece: DuctPiece, fromPlenum: boolean): number {
     }
     case 'takeoff': return fromPlenum ? c.takeoffPlenum : c.takeoffTrunk;
     case 'damper': return c.damper;
+    case 'fire-damper': return c.fireDamper;
     case 'plenum': return c.plenumEntry;
     default: return 0;
   }

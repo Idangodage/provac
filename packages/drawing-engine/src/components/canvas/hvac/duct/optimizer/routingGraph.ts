@@ -8,11 +8,19 @@
  * free corridor (the distance to the nearest obstacle beside it), so a duct
  * is only routed where its size fits.
  *
+ * A system spanning rooms may pass through the interior walls between them:
+ * an edge blocked by nothing but one such wall, square to it, crosses it. It
+ * keeps the straight it has either side of the wall (the router keeps the
+ * fittings that far off it), and the crossing's price (its sleeve, and a fire
+ * damper where the policy puts one). Nodes inside walls stay dropped, so no
+ * elbow, take-off or split sits in a wall.
+ *
  * Directions: 0 = +x, 1 = +y, 2 = −x, 3 = −y; left of d is (d + 1) mod 4 (the
  * local frame is a rotation of the plan, so left is left in plan too).
  */
 import type { Point2D } from '../../../../../types';
-import { flexClear, flexOk, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { flexClear, flexOk, toWorld, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import type { DuctWall } from '../ductBuilding';
 import { flexBendLossPa } from '../ductPressure';
 
 import type { SizingModel } from './sizingModel';
@@ -64,9 +72,20 @@ export interface RoutingGraph {
   leaves: LeafCandidate[][];
   /** Candidate roots on the collar's axis: the node where the fan-outlet straight ends, and its length. */
   roots: Array<{ node: number; outletMm: number }>;
+  /**
+   * Per node and direction, an edge through a wall: the wall (index into
+   * `crossWalls`; −1 none), the crossing's price, and the straight the edge
+   * keeps before and after the wall (a fire damper's sleeve taken off; mm).
+   * Absent: no edge passes through a wall.
+   */
+  cross?: Int32Array;
+  crossCost?: Float64Array;
+  crossBefore?: Float64Array;
+  crossAfter?: Float64Array;
+  crossWalls?: string[];
 }
 
-interface Box { minX: number; maxX: number; minY: number; maxY: number }
+interface Box { minX: number; maxX: number; minY: number; maxY: number; id?: string }
 
 /** Merges lines closer than MERGE_MM, keeping the more important one: `must` (the source axis, the roots), then `keep` (the runout lines). */
 function mergeLines(values: number[], keep: ReadonlySet<number>, must: ReadonlySet<number>): number[] {
@@ -98,7 +117,7 @@ function levelObstacles(ctx: ServiceCtx, bandMm: number): Box[] {
   const zMax = ctx.bottomZ + bandMm;
   return ctx.obstacles
     .filter((box) => box.id !== ctx.unitId && box.zMax > zMin && box.zMin < zMax)
-    .map((box) => ({ minX: box.minX, maxX: box.maxX, minY: box.minY, maxY: box.maxY }));
+    .map((box) => ({ minX: box.minX, maxX: box.maxX, minY: box.minY, maxY: box.maxY, ...(box.id ? { id: box.id } : {}) }));
 }
 
 /**
@@ -197,6 +216,14 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
   const neighbour = new Int32Array(count * 4).fill(-1);
   const edgeLength = new Float64Array(count * 4);
   const corridor = new Float64Array(count * 4);
+  // The walls a system spanning rooms may pass through, and the edges that do.
+  const crossable = new Map<string, DuctWall>();
+  if (ctx.crossing) for (const wall of ctx.walls ?? []) crossable.set(wall.id, wall);
+  const cross = crossable.size ? new Int32Array(count * 4).fill(-1) : null;
+  const crossCost = cross ? new Float64Array(count * 4) : null;
+  const crossBefore = cross ? new Float64Array(count * 4) : null;
+  const crossAfter = cross ? new Float64Array(count * 4) : null;
+  const crossWalls: string[] = [];
   for (let i = 0; i < xs.length; i += 1) {
     for (let j = 0; j < ys.length; j += 1) {
       const node = nodeAt[i * ys.length + j]!;
@@ -211,19 +238,53 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
         // The edge must not cross an obstacle; its corridor is the gap to the nearest one beside it.
         let free = Number.POSITIVE_INFINITY;
         let blocked = false;
+        let crossed: { box: Box; wall: DuctWall } | null = null;
         const horizontal = a.y === b.y;
+        const lo = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
+        const hi = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
         for (const box of boxes) {
-          const lo = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
-          const hi = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
-          if (hi <= (horizontal ? box.minX : box.minY) || lo >= (horizontal ? box.maxX : box.maxY)) continue;
+          const from = horizontal ? box.minX : box.minY;
+          const to = horizontal ? box.maxX : box.maxY;
+          if (hi <= from || lo >= to) continue;
           const at = horizontal ? a.y : a.x;
           const low = horizontal ? box.minY : box.minX;
           const high = horizontal ? box.maxY : box.maxX;
           const gap = at < low ? low - at : at > high ? at - high : 0;
-          if (gap < ROUTE_CLEARANCE_MM) { blocked = true; break; }
+          if (gap < ROUTE_CLEARANCE_MM) {
+            // Through a wall it may pass: square to it (the edge spans its thickness), and only one.
+            const wall = box.id ? crossable.get(box.id) : undefined;
+            if (wall && !crossed && Math.abs(to - from - wall.thicknessMm) < 1 && lo < from && hi > to) {
+              crossed = { box, wall };
+              continue;
+            }
+            blocked = true;
+            break;
+          }
           free = Math.min(free, gap);
         }
         if (blocked) continue;
+        if (crossed) {
+          const { box, wall } = crossed;
+          const half = wall.thicknessMm / 2;
+          const at = horizontal ? a.y : a.x;
+          // Through the wall, not past its end: the duct's half and clearance stay inside its length.
+          const endGap = horizontal ? Math.min(at - (box.minY + half), box.maxY - half - at) : Math.min(at - (box.minX + half), box.maxX - half - at);
+          const point = horizontal ? { x: (box.minX + box.maxX) / 2, y: at } : { x: at, y: (box.minY + box.maxY) / 2 };
+          if (endGap <= ROUTE_CLEARANCE_MM || !ctx.crossing!.allows(wall, toWorld(ctx.frame, point))) continue;
+          free = Math.min(free, endGap);
+          const forward = d === 0 || d === 1;
+          const [near, far] = horizontal ? (forward ? [box.minX, box.maxX] : [box.maxX, box.minX]) : (forward ? [box.minY, box.maxY] : [box.maxY, box.minY]);
+          const start = horizontal ? a.x : a.y;
+          const end = horizontal ? b.x : b.y;
+          // A fire damper's sleeve stands out of each face: the straight either side is that much shorter.
+          const sleeve = ctx.crossing!.fireDamper(wall) ? ctx.settings.fireDamperSleeveExtensionMm : 0;
+          let index = crossWalls.indexOf(wall.id);
+          if (index < 0) index = crossWalls.push(wall.id) - 1;
+          cross![node * 4 + d] = index;
+          crossCost![node * 4 + d] = ctx.crossing!.price(wall);
+          crossBefore![node * 4 + d] = Math.max(0, Math.abs(near - start) - sleeve);
+          crossAfter![node * 4 + d] = Math.max(0, Math.abs(end - far) - sleeve);
+        }
         neighbour[node * 4 + d] = other;
         edgeLength[node * 4 + d] = Math.hypot(b.x - a.x, b.y - a.y);
         corridor[node * 4 + d] = free;
@@ -275,5 +336,6 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
   return {
     xs, ys, nodeX: Float64Array.from(nodeXs), nodeY: Float64Array.from(nodeYs), nodeCount: count,
     neighbour, edgeLength, corridor, nodeClear, leaves, roots,
+    ...(cross && crossWalls.length ? { cross, crossCost: crossCost!, crossBefore: crossBefore!, crossAfter: crossAfter!, crossWalls } : {}),
   };
 }

@@ -6,7 +6,8 @@
  *    gauge each section resolved), fabrication and installation by sheet area
  *    (fittings at a multiple of a straight's rate, spiral round cheaper per m²
  *    than rectangular), NBR by area, flexible duct per metre, dampers, joints
- *    per metre of perimeter and hangers each.
+ *    per metre of perimeter and hangers each; each wall penetration's sleeve,
+ *    and a fire damper with its access door where it has one.
  *  - Life-cycle cost: first cost + the present worth of the fan energy the
  *    design's external static pressure costs. Fan power is Q·Δp/η, run for
  *    the operating hours each year; the present-worth factor over n years at
@@ -31,6 +32,7 @@ import { isRoundLeg, type DuctConstruction, type DuctLeg, type DuctService } fro
 export type DuctEconomicsSettings = Pick<DuctDesignSettings,
   | 'econCurrency' | 'econSheetPerKg' | 'econFabricationRectPerM2' | 'econFabricationSpiralPerM2' | 'econFittingFactor'
   | 'econInstallPerM2' | 'econInsulationPerM2' | 'econFlexPerM' | 'econDamperEach' | 'econHangerEach' | 'econJointPerM'
+  | 'econPenetrationEach' | 'econFireDamperEach' | 'econAccessDoorEach'
   | 'econElectricityPerKWh' | 'econHoursPerYear' | 'econFanEfficiency' | 'econLifeYears' | 'econDiscountPercent' | 'econEscalationPercent'>;
 
 export interface DuctCostBreakdown {
@@ -47,11 +49,13 @@ export interface DuctCostBreakdown {
   dampers: number;
   joints: number;
   hangers: number;
+  /** Wall penetrations: sleeves with their packing and sealant, fire dampers and their access doors. */
+  penetrations: number;
   total: number;
 }
 
 export const EMPTY_COST: DuctCostBreakdown = {
-  sheet: 0, fabrication: 0, fittings: 0, install: 0, insulation: 0, flex: 0, dampers: 0, joints: 0, hangers: 0, total: 0,
+  sheet: 0, fabrication: 0, fittings: 0, install: 0, insulation: 0, flex: 0, dampers: 0, joints: 0, hangers: 0, penetrations: 0, total: 0,
 };
 
 /** Reference size the flexible duct and damper rates are quoted at (mm). */
@@ -119,10 +123,21 @@ export function priceDuctPlans(plans: readonly DuctFabricationPlan[], settings: 
       const perimeterMm = round ? Math.PI * joint.outerWidthMm : 2 * (joint.outerWidthMm + joint.outerHeightMm);
       cost.joints += (perimeterMm / 1000) * settings.econJointPerM;
     }
+    for (const penetration of plan.penetrations ?? []) cost.penetrations += penetrationCost(penetration, settings);
   }
   cost.hangers = (hangers + STRAP_SHARE_OF_HANGER * straps) * settings.econHangerEach;
-  cost.total = cost.sheet + cost.fabrication + cost.fittings + cost.install + cost.insulation + cost.flex + cost.dampers + cost.joints + cost.hangers;
+  cost.total = cost.sheet + cost.fabrication + cost.fittings + cost.install + cost.insulation + cost.flex + cost.dampers + cost.joints + cost.hangers + cost.penetrations;
   return cost;
+}
+
+/** A wall penetration's cost: its sleeve, and its fire damper and access door (sleeve and damper at Ø200, scaled by the girth). */
+export function penetrationCost(
+  penetration: { fireDamper: boolean; widthMm: number; heightMm: number; diameterMm?: number },
+  settings: Pick<DuctEconomicsSettings, 'econPenetrationEach' | 'econFireDamperEach' | 'econAccessDoorEach'>,
+): number {
+  const girth = penetration.diameterMm !== undefined ? Math.PI * penetration.diameterMm : 2 * (penetration.widthMm + penetration.heightMm);
+  const scaleBy = girth / (Math.PI * REFERENCE_DIAMETER_MM);
+  return settings.econPenetrationEach * scaleBy + (penetration.fireDamper ? settings.econFireDamperEach * scaleBy + settings.econAccessDoorEach : 0);
 }
 
 export interface SectionCostContext {

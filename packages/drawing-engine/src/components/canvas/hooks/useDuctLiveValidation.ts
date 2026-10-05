@@ -15,12 +15,14 @@ const NO_ROOMS: ReadonlyArray<Pick<Room, 'id' | 'vertices' | 'name'>> = [];
 
 /**
  * Debounced duct design checks (DU_*) with the air-system checks; silent (and
- * free) until a duct or an air terminal exists.
+ * free) until a duct or an air terminal exists. `building` (the walls the runs
+ * pass through, which the plans read) re-runs them when a wall changes.
  */
 export function useDuctLiveValidation(
   elements: readonly HvacElement[],
   settings: DuctDesignSettings,
   rooms: ReadonlyArray<Pick<Room, 'id' | 'vertices' | 'name'>> = NO_ROOMS,
+  building?: unknown,
 ): VrfValidationReport {
   const [report, setReport] = useState<VrfValidationReport>(EMPTY);
   useEffect(() => {
@@ -45,6 +47,6 @@ export function useDuctLiveValidation(
       }
     }, DUCT_VALIDATION_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [elements, settings, rooms]);
+  }, [elements, settings, rooms, building]);
   return report;
 }

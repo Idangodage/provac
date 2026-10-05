@@ -14,7 +14,7 @@
  * main, a split's outlets fit the run before it, nothing grows downstream —
  * and where a rule binds the upstream section is raised and the report says
  * why. Reducers are placed again between the take-off windows, clear of the
- * elbows (a width change under the reducer step is carried on); branches are
+ * walls the runs pass through and of the elbows (a width change under the reducer step is carried on); branches are
  * re-anchored on their main's wall as resized, their ends staying on their
  * terminals. Locked runs, plenum boxes and collar-and-damper stubs before a
  * runout keep their sizes. The planner then judges the result, as for any
@@ -25,9 +25,11 @@ import { listNetworkPipeLanes } from '../networkPipeClearance';
 
 import { findAirPort } from './ductAirPorts';
 import { branchStubMm, type AutoDuctIssue } from './ductAutoContext';
+import { getActiveDuctBuilding } from './ductBuilding';
 import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorKeepingEnd, startAnchor } from './ductFollow';
 import { ductBranchesOf, ductParentOf } from './ductNetwork';
+import { runPenetrationZones } from './ductPenetrations';
 import { systemPressure, type ServicePressure } from './ductPressure';
 import { maxRoundBranchMm } from './ductRoundFittings';
 import type { DuctDesignSettings } from './ductSettings';
@@ -707,6 +709,11 @@ export function sizeDuctSystem(
       kept.push(rigid.length - 1);
       for (let index = 1; index < rigid.length; index += 1) {
         if (!isLevel(rigid[index - 1]!, rigid[index]!)) forbidden.push([stations[index - 1]!, stations[index]!]);
+      }
+      // Nor in a wall the run passes through (a fire damper's sleeve and the joint margin included).
+      const walls = getActiveDuctBuilding().walls;
+      for (const zone of runPenetrationZones({ path: rigid, legs, insulationThicknessMm: spec.insulationThicknessMm, end: { kind: 'open' }, ...(spec.penetrations ? { penetrations: spec.penetrations } : {}) }, walls, settings)) {
+        forbidden.push([zone.from, zone.to]);
       }
       const free = (low: number, high: number): Array<[number, number]> => {
         let parts: Array<[number, number]> = high > low ? [[low, high]] : [];

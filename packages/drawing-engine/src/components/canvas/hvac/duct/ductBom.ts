@@ -11,10 +11,11 @@ import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
 import { VANE_RUNNER, type DuctVaneSpec } from './ductFittingRules';
 import { FLEX_HANGER_WIRE_DIAMETER_MM, FLEX_RULES } from './ductFlex';
 import { describeJoint } from './ductGauge';
+import { ductPenetrationBomRows } from './ductPenetrationSchedule';
 import type { DuctSupportPlan } from './ductSupports';
 import { readDuctTerminalSpec, TERMINAL_FILTER_LABELS, TERMINAL_FILTER_THICKNESS_MM, terminalLabel } from './ductTerminals';
 
-export type DuctBomCategory = 'Sheet metal' | 'Fabricated pieces' | 'Accessories' | 'Joints' | 'Connections' | 'Insulation' | 'Air terminals' | 'Flexible duct' | 'Supports' | 'Issues';
+export type DuctBomCategory = 'Sheet metal' | 'Fabricated pieces' | 'Accessories' | 'Joints' | 'Connections' | 'Insulation' | 'Air terminals' | 'Flexible duct' | 'Wall penetrations' | 'Supports' | 'Issues';
 
 export interface DuctBomRow {
   category: DuctBomCategory;
@@ -109,6 +110,7 @@ function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
       : `Offset,${plane} ogee R${Math.round(offset.throatRadiusMm ?? 0)} throat (SMACNA Type 3), ${Math.round(offset.lateralOffsetMm)} mm`;
   }
   if (piece.kind === 'damper') return piece.damper?.description ?? 'Volume control damper, locking quadrant';
+  if (piece.kind === 'fire-damper') return `Fire damper, curtain type, in its sleeve ${Math.round(piece.lengthMm)} mm (UL 555 / EN 1366-2; rating to the wall)`;
   if (piece.kind === 'takeoff') {
     return piece.takeoff && piece.takeoff.leadInMm > 0
       ? `Shoe take-off, 45° lead-in ${Math.round(piece.takeoff.leadInMm)} mm`
@@ -270,6 +272,8 @@ export function buildDuctBom(
   const pieces = new Map<string, number>();
   for (const plan of good) {
     for (const piece of plan.pieces) {
+      // A fire damper is bought in with its sleeve: listed under the wall penetrations.
+      if (piece.kind === 'fire-damper') continue;
       if (piece.sheetThicknessMm !== null) {
         sheetArea.set(piece.sheetThicknessMm, (sheetArea.get(piece.sheetThicknessMm) ?? 0) + piece.sheetAreaM2);
         sheetMass.set(piece.sheetThicknessMm, (sheetMass.get(piece.sheetThicknessMm) ?? 0) + piece.massKg);
@@ -380,6 +384,7 @@ export function buildDuctBom(
     rows.push({ category: 'Insulation', description: 'NBR tape 50 mm (seams and flange bands)', size, quantity: round2(entry.tape), unit: 'm', basis: 'project practice' });
   }
   rows.push(...terminalAndFlexRows(good, terminals));
+  rows.push(...ductPenetrationBomRows(good));
   // Supports of the runs that are fabricated.
   const fabricated = new Set(good.map((plan) => plan.elementId));
   rows.push(...supportRows(supports.filter((plan) => fabricated.has(plan.elementId))));

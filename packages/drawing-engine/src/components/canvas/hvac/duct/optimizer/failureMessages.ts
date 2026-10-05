@@ -8,7 +8,7 @@ import type { AutoDuctIssue, ServiceCtx, TerminalCtx } from '../ductAutoContext'
 import { allRuns, servedTerminals, type RunDesign } from './designTree';
 import type { ServiceOption, TreeFailure } from './ductOptimizer';
 
-type Cause = 'collar' | 'runout' | 'take-off' | 'end' | 'split' | 'clash' | 'wall';
+type Cause = 'collar' | 'runout' | 'take-off' | 'end' | 'split' | 'clash' | 'wall' | 'penetration';
 
 const CAUSE_OF_REASON: Record<string, Cause> = {
   collar: 'collar',
@@ -30,6 +30,8 @@ const CAUSE_OF_CODE: Record<string, Cause> = {
   DU_LEG_TOO_SHORT: 'end',
   DU_CLASH: 'clash',
   DU_AUTO_WALL: 'wall',
+  DU_PENETRATION_FITTING: 'penetration',
+  DU_PENETRATION_FLEX: 'penetration',
 };
 
 function labelOf(terminal: TerminalCtx): string {
@@ -56,7 +58,9 @@ function sentence(cause: Cause, names: string): string {
     case 'split':
       return `${names}: the split that would feed it has no room for its outlets. Space the terminals further apart.`;
     case 'wall':
-      return `${names}: the duct would have to pass through a wall to reach it. Move it, or the unit, so both are in the same room.`;
+      return `${names}: the duct would have to pass through a wall it may not cross (an exterior wall, or a wall inside a one-room system). Move it, or the unit.`;
+    case 'penetration':
+      return `${names}: the duct reaches it through a wall, but a fitting or its flexible runout would sit in the wall there; a wall needs a plain straight through it. Move it further from the wall, or the unit.`;
     default:
       return `${names}: the duct cannot get past the equipment round it at this level. Move it, or the equipment in the way.`;
   }

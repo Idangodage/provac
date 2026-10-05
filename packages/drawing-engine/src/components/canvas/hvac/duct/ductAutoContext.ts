@@ -8,7 +8,9 @@ import type { HvacElement, Point2D } from '../../../../types';
 import type { OrthogonalRouteObstacle } from '../obstacleAwareOrthogonalRoute';
 
 import type { DuctAirPort } from './ductAirPorts';
+import type { DuctRoomOutline, DuctWall } from './ductBuilding';
 import { flexCurve } from './ductFlex';
+import type { WallCrossingRule } from './ductPenetrations';
 import type { DuctDesignSettings } from './ductSettings';
 import type { DuctTerminalSpigotSide } from './ductTerminalCatalog';
 import { readDuctTerminalSpec, SQUARE_BOX_TERMINAL_KINDS, terminalSpigotPort, type DuctTerminalSpec } from './ductTerminals';
@@ -185,8 +187,15 @@ export interface ServiceCtx {
   settings: DuctDesignSettings;
   /** Obstacles in the local frame, unpadded; routes pad them by their own half width. */
   obstacles: Array<OrthogonalRouteObstacle & { zMin: number; zMax: number }>;
-  /** The drawing's walls (centre lines, world): a run that crosses one fails verification. */
-  walls?: ReadonlyArray<{ id: string; startPoint: Point2D; endPoint: Point2D }>;
+  /** The drawing's walls (centre lines, world, their height bands) and rooms: the plans find the runs' wall penetrations. */
+  walls?: readonly DuctWall[];
+  rooms?: readonly DuctRoomOutline[];
+  /**
+   * A system spanning rooms: the walls its ducts may pass through (interior
+   * ones, by sleeve) and the price of each crossing. Absent: no wall may be
+   * crossed (a run through one fails verification).
+   */
+  crossing?: WallCrossingRule;
   maxHeightMm: number;
   construction: DuctDesignSettings['defaultConstruction'];
   ids: () => string;

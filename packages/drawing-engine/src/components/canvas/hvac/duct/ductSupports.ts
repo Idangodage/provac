@@ -191,7 +191,12 @@ export function planDuctSupports(
     });
   }
 
-  // Where a hanger may go: level straights and transitions, clear of joints and take-offs.
+  // Nor inside a wall the run passes through: its bar and rods stay clear of the wall faces.
+  const wallWindows = (plan.penetrations ?? []).map((penetration) => ({
+    from: penetration.fromStationMm - HANGER_HALF_LENGTH_MM - insulation, to: penetration.toStationMm + HANGER_HALF_LENGTH_MM + insulation,
+  }));
+
+  // Where a hanger may go: level straights and transitions, clear of joints, take-offs and walls.
   const allowed: Interval[] = [];
   for (const piece of pieces) {
     if (isBreak(piece) || (piece.kind !== 'straight' && piece.kind !== 'transition' && piece.kind !== 'plenum')) continue;
@@ -203,7 +208,7 @@ export function planDuctSupports(
       const mid = (piece.stationStartMm + piece.stationEndMm) / 2;
       spans.push({ from: mid, to: mid, piece });
     }
-    for (const window of takeoffWindows) {
+    for (const window of [...takeoffWindows, ...wallWindows]) {
       spans = spans.flatMap((span) => {
         if (window.to < span.from || window.from > span.to) return [span];
         const remaining: Interval[] = [];

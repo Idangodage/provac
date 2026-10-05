@@ -19,6 +19,7 @@ import {
   type AutoDuctSizingBases,
 } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
+import { ductWallInputs } from './ductBuilding';
 import { toElementUpdate } from './ductFollow';
 import { ductSystemRootOf, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
@@ -121,9 +122,10 @@ export async function generateAutoDuctPreview(request: AutoDuctRequest): Promise
   preview.clear();
   preview.setRunning(request.unitId);
   try {
-    // The drawing's walls and rooms come with it: the ducts stay in their rooms.
+    // The drawing's walls (their heights and construction) and rooms come with it: a one-room system stays in its
+    // room; one serving several passes through the walls between them by sleeve.
     const withWalls: AutoDuctRequest = {
-      ...request, walls: request.walls ?? walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
+      ...request, walls: request.walls ?? ductWallInputs(walls),
       rooms: request.rooms ?? rooms.map((room) => ({ id: room.id, vertices: room.vertices })),
     };
     const result = await runAutoDuctInWorker(hvacElements, withWalls, ductSettings);

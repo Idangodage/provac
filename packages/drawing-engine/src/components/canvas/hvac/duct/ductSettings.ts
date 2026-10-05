@@ -128,6 +128,15 @@ export interface DuctDesignSettings {
   autoAssignOverloadMm: number;
   /** Show every air system on the plan (tethers, rings, unit tags), not only the selected one. */
   showAirSystems: boolean;
+  /**
+   * Wall penetrations: the gap round a duct in its sleeve (each side, mm),
+   * where fire dampers go (none, masonry and concrete walls, every wall; a run
+   * may set its own at each crossing), and how far a damper's sleeve stands
+   * out of each wall face for its breakaway connection (mm).
+   */
+  penetrationClearanceMm: number;
+  fireDamperPolicy: 'none' | 'structural' | 'all';
+  fireDamperSleeveExtensionMm: number;
   /** Auto layout: round duct sizes to choose from (mm). */
   autoRoundSizesMm: number[];
   /** Auto layout: a trunk reduces only when its width drops by at least this much (mm). */
@@ -161,6 +170,10 @@ export interface DuctDesignSettings {
   econInsulationPerM2: number;
   econFlexPerM: number;
   econDamperEach: number;
+  /** A wall sleeve with its packing and sealant, and a fire damper, each at Ø200 (scaled by the girth); an access door each. */
+  econPenetrationEach: number;
+  econFireDamperEach: number;
+  econAccessDoorEach: number;
   econHangerEach: number;
   econJointPerM: number;
   econElectricityPerKWh: number;
@@ -242,6 +255,9 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoAssignWallPenaltyMm: 4000,
   autoAssignOverloadMm: 2500,
   showAirSystems: false,
+  penetrationClearanceMm: 25,
+  fireDamperPolicy: 'none',
+  fireDamperSleeveExtensionMm: 100,
   autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500],
   autoReducerStepMm: 100,
   autoExactTerminals: 8,
@@ -259,6 +275,9 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   econInsulationPerM2: 18,
   econFlexPerM: 7,
   econDamperEach: 25,
+  econPenetrationEach: 40,
+  econFireDamperEach: 160,
+  econAccessDoorEach: 45,
   econHangerEach: 14,
   econJointPerM: 5,
   econElectricityPerKWh: 0.15,
@@ -345,6 +364,12 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   autoAssignWallPenaltyMm: practice('Auto-assign: a wall between a collar and a terminal costs this much duct (a sleeve and coordination).'),
   autoAssignOverloadMm: practice('Auto-assign: each terminal past a unit\'s fair share (by airflow) costs this much duct, so units share the room.'),
   showAirSystems: { sourceId: 'project-configuration', verified: false, note: 'Display only.' },
+  penetrationClearanceMm: practice('Gap round the duct (its insulation included) in a wall sleeve, packed with mineral wool and sealed.'),
+  fireDamperPolicy: {
+    sourceId: 'project-configuration', verified: false,
+    note: 'The drawing\'s walls carry no fire rating: fire dampers go where the project\'s fire strategy puts them (none, masonry and concrete walls, or every wall), and each crossing can be set on its run.',
+  },
+  fireDamperSleeveExtensionMm: practice('Fire damper sleeve beyond each wall face for its breakaway connection; UL 555 installation instructions commonly allow up to 152 mm (6 in).'),
   autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex).' },
   autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
@@ -362,6 +387,9 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   econInsulationPerM2: practice('Placeholder: NBR sheet, adhesive and labour per m².'),
   econFlexPerM: practice('Placeholder: insulated flexible duct per metre at Ø200, scaled by the diameter.'),
   econDamperEach: practice('Placeholder: volume damper at Ø200, scaled by the girth.'),
+  econPenetrationEach: practice('Placeholder: a wall sleeve with its packing and sealant (builder\'s work and labour) at Ø200, scaled by the girth.'),
+  econFireDamperEach: practice('Placeholder: a curtain fire damper in its sleeve at Ø200, scaled by the girth.'),
+  econAccessDoorEach: practice('Placeholder: an access door beside a fire damper.'),
   econHangerEach: practice('Placeholder: a hanger (rods, bar or band, anchors, labour).'),
   econJointPerM: practice('Placeholder: a transverse joint per metre of its perimeter (flanges or sleeve, fasteners, sealant, labour).'),
   econElectricityPerKWh: practice('Placeholder: electricity tariff.'),
@@ -377,7 +405,7 @@ export const DUCT_SUPPORTED_PRESSURE_CLASSES_PA = [125, 250, 500] as const;
 /** Settings a duct design does not depend on: display, and the air-system assignment and placement checks. */
 export const DUCT_NON_DESIGN_SETTINGS: ReadonlySet<keyof DuctDesignSettings> = new Set<keyof DuctDesignSettings>([
   'showSizeTags', 'showJointTicks', 'showPieceMarks', 'showSupports', 'showAirSystems',
-  'returnSupplyMinGapMm', 'autoAssignWallPenaltyMm', 'autoAssignOverloadMm',
+  'returnSupplyMinGapMm', 'autoAssignWallPenaltyMm', 'autoAssignOverloadMm', 'penetrationClearanceMm',
 ]);
 
 /** The settings a duct design depends on, as a stable key (a proposal is current while it is unchanged). */
@@ -493,6 +521,10 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     autoAssignWallPenaltyMm: clampNumber(raw.autoAssignWallPenaltyMm, d.autoAssignWallPenaltyMm, 0, 100000),
     autoAssignOverloadMm: clampNumber(raw.autoAssignOverloadMm, d.autoAssignOverloadMm, 0, 100000),
     showAirSystems: bool(raw.showAirSystems, d.showAirSystems),
+    penetrationClearanceMm: clampNumber(raw.penetrationClearanceMm, d.penetrationClearanceMm, 0, 150),
+    fireDamperPolicy: oneOf(raw.fireDamperPolicy, ['none', 'structural', 'all'] as const, d.fireDamperPolicy),
+    // At least the joint margin either side, at most what UL 555 installations allow (6 in).
+    fireDamperSleeveExtensionMm: clampNumber(raw.fireDamperSleeveExtensionMm, d.fireDamperSleeveExtensionMm, 50, 152),
     autoRoundSizesMm: Array.isArray(raw.autoRoundSizesMm) && raw.autoRoundSizesMm.every((size) => typeof size === 'number' && size >= 50 && size <= 2000)
       ? [...new Set(raw.autoRoundSizesMm as number[])].sort((a, b) => a - b) : [...d.autoRoundSizesMm],
     autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),
@@ -513,6 +545,9 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     econInsulationPerM2: clampNumber(raw.econInsulationPerM2, d.econInsulationPerM2, 0, 1e5),
     econFlexPerM: clampNumber(raw.econFlexPerM, d.econFlexPerM, 0, 1e5),
     econDamperEach: clampNumber(raw.econDamperEach, d.econDamperEach, 0, 1e6),
+    econPenetrationEach: clampNumber(raw.econPenetrationEach, d.econPenetrationEach, 0, 1e6),
+    econFireDamperEach: clampNumber(raw.econFireDamperEach, d.econFireDamperEach, 0, 1e6),
+    econAccessDoorEach: clampNumber(raw.econAccessDoorEach, d.econAccessDoorEach, 0, 1e6),
     econHangerEach: clampNumber(raw.econHangerEach, d.econHangerEach, 0, 1e6),
     econJointPerM: clampNumber(raw.econJointPerM, d.econJointPerM, 0, 1e5),
     econElectricityPerKWh: clampNumber(raw.econElectricityPerKWh, d.econElectricityPerKWh, 0, 1e3),

@@ -16,6 +16,7 @@ import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
 import { terminalSpigotUpdates, type AutoDuctShape } from './duct/ductAutoLayout';
 import { ductSourceSignature } from './duct/ductAutoRoute';
+import { ductWallInputs } from './duct/ductBuilding';
 import type { FanSpeed } from './duct/ductSizing';
 import { isDuctTerminalElement } from './duct/ductTerminals';
 import { applyServiceRouteCommand, serviceRouteCommitIssues } from './serviceRouteValidation';
@@ -96,7 +97,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
   const signatures = {
     refrigerant: services.gas || services.liquid ? autoRouteSourceSignature(refrigerantSource(options.profile)) : null,
     condensate: services.condensate ? condensateSourceSignature(condensateSource()) : null,
-    ducts: wantsDucts(services) ? ductSourceSignature(state.hvacElements, state.ductSettings, state.walls) : null,
+    ducts: wantsDucts(services) ? ductSourceSignature(state.hvacElements, state.ductSettings, ductWallInputs(state.walls)) : null,
   };
   const request: UnifiedAutoRouteRequest = {
     type: 'route',
@@ -128,7 +129,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
         fanSpeed: options.duct?.fanSpeed ?? 'hi',
         rebuildExisting: options.duct?.rebuildExisting ?? false,
         scope: options.scope,
-        walls: state.walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
+        walls: ductWallInputs(state.walls),
         rooms: state.rooms.map((room) => ({ id: room.id, vertices: room.vertices })),
         ...(options.scope === 'selection' ? {
           unitIds: selection.filter((element) => element.type === 'ducted-ac').map((element) => element.id),
@@ -200,7 +201,7 @@ export function applyAutoRoutePreview(): string {
   const ducts = unified.ducts;
   if (ducts && signatures.ducts && (ducts.elementsToAdd.length || ducts.removeElementIds.length || ducts.terminalUpdates?.length)) {
     const state = useSmartDrawingStore.getState();
-    if (ductSourceSignature(state.hvacElements, state.ductSettings, state.walls) !== signatures.ducts) {
+    if (ductSourceSignature(state.hvacElements, state.ductSettings, ductWallInputs(state.walls)) !== signatures.ducts) {
       return refuse('The drawing or duct settings changed since the preview. Run Auto route again.');
     }
     add.push(...ducts.elementsToAdd);

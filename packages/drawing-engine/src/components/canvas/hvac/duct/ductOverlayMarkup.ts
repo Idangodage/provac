@@ -32,6 +32,8 @@ const COLORS = {
   fabric: '#475569',
   support: '#78350f',
   insulation: '#111827',
+  sleeve: '#57534e',
+  fireDamper: '#c2410c',
 } as const;
 
 function f(value: number): string {
@@ -96,6 +98,17 @@ export function ductRunMarkup(presentation: DuctPlanPresentation, style: DuctMar
   }
   if (style.showMarks) {
     for (const mark of presentation.marks) parts.push(textMarkup(mark.point, mark.text, px(9), '#334155'));
+  }
+  // Wall sleeves: the opening through the wall, dashed (a fire-dampered one in the damper's colour).
+  for (const sleeve of presentation.sleeves) {
+    const color = sleeve.fireDamper ? COLORS.fireDamper : COLORS.sleeve;
+    parts.push(`<path d="${pathData(sleeve.outline, true)}" fill="none" stroke="${color}" stroke-width="1.1" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`);
+    if (style.showTags) parts.push(textMarkup(sleeve.labelPoint, sleeve.label, px(9.5), color, 0, 'start'));
+  }
+  for (const damper of presentation.fireDampers) {
+    parts.push(`<path d="${pathData(damper.box, true)}" fill="rgba(194,65,12,0.14)" stroke="${COLORS.fireDamper}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`);
+    parts.push(`<path d="${pathData(damper.diagonal)}" stroke="${COLORS.fireDamper}" stroke-width="1.4" vector-effect="non-scaling-stroke"/>`);
+    parts.push(textMarkup(damper.labelPoint, damper.label, px(10), COLORS.fireDamper));
   }
   for (const damper of presentation.dampers) {
     parts.push(`<path d="${pathData(damper.blade)}" stroke="${stroke}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linecap="round"/>`);

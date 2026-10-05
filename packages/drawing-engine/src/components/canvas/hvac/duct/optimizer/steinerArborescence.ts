@@ -23,14 +23,19 @@
  *  - growth: a shortest-path pass through the grid (straight on, or a 90°
  *    turn with an elbow).
  * A main that runs on into its last terminal does so straight, with room for
- * its reducer. Where two runs of a tree would share an edge or cross, the
- * conflict is blocked for the smaller subtree and the programme solved again
+ * its reducer. An edge through a wall (a system spanning rooms) is priced
+ * with its crossing, and the wall counts as a fitting of its own: the duct
+ * enters it only with a fitting's reach of straight before its near face, and
+ * leaves it as if a fitting had just ended at its far face. Where two runs of
+ * a tree would share an edge or cross, the conflict is blocked for the
+ * smaller subtree and the programme solved again
  * (routeTrees). The result is optimal on the grid for its λ and its blocks;
  * the sizing DP then sizes the tree exactly and the planner judges it.
  * Time O(3^k·|V|), memory O(2^k·|V|): it runs up to the settings' limit.
  */
 import type { Point2D } from '../../../../../types';
 import { branchStubMm, flexClear, flexOk, runoutPath, runoutStaysOut, simplifyCollinear, type AutoDuctIssue, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
+import { PENETRATION_JOINT_MARGIN_MM } from '../ductPenetrations';
 import { flexBendLossPa } from '../ductPressure';
 import { maxRoundBranchMm } from '../ductRoundFittings';
 import { isRoundLeg, roundLeg, type DuctLeg, type DuctTapStyle } from '../ductTypes';
@@ -517,6 +522,53 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
   const stepsOf = (length: number) => Math.floor(length / CLEAR_STEP_MM + 1e-9);
   /** Level on arrival after a straight of `length` from level `c` (c = 0 right after a fitting). */
   const arrive = (top: number, c: number, length: number) => Math.min(top, c + stepsOf(length));
+  // Edges through walls: the straight each keeps before the wall's near face and after its far face.
+  const cross = graph.cross ?? null;
+  const crossCost = graph.crossCost!;
+  const crossBefore = graph.crossBefore!;
+  const crossAfter = graph.crossAfter!;
+  /** Straight a fitting needs off a wall face on this layer (its reach and the joint margin), in levels. */
+  const wallStepsOf = (layer: LayerPrice) => Math.min(topOf(layer), Math.ceil((layer.reachMm + PENETRATION_JOINT_MARGIN_MM) / CLEAR_STEP_MM));
+  /** Level on arriving past the wall of edge e: as if a fitting had ended at its far face. */
+  const crossArrival = (e: number, top: number, wallSteps: number) => Math.min(top, top - wallSteps + stepsOf(crossAfter[e]!));
+  /** The least level a duct may enter edge e at (≤ 0: right after a fitting; `collar`: a branch's own collar and damper first). */
+  const crossNeed = (e: number, wallSteps: number, collar = 0) => wallSteps - stepsOf(Math.max(0, crossBefore[e]! - collar));
+  /**
+   * Straight on out of (v, h) right after a fitting at v for at least `minMm`
+   * on layer S: its cost (walls crossed included), where it stops and the
+   * level it arrives with; null when it is blocked, or meets a wall too soon.
+   */
+  const straightOn = (S: number, start: number, minMm: number, layer: LayerPrice): { cost: number; node: number; level: number; crossed: boolean } | null => {
+    const top = topOf(layer);
+    const wallSteps = wallStepsOf(layer);
+    const h = start & 3;
+    let node = start >> 2;
+    let cost = 0;
+    let length = 0;
+    // The level at the last fitting (or wall face) and the straight since it.
+    let base = 0;
+    let since = 0;
+    let crossed = false;
+    while (length < minMm) {
+      const e = node * 4 + h;
+      const u = nb[e]!;
+      if (u < 0 || isBlocked(S, node, h)) return null;
+      cost += graph.edgeLength[e]! * priceFor(layer, graph.corridor[e]!);
+      if (cross && cross[e]! >= 0) {
+        if (arrive(top, base, since) < crossNeed(e, wallSteps)) return null;
+        cost += crossCost[e]!;
+        base = crossArrival(e, top, wallSteps);
+        since = 0;
+        crossed = true;
+      } else {
+        since += graph.edgeLength[e]!;
+      }
+      length += graph.edgeLength[e]!;
+      node = u;
+    }
+    if (!Number.isFinite(cost) || length <= 0) return null;
+    return { cost, node, level: arrive(top, base, since), crossed };
+  };
   /**
    * Straight on out of (v, h) for at least `minMm` after a fitting at v, then
    * the layer's own best from where that lands: the cost per directed state,
@@ -529,25 +581,14 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     if (cached) return cached;
     const layer = layers[S]!;
     const d = D[S]!;
-    const top = topOf(layer);
     const value = new Float64Array(directed).fill(INF);
     const land = new Int32Array(directed).fill(-1);
     for (let s = 0; s < directed; s += 1) {
-      const h = s & 3;
-      let node = s >> 2;
-      let cost = 0;
-      let length = 0;
-      while (length < minMm) {
-        const u = nb[node * 4 + h]!;
-        if (u < 0 || isBlocked(S, node, h)) { cost = INF; break; }
-        cost += graph.edgeLength[node * 4 + h]! * priceFor(layer, graph.corridor[node * 4 + h]!);
-        length += graph.edgeLength[node * 4 + h]!;
-        node = u;
-      }
-      if (!Number.isFinite(cost) || length <= 0) continue;
-      const s3 = (node * 4 + h) * LEVELS + arrive(top, 0, length);
+      const walked = straightOn(S, s, minMm, layer);
+      if (!walked) continue;
+      const s3 = (walked.node * 4 + (s & 3)) * LEVELS + walked.level;
       const rest = d[s3]!;
-      if (rest < INF) { value[s] = cost + rest; land[s] = s3; }
+      if (rest < INF) { value[s] = walked.cost + rest; land[s] = s3; }
     }
     const entry = { value, land };
     straightCache.set(key, entry);
@@ -730,7 +771,12 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     // Growth, backwards from the settled states: into t = (u, dir, c') from v = the node before u.
     // Each edge's price on this layer (its length at the cheapest section its corridor takes).
     const edgeCost = new Float64Array(directed);
-    for (let e = 0; e < directed; e += 1) edgeCost[e] = nb[e]! < 0 ? INF : graph.edgeLength[e]! * priceFor(layer, graph.corridor[e]!);
+    for (let e = 0; e < directed; e += 1) {
+      edgeCost[e] = nb[e]! < 0 ? INF : graph.edgeLength[e]! * priceFor(layer, graph.corridor[e]!);
+      // Through a wall: its sleeve (and fire damper) too.
+      if (cross && cross[e]! >= 0) edgeCost[e] += crossCost[e]!;
+    }
+    const wallSteps = wallStepsOf(layer);
     const heap = new Heap();
     for (let s3 = 0; s3 < states; s3 += 1) if (d[s3]! < INF) heap.push(d[s3]!, s3);
     const done = new Uint8Array(states);
@@ -752,6 +798,25 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       if (!(edge < INF)) continue;
       const value = key + edge;
       const move = MOVE + dir;
+      if (cross && cross[v * 4 + dir]! >= 0) {
+        // Through a wall: it arrives past the far face at one level, from any level that clears the near face.
+        const e = v * 4 + dir;
+        if (level !== crossArrival(e, top, wallSteps)) continue;
+        const need = crossNeed(e, wallSteps);
+        const into = (v * 4 + dir) * LEVELS;
+        for (let c = Math.max(0, need); c <= top; c += 1) {
+          if (value < d[into + c]! - 1e-9) { d[into + c] = value; dec[into + c] = move; heap.push(value, into + c); }
+        }
+        // A turn just before it: its elbow's reach must clear the near face too.
+        if (need <= 0 && graph.nodeClear[v]! >= turnRoom) {
+          const turned = value + elbowPrice;
+          const l = (v * 4 + ((dir + 1) & 3)) * LEVELS + top;
+          if (turned < d[l]! - 1e-9) { d[l] = turned; dec[l] = move; heap.push(turned, l); }
+          const r = (v * 4 + ((dir + 3) & 3)) * LEVELS + top;
+          if (turned < d[r]! - 1e-9) { d[r] = turned; dec[r] = move; heap.push(turned, r); }
+        }
+        continue;
+      }
       // Straight on from (v, dir, c): arrives at level min(top, c + steps) — one c below the top, a range at it.
       const steps = stepsOf(graph.edgeLength[v * 4 + dir]!);
       const base = (v * 4 + dir) * LEVELS;
@@ -780,6 +845,13 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       const length = graph.edgeLength[v * 4 + h]!;
       const edge = length * priceFor(layer, graph.corridor[v * 4 + h]!);
       if (!Number.isFinite(edge)) continue;
+      if (cross && cross[s]! >= 0) {
+        // Straight into a wall after the fitting: only with its reach clear of the near face.
+        const arrival = d[(u * 4 + h) * LEVELS + crossArrival(s, top, wallSteps)]!;
+        if (crossNeed(s, wallSteps) <= 0) gs[s] = edge + crossCost[s]! + arrival;
+        if (crossNeed(s, wallSteps, collarMm) <= 0) gb[s] = edge + crossCost[s]! + arrival;
+        continue;
+      }
       gs[s] = edge + d[(u * 4 + h) * LEVELS + arrive(top, 0, length)]!;
       gb[s] = edge + d[(u * 4 + h) * LEVELS + arrive(top, 0, Math.max(0, length - collarMm))]!;
     }
@@ -793,20 +865,11 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       const value = new Float64Array(directed).fill(INF);
       const land = new Int32Array(directed).fill(-1);
       for (let s = 0; s < directed; s += 1) {
-        const h = s & 3;
-        let node = s >> 2;
-        let cost = 0;
-        let length = 0;
-        while (length < MAIN_TAIL_MM) {
-          const u = nb[node * 4 + h]!;
-          if (u < 0 || isBlocked(S, node, h)) { cost = INF; break; }
-          cost += graph.edgeLength[node * 4 + h]! * priceFor(layer, graph.corridor[node * 4 + h]!);
-          length += graph.edgeLength[node * 4 + h]!;
-          node = u;
-        }
-        if (!Number.isFinite(cost)) continue;
-        const rest = d[(node * 4 + h) * LEVELS + top]!;
-        if (rest < INF) { value[s] = cost + rest; land[s] = node * 4 + h; }
+        const walked = straightOn(S, s, MAIN_TAIL_MM, layer);
+        // (Past a wall the tail must still end clear for what follows.)
+        if (!walked || (walked.crossed && walked.level < top)) continue;
+        const rest = d[(walked.node * 4 + (s & 3)) * LEVELS + top]!;
+        if (rest < INF) { value[s] = walked.cost + rest; land[s] = walked.node * 4 + (s & 3); }
       }
       tailValue[S] = value;
       tailLand[S] = land;
@@ -915,7 +978,9 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     const leave = (S: number, v: number, dir: number, branch = false) => {
       const u = nb[v * 4 + dir]!;
       const length = graph.edgeLength[v * 4 + dir]!;
-      return (u * 4 + dir) * LEVELS + arrive(topOf(layers[S]!), 0, branch ? Math.max(0, length - collarMm) : length);
+      const top = topOf(layers[S]!);
+      if (cross && cross[v * 4 + dir]! >= 0) return (u * 4 + dir) * LEVELS + crossArrival(v * 4 + dir, top, wallStepsOf(layers[S]!));
+      return (u * 4 + dir) * LEVELS + arrive(top, 0, branch ? Math.max(0, length - collarMm) : length);
     };
     const walk = (run: RunDesign, startSet: number, startState: number, from: number | null): void => {
       let S = startSet;
@@ -938,7 +1003,9 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
           // A corner here: its room round the node limits the run's section too.
           if (dir !== h) constrain(run, graph.nodeClear[v]!);
           use(run, S, v, u);
-          const next = arrive(top, dir === h ? level : 0, graph.edgeLength[v * 4 + dir]!);
+          const next = cross && cross[v * 4 + dir]! >= 0
+            ? crossArrival(v * 4 + dir, top, wallStepsOf(layers[S]!))
+            : arrive(top, dir === h ? level : 0, graph.edgeLength[v * 4 + dir]!);
           s3 = (u * 4 + dir) * LEVELS + next;
           continue;
         }

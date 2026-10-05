@@ -1,4 +1,5 @@
 import type { HvacElement } from '../../../types';
+import { getActiveDuctBuilding } from '../hvac/duct/ductBuilding';
 import { ductBranchesOf } from '../hvac/duct/ductNetwork';
 import { getActivePipeRoutingSettings } from '../hvac/pipeRoutingSettings';
 import type { HvacBuildSceneContext } from '../hvac/three3d';
@@ -37,10 +38,11 @@ function dependencyReader(context: HvacBuildSceneContext, modelRevision: number)
         if (tail) dependencies.push(...connectorSources(tail, byId));
       }
     } else if (element.type === 'duct') {
-      // A run's fabrication depends on the project duct settings, the unit
-      // collar or parent run it starts from, and the branches taken off it
-      // (their openings move its joints; its split grows their elbows).
-      dependencies.push(context.ductSettings, ...connectorSources(element, byId));
+      // A run's fabrication depends on the project duct settings, the walls it
+      // passes through (its sleeves and fire dampers), the unit collar or
+      // parent run it starts from, and the branches taken off it (their
+      // openings move its joints; its split grows their elbows).
+      dependencies.push(context.ductSettings, getActiveDuctBuilding(), ...connectorSources(element, byId));
       const run = element.properties.ductRun as {
         start?: { unitId?: unknown; parentRunId?: unknown };
         end?: { terminalId?: unknown };

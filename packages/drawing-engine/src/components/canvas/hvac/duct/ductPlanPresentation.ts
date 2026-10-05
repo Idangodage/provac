@@ -2,7 +2,7 @@
  * Plan (2D) presentation of a fabrication plan, in world millimetres: piece
  * outlines (sections, elbows, transitions, take-offs, dampers, splits), flange
  * ticks at every joint, the hatched flexible connector, turning vanes, damper
- * blades, piece marks and size tags. The same piece polygons drive geometric
+ * blades, fire dampers and wall sleeves, piece marks and size tags. The same piece polygons drive geometric
  * picking, so what you click is what is drawn.
  */
 import type { Point2D } from '../../../../types';
@@ -51,6 +51,10 @@ export interface DuctPlanPresentation {
   insulationOutlines: Point2D[][];
   /** Plenum boxes: their diagonals (the usual box symbol). */
   boxDiagonals: Array<[Point2D, Point2D]>;
+  /** Fire dampers: the damper's box with one diagonal, labelled FD (the usual symbol). */
+  fireDampers: Array<{ box: Point2D[]; diagonal: [Point2D, Point2D]; labelPoint: Point2D; label: string }>;
+  /** Wall penetrations: the sleeve's opening through the wall (drawn dashed) and its mark and size. */
+  sleeves: Array<{ outline: Point2D[]; labelPoint: Point2D; label: string; fireDamper: boolean }>;
 }
 
 /** Flange projection drawn beyond the duct side (mm). */
@@ -87,7 +91,8 @@ function pieceOutline(piece: DuctPiece, sheet: number): Point2D[] | null {
     case 'takeoff': return takeoffOutline(piece, sheet);
     case 'straight':
     case 'plenum':
-    case 'damper': return rectangle(piece.start, piece.end, piece.direction, halfWidth);
+    case 'damper':
+    case 'fire-damper': return rectangle(piece.start, piece.end, piece.direction, halfWidth);
     default: return null;
   }
 }
@@ -274,6 +279,7 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
   const marks: DuctPlanPresentation['marks'] = [];
   const centreline: Point2D[] = [];
   const boxDiagonals: Array<[Point2D, Point2D]> = [];
+  const fireDampers: DuctPlanPresentation['fireDampers'] = [];
   const tags: DuctPlanTag[] = [];
   for (const piece of plan.pieces) {
     const sheet = piece.sheetThicknessMm ?? 1;
@@ -439,6 +445,10 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
             quadrant: add(mid, scale(n, halfWidth + 45)),
           });
         }
+        if (piece.kind === 'fire-damper') {
+          const box = rectangle(piece.start, piece.end, piece.direction, halfWidth);
+          fireDampers.push({ box, diagonal: [box[0]!, box[2]!], labelPoint: add(mid, scale(n, halfWidth + 55)), label: `FD ${piece.mark}` });
+        }
         if (piece.kind === 'connector') {
           const metal = Math.min(piece.lengthMm / 3, piece.connectorMetalMm ?? piece.lengthMm * 0.3);
           const from = add(piece.start, scale(piece.direction, metal));
@@ -516,8 +526,20 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
     warningPoints: plan.issues.filter((issue) => issue.severity === 'warning' && issue.point).map((issue) => issue.point!),
     risers,
     boxDiagonals,
+    fireDampers,
+    sleeves: (plan.penetrations ?? []).map((penetration) => {
+      // The opening across the duct, the wall's depth along it (an oblique crossing's longer zone).
+      const half = (penetration.toStationMm - penetration.fromStationMm) / 2;
+      const along = penetration.direction;
+      const outline = rectangle(sub(penetration.point, scale(along, half)), add(penetration.point, scale(along, half)), along, penetration.opening.widthMm / 2);
+      const size = penetration.opening.round ? `Ø${Math.round(penetration.opening.widthMm)}` : `${Math.round(penetration.opening.widthMm)}×${Math.round(penetration.opening.heightMm)}`;
+      return {
+        outline, fireDamper: penetration.fireDamper, label: `${penetration.mark} · SLV ${size}`,
+        labelPoint: add(add(penetration.point, scale(along, half + 40)), scale(normalOf(along), -(penetration.opening.widthMm / 2 + 45))),
+      };
+    }),
     insulationOutlines: plan.insulationMm > 0
-      ? plan.pieces.filter((piece) => piece.kind !== 'connector')
+      ? plan.pieces.filter((piece) => piece.kind !== 'connector' && piece.kind !== 'fire-damper')
         .map((piece) => pieceOutline(piece, (piece.sheetThicknessMm ?? 1) + plan.insulationMm))
         .filter((outline): outline is Point2D[] => outline !== null)
       : [],

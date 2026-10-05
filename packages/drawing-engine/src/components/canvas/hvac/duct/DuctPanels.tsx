@@ -27,6 +27,8 @@ import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlann
 import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
 import { describeJoint } from './ductGauge';
 import { ductBranchesOf } from './ductNetwork';
+import { ductPenetrationSchedule, ductPenetrationScheduleToCsv } from './ductPenetrationSchedule';
+import { penetrationHasFireDamper } from './ductPenetrations';
 import { defaultPlenumSize } from './ductPlenum';
 import { DUCT_RULE_SOURCES, DUCT_SUPPORTED_PRESSURE_CLASSES_PA, type DuctDesignSettings, type DuctJointSystem } from './ductSettings';
 import { neckVelocityMs } from './ductSizing';
@@ -49,6 +51,7 @@ import {
 } from './ductTerminals';
 import { tapStyleFor, useDuctToolStore } from './ductToolStore';
 import { isDuctElement, isRoundLeg, readDuctRunSpec, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
+import { useDuctBuilding } from './useDuctBuilding';
 
 const JOINT_OPTIONS: Array<{ value: DuctJointSystem; label: string }> = [
   { value: 'auto', label: 'Auto (TDC → angle)' },
@@ -153,10 +156,46 @@ function usePlans(): DuctFabricationPlan[] {
   const { hvacElements, ductSettings } = useSmartDrawingStore((state) => ({
     hvacElements: state.hvacElements, ductSettings: state.ductSettings,
   }), shallow);
+  // The plans read the walls the runs pass through (the active building, which this tracks).
+  const building = useDuctBuilding();
   return useMemo(() => hvacElements
     .filter(isDuctElement)
     .map((element) => getDuctRunPlan(element, hvacElements, ductSettings))
-    .filter((plan): plan is DuctFabricationPlan => plan !== null), [hvacElements, ductSettings]);
+    .filter((plan): plan is DuctFabricationPlan => plan !== null), [hvacElements, ductSettings, building]);
+}
+
+/**
+ * The walls a run passes through: each penetration's sleeve opening and wall,
+ * and its fire damper: the project policy's, or the run's own choice (one undo
+ * each; a choice matching the policy is not kept).
+ */
+function RunPenetrations({ plan, policy, onSet }: {
+  plan: DuctFabricationPlan;
+  policy: DuctDesignSettings['fireDamperPolicy'];
+  onSet: (key: string, fireDamper: boolean, byPolicy: boolean) => void;
+}) {
+  if (!plan.penetrations.length) return null;
+  return (
+    <div className="space-y-0.5 pt-1" data-testid="duct-run-penetrations">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Wall penetrations</div>
+      {plan.penetrations.map((penetration) => {
+        const opening = penetration.opening.round ? `Ø${Math.round(penetration.opening.widthMm)}` : `${Math.round(penetration.opening.widthMm)}×${Math.round(penetration.opening.heightMm)}`;
+        const byPolicy = penetrationHasFireDamper({ key: '', structural: penetration.structural }, undefined, policy);
+        const own = plan.spec.penetrations?.[penetration.key]?.fireDamper !== undefined;
+        return (
+          <div key={penetration.key} className="flex flex-wrap items-center gap-x-2 text-xs text-slate-700" data-testid="duct-run-penetration">
+            <span className="font-mono text-slate-500">{penetration.mark}</span>
+            <span>{penetration.material ?? (penetration.structural ? 'masonry' : 'partition')} {Math.round(penetration.thicknessMm)} mm · sleeve {opening}{penetration.exterior ? ' · exterior' : ''}</span>
+            <label className="ml-auto inline-flex items-center gap-1" title={own ? 'Set on this run' : `Project policy (${policy})`}>
+              <input type="checkbox" checked={penetration.fireDamper} disabled={penetration.onFlex} aria-label={`Fire damper at ${penetration.mark}`}
+                onChange={(event) => onSet(penetration.key, event.target.checked, byPolicy)} />
+              fire damper{penetration.damperMark ? ` ${penetration.damperMark}` : ''}{own ? ' *' : ''}
+            </label>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /** A number field that commits on blur or Enter (never per keystroke). */
@@ -371,7 +410,8 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
     updateHvacElement: state.updateHvacElement,
   }), shallow);
   const tool = useDuctToolStore();
-  const plan = useMemo(() => getDuctRunPlan(element, hvacElements, ductSettings), [element, hvacElements, ductSettings]);
+  const building = useDuctBuilding();
+  const plan = useMemo(() => getDuctRunPlan(element, hvacElements, ductSettings), [element, hvacElements, ductSettings, building]);
   const bom = useMemo(() => (plan ? buildDuctBom([plan], [getDuctSupportPlan(plan, hvacElements, ductSettings)]) : []), [plan, hvacElements, ductSettings]);
   const reattachStyle = plan ? tapStyleFor(plan.spec.legs[0]) : tool.tapStyle;
   const reattach = useMemo(() => (plan && plan.spec.start.kind === 'open'
@@ -384,7 +424,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
   const count = (kind: string) => plan.pieces.filter((piece) => piece.kind === kind).length;
   const pieceSummary = [
     [count('straight'), 'section'], [count('elbow'), 'elbow'], [count('offset'), 'offset'], [count('transition'), 'transition'],
-    [count('takeoff'), 'take-off'], [count('damper'), 'damper'], [count('split'), 'split'],
+    [count('takeoff'), 'take-off'], [count('damper'), 'damper'], [count('fire-damper'), 'fire damper'], [count('split'), 'split'],
     [count('connector'), 'connector'], [count('end-cap'), 'cap'],
   ].filter(([n]) => (n as number) > 0).map(([n, label]) => `${n} ${label}${n === 1 || label === 'cap' ? '' : 's'}`).join(' · ');
   const endValue = spec.end.kind === 'split' ? spec.end.style : spec.end.kind;
@@ -581,6 +621,13 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
         </Row>
       ) : null}
       <Row label="Pieces">{pieceSummary}</Row>
+      <RunPenetrations plan={plan} policy={ductSettings.fireDamperPolicy} onSet={(key, fireDamper, byPolicy) => {
+        const { penetrations: _previous, ...rest } = spec;
+        const overrides = { ...(spec.penetrations ?? {}) };
+        if (fireDamper === byPolicy) delete overrides[key];
+        else overrides[key] = { fireDamper };
+        commit(Object.keys(overrides).length ? { ...rest, penetrations: overrides } : rest, fireDamper ? 'Fire damper in the wall' : 'No fire damper in the wall');
+      }} />
       <Row label="Joints">{plan.joints.length}</Row>
       <Row label="Sheet metal">{plan.totals.sheetAreaM2.toFixed(2)} m² · {plan.totals.massKg.toFixed(1)} kg</Row>
       {plan.issues.length > 0 ? (
@@ -755,6 +802,7 @@ export function DuctSystemsSection() {
     hvacElements.filter(isDuctTerminalElement),
   ), [plans, hvacElements, ductSettings]);
   const schedule = useMemo(() => buildDuctFabricationSchedule(plans), [plans]);
+  const penetrationRows = useMemo(() => ductPenetrationSchedule(plans, new Map(hvacElements.map((element) => [element.id, element.label || element.id]))), [plans, hvacElements]);
   const [stockDraft, setStockDraft] = useState<string | null>(null);
   const pressureWarning = (value: number) => (DUCT_SUPPORTED_PRESSURE_CLASSES_PA.some((pa) => value <= pa) ? null
     : <span className="ml-1 text-[10px] text-red-600">unsupported (&gt;500 Pa)</span>);
@@ -914,6 +962,9 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="econInsulationPerM2" label="NBR insulation" step={0.5} min={0} max={100000} unit="/ m²" />
       <SettingNumber settingKey="econFlexPerM" label="Flexible duct, Ø200" step={0.5} min={0} max={100000} unit="/ m" />
       <SettingNumber settingKey="econDamperEach" label="Damper, Ø200" step={1} min={0} max={1000000} unit="each" />
+      <SettingNumber settingKey="econPenetrationEach" label="Wall sleeve, Ø200" step={1} min={0} max={1000000} unit="each" />
+      <SettingNumber settingKey="econFireDamperEach" label="Fire damper, Ø200" step={1} min={0} max={1000000} unit="each" />
+      <SettingNumber settingKey="econAccessDoorEach" label="Access door" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econHangerEach" label="Hanger" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econJointPerM" label="Joint" step={0.5} min={0} max={100000} unit="/ m of perimeter" />
       <SettingNumber settingKey="econElectricityPerKWh" label="Electricity" step={0.01} min={0} max={1000} unit="/ kWh" />
@@ -971,6 +1022,18 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="hangerJointClearanceMm" label="Hanger clear of joints" step={10} min={0} max={400} />
       <SettingNumber settingKey="hangerFromUnitMm" label="First hanger past connector" step={10} min={50} max={610} />
       <SettingNumber settingKey="riserSupportIntervalMm" label="Riser support interval" step={10} min={3660} max={7320} />
+      <div className="pt-1 text-xs font-medium text-slate-700">Wall penetrations</div>
+      <Row label="Fire dampers">
+        <select value={ductSettings.fireDamperPolicy} aria-label="Fire damper policy" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => setDuctSettings({ fireDamperPolicy: event.target.value as DuctDesignSettings['fireDamperPolicy'] })}>
+          <option value="none">None (set per crossing)</option>
+          <option value="structural">In masonry and concrete walls</option>
+          <option value="all">In every wall</option>
+        </select>
+        <SourceBadge settingKey="fireDamperPolicy" />
+      </Row>
+      <SettingNumber settingKey="penetrationClearanceMm" label="Sleeve clearance" step={5} min={0} max={150} />
+      <SettingNumber settingKey="fireDamperSleeveExtensionMm" label="Damper sleeve past wall" step={5} min={50} max={152} />
       <Row label="Show">
         <label className="mr-2 text-xs"><input type="checkbox" checked={ductSettings.showSizeTags} onChange={(event) => setDuctSettings({ showSizeTags: event.target.checked })} /> tags</label>
         <label className="mr-2 text-xs"><input type="checkbox" checked={ductSettings.showJointTicks} onChange={(event) => setDuctSettings({ showJointTicks: event.target.checked })} /> joints</label>
@@ -985,6 +1048,22 @@ export function DuctSystemsSection() {
           <CopyButton text={ductScheduleToCsv(schedule)} label="Copy schedule CSV" />
         </div>
       </details>
+      {penetrationRows.length ? (
+        <details data-testid="duct-penetration-schedule">
+          <summary className="cursor-pointer text-xs font-medium text-slate-700">Wall penetrations, builder&apos;s work ({penetrationRows.length})</summary>
+          <table className="w-full text-[11px]">
+            <thead><tr className="text-left text-slate-500"><th>Ref</th><th>Run</th><th>Wall</th><th>Duct</th><th>Opening</th><th>BOD</th><th>FD</th></tr></thead>
+            <tbody>
+              {penetrationRows.map((row) => (
+                <tr key={row.ref} className="border-t border-slate-100">
+                  <td className="font-mono">{row.ref}</td><td>{row.run} {row.mark}</td><td>{row.wall} {row.thicknessMm}</td><td>{row.duct}</td><td>{row.opening}</td><td>{row.bottomZ}</td><td>{row.fireDamper ? 'yes' : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="pt-1"><CopyButton text={ductPenetrationScheduleToCsv(penetrationRows)} label="Copy penetration schedule CSV" /></div>
+        </details>
+      ) : null}
     </div>
   );
 }

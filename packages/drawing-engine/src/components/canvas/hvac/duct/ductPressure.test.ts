@@ -36,7 +36,7 @@ function plan(id: string, pieces: DuctPiece[], options: {
       insulationThicknessMm: 0, pressureClassPa: null, jointSystem: null,
       start: options.start ?? { kind: 'open' }, end: options.end ?? terminal(id), nodeOverrides: {}, locked: false,
     },
-    status: 'ok', constructionByLeg: [], startPort: null, tap: null, pieces, joints: [], issues: [],
+    status: 'ok', constructionByLeg: [], startPort: null, tap: null, pieces, joints: [], issues: [], penetrations: [],
     polylineLengthMm: length, totals: { sheetAreaM2: 0, fabricAreaM2: 0, massKg: 0 },
     unverifiedRules: [], practiceRules: [], seamType: 'pittsburgh', seamRound: 'spiral',
     insulationMm: 0, insulation: null,

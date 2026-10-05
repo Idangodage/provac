@@ -113,6 +113,7 @@ import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
 import { getDuctSupportPlan } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
+import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
@@ -742,7 +743,9 @@ export function DrawingCanvas({
   const projectionViewOnly = hybridViewOnly;
   const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile);
   const condensateValidationReport = useCondensateLiveValidation(hvacElements, condensateSettings, pipeRoutingSettings);
-  const ductValidationReport = useDuctLiveValidation(hvacElements, ductSettings, rooms);
+  // The walls and rooms duct plans read (sleeves, fire dampers), synced before any child plans a run.
+  const ductBuilding = useDuctBuilding();
+  const ductValidationReport = useDuctLiveValidation(hvacElements, ductSettings, rooms, ductBuilding);
   useEffect(() => {
     hvacRendererRef.current?.setDuctSettings(ductSettings);
     // The pipe clash check plans ducts as obstacles with the document's settings.
@@ -862,6 +865,30 @@ export function DrawingCanvas({
       getRooms: () => useSmartDrawingStore.getState().rooms.map((room) => ({ id: room.id, name: room.name, vertices: room.vertices })),
       /** Wall centre lines and thicknesses (scripted auto-layout checks). */
       getWalls: () => useSmartDrawingStore.getState().walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
+      /**
+       * One wall committed as the wall tool commits it (one undo), for scripted checks. The canvas tool also splits
+       * the walls it meets at a T, and room detection then loses the rooms either side; this path keeps the rooms.
+       */
+      addWall: (start: { x: number; y: number }, end: { x: number; y: number }, tool: 'wall' | 'partition-wall' = 'wall') => {
+        const store = useSmartDrawingStore.getState();
+        store.setTool(tool);
+        store.startWallDrawing(start);
+        store.updateWallPreview(end);
+        const id = store.commitWall();
+        store.cancelWallDrawing();
+        store.setTool('select');
+        return id;
+      },
+      /** Every wall penetration of the drawing's duct runs: the run, its mark, the wall, the sleeve opening and its fire damper. */
+      getPenetrations: () => {
+        const state = useSmartDrawingStore.getState();
+        return state.hvacElements.filter(isDuctElement).flatMap((element) => (getDuctRunPlan(element, state.hvacElements, state.ductSettings)?.penetrations ?? [])
+          .map((penetration) => ({
+            runId: element.id, mark: penetration.mark, key: penetration.key, wallId: penetration.wallId, rooms: penetration.rooms, exterior: penetration.exterior,
+            fireDamper: penetration.fireDamper, damperMark: penetration.damperMark ?? null, opening: penetration.opening, point: penetration.point,
+            bottomZ: penetration.bottomZ, angleDeg: penetration.angleDeg, onFlex: penetration.onFlex,
+          })));
+      },
       getDuctPlan: (elementId: string) => {
         const state = useSmartDrawingStore.getState();
         const target = state.hvacElements.find((candidate) => candidate.id === elementId);
