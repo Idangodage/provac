@@ -14,7 +14,7 @@ import { crossingAllowed } from '../ductPenetrations';
 import { systemPressure, type ServicePressure } from '../ductPressure';
 import { getDuctSupportPlan } from '../ductSupports';
 import type { DuctSystemSizingReport } from '../ductSystemSizing';
-import { terminalDropLookup } from '../ductTerminals';
+import { filterPanelsServed, terminalDropLookup } from '../ductTerminals';
 import { readDuctRunSpec } from '../ductTypes';
 import { findDuctClashes } from '../ductVolumes';
 
@@ -32,6 +32,8 @@ export interface VerifiedRuns {
   /** Rod hangers and runout straps the support plans place. */
   hangers: number;
   straps: number;
+  /** Filter panels in the filter return grilles the runs serve. */
+  filterPanels: number;
 }
 
 /**
@@ -96,7 +98,7 @@ export function verifyRuns(ctx: ServiceCtx, runs: readonly HvacElement[], notes:
       else hangers += 1;
     }
   }
-  return { plans, issues, errors, warnings, pressure, hangers, straps };
+  return { plans, issues, errors, warnings, pressure, hangers, straps, filterPanels: filterPanelsServed(plans, scene) };
 }
 
 export interface ServiceOption {
@@ -219,7 +221,7 @@ export function optimiseService(
       realised += 1;
       if (!built) { if (order === 0) leadFailed = true; continue; }
       const verified = verifyRuns(ctx, built.runs, [...frontier.design.notes, ...built.notes], built.terminalUpdates);
-      const cost = priceDuctPlans(verified.plans, ctx.settings, verified.hangers, verified.straps);
+      const cost = priceDuctPlans(verified.plans, ctx.settings, verified.hangers, verified.straps, verified.filterPanels);
       cost.total += frontier.design.penalty;
       options.push({
         key: `${frontier.design.label}#${index}`,

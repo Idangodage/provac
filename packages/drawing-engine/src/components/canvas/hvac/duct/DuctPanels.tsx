@@ -965,6 +965,7 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="econPenetrationEach" label="Wall sleeve, Ø200" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econFireDamperEach" label="Fire damper, Ø200" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econAccessDoorEach" label="Access door" step={1} min={0} max={1000000} unit="each" />
+      <SettingNumber settingKey="econFilterEach" label="Filter panel (return grille)" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econHangerEach" label="Hanger" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econJointPerM" label="Joint" step={0.5} min={0} max={100000} unit="/ m of perimeter" />
       <SettingNumber settingKey="econElectricityPerKWh" label="Electricity" step={0.01} min={0} max={1000} unit="/ kWh" />

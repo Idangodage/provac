@@ -867,7 +867,7 @@ Your decisions (28 September 2026):
 - **Tags:** SAD, SAG and LSD for supply; RAD, RAG and LRG for return. Placing one takes the next free number; numbers are never reused.
 - **Toolbox:** separate *Supply air terminals* and *Return air terminals* sections, each tile with a service dot. The inspector has Service (locked while a duct is connected), Face and Filter (return only).
 - **Pressure:** a terminal's drop is the service's base plus a filter's drop: rated ΔP × face velocity ÷ rated velocity × the mid-life factor (practice). The sizing model and the verified pressure use this one formula; without a filter the figures are as before.
-- **BOM:** terminals are described by service and face, with a filter panel row per filter grille.
+- **BOM and cost:** terminals are described by service and face, with a filter panel row per filter grille. The first set of filter panels is priced with the design (`econFilterEach`, one per filter grille its runs serve).
 
 ### Air systems: terminals dedicated to a unit
 
@@ -966,6 +966,7 @@ Plans derive the penetrations every time they are made, so a moved wall never le
 | `fireDamperPolicy` | none | project (the walls carry no fire rating) |
 | `fireDamperSleeveExtensionMm` | 100 (50–152) | practice (UL 555 installations: ≤ 6 in) |
 | `econPenetrationEach` / `econFireDamperEach` / `econAccessDoorEach` | 40 / 160 / 45 | placeholders |
+| `econFilterEach` | 18 | placeholder |
 
 ### Verified
 
@@ -981,14 +982,16 @@ Plans derive the penetrations every time they are made, so a moved wall never le
   - the fire-damper piece, centred and contiguous;
   - every code;
   - BOM, cost, schedule, supports, plan and 3D.
-- **`ductCrossRoom.test.ts`** (5 tests):
+- **`ductCrossRoom.test.ts`** (6 tests):
   - a unit serving a room beyond a partition designs clean through one sleeve;
+  - a corridor unit serving two bedrooms designs clean with two sleeves, both through interior walls;
   - the same layout as a one-room system never crosses (`DU_AUTO_WALL`, and the reason names the terminal);
   - the policy puts a fire damper in the partition;
   - crossings only add edges to the routing graph;
   - the unified Auto route serves a dedicated terminal in the other room and reports the sleeve.
-- **Full suite and checks:** the full drawing-engine suite (227 files, 1987 tests); `tsc` and `eslint` clean.
-- **Benchmark** (`DUCT_BENCHMARK=1`): 39/39 in 392 s, the one-room layouts unchanged.
+- **Filter pricing** (`ductReturnTerminals.test.ts`): one filter panel per filter grille served, none for a plain grille, priced at `econFilterEach`.
+- **Full suite and checks:** the full drawing-engine suite (228 files, 1990 tests; the benchmark separately); `tsc` and `eslint` clean.
+- **Benchmark** (`DUCT_BENCHMARK=1`): 43/43 in 422 s. The one-room layouts are unchanged; four cross-room layouts were added (beyond a partition with 1 + 2 supply and a return; two bedrooms off a corridor; each with spigots dropped or turned to the unit). Each is clean, serves every terminal and passes only interior walls by sleeve.
 - **On canvas** (Playwright against the dev server, project restored exactly each time): Phase 1 25/25, Phase 2 23/23, Phase 3 14/14, and Phase 4 `duct-cross-room.mjs` 18/18:
   - Two rooms: the room tool, then a partition committed through the store's wall action.
   - DU-1 placed, with SAD-1, SAD-2 (beyond the partition) and RAG-1 placed from its Air system card.
@@ -1000,8 +1003,11 @@ Plans derive the penetrations every time they are made, so a moved wall never le
   - The 3D view.
 - **Regression drivers:**
   - On this code: `air-p1` 25/25, `air-p2` 23/23, `air-p3` 14/14.
-  - The older duct drivers fail on the project as it now is: duct-p4 20/21 (a clash with the cassette since placed in the test room), duct-sizing 20/26, duct-many 3/8, duct-auto at its setup. The room now holds a cassette and refrigerant pipes at duct level, and its test spots are taken.
-  - They fail identically on the committed code before this phase (A/B, 5 October 2026). They need re-staging for the current project.
+  - The older duct drivers were re-staged for the project as it now is. They clear the test room's cassette and its refrigerant pipes first (one Delete, undone at the end).
+    - duct-p4: 21/21.
+    - duct-auto: 16/17, the same as on the code before Phase 1 (A/B). Its one failure is an outdated expectation: it wants every branch to start with a take-off, and the optimiser now feeds one terminal from a split outlet.
+    - duct-sizing 21/26 and duct-many 4/8: the same failures on the code before Phase 1 (A/B). This 6.5 × 4.7 m room still leaves those layouts with a wall crossing or tight runouts (the known tight-room limit), unrelated to this work.
+  - **Found and fixed through duct-auto:** Phase 2's checks now, correctly, warn on a return grille within 1.5 m of a diffuser (`DU_SHORT_CIRCUIT`), and that warning's marker sits on the grille's centre. A Shift-click on a marker replaced the selection instead of adding to it. A marker click now honours Shift, Ctrl and ⌘ like a click on the canvas (`selectionAfterMarkerClick`).
 
 ### Known limits
 

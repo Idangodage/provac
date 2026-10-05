@@ -82,7 +82,7 @@ import {
 } from './ductSizing';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
 import { linkSizingBasis, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
-import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec, terminalPressureDropPa } from './ductTerminals';
+import { filterPanelsServed, isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec, terminalPressureDropPa } from './ductTerminals';
 import {
   isDuctElement,
   readDuctRunSpec,
@@ -1173,7 +1173,7 @@ function constantFrictionOption(ctx: ServiceCtx, option: ServiceOption, basis: D
   // The design's own notes stay; the sizing's go with them (the planner's are found again).
   const notes = [...option.issues.filter((issue) => !issue.runId), ...sized.report.issues.filter((issue) => issue.code.startsWith('DU_SIZE_'))];
   const verified = verifyRuns(ctx, runs, notes, option.terminalUpdates);
-  const cost = priceDuctPlans(verified.plans, ctx.settings, verified.hangers, verified.straps);
+  const cost = priceDuctPlans(verified.plans, ctx.settings, verified.hangers, verified.straps, verified.filterPanels);
   cost.total += option.design?.penalty ?? 0;
   const report: DuctSystemSizingReport = {
     ...sized.report,
@@ -1268,7 +1268,7 @@ export function resizeAutoDuctDesign(
       plans: report.plans,
       pressure: report.pressure,
       trunkSections: trunkSectionsOf(report),
-      cost: priceDuctPlans(report.plans, settings, hangers, straps),
+      cost: priceDuctPlans(report.plans, settings, hangers, straps, filterPanelsServed(report.plans, after)),
       issues: [...service.issues.filter((issue) => !issue.runId && !REPORTED_AGAIN.has(issue.code) && !issue.code.startsWith('DU_SIZE_')), ...report.issues],
       terminals: service.terminals.map((terminal) => {
         const sizedTerminal = report.terminals.find((entry) => entry.terminalId === terminal.terminalId);
@@ -1675,7 +1675,7 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
         key: `v1:${best.candidate.layout}`, label: `${AUTO_DUCT_LAYOUT_LABELS[best.candidate.layout]} (equal friction)`, source: 'v1', shape: 'rect',
         runs: best.candidate.runs, plans: verified.plans, terminalRuns: best.candidate.terminalRuns, trunkSections: best.candidate.trunkSections,
         pressure: verified.pressure, espPa: verified.pressure.indexPa,
-        cost: priceDuctPlans(verified.plans, settings, verified.hangers, verified.straps), errors: best.errors, warnings: best.warnings, issues: best.issues,
+        cost: priceDuctPlans(verified.plans, settings, verified.hangers, verified.straps, verified.filterPanels), errors: best.errors, warnings: best.warnings, issues: best.issues,
         modelCost: 0, modelPressurePa: verified.pressure.indexPa, exact: false, terminalUpdates: best.candidate.terminalUpdates ?? [],
       }];
     }

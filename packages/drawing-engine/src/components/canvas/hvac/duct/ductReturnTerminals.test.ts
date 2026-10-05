@@ -12,11 +12,13 @@ import { buildHvacElementMesh } from '../three3d/buildHvacElementMesh';
 import { resolveUnitAirPorts } from './ductAirPorts';
 import { buildDuctBom } from './ductBom';
 import { buildDuctRunDraftElement } from './ductDraft';
+import { priceDuctPlans } from './ductEconomics';
 import { planDuctRun } from './ductFabricationPlanner';
 import { airTerminalMarkup } from './ductOverlayMarkup';
 import { systemPressure } from './ductPressure';
 import { resolveDuctSettings } from './ductSettings';
 import {
+  filterPanelsServed,
   nextTerminalTag,
   readDuctTerminalSpec,
   terminalDropLookup,
@@ -144,6 +146,14 @@ describe('return filters', () => {
       'Filter panel G4 coarse (≈ ISO Coarse 60 % · ≈ MERV 7), behind a hinged face',
     ]);
     expect(rows[1]).toMatchObject({ size: '595×595×25', quantity: 1, unit: 'no.' });
+
+    // Its panel is priced with the runs that serve it (one per filter grille; none for a plain grille).
+    expect(filterPanelsServed([plan], scene)).toBe(1);
+    const plainGrille = { ...grille, properties: { ...grille.properties, terminal: { ...spec, filter: null } } };
+    expect(filterPanelsServed([plan], [unit, plainGrille, run])).toBe(0);
+    const cost = priceDuctPlans([plan], settings, 0, 0, filterPanelsServed([plan], scene));
+    expect(cost.filters).toBe(settings.econFilterEach);
+    expect(cost.total - priceDuctPlans([plan], settings).total).toBeCloseTo(settings.econFilterEach, 9);
 
     const markup = airTerminalMarkup(grille, readDuctTerminalSpec(grille)!, 0.5, true);
     expect(markup).toContain('data-terminal-filter="G4"');

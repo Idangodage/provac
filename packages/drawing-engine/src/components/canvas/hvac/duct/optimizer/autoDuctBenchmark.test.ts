@@ -1,15 +1,18 @@
 /**
  * Auto duct benchmark: the layouts a designer actually draws — rows across the
  * unit, lines on its axis, office grids from 2×2 to 4×3, diffusers dropped as
- * they come (spigot facing away) or turned to the unit, with return grilles —
- * each must come out as a verified design without errors, serving every
- * terminal, in reasonable time. The acceptance gate for the optimiser.
+ * they come (spigot facing away) or turned to the unit, with return grilles,
+ * and systems spanning rooms (through a partition, two bedrooms off a
+ * corridor) — each must come out as a verified design without errors, serving
+ * every terminal, in reasonable time; a system spanning rooms passes only
+ * interior walls, by sleeve. The acceptance gate for the optimiser.
  */
 import { afterAll, describe, expect, it } from 'vitest';
 
 import type { HvacElement, Point2D } from '../../../../../types';
 import { resolveUnitAirPorts } from '../ductAirPorts';
 import { generateAutoDuct, type AutoDuctResult, type AutoDuctShape } from '../ductAutoLayout';
+import type { DuctWallInput } from '../ductBuilding';
 import { DEFAULT_DUCT_SETTINGS } from '../ductSettings';
 import { terminalEnvelope, typicalTerminalSpec, type DuctTerminalKind } from '../ductTerminals';
 import { readDuctRunSpec } from '../ductTypes';
@@ -55,7 +58,9 @@ function towardUnit(at: Point2D): number {
 }
 
 type Spigots = 'dropped' | 'toward';
-interface Layout { name: string; supply: Point2D[]; returns?: Point2D[]; spigots: Spigots }
+/** A building for a system spanning rooms: its walls, its rooms, which room a point is in, and the sleeves expected at least. */
+interface Building { walls: DuctWallInput[]; rooms: Array<{ id: string; vertices: Point2D[] }>; roomOf: (at: Point2D) => string; sleeves: number }
+interface Layout { name: string; supply: Point2D[]; returns?: Point2D[]; spigots: Spigots; building?: Building }
 
 const row = (k: number, along: number, pitch: number) => Array.from({ length: k }, (_, i) => S(along, (i - (k - 1) / 2) * pitch));
 const line = (k: number, along0: number, pitch: number) => Array.from({ length: k }, (_, i) => S(along0 + i * pitch));
@@ -75,11 +80,59 @@ for (const spigots of ['dropped', 'toward'] as const) {
   LAYOUTS.push({ name: 'grid 4×3', supply: grid(4, 3, 1500, 2200, 2400), spigots });
   LAYOUTS.push({ name: 'grid 2×2 + 1 return', supply: grid(2, 2, 1800, 2400, 3000), returns: [R(1500)], spigots });
   LAYOUTS.push({ name: 'grid 3×2 + 2 returns', supply: grid(3, 2, 1800, 2400, 2700), returns: [R(1500, -1500), R(1500, 1500)], spigots });
+  LAYOUTS.push({ name: 'beyond a partition: 1 + 2 + 1 return', supply: [S(1500, 1500), S(4500, -1500), S(4500, 1500)], returns: [R(1500)], spigots, building: partitioned() });
+  LAYOUTS.push({ name: 'two bedrooms off a corridor', supply: [S(4300, -2000), S(4300, 2000)], spigots, building: corridor() });
+}
+
+function wallOf(id: string, a: Point2D, b: Point2D, thickness: number): DuctWallInput {
+  return { id, startPoint: a, endPoint: b, thickness, baseZ: 0, topZ: 3000, structural: thickness >= 200, material: thickness >= 200 ? 'brick' : 'partition' };
+}
+/** A rectangle's corners (an outline). */
+function box(x0: number, y0: number, x1: number, y1: number): Point2D[] {
+  return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+}
+
+/** The unit's room, and a room beyond a partition 2.5 m in front of its supply collar. */
+function partitioned(): Building {
+  const [left, right, far, back] = [supplyLip.x - 4500, supplyLip.x + 4500, supplyLip.y - 7000, returnLip.y + 2500];
+  const at = supplyLip.y - 2500;
+  return {
+    walls: [
+      wallOf('north', { x: left, y: back }, { x: right, y: back }, 200), wallOf('south', { x: left, y: far }, { x: right, y: far }, 200),
+      wallOf('west', { x: left, y: far }, { x: left, y: back }, 200), wallOf('east', { x: right, y: far }, { x: right, y: back }, 200),
+      wallOf('partition', { x: left, y: at }, { x: right, y: at }, 100),
+    ],
+    rooms: [{ id: 'r', vertices: box(left + 100, at + 50, right - 100, back - 100) }, { id: 'beyond', vertices: box(left + 100, far + 100, right - 100, at - 50) }],
+    roomOf: (point) => (point.y > at ? 'r' : 'beyond'),
+    sleeves: 1,
+  };
+}
+
+/** The unit in a corridor; two bedrooms beyond the corridor wall 2 m in front of the collar, a partition between them. */
+function corridor(): Building {
+  const [left, right, far, back] = [supplyLip.x - 4000, supplyLip.x + 4000, supplyLip.y - 6500, returnLip.y + 2500];
+  const at = supplyLip.y - 2000;
+  return {
+    walls: [
+      wallOf('north', { x: left, y: back }, { x: right, y: back }, 200), wallOf('south', { x: left, y: far }, { x: right, y: far }, 200),
+      wallOf('west', { x: left, y: far }, { x: left, y: back }, 200), wallOf('east', { x: right, y: far }, { x: right, y: back }, 200),
+      wallOf('corridor', { x: left, y: at }, { x: right, y: at }, 100), wallOf('between', { x: supplyLip.x, y: far }, { x: supplyLip.x, y: at }, 100),
+    ],
+    rooms: [
+      { id: 'r', vertices: box(left + 100, at + 50, right - 100, back - 100) },
+      { id: 'bedroom-1', vertices: box(left + 100, far + 100, supplyLip.x - 50, at - 50) },
+      { id: 'bedroom-2', vertices: box(supplyLip.x + 50, far + 100, right - 100, at - 50) },
+    ],
+    roomOf: (point) => (point.y > at ? 'r' : point.x < supplyLip.x ? 'bedroom-1' : 'bedroom-2'),
+    sleeves: 2,
+  };
 }
 
 function scene(layout: Layout): { elements: HvacElement[]; ids: string[] } {
-  const supply = layout.supply.map((at, i) => terminal(`sd${i + 1}`, at, layout.spigots === 'dropped' ? 0 : towardUnit(at)));
-  const returns = (layout.returns ?? []).map((at, i) => terminal(`rg${i + 1}`, at, layout.spigots === 'dropped' ? 0 : 180, 'return-egg-crate', 250));
+  // In a building, each terminal is in the room it stands in.
+  const inRoom = (element: HvacElement, at: Point2D): HvacElement => (layout.building ? { ...element, roomId: layout.building.roomOf(at) } : element);
+  const supply = layout.supply.map((at, i) => inRoom(terminal(`sd${i + 1}`, at, layout.spigots === 'dropped' ? 0 : towardUnit(at)), at));
+  const returns = (layout.returns ?? []).map((at, i) => inRoom(terminal(`rg${i + 1}`, at, layout.spigots === 'dropped' ? 0 : 180, 'return-egg-crate', 250), at));
   return { elements: [unit, ...supply, ...returns], ids: [...supply, ...returns].map((element) => element.id) };
 }
 
@@ -88,6 +141,7 @@ function run(layout: Layout, shape: AutoDuctShape = 'optimal'): { result: AutoDu
   const started = Date.now();
   const result = generateAutoDuct(elements, {
     unitId: 'u', terminalIds: ids, fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: true }, rebuildExisting: false, shape,
+    ...(layout.building ? { walls: layout.building.walls, rooms: layout.building.rooms } : {}),
   }, DEFAULT_DUCT_SETTINGS);
   return { result, ms: Date.now() - started, ids };
 }
@@ -129,6 +183,12 @@ describe.runIf(ENABLED)('auto duct benchmark: every layout within the exact sear
     }
     expect(design!.errors, errors.join(' / ')).toBe(0);
     expect([...served].sort()).toEqual([...ids].sort());
+    if (layout.building) {
+      // Through interior walls only, a sleeve each (at least one per room beyond the unit's).
+      const penetrations = design!.services.flatMap((service) => service.plans.flatMap((plan) => plan.penetrations));
+      expect(penetrations.length).toBeGreaterThanOrEqual(layout.building.sleeves);
+      expect(penetrations.every((penetration) => !penetration.exterior && !penetration.onFlex)).toBe(true);
+    }
   }, 120_000);
 
   it('Optimal is never worse than Rectangular or Round alone (life-cycle)', () => {

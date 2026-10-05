@@ -38,6 +38,12 @@ export const TERMINAL_PROVENANCE: DuctRuleProvenance = {
   note: 'Typical catalog size (SMACNA gives none); replace with the supplier\'s data.',
 };
 
+/** How many filter panels the runs serve: one per filter return grille a run ends on. */
+export function filterPanelsServed(plans: ReadonlyArray<{ spec: { end: { kind: string; terminalId?: string } } }>, scene: readonly HvacElement[]): number {
+  const served = new Set(plans.flatMap((plan) => (plan.spec.end.kind === 'terminal' && plan.spec.end.terminalId ? [plan.spec.end.terminalId] : [])));
+  return scene.filter((element) => served.has(element.id) && Boolean(readDuctTerminalSpec(element)?.filter)).length;
+}
+
 export function isDuctTerminalElement(element: Pick<HvacElement, 'type'>): boolean {
   return element.type === 'diffuser' || element.type === 'return-grille';
 }

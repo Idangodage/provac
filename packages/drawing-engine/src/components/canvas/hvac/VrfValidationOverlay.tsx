@@ -23,7 +23,12 @@ export interface VrfValidationOverlayProps {
   panOffset: Point2D;
   hvacElements: HvacElement[];
   report: VrfValidationReport;
-  onSelectElement?: (elementId: string) => void;
+  /**
+   * Selects the element a marker or an issue names. `additive`: Shift, Ctrl or
+   * ⌘ was held on a marker, so the element joins the selection (or leaves it),
+   * as a click on the canvas does; a marker never blocks multi-select.
+   */
+  onSelectElement?: (elementId: string, additive?: boolean) => void;
   onApplyFix?: (issue: VrfValidationIssue) => void;
 }
 
@@ -89,6 +94,16 @@ function elementAnchor(element: HvacElement): Point2D {
     x: element.position.x + element.width / 2,
     y: element.position.y + element.depth / 2,
   };
+}
+
+/**
+ * The selection after a click on a marker: the element alone, or, with Shift,
+ * Ctrl or ⌘ held (`additive`), the selection with the element added or taken
+ * out, as a click on the canvas does.
+ */
+export function selectionAfterMarkerClick(current: readonly string[], elementId: string, additive: boolean): string[] {
+  if (!additive) return [elementId];
+  return current.includes(elementId) ? current.filter((id) => id !== elementId) : [...current, elementId];
 }
 
 function issueElement(issue: VrfValidationIssue, elements: HvacElement[]): HvacElement | null {
@@ -174,7 +189,7 @@ export function VrfValidationOverlay({
             title={title}
             onClick={(event) => {
               event.stopPropagation();
-              onSelectElement?.(element.id);
+              onSelectElement?.(element.id, event.shiftKey || event.ctrlKey || event.metaKey);
             }}
             aria-label={`${style.label} on ${element.label}: ${title}`}
           >

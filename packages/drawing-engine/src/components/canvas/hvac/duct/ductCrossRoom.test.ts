@@ -153,3 +153,49 @@ describe('a unit serving a room beyond a partition', () => {
     expect(own.units.find((entry) => entry.unitId === unit.id)!.supplyTerminals).toBe(1);
   }, 120000);
 });
+
+/*
+ * A unit in a corridor serving two bedrooms beyond the corridor wall, a
+ * partition between them: the corridor wall 2 m in front of the collar, the
+ * bedrooms side by side across the collar's axis.
+ */
+describe('a corridor unit serving two bedrooms', () => {
+  const corridorY = lip.y - 2000;
+  const [left, right, back, far] = [lip.x - 4000, lip.x + 4000, lip.y + 2400, lip.y - 6500];
+  const corridorWalls: DuctWallInput[] = [
+    wall('outer-back', { x: left, y: back }, { x: right, y: back }, 200),
+    wall('outer-far', { x: left, y: far }, { x: right, y: far }, 200),
+    wall('outer-left', { x: left, y: far }, { x: left, y: back }, 200),
+    wall('outer-right', { x: right, y: far }, { x: right, y: back }, 200),
+    wall('corridor', { x: left, y: corridorY }, { x: right, y: corridorY }, 100, { material: 'partition' }),
+    wall('between', { x: lip.x, y: far }, { x: lip.x, y: corridorY }, 100, { material: 'partition' }),
+  ];
+  const corridorRooms = [
+    { id: 'corridor', vertices: [{ x: left + 100, y: corridorY + 50 }, { x: right - 100, y: corridorY + 50 }, { x: right - 100, y: back - 100 }, { x: left + 100, y: back - 100 }] },
+    { id: 'bedroom-1', vertices: [{ x: left + 100, y: far + 100 }, { x: lip.x - 50, y: far + 100 }, { x: lip.x - 50, y: corridorY - 50 }, { x: left + 100, y: corridorY - 50 }] },
+    { id: 'bedroom-2', vertices: [{ x: lip.x + 50, y: far + 100 }, { x: right - 100, y: far + 100 }, { x: right - 100, y: corridorY - 50 }, { x: lip.x + 50, y: corridorY - 50 }] },
+  ];
+  const bedroom1 = diffuser('sd-1', ahead(4300, -2000));
+  const bedroom2 = diffuser('sd-2', ahead(4300, 2000));
+
+  it('is clean with two sleeves, every one through an interior wall', () => {
+    const result = generateAutoDuct([unit, bedroom1, bedroom2], {
+      unitId: unit.id, terminalIds: [bedroom1.id, bedroom2.id], fanSpeed: 'hi', layout: 'auto', shape: 'optimal',
+      services: { supply: true, return: false }, rebuildExisting: false, walls: corridorWalls, rooms: corridorRooms,
+    }, settings);
+    const chosen = best(result)!;
+    const issues = [...result.issues, ...result.services.flatMap((service) => service.issues)].filter((issue) => issue.severity === 'error').map((issue) => issue.message);
+    expect(chosen.errors, issues.join(' / ')).toBe(0);
+    const plans = chosen.services.flatMap((service) => service.plans);
+    const served = new Set(chosen.runs.flatMap((run) => { const end = readDuctRunSpec(run)?.end; return end?.kind === 'terminal' ? [end.terminalId] : []; }));
+    expect([...served].sort()).toEqual(['sd-1', 'sd-2']);
+    const penetrations = plans.flatMap((plan) => plan.penetrations);
+    expect(penetrations).toHaveLength(2);
+    for (const penetration of penetrations) {
+      expect(['corridor', 'between']).toContain(penetration.wallId);
+      expect(penetration).toMatchObject({ exterior: false, onFlex: false, fireDamper: false });
+    }
+    expect(plans.flatMap((plan) => plan.issues).filter((issue) => issue.code.startsWith('DU_PENETRATION') && issue.severity !== 'info')).toEqual([]);
+    expect(buildDuctBom(plans).find((row) => row.category === 'Wall penetrations' && row.description.startsWith('Wall sleeve'))?.quantity).toBe(2);
+  }, 120000);
+});

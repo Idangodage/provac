@@ -83,7 +83,7 @@ import {
   PipeStudioOverlay,
   type PipeStudioOverlayHandle,
 } from "./canvas/hvac/PipeStudioOverlay";
-import { VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
+import { selectionAfterMarkerClick, VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
 import { applyAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteController";
 import { CondensateEditGizmo3D } from "./canvas/hvac/condensate/CondensateEditGizmo3D";
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
@@ -751,6 +751,11 @@ export function DrawingCanvas({
     // The pipe clash check plans ducts as obstacles with the document's settings.
     setActiveDuctSettings(ductSettings);
   }, [ductSettings]);
+  // A design-check marker sits on its element: clicking it selects the element; with Shift (or Ctrl/⌘) the element
+  // joins the selection or leaves it, as a click on the canvas does.
+  const selectFromDesignCheck = useCallback((elementId: string, additive = false) => {
+    setSelectedIds(selectionAfterMarkerClick(useSmartDrawingStore.getState().selectedIds, elementId, additive));
+  }, [setSelectedIds]);
   // One design-check list: refrigerant (VRF) rules, condensate drainage rules and duct (DU_*) checks.
   const designCheckReport = useMemo(
     () => mergeValidationReports(mergeValidationReports(vrfValidationReport, condensateValidationReport), ductValidationReport),
@@ -3363,7 +3368,7 @@ export function DrawingCanvas({
             panOffset={panOffset}
             hvacElements={hvacElements}
             report={designCheckReport}
-            onSelectElement={(elementId) => setSelectedIds([elementId])}
+            onSelectElement={selectFromDesignCheck}
             onApplyFix={handleApplyVrfValidationFix}
           />
           <PipeClashOverlay
@@ -3440,7 +3445,7 @@ export function DrawingCanvas({
           panOffset={panOffset}
           hvacElements={hvacElements}
           report={designCheckReport}
-          onSelectElement={(elementId) => setSelectedIds([elementId])}
+          onSelectElement={selectFromDesignCheck}
           onApplyFix={handleApplyVrfValidationFix}
         />
         <HybridProjectionLayer

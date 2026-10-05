@@ -7,7 +7,8 @@
  *    (fittings at a multiple of a straight's rate, spiral round cheaper per m²
  *    than rectangular), NBR by area, flexible duct per metre, dampers, joints
  *    per metre of perimeter and hangers each; each wall penetration's sleeve,
- *    and a fire damper with its access door where it has one.
+ *    and a fire damper with its access door where it has one; the filter
+ *    panels of the filter return grilles the runs serve.
  *  - Life-cycle cost: first cost + the present worth of the fan energy the
  *    design's external static pressure costs. Fan power is Q·Δp/η, run for
  *    the operating hours each year; the present-worth factor over n years at
@@ -32,7 +33,7 @@ import { isRoundLeg, type DuctConstruction, type DuctLeg, type DuctService } fro
 export type DuctEconomicsSettings = Pick<DuctDesignSettings,
   | 'econCurrency' | 'econSheetPerKg' | 'econFabricationRectPerM2' | 'econFabricationSpiralPerM2' | 'econFittingFactor'
   | 'econInstallPerM2' | 'econInsulationPerM2' | 'econFlexPerM' | 'econDamperEach' | 'econHangerEach' | 'econJointPerM'
-  | 'econPenetrationEach' | 'econFireDamperEach' | 'econAccessDoorEach'
+  | 'econPenetrationEach' | 'econFireDamperEach' | 'econAccessDoorEach' | 'econFilterEach'
   | 'econElectricityPerKWh' | 'econHoursPerYear' | 'econFanEfficiency' | 'econLifeYears' | 'econDiscountPercent' | 'econEscalationPercent'>;
 
 export interface DuctCostBreakdown {
@@ -51,11 +52,13 @@ export interface DuctCostBreakdown {
   hangers: number;
   /** Wall penetrations: sleeves with their packing and sealant, fire dampers and their access doors. */
   penetrations: number;
+  /** Filter panels in the filter return grilles the runs serve (the first set). */
+  filters: number;
   total: number;
 }
 
 export const EMPTY_COST: DuctCostBreakdown = {
-  sheet: 0, fabrication: 0, fittings: 0, install: 0, insulation: 0, flex: 0, dampers: 0, joints: 0, hangers: 0, penetrations: 0, total: 0,
+  sheet: 0, fabrication: 0, fittings: 0, install: 0, insulation: 0, flex: 0, dampers: 0, joints: 0, hangers: 0, penetrations: 0, filters: 0, total: 0,
 };
 
 /** Reference size the flexible duct and damper rates are quoted at (mm). */
@@ -96,10 +99,10 @@ function pieceGirthMm(piece: DuctPiece): number {
 
 /**
  * First cost of the planned runs. `hangers` = the rod hangers their support
- * plans place and `straps` = the runouts' straps (the caller has the scene to
- * plan them).
+ * plans place, `straps` = the runouts' straps and `filterPanels` = the filter
+ * panels of the grilles the runs serve (the caller has the scene to count them).
  */
-export function priceDuctPlans(plans: readonly DuctFabricationPlan[], settings: DuctEconomicsSettings, hangers = 0, straps = 0): DuctCostBreakdown {
+export function priceDuctPlans(plans: readonly DuctFabricationPlan[], settings: DuctEconomicsSettings, hangers = 0, straps = 0, filterPanels = 0): DuctCostBreakdown {
   const cost = { ...EMPTY_COST };
   for (const plan of plans) {
     for (const piece of plan.pieces) {
@@ -126,7 +129,9 @@ export function priceDuctPlans(plans: readonly DuctFabricationPlan[], settings: 
     for (const penetration of plan.penetrations ?? []) cost.penetrations += penetrationCost(penetration, settings);
   }
   cost.hangers = (hangers + STRAP_SHARE_OF_HANGER * straps) * settings.econHangerEach;
-  cost.total = cost.sheet + cost.fabrication + cost.fittings + cost.install + cost.insulation + cost.flex + cost.dampers + cost.joints + cost.hangers + cost.penetrations;
+  cost.filters = filterPanels * settings.econFilterEach;
+  cost.total = cost.sheet + cost.fabrication + cost.fittings + cost.install + cost.insulation + cost.flex + cost.dampers + cost.joints + cost.hangers
+    + cost.penetrations + cost.filters;
   return cost;
 }
 
