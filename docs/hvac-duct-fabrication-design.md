@@ -1019,7 +1019,7 @@ Plans derive the penetrations every time they are made, so a moved wall never le
 - An edge crosses one wall at a time. Two walls closer together than the grid's lines block, as a single wall does without a spanning system.
 - Terminal, filter and fire-damper pressure drops are practice values until the supplier's data is entered. The router prices a crossing at the reference size; the verified plan prices the real one.
 
-## Segment cards: the options of each piece of a duct run, in 2D and 3D (6 October 2026)
+## Segment cards: the options of each piece of a duct run, in 2D and 3D (6–7 October 2026)
 
 **The request:** point at a segment of a generated duct path and see its alternatives: a rectangular duct's equivalent spiral duct; for a Y or a bend, rectangular alternatives and parameters such as the inner radius; an easily edited size, the segments around it (round-to-square and so on) following. Every view. The approved plan is in `C:\Users\idang\.claude\plans\duct-segment-options.md` (phases 0–6).
 
@@ -1093,9 +1093,22 @@ Plans derive the penetrations every time they are made, so a moved wall never le
 - Canvas: `duct-seg-p3` 29/29 on the generated system, the mouse and keyboard only, project restored exactly: every lateral first offered disabled with its reason (the diffusers sit upstream of their take-offs); one diffuser nudged 500 mm downstream (Shift + arrows), its runout following, and the lateral offered and applied, the branch turning with it, its end kept; its main made rectangular from the take-off card (its row predicted one new take-off clash, and applying it gave exactly that), two undos back to the generated system; the main's runout to SAD-3 made rigid (straight, offset, no errors) and flexible again; SAD-3's neck Ø150 (runout follows) and a linear-slot face (tag LSD-1), each one undo; a transition at 10°.
 - Found while verifying, not part of this work: equipment (a diffuser, the FDUM22) does not move under a mouse drag in this state — the press selects it, nothing moves; the 28 September driver logged the same after the Duct tool had been used. Keyboard nudges work.
 
+### The same cards in 3D (Phase 4)
+
+- **Selecting and pointing in 3D.** Duct runs are picked by a ray against their meshes (`hybridDuctSegments.raycastDuctRun`, after refrigerant and drain pipes, before walls): a click on a run selects it; on a selected run, resting on a segment peeks its card and a click pins it — the plan's segment keys and the one UI store (`view: '3d'`), so a segment has one card whichever view points at it, and the card survives a switch of views.
+- **Which piece:** the meshes are merged per material, so the ray's hit (in the model frame: `root.worldToLocal`) is matched to the nearest piece by its plan outline and its height range (`segmentAtModelPoint`, `pieceZRange`: a level end spans its section, a vertical end — a riser's, either end of a vertical elbow — only its end point), within the insulation plus 60 mm. A riser and the elbows over it in plan are told apart by height.
+- **Outlines** (the post-process outline effect): a selected run by its own meshes; the pinned segment instead of its run, and the hovered one, by a proxy of their pieces' outer surface (`ductPiecesOuterGeometry`: the insulation's face where insulated, positions only). Refreshed on selection, hover, focus and every rebuild of the HVAC scene.
+- **Anchored card:** the segment's box (its anchor piece's) projected through the live camera (`segmentClientRect3D`), read every frame by the card's own positioning loop, so an orbit or a zoom carries the card and it flips to stay beside the segment, never over it.
+- **Live 3D preview:** the option under the pointer goes through the 3D preview path the Auto route uses: the runs it changes are drawn as they would be, planned against the drawing with all its changes, and their committed meshes are hidden meanwhile.
+
+### Verified (Phase 4)
+
+- Tests: `ductSegments` (7: picks in 3D with a riser between its elbows, 3D bounds), `ductMeshes` (17: a segment's outer surface inside its 3D box, standing the sheet and insulation off it), `hybridDuctSegments` (3: a ray through the mirrored model basis finds the run, its surface point and segment; proxies; the projected box, and none off the drawing). Full suite 236 files / 2049 tests; `DUCT_BENCHMARK` 43/43.
+- Canvas: `duct-seg-p4` 15/15 in the Iso view on the generated system, mouse only, project restored exactly: a click selects the main; resting on its leg focuses `leg:0` (3D) and peeks the card; a click pins it beside the leg; hovering *Ø315 spiral* changes the 3D drawing there (the leg larger, a transition) and the card lists the take-off sliding 70 mm; leaving the option restores the drawing pixel for pixel; clicking applies it (one undo) with the card kept on its segment; an orbit carries the card to the leg's other side; Esc closes it. The 2D drivers `duct-seg-p1`–`p3` re-run against the same build.
+- Possible follow-up: hover picks test every duct mesh the ray's bounds admit (per triangle); for very large drawings, a BVH (`three-mesh-bvh`, already a dependency) would make them constant-time.
+
 ### Next (approved, not yet built)
 
-- Phase 4: the same cards in 3D (ducts selectable in 3D, picking pieces, outlines, live 3D previews).
 - Phase 5: inline accessories on straights (volume damper, access door, sound attenuator).
 
 ## Known limits (auto duct, 30 September 2026)

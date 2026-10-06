@@ -113,7 +113,7 @@ import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
 import { moveDuctRuns, toElementUpdate } from "./canvas/hvac/duct/ductFollow";
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { useDuctSegmentUiStore, type DuctSegmentFocus } from "./canvas/hvac/duct/ductSegmentUiStore";
-import { ductSegments, segmentHotspot } from "./canvas/hvac/duct/ductSegments";
+import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
 import { getDuctSupportPlan } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
@@ -154,6 +154,7 @@ import {
   type Hybrid3DViewState,
   type HybridViewStyle,
 } from "./canvas/hybrid/HybridProjectionLayer";
+import { segmentClientRect3D } from "./canvas/hybrid/hybridDuctSegments";
 import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
 import type {
   DerivedBoardView,
@@ -758,10 +759,16 @@ export function DrawingCanvas({
   }, [ductSettings]);
   // A design-check marker sits on its element: clicking it selects the element; with Shift (or Ctrl/⌘) the element
   // joins the selection or leaves it, as a click on the canvas does.
-  // A duct segment's card sits beside its piece: on the plan, where the plan overlay draws it.
-  const resolveSegmentAnchor = useCallback((focus: DuctSegmentFocus) => (
-    projectionViewOnly ? null : ductOverlayRef.current?.segmentClientRect(focus.runId, focus.key, focus.anchorMark) ?? null
-  ), [projectionViewOnly]);
+  // A duct segment's card sits beside its piece: on the plan, where the plan overlay draws it; in a 3D view, where
+  // the camera sees it (read every frame, so the card follows an orbit or a zoom).
+  const resolveSegmentAnchor = useCallback((focus: DuctSegmentFocus) => {
+    if (!projectionViewOnly) return ductOverlayRef.current?.segmentClientRect(focus.runId, focus.key, focus.anchorMark) ?? null;
+    const camera = hybridControllerRef.current?.camera;
+    const host = hostRef.current;
+    if (!camera || !host) return null;
+    const state = useSmartDrawingStore.getState();
+    return segmentClientRect3D(state.hvacElements, state.ductSettings, focus, camera, host.getBoundingClientRect());
+  }, [projectionViewOnly]);
   const selectFromDesignCheck = useCallback((elementId: string, additive = false) => {
     setSelectedIds(selectionAfterMarkerClick(useSmartDrawingStore.getState().selectedIds, elementId, additive));
   }, [setSelectedIds]);
@@ -1012,6 +1019,21 @@ export function DrawingCanvas({
       getSegmentFigures: (runId: string, key: string) => {
         const state = useSmartDrawingStore.getState();
         return ductSegmentFigures(state.hvacElements, state.ductSettings, runId, key);
+      },
+      /** A model point half way up a segment's first piece (where a pointer rests on it in 3D), or null. */
+      getSegmentHotspot3D: (runId: string, key: string) => {
+        const state = useSmartDrawingStore.getState();
+        const element = state.hvacElements.find((candidate) => candidate.id === runId);
+        const plan = element ? getDuctRunPlan(element, state.hvacElements, state.ductSettings) : null;
+        return plan ? segmentHotspot3D(plan, key) : null;
+      },
+      /** A segment's box (its anchor piece's, given its mark) as the 3D camera sees it, in client pixels; null in the plan view. */
+      getSegmentClientRect3D: (runId: string, key: string, anchorMark: string | null = null) => {
+        const camera = hybridControllerRef.current?.camera;
+        const host = hostRef.current;
+        if (!camera || !host) return null;
+        const state = useSmartDrawingStore.getState();
+        return segmentClientRect3D(state.hvacElements, state.ductSettings, { runId, key, anchorMark }, camera, host.getBoundingClientRect());
       },
       /** A model point (mm, z up) where the 3D views draw it, in client pixels; null without a 3D camera. */
       modelToClient3D: (point: { x: number; y: number; z: number }) => {
@@ -1778,8 +1800,9 @@ export function DrawingCanvas({
   const handleCondensateEditPreview = useCallback((elements: HvacElement[] | null, removeIds: string[]) => {
     setCondensateEditPreview(elements ? { elements, removeIds } : null);
   }, []);
+  const ductSegmentPreview = useDuctSegmentUiStore((state) => state.preview?.updates ?? null);
   const autoRoutePreviewElements = useMemo(() => {
-    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview && !autoDuctTurned) return null;
+    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview && !autoDuctTurned && !ductSegmentPreview) return null;
     const removed = new Set([
       ...(ductRoutePreview?.removeElementIds ?? []),
       ...(condensatePreview?.removeElementIds ?? []),
@@ -1797,9 +1820,10 @@ export function DrawingCanvas({
       ...(refrigerantPreview?.updates ?? []),
       ...(condensatePreview?.elementsToAdd ?? []),
       ...(condensateEditPreview?.elements ?? []),
+      ...(ductSegmentPreview ?? []),
       ...hidden,
     ];
-  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, autoDuctTurned, hvacElements]);
+  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, autoDuctTurned, ductSegmentPreview, hvacElements]);
   const hybridPlanPaintPendingRef = useRef(false);
   const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the

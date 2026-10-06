@@ -1096,6 +1096,36 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
   }
   push('duct-metal', metal, sweepRectangularTube(piecePath(piece), piece.centreZ, halfWidth, halfHeight));
 }
+/**
+ * The outer surface of some of a run's pieces — a segment — in one geometry,
+ * as its meshes draw them (the insulation's face where the run is insulated):
+ * the proxy a 3D outline traces. Null when they draw nothing.
+ */
+export function ductPiecesOuterGeometry(plan: DuctFabricationPlan, pieceIndices: readonly number[]): THREE.BufferGeometry | null {
+  const parts: THREE.BufferGeometry[] = [];
+  const collect: MeshPush = (_name, _material, geometry) => {
+    if (!geometry) return;
+    const part = geometry.index ? geometry.toNonIndexed() : geometry;
+    if (geometry.index) geometry.dispose();
+    // An outline needs the surface only: positions (so every part merges).
+    for (const name of Object.keys(part.attributes)) if (name !== 'position') part.deleteAttribute(name);
+    parts.push(part);
+  };
+  const unused = new THREE.MeshBasicMaterial();
+  for (const index of pieceIndices) {
+    const piece = plan.pieces[index];
+    if (!piece) continue;
+    // As the run's meshes: no skin on the connector, a split, a flexible runout or a fire damper's sleeve.
+    const skinned = plan.insulationMm > 0 && piece.kind !== 'connector' && piece.kind !== 'split' && piece.kind !== 'flex' && piece.kind !== 'fire-damper';
+    addPieceMeshes(piece, (piece.sheetThicknessMm ?? 1) + (skinned ? plan.insulationMm : 0), unused, collect);
+  }
+  unused.dispose();
+  if (parts.length === 0) return null;
+  const merged = parts.length === 1 ? parts[0]! : mergeGeometries(parts, false);
+  if (parts.length > 1) parts.forEach((part) => part.dispose());
+  return merged ?? null;
+}
+
 /** Build the run's meshes into `group` (which must sit at the world origin). */
 export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, context: DuctMeshContext): DuctFabricationPlan | null {
   const settings = context.ductSettings ?? DEFAULT_SETTINGS;

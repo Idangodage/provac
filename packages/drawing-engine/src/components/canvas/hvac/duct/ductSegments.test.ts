@@ -11,8 +11,10 @@ import {
   ductSegmentOf,
   ductSegments,
   neighbourSegment,
+  segmentAtModelPoint,
   segmentAtPlanPoint,
   segmentBounds,
+  segmentBounds3D,
   segmentIssues,
   segmentOutlines,
 } from './ductSegments';
@@ -115,6 +117,34 @@ describe('the segments of a duct run', () => {
     // 600 wide, centred on the collar's line.
     expect(bounds.maxX - bounds.minX).toBeGreaterThan(600);
     expect(bounds.maxX - bounds.minX).toBeLessThan(610);
+  });
+
+  it('are found at a point in 3D, a riser told apart from the elbows over it by height, and bound in 3D', () => {
+    // 600×300 out 3 m, up 1.2 m, then 2.5 m on at the new level.
+    const flat = buildDuctRunDraftElement({ port: supply, points: [P(3000)], legSizes: [{ widthMm: 600, heightMm: 300 }] }, 'r');
+    const z0 = readDuctRunSpec(flat)!.path[1]!.z;
+    const element = buildDuctRunDraftElement({
+      port: supply, points: [P(3000), { ...P(3000), z: z0 + 1200 }, { ...P(5500), z: z0 + 1200 }],
+      legSizes: [{ widthMm: 600, heightMm: 300 }, { widthMm: 600, heightMm: 300 }, { widthMm: 600, heightMm: 300 }],
+    }, 'r');
+    const plan = planDuctRun(element, { settings, scene: [unit, element] })!;
+    const at = (point: Point2D, z: number) => segmentAtModelPoint(plan, { ...point, z }, 50)?.segment.key ?? null;
+    // On the first leg's top face, half way along.
+    expect(at(P(1500), z0 + 300)).toBe('leg:0');
+    // Over the riser in plan: its middle is the riser, its foot the lower elbow, its head the upper one.
+    expect(at(P(3000), z0 + 750)).toBe('leg:1');
+    expect(ductSegmentOf(plan, 'leg:1')!.kind).toBe('riser');
+    expect(at(P(3000), z0 + 150)).toBe('node:1');
+    expect(at(P(3000), z0 + 1350)).toBe('node:2');
+    // Far from the run: nothing.
+    expect(at(P(1500), z0 + 900)).toBeNull();
+    expect(ductSegmentOf(plan, 'leg:0')!.marks).toContain(segmentAtModelPoint(plan, { ...P(1500), z: z0 + 300 }, 50)!.mark);
+    // The riser runs between its elbows: each takes 1.5 × 300 + 50 mm of it, from the levels' centrelines.
+    const riser = segmentBounds3D(plan, 'leg:1')!;
+    expect(riser.min.z).toBeCloseTo(z0 + 150 + 500, 6);
+    expect(riser.max.z).toBeCloseTo(z0 + 1200 + 150 - 500, 6);
+    const first = segmentBounds3D(plan, 'leg:0')!;
+    expect(first.max.z - first.min.z).toBeCloseTo(300, 0);
   });
 
   it('carry the issues that belong to them', () => {

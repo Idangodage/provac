@@ -7,12 +7,13 @@ import { spigotOrigin, splitOrigin, tapOrigin } from '../duct/ductBranchTargets'
 import { buildDuctRunDraftElement } from '../duct/ductDraft';
 import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
 import { FLEX_RULES } from '../duct/ductFlex';
+import { ductSegmentOf, segmentBounds3D } from '../duct/ductSegments';
 import { resolveDuctSettings } from '../duct/ductSettings';
 import { DUCT_BAND_RADIAL_OFFSET_MM, planDuctSupports } from '../duct/ductSupports';
 import { buildDuctRunElement, readDuctRunSpec, roundLeg } from '../duct/ductTypes';
 
 import { buildHvacElementMesh } from './buildHvacElementMesh';
-import { addDuctSupportMeshes } from './ductMeshes';
+import { addDuctSupportMeshes, ductPiecesOuterGeometry } from './ductMeshes';
 
 const unit: HvacElement = {
   id: 'fdum', type: 'ducted-ac', position: { x: 1000, y: 2000 }, rotation: 0, width: 1084, depth: 697, height: 300,
@@ -36,6 +37,28 @@ function box(group: THREE.Object3D, name: string): THREE.Box3 {
 }
 
 describe('duct run 3D', () => {
+  it("outlines a segment by its pieces' outer surface: the insulation's face, inside the segment's 3D box", () => {
+    const settings = resolveDuctSettings({ showSupports: false });
+    const run = buildDuctRunDraftElement({ port: supply, points: [{ x: supply.lip.x, y: supply.lip.y - 3000 }, { x: supply.lip.x + 2500, y: supply.lip.y - 3000 }],
+      legSizes: [{ widthMm: 600, heightMm: 300 }, { widthMm: 600, heightMm: 300 }] }, 'outlined');
+    const scene = [unit, run];
+    const plan = getDuctRunPlan(run, scene, settings)!;
+    for (const key of ['leg:0', 'node:1']) {
+      const geometry = ductPiecesOuterGeometry(plan, ductSegmentOf(plan, key)!.pieceIndices)!;
+      expect(Object.keys(geometry.attributes)).toEqual(['position']);
+      geometry.computeBoundingBox();
+      const drawn = geometry.boundingBox!;
+      const bounds = segmentBounds3D(plan, key)!;
+      // The skin stands the sheet plus the insulation off the clear section (NBR on a supply duct).
+      const skin = 1 + plan.insulationMm;
+      expect(drawn.min.z).toBeCloseTo(bounds.min.z - skin, 0);
+      expect(drawn.max.z).toBeCloseTo(bounds.max.z + skin, 0);
+      expect(drawn.min.x).toBeGreaterThan(bounds.min.x - skin - 2);
+      expect(drawn.max.x).toBeLessThan(bounds.max.x + skin + 2);
+      geometry.dispose();
+    }
+  });
+
   it('cuts round and shoe takeoffs into opposite main walls while keeping the roof and neighbouring sheet closed', () => {
     const settings = resolveDuctSettings({ showSupports: false });
     const main = buildDuctRunDraftElement({ port: supply, points: [{ x: supply.lip.x, y: supply.lip.y - 8000 }],

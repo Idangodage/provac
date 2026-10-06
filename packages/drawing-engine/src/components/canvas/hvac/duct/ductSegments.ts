@@ -291,6 +291,80 @@ export function segmentBounds(plan: DuctFabricationPlan, key: string): { minX: n
   };
 }
 
+/**
+ * The heights a piece spans, bottom to top (mm): its section about its
+ * centreline at a level end, the end itself where the duct is vertical (its
+ * face is horizontal: a riser, either end of a vertical elbow), a plenum's
+ * box, a flexible runout's curve.
+ */
+export function pieceZRange(piece: DuctPiece): { minZ: number; maxZ: number } {
+  // A vertical-plane elbow turns between a level end and a vertical one; an offset's ends are both level.
+  const startVertical = piece.vertical !== undefined && piece.kind !== 'offset';
+  const endVertical = piece.kind === 'elbow' && piece.frame ? !startVertical : startVertical;
+  const start = startVertical ? 0 : (piece.diameterMm ?? piece.heightMm) / 2;
+  const end = endVertical ? 0 : (piece.endDiameterMm ?? piece.endHeightMm) / 2;
+  const zs = [piece.bottomZ, piece.centreZ - start, piece.centreZ + start, piece.endCentreZ - end, piece.endCentreZ + end];
+  if (piece.plenum) zs.push(piece.bottomZ + piece.plenum.heightMm);
+  for (const point of piece.flex?.points ?? []) zs.push(point.z - start, point.z + start);
+  return { minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+}
+
+/**
+ * The segment at a point on the run in 3D (a picked point on its surface): the
+ * piece nearest it in plan (its outline) and in height (its range), within
+ * `toleranceMm` — so a riser and the elbows over it in plan are told apart.
+ * With the piece's mark, where the card is placed.
+ */
+export function segmentAtModelPoint(
+  plan: DuctFabricationPlan,
+  point: { x: number; y: number; z: number },
+  toleranceMm: number,
+): { segment: DuctSegment; mark: string } | null {
+  const pieces = new Map(plan.pieces.map((piece) => [piece.mark, piece]));
+  let best: { mark: string; distance: number } | null = null;
+  for (const polygon of getDuctPlanPresentation(plan).piecePolygons) {
+    const piece = pieces.get(polygon.mark);
+    if (!piece) continue;
+    const { minZ, maxZ } = pieceZRange(piece);
+    const distance = Math.hypot(distanceToPolygon(point, polygon.polygon), Math.max(0, minZ - point.z, point.z - maxZ));
+    if (distance <= toleranceMm && (!best || distance < best.distance)) best = { mark: polygon.mark, distance };
+  }
+  const segment = best ? ductSegmentOfMark(plan, best.mark) : null;
+  return segment && best ? { segment, mark: best.mark } : null;
+}
+
+/**
+ * A segment's box in the model (its pieces' plan outlines and heights; with
+ * `anchorMark`, that piece's alone — where a card is placed), or null when it
+ * has no outline.
+ */
+export function segmentBounds3D(
+  plan: DuctFabricationPlan,
+  key: string,
+  anchorMark: string | null = null,
+): { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } } | null {
+  const segment = ductSegmentOf(plan, key);
+  if (!segment) return null;
+  const marks = new Set(anchorMark && segment.marks.includes(anchorMark) ? [anchorMark] : segment.marks);
+  const points = getDuctPlanPresentation(plan).piecePolygons.filter((polygon) => marks.has(polygon.mark)).flatMap((polygon) => polygon.polygon);
+  const ranges = plan.pieces.filter((piece) => marks.has(piece.mark)).map(pieceZRange);
+  if (points.length === 0 || ranges.length === 0) return null;
+  return {
+    min: { x: Math.min(...points.map((point) => point.x)), y: Math.min(...points.map((point) => point.y)), z: Math.min(...ranges.map((range) => range.minZ)) },
+    max: { x: Math.max(...points.map((point) => point.x)), y: Math.max(...points.map((point) => point.y)), z: Math.max(...ranges.map((range) => range.maxZ)) },
+  };
+}
+
+/** A model point on a segment's first piece, half way up it: where a pointer rests to point at the segment in 3D. */
+export function segmentHotspot3D(plan: DuctFabricationPlan, key: string): { x: number; y: number; z: number } | null {
+  const segment = ductSegmentOf(plan, key);
+  const point = segmentHotspot(plan, key);
+  const piece = segment ? plan.pieces[segment.pieceIndices[0]!] : undefined;
+  if (!point || !piece) return null;
+  const { minZ, maxZ } = pieceZRange(piece);
+  return { x: point.x, y: point.y, z: (minZ + maxZ) / 2 };
+}
+
 /** The issues of a plan that belong to a segment (by their node, leg, wall crossing, or where they point). */
 export function segmentIssues(plan: DuctFabricationPlan, key: string): DuctFabricationPlan['issues'] {
   const segment = ductSegmentOf(plan, key);
