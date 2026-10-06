@@ -426,6 +426,19 @@ export class HybridViewportController {
     }, 'iso', animate, false);
   }
 
+  /**
+   * Turn the camera to a polar / azimuth pose about its current target
+   * (camera-only, like the RMB orbit): looking at a fitting from a chosen side.
+   */
+  orbitTo(polarRad: number, azimuthRad: number, animate = true): void {
+    if (!this.controls || !Number.isFinite(polarRad) || !Number.isFinite(azimuthRad)) return;
+    this.beginViewTransition({
+      ...this.capturePose(),
+      polar: Math.min(Math.max(polarRad, 0), Math.PI / 2),
+      azimuth: azimuthRad,
+    }, 'iso', animate, false);
+  }
+
   get isTilted(): boolean {
     return (this.controls?.polarAngle ?? 0) > FLAT_POLAR_EPSILON;
   }

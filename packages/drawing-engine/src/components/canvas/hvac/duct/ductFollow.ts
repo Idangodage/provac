@@ -9,12 +9,12 @@ import type { HvacElement, Point2D } from '../../../../types';
 
 import { findAirPort } from './ductAirPorts';
 import { splitOutlet, tapAttachment } from './ductBranches';
-import { resolveSectionConstruction } from './ductGauge';
+import { runSectionSheetMm } from './ductGauge';
 import { ductLegs } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
 import { spigotAttachment } from './ductPlenum';
-import { findTerminalPort } from './ductTerminals';
 import type { DuctDesignSettings } from './ductSettings';
+import { findTerminalPort } from './ductTerminals';
 import { buildDuctRunElement, readDuctRunSpec, type DuctLeg, type DuctRunSpec } from './ductTypes';
 
 /** Where a run is anchored: a plan point, the direction it leaves in, and its level. */
@@ -62,10 +62,7 @@ export function toElementUpdate(element: HvacElement): { id: string; updates: Pa
 }
 
 function sheetOf(spec: DuctRunSpec, section: DuctLeg, settings: DuctDesignSettings): number {
-  return resolveSectionConstruction({
-    widthMm: section.widthMm, heightMm: section.heightMm, service: spec.service, construction: spec.construction,
-    settings, pressureClassPa: spec.pressureClassPa, jointSystem: spec.jointSystem, gaugeOverrideMm: spec.gaugeOverrideMm,
-  }).sheetThicknessMm ?? 1;
+  return runSectionSheetMm(spec, section, settings);
 }
 
 /** Where a run starts: its first point, the plan direction of its first leg, its level. */

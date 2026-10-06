@@ -12,6 +12,7 @@ declare const process: { env: { NODE_ENV?: string } };
 
 import * as fabric from "fabric";
 import { useEffect, useRef, useCallback, useMemo, useState } from "react";
+import { Box3 } from "three";
 import { shallow } from "zustand/shallow";
 
 import type { ArchitecturalObjectDefinition } from "../data";
@@ -984,6 +985,27 @@ export function DrawingCanvas({
         const screen = worldToScreenFromFabricViewport(point, viewport as unknown as readonly [number, number, number, number, number, number]);
         const rect = fabricCanvas.getElement().getBoundingClientRect();
         return { x: rect.left + screen.x, y: rect.top + screen.y };
+      },
+      /** A model point (mm, z up) where the 3D views draw it, in client pixels; null without a 3D camera. */
+      modelToClient3D: (point: { x: number; y: number; z: number }) => {
+        const camera = hybridControllerRef.current?.camera;
+        const host = hostRef.current;
+        if (!camera || !host) return null;
+        camera.updateMatrixWorld();
+        const clip = modelPointToWorld({ x: point.x, y: point.y }, point.z).project(camera);
+        const rect = host.getBoundingClientRect();
+        return { x: rect.left + ((clip.x + 1) / 2) * rect.width, y: rect.top + ((1 - clip.y) / 2) * rect.height };
+      },
+      /** Frame a model box (mm, z up) in the current 3D view, as a Fit to it would; until the scene changes, Fit keeps this box. */
+      frame3D: (min: { x: number; y: number; z: number }, max: { x: number; y: number; z: number }) => {
+        const controller = hybridControllerRef.current;
+        if (!controller) return false;
+        controller.setContentBounds(new Box3().setFromPoints([modelPointToWorld({ x: min.x, y: min.y }, min.z), modelPointToWorld({ x: max.x, y: max.y }, max.z)]));
+        return controller.fitContent(undefined, false);
+      },
+      /** Turn the 3D camera about its target (degrees: polar from straight down, azimuth about the vertical). */
+      orbit3D: (polarDeg: number, azimuthDeg: number) => {
+        hybridControllerRef.current?.orbitTo((polarDeg * Math.PI) / 180, (azimuthDeg * Math.PI) / 180, false);
       },
     };
     return () => {

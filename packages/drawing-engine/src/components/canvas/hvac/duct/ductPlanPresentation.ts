@@ -182,14 +182,54 @@ function transitionOutline(piece: DuctPiece, sheet: number): Point2D[] {
   ];
 }
 
+/** Half the collar's width where it meets its parent: the cone's mouth, else the branch. */
+function collarMouthHalf(piece: DuctPiece, sheet: number): number {
+  const takeoff = piece.takeoff;
+  return (takeoff?.style === 'conical' || takeoff?.style === 'round-conical') && takeoff.openingMm
+    ? takeoff.openingMm / 2 + sheet : piece.widthMm / 2 + sheet;
+}
+
+/**
+ * A collar off a round main meets it along the main's side line in plan: both
+ * of its sides run back to that line (or are cut back to it), so a 45° lateral
+ * neither leaves a gap beside the main nor overlaps it. Its two corners there,
+ * left then right of the branch; null for a collar off a flat wall. `sheet` is
+ * the outline's growth (the sheet, or the sheet and insulation), applied to the
+ * main as well.
+ */
+export function roundMainCollarStart(piece: DuctPiece, sheet: number): [Point2D, Point2D] | null {
+  const main = piece.takeoff?.roundMain;
+  if (!main) return null;
+  const outward = sub(piece.start, main.axisPoint);
+  const reach = Math.hypot(outward.x, outward.y);
+  if (reach < 1e-6) return null;
+  const n = scale(outward, 1 / reach);
+  const edge = add(main.axisPoint, scale(n, main.diameterMm / 2 + main.sheetMm + sheet - (piece.sheetThicknessMm ?? 1)));
+  const across = normalOf(piece.direction);
+  const half = piece.widthMm / 2 + sheet;
+  const mouth = collarMouthHalf(piece, sheet);
+  const corner = (side: 1 | -1): Point2D => {
+    const far = add(piece.end, scale(across, side * half));
+    const near = add(piece.start, scale(across, side * mouth));
+    const span = dot(sub(near, far), n);
+    return Math.abs(span) < 1e-9 ? near : add(far, scale(sub(near, far), dot(sub(edge, far), n) / span));
+  };
+  return [corner(1), corner(-1)];
+}
+
 /** Take-off: a straight collar, or a shoe with its 45° lead-in toward the parent's start. */
 function takeoffOutline(piece: DuctPiece, sheet: number): Point2D[] {
   const half = piece.widthMm / 2 + sheet;
   const lead = piece.takeoff?.leadInMm ?? 0;
+  const saddle = roundMainCollarStart(piece, sheet);
+  if (saddle) {
+    const n = normalOf(piece.direction);
+    return [saddle[0], add(piece.end, scale(n, half)), sub(piece.end, scale(n, half)), saddle[1]];
+  }
   if ((piece.takeoff?.style === 'conical' || piece.takeoff?.style === 'round-conical') && piece.takeoff.openingMm) {
     // Cone: the mouth on the parent wall is wider than the branch (SMACNA Fig. 2-6, D1 ≥ D2).
     const n = normalOf(piece.direction);
-    const mouth = piece.takeoff.openingMm / 2 + sheet;
+    const mouth = collarMouthHalf(piece, sheet);
     return [add(piece.start, scale(n, mouth)), add(piece.end, scale(n, half)), sub(piece.end, scale(n, half)), sub(piece.start, scale(n, mouth))];
   }
   if (lead <= 0 || !piece.takeoff) return rectangle(piece.start, piece.end, piece.direction, half);
@@ -464,8 +504,12 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
       }
     }
   }
+  // A collar off a round main joins it along the main's side line (a lateral's runs on the slant).
+  const collar = plan.pieces.find((piece) => piece.kind === 'takeoff' && piece.takeoff?.roundMain);
+  const collarJoint = collar ? roundMainCollarStart(collar, collar.sheetThicknessMm ?? 1) : null;
   // Flanges only: a runout's draw bands and a terminal's spigot carry no flange tick.
   const jointTicks = plan.joints.filter((joint) => !joint.vertical && joint.kind !== 'flex-connection' && joint.kind !== 'terminal-connection').map((joint) => {
+    if (joint.kind === 'tap-connection' && collarJoint) return { a: collarJoint[0], b: collarJoint[1], kind: joint.kind };
     const n = normalOf(joint.direction);
     const half = joint.outerWidthMm / 2 + (joint.kind === 'unit-connection' || joint.kind === 'tap-connection' ? 0 : FLANGE_TICK_OVERHANG_MM);
     return { a: add(joint.point, scale(n, half)), b: sub(joint.point, scale(n, half)), kind: joint.kind };

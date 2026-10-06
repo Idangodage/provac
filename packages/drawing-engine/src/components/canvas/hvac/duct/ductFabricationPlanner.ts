@@ -21,6 +21,7 @@ import {
   splitFitting,
   splitOutlet,
   tapAttachment,
+  type RoundMainCylinder,
   type SplitFittingGeometry,
   type TapAttachment,
 } from './ductBranches';
@@ -39,7 +40,7 @@ import {
   type DuctVaneSpec,
 } from './ductFittingRules';
 import { FLEX_RULES, flexCurve } from './ductFlex';
-import { resolveSectionConstruction, type SectionConstruction } from './ductGauge';
+import { resolveSectionConstruction, runSectionSheetMm, type SectionConstruction } from './ductGauge';
 import {
   TURN_EPSILON_DEG,
   add,
@@ -213,6 +214,8 @@ export interface DuctTakeoffInfo {
   openingMm?: number;
   /** Parent leg direction (the lead-in points toward its start, −d). */
   parentDirection: Point2D;
+  /** Off a round main: the main's cylinder, which the collar is cut to (its saddle). */
+  roundMain?: RoundMainCylinder;
 }
 
 export interface DuctPiece {
@@ -878,10 +881,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       issues.push({ code: 'DU_STALE', severity: 'warning', point: spec.path[0], message: 'The run this branch was taken off is missing.' });
     } else if (start.kind === 'tap') {
       const parentSection = parentSpec.legs[start.legIndex];
-      const parentSheet = parentSection
-        ? resolveSectionConstruction({ widthMm: parentSection.widthMm, heightMm: parentSection.heightMm, service: parentSpec.service,
-          construction: parentSpec.construction, settings, pressureClassPa: parentSpec.pressureClassPa, jointSystem: parentSpec.jointSystem, gaugeOverrideMm: parentSpec.gaugeOverrideMm }).sheetThicknessMm ?? 1
-        : 1;
+      const parentSheet = parentSection ? runSectionSheetMm(parentSpec, parentSection, settings) : 1;
       tap = tapAttachment(parentSpec, start, firstLeg, parentSheet, settings);
       const roundMain = Boolean(parentSection && isRoundLeg(parentSection));
       if (roundMain && !isRoundMainTapStyle(start.style)) {
@@ -936,8 +936,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     } else {
       const style = parentSpec.end.kind === 'split' ? parentSpec.end.style : 'bullhead';
       const lastSection = parentSpec.legs[parentSpec.legs.length - 1]!;
-      const parentSheet = resolveSectionConstruction({ widthMm: lastSection.widthMm, heightMm: lastSection.heightMm, service: parentSpec.service,
-        construction: parentSpec.construction, settings, pressureClassPa: parentSpec.pressureClassPa, jointSystem: parentSpec.jointSystem, gaugeOverrideMm: parentSpec.gaugeOverrideMm }).sheetThicknessMm ?? 1;
+      const parentSheet = runSectionSheetMm(parentSpec, lastSection, settings);
       const outlet = splitOutlet(parentSpec, style, start.side, firstLeg, parentSheet, settings);
       leaving = outlet?.direction ?? null;
       if (parentSpec.end.kind !== 'split') {
@@ -1072,6 +1071,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
             takeoff: {
               style: (spec.start as { style: DuctTapStyle }).style, leadInMm: tap.leadInMm, parentDirection: tap.parentDirection,
               ...(tap.openingDiameterMm !== null ? { openingMm: tap.openingDiameterMm } : {}),
+              ...(tap.roundMain ? { roundMain: tap.roundMain } : {}),
             },
           });
           // The shoe's lead-in adds a triangular cheek pair and a sloped wall.

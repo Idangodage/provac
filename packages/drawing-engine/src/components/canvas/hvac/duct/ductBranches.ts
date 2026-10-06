@@ -51,6 +51,17 @@ export interface TapAttachment {
   /** Station range of the opening on the parent leg (lead-in included). */
   openingFromMm: number;
   openingToMm: number;
+  /** A round main: the cylinder the collar is cut to (its saddle), for drawing the collar on the curved wall. */
+  roundMain?: RoundMainCylinder;
+}
+
+/** A round main at a tap: its axis at the tap station and its outside (clear Ø + sheet). */
+export interface RoundMainCylinder {
+  diameterMm: number;
+  sheetMm: number;
+  /** The main's axis at the tap station (plan) and its height. */
+  axisPoint: Point2D;
+  axisZ: number;
 }
 
 export function tapAttachment(
@@ -82,6 +93,7 @@ export function tapAttachment(
       openingDiameterMm: geometry.openingMm,
       openingFromMm: tap.stationMm - geometry.windowHalfMm,
       openingToMm: tap.stationMm + geometry.windowHalfMm,
+      roundMain: { diameterMm: section.diameterMm!, sheetMm: parentSheetMm, axisPoint: along, axisZ: leg.start.z + section.heightMm / 2 },
     };
   }
   const leadInMm = tap.style === 'shoe-45' ? shoeLeadInMm(branch.widthMm) : 0;

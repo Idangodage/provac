@@ -426,12 +426,18 @@ export function sweepCircularRings(rings: DuctRoundRing[]): THREE.BufferGeometry
     }
     return points;
   });
+  return loftRings(corners);
+}
+
+/** Open tube through rings of matching vertices (a quad between each pair of neighbouring rings). */
+export function loftRings(rings: ReadonlyArray<readonly THREE.Vector3[]>): THREE.BufferGeometry | null {
+  if (rings.length < 2) return null;
   const positions: number[] = [];
-  for (let index = 1; index < corners.length; index += 1) {
-    const r0 = corners[index - 1]!;
-    const r1 = corners[index]!;
-    for (let k = 0; k < ROUND_SEGMENTS; k += 1) {
-      const next = (k + 1) % ROUND_SEGMENTS;
+  for (let index = 1; index < rings.length; index += 1) {
+    const r0 = rings[index - 1]!;
+    const r1 = rings[index]!;
+    for (let k = 0; k < r0.length; k += 1) {
+      const next = (k + 1) % r0.length;
       const quad = [r0[k]!, r0[next]!, r1[next]!, r0[k]!, r1[next]!, r1[k]!];
       for (const vertex of quad) positions.push(vertex.x, vertex.y, vertex.z);
     }
@@ -440,6 +446,69 @@ export function sweepCircularRings(rings: DuctRoundRing[]): THREE.BufferGeometry
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.computeVertexNormals();
   return geometry;
+}
+
+/**
+ * A round collar off a round main (a 90° tap, a conical tap, a 45° lateral),
+ * as the fabricator cuts it: every generator of the collar runs back to where
+ * it meets the main's cylinder, so the collar ends on the saddle along the
+ * curved wall instead of in a flat ring that stands off the main on one side.
+ * `t` grows the collar and the main alike (the sheet, or sheet and insulation
+ * for the skin). A conical tap on a round main is concentric with its branch.
+ * Its start ring (on the main) and end ring (the branch end), or null for a
+ * collar off a flat wall.
+ */
+export function roundMainCollarRings(piece: DuctPiece, t: number): { start: THREE.Vector3[]; end: THREE.Vector3[] } | null {
+  const takeoff = piece.takeoff;
+  const main = takeoff?.roundMain;
+  if (!takeoff || !main || piece.diameterMm === undefined) return null;
+  const mainRadius = main.diameterMm / 2 + main.sheetMm + t - (piece.sheetThicknessMm ?? 1);
+  const radius = piece.diameterMm / 2 + t;
+  const mouth = takeoff.style === 'round-conical' && takeoff.openingMm ? takeoff.openingMm / 2 + t : radius;
+  const z = piece.centreZ;
+  const across = { x: -piece.direction.y, y: piece.direction.x };
+  const ring = (point: Point2D, r: number) => Array.from({ length: ROUND_SEGMENTS }, (_, k) => {
+    const phi = (2 * Math.PI * k) / ROUND_SEGMENTS;
+    const a = r * Math.cos(phi);
+    return new THREE.Vector3(point.x + across.x * a, point.y + across.y * a, z + r * Math.sin(phi));
+  });
+  const end = ring(piece.end, radius);
+  const m = takeoff.parentDirection;
+  // Across the main's (level) axis: drop the component along it.
+  const acrossAxis = (x: number, y: number, h: number) => {
+    const along = x * m.x + y * m.y;
+    return { x: x - m.x * along, y: y - m.y * along, z: h };
+  };
+  const start = ring(piece.start, mouth).map((from, k) => {
+    const generator = end[k]!.clone().sub(from);
+    const w = acrossAxis(from.x - main.axisPoint.x, from.y - main.axisPoint.y, from.z - main.axisZ);
+    const u = acrossAxis(generator.x, generator.y, generator.z);
+    const a = u.x * u.x + u.y * u.y + u.z * u.z;
+    if (a < 1e-9) return from;
+    const b = 2 * (w.x * u.x + w.y * u.y + w.z * u.z);
+    const c = w.x * w.x + w.y * w.y + w.z * w.z - mainRadius * mainRadius;
+    const discriminant = b * b - 4 * a * c;
+    // It leaves the cylinder at the larger root; a generator that misses it keeps its closest approach.
+    const s = discriminant >= 0 ? (-b + Math.sqrt(discriminant)) / (2 * a) : -b / (2 * a);
+    return from.clone().add(generator.multiplyScalar(s));
+  });
+  return { start, end };
+}
+
+/** A round-main collar cut to its saddle, with its spin-in bead just past the saddle's far point. */
+function addRoundMainCollar(piece: DuctPiece, t: number, metal: THREE.Material, push: MeshPush): boolean {
+  const rings = roundMainCollarRings(piece, t);
+  if (!rings) return false;
+  push('duct-metal', metal, loftRings([rings.start, rings.end]));
+  if (piece.takeoff?.style === 'round-conical') return true;
+  const d = piece.direction;
+  const reach = Math.max(...rings.start.map((point) => (point.x - piece.start.x) * d.x + (point.y - piece.start.y) * d.y));
+  const from = Math.max(0, Math.min(reach + 25, piece.lengthMm - 8));
+  const at = (distance: number) => ({ x: piece.start.x + d.x * distance, y: piece.start.y + d.y * distance });
+  const radius = piece.diameterMm! / 2 + t + 4;
+  push('duct-flanges', material(DUCT_3D_COLORS.flange, 0.15, 0.5),
+    sweepCircularRings([{ point: at(from), z: piece.centreZ, radius }, { point: at(from + 8), z: piece.centreZ, radius }]));
+  return true;
 }
 
 /** A flat disc square to `axis` (end cap, damper blade). */
@@ -727,6 +796,7 @@ function addRoundPiece(piece: DuctPiece, t: number, metal: THREE.Material, push:
     ]));
     return;
   }
+  if (piece.kind === 'takeoff' && addRoundMainCollar(piece, t, metal, push)) return;
   if (piece.kind === 'takeoff' && (piece.takeoff?.style === 'conical' || piece.takeoff?.style === 'round-conical') && piece.takeoff.openingMm) {
     const mouth = piece.takeoff.openingMm / 2 + t;
     push('duct-metal', metal, sweepCircularRings([

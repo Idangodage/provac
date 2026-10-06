@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { HvacElement, Point2D } from '../../../../types';
 import { buildHvacElementMesh } from '../three3d/buildHvacElementMesh';
+import { roundMainCollarRings } from '../three3d/ductMeshes';
 
 import { resolveUnitAirPorts } from './ductAirPorts';
 import { buildDuctBom } from './ductBom';
@@ -160,6 +161,112 @@ describe('take-offs off a round main (SMACNA Fig. 3-4 / 3-5)', () => {
     const leg = constrainDuctLeg({ x: 0, y: 0 }, { x: 1000, y: 0 }, base, { first: false, mode: '90', returnTurns: true });
     expect(leg.direction.x).toBeCloseTo(1, 6);
     expect(leg.direction.y).toBeCloseTo(0, 6);
+  });
+});
+
+describe('a round-main collar sits on the curved main (cut to its saddle)', () => {
+  /** A branch off the Ø355 main by `style`; a lateral turns back square after 800 mm. */
+  const branch = (main: HvacElement, style: DuctTapStyle) => {
+    if (style !== 'round-lateral') return branchOff(main, style, 200, [{ x: 1500, y: 0 }]);
+    const probe = tapOrigin(main, settings, { legIndex: 0, stationMm: 3000, side: 1, style, vcd: true }, roundLeg(200))!;
+    const direction = (probe as { direction: Point2D }).direction;
+    return branchOff(main, style, 200, [{ x: direction.x * 800, y: direction.y * 800 }, { x: Math.sign(direction.x) * 1500, y: 0 }]);
+  };
+  // The main runs along −y from the collar: its axis is x = the path's x, at half its diameter above the clear bottom.
+  const axisOf = (main: HvacElement) => {
+    const start = readDuctRunSpec(main)!.path[0]!;
+    return { x: start.x, z: start.z + MAIN_D / 2 };
+  };
+  const styles: DuctTapStyle[] = ['round-lateral', 'round-tee', 'round-conical'];
+
+  for (const style of styles) {
+    it(`${style}: the collar's start lies on the main's outside all round, bare and in its insulation skin`, () => {
+      const main = roundMain();
+      const { element, plan } = branch(main, style);
+      expect(codes(plan)).toEqual([]);
+      const takeoff = plan.pieces[0]!;
+      const cylinder = takeoff.takeoff!.roundMain!;
+      expect(cylinder.diameterMm).toBe(MAIN_D);
+      // The cylinder is the main as drawn: its sheet is the main's own.
+      const mainPlan = planDuctRun(main, { settings, scene: [unit, main, element] })!;
+      expect(mainPlan.pieces.find((piece) => piece.kind === 'straight' && piece.diameterMm === MAIN_D)!.sheetThicknessMm).toBe(cylinder.sheetMm);
+      const axis = axisOf(main);
+      for (const growth of [0, 25]) {
+        const rings = roundMainCollarRings(takeoff, (takeoff.sheetThicknessMm ?? 1) + growth)!;
+        const outside = MAIN_D / 2 + cylinder.sheetMm + growth;
+        for (const point of rings.start) {
+          expect(Math.hypot(point.x - axis.x, point.z - axis.z)).toBeCloseTo(outside, 3);
+          // On the branch's side of the main, never through to the far side.
+          expect(point.x - axis.x).toBeGreaterThan(0);
+        }
+        // The branch end stays where the plan puts it.
+        for (const point of rings.end) expect(Math.hypot(point.x - takeoff.end.x, point.y - takeoff.end.y, point.z - takeoff.centreZ)).toBeLessThan(outside);
+      }
+    });
+  }
+
+  it('in plan a lateral\'s sides run to the main\'s side line (no gap, no overlap), and its joint lies along it', () => {
+    const main = roundMain();
+    const { plan } = branch(main, 'round-lateral');
+    const takeoff = plan.pieces[0]!;
+    const sheet = takeoff.sheetThicknessMm ?? 1;
+    const edgeX = axisOf(main).x + MAIN_D / 2 + takeoff.takeoff!.roundMain!.sheetMm;
+    const presentation = buildDuctPlanPresentation(plan);
+    const outline = presentation.piecePolygons.find((piece) => piece.kind === 'takeoff')!.polygon;
+    expect(outline[0]!.x).toBeCloseTo(edgeX, 6);
+    expect(outline[3]!.x).toBeCloseTo(edgeX, 6);
+    // Both sides stay parallel to the branch: the cut is a slanted end, not a pinched one.
+    const along = (a: Point2D, b: Point2D) => ((b.x - a.x) * takeoff.direction.y - (b.y - a.y) * takeoff.direction.x);
+    expect(along(outline[0]!, outline[1]!)).toBeCloseTo(0, 6);
+    expect(along(outline[3]!, outline[2]!)).toBeCloseTo(0, 6);
+    expect(Math.hypot(outline[0]!.x - outline[3]!.x, outline[0]!.y - outline[3]!.y)).toBeCloseTo((200 + 2 * sheet) * Math.SQRT2, 3);
+    const tick = presentation.jointTicks.find((joint) => joint.kind === 'tap-connection')!;
+    expect(tick.a.x).toBeCloseTo(edgeX, 6);
+    expect(tick.b.x).toBeCloseTo(edgeX, 6);
+  });
+
+  it('a 90° or conical tap keeps its square end in plan; a take-off off a flat wall carries no cylinder', () => {
+    const main = roundMain();
+    for (const style of ['round-tee', 'round-conical'] as DuctTapStyle[]) {
+      const { plan } = branch(main, style);
+      const takeoff = plan.pieces[0]!;
+      const sheet = takeoff.sheetThicknessMm ?? 1;
+      const mouth = (style === 'round-conical' ? takeoff.takeoff!.openingMm! : 200) / 2 + sheet;
+      const outline = buildDuctPlanPresentation(plan).piecePolygons.find((piece) => piece.kind === 'takeoff')!.polygon;
+      expect(outline[0]!.x).toBeCloseTo(takeoff.start.x, 6);
+      expect(Math.abs(outline[0]!.y - takeoff.start.y)).toBeCloseTo(mouth, 6);
+    }
+    const rect = buildDuctRunDraftElement({ port: supply, points: [{ x: supply.lip.x, y: supply.lip.y - 6000 }], legSizes: [{ widthMm: 600, heightMm: 300 }] }, 'rect');
+    for (const style of ['spin-in', 'conical'] as DuctTapStyle[]) {
+      const takeoff = branchOff(rect, style, 200, [{ x: 1500, y: 0 }]).plan.pieces[0]!;
+      expect(takeoff.takeoff!.roundMain).toBeUndefined();
+      expect(roundMainCollarRings(takeoff, 1)).toBeNull();
+    }
+  });
+
+  it('3D: the collar is drawn from its saddle, its bead clear of the main', () => {
+    const main = roundMain();
+    const { element } = branch(main, 'round-lateral');
+    const group = buildHvacElementMesh(element, { allElements: [unit, main, element], ductSettings: settings })!;
+    group.updateMatrixWorld(true);
+    const axis = axisOf(main);
+    const metal = group.getObjectByName('duct-metal') as THREE.Mesh;
+    const position = metal.geometry.getAttribute('position');
+    let deepest = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < position.count; index += 1) {
+      const x = position.getX(index);
+      const z = position.getZ(index);
+      if (position.getY(index) > supply.lip.y - 2000) continue;
+      deepest = Math.min(deepest, Math.hypot(x - axis.x, z - axis.z));
+    }
+    // Nothing of the branch reaches inside the main's sheet.
+    expect(deepest).toBeGreaterThan(MAIN_D / 2 - 0.5);
+    // The spin-in bead (and the slip sleeve on the spigot) stay outside the main: the old flat
+    // collar put its bead 25 mm out on the axis side, 56 mm inside the main.
+    const flanges = (group.getObjectByName('duct-flanges') as THREE.Mesh).geometry.getAttribute('position');
+    let closest = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < flanges.count; index += 1) closest = Math.min(closest, Math.hypot(flanges.getX(index) - axis.x, flanges.getZ(index) - axis.z));
+    expect(closest).toBeGreaterThan(MAIN_D / 2 - 2);
   });
 });
 

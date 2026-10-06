@@ -31,7 +31,7 @@ import {
 } from './ductCatalog';
 import { roundMinimumThickness, ROUND_REINFORCEMENT_ANGLES, type DuctRoundJointType } from './ductRoundRules';
 import type { DuctDesignSettings, DuctGaugeMode, DuctJointSystem } from './ductSettings';
-import type { DuctConstruction, DuctService } from './ductTypes';
+import type { DuctConstruction, DuctLeg, DuctRunSpec, DuctService } from './ductTypes';
 import {
   SMACNA_REINFORCEMENT_SPACINGS_MM,
   SMACNA_TABLE_1_3M,
@@ -198,6 +198,25 @@ function resolveJoint(
     sheetMm,
     message: `A TDC flange cannot reach class ${required} (${mode} pressure) with the stocked sheets; use an angle flange.`,
   };
+}
+
+/**
+ * The sheet one of a run's sections is made of, by the run's own choices (a
+ * round section by the round tables, as the run's own plan resolves it), or
+ * `fallback` when it cannot be resolved. Branches use it for their parent's
+ * wall, so a collar meets the parent's real outside.
+ */
+export function runSectionSheetMm(
+  spec: Pick<DuctRunSpec, 'service' | 'construction' | 'pressureClassPa' | 'jointSystem' | 'gaugeOverrideMm'>,
+  section: DuctLeg,
+  settings: DuctDesignSettings,
+  fallback = 1,
+): number {
+  return resolveSectionConstruction({
+    widthMm: section.widthMm, heightMm: section.heightMm, service: spec.service, construction: spec.construction,
+    settings, pressureClassPa: spec.pressureClassPa, jointSystem: spec.jointSystem, gaugeOverrideMm: spec.gaugeOverrideMm,
+    ...(section.diameterMm !== undefined ? { diameterMm: section.diameterMm } : {}),
+  }).sheetThicknessMm ?? fallback;
 }
 
 export function resolveSectionConstruction(input: SectionConstructionInput): SectionConstruction {

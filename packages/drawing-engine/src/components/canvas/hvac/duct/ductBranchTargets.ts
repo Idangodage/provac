@@ -9,7 +9,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { legNormal, splitOutlet, tapAttachment } from './ductBranches';
 import type { DuctDraftOrigin } from './ductDraft';
 import { getDuctRunPlan } from './ductFabricationPlanner';
-import { resolveSectionConstruction } from './ductGauge';
+import { runSectionSheetMm } from './ductGauge';
 import { add, dot, ductLegs, scale, sub } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
 import { plenumGeometry, spigotAttachment } from './ductPlenum';
@@ -29,10 +29,7 @@ import {
 } from './ductTypes';
 
 function parentSheetMm(spec: DuctRunSpec, section: DuctLeg, settings: DuctDesignSettings): number {
-  return resolveSectionConstruction({
-    widthMm: section.widthMm, heightMm: section.heightMm, service: spec.service, construction: spec.construction,
-    settings, pressureClassPa: spec.pressureClassPa, jointSystem: spec.jointSystem, gaugeOverrideMm: spec.gaugeOverrideMm,
-  }).sheetThicknessMm ?? 1;
+  return runSectionSheetMm(spec, section, settings);
 }
 
 /**
