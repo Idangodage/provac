@@ -37,6 +37,7 @@ import { neckVelocityMs } from './ductSizing';
 import { DUCT_SOURCES, isPracticeSource } from './ductSources';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
 import { ductSystemRootOfRun } from './ductSystemSizing';
+import { TERMINAL_FACES_BY_SERVICE } from './ductTerminalCatalog';
 import {
   DUCT_TERMINAL_FILTER_CLASSES,
   DUCT_TERMINAL_NECKS_MM,
@@ -276,11 +277,7 @@ function ServedByRow({ element }: { element: HvacElement }) {
   );
 }
 
-/** The faces offered for each service (in ceilings a louvred or egg-crate face is a return grille). */
-const TERMINAL_FACES: Record<'supply' | 'return', readonly DuctTerminalKind[]> = {
-  supply: ['square-4way', 'round', 'linear-slot', 'perforated'],
-  return: ['return-egg-crate', 'louvred', 'perforated', 'square-4way', 'round', 'linear-slot'],
-};
+const TERMINAL_FACES = TERMINAL_FACES_BY_SERVICE;
 
 export function DuctTerminalInspector({ element }: { element: HvacElement }) {
   const { updateHvacElement, hvacElements, ductSettings } = useSmartDrawingStore((state) => ({

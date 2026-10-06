@@ -9,7 +9,7 @@ import { getDuctRunPlan } from './ductFabricationPlanner';
 import { branchAnchor } from './ductFollow';
 import { applyDuctSegmentEdit, roundBranchFor, tapStyleForMain } from './ductSegmentEdits';
 import { resolveDuctSettings } from './ductSettings';
-import { terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from './ductTerminals';
+import { readDuctTerminalSpec, terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from './ductTerminals';
 import { readDuctRunSpec, roundLeg, type DuctLeg, type DuctTapStyle } from './ductTypes';
 
 const settings = resolveDuctSettings({});
@@ -75,7 +75,8 @@ describe('a take-off\'s fitting follows its main\'s shape, leaving at the same a
     // A cone needs the main to be Ø + flare + 20 high: 200 + 50 + 20 = 270 ≤ 300.
     expect(tapStyleForMain('round-conical', false, rect, 200, settings)).toEqual({ style: 'conical' });
     expect(tapStyleForMain('round-conical', false, rect, 250, settings)).toEqual({ style: 'spin-in' });
-    expect(tapStyleForMain('round-lateral', false, rect, 200, settings)).toHaveProperty('refused');
+    // A lateral has no square counterpart: a spin-in, its branch turning with it (re-aimed).
+    expect(tapStyleForMain('round-lateral', false, rect, 200, settings)).toEqual({ style: 'spin-in' });
   });
 
   it('a rectangular branch off a main turned round takes its equal-friction size, at most ⅔ of the main (S3.4)', () => {
@@ -125,7 +126,7 @@ describe('a segment edit carries everything that follows it', () => {
     expect(specOf(after, 'a').legs).toEqual([roundLeg(300), roundLeg(300)]);
   });
 
-  it('a round main with a 45° lateral cannot turn rectangular until the lateral is changed', () => {
+  it('a round main with a 45° lateral turns rectangular, the lateral becoming a spin-in that its branch turns with', () => {
     const main = buildDuctRunDraftElement({ port, points: [S(6000)], legSizes: [roundLeg(355)] }, 'main');
     const origin = tapOrigin(main, settings, { legIndex: 0, stationMm: 3000, side: 1, style: 'round-lateral', vcd: true }, roundLeg(200))!;
     if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
@@ -136,9 +137,9 @@ describe('a segment edit carries everything that follows it', () => {
     }, 'lateral');
     const list = [unit, main, lateral];
     const result = applyDuctSegmentEdit(list, settings, { kind: 'leg-section', runId: 'main', sections: [{ leg: 0, section: { widthMm: 500, heightMm: 300 } }] });
-    expect(result.refused).toMatch(/45° lateral/);
-    expect(result.updates).toEqual([]);
-    expect(applyDuctSegmentEdit(list, settings, { kind: 'tap', runId: 'lateral', style: 'round-tee' }).refused).toMatch(/another angle/);
+    expect(result.refused).toBeUndefined();
+    expect(readDuctRunSpec(result.updates.find((element) => element.id === 'lateral')!)!.start).toMatchObject({ style: 'spin-in' });
+    expect(applyDuctSegmentEdit(list, settings, { kind: 'tap', runId: 'lateral', style: 'round-tee' }).refused).toBeUndefined();
   });
 
   it('a take-off swapped for a round collar takes a round branch; its end stays', () => {
@@ -169,5 +170,110 @@ describe('a segment edit carries everything that follows it', () => {
     const run = buildDuctRunDraftElement({ port, points: [S(3000)], legSizes: [{ widthMm: 600, heightMm: 300 }] }, 'k');
     const locked = { ...run, properties: { ...run.properties, ductRun: { ...readDuctRunSpec(run)!, locked: true } } };
     expect(applyDuctSegmentEdit([unit, locked], settings, { kind: 'leg-section', runId: 'k', sections: [{ leg: 0, section: roundLeg(450) }] }).refused).toMatch(/locked/);
+  });
+});
+
+/** A Ø200 take-off off a 600×300 main, on a flexible runout from 500 mm out to a diffuser turned `rotation` (its spigot's side). */
+function runoutScene(along: number, across: number, rotation: number, elevation = 2400): HvacElement[] {
+  const main = buildDuctRunDraftElement({ port, points: [S(6000)], legSizes: [{ widthMm: 600, heightMm: 300 }] }, 'main');
+  const terminal: HvacElement = { ...diffuser('sad', S(along, across)), rotation, elevation, label: 'SAD-1' };
+  const lip = terminalSpigotPort(terminal)!;
+  const round = roundLeg(200);
+  const origin = tapOrigin(main, settings, { legIndex: 0, stationMm: 3000, side: 1, style: 'spin-in', vcd: true }, round)!;
+  if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
+  const run = buildDuctRunDraftElement({
+    origin, points: [{ x: origin.point.x + origin.direction.x * 500, y: origin.point.y + origin.direction.y * 500 }, { x: lip.lip.x, y: lip.lip.y, z: lip.lip.z - lip.heightMm / 2 }],
+    legSizes: [round, round], end: { kind: 'terminal', terminalId: terminal.id, portId: lip.portId, flex: true },
+  }, 'r');
+  return [unit, terminal, main, run];
+}
+const pieceKinds = (list: readonly HvacElement[], id: string) => getDuctRunPlan(byId(list, id), list, settings)!.pieces.map((piece) => piece.kind);
+/** The run ends on the terminal's spigot: on its lip, its centre at the lip's height. */
+const onSpigot = (list: readonly HvacElement[], runId: string, terminalId: string) => {
+  const lip = terminalSpigotPort(byId(list, terminalId))!;
+  const end = specOf(list, runId).path.at(-1)!;
+  return Math.hypot(end.x - lip.lip.x, end.y - lip.lip.y) < 0.01 && Math.abs(end.z + lip.heightMm / 2 - lip.lip.z) < 0.01;
+};
+const planLength = (a: Point2D, b: Point2D) => Math.hypot(b.x - a.x, b.y - a.y);
+
+describe('a runout and the terminal at its end', () => {
+  it("a flexible runout made rigid runs straight on along the spigot's axis, onto its height by an offset; made flexible again, it leaves 800 mm before the spigot", () => {
+    const before = runoutScene(3000, 2200, 270);
+    const rigid = applyDuctSegmentEdit(before, settings, { kind: 'runout', runId: 'r', flex: false });
+    expect(rigid.refused).toBeUndefined();
+    const after = withUpdates(before, rigid.updates);
+    expect(specOf(after, 'r').end).toMatchObject({ flex: false });
+    expect(onSpigot(after, 'r', 'sad')).toBe(true);
+    // The spigot's centre is 15 mm above the branch's: a short drop on its axis, made as one offset (SMACNA Fig. 2-7); no elbow.
+    const kinds = pieceKinds(after, 'r');
+    expect(kinds).toContain('offset');
+    expect(kinds).not.toContain('elbow');
+    expect(kinds).not.toContain('flex');
+    expect(errors(after, 'r')).toEqual([]);
+    expect(rigid.notes.join(' ')).toMatch(/rigid Ø200 runout/);
+    const flex = applyDuctSegmentEdit(after, settings, { kind: 'runout', runId: 'r', flex: true });
+    expect(flex.refused).toBeUndefined();
+    const back = withUpdates(after, flex.updates);
+    const spec = specOf(back, 'r');
+    expect(spec.end).toMatchObject({ flex: true });
+    expect(planLength(spec.path.at(-2)!, spec.path.at(-1)!)).toBeCloseTo(800, 6);
+    expect(errors(back, 'r')).toEqual([]);
+  });
+
+  it("off the spigot's axis, the rigid runout turns onto it at one new elbow", () => {
+    const before = runoutScene(1500, 1800, 0);
+    const result = applyDuctSegmentEdit(before, settings, { kind: 'runout', runId: 'r', flex: false });
+    expect(result.refused).toBeUndefined();
+    const after = withUpdates(before, result.updates);
+    expect(pieceKinds(after, 'r').filter((kind) => kind === 'elbow')).toHaveLength(1);
+    expect(onSpigot(after, 'r', 'sad')).toBe(true);
+    expect(errors(after, 'r')).toEqual([]);
+  });
+
+  it("beside the spigot's axis it jogs onto it early, leaving a straight a flexible runout can take over; a spigot facing away is refused", () => {
+    // Level with the branch, 600 mm beside its line.
+    const before = runoutScene(3600, 3200, 270, 2385);
+    const after = withUpdates(before, applyDuctSegmentEdit(before, settings, { kind: 'runout', runId: 'r', flex: false }).updates);
+    const spec = specOf(after, 'r');
+    expect(planLength(spec.path.at(-2)!, spec.path.at(-1)!)).toBeCloseTo(1100, 6);
+    expect(onSpigot(after, 'r', 'sad')).toBe(true);
+    expect(errors(after, 'r')).toEqual([]);
+    const back = withUpdates(after, applyDuctSegmentEdit(after, settings, { kind: 'runout', runId: 'r', flex: true }).updates);
+    expect(planLength(specOf(back, 'r').path.at(-2)!, specOf(back, 'r').path.at(-1)!)).toBeCloseTo(800, 6);
+    expect(errors(back, 'r')).toEqual([]);
+    expect(applyDuctSegmentEdit(runoutScene(3000, 1800, 90), settings, { kind: 'runout', runId: 'r', flex: false }).refused).toMatch(/faces away/);
+  });
+
+  it("a new neck: the terminal's spigot and its runout take it, the run ending on the new spigot; a rigid runout is re-made onto it", () => {
+    for (const rigid of [false, true]) {
+      let before = runoutScene(3000, 2200, 270);
+      if (rigid) before = withUpdates(before, applyDuctSegmentEdit(before, settings, { kind: 'runout', runId: 'r', flex: false }).updates);
+      const result = applyDuctSegmentEdit(before, settings, { kind: 'terminal', terminalId: 'sad', neckMm: 250 });
+      expect(result.refused).toBeUndefined();
+      const after = withUpdates(before, result.updates);
+      expect(readDuctTerminalSpec(byId(after, 'sad'))!.neckDiameterMm).toBe(250);
+      // The branch is the runout's Ø200 throughout: all of it becomes Ø250.
+      expect(specOf(after, 'r').legs.every((leg) => leg.diameterMm === 250)).toBe(true);
+      expect(specOf(after, 'r').end).toMatchObject({ flex: !rigid });
+      expect(onSpigot(after, 'r', 'sad')).toBe(true);
+      expect(errors(after, 'r')).toEqual([]);
+      expect(result.notes.join(' ')).toMatch(/runout becomes Ø250/);
+    }
+  });
+
+  it('another face: the box resizes on its centre, its tag follows its type, the runout follows the spigot', () => {
+    const before = runoutScene(3000, 2200, 270);
+    const result = applyDuctSegmentEdit(before, settings, { kind: 'terminal', terminalId: 'sad', face: 'linear-slot' });
+    expect(result.refused).toBeUndefined();
+    const after = withUpdates(before, result.updates);
+    const terminal = byId(after, 'sad');
+    expect(readDuctTerminalSpec(terminal)!.kind).toBe('linear-slot');
+    expect(terminal.label).toBe('LSD-1');
+    const centre = (element: HvacElement) => ({ x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 });
+    expect(centre(terminal).x).toBeCloseTo(centre(byId(before, 'sad')).x, 6);
+    expect(centre(terminal).y).toBeCloseTo(centre(byId(before, 'sad')).y, 6);
+    expect(onSpigot(after, 'r', 'sad')).toBe(true);
+    expect(errors(after, 'r')).toEqual([]);
+    expect(applyDuctSegmentEdit(before, settings, { kind: 'terminal', terminalId: 'sad', face: 'square-4way' }).refused).toMatch(/already/);
   });
 });

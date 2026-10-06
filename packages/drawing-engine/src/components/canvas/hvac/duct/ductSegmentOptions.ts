@@ -31,15 +31,17 @@ import { ductSegmentOf, sectionLabel, TAKEOFF_TITLES, type DuctSegment } from '.
 import type { DuctDesignSettings } from './ductSettings';
 import { equivalentDiameterMm, sizeRectangular, sizeRound, velocityMs } from './ductSizing';
 import { resolveSoffitZ } from './ductSupports';
+import { DUCT_TERMINAL_NECKS_MM, TERMINAL_FACE_LABELS, TERMINAL_FACES_BY_SERVICE, terminalLabel } from './ductTerminalCatalog';
+import { readDuctTerminalSpec } from './ductTerminals';
 import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
 
-export type DuctOptionGroup = 'size' | 'swap' | 'tune' | 'accessory';
+export type DuctOptionGroup = 'size' | 'swap' | 'tune' | 'accessory' | 'terminal';
 
 /** What an option's small picture shows. */
 export type DuctOptionGlyph =
   | 'rect' | 'round' | 'elbow-radius' | 'elbow-vaned' | 'elbow-gored' | 'taper'
   | 'tap-shoe' | 'tap-straight' | 'tap-spin' | 'tap-conical' | 'tap-tee' | 'tap-lateral'
-  | 'split-y' | 'split-bullhead' | 'damper' | 'connector' | 'fire-damper' | 'cap' | 'open';
+  | 'split-y' | 'split-bullhead' | 'damper' | 'connector' | 'fire-damper' | 'cap' | 'open' | 'flex' | 'terminal';
 
 export interface DuctSegmentOption {
   /** Stable within the segment (survives a re-read of the same drawing). */
@@ -272,10 +274,9 @@ function takeoffOptions(scene: readonly HvacElement[], runId: string, context: D
   const offer = (style: DuctTapStyle, detail: string, firstLeg?: DuctLeg) => {
     const turns = lateralNow !== (style === 'round-lateral');
     options.push({
-      id: `tap:${style}`, group: 'swap', glyph: TAP_GLYPH[style], title: TAKEOFF_TITLES[style], detail,
+      id: `tap:${style}`, group: 'swap', glyph: TAP_GLYPH[style], title: TAKEOFF_TITLES[style], detail: turns ? `${detail}; the branch turns with it` : detail,
       edit: { kind: 'tap', runId, style, ...(firstLeg ? { firstLeg } : {}) },
       ...(style === start.style ? { current: true } : {}),
-      ...(turns ? { disabledReason: 'The branch would leave the main at another angle: its route has to turn with it.' } : {}),
     });
   };
   if (isRoundLeg(main)) {
@@ -288,9 +289,9 @@ function takeoffOptions(scene: readonly HvacElement[], runId: string, context: D
     if (moderate) {
       options.push({
         id: `main-rect:${moderate.widthMm}x${moderate.heightMm}`, group: 'swap', glyph: 'rect', title: `Rectangular main ${sectionLabel(moderate)}`,
-        detail: 'the main leg in rectangular duct; this collar becomes a spin-in or conical one',
+        detail: lateralNow ? 'the main leg in rectangular duct; this lateral becomes a spin-in and its branch turns with it'
+          : 'the main leg in rectangular duct; this collar becomes a spin-in or conical one',
         edit: { kind: 'leg-section', runId: parent.id, sections: [{ leg: start.legIndex, section: moderate }] },
-        ...(lateralNow ? { disabledReason: 'A 45° lateral has no square counterpart: change it to a 90° tee first.' } : {}),
       });
     }
   } else {
@@ -341,18 +342,88 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
       });
     }
   }
-  if (kind === 'split' && spec.end.kind === 'split' && spec.end.style !== 'wye') {
+  if (kind === 'split' && spec.end.kind === 'split') {
     const now = spec.end.style;
-    for (const style of ['y', 'bullhead'] as const) {
-      options.push({
-        id: `split:${style}`, group: 'swap', glyph: style === 'y' ? 'split-y' : 'split-bullhead',
-        title: style === 'y' ? 'Y split' : 'Bullhead tee', detail: style === 'y' ? 'divides the flow on radius elbows: the lower loss (SMACNA Fig. 2-5)' : 'square tee with turning vanes (SMACNA Fig. 2-5)',
-        edit: { kind: 'split', runId, style }, ...(style === now ? { current: true } : {}),
-      });
+    const last = rigidLegIndices(spec).at(-1);
+    const section = last !== undefined ? spec.legs[last]! : null;
+    if (now !== 'wye') {
+      for (const style of ['y', 'bullhead'] as const) {
+        options.push({
+          id: `split:${style}`, group: 'swap', glyph: style === 'y' ? 'split-y' : 'split-bullhead',
+          title: style === 'y' ? 'Y split' : 'Bullhead tee', detail: style === 'y' ? 'divides the flow on radius elbows: the lower loss (SMACNA Fig. 2-5)' : 'square tee with turning vanes (SMACNA Fig. 2-5)',
+          edit: { kind: 'split', runId, style }, ...(style === now ? { current: true } : {}),
+        });
+      }
+      // The same split in spiral duct: the last leg its equal-friction round size, a wye, the outlets round and turned 45°.
+      const round = section ? roundEquivalents(section, settings.autoRoundSizesMm).atOrAbove : null;
+      if (round && last !== undefined) {
+        options.push({
+          id: `split:wye:${round.diameterMm}`, group: 'swap', glyph: 'split-y', title: `Wye in Ø${round.diameterMm} spiral`,
+          detail: 'the run\'s last leg round, a wye (SMACNA Fig. 3-5); its outlets round, leaving at 45°',
+          edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: round }] },
+        });
+      }
+    } else if (section && last !== undefined) {
+      options.push({ id: 'split:wye', group: 'swap', glyph: 'split-y', title: 'Wye', detail: 'SMACNA Fig. 3-5', edit: { kind: 'split', runId, style: 'wye' }, current: true });
+      const rects = rectangularEquivalents(section.diameterMm!, { maxHeightMm: Math.min(context.voidHeightMm, section.diameterMm!), maxAspect: settings.aspectRatioAdvisory });
+      const moderate = [...rects].sort((a, b) => Math.abs(aspectOf(a) - 2) - Math.abs(aspectOf(b) - 2))[0];
+      if (moderate) {
+        for (const style of ['y', 'bullhead'] as const) {
+          options.push({
+            id: `split:${style}:${moderate.widthMm}x${moderate.heightMm}`, group: 'swap', glyph: style === 'y' ? 'split-y' : 'split-bullhead',
+            title: `${style === 'y' ? 'Y split' : 'Bullhead tee'} in ${sectionLabel(moderate)}`,
+            detail: `the run's last leg rectangular (SMACNA Fig. 2-5); its outlets rectangular, leaving square`,
+            edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: moderate }], splitStyle: style },
+          });
+        }
+      }
     }
   }
   if (kind === 'end-cap') {
     options.push({ id: 'end:open', group: 'accessory', glyph: 'open', title: 'Leave the end open', detail: 'for a later extension', edit: { kind: 'end', runId, end: 'open' } });
+  }
+  return options;
+}
+
+/** A runout made rigid or flexible, and the terminal at its end: other faces of its service, other necks. */
+function runoutOptions(scene: readonly HvacElement[], runId: string, context: DuctSegmentOptionContext): DuctSegmentOption[] {
+  const spec = context.spec;
+  const end = spec.end;
+  if (end.kind !== 'terminal') return [];
+  const options: DuctSegmentOption[] = [];
+  const terminal = scene.find((element) => element.id === end.terminalId);
+  const terminalSpec = terminal ? readDuctTerminalSpec(terminal) : null;
+  const kind = context.segment.kind;
+  if (kind === 'flex') {
+    options.push({
+      id: 'runout:rigid', group: 'swap', glyph: 'round', title: `Rigid runout in Ø${terminalSpec?.neckDiameterMm ?? ''} spiral`,
+      detail: 'a slip joint on the spigot: no flexible duct to sag or kink (SMACNA S3.23 keeps flex short)',
+      edit: { kind: 'runout', runId, flex: false },
+    });
+  } else if (!end.flex && (kind === 'straight' || kind === 'riser')) {
+    options.push({
+      id: 'runout:flex', group: 'accessory', glyph: 'flex', title: 'Flexible runout to the terminal',
+      detail: 'flexible duct from the run\'s level to the spigot (easier to fit; keep it short)', edit: { kind: 'runout', runId, flex: true },
+    });
+  }
+  if (terminal && terminalSpec && (kind === 'flex' || (!end.flex && context.segment.legIndex === spec.legs.length - 1))) {
+    const necks = [...DUCT_TERMINAL_NECKS_MM];
+    const at = necks.indexOf(terminalSpec.neckDiameterMm as (typeof necks)[number]);
+    for (const neck of [necks[at - 1], necks[at + 1]].filter((value): value is (typeof necks)[number] => value !== undefined)) {
+      options.push({
+        id: `neck:${neck}`, group: 'terminal', glyph: 'terminal', title: `Neck Ø${neck}`,
+        detail: `${terminal.label || 'the terminal'} on a Ø${neck} spigot; its runout follows (${neck > terminalSpec.neckDiameterMm ? 'slower and quieter' : 'smaller'})`,
+        edit: { kind: 'terminal', terminalId: terminal.id, neckMm: neck },
+      });
+    }
+    for (const face of TERMINAL_FACES_BY_SERVICE[terminalSpec.service]) {
+      if (face === terminalSpec.kind) continue;
+      options.push({
+        id: `face:${face}`, group: 'terminal', glyph: 'terminal', title: terminalLabel({ kind: face, service: terminalSpec.service, filter: terminalSpec.filter ?? null }),
+        detail: `${terminal.label || 'the terminal'} with a ${TERMINAL_FACE_LABELS[face].toLowerCase()} face, the same neck`,
+        edit: { kind: 'terminal', terminalId: terminal.id, face },
+      });
+    }
   }
   return options;
 }
@@ -373,6 +444,7 @@ export function ductSegmentOptions(scene: readonly HvacElement[], settings: Duct
   } else if (segment.kind === 'takeoff') {
     options = takeoffOptions(scene, runId, context, settings);
   }
+  options.push(...runoutOptions(scene, runId, context));
   options.push(...accessoryOptions(runId, context, settings));
   if (spec.locked) return options.map((option) => (option.current ? option : { ...option, disabledReason: 'The run is locked: unlock it to change it.' }));
   return options;

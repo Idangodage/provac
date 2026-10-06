@@ -514,6 +514,7 @@ function SegmentCard({ variant, focus, scene, settings, resolveAnchor, container
   const construction = figures?.construction ?? null;
   const swaps = options.filter((option) => option.group === 'size' || option.group === 'swap');
   const tunes = options.filter((option) => option.group === 'tune');
+  const terminalOptions = options.filter((option) => option.group === 'terminal');
   const accessories = options.filter((option) => option.group === 'accessory');
   // The peek's quick swaps: those that break no rule, the recommended first, then by life-cycle cost.
   const quick = swaps.filter((option) => {
@@ -615,6 +616,14 @@ function SegmentCard({ variant, focus, scene, settings, resolveAnchor, container
             ) : null}
             {editable && segment.kind === 'elbow' ? (
               <ElbowTune scene={scene} settings={settings} focus={focus} plan={plan} segment={segment} onPreview={preview} onApply={apply} />
+            ) : null}
+            {terminalOptions.length ? (
+              <div className="border-t border-slate-100 px-1.5 py-1.5" data-testid="duct-segment-terminal" onKeyDown={onListKey}>
+                <div className="px-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Terminal</div>
+                {terminalOptions.map((option) => (
+                  <OptionRow key={option.id} option={option} evaluation={evaluations.get(option.id)} badges={[]} compact onPreview={preview} onApply={apply} />
+                ))}
+              </div>
             ) : null}
             {accessories.length ? (
               <div className="border-t border-slate-100 px-1.5 py-1.5" data-testid="duct-segment-accessories" onKeyDown={onListKey}>

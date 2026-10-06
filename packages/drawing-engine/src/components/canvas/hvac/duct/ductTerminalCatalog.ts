@@ -58,6 +58,12 @@ export const TERMINAL_FACE_LABELS: Record<DuctTerminalKind, string> = {
   louvred: 'Louvred',
 };
 
+/** The faces offered for each service (in ceilings a louvred or egg-crate face is a return grille). */
+export const TERMINAL_FACES_BY_SERVICE: Record<DuctService, readonly DuctTerminalKind[]> = {
+  supply: ['square-4way', 'round', 'linear-slot', 'perforated'],
+  return: ['return-egg-crate', 'louvred', 'perforated', 'square-4way', 'round', 'linear-slot'],
+};
+
 /** The usual name of each face in the service it is usually used for. */
 export const TERMINAL_LABELS: Record<DuctTerminalKind, string> = {
   'square-4way': 'Square 4-way ceiling diffuser',

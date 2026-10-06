@@ -27,6 +27,8 @@ const PATHS: Record<DuctOptionGlyph, string> = {
   'fire-damper': 'M5 4h10v12H5z M5 16L15 4',
   cap: 'M2 6h12 M2 14h12 M14 5v10',
   open: 'M2 6h14 M2 14h14',
+  flex: 'M2 8c2-3 3 3 5 0s3 3 5 0s3 3 5 0 M2 12c2-3 3 3 5 0s3 3 5 0s3 3 5 0',
+  terminal: 'M3 4h14v12H3z M6 7h8v6H6z M10 1v3',
 };
 
 export function DuctSegmentGlyph({ glyph, className }: { glyph: DuctOptionGlyph; className?: string }) {

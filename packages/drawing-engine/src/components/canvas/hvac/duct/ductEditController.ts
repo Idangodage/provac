@@ -49,7 +49,10 @@ export function commitDuctRunSpec(element: HvacElement, spec: DuctRunSpec, actio
 /** Commit what a segment card's option changes (the run and everything that follows it), as one command. */
 export function commitDuctSegmentEdit(updates: readonly HvacElement[], action: string): void {
   if (updates.length === 0) return;
-  useSmartDrawingStore.getState().commitHvacElementCommand(action, { updates: updates.map(toElementUpdate) });
+  // A terminal's tag (its label) and type change with its face; a run's stay as they are.
+  useSmartDrawingStore.getState().commitHvacElementCommand(action, {
+    updates: updates.map((element) => ({ id: element.id, updates: { ...toElementUpdate(element).updates, label: element.label, type: element.type } })),
+  });
 }
 
 /** Commit an in-place edit (a leg, the end or a riser moved; a rise changed): one command, branches follow. */

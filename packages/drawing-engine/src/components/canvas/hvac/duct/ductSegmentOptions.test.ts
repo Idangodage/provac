@@ -95,6 +95,20 @@ describe('the options of a segment', () => {
   });
 });
 
+describe('a runout and its terminal', () => {
+  it("a flexible runout offers rigid duct, the terminal's necks either side and its service's other faces", () => {
+    const scene = system();
+    const options = ductSegmentOptions(scene, settings, 'b2', 'end:flex');
+    expect(ids(options)).toEqual(expect.arrayContaining(['runout:rigid', 'neck:150', 'neck:250', 'face:round', 'face:linear-slot', 'face:perforated']));
+    expect(ids(options)).not.toContain('face:square-4way');
+    expect(options.find((option) => option.id === 'neck:250')?.group).toBe('terminal');
+    const evaluation = evaluateDuctSegmentOption(scene, settings, 'b2', 'end:flex', options.find((option) => option.id === 'neck:250')!);
+    expect(evaluation.refused).toBeUndefined();
+    expect(evaluation.updates.map((element) => element.id)).toEqual(expect.arrayContaining(['d2', 'b2']));
+    expect(evaluation.action).toMatch(/neck Ø250/);
+  });
+});
+
 describe("a transition's taper", () => {
   it("is offered gentler and steeper (the project taper marked current); gentler makes it longer", () => {
     const scene = system();
