@@ -39,6 +39,7 @@ import {
   readUnitAirData,
   shareAirflow,
   sizeRectangular,
+  type TerminalAirflow,
   sizeRound,
   velocityMs,
   withinLimits,
@@ -139,6 +140,23 @@ export function basisAirflowM3h(
   if (typeof lps === 'number' && Number.isFinite(lps) && lps > 0) return { airflowM3h: lps * 3.6, source: 'unit' };
   const data = readUnitAirData(unit).airflowM3h?.[basis.fanSpeed] ?? null;
   return { airflowM3h: data, source: data ? 'manufacturer' : null };
+}
+
+/**
+ * Each terminal's airflow in a system as the sizing takes it: its own design
+ * airflow, else an equal share of what the system airflow leaves. The system
+ * airflow is the basis's (typed, the unit's field, else its data at the fan
+ * speed), else the terminals' own when every one has one; null without either.
+ */
+export function systemTerminalAirflows(
+  unit: Pick<HvacElement, 'properties'> | undefined,
+  basis: Pick<DuctSystemSizing, 'airflowM3h' | 'fanSpeed'>,
+  terminals: ReadonlyArray<{ id: string; spec: { designAirflowM3h: number | null } }>,
+): { systemAirflowM3h: number | null; source: DuctAirflowSource | null; shares: TerminalAirflow[] } {
+  const air = basisAirflowM3h(unit, basis);
+  const fixedTotal = terminals.reduce((sum, entry) => sum + (entry.spec.designAirflowM3h ?? 0), 0);
+  const systemAirflowM3h = air.airflowM3h ?? (terminals.every((entry) => entry.spec.designAirflowM3h) ? fixedTotal : null);
+  return { systemAirflowM3h, source: air.airflowM3h ? air.source : null, shares: shareAirflow(systemAirflowM3h ?? 0, terminals) };
 }
 
 // ---- The report ----
@@ -444,11 +462,8 @@ export function sizeDuctSystem(
     }
     return { id: element.id, spec: { designAirflowM3h: next } };
   });
-  const air = basisAirflowM3h(unit, input.basis);
-  const fixedTotal = effective.reduce((sum, entry) => sum + (entry.spec.designAirflowM3h ?? 0), 0);
-  const systemAirflow = air.airflowM3h ?? (effective.every((entry) => entry.spec.designAirflowM3h) ? fixedTotal : null);
+  const { systemAirflowM3h: systemAirflow, source: airflowSource, shares } = systemTerminalAirflows(unit, input.basis, effective);
   if (!systemAirflow) issues.push({ code: 'DU_AUTO_NO_DATA', severity: 'error', service, message: 'The unit has no airflow data: enter the system airflow, or each terminal\'s.' });
-  const shares = shareAirflow(systemAirflow ?? 0, effective);
   const flowOf = new Map(shares.map((share) => [share.terminalId, share]));
   const terminalsAirflow = shares.reduce((sum, share) => sum + share.airflowM3h, 0);
   if (systemAirflow && Math.abs(terminalsAirflow - systemAirflow) > systemAirflow * 0.1) {
@@ -917,7 +932,7 @@ export function sizeDuctSystem(
   });
   const unitAir = unit ? readUnitAirData(unit) : null;
   const report: DuctSystemSizingReport = {
-    service, rootRunId, unitId, basis, airflowM3h: systemAirflow, airflowSource: air.airflowM3h ? air.source : null, terminalsAirflowM3h: terminalsAirflow,
+    service, rootRunId, unitId, basis, airflowM3h: systemAirflow, airflowSource, terminalsAirflowM3h: terminalsAirflow,
     sections, terminals, plans: [], pressure: null, maxEspPa: unitAir?.maxEspPa ?? null, issues, errors: 0, warnings: 0, changedRunIds,
   };
   if (input.verify !== false) {

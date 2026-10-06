@@ -8,6 +8,7 @@ import type { HvacElement } from '../../../../types';
 
 import { findReattachTarget, REATTACH_REACH_MM } from './ductBranchTargets';
 import { applyDuctRunEdit, type DuctEditResult } from './ductEdits';
+import { ductRunElementWithSpec, followDuctsForUnitMove, moveDuctRuns, reanchorBranchesKeepingEnds, toElementUpdate } from './ductFollow';
 import {
   nextTerminalTag,
   readDuctTerminalSpec,
@@ -18,7 +19,6 @@ import {
   type DuctTerminalKind,
   type DuctTerminalSpec,
 } from './ductTerminals';
-import { ductRunElementWithSpec, followDuctsForUnitMove, moveDuctRuns, reanchorBranches, toElementUpdate } from './ductFollow';
 import { isDuctElement, readDuctRunSpec, type DuctRunSpec, type DuctService, type DuctTapStyle } from './ductTypes';
 
 /** Runs that follow moved units, to fold into the move's own command. */
@@ -41,8 +41,15 @@ export function commitDuctRunSpec(element: HvacElement, spec: DuctRunSpec, actio
   const state = useSmartDrawingStore.getState();
   const next = ductRunElementWithSpec(element, spec);
   const scene = state.hvacElements.map((candidate) => (candidate.id === element.id ? next : candidate));
-  const branches = reanchorBranches(scene, new Map([[element.id, next]]), state.ductSettings);
+  // An edit (a size, a fitting, an end) keeps where each branch goes: its end stays on its terminal.
+  const branches = reanchorBranchesKeepingEnds(scene, new Map([[element.id, next]]), state.ductSettings);
   state.commitHvacElementCommand(action, { updates: [next, ...branches].map(toElementUpdate) });
+}
+
+/** Commit what a segment card's option changes (the run and everything that follows it), as one command. */
+export function commitDuctSegmentEdit(updates: readonly HvacElement[], action: string): void {
+  if (updates.length === 0) return;
+  useSmartDrawingStore.getState().commitHvacElementCommand(action, { updates: updates.map(toElementUpdate) });
 }
 
 /** Commit an in-place edit (a leg, the end or a riser moved; a rise changed): one command, branches follow. */

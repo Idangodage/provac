@@ -675,9 +675,9 @@ interface TransitionPlan {
 }
 
 /** Level legs keep a flat bottom (the height changes on top); a riser's transition is concentric both ways. */
-function planTransition(from: DuctLeg, to: DuctLeg, settings: DuctDesignSettings, concentric = false): TransitionPlan {
+function planTransition(from: DuctLeg, to: DuctLeg, settings: DuctDesignSettings, concentric = false, taperDeg = settings.transitionTaperDeg): TransitionPlan {
   const rise = Math.max(Math.abs(to.widthMm - from.widthMm) / 2, Math.abs(to.heightMm - from.heightMm) / (concentric ? 2 : 1));
-  let slope = Math.ceil(rise / Math.tan((settings.transitionTaperDeg * Math.PI) / 180) / 10) * 10;
+  let slope = Math.ceil(rise / Math.tan((taperDeg * Math.PI) / 180) / 10) * 10;
   // A round reducer's cone is at least A - B and 102 mm long (SMACNA Fig. 3-5, L2).
   if (isRoundLeg(from) && isRoundLeg(to)) slope = Math.max(slope, Math.ceil(roundReducerMinLengthMm(from.diameterMm!, to.diameterMm!) / 10) * 10);
   return { from, to, neckMm: settings.elbowNeckMm, slopeMm: slope };
@@ -964,7 +964,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
   // ---- Transitions: where the section changes along the path. ----
   const transitions: Array<TransitionPlan | null> = spec.legs.map((section, index) => {
     const previous = index === 0 ? entrySection : spec.legs[index - 1]!;
-    return sameSection(previous, section) ? null : planTransition(previous, section, settings, Boolean(legs[index]?.vertical));
+    return sameSection(previous, section) ? null : planTransition(previous, section, settings, Boolean(legs[index]?.vertical), spec.nodeOverrides[String(index)]?.taperDeg);
   });
   if (transitions.some(Boolean)) practice.add(PRACTICE.transitionTaper);
   const startPiecesLength = startPieces.reduce((total, piece) => total + piece.lengthMm, 0);

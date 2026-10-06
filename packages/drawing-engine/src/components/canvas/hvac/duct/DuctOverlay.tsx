@@ -13,7 +13,7 @@
  * works like any other element. Shares the same-frame viewport bond as the
  * condensate and pipe overlays.
  */
-import { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 
 import type { HvacElement, Point2D, Room } from '../../../../types';
 import {
@@ -35,13 +35,25 @@ import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, t
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
 import { moveDuctRuns } from './ductFollow';
 import { ductLegs } from './ductGeometry';
-import { airPortMarkup, airTerminalMarkup, branchTargetMarkup, draftLabelMarkup, ductRunMarkup, ductSupportMarkup, type DuctMarkupStyle } from './ductOverlayMarkup';
-import { getDuctPlanPresentation } from './ductPick';
+import {
+  airPortMarkup,
+  airTerminalMarkup,
+  branchTargetMarkup,
+  draftLabelMarkup,
+  ductRunMarkup,
+  ductSupportMarkup,
+  segmentFocusMarkup,
+  type DuctMarkupStyle,
+} from './ductOverlayMarkup';
+import { distanceToPolygon, getDuctPlanPresentation } from './ductPick';
 import { buildDuctPlanPresentation } from './ductPlanPresentation';
+import { useDuctSegmentUiStore, type DuctSegmentFocus } from './ductSegmentUiStore';
+import { ductSegmentOfMark, segmentOutlines } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { getDuctSupportPlan } from './ductSupports';
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec } from './ductTypes';
+import type { ScreenRect } from './popoverPlacement';
 import { useDuctBuilding } from './useDuctBuilding';
 
 export interface DuctOverlayDraft {
@@ -63,6 +75,8 @@ export interface DuctOverlayHandle {
   setDraft: (draft: DuctOverlayDraft | null) => void;
   setHoveredPort: (key: string | null) => void;
   setBranchTarget: (target: DuctOverlayBranchTarget | null) => void;
+  /** Where a segment of a run is on screen (client pixels): the piece `anchorMark`, else the whole segment. */
+  segmentClientRect: (runId: string, key: string, anchorMark: string | null) => ScreenRect | null;
 }
 
 function markupStyle(k: number, settings: DuctDesignSettings): DuctMarkupStyle {
@@ -119,7 +133,12 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const runsRef = useRef<SVGGElement | null>(null);
   /** Committed runs the draft re-draws (a branch's parent, or runs being moved), hidden meanwhile. */
   const hiddenRunsRef = useRef<ReadonlySet<string>>(new Set());
-  const moveRef = useRef<{ ids: string[]; start: Point2D; startClient: Point2D; moved: boolean; delta: Point2D } | null>(null);
+  const moveRef = useRef<{ ids: string[]; start: Point2D; startClient: Point2D; moved: boolean; delta: Point2D; piece: { runId: string; mark: string } | null } | null>(null);
+  /** The segment focus outlines (painted imperatively from the segment store). */
+  const segmentRef = useRef<SVGGElement | null>(null);
+  /** A segment option shown before it is applied: the runs it changes, drawn as they would be (dashed). */
+  const optionPreviewRef = useRef<SVGGElement | null>(null);
+  const previewHiddenRef = useRef<ReadonlySet<string>>(new Set());
   const editRef = useRef<{ handle: DuctEditHandle; elementId: string; start: Point2D; result: DuctEditResult | null } | null>(null);
   const liveViewportRef = useRef<FabricViewportMatrix | null>(null);
   const hoveredPortRef = useRef<string | null>(null);
@@ -165,7 +184,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const root = runsRef.current;
     if (!root) return;
     root.querySelectorAll<SVGGElement>('[data-duct-run], [data-duct-supports]').forEach((node) => {
-      const hide = hiddenRunsRef.current.has(node.getAttribute('data-duct-run') ?? node.getAttribute('data-duct-supports') ?? '');
+      const id = node.getAttribute('data-duct-run') ?? node.getAttribute('data-duct-supports') ?? '';
+      const hide = hiddenRunsRef.current.has(id) || previewHiddenRef.current.has(id);
       if ((node.style.display === 'none') !== hide) node.style.display = hide ? 'none' : '';
     });
   }, []);
@@ -202,6 +222,30 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     }
     target.innerHTML = markup + (draft.label ? draftLabelMarkup(draft.label.point, draft.label.text, kRef.current) : '');
   }, [applyHiddenRun]);
+
+  const selectedIdsRef = useRef(selectedIds);
+  selectedIdsRef.current = selectedIds;
+  /**
+   * The piece of a selected run under a plan point: the one whose outline is
+   * nearest (inside = 0), within a few pixels. Geometric, so a short collar
+   * beside a long section is found even where their hit strokes overlap.
+   */
+  const pieceAt = useCallback((point: Point2D): { runId: string; mark: string } | null => {
+    const { hvacElements: stored, settings: current } = sceneRef.current;
+    const tolerance = 6 / Math.max(kRef.current, 1e-6);
+    let best: { runId: string; mark: string; distance: number } | null = null;
+    for (const id of selectedIdsRef.current) {
+      const element = stored.find((candidate) => candidate.id === id);
+      if (!element || !isDuctElement(element)) continue;
+      const plan = getDuctRunPlan(element, stored, current);
+      if (!plan) continue;
+      for (const piece of getDuctPlanPresentation(plan).piecePolygons) {
+        const distance = distanceToPolygon(point, piece.polygon);
+        if (distance <= tolerance && (!best || distance < best.distance)) best = { runId: id, mark: piece.mark, distance };
+      }
+    }
+    return best ? { runId: best.runId, mark: best.mark } : null;
+  }, []);
 
   // ---- Drag the selected runs (select tool). ----
   const toWorld = useCallback((clientX: number, clientY: number): Point2D | null => {
@@ -243,21 +287,56 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     event.preventDefault();
     const { hvacElements: stored } = sceneRef.current;
     const ids = selectedIds.filter((id) => stored.some((element) => element.id === id && isDuctElement(element)));
-    moveRef.current = { ids, start, startClient: { x: event.clientX, y: event.clientY }, moved: false, delta: { x: 0, y: 0 } };
+    moveRef.current = { ids, start, startClient: { x: event.clientX, y: event.clientY }, moved: false, delta: { x: 0, y: 0 }, piece: pieceAt(start) };
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [selectedIds, toWorld]);
+  }, [selectedIds, toWorld, pieceAt]);
+
+  // ---- Segments of the selected runs: hover shows a segment's card, a click pins it. ----
+  const focusOfPiece = useCallback((runId: string, mark: string): DuctSegmentFocus | null => {
+    const { hvacElements: stored, settings: current } = sceneRef.current;
+    const element = stored.find((candidate) => candidate.id === runId);
+    const plan = element ? getDuctRunPlan(element, stored, current) : null;
+    const segment = plan ? ductSegmentOfMark(plan, mark) : null;
+    return segment ? { runId, key: segment.key, anchorMark: mark, view: '2d' } : null;
+  }, []);
+
+  const onHitPointerOver = useCallback((event: ReactPointerEvent<SVGPathElement>) => {
+    if (moveRef.current || event.buttons !== 0) return;
+    const at = toWorld(event.clientX, event.clientY);
+    const piece = at ? pieceAt(at) : null;
+    useDuctSegmentUiStore.getState().setHovered(piece ? focusOfPiece(piece.runId, piece.mark) : null);
+  }, [focusOfPiece, toWorld, pieceAt]);
+
+  const onHitPointerOut = useCallback(() => {
+    if (!moveRef.current) useDuctSegmentUiStore.getState().setHovered(null);
+  }, []);
 
   const onHitPointerMove = useCallback((event: ReactPointerEvent<SVGPathElement>) => {
     const move = moveRef.current;
-    if (!move) return;
+    if (!move) {
+      onHitPointerOver(event);
+      return;
+    }
     const at = toWorld(event.clientX, event.clientY);
     if (!at) return;
     if (!move.moved && Math.hypot(event.clientX - move.startClient.x, event.clientY - move.startClient.y) < 4) return;
+    // A drag, not a click: the segment's card stays closed.
+    if (!move.moved) useDuctSegmentUiStore.getState().setHovered(null);
     move.moved = true;
     // Snap the drag to 10 mm so moved runs keep round coordinates.
     move.delta = { x: Math.round((at.x - move.start.x) / 10) * 10, y: Math.round((at.y - move.start.y) / 10) * 10 };
     renderMovePreview(move.ids, move.delta);
-  }, [renderMovePreview, toWorld]);
+  }, [renderMovePreview, toWorld, onHitPointerOver]);
+
+  /** Release on a run: the end of a drag, or (without moving) a click that pins the segment's card. */
+  const onHitPointerUp = useCallback(() => {
+    const move = moveRef.current;
+    endMove(true);
+    if (move && !move.moved && move.piece) {
+      const focus = focusOfPiece(move.piece.runId, move.piece.mark);
+      if (focus) useDuctSegmentUiStore.getState().pin(focus);
+    }
+  }, [endMove, focusOfPiece]);
 
   // ---- Edit handles on the one selected run: legs sideways, the end along, risers along. ----
   const renderEditPreview = useCallback((elements: HvacElement[], selectedId: string) => {
@@ -317,12 +396,82 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     if (targetRef.current) targetRef.current.innerHTML = target ? branchTargetMarkup(target, kRef.current) : '';
   }, []);
 
-  useImperativeHandle(ref, () => ({ syncViewTransform, setDraft, setHoveredPort, setBranchTarget }), [syncViewTransform, setDraft, setHoveredPort, setBranchTarget]);
+  /** A run's plan as drawn now. */
+  const planOf = useCallback((runId: string) => {
+    const { hvacElements: stored, settings: current } = sceneRef.current;
+    const element = stored.find((candidate) => candidate.id === runId);
+    return element ? getDuctRunPlan(element, stored, current) : null;
+  }, []);
+
+  const segmentClientRect = useCallback((runId: string, key: string, anchorMark: string | null): ScreenRect | null => {
+    const matrix = gRef.current?.getScreenCTM();
+    const plan = planOf(runId);
+    if (!matrix || !plan) return null;
+    const anchor = anchorMark ? getDuctPlanPresentation(plan).piecePolygons.filter((piece) => piece.mark === anchorMark).map((piece) => piece.polygon) : [];
+    const points = (anchor.length ? anchor : segmentOutlines(plan, key)).flat();
+    if (points.length === 0) return null;
+    const client = points.map((point) => new DOMPoint(point.x, point.y).matrixTransform(matrix));
+    return {
+      left: Math.min(...client.map((point) => point.x)), right: Math.max(...client.map((point) => point.x)),
+      top: Math.min(...client.map((point) => point.y)), bottom: Math.max(...client.map((point) => point.y)),
+    };
+  }, [planOf]);
+
+  /** Draw the option being previewed: the runs it changes as they would be, the committed ones hidden meanwhile. */
+  const paintOptionPreview = useCallback(() => {
+    const target = optionPreviewRef.current;
+    if (!target) return;
+    const { preview } = useDuctSegmentUiStore.getState();
+    const { hvacElements: stored, settings: current } = sceneRef.current;
+    const ducts = preview ? preview.updates.filter(isDuctElement) : [];
+    const ids = new Set(ducts.map((element) => element.id));
+    let markup = '';
+    if (ducts.length) {
+      const replaced = new Map(preview!.updates.map((element) => [element.id, element]));
+      const scene = stored.map((element) => replaced.get(element.id) ?? element);
+      const pinnedRun = useDuctSegmentUiStore.getState().pinned?.runId;
+      markup = ducts.map((element) => {
+        const plan = getDuctRunPlan(element, scene, current);
+        return plan ? ductRunMarkup(buildDuctPlanPresentation(plan), { ...markupStyle(kRef.current, current), draft: true, selected: element.id === pinnedRun }) : '';
+      }).join('');
+    }
+    if (target.innerHTML !== markup) target.innerHTML = markup;
+    if ([...ids].join() !== [...previewHiddenRef.current].join()) {
+      previewHiddenRef.current = ids;
+      applyHiddenRun();
+    }
+  }, [applyHiddenRun]);
+
+  /** Outline the segment under the pointer and the pinned one (from the segment store; no React render). */
+  const paintSegments = useCallback(() => {
+    const target = segmentRef.current;
+    if (!target) return;
+    paintOptionPreview();
+    const { hovered, pinned, preview } = useDuctSegmentUiStore.getState();
+    if (preview) {
+      // While an option is previewed the drawing shows it, not the outline of what it replaces.
+      if (target.innerHTML) target.innerHTML = '';
+      return;
+    }
+    const outlinesOf = (focus: DuctSegmentFocus) => {
+      const plan = planOf(focus.runId);
+      return plan ? segmentOutlines(plan, focus.key) : [];
+    };
+    const samePinned = hovered && pinned && hovered.runId === pinned.runId && hovered.key === pinned.key;
+    const markup = (pinned ? segmentFocusMarkup(outlinesOf(pinned), 'pinned') : '')
+      + (hovered && !samePinned ? segmentFocusMarkup(outlinesOf(hovered), 'hovered') : '');
+    if (target.innerHTML !== markup) target.innerHTML = markup;
+  }, [planOf, paintOptionPreview]);
+  useEffect(() => useDuctSegmentUiStore.subscribe(paintSegments), [paintSegments]);
+
+  useImperativeHandle(ref, () => ({ syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect }),
+    [syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect]);
 
   useLayoutEffect(() => {
     if (liveViewportRef.current) syncViewTransform(liveViewportRef.current);
     paintPorts();
     applyHiddenRun();
+    paintSegments();
   });
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -378,7 +527,13 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     // (The plans read the active building, which `building` tracks.)
     .filter((plan): plan is NonNullable<typeof plan> => plan !== null), [hvacElements, settings, building]);
   const hitAreas = useMemo(() => (moveEnabled ? runs.filter((plan) => selectedSet.has(plan.elementId)) : [])
-    .flatMap((plan) => getDuctPlanPresentation(plan).piecePolygons.map((piece) => piece.polygon)), [moveEnabled, runs, selectedSet]);
+    .flatMap((plan) => getDuctPlanPresentation(plan).piecePolygons.map((piece) => ({ runId: plan.elementId, mark: piece.mark, polygon: piece.polygon }))),
+  [moveEnabled, runs, selectedSet]);
+  // A segment under the pointer belongs to a selected run, in the plan's select tool.
+  useEffect(() => {
+    const { hovered } = useDuctSegmentUiStore.getState();
+    if (hovered?.view === '2d' && (!moveEnabled || !selectedSet.has(hovered.runId))) useDuctSegmentUiStore.getState().setHovered(null);
+  }, [moveEnabled, selectedSet]);
   // Handles on the run when it alone is selected (legs that start on a collar or parent wall stay put).
   const editTarget = useMemo(() => {
     if (!moveEnabled || !onEditCommit) return null;
@@ -429,23 +584,29 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
           <AirSystemLayer analysis={airSystems} hvacElements={hvacElements} k={k} focusUnitIds={focusUnitIds}
             showAll={settings.showAirSystems} showTags={style.showTags} />
           <g data-testid="duct-auto-preview" dangerouslySetInnerHTML={{ __html: previewMarkup }} />
+          <g ref={optionPreviewRef} data-testid="duct-option-preview" style={{ pointerEvents: 'none' }} />
+          <g ref={segmentRef} data-testid="duct-segment-focus" style={{ pointerEvents: 'none' }} />
           <g ref={portsRef} data-testid="duct-ports" />
           <g ref={targetRef} data-testid="duct-branch-target" />
           <g ref={draftRef} data-testid="duct-draft" />
           {hitAreas.length > 0 ? (
             <g data-testid="duct-move-handles">
-              {hitAreas.map((polygon, index) => (
+              {hitAreas.map((hit, index) => (
                 <path
-                  key={index}
-                  d={`M${polygon.map((point) => `${point.x} ${point.y}`).join(' L')} Z`}
+                  key={`${hit.runId}|${hit.mark}|${index}`}
+                  d={`M${hit.polygon.map((point) => `${point.x} ${point.y}`).join(' L')} Z`}
                   fill="transparent"
                   stroke="transparent"
                   strokeWidth={8}
                   vectorEffect="non-scaling-stroke"
                   style={{ pointerEvents: 'all', cursor: 'move' }}
+                  data-duct-hit={hit.runId}
+                  data-duct-mark={hit.mark}
                   onPointerDown={onHitPointerDown}
+                  onPointerOver={onHitPointerOver}
                   onPointerMove={onHitPointerMove}
-                  onPointerUp={() => endMove(true)}
+                  onPointerOut={onHitPointerOut}
+                  onPointerUp={onHitPointerUp}
                   onPointerCancel={() => endMove(false)}
                 />
               ))}

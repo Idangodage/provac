@@ -139,6 +139,8 @@ export interface DuctNodeOverride {
   elbowStyle?: 'radius' | 'square-vaned';
   centrelineRatio?: number;
   vaneType?: DuctVaneType;
+  /** The taper of the transition starting at this node (degrees per side; the project's otherwise). */
+  taperDeg?: number;
 }
 
 /**
@@ -411,6 +413,7 @@ export function readDuctRunSpec(
       if (candidate.elbowStyle === 'radius' || candidate.elbowStyle === 'square-vaned') override.elbowStyle = candidate.elbowStyle;
       if (finite(candidate.centrelineRatio)) override.centrelineRatio = candidate.centrelineRatio;
       if (typeof candidate.vaneType === 'string' && candidate.vaneType in DUCT_VANES) override.vaneType = candidate.vaneType as DuctVaneType;
+      if (finite(candidate.taperDeg) && candidate.taperDeg >= 5 && candidate.taperDeg <= 45) override.taperDeg = candidate.taperDeg;
       overrides[key] = override;
     }
   }

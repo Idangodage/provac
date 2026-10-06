@@ -20,7 +20,7 @@ export function getDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPres
   return presentation;
 }
 
-function insidePolygon(point: Point2D, polygon: readonly Point2D[]): boolean {
+export function insidePolygon(point: Point2D, polygon: readonly Point2D[]): boolean {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
     const a = polygon[i]!;

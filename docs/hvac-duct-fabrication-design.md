@@ -1019,6 +1019,66 @@ Plans derive the penetrations every time they are made, so a moved wall never le
 - An edge crosses one wall at a time. Two walls closer together than the grid's lines block, as a single wall does without a spanning system.
 - Terminal, filter and fire-damper pressure drops are practice values until the supplier's data is entered. The router prices a crossing at the reference size; the verified plan prices the real one.
 
+## Segment cards: the options of each piece of a duct run, in 2D and 3D (6 October 2026)
+
+**The request:** point at a segment of a generated duct path and see its alternatives: a rectangular duct's equivalent spiral duct; for a Y or a bend, rectangular alternatives and parameters such as the inner radius; an easily edited size, the segments around it (round-to-square and so on) following. Every view. The approved plan is in `C:\Users\idang\.claude\plans\duct-segment-options.md` (phases 0–6).
+
+### Round-main collars fit the main (Phase 0, 73f2627)
+
+- A take-off off a round main (45° lateral, 90° tee, conical tee) carries the main's cylinder (`DuctTakeoffInfo.roundMain`: diameter, sheet, axis at the tap station).
+- 3D: every generator of the collar runs back to where it meets that cylinder, so the collar ends on the exact saddle; the insulation skin likewise. A conical tap on a round main is concentric. The spin-in bead sits past the saddle.
+- Plan: a lateral's sides run to the main's side line, and its joint lies along it.
+- A branch resolves a round parent's sheet by the round tables (`runSectionSheetMm`), as the parent's own plan does.
+
+### What a designer sees (Phases 1–2)
+
+- **Hover** a segment of a selected run: it is outlined in violet and, after a quarter of a second, a peek card shows what it is (`E-02 · 90° radius elbow · 600×300 · R/W 1.5 · throat 600 mm`), the air it carries (airflow, velocity against its limit, pressure, ζ, friction rate, terminals served, on the index path or not) and its best few alternatives that break no rule.
+- **Click** the segment: the card pins beside it (it never covers the piece; it flips to stay on screen and follows pan and zoom every frame, imperatively). It holds:
+  - **Size** (straights and risers): W × H or Ø, ▭ / ◯ (switching shape fills in the equal-friction size), ± 50 mm (Shift ± 10 on the arrow keys), *This leg* or *All legs of this size*, with what the size would do before Apply (Enter).
+  - **Same air, another way / Alternatives:** each row says what it would do — velocity, change in the index path's pressure, mass, height — and any rule it would newly break; badges *Recommended* (lowest life-cycle cost of the options that break nothing and keep the velocity in its limit, when it beats the segment as it is), *Lowest ΔP*, *Lowest cost*, *Saves height*.
+  - **Inner radius** (radius and gored elbows): a slider of R/W (R/D) showing the throat radius in mm; release applies.
+  - **Taper** (transitions), **Accessories** (volume damper, flexible connector, fire damper at a wall, end open/capped).
+  - **How it is built:** sheet and gauge, joint, seam, insulation, pressure class, pieces, length, area, mass; the segment's own issues.
+- **Hover an option:** the drawing shows the change dashed (the runs it changes, re-planned; the committed ones hidden meanwhile) and the card says what else changes ("The take-off to SAD-1 becomes a spin-in collar · it slides 90 mm on along the main, clear of its fittings · 1 transition added").
+- **Click it:** one command, one undo; the card stays on the segment (or the leg it became).
+- **Keyboard:** `[` / `]` previous / next segment, ↑ ↓ through the options, Enter applies, Esc hides a peek or closes the card. Hover content follows WCAG 2.2 SC 1.4.13 (dismissible, hoverable, persistent).
+- **Inspector:** the pinned segment's leg or elbow row is marked; a row's caption pins its segment.
+
+### Segments (`ductSegments.ts`)
+
+- A segment is a design decision, keyed stably across edits that keep the run's topology: `leg:<i>` (a leg's straights), `node:<i>` (an elbow or an offset), `transition:<i>`, `start:connector | takeoff | damper`, `end:split | plenum | cap | flex`, `pen:<wall>:<n>` (a fire damper).
+- 2D picking is geometric (the nearest piece outline under the pointer), so a 102 mm collar next to a damper is found at any zoom.
+
+### Figures (`ductSegmentFigures.ts`)
+
+- The system's flow model is the sizing's own: each terminal's design airflow, else an equal share of the system airflow (`systemTerminalAirflows`, now shared with `sizeDuctSystem`).
+- `buildDuctFlowTree` and the per-piece loss were taken out of `systemPressure`, which now uses them: the same additions in the same order, so the duty is unchanged (the duct suite and the benchmark are identical), and a single run's piece losses plus its terminal's drop equal `systemPressure`'s index path to 1e-9 (tested).
+- Built once per drawing revision and system (WeakMap on the scene array), shared by every segment.
+
+### Options and their edits (`ductSegmentOptions.ts`, `ductSegmentEdits.ts`, `ductSectionEquivalents.ts`)
+
+- **Equivalents:** the Huebscher equivalent diameter (ASHRAE Fundamentals ch. 21): round sizes from the stock either side of a rectangle's De; rectangles of at least a round's (or a rectangle's) De, one per height in 50 mm steps, lying flat, within the aspect limit and the void (soffit − bottom − 2 × insulation − 50).
+- **Size for its air:** the constant-friction size at the system's friction rate and the part's velocity limit (a rectangle lies flat). Where it is also an equivalent, one row says both.
+- **Elbows:** radius R/W 1.5 (SMACNA RE1 default), 1.0, 0.75 (tight throat, ≤ 5 m/s); square with turning vanes (auto, or double-wall); the turn in spiral duct (the legs either side round); gored R/D 1.5 (Table 3-1) and 1.0; the turn in rectangles.
+- **Take-offs:** rectangular main: shoe, straight, spin-in, conical (a round collar takes a round branch, a square one a rectangular branch, each its equal-friction size); round main: conical tee, 90° tee, lateral; *Rectangular main* (edits the parent leg).
+- **Cascade (one command):**
+  - A main that changes shape changes its take-offs' fittings, keeping the angle their branch leaves at: rectangular → round: shoe → conical tee, straight / spin-in → 90° tee, conical → conical tee; round → rectangular: tee → spin-in, conical tee → conical (spin-in where the main is under Ø + flare + 20). A rectangular branch off a main turned round takes a round first leg (equal friction, at most ⅔ of the main, S3.4), or round all along when asked.
+  - Every branch re-anchors on its parent's new wall **keeping its end** (`reanchorBranchesKeepingEnds`): its first straight slides onto the new line, so the rest and its terminal stay. Inspector edits (`commitDuctRunSpec`) now do the same; moves still move branches rigidly.
+  - **Make room:** a take-off whose window a new fitting (a longer transition, a bigger elbow) would overlap slides along its leg just clear of it and of the others — the planner's own rule. With no room left the clash stays and the card shows it.
+- **Evaluation:** an option's edit is applied to a copy of the drawing and the system re-read: the segment's velocity and loss, the index path, first cost and life-cycle cost (`priceDuctPlans`, `energyPricePerPa`), mass, the outside height it needs, and new or cleared errors and warnings on the runs it changes (by kind, so an issue whose numbers change is not new). Cached per drawing; the card evaluates a few options per 12 ms slice.
+- **Per-transition taper:** `nodeOverrides[i].taperDeg` (5–45°) sets the taper of the transition starting at node i.
+
+### Verified (Phases 1–2)
+
+- Tests: `ductSegments` (6), `ductSegmentFigures` (4), `popoverPlacement` (4, one property), `ductSectionEquivalents` (6, one property), `ductSegmentEdits` (8), `ductSegmentOptions` (9). The duct suite, the full suite and `DUCT_BENCHMARK` (43/43) pass.
+- Canvas (`D:\claude-tmp-vrf-check`): `duct-seg-p1` 16/16 and `duct-seg-p2` 22/22 on a generated system (FDUM22 with three diffusers and a return grille, Auto route), the mouse and keyboard only, project restored exactly. In that tightly packed layout the main's first leg has no room for a rectangle's longer transition: those rows say "1 new error", and applying one gives exactly the errors its row predicted.
+
+### Next (approved, not yet built)
+
+- Phase 3: swaps that turn a branch (lateral ↔ tee, Y / bullhead ↔ wye, a lateral's main made rectangular) by re-aiming the branch; rigid ↔ flexible runout; a terminal's face and neck from its runout's card.
+- Phase 4: the same cards in 3D (ducts selectable in 3D, picking pieces, outlines, live 3D previews).
+- Phase 5: inline accessories on straights (volume damper, access door, sound attenuator).
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.

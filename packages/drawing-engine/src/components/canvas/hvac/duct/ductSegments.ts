@@ -1,0 +1,306 @@
+/**
+ * Segments of a duct run: what a designer points at and talks about. A
+ * segment groups the fabricated pieces that are one design decision:
+ *
+ *  - a leg's straight sections (its size and shape are one choice, made from
+ *    fitting to fitting), keyed `leg:<i>`;
+ *  - each fitting at a node (an elbow, or an offset spanning two nodes),
+ *    keyed `node:<i>`; each transition at a leg's start, `transition:<i>`;
+ *  - the run's start pieces (`start:connector`, `start:takeoff`,
+ *    `start:damper`), its end (`end:split`, `end:plenum`, `end:cap`,
+ *    `end:flex`) and each fire damper in a wall (`pen:<wall>:<n>`).
+ *
+ * Keys are stable across edits that keep the run's topology (a resize, a
+ * shape change, a different elbow), so an options card stays on "its"
+ * segment after the designer applies a change. Pure; memoised per plan.
+ */
+import type { Point2D } from '../../../../types';
+
+import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
+import { DUCT_VANES } from './ductFittingRules';
+import { distanceToPolygon, getDuctPlanPresentation, insidePolygon } from './ductPick';
+import type { DuctLeg, DuctTapStyle } from './ductTypes';
+
+export type DuctSegmentKind =
+  | 'connector' | 'takeoff' | 'damper' | 'straight' | 'riser' | 'elbow' | 'offset' | 'transition'
+  | 'split' | 'plenum' | 'end-cap' | 'flex' | 'fire-damper';
+
+/** A segment of one run, identified by its key on that run. */
+export interface DuctSegmentRef {
+  runId: string;
+  key: string;
+}
+
+export interface DuctSegment {
+  key: string;
+  kind: DuctSegmentKind;
+  /** Indices into the plan's pieces, in path order. */
+  pieceIndices: number[];
+  marks: string[];
+  legIndex: number;
+  nodeIndex?: number;
+  /** What it is, e.g. "90° radius elbow", "Spiral duct", "45° lateral". */
+  title: string;
+  /** Its section, e.g. "600×300", "Ø450", "600×300 → Ø450". */
+  size: string;
+  /** The parameters that define it, e.g. "R/W 1.5 · throat 600 mm". */
+  detail: string;
+  /** Developed centreline length (mm). */
+  lengthMm: number;
+  round: boolean;
+}
+
+/** The segment key a piece belongs to. */
+export function ductSegmentKey(piece: DuctPiece): string {
+  switch (piece.kind) {
+    case 'connector': return 'start:connector';
+    case 'takeoff': return 'start:takeoff';
+    case 'damper': return 'start:damper';
+    case 'elbow':
+    case 'offset': return `node:${piece.nodeIndex ?? piece.legIndex}`;
+    case 'transition': return `transition:${piece.legIndex}`;
+    case 'split': return 'end:split';
+    case 'plenum': return 'end:plenum';
+    case 'end-cap': return 'end:cap';
+    case 'flex': return 'end:flex';
+    case 'fire-damper': return `pen:${piece.penetrationKey ?? piece.mark}`;
+    default: return `leg:${piece.legIndex}`;
+  }
+}
+
+export function sectionLabel(section: Pick<DuctLeg, 'widthMm' | 'heightMm' | 'diameterMm'>): string {
+  return section.diameterMm !== undefined
+    ? `Ø${Math.round(section.diameterMm)}`
+    : `${Math.round(section.widthMm)}×${Math.round(section.heightMm)}`;
+}
+
+function pieceStartSection(piece: DuctPiece): DuctLeg {
+  return piece.diameterMm !== undefined
+    ? { widthMm: piece.diameterMm, heightMm: piece.diameterMm, diameterMm: piece.diameterMm }
+    : { widthMm: piece.widthMm, heightMm: piece.heightMm };
+}
+
+function pieceEndSection(piece: DuctPiece): DuctLeg {
+  return piece.endDiameterMm !== undefined
+    ? { widthMm: piece.endDiameterMm, heightMm: piece.endDiameterMm, diameterMm: piece.endDiameterMm }
+    : { widthMm: piece.endWidthMm, heightMm: piece.endHeightMm };
+}
+
+export const TAKEOFF_TITLES: Record<DuctTapStyle, string> = {
+  'shoe-45': '45° shoe take-off',
+  straight: 'Straight take-off',
+  'spin-in': 'Spin-in collar',
+  conical: 'Conical spin-in',
+  'round-tee': '90° tee',
+  'round-conical': 'Conical tee',
+  'round-lateral': '45° lateral (Y)',
+};
+
+const SPLIT_TITLES: Record<string, string> = { y: 'Y split', bullhead: 'Bullhead tee', wye: 'Wye' };
+
+const round1 = (value: number) => Math.round(value * 10) / 10;
+const metres = (mm: number) => `${(mm / 1000).toFixed(2)} m`;
+
+function describe(plan: DuctFabricationPlan, kind: DuctSegmentKind, pieces: DuctPiece[]): Pick<DuctSegment, 'title' | 'size' | 'detail'> {
+  const first = pieces[0]!;
+  const length = pieces.reduce((total, piece) => total + piece.lengthMm, 0);
+  const size = sectionLabel(pieceStartSection(first));
+  switch (kind) {
+    case 'connector':
+      return { title: 'Flexible connector', size, detail: 'at the unit\'s collar' };
+    case 'takeoff': {
+      const takeoff = first.takeoff;
+      const main = plan.tap?.parentSection;
+      const mouth = takeoff?.openingMm && (takeoff.style === 'conical' || takeoff.style === 'round-conical') ? `mouth Ø${Math.round(takeoff.openingMm)} · ` : '';
+      const lead = takeoff?.leadInMm ? `lead-in ${Math.round(takeoff.leadInMm)} mm · ` : '';
+      const off = plan.spec.start.kind === 'spigot' ? 'off the plenum' : main ? `off ${sectionLabel(main)} main` : 'off its parent';
+      return { title: takeoff ? TAKEOFF_TITLES[takeoff.style] : 'Take-off', size, detail: `${mouth}${lead}${off}` };
+    }
+    case 'damper':
+      return { title: 'Volume damper', size, detail: first.damper?.description ?? 'manual, locking quadrant' };
+    case 'straight':
+    case 'riser': {
+      const roundSection = first.diameterMm !== undefined;
+      const title = kind === 'riser'
+        ? (first.vertical === -1 ? 'Drop' : 'Riser')
+        : roundSection ? (plan.seamRound === 'spiral' ? 'Spiral duct' : 'Round duct') : 'Straight duct';
+      return { title, size, detail: `${metres(length)} · ${pieces.length} section${pieces.length === 1 ? '' : 's'}` };
+    }
+    case 'elbow': {
+      const elbow = first.elbow!;
+      const angle = Math.round(elbow.angleDeg);
+      const inPlane = elbow.inPlaneMm ?? first.widthMm;
+      const ratio = inPlane > 0 ? round1(elbow.centrelineRadiusMm / inPlane) : 0;
+      const throat = Math.max(0, Math.round(elbow.centrelineRadiusMm - inPlane / 2));
+      const plane = elbow.plane === 'vertical' ? ' (vertical)' : '';
+      if (elbow.style === 'square-vaned') {
+        const vanes = elbow.vanes ? DUCT_VANES[elbow.vanes.spec.type]?.label.split(' (')[0] ?? 'vanes' : 'vanes';
+        return { title: `${angle}° square elbow${plane}`, size, detail: `${elbow.vaneCount} ${vanes} vanes` };
+      }
+      if (elbow.style === 'gored') {
+        return { title: `${angle}° gored elbow${plane}`, size, detail: `${elbow.gores ?? 5}-piece · R/D ${ratio} · throat ${throat} mm` };
+      }
+      return { title: `${angle}° radius elbow${plane}`, size, detail: `R/${elbow.plane === 'vertical' ? 'H' : 'W'} ${ratio} · throat ${throat} mm` };
+    }
+    case 'offset': {
+      const offset = first.offset!;
+      return {
+        title: `${offset.type === 'ogee' ? 'Ogee' : 'Mitred'} offset`, size,
+        detail: `${Math.round(offset.lateralOffsetMm)} mm jog · ${Math.round(offset.angleDeg)}°`,
+      };
+    }
+    case 'transition': {
+      const from = pieceStartSection(first);
+      const to = pieceEndSection(first);
+      const fromRound = from.diameterMm !== undefined;
+      const toRound = to.diameterMm !== undefined;
+      const title = fromRound === toRound
+        ? (fromRound ? ((to.diameterMm ?? 0) < (from.diameterMm ?? 0) ? 'Reducer' : 'Increaser') : 'Transition')
+        : (fromRound ? 'Round-to-square' : 'Square-to-round');
+      const info = first.transition;
+      const angle = info ? Math.max(info.angleWidthDeg, info.angleHeightDeg) : null;
+      return { title, size: `${sectionLabel(from)} → ${sectionLabel(to)}`, detail: `${metres(first.lengthMm)}${angle !== null ? ` · ${round1(angle)}° per side` : ''}` };
+    }
+    case 'split': {
+      const style = first.split?.style ?? (plan.spec.end.kind === 'split' ? plan.spec.end.style : 'y');
+      const outlets = first.split?.branches.map((branch) => sectionLabel(branch.section)).join(' + ');
+      return { title: SPLIT_TITLES[style] ?? 'Split', size, detail: outlets ? `to ${outlets}` : 'outlets open' };
+    }
+    case 'plenum': {
+      const box = first.plenum;
+      return { title: 'Plenum box', size: box ? `${Math.round(box.widthMm)}×${Math.round(box.heightMm)}×${Math.round(box.lengthMm)}` : size, detail: `${box?.spigots.length ?? 0} spigot(s)` };
+    }
+    case 'end-cap':
+      return { title: 'End cap', size, detail: 'closes the run' };
+    case 'flex': {
+      const flex = first.flex;
+      const type = flex?.type === 'nm-il' ? 'insulated' : flex?.type === 'm-un' ? 'metallic' : 'non-metallic';
+      return { title: 'Flexible runout', size, detail: `${metres(first.lengthMm)} · ${type}` };
+    }
+    case 'fire-damper': {
+      const penetration = plan.penetrations.find((candidate) => candidate.key === first.penetrationKey);
+      return { title: 'Fire damper', size, detail: penetration ? `${penetration.mark} · ${Math.round(penetration.thicknessMm)} mm wall` : 'in a wall' };
+    }
+    default:
+      return { title: 'Duct', size, detail: '' };
+  }
+}
+
+function kindOf(piece: DuctPiece): DuctSegmentKind {
+  if (piece.kind === 'straight') return piece.vertical ? 'riser' : 'straight';
+  return piece.kind as DuctSegmentKind;
+}
+
+const SEGMENT_CACHE = new WeakMap<DuctFabricationPlan, DuctSegment[]>();
+
+/** The run's segments in path order (by their first piece). */
+export function ductSegments(plan: DuctFabricationPlan): DuctSegment[] {
+  const cached = SEGMENT_CACHE.get(plan);
+  if (cached) return cached;
+  const groups = new Map<string, number[]>();
+  plan.pieces.forEach((piece, index) => {
+    const key = ductSegmentKey(piece);
+    const list = groups.get(key);
+    if (list) list.push(index);
+    else groups.set(key, [index]);
+  });
+  const segments = [...groups.entries()].map(([key, pieceIndices]): DuctSegment => {
+    const pieces = pieceIndices.map((index) => plan.pieces[index]!);
+    const first = pieces[0]!;
+    // A leg that is a riser in part is still one leg: its straights call it a riser when all are vertical.
+    const kind = first.kind === 'straight' && pieces.some((piece) => !piece.vertical) ? 'straight' : kindOf(first);
+    return {
+      key, kind, pieceIndices, marks: pieces.map((piece) => piece.mark),
+      legIndex: first.legIndex,
+      ...(first.nodeIndex !== undefined ? { nodeIndex: first.nodeIndex } : {}),
+      ...describe(plan, kind, pieces),
+      lengthMm: pieces.reduce((total, piece) => total + piece.lengthMm, 0),
+      round: first.diameterMm !== undefined,
+    };
+  });
+  segments.sort((a, b) => a.pieceIndices[0]! - b.pieceIndices[0]!);
+  SEGMENT_CACHE.set(plan, segments);
+  return segments;
+}
+
+export function ductSegmentOf(plan: DuctFabricationPlan, key: string): DuctSegment | null {
+  return ductSegments(plan).find((segment) => segment.key === key) ?? null;
+}
+
+/** The segment a piece mark belongs to. */
+export function ductSegmentOfMark(plan: DuctFabricationPlan, mark: string): DuctSegment | null {
+  const index = plan.pieces.findIndex((piece) => piece.mark === mark);
+  return index < 0 ? null : ductSegmentOf(plan, ductSegmentKey(plan.pieces[index]!));
+}
+
+/** The segment before (−1) or after (+1) `key` along the run, or null at either end. */
+export function neighbourSegment(plan: DuctFabricationPlan, key: string, step: -1 | 1): DuctSegment | null {
+  const segments = ductSegments(plan);
+  const index = segments.findIndex((segment) => segment.key === key);
+  return index < 0 ? null : segments[index + step] ?? null;
+}
+
+/** The plan outlines of a segment's pieces (for highlighting and anchoring). */
+export function segmentOutlines(plan: DuctFabricationPlan, key: string): Point2D[][] {
+  const segment = ductSegmentOf(plan, key);
+  if (!segment) return [];
+  const marks = new Set(segment.marks);
+  return getDuctPlanPresentation(plan).piecePolygons.filter((polygon) => marks.has(polygon.mark)).map((polygon) => polygon.polygon);
+}
+
+/** The segment whose outline is nearest a plan point, within `toleranceMm`. */
+export function segmentAtPlanPoint(plan: DuctFabricationPlan, point: Point2D, toleranceMm: number): DuctSegment | null {
+  let best: { mark: string; distance: number } | null = null;
+  for (const polygon of getDuctPlanPresentation(plan).piecePolygons) {
+    const distance = distanceToPolygon(point, polygon.polygon);
+    if (distance <= toleranceMm && (!best || distance < best.distance)) best = { mark: polygon.mark, distance };
+  }
+  return best ? ductSegmentOfMark(plan, best.mark) : null;
+}
+
+/**
+ * A plan point inside a segment's outline (its first piece): where a pointer
+ * rests to point at it. The outline's vertex centroid when inside, else the
+ * middle of a chord across it.
+ */
+export function segmentHotspot(plan: DuctFabricationPlan, key: string): Point2D | null {
+  const outline = segmentOutlines(plan, key).find((polygon) => polygon.length >= 3);
+  if (!outline) return null;
+  const centroid = {
+    x: outline.reduce((total, point) => total + point.x, 0) / outline.length,
+    y: outline.reduce((total, point) => total + point.y, 0) / outline.length,
+  };
+  if (insidePolygon(centroid, outline)) return centroid;
+  const half = Math.floor(outline.length / 2);
+  for (let index = 0; index < outline.length; index += 1) {
+    const a = outline[index]!;
+    const b = outline[(index + half) % outline.length]!;
+    const middle = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    if (insidePolygon(middle, outline)) return middle;
+  }
+  return null;
+}
+
+/** Plan bounds of a segment (for placing a card beside it), or null when it has no outline. */
+export function segmentBounds(plan: DuctFabricationPlan, key: string): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const points = segmentOutlines(plan, key).flat();
+  if (points.length === 0) return null;
+  return {
+    minX: Math.min(...points.map((point) => point.x)), minY: Math.min(...points.map((point) => point.y)),
+    maxX: Math.max(...points.map((point) => point.x)), maxY: Math.max(...points.map((point) => point.y)),
+  };
+}
+
+/** The issues of a plan that belong to a segment (by their node, leg, wall crossing, or where they point). */
+export function segmentIssues(plan: DuctFabricationPlan, key: string): DuctFabricationPlan['issues'] {
+  const segment = ductSegmentOf(plan, key);
+  if (!segment) return [];
+  const outlines = segmentOutlines(plan, key);
+  return plan.issues.filter((issue) => {
+    if (issue.penetrationKey !== undefined) return key === `pen:${issue.penetrationKey}`;
+    if (issue.nodeIndex !== undefined) return segment.nodeIndex === issue.nodeIndex && (segment.kind === 'elbow' || segment.kind === 'offset');
+    if (issue.legIndex !== undefined) return segment.key === `leg:${issue.legIndex}`;
+    if (!issue.point) return false;
+    return outlines.some((outline) => distanceToPolygon(issue.point!, outline) <= 1);
+  });
+}

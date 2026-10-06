@@ -98,6 +98,7 @@ import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensa
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
 import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
 import { DuctOverlay, type DuctOverlayHandle } from "./canvas/hvac/duct/DuctOverlay";
+import { DuctSegmentCardLayer } from "./canvas/hvac/duct/DuctSegmentCard";
 import { assignTerminalsToUnit, autoAssignTerminals, unassignTerminals } from "./canvas/hvac/duct/airSystemController";
 import { useAirSystemUiStore } from "./canvas/hvac/duct/airSystemUiStore";
 import { listAirPorts } from "./canvas/hvac/duct/ductAirPorts";
@@ -110,6 +111,9 @@ import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from
 import { commitDuctRunEdit, commitDuctRunMove, followDuctsForMove } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
 import { moveDuctRuns, toElementUpdate } from "./canvas/hvac/duct/ductFollow";
+import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
+import { useDuctSegmentUiStore, type DuctSegmentFocus } from "./canvas/hvac/duct/ductSegmentUiStore";
+import { ductSegments, segmentHotspot } from "./canvas/hvac/duct/ductSegments";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
 import { getDuctSupportPlan } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
@@ -754,6 +758,10 @@ export function DrawingCanvas({
   }, [ductSettings]);
   // A design-check marker sits on its element: clicking it selects the element; with Shift (or Ctrl/⌘) the element
   // joins the selection or leaves it, as a click on the canvas does.
+  // A duct segment's card sits beside its piece: on the plan, where the plan overlay draws it.
+  const resolveSegmentAnchor = useCallback((focus: DuctSegmentFocus) => (
+    projectionViewOnly ? null : ductOverlayRef.current?.segmentClientRect(focus.runId, focus.key, focus.anchorMark) ?? null
+  ), [projectionViewOnly]);
   const selectFromDesignCheck = useCallback((elementId: string, additive = false) => {
     setSelectedIds(selectionAfterMarkerClick(useSmartDrawingStore.getState().selectedIds, elementId, additive));
   }, [setSelectedIds]);
@@ -985,6 +993,25 @@ export function DrawingCanvas({
         const screen = worldToScreenFromFabricViewport(point, viewport as unknown as readonly [number, number, number, number, number, number]);
         const rect = fabricCanvas.getElement().getBoundingClientRect();
         return { x: rect.left + screen.x, y: rect.top + screen.y };
+      },
+      /** The duct segment under the pointer and the one whose card is pinned. */
+      getSegmentFocus: () => {
+        const { hovered, pinned } = useDuctSegmentUiStore.getState();
+        return { hovered, pinned };
+      },
+      /** A run's segments in path order, each with a plan point inside it. */
+      getDuctSegments: (runId: string) => {
+        const state = useSmartDrawingStore.getState();
+        const element = state.hvacElements.find((candidate) => candidate.id === runId);
+        const plan = element ? getDuctRunPlan(element, state.hvacElements, state.ductSettings) : null;
+        return plan ? ductSegments(plan).map((segment) => ({
+          key: segment.key, kind: segment.kind, title: segment.title, size: segment.size, detail: segment.detail, marks: segment.marks,
+          hotspot: segmentHotspot(plan, segment.key),
+        })) : null;
+      },
+      getSegmentFigures: (runId: string, key: string) => {
+        const state = useSmartDrawingStore.getState();
+        return ductSegmentFigures(state.hvacElements, state.ductSettings, runId, key);
       },
       /** A model point (mm, z up) where the 3D views draw it, in client pixels; null without a 3D camera. */
       modelToClient3D: (point: { x: number; y: number; z: number }) => {
@@ -3516,6 +3543,8 @@ export function DrawingCanvas({
         <CondensateEditGizmo3D enabled={projectionViewOnly && tool === "select"} controllerRef={hybridControllerRef}
           width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />
+        <DuctSegmentCardLayer enabled={tool === "select"} hvacElements={hvacElements} settings={ductSettings}
+          selectedIds={selectedIds} resolveAnchor={resolveSegmentAnchor} />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
           showInteriorNodeHandles={projectionViewOnly}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}

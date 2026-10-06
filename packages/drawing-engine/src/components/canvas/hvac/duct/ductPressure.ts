@@ -222,37 +222,44 @@ function coefficientOf(piece: DuctPiece, fromPlenum: boolean): number {
   }
 }
 
-interface RunNode {
+/** A run in a system's flow tree: where it leaves its parent, and the air it carries. */
+export interface DuctFlowRun {
   plan: DuctFabricationPlan;
   parentId: string | null;
   /** Where on the parent this run leaves it (mm along the parent's path). */
   attachMm: number;
   /** The terminal at this run's end, if any. */
   terminalId: string | null;
-  children: RunNode[];
+  children: DuctFlowRun[];
+  /** Airflow into the run: its terminal's and all its branches' (m³/h). */
   airflowM3h: number;
+  /** Terminals it serves: its own and all its branches'. */
+  terminals: number;
+}
+
+/** A system's runs as a tree, with the airflow at any station along any of them. */
+export interface DuctFlowTree {
+  runs: ReadonlyMap<string, DuctFlowRun>;
+  /** Airflow in a run at a station: its own terminal's and the branches' leaving further on (m³/h). */
+  flowAt: (run: DuctFlowRun, stationMm: number) => number;
+  /** Terminals served at a station: its own and those of the branches leaving further on. */
+  terminalsAt: (run: DuctFlowRun, stationMm: number) => number;
+  /** Where its branches leave a run (mm along it, in order). */
+  branchStations: (run: DuctFlowRun) => readonly number[];
 }
 
 /**
- * Every terminal path of one service's system. `plans` are the system's runs
- * (a run from the unit collar and everything taken off it); `airflow` maps a
- * terminal id to its design airflow (m³/h). `terminalDropPa` gives a
- * terminal's own drop at its airflow (a filter grille's media included);
- * without it, or where it returns null, the service's placeholder drop is used.
+ * The flow tree of one service's system. `plans` are the system's runs (a run
+ * from the unit collar and everything taken off it); `airflow` maps a terminal
+ * id to its design airflow (m³/h). Throws on cyclic parent connections.
  */
-export function systemPressure(
-  plans: readonly DuctFabricationPlan[],
-  airflow: ReadonlyMap<string, number>,
-  settings: Pick<DuctDesignSettings, 'autoDiffuserDropPa' | 'autoGrilleDropPa'>,
-  service: DuctService,
-  terminalDropPa?: (terminalId: string, airflowM3h: number) => number | null,
-): ServicePressure {
-  const nodes = new Map<string, RunNode>();
+export function buildDuctFlowTree(plans: readonly DuctFabricationPlan[], airflow: ReadonlyMap<string, number>): DuctFlowTree {
+  const nodes = new Map<string, DuctFlowRun>();
   for (const plan of plans) {
     const start = plan.spec.start;
     const parentId = start.kind === 'tap' || start.kind === 'split-branch' || start.kind === 'spigot' ? start.parentRunId : null;
     const end = plan.spec.end;
-    nodes.set(plan.elementId, { plan, parentId, attachMm: 0, terminalId: end.kind === 'terminal' ? end.terminalId : null, children: [], airflowM3h: 0 });
+    nodes.set(plan.elementId, { plan, parentId, attachMm: 0, terminalId: end.kind === 'terminal' ? end.terminalId : null, children: [], airflowM3h: 0, terminals: 0 });
   }
   for (const node of nodes.values()) {
     const parent = node.parentId ? nodes.get(node.parentId) : undefined;
@@ -269,10 +276,11 @@ export function systemPressure(
   }
   // Resolve leaves first: avoids recursion depth limits and detects corrupt
   // parent cycles, which otherwise make both walks run indefinitely.
-  const remaining = new Map<RunNode, number>();
-  const pending: RunNode[] = [];
+  const remaining = new Map<DuctFlowRun, number>();
+  const pending: DuctFlowRun[] = [];
   for (const node of nodes.values()) {
     node.airflowM3h = node.terminalId ? airflow.get(node.terminalId) ?? 0 : 0;
+    node.terminals = node.terminalId ? 1 : 0;
     remaining.set(node, node.children.length);
     if (node.children.length === 0) pending.push(node);
   }
@@ -281,23 +289,25 @@ export function systemPressure(
     const parent = node.parentId ? nodes.get(node.parentId) : undefined;
     if (!parent) continue;
     parent.airflowM3h += node.airflowM3h;
+    parent.terminals += node.terminals;
     const left = remaining.get(parent)! - 1;
     remaining.set(parent, left);
     if (left === 0) pending.push(parent);
   }
   if (pending.length !== nodes.size) throw new Error('Cannot calculate duct pressure: cyclic run connections.');
-  const flowStations = new Map<RunNode, { stations: number[]; suffixFlows: number[] }>();
+  const flowStations = new Map<DuctFlowRun, { stations: number[]; suffixFlows: number[]; suffixTerminals: number[] }>();
   for (const node of nodes.values()) {
     const children = [...node.children].sort((a, b) => a.attachMm - b.attachMm);
     const suffixFlows = new Array<number>(children.length + 1).fill(0);
+    const suffixTerminals = new Array<number>(children.length + 1).fill(0);
     for (let index = children.length - 1; index >= 0; index -= 1) {
       suffixFlows[index] = suffixFlows[index + 1]! + children[index]!.airflowM3h;
+      suffixTerminals[index] = suffixTerminals[index + 1]! + children[index]!.terminals;
     }
-    flowStations.set(node, { stations: children.map((child) => child.attachMm), suffixFlows });
+    flowStations.set(node, { stations: children.map((child) => child.attachMm), suffixFlows, suffixTerminals });
   }
-  /** Airflow in a run at a station: its own terminal and the children leaving further on. */
-  const flowAt = (node: RunNode, station: number): number => {
-    const { stations, suffixFlows } = flowStations.get(node)!;
+  /** The first branch leaving after a station. */
+  const firstAfter = (stations: readonly number[], station: number): number => {
     let low = 0;
     let high = stations.length;
     while (low < high) {
@@ -305,91 +315,198 @@ export function systemPressure(
       if (stations[mid]! <= station + 1e-6) low = mid + 1;
       else high = mid;
     }
-    return (node.terminalId ? airflow.get(node.terminalId) ?? 0 : 0) + suffixFlows[low]!;
+    return low;
   };
+  return {
+    runs: nodes,
+    flowAt: (node, station) => {
+      const { stations, suffixFlows } = flowStations.get(node)!;
+      return (node.terminalId ? airflow.get(node.terminalId) ?? 0 : 0) + suffixFlows[firstAfter(stations, station)]!;
+    },
+    terminalsAt: (node, station) => {
+      const { stations, suffixTerminals } = flowStations.get(node)!;
+      return (node.terminalId ? 1 : 0) + suffixTerminals[firstAfter(stations, station)]!;
+    },
+    branchStations: (node) => flowStations.get(node)!.stations,
+  };
+}
 
-  /** The section of `node` at a station along its path (the piece covering it). */
-  const sectionAt = (node: RunNode, station: number): DuctLeg | null => {
-    const piece = node.plan.pieces.find((candidate) => candidate.kind !== 'flex' && candidate.kind !== 'split'
-      && candidate.stationStartMm <= station + 1e-6 && candidate.stationEndMm >= station - 1e-6);
-    return piece ? sectionOf(piece) : null;
-  };
-  /** Velocity in the parent main just upstream of where `node` leaves it (the combined flow). */
-  const mainVelocityAt = (node: RunNode): number => {
-    const parent = node.parentId ? nodes.get(node.parentId) : undefined;
-    if (!parent) return 0;
-    const flow = flowAt(parent, node.attachMm - 1);
-    const section = node.plan.spec.start.kind === 'split-branch'
-      ? (() => { const last = parent.plan.spec.legs[parent.plan.spec.legs.length - 1]; return last ?? null; })()
-      : sectionAt(parent, node.attachMm);
-    return section ? velocityMs(section, flow) : 0;
-  };
+/** The section of a run at a station along its path (the piece covering it). */
+function sectionAtStation(run: DuctFlowRun, station: number): DuctLeg | null {
+  const piece = run.plan.pieces.find((candidate) => candidate.kind !== 'flex' && candidate.kind !== 'split'
+    && candidate.stationStartMm <= station + 1e-6 && candidate.stationEndMm >= station - 1e-6);
+  return piece ? sectionOf(piece) : null;
+}
 
-  const pressureCache = new Map<RunNode, Map<RunNode | null, { friction: number; fittings: number }>>();
+/** Velocity in the parent main just upstream of where `run` leaves it (the combined flow). */
+function mainVelocityAt(tree: DuctFlowTree, run: DuctFlowRun): number {
+  const parent = run.parentId ? tree.runs.get(run.parentId) : undefined;
+  if (!parent) return 0;
+  const flow = tree.flowAt(parent, run.attachMm - 1);
+  const section = run.plan.spec.start.kind === 'split-branch'
+    ? (() => { const last = parent.plan.spec.legs[parent.plan.spec.legs.length - 1]; return last ?? null; })()
+    : sectionAtStation(parent, run.attachMm);
+  return section ? velocityMs(section, flow) : 0;
+}
+
+/** The main's straight-through loss where take-off `passed` leaves `run` (Pa). */
+function passageLossPa(tree: DuctFlowTree, run: DuctFlowRun, passed: DuctFlowRun): number {
+  const section = sectionAtStation(run, passed.attachMm);
+  if (!section) return 0;
+  return mainPassageLossPa(velocityMs(section, tree.flowAt(run, passed.attachMm + 1)), velocityMs(section, tree.flowAt(run, passed.attachMm - 1)));
+}
+
+/** The loss into split outlet `child` at the end of `run` (Pa). Splits have zero station length and all flow leaves there. */
+function splitLossPa(tree: DuctFlowTree, run: DuctFlowRun, piece: DuctPiece, child: DuctFlowRun): number {
+  const first = child.plan.pieces[0];
+  const style = piece.split?.style ?? (run.plan.spec.end.kind === 'split' ? run.plan.spec.end.style : 'y');
+  const last = run.plan.spec.legs[run.plan.spec.legs.length - 1];
+  const combinedFlow = tree.flowAt(run, piece.stationStartMm - 1e-3);
+  if (!first || child.airflowM3h <= 0) return 0;
+  return splitOutletLossPa(style, velocityMs(sectionOf(first), child.airflowM3h), last ? velocityMs(last, combinedFlow) : 0);
+}
+
+/**
+ * A piece's loss from its start up to `endMm` (a path that leaves the run
+ * part-way along it stops there), added to `total`: friction over the
+ * developed length at the airflow of each stretch between take-offs, and the
+ * piece's own fitting loss at the airflow it carries.
+ */
+function addPieceLoss(
+  tree: DuctFlowTree,
+  run: DuctFlowRun,
+  piece: DuctPiece,
+  endMm: number,
+  service: DuctService,
+  total: { friction: number; fittings: number },
+): void {
+  const fromPlenum = run.plan.spec.start.kind === 'spigot';
+  const span = piece.stationEndMm - piece.stationStartMm;
+  const section = sectionOf(piece);
+  // A fabricated straight can span several take-offs. Integrate each
+  // constant-flow interval instead of assigning its midpoint flow to all
+  // of it, and use developed length for elbows and offsets.
+  const stations = [piece.stationStartMm, ...tree.branchStations(run)
+    .filter((station) => station > piece.stationStartMm && station < endMm), endMm];
+  for (let index = 1; index < stations.length; index += 1) {
+    const from = stations[index - 1]!;
+    const to = stations[index]!;
+    if (to <= from || span <= 0) continue;
+    const segmentFlow = tree.flowAt(run, (from + to) / 2);
+    if (segmentFlow <= 0) continue;
+    const developedLength = piece.lengthMm * (to - from) / span;
+    total.friction += frictionPaPerM(section, segmentFlow, piece.kind === 'flex' ? 'flex' : 'galvanised') * (developedLength / 1000);
+  }
+  const flow = tree.flowAt(run, (piece.stationStartMm + endMm) / 2);
+  if (flow <= 0) return;
+  if (piece.kind === 'flex' && piece.flex) {
+    total.fittings += flexBendLossPa(piece.flex.points, piece.diameterMm ?? piece.widthMm, flow);
+    return;
+  }
+  if (piece.kind === 'takeoff' && !fromPlenum && run.plan.spec.start.kind === 'tap') {
+    total.fittings += takeoffBranchLossPa(run.plan.spec.start.style, velocityMs(section, flow), mainVelocityAt(tree, run));
+    return;
+  }
+  const coefficient = coefficientOf(piece, fromPlenum);
+  if (coefficient > 0) {
+    // The return path is stored from unit to terminal but air flows back
+    // to the unit. Plenum entry loses the inlet duct's velocity pressure.
+    const reference = piece.kind === 'transition' ? sectionOf(piece, service === 'supply')
+      : piece.kind === 'plenum' ? run.plan.spec.legs[piece.legIndex] ?? section : section;
+    total.fittings += coefficient * velocityPressurePa(velocityMs(reference, flow));
+  }
+}
+
+/** One piece's own figures, for reading off a segment (the sums systemPressure takes along a path). */
+export interface DuctPieceLoss {
+  /** Airflow just inside its start, at its middle and just inside its end (m³/h). */
+  flowStartM3h: number;
+  flowM3h: number;
+  flowEndM3h: number;
+  /** Friction over its developed length at the airflow it carries (Pa). */
+  frictionPa: number;
+  /** Its own fitting loss (a split: its worst outlet) (Pa). */
+  fittingsPa: number;
+  /** The main's straight-through loss at the take-offs leaving along it (Pa). */
+  passagePa: number;
+  /** Terminals served at its start. */
+  terminals: number;
+}
+
+/** Each piece's own loss along a run of the tree (null when the run is not in it). */
+export function ductRunPieceLosses(tree: DuctFlowTree, runId: string, service: DuctService): DuctPieceLoss[] | null {
+  const run = tree.runs.get(runId);
+  if (!run) return null;
+  return run.plan.pieces.map((piece) => {
+    const total = { friction: 0, fittings: 0 };
+    let passage = 0;
+    if (piece.kind === 'split') {
+      for (const child of run.children) {
+        if (child.plan.spec.start.kind === 'split-branch') total.fittings = Math.max(total.fittings, splitLossPa(tree, run, piece, child));
+      }
+    } else {
+      addPieceLoss(tree, run, piece, piece.stationEndMm, service, total);
+      for (const passed of run.children) {
+        if (passed.plan.spec.start.kind !== 'tap' || passed.attachMm < piece.stationStartMm - 1e-6 || passed.attachMm >= piece.stationEndMm - 1e-6) continue;
+        passage += passageLossPa(tree, run, passed);
+      }
+    }
+    const from = piece.stationStartMm;
+    const to = piece.stationEndMm;
+    // A piece with no length (a split, a cap) carries what reaches it.
+    const inside = to - from > 1 ? 0.5 : -0.5;
+    return {
+      flowStartM3h: tree.flowAt(run, from + inside),
+      flowM3h: tree.flowAt(run, to - from > 1 ? (from + to) / 2 : from - 0.5),
+      flowEndM3h: tree.flowAt(run, to - from > 1 ? to - 0.5 : from - 0.5),
+      frictionPa: total.friction,
+      fittingsPa: total.fittings,
+      passagePa: passage,
+      terminals: tree.terminalsAt(run, from + inside),
+    };
+  });
+}
+
+/**
+ * Every terminal path of one service's system. `plans` are the system's runs
+ * (a run from the unit collar and everything taken off it); `airflow` maps a
+ * terminal id to its design airflow (m³/h). `terminalDropPa` gives a
+ * terminal's own drop at its airflow (a filter grille's media included);
+ * without it, or where it returns null, the service's placeholder drop is used.
+ */
+export function systemPressure(
+  plans: readonly DuctFabricationPlan[],
+  airflow: ReadonlyMap<string, number>,
+  settings: Pick<DuctDesignSettings, 'autoDiffuserDropPa' | 'autoGrilleDropPa'>,
+  service: DuctService,
+  terminalDropPa?: (terminalId: string, airflowM3h: number) => number | null,
+): ServicePressure {
+  const tree = buildDuctFlowTree(plans, airflow);
+  const nodes = tree.runs;
+
+  const pressureCache = new Map<DuctFlowRun, Map<DuctFlowRun | null, { friction: number; fittings: number }>>();
   /** Friction and fittings in `node` from its start up to `limitMm`; `child` = the run the path leaves by. */
-  const along = (node: RunNode, limitMm: number, child: RunNode | null): { friction: number; fittings: number } => {
+  const along = (node: DuctFlowRun, limitMm: number, child: DuctFlowRun | null): { friction: number; fittings: number } => {
     const cached = pressureCache.get(node)?.get(child);
     if (cached) return cached;
-    let friction = 0;
-    let fittings = 0;
-    const fromPlenum = node.plan.spec.start.kind === 'spigot';
+    const total = { friction: 0, fittings: 0 };
     // The main's straight-through passage at every take-off this path passes.
     for (const passed of node.children) {
       if (passed === child || passed.plan.spec.start.kind !== 'tap' || passed.attachMm >= limitMm - 1e-6) continue;
-      const section = sectionAt(node, passed.attachMm);
-      if (!section) continue;
-      fittings += mainPassageLossPa(velocityMs(section, flowAt(node, passed.attachMm + 1)), velocityMs(section, flowAt(node, passed.attachMm - 1)));
+      total.fittings += passageLossPa(tree, node, passed);
     }
     for (const piece of node.plan.pieces) {
       // Splits have zero station length and all flow leaves at that station.
       // Account for them before sampling flow downstream of the outlets.
       if (piece.kind === 'split') {
         if (!child || child.plan.spec.start.kind !== 'split-branch' || piece.stationStartMm > limitMm + 1e-6) continue;
-        const first = child.plan.pieces[0];
-        const style = piece.split?.style ?? (node.plan.spec.end.kind === 'split' ? node.plan.spec.end.style : 'y');
-        const last = node.plan.spec.legs[node.plan.spec.legs.length - 1];
-        const combinedFlow = flowAt(node, piece.stationStartMm - 1e-3);
-        if (first && child.airflowM3h > 0) fittings += splitOutletLossPa(style, velocityMs(sectionOf(first), child.airflowM3h), last ? velocityMs(last, combinedFlow) : 0);
+        total.fittings += splitLossPa(tree, node, piece, child);
         continue;
       }
       if (piece.stationStartMm >= limitMm - 1e-6) continue;
-      const end = Math.min(piece.stationEndMm, limitMm);
-      const span = piece.stationEndMm - piece.stationStartMm;
-      const section = sectionOf(piece);
-      // A fabricated straight can span several take-offs. Integrate each
-      // constant-flow interval instead of assigning its midpoint flow to all
-      // of it, and use developed length for elbows and offsets.
-      const stations = [piece.stationStartMm, ...flowStations.get(node)!.stations
-        .filter((station) => station > piece.stationStartMm && station < end), end];
-      for (let index = 1; index < stations.length; index += 1) {
-        const from = stations[index - 1]!;
-        const to = stations[index]!;
-        if (to <= from || span <= 0) continue;
-        const segmentFlow = flowAt(node, (from + to) / 2);
-        if (segmentFlow <= 0) continue;
-        const developedLength = piece.lengthMm * (to - from) / span;
-        friction += frictionPaPerM(section, segmentFlow, piece.kind === 'flex' ? 'flex' : 'galvanised') * (developedLength / 1000);
-      }
-      const flow = flowAt(node, (piece.stationStartMm + end) / 2);
-      if (flow <= 0) continue;
-      if (piece.kind === 'flex' && piece.flex) {
-        fittings += flexBendLossPa(piece.flex.points, piece.diameterMm ?? piece.widthMm, flow);
-        continue;
-      }
-      if (piece.kind === 'takeoff' && !fromPlenum && node.plan.spec.start.kind === 'tap') {
-        fittings += takeoffBranchLossPa(node.plan.spec.start.style, velocityMs(section, flow), mainVelocityAt(node));
-        continue;
-      }
-      const coefficient = coefficientOf(piece, fromPlenum);
-      if (coefficient > 0) {
-        // The return path is stored from unit to terminal but air flows back
-        // to the unit. Plenum entry loses the inlet duct's velocity pressure.
-        const reference = piece.kind === 'transition' ? sectionOf(piece, service === 'supply')
-          : piece.kind === 'plenum' ? node.plan.spec.legs[piece.legIndex] ?? section : section;
-        fittings += coefficient * velocityPressurePa(velocityMs(reference, flow));
-      }
+      addPieceLoss(tree, node, piece, Math.min(piece.stationEndMm, limitMm), service, total);
     }
-    const result = { friction, fittings };
+    const result = { friction: total.friction, fittings: total.fittings };
     let cache = pressureCache.get(node);
     if (!cache) {
       cache = new Map();
@@ -406,8 +523,8 @@ export function systemPressure(
     const terminalDrop = terminalDropPa?.(node.terminalId, airflow.get(node.terminalId) ?? 0) ?? serviceDrop;
     let friction = 0;
     let fittings = 0;
-    let current: RunNode | undefined = node;
-    let child: RunNode | null = null;
+    let current: DuctFlowRun | undefined = node;
+    let child: DuctFlowRun | null = null;
     let limit = Number.POSITIVE_INFINITY;
     while (current) {
       const part = along(current, limit, child);

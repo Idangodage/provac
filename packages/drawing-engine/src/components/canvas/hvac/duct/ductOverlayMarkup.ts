@@ -127,6 +127,27 @@ export function ductRunMarkup(presentation: DuctPlanPresentation, style: DuctMar
   return parts.join('');
 }
 
+/** Segment focus in plan: violet, apart from the amber of a selected run and the blue / teal of the services. */
+export const SEGMENT_FOCUS_COLORS = {
+  hovered: { stroke: '#8b5cf6', fill: 'rgba(139,92,246,0.10)' },
+  pinned: { stroke: '#7c3aed', fill: 'rgba(124,58,237,0.17)', glow: 'rgba(124,58,237,0.24)' },
+} as const;
+
+/**
+ * A segment's pieces outlined for focus: the segment under the pointer, or
+ * the one whose card is pinned (with a soft glow round it).
+ */
+export function segmentFocusMarkup(outlines: readonly Point2D[][], tone: 'hovered' | 'pinned'): string {
+  const colors = SEGMENT_FOCUS_COLORS[tone];
+  return outlines.map((outline) => {
+    const d = pathData(outline, true);
+    const glow = tone === 'pinned'
+      ? `<path d="${d}" fill="none" stroke="${SEGMENT_FOCUS_COLORS.pinned.glow}" stroke-width="7" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`
+      : '';
+    return `${glow}<path d="${d}" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="${tone === 'pinned' ? 2.4 : 1.8}" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
+  }).join('');
+}
+
 /**
  * Supports in plan: each trapeze as its bar across the duct with a dot at
  * each rod, a round band as one rod dot on a short band line, and the riser

@@ -9,7 +9,7 @@
  *    BOM and the fabrication schedule (CSV).
  * Unverified rule values are always labelled as such.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
@@ -30,6 +30,8 @@ import { ductBranchesOf } from './ductNetwork';
 import { ductPenetrationSchedule, ductPenetrationScheduleToCsv } from './ductPenetrationSchedule';
 import { penetrationHasFireDamper } from './ductPenetrations';
 import { defaultPlenumSize } from './ductPlenum';
+import { useDuctSegmentUiStore } from './ductSegmentUiStore';
+import { ductSegmentOf } from './ductSegments';
 import { DUCT_RULE_SOURCES, DUCT_SUPPORTED_PRESSURE_CLASSES_PA, type DuctDesignSettings, type DuctJointSystem } from './ductSettings';
 import { neckVelocityMs } from './ductSizing';
 import { DUCT_SOURCES, isPracticeSource } from './ductSources';
@@ -412,6 +414,13 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
   const tool = useDuctToolStore();
   const building = useDuctBuilding();
   const plan = useMemo(() => getDuctRunPlan(element, hvacElements, ductSettings), [element, hvacElements, ductSettings, building]);
+  const pinnedKey = useDuctSegmentUiStore((state) => (state.pinned?.runId === element.id ? state.pinned.key : null));
+  const pinFocus = useDuctSegmentUiStore((state) => state.pin);
+  const inspectorRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!pinnedKey) return;
+    inspectorRef.current?.querySelector(`[data-segment-key="${pinnedKey}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [pinnedKey]);
   const bom = useMemo(() => (plan ? buildDuctBom([plan], [getDuctSupportPlan(plan, hvacElements, ductSettings)]) : []), [plan, hvacElements, ductSettings]);
   const reattachStyle = plan ? tapStyleFor(plan.spec.legs[0]) : tool.tapStyle;
   const reattach = useMemo(() => (plan && plan.spec.start.kind === 'open'
@@ -445,8 +454,14 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
   };
   const elbows = plan.pieces.filter((piece) => piece.kind === 'elbow' && piece.nodeIndex !== undefined);
   const select = 'min-w-0 max-w-full rounded border border-slate-200 px-1 py-0.5 text-xs';
+  // The segment whose card is pinned is marked here; a row's caption pins its segment.
+  const focusRow = (key: string) => (pinnedKey === key ? ' rounded bg-violet-50 ring-1 ring-violet-300' : '');
+  const pinSegment = (key: string) => {
+    const segment = ductSegmentOf(plan, key);
+    if (segment) pinFocus({ runId: element.id, key, anchorMark: segment.marks[0] ?? null, view: '2d' });
+  };
   return (
-    <div className="space-y-1" data-testid="duct-run-inspector">
+    <div className="space-y-1" data-testid="duct-run-inspector" ref={inspectorRef}>
       <Row label="Label">
         <input
           type="text"
@@ -494,9 +509,11 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
         <div className="rounded border border-slate-100 px-2 py-1" data-testid="duct-leg-sizes">
           <div className="text-xs text-slate-500">Clear section per leg (W × H mm; a change adds a transition)</div>
           {spec.legs.map((leg, index) => (
-            <div key={index} className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 py-0.5 text-xs">
+            <div key={index} data-segment-key={`leg:${index}`} className={`flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 py-0.5 text-xs${focusRow(`leg:${index}`)}`}>
               <span className="text-slate-500">
-                {legCaption(spec, index)}
+                <button type="button" className="hover:text-violet-700 hover:underline" title="Show this leg's card on the drawing" onClick={() => pinSegment(`leg:${index}`)}>
+                  {legCaption(spec, index)}
+                </button>
                 {riseOf(spec, index) !== null ? (
                   <span className="ml-1" title="Rise (+) or drop (−) in mm; the run after it moves with it">
                     <CommitNumber label={`Leg ${index + 1} rise`} value={riseOf(spec, index)!} step={50} min={-30000} max={30000}
@@ -563,8 +580,9 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
             const override = spec.nodeOverrides[String(node)] ?? {};
             const elbow = piece.elbow!;
             return (
-              <div key={node} className="flex flex-wrap items-center justify-between gap-1 py-0.5 text-xs">
-                <span className="text-slate-500">{piece.mark} · {Math.round(elbow.angleDeg)}°</span>
+              <div key={node} data-segment-key={`node:${node}`} className={`flex flex-wrap items-center justify-between gap-1 py-0.5 text-xs${focusRow(`node:${node}`)}`}>
+                <button type="button" className="text-slate-500 hover:text-violet-700 hover:underline" title="Show this elbow's card on the drawing"
+                  onClick={() => pinSegment(`node:${node}`)}>{piece.mark} · {Math.round(elbow.angleDeg)}°</button>
                 <select value={override.elbowStyle ?? 'auto'} aria-label={`Elbow ${node} style`} className={select}
                   onChange={(event) => setNode(node, { elbowStyle: event.target.value === 'auto' ? undefined : (event.target.value as 'radius' | 'square-vaned') })}>
                   <option value="auto">Project ({elbow.style === 'radius' ? 'radius' : 'vaned'})</option>

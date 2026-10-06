@@ -175,6 +175,94 @@ export function reanchorKeepingEnd(spec: DuctRunSpec, from: DuctAnchor, to: Duct
   };
 }
 
+/** A take-off's centre on its parent's centreline (plan). */
+function tapCentre(parent: DuctRunSpec, start: { legIndex: number; stationMm: number }): Point2D | null {
+  const leg = ductLegs(parent)[start.legIndex];
+  if (!leg) return null;
+  return { x: leg.start.x + leg.direction.x * start.stationMm, y: leg.start.y + leg.direction.y * start.stationMm };
+}
+
+/** The leg of a path a plan point lies on (nearest), and how far along it. */
+function locateOnLegs(spec: DuctRunSpec, point: Point2D): { legIndex: number; stationMm: number } | null {
+  const legs = ductLegs(spec);
+  let best: { legIndex: number; stationMm: number; gap: number } | null = null;
+  for (let legIndex = 0; legIndex < legs.length; legIndex += 1) {
+    const leg = legs[legIndex]!;
+    if (leg.vertical) continue;
+    const along = Math.max(0, Math.min(leg.lengthMm, (point.x - leg.start.x) * leg.direction.x + (point.y - leg.start.y) * leg.direction.y));
+    const gap = Math.hypot(leg.start.x + leg.direction.x * along - point.x, leg.start.y + leg.direction.y * along - point.y);
+    if (!best || gap < best.gap - 1e-9) best = { legIndex, stationMm: along, gap };
+  }
+  return best ? { legIndex: best.legIndex, stationMm: Math.round(best.stationMm * 10) / 10 } : null;
+}
+
+/**
+ * Re-anchor the branches of every changed run, recursively, keeping where
+ * they go (an edit, unlike a move): each branch's start moves onto its
+ * parent's changed wall and its first straight slides onto the new line
+ * (reanchorKeepingEnd), so the rest of the run and the terminal at its end
+ * stay. A take-off on a straight that slid keeps its place on that straight.
+ * A changed run that is itself a branch (its take-off or first section
+ * changed) is re-anchored on its parent too. `minFirstMm`: the shortest first
+ * straight (collar and damper) before it moves whole.
+ */
+export function reanchorBranchesKeepingEnds(
+  scene: readonly HvacElement[],
+  changed: ReadonlyMap<string, HvacElement>,
+  settings: DuctDesignSettings,
+  minFirstMm = settings.tapCollarMm + settings.vcdLengthMm + 100,
+): HvacElement[] {
+  const current = new Map<string, HvacElement>(changed);
+  const result = new Map<string, HvacElement>();
+  const moves = new Map<string, { before: DuctRunSpec; mapPoint: (point: Point2D, legIndex: number) => Point2D }>();
+  const withChanges = () => scene.map((element) => current.get(element.id) ?? element);
+  const byId = new Map(scene.map((element) => [element.id, element]));
+  const queue: string[] = [];
+  for (const [id, element] of changed) {
+    const spec = readDuctRunSpec(element);
+    const parentId = spec && (spec.start.kind === 'tap' || spec.start.kind === 'split-branch' || spec.start.kind === 'spigot') ? spec.start.parentRunId : null;
+    if (parentId && !changed.has(parentId)) queue.push(parentId);
+    queue.push(id);
+  }
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const parentId = queue.shift()!;
+    if (seen.has(parentId)) continue;
+    seen.add(parentId);
+    const parent = current.get(parentId) ?? byId.get(parentId);
+    const parentSpec = parent ? readDuctRunSpec(parent) : null;
+    if (!parentSpec) continue;
+    const parentMove = moves.get(parentId);
+    for (const branch of ductBranchesOf(parentId, withChanges())) {
+      let spec = branch.spec;
+      if (parentMove && spec.start.kind === 'tap') {
+        const centre = tapCentre(parentMove.before, spec.start);
+        const at = centre ? locateOnLegs(parentSpec, parentMove.mapPoint(centre, spec.start.legIndex)) : null;
+        if (at) spec = { ...spec, start: { ...spec.start, legIndex: at.legIndex, stationMm: at.stationMm } };
+      }
+      const from = startAnchor(spec);
+      const to = branchAnchor(parentSpec, spec, settings);
+      const restated = spec !== branch.spec;
+      if (!from || !to || !anchorsDiffer(from, to)) {
+        if (restated) {
+          const element = ductRunElementWithSpec(branch.element, spec);
+          current.set(element.id, element);
+          result.set(element.id, element);
+          queue.push(element.id);
+        }
+        continue;
+      }
+      const moved = reanchorKeepingEnd(spec, from, to, minFirstMm);
+      const element = ductRunElementWithSpec(branch.element, moved.spec);
+      current.set(element.id, element);
+      result.set(element.id, element);
+      moves.set(element.id, { before: spec, mapPoint: moved.mapPoint });
+      queue.push(element.id);
+    }
+  }
+  return [...result.values()];
+}
+
 function anchorsDiffer(a: DuctAnchor, b: DuctAnchor): boolean {
   return Math.hypot(a.point.x - b.point.x, a.point.y - b.point.y) > MOVED_EPSILON_MM
     || Math.abs(a.z - b.z) > MOVED_EPSILON_MM
