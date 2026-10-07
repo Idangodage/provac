@@ -1218,13 +1218,111 @@ Each field is judged as it is typed. Once the value differs, its result (velocit
     - `duct-seg-p1` 16/16, `-p2` 22/22, `-p3` 29/29, `-p5` 14/14, `duct-seg-views` 8/8;
     - `-p4` 15/15: leaving a previewed option restores the 3D drawing pixel for pixel, wash included.
 
+### One click selects a segment (7 October 2026)
+
+**What the user saw:** no segment got selected in plan or 3D.
+
+**Why:** the first click on a duct selected only its whole run; a segment was pinned only by a second click on the
+run once it was selected.
+- **Plan:** the overlay draws its segment hit areas on selected runs only, and the first click goes to the general
+  select handler.
+- **3D:** the duct click pinned only on a selected run.
+- **Why no check caught it:** the drivers selected the run through the debug handle (plan) or clicked twice (3D).
+
+**Now, in the select tool, in both views:**
+- **A plain click on a duct** selects its run and pins the segment under the pointer, its card beside it.
+  - Plan: the select handler's duct branch pins through `HvacPlanRenderer.ductSegmentAtWorldPoint`
+    (`segmentPieceAtPlanPoint`, at the duct pick's own tolerance).
+  - 3D: the duct click selects the run if it is not selected, then pins.
+- **A click on another segment** of the selected run pins that one, as before.
+- **Shift / Ctrl-click** adds the run to the selection, or takes it out, and pins nothing.
+- **Esc** closes the card and leaves the run selected.
+- **Hover** is unchanged.
+
+**The card closes with its run only when the selection changes**, so a card pinned by the click that selects its run is
+never closed before that selection arrives.
+
+**Verified**
+- **Unit test:** `ductSegments` (+1): the piece under a plan point on a leg and on an elbow.
+- **On canvas** (mouse only, the project restored): `duct-seg-click` 8/8.
+  - Plan and Iso: one click selects the run and pins the segment, with its card and highlight.
+  - Esc closes the card and keeps the run.
+  - Shift-click adds a second run and pins nothing.
+  - A drag on the selected run opens no card.
+- **`duct-seg-p4`:** updated for the one-click pin (Esc, then rest and peek as before).
+
+**Found while verifying, not part of this work:** a selected duct does not move under a mouse drag in plan. It is the
+same as the equipment drag noted above, and was confirmed on the code before this change.
+
+### Round to rectangular with a split in the way (7 October 2026)
+
+**What the user saw:** a round duct could not be set to rectangular.
+
+**Why:** the layout ran from the unit, through a square-to-round, along a round main to a wye whose outlets turned
+about 0.5 m on.
+- A rectangular main cannot end in a wye, so the edit turns the wye into a rectangular split (bullhead tee or Y).
+- That split's outlets leave square, so each outlet branch is re-aimed to keep its end.
+- With so little room before they turn, no route exists, and the change was refused on both the main's card and the
+  wye's.
+- **Probe**, by outlet length before the turn: 500 mm, both rectangles refused; 800 mm, one of two; 1200 mm, both
+  converted.
+
+**Now:**
+- **The split stays, behind a transition** (`keepSplitBehindTransition`).
+  - **When:** the outlets cannot turn to the new split, or a row asks for it (`keepSplit`).
+  - **How:** the last leg is cut by a straight-through vertex: the new section up to it, a neck of the old section into
+    the split. The planner lays the transition at that vertex.
+  - **Neck length:** the shortest, from 150 mm in 50 mm steps, that plans with no new error.
+  - **What moves:** take-offs and accessories on the neck move onto it, their stations re-based and their positions
+    unchanged. The split and its outlets do not change.
+  - **The reverse:** a rectangular Y or bullhead run made round keeps its split behind a round-to-square.
+  - **The card's foot says so:** "The wye stays as it is: the duct turns back to Ø500 through a square-to-round 400 mm
+    before it".
+- **Rows:**
+  - the wye's card: "Rectangular main W×H, wye kept";
+  - a rectangular split's card: "Round main ØD, Y split kept";
+  - the cone at the unit (`transition:0`): "Rectangular duct W×H" (its first leg in the equal-friction rectangle,
+    lying flat in the void) and "Rectangular run" (every round leg of the run).
+- **Elbows that fit** (`fitElbows`). A round run made rectangular takes wider elbows. Where an edit leaves a leg too
+  short for its elbows:
+  - each elbow takes the largest of R/W 1.25, 1.0 or 0.75 that fits and breaks no new rule;
+  - failing that, turning vanes on a 90° turn;
+  - the card's foot says which.
+
+**Verified**
+- **Unit tests:** `ductRoundToRect` (6):
+  - the layout as drawn: the wye kept, a 400 mm neck, the outlets untouched, no errors;
+  - at 800 mm: the wye becomes a rectangular split;
+  - "wye kept" chosen where the outlets could turn;
+  - a rectangular Y made round keeping its Y;
+  - a take-off on the neck: the neck reaches back past it, which stays a round tee, re-based, not moved;
+  - the cone's rows on a one-leg and a two-leg run;
+  - an outlet elbow made rectangular taking R/W 1.25.
+  - The segment suites pass (61 tests).
+- **On canvas:** `duct-round-rect` 9/9, mouse only, the project restored. The layout (unit, round main, wye, outlets
+  turning at 500 mm) is committed into the room in one step.
+  - **Plan:**
+    - one click on the cone, then "Rectangular duct 650×350": the wye is kept behind a 400 mm square-to-round, the
+      card's foot said so first, no errors, one undo;
+    - the wye's card offers "wye kept";
+    - an outlet elbow made rectangular applies with no error.
+  - **Iso:** one click on the round main, then "950×250": the wye is kept behind a 550 mm neck, the outlets are as they
+    were, no errors, one undo.
+- **Both changes, on the final build:**
+  - The full suite: 239 files and 2072 tests pass.
+  - `DUCT_BENCHMARK`: 43/43.
+  - Type-check and lint: clean on the changed files.
+  - Every card driver re-run, each restoring the project: `duct-seg-p1` 16/16, `-p2` 22/22, `-p3` 29/29, `-p4` 16/16,
+    `-p5` 14/14, `duct-seg-views` 8/8, `-v2-highlight` 5/5, `-v2` 10/10, `duct-seg-click` 8/8.
+
 ### Known limits
 
 - Accessories are kept with their legs through the card's edits; an edit elsewhere that inserts or removes a vertex shifts the legs after it, and an accessory left on the wrong leg is reported (`DU_INLINE_CLASH`) or sits where its station falls.
 - Attenuator and access-door sizes, prices and the attenuator's loss are practice placeholders until the supplier's data is entered.
 - A runout's length is set along a level rigid leg only. Where the rigid duct reaches the runout down a riser, the card refuses with the reason; move its end by hand.
 - 3D picks test the duct meshes the ray's bounds admit, triangle by triangle; a very large drawing would want a BVH (`three-mesh-bvh` is already a dependency).
-- Found while verifying, not part of this work: equipment (a diffuser, the FDUM22) does not move under a mouse drag after placing through the Air system card and Auto route (the press selects it; the 28 September driver logged the same after the Duct tool); keyboard nudges work.
+- Found while verifying, not part of this work: equipment (a diffuser, the FDUM22) does not move under a mouse drag after placing through the Air system card and Auto route (the press selects it; the 28 September driver logged the same after the Duct tool); keyboard nudges work. A selected duct does not move under a mouse drag in plan either.
+- Where a split is kept behind a transition and a take-off sits near the split, the neck reaches back past the take-off (it stays on round duct): the neck can be long (1.3 m in the test).
 
 ## Known limits (auto duct, 30 September 2026)
 
