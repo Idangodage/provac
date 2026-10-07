@@ -1125,9 +1125,17 @@ Plans derive the penetrations every time they are made, so a moved wall never le
 - Tests: `ductInline` (9: reading, laying and the length invariant, no joint inside, clashes, segments, the attenuator's loss rectangular and round, plan symbols and 3D, BOM rows and price, the card's options and its clear-spot placement, an attenuator's lengths and removal), `ductSegmentEdits` (+1: a damper set into a branch stays through a runout made rigid and flexible again). Full suite 237 files / 2059 tests; `DUCT_BENCHMARK` 43/43.
 - Canvas: `duct-seg-p5` 14/14 on the generated system, mouse only, project restored exactly: the main's first leg offers the three accessories; hovering the attenuator previews it (placed 61 mm back, clear of the take-off) and clicking adds it, drawn `SA SA-01`, with no error; its own card offers 600–1500 mm (900 current) and removal; 1200 mm applied (re-placed, the card kept on it; 1500 then disabled: no room); the first leg then has no room for an access door (its row says so), the third leg takes one, drawn `AD`; in the Iso view the attenuator's casing shows and a click on it pins its card from 3D.
 
-### Next (approved, not yet built)
+### Final verification (Phase 6, 7 October 2026)
 
-- Phase 6: the final verification and docs pass (all drivers, the full suite and the benchmark, a closing write-up).
+- The full suite (237 files / 2059 tests), the type-check and `DUCT_BENCHMARK` (43/43) pass; lint is clean but for an import-order error in `ductPlenum.test.ts` and `pipeSimplify.test.ts` that predates this work.
+- Every driver re-run against the final build, mouse and keyboard only, each restoring the project exactly: `duct-y-fit` (Phase 0), `duct-seg-p1` 16/16, `-p2` 22/22, `-p3` 29/29, `-p4` 15/15, `-p5` 14/14, and `duct-seg-views` 8/8 — in the plan and in the Iso, Front and Side views a click selects the duct under the pointer (the nearest along the ray: in the Front view the return main stands in front of the supply main and its elbow is the one picked), a second click pins that segment's card, beside it.
+
+### Known limits
+
+- Accessories are kept with their legs through the card's edits; an edit elsewhere that inserts or removes a vertex shifts the legs after it, and an accessory left on the wrong leg is reported (`DU_INLINE_CLASH`) or sits where its station falls.
+- Attenuator and access-door sizes, prices and the attenuator's loss are practice placeholders until the supplier's data is entered.
+- 3D picks test the duct meshes the ray's bounds admit, triangle by triangle; a very large drawing would want a BVH (`three-mesh-bvh` is already a dependency).
+- Found while verifying, not part of this work: equipment (a diffuser, the FDUM22) does not move under a mouse drag after placing through the Air system card and Auto route (the press selects it; the 28 September driver logged the same after the Duct tool); keyboard nudges work.
 
 ## Known limits (auto duct, 30 September 2026)
 
