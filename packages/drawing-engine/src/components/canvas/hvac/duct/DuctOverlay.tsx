@@ -48,7 +48,7 @@ import {
 import { distanceToPolygon, getDuctPlanPresentation } from './ductPick';
 import { buildDuctPlanPresentation } from './ductPlanPresentation';
 import { useDuctSegmentUiStore, type DuctSegmentFocus } from './ductSegmentUiStore';
-import { ductSegmentOfMark, segmentOutlines } from './ductSegments';
+import { ductSegmentOfMark, polygonHotspot, segmentEnds, segmentOutlines } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { getDuctSupportPlan } from './ductSupports';
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
@@ -408,12 +408,17 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const plan = planOf(runId);
     if (!matrix || !plan) return null;
     const anchor = anchorMark ? getDuctPlanPresentation(plan).piecePolygons.filter((piece) => piece.mark === anchorMark).map((piece) => piece.polygon) : [];
-    const points = (anchor.length ? anchor : segmentOutlines(plan, key)).flat();
+    const polygons = anchor.length ? anchor : segmentOutlines(plan, key);
+    const points = polygons.flat();
     if (points.length === 0) return null;
     const client = points.map((point) => new DOMPoint(point.x, point.y).matrixTransform(matrix));
+    // The leader line ends on the piece itself (a point inside its outline).
+    const inside = polygons.map((polygon) => polygonHotspot(polygon)).find((point): point is Point2D => point !== null);
+    const pin = inside ? new DOMPoint(inside.x, inside.y).matrixTransform(matrix) : null;
     return {
       left: Math.min(...client.map((point) => point.x)), right: Math.max(...client.map((point) => point.x)),
       top: Math.min(...client.map((point) => point.y)), bottom: Math.max(...client.map((point) => point.y)),
+      ...(pin ? { pinX: pin.x, pinY: pin.y } : {}),
     };
   }, [planOf]);
 
@@ -457,8 +462,12 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       const plan = planOf(focus.runId);
       return plan ? segmentOutlines(plan, focus.key) : [];
     };
+    const endsOf = (focus: DuctSegmentFocus) => {
+      const plan = planOf(focus.runId);
+      return plan ? segmentEnds(plan, focus.key) : [];
+    };
     const samePinned = hovered && pinned && hovered.runId === pinned.runId && hovered.key === pinned.key;
-    const markup = (pinned ? segmentFocusMarkup(outlinesOf(pinned), 'pinned') : '')
+    const markup = (pinned ? segmentFocusMarkup(outlinesOf(pinned), 'pinned', endsOf(pinned), kRef.current) : '')
       + (hovered && !samePinned ? segmentFocusMarkup(outlinesOf(hovered), 'hovered') : '');
     if (target.innerHTML !== markup) target.innerHTML = markup;
   }, [planOf, paintOptionPreview]);

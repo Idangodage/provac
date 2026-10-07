@@ -5,17 +5,18 @@
  * the camera sees it (where its card goes).
  */
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 import type { HvacElement } from '../../../types';
 import { getDuctRunPlan } from '../hvac/duct/ductFabricationPlanner';
 import type { DuctSegmentFocus } from '../hvac/duct/ductSegmentUiStore';
-import { ductSegmentOf, segmentAtModelPoint, segmentBounds3D } from '../hvac/duct/ductSegments';
+import { ductSegmentOf, pieceHotspot3D, segmentAtModelPoint, segmentBounds3D, segmentEnds, type DuctSegmentEnd } from '../hvac/duct/ductSegments';
 import type { DuctDesignSettings } from '../hvac/duct/ductSettings';
 import type { ScreenRect } from '../hvac/duct/popoverPlacement';
 import { ductPiecesOuterGeometry } from '../hvac/three3d/ductMeshes';
 import { modelPointToWorld } from '../modelSpace';
 
-import { OUTLINE_PROXY_MATERIAL } from './postfx';
+import { FOCUS_RING_MATERIAL, OUTLINE_PROXY_MATERIAL } from './postfx';
 
 export interface DuctHit3D {
   runId: string;
@@ -68,6 +69,51 @@ export function ductSegmentProxy(scene: readonly HvacElement[], settings: DuctDe
   return mesh;
 }
 
+/** A ring stands this far clear of the duct's outer face, its tube this thick (radius), mm. */
+const END_RING_GAP_MM = 25;
+const END_RING_TUBE_MM = 10;
+
+/** A ring round the duct at one end of a segment, in its cross-section: a circle round a round duct, a rounded rectangle round a rectangular one. */
+function endRingGeometry(end: DuctSegmentEnd): THREE.BufferGeometry {
+  const a = end.halfWidthMm + END_RING_GAP_MM + END_RING_TUBE_MM;
+  const b = end.halfHeightMm + END_RING_GAP_MM + END_RING_TUBE_MM;
+  const loop: Array<[number, number]> = [];
+  if (end.round) {
+    for (let index = 0; index < 48; index += 1) {
+      const angle = (index / 48) * Math.PI * 2;
+      loop.push([Math.cos(angle) * a, Math.sin(angle) * a]);
+    }
+  } else {
+    const r = Math.min(40, a / 2, b / 2);
+    for (const [cx, cy, from] of [[a - r, b - r, 0], [r - a, b - r, 0.5], [r - a, r - b, 1], [a - r, r - b, 1.5]] as const) {
+      for (let index = 0; index <= 6; index += 1) {
+        const angle = (from + index / 12) * Math.PI;
+        loop.push([cx + Math.cos(angle) * r, cy + Math.sin(angle) * r]);
+      }
+    }
+  }
+  // Across the run (level) and up: the plane square to the run's heading.
+  const across = new THREE.Vector3(-end.direction.y, end.direction.x, 0);
+  const up = new THREE.Vector3(0, 0, 1);
+  const centre = new THREE.Vector3(end.point.x, end.point.y, end.z);
+  const curve = new THREE.CatmullRomCurve3(loop.map(([u, v]) => centre.clone().addScaledVector(across, u).addScaledVector(up, v)), true, 'centripetal');
+  return new THREE.TubeGeometry(curve, end.round ? 96 : 128, END_RING_TUBE_MM, 6, true);
+}
+
+/** Rings round a segment's two ends, standing clear of it: where it starts and stops, as the plan's brackets show; null for none (a riser). */
+export function ductSegmentEndRings(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, key: string): THREE.Mesh | null {
+  const element = scene.find((candidate) => candidate.id === runId);
+  const plan = element ? getDuctRunPlan(element, scene, settings) : null;
+  const parts = (plan ? segmentEnds(plan, key) : []).map(endRingGeometry);
+  if (parts.length === 0) return null;
+  const geometry = parts.length === 1 ? parts[0]! : mergeGeometries(parts, false);
+  if (parts.length > 1) parts.forEach((part) => part.dispose());
+  if (!geometry) return null;
+  const mesh = new THREE.Mesh(geometry, FOCUS_RING_MATERIAL);
+  mesh.name = `duct-segment-ends-${runId}-${key}`;
+  return mesh;
+}
+
 /** The meshes a duct run is drawn with (visible ones), for an outline of the whole run; none for another element. */
 export function ductRunMeshes(root: THREE.Object3D, runId: string): THREE.Mesh[] {
   const group = root.children.find((object) => object.userData.hvacElementId === runId && object.userData.hvacElementType === 'duct' && object.visible);
@@ -108,8 +154,16 @@ export function segmentClientRect3D(
     }
   }
   if (xs.length === 0) return null;
-  const rect = { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
+  const rect: ScreenRect = { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
   // Wholly off the drawing: no card.
   if (rect.right < host.left || rect.left > host.left + host.width || rect.bottom < host.top || rect.top > host.top + host.height) return null;
+  // The leader line ends on the piece itself: inside its outline, half way up it.
+  const mark = focus.anchorMark ?? (plan ? ductSegmentOf(plan, focus.key)?.marks[0] ?? null : null);
+  const point = plan && mark ? pieceHotspot3D(plan, mark) : null;
+  const clip = point ? modelPointToWorld({ x: point.x, y: point.y }, point.z).project(camera) : null;
+  if (clip && Number.isFinite(clip.x) && Number.isFinite(clip.y) && clip.z >= -1 && clip.z <= 1) {
+    rect.pinX = host.left + ((clip.x + 1) / 2) * host.width;
+    rect.pinY = host.top + ((1 - clip.y) / 2) * host.height;
+  }
   return rect;
 }

@@ -104,7 +104,7 @@ import { createWallOutline } from "../wall/wallThreeVisual";
 import { buildWallChunkGeometry } from "../wallview/wallMeshBuilder";
 
 import { HandleLayer3D, type HandleDef3D } from "./handleLayer3D";
-import { ductRunMeshes, ductSegmentFocusAt, ductSegmentProxy, raycastDuctRun, type DuctHit3D } from "./hybridDuctSegments";
+import { ductRunMeshes, ductSegmentEndRings, ductSegmentFocusAt, ductSegmentProxy, raycastDuctRun, type DuctHit3D } from "./hybridDuctSegments";
 import { createHybridHvacScene } from "./hybridHvacScene";
 import {
   getProtectedPipeNodeIndexes,
@@ -130,7 +130,7 @@ import {
   planSheetOpacityForPolar,
   wallRiseForPolar,
 } from "./planSheetTransform";
-import { HybridPostFX, OUTLINE_PROXY_MATERIAL } from "./postfx";
+import { FOCUS_OVERLAY_MATERIAL, HybridPostFX, OUTLINE_PROXY_MATERIAL } from "./postfx";
 import { extractEntityTriangles, resolveWallHitId } from "./wallPicking";
 
 export type Hybrid3DViewState = {
@@ -918,6 +918,8 @@ interface DuctOutlineFocus {
   settings: DuctDesignSettings;
   hovered: DuctSegmentFocus | null;
   pinned: DuctSegmentFocus | null;
+  /** An option of the card is being previewed. */
+  previewing: boolean;
 }
 
 /**
@@ -934,9 +936,13 @@ function refreshOutlineProxies(
   ducts: DuctOutlineFocus | null = null,
 ): void {
   const layer = sceneState.proxyLayer;
+  const disposed = new Set<THREE.BufferGeometry>();
   [...layer.children].forEach((child) => {
     layer.remove(child);
-    if (child instanceof THREE.Mesh) child.geometry.dispose();
+    if (child instanceof THREE.Mesh && !disposed.has(child.geometry)) {
+      disposed.add(child.geometry);
+      child.geometry.dispose();
+    }
   });
   const chunk = sceneState.wallChunk;
   const postfx = sceneState.postfx;
@@ -962,12 +968,33 @@ function refreshOutlineProxies(
     if (mesh) layer.add(mesh);
     return mesh;
   };
-  // A card's segment belongs to a selected run (the card closes with its run).
-  const pinned = ducts?.pinned && selectedIds.includes(ducts.pinned.runId) ? ducts.pinned : null;
+  // A card's segment belongs to a selected run (the card closes with its run). While one of its options is previewed
+  // the drawing shows the option, not the segment it replaces.
+  const pinned = ducts?.pinned && selectedIds.includes(ducts.pinned.runId) && !ducts.previewing ? ducts.pinned : null;
   const selectionMeshes: THREE.Object3D[] = [];
+  const focusMeshes: THREE.Object3D[] = [];
   for (const id of selectedIds) {
     const run = ductRunMeshes(sceneState.root, id);
-    const proxy = run.length ? (pinned?.runId === id ? segmentProxy(pinned) : null) : buildProxy(id);
+    if (run.length && pinned?.runId === id) {
+      // The pinned segment: a thick violet outline and a violet wash over its surface, instead of the run's outline,
+      // and a ring round each of its ends.
+      const proxy = segmentProxy(pinned);
+      if (proxy) {
+        focusMeshes.push(proxy);
+        const wash = new THREE.Mesh(proxy.geometry, FOCUS_OVERLAY_MATERIAL);
+        wash.name = `${proxy.name}-wash`;
+        wash.renderOrder = 900;
+        layer.add(wash);
+        const rings = ducts ? ductSegmentEndRings(ducts.scene, ducts.settings, pinned.runId, pinned.key) : null;
+        if (rings) {
+          rings.renderOrder = 901;
+          layer.add(rings);
+          focusMeshes.push(rings);
+        }
+        continue;
+      }
+    }
+    const proxy = run.length ? null : buildProxy(id);
     if (proxy) selectionMeshes.push(proxy);
     else selectionMeshes.push(...run);
   }
@@ -986,6 +1013,7 @@ function refreshOutlineProxies(
   }
   postfx.setSelection(selectionMeshes);
   postfx.setHover(hoverMeshes);
+  postfx.setFocus(focusMeshes);
 }
 
 /** Solid → X-ray → Wire (reference applyStyles): render styles only; the
@@ -1014,7 +1042,7 @@ function rebuildPipePreviewLayer(
   externalEdits: readonly HvacElement[] | null,
   buildRenderContext: ReturnType<typeof createPipeRenderStateCache>,
   ductSettings?: DuctDesignSettings,
-): void {
+): boolean {
   const { hiddenIds, changed } = updateHybridPipePreviewScene(sceneState.pipePreviewLayer, {
     committedScene: sceneState.hvacScene,
     committed: committedElements,
@@ -1027,11 +1055,17 @@ function rebuildPipePreviewLayer(
     if (mesh) tuneHvacMesh(mesh);
     return mesh;
   });
+  // Committed elements an edit replaces are hidden while it is previewed; true when one is hidden or shown again.
+  let shownOrHidden = false;
   sceneState.root.children.forEach((child) => {
     const elementId = child.userData.hvacElementId as string | undefined;
-    if (elementId) child.visible = !hiddenIds.has(elementId);
+    if (!elementId) return;
+    const visible = !hiddenIds.has(elementId);
+    if (child.visible !== visible) shownOrHidden = true;
+    child.visible = visible;
   });
   if (changed) refreshSceneContentBounds(sceneState);
+  return shownOrHidden;
 }
 
 export function HybridProjectionLayer({
@@ -1107,13 +1141,15 @@ export function HybridProjectionLayer({
   hvacElementsRef.current = hvacElements;
   const ductSettingsRef = useRef(ductSettings);
   ductSettingsRef.current = ductSettings;
+  /** Outlines of what is selected and hovered, and of the duct segments in focus (set below). */
+  const refreshOutlinesRef = useRef<() => void>(() => undefined);
   const schedulePreviewRebuild = useCallback(() => {
     if (previewRebuildFrameRef.current !== null || typeof window === "undefined") return;
     previewRebuildFrameRef.current = window.requestAnimationFrame(() => {
       previewRebuildFrameRef.current = null;
       const sceneState = sceneStateRef.current;
       if (!sceneState) return;
-      rebuildPipePreviewLayer(
+      const shownOrHidden = rebuildPipePreviewLayer(
         sceneState,
         draftPipesRef.current,
         editPipePreviewRef.current,
@@ -1123,6 +1159,8 @@ export function HybridProjectionLayer({
         ductSettingsRef.current,
       );
       controllerRef.current?.setContentBounds(sceneState.contentBounds);
+      // Outlines are drawn from visible meshes: an element hidden under a preview, or shown again after it, is outlined afresh.
+      if (shownOrHidden) refreshOutlinesRef.current();
       requestFrameRef.current?.();
     });
   }, [buildPreviewRenderContext]);
@@ -1181,14 +1219,12 @@ export function HybridProjectionLayer({
   selectedIdsRef.current = selectedIds ?? [];
   const hoveredRef = useRef(hoveredElementId ?? null);
   hoveredRef.current = hoveredElementId ?? null;
-  /** Outlines of what is selected and hovered, and of the duct segments in focus. */
-  const refreshOutlinesRef = useRef<() => void>(() => undefined);
   refreshOutlinesRef.current = () => {
     const sceneState = sceneStateRef.current;
     if (!sceneState) return;
-    const { hovered, pinned } = useDuctSegmentUiStore.getState();
+    const { hovered, pinned, preview } = useDuctSegmentUiStore.getState();
     refreshOutlineProxies(sceneState, wallsRef.current, selectedIdsRef.current, hoveredRef.current,
-      { scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered, pinned });
+      { scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered, pinned, previewing: Boolean(preview) });
     requestFrameRef.current?.();
   };
   const viewStyleRef = useRef<HybridViewStyle>(viewStyle ?? "solid");
@@ -3098,7 +3134,7 @@ export function HybridProjectionLayer({
   }, [selectedIds, hoveredElementId, walls]);
   // A duct segment hovered or its card pinned, in either view: its outline here.
   useEffect(() => useDuctSegmentUiStore.subscribe((state, previous) => {
-    if (state.hovered !== previous.hovered || state.pinned !== previous.pinned) refreshOutlinesRef.current();
+    if (state.hovered !== previous.hovered || state.pinned !== previous.pinned || Boolean(state.preview) !== Boolean(previous.preview)) refreshOutlinesRef.current();
   }), []);
 
   // Selection → micro-edit handle definitions (square corners + diamond mid).

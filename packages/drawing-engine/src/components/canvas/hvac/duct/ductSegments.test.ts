@@ -6,15 +6,18 @@ import { resolveUnitAirPorts } from './ductAirPorts';
 import { tapOrigin } from './ductBranchTargets';
 import { buildDuctRunDraftElement } from './ductDraft';
 import { planDuctRun, type DuctFabricationPlan } from './ductFabricationPlanner';
+import { segmentFocusMarkup } from './ductOverlayMarkup';
 import {
   ductSegmentKey,
   ductSegmentOf,
   ductSegments,
   neighbourSegment,
+  polygonHotspot,
   segmentAtModelPoint,
   segmentAtPlanPoint,
   segmentBounds,
   segmentBounds3D,
+  segmentEnds,
   segmentIssues,
   segmentOutlines,
 } from './ductSegments';
@@ -145,6 +148,52 @@ describe('the segments of a duct run', () => {
     expect(riser.max.z).toBeCloseTo(z0 + 1200 + 150 - 500, 6);
     const first = segmentBounds3D(plan, 'leg:0')!;
     expect(first.max.z - first.min.z).toBeCloseTo(300, 0);
+  });
+
+  it('mark where they begin and end, and have a point inside them for a pin', () => {
+    const { plan } = rectMain();
+    // The first leg runs along −y: its ends are its first and last pieces' ends, square across it, at their height,
+    // the 600×300 section out to its outer face (the sheet and the insulation the plan draws).
+    const leg = ductSegmentOf(plan, 'leg:0')!;
+    const first = plan.pieces[leg.pieceIndices[0]!]!;
+    const last = plan.pieces[leg.pieceIndices.at(-1)!]!;
+    const [start, end] = segmentEnds(plan, 'leg:0');
+    expect(start!.point).toEqual(first.start);
+    expect(end!.point).toEqual(last.end);
+    expect(start!.z).toBe(first.centreZ);
+    expect(end!.z).toBe(last.endCentreZ);
+    expect(start!.direction.x).toBeCloseTo(0, 9);
+    expect(start!.direction.y).toBeCloseTo(-1, 9);
+    const outer = (first.sheetThicknessMm ?? 1) + plan.insulationMm;
+    expect(start!.halfWidthMm).toBeCloseTo(300 + outer, 9);
+    expect(start!.halfHeightMm).toBeCloseTo(150 + outer, 9);
+    expect(start!.round).toBe(false);
+    // The elbow: in along −y, out along +x.
+    const [into, out] = segmentEnds(plan, 'node:1');
+    expect(into!.direction.y).toBeCloseTo(-1, 9);
+    expect(out!.direction.x).toBeCloseTo(1, 9);
+    // The pin is inside the segment's outline.
+    const pin = polygonHotspot(segmentOutlines(plan, 'leg:0')[0]!)!;
+    expect(segmentAtPlanPoint(plan, pin, 1)!.key).toBe('leg:0');
+    // An L whose centroid falls outside it still gets a point inside it.
+    const ell = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 10 }, { x: 10, y: 10 }, { x: 10, y: 100 }, { x: 0, y: 100 }];
+    const inside = polygonHotspot(ell)!;
+    expect((inside.x > 0 && inside.x < 10 && inside.y > 0 && inside.y < 100) || (inside.y > 0 && inside.y < 10 && inside.x > 0 && inside.x < 100)).toBe(true);
+    expect(polygonHotspot([{ x: 0, y: 0 }, { x: 1, y: 0 }])).toBeNull();
+  });
+
+  it('are drawn in focus: a pinned one filled, haloed and bracketed at both ends; a hovered one dashed', () => {
+    const { plan } = rectMain();
+    const outlines = segmentOutlines(plan, 'leg:0');
+    const ends = segmentEnds(plan, 'leg:0');
+    const paths = (markup: string) => markup.match(/<path /g)?.length ?? 0;
+    const pinned = segmentFocusMarkup(outlines, 'pinned', ends, 2);
+    // A halo and a filled outline per piece, a white underlay and a violet bracket per end.
+    expect(paths(pinned)).toBe(outlines.length * 2 + ends.length * 2);
+    expect(pinned).toContain('stroke="#ffffff"');
+    const hovered = segmentFocusMarkup(outlines, 'hovered', ends, 2);
+    expect(paths(hovered)).toBe(outlines.length);
+    expect(hovered).toContain('stroke-dasharray');
   });
 
   it('carry the issues that belong to them', () => {

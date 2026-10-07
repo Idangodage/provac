@@ -5,12 +5,12 @@ import type { HvacElement, Point2D } from '../../../types';
 import { resolveUnitAirPorts } from '../hvac/duct/ductAirPorts';
 import { buildDuctRunDraftElement } from '../hvac/duct/ductDraft';
 import { getDuctRunPlan } from '../hvac/duct/ductFabricationPlanner';
-import { segmentHotspot3D } from '../hvac/duct/ductSegments';
+import { segmentEnds, segmentHotspot3D } from '../hvac/duct/ductSegments';
 import { resolveDuctSettings } from '../hvac/duct/ductSettings';
 import { buildHvacElementMesh } from '../hvac/three3d/buildHvacElementMesh';
 import { applyModelToWorldBasis, modelPointToWorld } from '../modelSpace';
 
-import { ductRunMeshes, ductSegmentFocusAt, ductSegmentProxy, raycastDuctRun, segmentClientRect3D } from './hybridDuctSegments';
+import { ductRunMeshes, ductSegmentEndRings, ductSegmentFocusAt, ductSegmentProxy, raycastDuctRun, segmentClientRect3D } from './hybridDuctSegments';
 
 const settings = resolveDuctSettings({ showSupports: false });
 const unit: HvacElement = {
@@ -59,6 +59,29 @@ describe('duct runs in the 3D views', () => {
     expect(ductSegmentFocusAt(scene, settings, elbow.runId, elbow.model)?.key).toBe('node:1');
     // Beside the run: nothing.
     expect(raycastDuctRun(downOnto({ ...P(1500, 1500), z: target.z }), root)).toBeNull();
+  });
+
+  it('rings a segment at both of its ends, clear of its outer face', () => {
+    const { scene, plan } = world();
+    const ends = segmentEnds(plan, 'leg:0');
+    const rings = ductSegmentEndRings(scene, settings, 'run', 'leg:0')!;
+    const position = rings.geometry.getAttribute('position');
+    const atEnd = [0, 0];
+    for (let index = 0; index < position.count; index += 1) {
+      const p = { x: position.getX(index), y: position.getY(index), z: position.getZ(index) };
+      // In one end's cross-section (within the ring's tube) …
+      const which = ends.findIndex((end) => Math.abs((p.x - end.point.x) * end.direction.x + (p.y - end.point.y) * end.direction.y) <= 10 + 1e-6);
+      expect(which).toBeGreaterThanOrEqual(0);
+      atEnd[which] = (atEnd[which] ?? 0) + 1;
+      // … and round the duct, clear of its outer face.
+      const end = ends[which]!;
+      const across = Math.abs(-(p.x - end.point.x) * end.direction.y + (p.y - end.point.y) * end.direction.x);
+      const up = Math.abs(p.z - end.z);
+      expect(across > end.halfWidthMm + 10 || up > end.halfHeightMm + 10).toBe(true);
+    }
+    expect(atEnd[0]).toBeGreaterThan(0);
+    expect(atEnd[1]).toBeGreaterThan(0);
+    expect(ductSegmentEndRings(scene, settings, 'run', 'nope')).toBeNull();
   });
 
   it('outlines a segment with a proxy and the run with its own meshes', () => {

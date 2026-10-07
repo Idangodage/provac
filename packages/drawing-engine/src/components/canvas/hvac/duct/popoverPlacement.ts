@@ -11,6 +11,9 @@ export interface ScreenRect {
   top: number;
   right: number;
   bottom: number;
+  /** A point on the thing anchored to (screen pixels), where a leader line from the card ends; else the rect's centre. */
+  pinX?: number;
+  pinY?: number;
 }
 
 export type PopoverSide = 'right' | 'left' | 'bottom' | 'top';

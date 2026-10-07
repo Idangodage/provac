@@ -140,23 +140,44 @@ export function ductRunMarkup(presentation: DuctPlanPresentation, style: DuctMar
 
 /** Segment focus in plan: violet, apart from the amber of a selected run and the blue / teal of the services. */
 export const SEGMENT_FOCUS_COLORS = {
-  hovered: { stroke: '#8b5cf6', fill: 'rgba(139,92,246,0.10)' },
-  pinned: { stroke: '#7c3aed', fill: 'rgba(124,58,237,0.17)', glow: 'rgba(124,58,237,0.24)' },
+  hovered: { stroke: '#8b5cf6', fill: 'rgba(139,92,246,0.08)' },
+  pinned: { stroke: '#7c3aed', fill: 'rgba(124,58,237,0.26)', glow: 'rgba(124,58,237,0.22)' },
 } as const;
 
 /**
- * A segment's pieces outlined for focus: the segment under the pointer, or
- * the one whose card is pinned (with a soft glow round it).
+ * A segment in focus. Hovered: a light dashed outline. Pinned (its card
+ * open): a filled shape in a soft halo, and brackets at both of its ends —
+ * across the duct and a little beyond, with short returns into the segment —
+ * so its exact extent reads at any zoom (`k`: screen pixels per mm).
  */
-export function segmentFocusMarkup(outlines: readonly Point2D[][], tone: 'hovered' | 'pinned'): string {
+export function segmentFocusMarkup(
+  outlines: readonly Point2D[][],
+  tone: 'hovered' | 'pinned',
+  ends: ReadonlyArray<{ point: Point2D; direction: Point2D; halfWidthMm: number }> = [],
+  k = 1,
+): string {
   const colors = SEGMENT_FOCUS_COLORS[tone];
-  return outlines.map((outline) => {
+  const shapes = outlines.map((outline) => {
     const d = pathData(outline, true);
-    const glow = tone === 'pinned'
-      ? `<path d="${d}" fill="none" stroke="${SEGMENT_FOCUS_COLORS.pinned.glow}" stroke-width="7" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`
-      : '';
-    return `${glow}<path d="${d}" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="${tone === 'pinned' ? 2.4 : 1.8}" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
+    if (tone === 'hovered') {
+      return `<path d="${d}" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="1.6" stroke-dasharray="5 3" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
+    }
+    return `<path d="${d}" fill="none" stroke="${SEGMENT_FOCUS_COLORS.pinned.glow}" stroke-width="13" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`
+      + `<path d="${d}" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="2.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
   }).join('');
+  if (tone !== 'pinned') return shapes;
+  const px = (value: number) => value / Math.max(k, 1e-6);
+  const brackets = ends.map((end, index) => {
+    const n = { x: -end.direction.y, y: end.direction.x };
+    const reach = end.halfWidthMm + px(9);
+    const into = (index === 0 ? 1 : -1) * px(8);
+    const a = { x: end.point.x + n.x * reach, y: end.point.y + n.y * reach };
+    const b = { x: end.point.x - n.x * reach, y: end.point.y - n.y * reach };
+    const path = [{ x: a.x + end.direction.x * into, y: a.y + end.direction.y * into }, a, b, { x: b.x + end.direction.x * into, y: b.y + end.direction.y * into }];
+    return `<path d="${pathData(path)}" fill="none" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+      + `<path d="${pathData(path)}" fill="none" stroke="${colors.stroke}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+  }).join('');
+  return shapes + brackets;
 }
 
 /**

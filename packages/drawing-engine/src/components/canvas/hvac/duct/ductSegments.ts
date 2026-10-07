@@ -272,14 +272,9 @@ export function segmentAtPlanPoint(plan: DuctFabricationPlan, point: Point2D, to
   return best ? ductSegmentOfMark(plan, best.mark) : null;
 }
 
-/**
- * A plan point inside a segment's outline (its first piece): where a pointer
- * rests to point at it. The outline's vertex centroid when inside, else the
- * middle of a chord across it.
- */
-export function segmentHotspot(plan: DuctFabricationPlan, key: string): Point2D | null {
-  const outline = segmentOutlines(plan, key).find((polygon) => polygon.length >= 3);
-  if (!outline) return null;
+/** A point inside an outline: its vertex centroid when inside, else the middle of a chord across it. */
+export function polygonHotspot(outline: readonly Point2D[]): Point2D | null {
+  if (outline.length < 3) return null;
   const centroid = {
     x: outline.reduce((total, point) => total + point.x, 0) / outline.length,
     y: outline.reduce((total, point) => total + point.y, 0) / outline.length,
@@ -293,6 +288,74 @@ export function segmentHotspot(plan: DuctFabricationPlan, key: string): Point2D 
     if (insidePolygon(middle, outline)) return middle;
   }
   return null;
+}
+
+/** A plan point inside a segment's outline (its first piece): where a pointer rests to point at it. */
+export function segmentHotspot(plan: DuctFabricationPlan, key: string): Point2D | null {
+  const outline = segmentOutlines(plan, key).find((polygon) => polygon.length >= 3);
+  return outline ? polygonHotspot(outline) : null;
+}
+
+/** A point inside one piece's plan outline, half way up it: where a card's leader line ends. */
+export function pieceHotspot3D(plan: DuctFabricationPlan, mark: string): { x: number; y: number; z: number } | null {
+  const piece = plan.pieces.find((candidate) => candidate.mark === mark);
+  const outline = getDuctPlanPresentation(plan).piecePolygons.find((polygon) => polygon.mark === mark)?.polygon;
+  const point = outline ? polygonHotspot(outline) : null;
+  if (!piece || !point) return null;
+  const { minZ, maxZ } = pieceZRange(piece);
+  return { x: point.x, y: point.y, z: (minZ + maxZ) / 2 };
+}
+
+export interface DuctSegmentEnd {
+  point: Point2D;
+  /** The centreline's height there (mm). */
+  z: number;
+  /** The run's heading there (along the run). */
+  direction: Point2D;
+  /** Half the duct's width there, to its outer face: the sheet, the insulation where it is drawn, an attenuator's casing (mm). */
+  halfWidthMm: number;
+  /** Half its height there, to the same face (mm). */
+  halfHeightMm: number;
+  round: boolean;
+}
+
+/** The plan heading at either end of a curve through 3D points. */
+function headingOf(points: ReadonlyArray<{ x: number; y: number }>, at: 'start' | 'end'): Point2D | null {
+  const [a, b] = at === 'start' ? [points[0], points[1]] : [points[points.length - 2], points[points.length - 1]];
+  if (!a || !b) return null;
+  const length = Math.hypot(b.x - a.x, b.y - a.y);
+  return length > 1e-6 ? { x: (b.x - a.x) / length, y: (b.y - a.y) / length } : null;
+}
+
+/**
+ * Where a segment begins and ends — the brackets marking its extent in plan,
+ * the rings in 3D: the point and its height, the run's heading there and the
+ * duct's half section to its outer face. None for a segment that is vertical
+ * in plan (a riser's pieces stack on one spot).
+ */
+export function segmentEnds(plan: DuctFabricationPlan, key: string): DuctSegmentEnd[] {
+  const segment = ductSegmentOf(plan, key);
+  if (!segment) return [];
+  const pieces = segment.pieceIndices.map((index) => plan.pieces[index]!).filter((piece) => !piece.vertical && !piece.frame);
+  const first = pieces[0];
+  const last = pieces[pieces.length - 1];
+  if (!first || !last) return [];
+  const end = (piece: DuctPiece, at: 'start' | 'end', direction: Point2D): DuctSegmentEnd => {
+    // The outer face as the plan draws it: the sheet, the insulation (not on a connector or a fire damper), a casing.
+    const outer = (piece.sheetThicknessMm ?? 1) + (plan.insulationMm > 0 && piece.kind !== 'connector' && piece.kind !== 'fire-damper' ? plan.insulationMm : 0)
+      + (piece.attenuator?.casingMm ?? 0);
+    const diameter = at === 'start' ? piece.diameterMm : piece.endDiameterMm;
+    const width = diameter ?? (at === 'start' ? piece.widthMm : piece.endWidthMm);
+    const height = diameter ?? (at === 'start' ? piece.heightMm : piece.endHeightMm);
+    return {
+      point: at === 'start' ? piece.start : piece.end, z: at === 'start' ? piece.centreZ : piece.endCentreZ, direction,
+      halfWidthMm: width / 2 + outer, halfHeightMm: height / 2 + outer, round: diameter !== undefined,
+    };
+  };
+  return [
+    end(first, 'start', first.elbow?.inDirection ?? (first.flex ? headingOf(first.flex.points, 'start') : null) ?? first.direction),
+    end(last, 'end', last.elbow?.outDirection ?? (last.flex ? headingOf(last.flex.points, 'end') : null) ?? last.direction),
+  ];
 }
 
 /** Plan bounds of a segment (for placing a card beside it), or null when it has no outline. */
