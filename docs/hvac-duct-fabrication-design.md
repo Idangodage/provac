@@ -1130,10 +1130,99 @@ Plans derive the penetrations every time they are made, so a moved wall never le
 - The full suite (237 files / 2059 tests), the type-check and `DUCT_BENCHMARK` (43/43) pass; lint is clean but for an import-order error in `ductPlenum.test.ts` and `pipeSimplify.test.ts` that predates this work.
 - Every driver re-run against the final build, mouse and keyboard only, each restoring the project exactly: `duct-y-fit` (Phase 0), `duct-seg-p1` 16/16, `-p2` 22/22, `-p3` 29/29, `-p4` 15/15, `-p5` 14/14, and `duct-seg-views` 8/8 — in the plan and in the Iso, Front and Side views a click selects the duct under the pointer (the nearest along the ray: in the Front view the return main stands in front of the supply main and its elbow is the one picked), a second click pins that segment's card, beside it.
 
+### Card v2: a selection you can see, a simpler card, values of your own (7 October 2026)
+
+**The request**, after using the card: the segment a click selects should be more visible and specific; the card has too much text and should be simple but comprehensive; and it should take values of the designer's own. Approved plan: `C:\Users\idang\.claude\plans\duct-segment-card-v2.md` ("do this the modern way"). The rest of the drawing is not dimmed.
+
+**The selection**
+- **Plan:**
+  - The pinned segment is filled violet (26 %), with a soft glow and a 2.6 px outline.
+  - It is bracketed square across the duct at both of its ends: violet over a white underlay, so they read on any background.
+  - The ends are the headings of its first and last level pieces (`segmentEnds`). Each bracket reaches 9 px past the duct's outer face as the plan draws it: the sheet, the insulation, an attenuator's casing.
+  - A segment only hovered keeps a dashed outline and a light fill.
+- **Pin, leader and chip:**
+  - A pin sits inside the segment's outline (`polygonHotspot`), with a leader line to the card.
+  - A chip names the segment's marks and size (`S-001 · Ø300`). It is kept on the far side of the pin from the card, never under it.
+- **3D:**
+  - The segment gets a violet wash over its skin (polygon offset, no depth write) and a thick violet outline. The outline is the outline effect's own focus layer, sampled at 1–3 texels.
+  - A violet ring stands round the duct at each of its ends, 25 mm clear of its outer face: the plan's brackets in 3D (`ductSegmentEndRings`). It is a circle round a round duct, a rounded rectangle round a rectangular one, and is outlined with the segment. A riser has none, since its ends stack in plan; the wash marks it.
+  - Pin, leader and chip come from the anchor piece's projected centre (`pieceHotspot3D`).
+  - While an option is previewed, the wash and rings step aside, because the drawing then shows the option.
+
+**The card**
+- **Header:**
+  - The segment's glyph in its service colour, its name, marks and size.
+  - An issue chip.
+  - ⓘ for how it is built: construction, its issues and the keys.
+  - ‹ › ✕.
+- **Figures:** one strip with the airflow, the velocity (a dot against its limit) and the pressure. A flag shows when the segment is on the fan's index path.
+- **Tabs:** **Edit · Swap · Add**, with counts. The card opens on the tab last used for that kind of segment.
+- **Option rows:** each is one line.
+  - A glyph tile and its name.
+  - Its change as chips: ΔP, mass, and a red count of the errors it would add.
+  - Its badges as icons: recommended, lowest ΔP, lowest cost, saves height.
+  - Six rows show, then "N more…".
+- **Hovering a row:** the drawing previews it, and the card's foot gives the rest: what it is, velocity, ΔP, mass, height, "Also changes: …". A disabled row gives its reason there and as its tooltip.
+- **The peek:** the header, the figures and the two best swaps that break no rule.
+
+**Values of the designer's own (the Edit tab)**
+
+Each field is judged as it is typed. Once the value differs, its result (velocity, ΔP, mass, new errors) and **Apply** show under it. Enter applies it, and each change is one undo.
+
+- **Size** (straights, risers):
+  - Ø or W × H: ± 50 mm, Shift ± 10.
+  - ▭ / ◯.
+  - This leg, or all legs of this size.
+- **Elbow:** the R/W (R/D) slider, the ratio typed, or the throat radius in mm.
+- **Transition:** 10°, the project's, 20° or 30°, or an angle of the designer's own (5–45° a side; `nodeOverrides[i].taperDeg`).
+- **Take-off:** its position along the main (`tap-station`). The branch slides with it and keeps its end.
+- **Flexible runout:**
+  - **Its length** (`runout-length`). The rigid leg before the runout runs on or stops short. Where it stops is bisected, each try planned.
+  - **Limits:** a first leg never goes shorter than its take-off's collar and damper plus 20 mm, a later leg than 300 mm (an elbow's room). It runs on to no closer than 150 mm short of the spigot. The card says when the length stops at a limit.
+  - **The terminal's neck** (quick picks) and **its design airflow** in m³/h (`terminal` with `airflowM3h`). **Share** returns it to an equal share of the system's airflow.
+- **Accessory:**
+  - Its position along its leg (`inline-move`): the clear spot nearest the value. It is refused when it cannot go further that way.
+  - An attenuator's length: the catalogue lengths, or 300–3000 mm.
+  - An access door's size (`inline-door`): 100–600 mm in 10 mm steps, stored as `DuctInlineAccessory.doorMm`. Its section stays 100 mm longer than the door.
+
+**Found and fixed while verifying**
+- **The card re-placed itself** whenever its foot changed its height, and could swap sides back and forth. Its place is now held while its anchor and the canvas are unchanged and it still fits.
+- **In 3D, leaving a previewed option left the pinned segment without its wash.** The outlines were rebuilt before the preview pass showed the committed run again. They are now rebuilt whenever that pass hides or shows a run.
+
+**Verified**
+- **Unit tests:**
+  - `ductSegmentCustom` (4):
+    - a take-off moved 400 mm, its branch's end kept;
+    - runouts of 800 and 500 mm, and of 2500 mm, which stops at the collar and damper plus 20 mm;
+    - an attenuator moved, a 300 mm access door, and the door size it already has refused;
+    - a terminal's airflow, and back to a share.
+  - `ductSegments` (+2): the ends, a pin point inside an L-shaped outline, and the focus markup.
+  - `hybridDuctSegments` (+1): the end rings lie in the ends' cross-sections, clear of the outer face.
+  - Full suite: 238 files and 2066 tests pass (the benchmark's 43 skip without `DUCT_BENCHMARK`).
+  - `DUCT_BENCHMARK`: 43/43.
+  - Type-check: clean.
+  - Lint: clean on every changed file. The duct and 3D folders have only `ductPlenum.test.ts`'s old import-order error.
+- **On canvas.** Each driver uses the mouse and keyboard only and restores the project exactly.
+  - `duct-seg-v2-highlight`, 5/5:
+    - In plan, a leg and an elbow pinned: each drawn with its halo, fill and two brackets.
+    - In the Iso view, a leg pinned from 3D: 30 % of its box is violet (wash, outline, rings), and none once the card closes.
+  - `duct-seg-v2`, 10/10:
+    - a 12° taper typed, its result shown, then applied;
+    - R/D 1.25 typed;
+    - an attenuator added, moved 150 mm back and made 600 mm;
+    - a take-off moved 200 mm back, its branch still ending on its terminal. In that layout the runout then bends tighter than the planner allows (`DU_FLEX_BEND`), shown as a new error before Apply;
+    - a 600 mm flexible runout;
+    - a terminal's 450 m³/h;
+    - in the Iso view, Ø250 typed into a leg's card.
+  - The earlier drivers, re-run against the final build:
+    - `duct-seg-p1` 16/16, `-p2` 22/22, `-p3` 29/29, `-p5` 14/14, `duct-seg-views` 8/8;
+    - `-p4` 15/15: leaving a previewed option restores the 3D drawing pixel for pixel, wash included.
+
 ### Known limits
 
 - Accessories are kept with their legs through the card's edits; an edit elsewhere that inserts or removes a vertex shifts the legs after it, and an accessory left on the wrong leg is reported (`DU_INLINE_CLASH`) or sits where its station falls.
 - Attenuator and access-door sizes, prices and the attenuator's loss are practice placeholders until the supplier's data is entered.
+- A runout's length is set along a level rigid leg only. Where the rigid duct reaches the runout down a riser, the card refuses with the reason; move its end by hand.
 - 3D picks test the duct meshes the ray's bounds admit, triangle by triangle; a very large drawing would want a BVH (`three-mesh-bvh` is already a dependency).
 - Found while verifying, not part of this work: equipment (a diffuser, the FDUM22) does not move under a mouse drag after placing through the Air system card and Auto route (the press selects it; the 28 September driver logged the same after the Duct tool); keyboard nudges work.
 

@@ -410,9 +410,9 @@ function inlineOptions(runId: string, context: DuctSegmentOptionContext): DuctSe
       id: `inline:${kind}`, group: 'accessory', glyph: kind === 'damper' ? 'damper' : kind, title, detail,
       edit: { kind: 'inline-add', runId, accessory: { kind, legIndex: segment.legIndex, stationMm, ...(kind === 'attenuator' ? { lengthMm: 900 } : {}) } },
     });
-    add('damper', 'Add a volume damper here', 'balances the air past it (SMACNA Fig. 2-12 / 2-13)');
-    add('access-door', 'Add an access door here', `${door.sizeMm}×${door.sizeMm} in the duct's ${door.face}, for cleaning and inspection (SMACNA Fig. 7-2)`);
-    add('attenuator', 'Add a sound attenuator here', `900 mm ${isRoundLeg(section) ? 'round podded' : 'rectangular splitter'}: quietens the air to the rooms (its loss a practice estimate)`);
+    add('damper', 'Volume damper', 'a volume damper here: balances the air past it (SMACNA Fig. 2-12 / 2-13)');
+    add('access-door', `Access door ${door.sizeMm}×${door.sizeMm}`, `an access door here, in the duct's ${door.face}, for cleaning and inspection (SMACNA Fig. 7-2)`);
+    add('attenuator', 'Sound attenuator 900 mm', `a ${isRoundLeg(section) ? 'round podded' : 'rectangular splitter'} attenuator here: quietens the air to the rooms (its loss a practice estimate)`);
     return options;
   }
   const id = segment.key.startsWith('inline:') ? segment.key.slice('inline:'.length) : null;
