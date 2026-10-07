@@ -174,6 +174,8 @@ export interface DuctDesignSettings {
   econPenetrationEach: number;
   econFireDamperEach: number;
   econAccessDoorEach: number;
+  /** A 900 mm sound attenuator at Ø200 (scaled by the girth and the length). */
+  econAttenuatorEach: number;
   /** A filter panel in a filter return grille (the first set; spares are the maintenance contract's). */
   econFilterEach: number;
   econHangerEach: number;
@@ -280,6 +282,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   econPenetrationEach: 40,
   econFireDamperEach: 160,
   econAccessDoorEach: 45,
+  econAttenuatorEach: 180,
   econFilterEach: 18,
   econHangerEach: 14,
   econJointPerM: 5,
@@ -392,7 +395,8 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   econDamperEach: practice('Placeholder: volume damper at Ø200, scaled by the girth.'),
   econPenetrationEach: practice('Placeholder: a wall sleeve with its packing and sealant (builder\'s work and labour) at Ø200, scaled by the girth.'),
   econFireDamperEach: practice('Placeholder: a curtain fire damper in its sleeve at Ø200, scaled by the girth.'),
-  econAccessDoorEach: practice('Placeholder: an access door beside a fire damper.'),
+  econAccessDoorEach: practice('Placeholder: an access door (beside a fire damper, or in a duct\'s straight).'),
+  econAttenuatorEach: practice('Placeholder: a 900 mm sound attenuator at Ø200, scaled by the girth and the length.'),
   econFilterEach: practice('Placeholder: a 25 mm filter panel in a filter return grille, supplied and fitted (the first set).'),
   econHangerEach: practice('Placeholder: a hanger (rods, bar or band, anchors, labour).'),
   econJointPerM: practice('Placeholder: a transverse joint per metre of its perimeter (flanges or sleeve, fasteners, sealant, labour).'),
@@ -552,6 +556,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     econPenetrationEach: clampNumber(raw.econPenetrationEach, d.econPenetrationEach, 0, 1e6),
     econFireDamperEach: clampNumber(raw.econFireDamperEach, d.econFireDamperEach, 0, 1e6),
     econAccessDoorEach: clampNumber(raw.econAccessDoorEach, d.econAccessDoorEach, 0, 1e6),
+    econAttenuatorEach: clampNumber(raw.econAttenuatorEach, d.econAttenuatorEach, 0, 1e6),
     econFilterEach: clampNumber(raw.econFilterEach, d.econFilterEach, 0, 1e6),
     econHangerEach: clampNumber(raw.econHangerEach, d.econHangerEach, 0, 1e6),
     econJointPerM: clampNumber(raw.econJointPerM, d.econJointPerM, 0, 1e5),

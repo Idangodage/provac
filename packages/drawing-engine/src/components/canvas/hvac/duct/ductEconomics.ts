@@ -33,7 +33,7 @@ import { isRoundLeg, type DuctConstruction, type DuctLeg, type DuctService } fro
 export type DuctEconomicsSettings = Pick<DuctDesignSettings,
   | 'econCurrency' | 'econSheetPerKg' | 'econFabricationRectPerM2' | 'econFabricationSpiralPerM2' | 'econFittingFactor'
   | 'econInstallPerM2' | 'econInsulationPerM2' | 'econFlexPerM' | 'econDamperEach' | 'econHangerEach' | 'econJointPerM'
-  | 'econPenetrationEach' | 'econFireDamperEach' | 'econAccessDoorEach' | 'econFilterEach'
+  | 'econPenetrationEach' | 'econFireDamperEach' | 'econAccessDoorEach' | 'econAttenuatorEach' | 'econFilterEach'
   | 'econElectricityPerKWh' | 'econHoursPerYear' | 'econFanEfficiency' | 'econLifeYears' | 'econDiscountPercent' | 'econEscalationPercent'>;
 
 export interface DuctCostBreakdown {
@@ -54,15 +54,20 @@ export interface DuctCostBreakdown {
   penetrations: number;
   /** Filter panels in the filter return grilles the runs serve (the first set). */
   filters: number;
+  /** Accessories set into the straights: access doors and sound attenuators (inline dampers are under dampers). */
+  accessories: number;
   total: number;
 }
 
 export const EMPTY_COST: DuctCostBreakdown = {
-  sheet: 0, fabrication: 0, fittings: 0, install: 0, insulation: 0, flex: 0, dampers: 0, joints: 0, hangers: 0, penetrations: 0, filters: 0, total: 0,
+  sheet: 0, fabrication: 0, fittings: 0, install: 0, insulation: 0, flex: 0, dampers: 0, joints: 0, hangers: 0, penetrations: 0, filters: 0, accessories: 0,
+  total: 0,
 };
 
 /** Reference size the flexible duct and damper rates are quoted at (mm). */
 const REFERENCE_DIAMETER_MM = 200;
+/** The attenuator length its rate is quoted at (mm). */
+const ATTENUATOR_REFERENCE_MM = 900;
 /** A flexible runout's strap on a hanger wire, as a share of a rod hanger (practice). */
 export const STRAP_SHARE_OF_HANGER = 0.3;
 
@@ -111,6 +116,10 @@ export function priceDuctPlans(plans: readonly DuctFabricationPlan[], settings: 
         continue;
       }
       if (piece.kind === 'damper') cost.dampers += settings.econDamperEach * (pieceGirthMm(piece) / (Math.PI * REFERENCE_DIAMETER_MM));
+      if (piece.kind === 'access-door') cost.accessories += settings.econAccessDoorEach;
+      if (piece.kind === 'attenuator') {
+        cost.accessories += settings.econAttenuatorEach * (pieceGirthMm(piece) / (Math.PI * REFERENCE_DIAMETER_MM)) * (piece.lengthMm / ATTENUATOR_REFERENCE_MM);
+      }
       if (piece.sheetAreaM2 <= 0) continue;
       cost.sheet += piece.massKg * settings.econSheetPerKg;
       const round = piece.diameterMm !== undefined && (piece.endDiameterMm !== undefined || piece.kind !== 'transition');
@@ -131,7 +140,7 @@ export function priceDuctPlans(plans: readonly DuctFabricationPlan[], settings: 
   cost.hangers = (hangers + STRAP_SHARE_OF_HANGER * straps) * settings.econHangerEach;
   cost.filters = filterPanels * settings.econFilterEach;
   cost.total = cost.sheet + cost.fabrication + cost.fittings + cost.install + cost.insulation + cost.flex + cost.dampers + cost.joints + cost.hangers
-    + cost.penetrations + cost.filters;
+    + cost.penetrations + cost.filters + cost.accessories;
   return cost;
 }
 

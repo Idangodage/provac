@@ -21,11 +21,13 @@ import type { HvacElement } from '../../../../types';
 import { getActiveDuctBuilding } from './ductBuilding';
 import { energyPricePerPa, priceDuctPlans } from './ductEconomics';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
+import { accessDoorFor } from './ductFabricationPlanner';
 import { DUCT_VANES } from './ductFittingRules';
+import { ductLegs } from './ductGeometry';
 import { ductParentOf } from './ductNetwork';
 import { penetrationHasFireDamper } from './ductPenetrations';
 import { aspectOf, outerHeightMm, rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
-import { applyDuctSegmentEdit, rigidLegIndices, type DuctSegmentEdit } from './ductSegmentEdits';
+import { applyDuctSegmentEdit, INLINE_TITLES, rigidLegIndices, type DuctSegmentEdit } from './ductSegmentEdits';
 import { ductSegmentFigures, type DuctFigureStatus, type DuctSegmentFigures } from './ductSegmentFigures';
 import { ductSegmentOf, sectionLabel, TAKEOFF_TITLES, type DuctSegment } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
@@ -33,7 +35,7 @@ import { equivalentDiameterMm, sizeRectangular, sizeRound, velocityMs } from './
 import { resolveSoffitZ } from './ductSupports';
 import { DUCT_TERMINAL_NECKS_MM, TERMINAL_FACE_LABELS, TERMINAL_FACES_BY_SERVICE, terminalLabel } from './ductTerminalCatalog';
 import { readDuctTerminalSpec } from './ductTerminals';
-import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
+import { DUCT_ATTENUATOR_LENGTHS_MM, isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
 
 export type DuctOptionGroup = 'size' | 'swap' | 'tune' | 'accessory' | 'terminal';
 
@@ -41,7 +43,8 @@ export type DuctOptionGroup = 'size' | 'swap' | 'tune' | 'accessory' | 'terminal
 export type DuctOptionGlyph =
   | 'rect' | 'round' | 'elbow-radius' | 'elbow-vaned' | 'elbow-gored' | 'taper'
   | 'tap-shoe' | 'tap-straight' | 'tap-spin' | 'tap-conical' | 'tap-tee' | 'tap-lateral'
-  | 'split-y' | 'split-bullhead' | 'damper' | 'connector' | 'fire-damper' | 'cap' | 'open' | 'flex' | 'terminal';
+  | 'split-y' | 'split-bullhead' | 'damper' | 'connector' | 'fire-damper' | 'cap' | 'open' | 'flex' | 'terminal'
+  | 'access-door' | 'attenuator';
 
 export interface DuctSegmentOption {
   /** Stable within the segment (survives a re-read of the same drawing). */
@@ -313,7 +316,7 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
   const kind = context.segment.kind;
   const start = spec.start;
   const options: DuctSegmentOption[] = [];
-  if ((kind === 'takeoff' || kind === 'damper') && (start.kind === 'tap' || start.kind === 'split-branch' || start.kind === 'spigot')) {
+  if ((kind === 'takeoff' || context.segment.key === 'start:damper') && (start.kind === 'tap' || start.kind === 'split-branch' || start.kind === 'spigot')) {
     options.push({
       id: `vcd:${!start.vcd}`, group: 'accessory', glyph: 'damper',
       title: start.vcd ? 'Remove the volume damper' : 'Add a volume damper',
@@ -382,6 +385,54 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
   if (kind === 'end-cap') {
     options.push({ id: 'end:open', group: 'accessory', glyph: 'open', title: 'Leave the end open', detail: 'for a later extension', edit: { kind: 'end', runId, end: 'open' } });
   }
+  options.push(...inlineOptions(runId, context));
+  return options;
+}
+
+/**
+ * Accessories set into a straight: on a straight (or riser), a volume damper,
+ * an access door or a sound attenuator at its middle (the edit takes the clear
+ * spot nearest it); on an accessory, taking it out and an attenuator's lengths.
+ */
+function inlineOptions(runId: string, context: DuctSegmentOptionContext): DuctSegmentOption[] {
+  const { spec, segment, plan } = context;
+  const options: DuctSegmentOption[] = [];
+  if ((segment.kind === 'straight' || segment.kind === 'riser') && rigidLegIndices(spec).includes(segment.legIndex)) {
+    const pieces = segment.pieceIndices.map((index) => plan.pieces[index]!);
+    const legStart = pieces.length ? Math.min(...pieces.map((piece) => piece.stationStartMm)) : 0;
+    const legEnd = pieces.length ? Math.max(...pieces.map((piece) => piece.stationEndMm)) : 0;
+    // The middle of the leg's straights, along the leg (from the leg's own start).
+    const legOrigin = ductLegs(spec).slice(0, segment.legIndex).reduce((total, leg) => total + leg.lengthMm, 0);
+    const stationMm = Math.round((legStart + legEnd) / 2 - legOrigin);
+    const section = spec.legs[segment.legIndex]!;
+    const door = accessDoorFor(section);
+    const add = (kind: 'damper' | 'access-door' | 'attenuator', title: string, detail: string) => options.push({
+      id: `inline:${kind}`, group: 'accessory', glyph: kind === 'damper' ? 'damper' : kind, title, detail,
+      edit: { kind: 'inline-add', runId, accessory: { kind, legIndex: segment.legIndex, stationMm, ...(kind === 'attenuator' ? { lengthMm: 900 } : {}) } },
+    });
+    add('damper', 'Add a volume damper here', 'balances the air past it (SMACNA Fig. 2-12 / 2-13)');
+    add('access-door', 'Add an access door here', `${door.sizeMm}×${door.sizeMm} in the duct's ${door.face}, for cleaning and inspection (SMACNA Fig. 7-2)`);
+    add('attenuator', 'Add a sound attenuator here', `900 mm ${isRoundLeg(section) ? 'round podded' : 'rectangular splitter'}: quietens the air to the rooms (its loss a practice estimate)`);
+    return options;
+  }
+  const id = segment.key.startsWith('inline:') ? segment.key.slice('inline:'.length) : null;
+  const item = id ? spec.inline?.find((candidate) => candidate.id === id) : undefined;
+  if (!item) return options;
+  if (item.kind === 'attenuator') {
+    const now = item.lengthMm ?? 900;
+    for (const length of DUCT_ATTENUATOR_LENGTHS_MM) {
+      options.push({
+        id: `attenuator:${length}`, group: 'tune', glyph: 'attenuator', title: `${length} mm`,
+        detail: length === now ? 'as it is' : length < now ? 'shorter: less attenuation and loss' : 'longer: more attenuation and loss',
+        edit: { kind: 'inline-length', runId, id: item.id, lengthMm: length }, ...(length === now ? { current: true } : {}),
+      });
+    }
+  }
+  options.push({
+    id: 'inline:remove', group: 'accessory', glyph: item.kind === 'damper' ? 'damper' : item.kind,
+    title: `Remove the ${INLINE_TITLES[item.kind].toLowerCase()}`, detail: 'the straight closes over its place',
+    edit: { kind: 'inline-remove', runId, id: item.id },
+  });
   return options;
 }
 

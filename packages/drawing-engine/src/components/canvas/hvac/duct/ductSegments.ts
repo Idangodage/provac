@@ -8,7 +8,9 @@
  *    keyed `node:<i>`; each transition at a leg's start, `transition:<i>`;
  *  - the run's start pieces (`start:connector`, `start:takeoff`,
  *    `start:damper`), its end (`end:split`, `end:plenum`, `end:cap`,
- *    `end:flex`) and each fire damper in a wall (`pen:<wall>:<n>`).
+ *    `end:flex`), each fire damper in a wall (`pen:<wall>:<n>`) and each
+ *    accessory set into a straight (`inline:<id>`: a volume damper, an
+ *    access door, a sound attenuator).
  *
  * Keys are stable across edits that keep the run's topology (a resize, a
  * shape change, a different elbow), so an options card stays on "its"
@@ -23,7 +25,7 @@ import type { DuctLeg, DuctTapStyle } from './ductTypes';
 
 export type DuctSegmentKind =
   | 'connector' | 'takeoff' | 'damper' | 'straight' | 'riser' | 'elbow' | 'offset' | 'transition'
-  | 'split' | 'plenum' | 'end-cap' | 'flex' | 'fire-damper';
+  | 'split' | 'plenum' | 'end-cap' | 'flex' | 'fire-damper' | 'access-door' | 'attenuator';
 
 /** A segment of one run, identified by its key on that run. */
 export interface DuctSegmentRef {
@@ -52,6 +54,7 @@ export interface DuctSegment {
 
 /** The segment key a piece belongs to. */
 export function ductSegmentKey(piece: DuctPiece): string {
+  if (piece.inlineId) return `inline:${piece.inlineId}`;
   switch (piece.kind) {
     case 'connector': return 'start:connector';
     case 'takeoff': return 'start:takeoff';
@@ -117,7 +120,18 @@ function describe(plan: DuctFabricationPlan, kind: DuctSegmentKind, pieces: Duct
       return { title: takeoff ? TAKEOFF_TITLES[takeoff.style] : 'Take-off', size, detail: `${mouth}${lead}${off}` };
     }
     case 'damper':
-      return { title: 'Volume damper', size, detail: first.damper?.description ?? 'manual, locking quadrant' };
+      return { title: first.inlineId ? 'Volume damper (in line)' : 'Volume damper', size, detail: first.damper?.description ?? 'manual, locking quadrant' };
+    case 'access-door': {
+      const door = first.accessDoor;
+      return { title: 'Access door', size, detail: door ? `${door.sizeMm}×${door.sizeMm} door in the ${door.face} · ${metres(length)} section` : metres(length) };
+    }
+    case 'attenuator': {
+      const attenuator = first.attenuator;
+      return {
+        title: 'Sound attenuator', size,
+        detail: `${metres(length)} · ${attenuator?.type === 'podded' ? 'round podded' : 'rectangular splitter'}${attenuator ? ` · casing ${attenuator.casingMm} mm proud` : ''}`,
+      };
+    }
     case 'straight':
     case 'riser': {
       const roundSection = first.diameterMm !== undefined;

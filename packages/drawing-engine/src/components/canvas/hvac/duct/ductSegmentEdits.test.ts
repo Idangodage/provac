@@ -6,7 +6,7 @@ import { resolveUnitAirPorts } from './ductAirPorts';
 import { tapOrigin } from './ductBranchTargets';
 import { buildDuctRunDraftElement } from './ductDraft';
 import { getDuctRunPlan } from './ductFabricationPlanner';
-import { branchAnchor } from './ductFollow';
+import { branchAnchor, ductRunElementWithSpec } from './ductFollow';
 import { applyDuctSegmentEdit, roundBranchFor, tapStyleForMain } from './ductSegmentEdits';
 import { resolveDuctSettings } from './ductSettings';
 import { readDuctTerminalSpec, terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from './ductTerminals';
@@ -218,6 +218,20 @@ describe('a runout and the terminal at its end', () => {
     expect(spec.end).toMatchObject({ flex: true });
     expect(planLength(spec.path.at(-2)!, spec.path.at(-1)!)).toBeCloseTo(800, 6);
     expect(errors(back, 'r')).toEqual([]);
+  });
+
+  it('a damper set into the branch stays through a runout made rigid and flexible again', () => {
+    const scene = runoutScene(3000, 2200, 270);
+    const run = byId(scene, 'r');
+    const before = scene.map((element) => (element.id === 'r'
+      ? ductRunElementWithSpec(run, { ...readDuctRunSpec(run)!, inline: [{ id: 'i1', kind: 'damper', legIndex: 0, stationMm: 400 }] }) : element));
+    const rigid = withUpdates(before, applyDuctSegmentEdit(before, settings, { kind: 'runout', runId: 'r', flex: false }).updates);
+    expect(specOf(rigid, 'r').inline).toEqual([{ id: 'i1', kind: 'damper', legIndex: 0, stationMm: 400 }]);
+    expect(getDuctRunPlan(byId(rigid, 'r'), rigid, settings)!.pieces.some((piece) => piece.inlineId === 'i1')).toBe(true);
+    expect(errors(rigid, 'r')).toEqual([]);
+    const flex = withUpdates(rigid, applyDuctSegmentEdit(rigid, settings, { kind: 'runout', runId: 'r', flex: true }).updates);
+    expect(specOf(flex, 'r').inline).toHaveLength(1);
+    expect(errors(flex, 'r')).toEqual([]);
   });
 
   it("off the spigot's axis, the rigid runout turns onto it at one new elbow", () => {

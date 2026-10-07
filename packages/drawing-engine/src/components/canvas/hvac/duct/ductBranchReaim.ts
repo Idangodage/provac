@@ -283,7 +283,11 @@ export function reaimBranch(
       // Exact: the new first leg runs straight into the route it joins (a rounded station would bend it by a hair).
       ? { ...start, stationMm: (start as { stationMm: number }).stationMm + candidate.slideMm }
       : start;
-    const next: DuctRunSpec = { ...spec, start: nextStart, path, legs: nextLegs, nodeOverrides };
+    // Accessories on kept legs are renumbered with them; those on legs that go, go.
+    const inline = (spec.inline ?? []).flatMap((item) => (item.legIndex >= candidate.keepFrom && item.legIndex < rigid.length - 1
+      ? [{ ...item, legIndex: item.legIndex - candidate.keepFrom + newLegCount }] : []));
+    const { inline: _inline, ...rest } = spec;
+    const next: DuctRunSpec = { ...rest, start: nextStart, path, legs: nextLegs, nodeOverrides, ...(inline.length ? { inline } : {}) };
     const nextBranch = ductRunElementWithSpec(branch, next);
     const replaced = new Map([[branch.id, nextBranch], ...renumbered.map((element) => [element.id, element] as const)]);
     const trial = scene.map((element) => replaced.get(element.id) ?? element);

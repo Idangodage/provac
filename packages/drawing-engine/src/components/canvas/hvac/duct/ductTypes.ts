@@ -184,6 +184,55 @@ export function readDuctPenetrationOverrides(value: unknown): Record<string, Duc
   return Object.keys(out).length ? out : undefined;
 }
 
+export type DuctInlineKind = 'damper' | 'access-door' | 'attenuator';
+
+/** Catalogue lengths of a sound attenuator (mm); 900 by default. */
+export const DUCT_ATTENUATOR_LENGTHS_MM = [600, 900, 1200, 1500] as const;
+
+/**
+ * An accessory set into a leg's straight: a volume damper, an access door (a
+ * straight section carrying the door) or a sound attenuator. Its centre is
+ * `stationMm` along the leg from the leg's start.
+ */
+export interface DuctInlineAccessory {
+  /** Unique on the run ("i1", "i2", …): the accessory's segment key is `inline:<id>`. */
+  id: string;
+  kind: DuctInlineKind;
+  legIndex: number;
+  stationMm: number;
+  /** An attenuator's catalogue length (mm); the others take their own. */
+  lengthMm?: number;
+}
+
+/** Tolerant reader of a run's inline accessories (none when absent or unreadable). */
+export function readDuctInlineAccessories(value: unknown): DuctInlineAccessory[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const out: DuctInlineAccessory[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const candidate = entry as Record<string, unknown>;
+    const kind = candidate.kind;
+    if (kind !== 'damper' && kind !== 'access-door' && kind !== 'attenuator') continue;
+    const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null;
+    if (!id || seen.has(id) || !finite(candidate.legIndex) || !finite(candidate.stationMm)) continue;
+    const legIndex = Math.round(candidate.legIndex);
+    if (legIndex < 0 || candidate.stationMm < 0) continue;
+    seen.add(id);
+    out.push({
+      id, kind, legIndex, stationMm: candidate.stationMm,
+      ...(kind === 'attenuator' && finite(candidate.lengthMm) && candidate.lengthMm >= 300 && candidate.lengthMm <= 3000 ? { lengthMm: candidate.lengthMm } : {}),
+    });
+  }
+  return out.length ? out : undefined;
+}
+
+/** A new accessory id on a run ("i<n>", one past the highest). */
+export function nextInlineId(inline: readonly DuctInlineAccessory[] | undefined): string {
+  const highest = (inline ?? []).reduce((max, item) => Math.max(max, Number(/^i(\d+)$/.exec(item.id)?.[1] ?? 0)), 0);
+  return `i${highest + 1}`;
+}
+
 export interface DuctRunSpec {
   version: 1;
   service: DuctService;
@@ -213,6 +262,8 @@ export interface DuctRunSpec {
    * themselves are derived from the walls every time the run is planned.
    */
   penetrations?: Record<string, DuctPenetrationOverride>;
+  /** Accessories set into the legs' straights (volume dampers, access doors, sound attenuators). */
+  inline?: DuctInlineAccessory[];
   /** Read from the old straight-stub format (no connector, no end cap). */
   legacy?: boolean;
 }
@@ -419,6 +470,7 @@ export function readDuctRunSpec(
   }
   const sizing = readDuctSystemSizing(record.sizing);
   const penetrations = readDuctPenetrationOverrides(record.penetrations);
+  const inline = readDuctInlineAccessories(record.inline);
   return {
     version: 1,
     service: record.service === 'return' ? 'return' : 'supply',
@@ -435,6 +487,7 @@ export function readDuctRunSpec(
     locked: record.locked === true,
     ...(sizing ? { sizing } : {}),
     ...(penetrations ? { penetrations } : {}),
+    ...(inline ? { inline } : {}),
   };
 }
 

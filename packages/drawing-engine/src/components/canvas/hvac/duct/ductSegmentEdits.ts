@@ -14,7 +14,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { findAirPort, type DuctAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
 import { tapAttachment } from './ductBranches';
-import { planDuctRunSpec } from './ductFabricationPlanner';
+import { inlineAccessoryLengthMm, planDuctRunSpec } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds, startAnchor } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
 import { cross, dot, ductLegs } from './ductGeometry';
@@ -26,9 +26,13 @@ import type { DuctDesignSettings } from './ductSettings';
 import { TERMINAL_TAG_PATTERN, terminalLabel, terminalTypeTag, typicalTerminalSpec, type DuctTerminalKind } from './ductTerminalCatalog';
 import { findTerminalPort, nextTerminalTag, readDuctTerminalSpec, terminalEnvelope } from './ductTerminals';
 import {
+  DUCT_ATTENUATOR_LENGTHS_MM,
   isRoundLeg,
+  nextInlineId,
   readDuctRunSpec,
   roundLeg,
+  type DuctInlineAccessory,
+  type DuctInlineKind,
   type DuctLeg,
   type DuctNodeOverride,
   type DuctPoint3,
@@ -57,7 +61,12 @@ export type DuctSegmentEdit =
   /** The runout to the terminal the run ends on: flexible, or rigid (spiral duct, dropping onto the spigot's axis). */
   | { kind: 'runout'; runId: string; flex: boolean }
   /** The terminal a run ends on: another face of its service, or another neck (its runout follows). */
-  | { kind: 'terminal'; terminalId: string; face?: DuctTerminalKind; neckMm?: number };
+  | { kind: 'terminal'; terminalId: string; face?: DuctTerminalKind; neckMm?: number }
+  /** An accessory set into a leg's straight, at the clear spot nearest `stationMm` (along the leg). */
+  | { kind: 'inline-add'; runId: string; accessory: Omit<DuctInlineAccessory, 'id'> }
+  | { kind: 'inline-remove'; runId: string; id: string }
+  /** A sound attenuator's catalogue length. */
+  | { kind: 'inline-length'; runId: string; id: string; lengthMm: number };
 
 export interface DuctSegmentEditResult {
   /** Every element the edit changes, as it will be stored (empty when refused). */
@@ -468,12 +477,12 @@ function withFlexRunout(
   };
   const runout = roundLeg(neck);
   const overridesUpTo = (last: number) => Object.fromEntries(Object.entries(spec.nodeOverrides).filter(([node]) => Number(node) <= last));
-  const cutAt = (index: number, point: DuctPoint3): DuctRunSpec => ({
+  const cutAt = (index: number, point: DuctPoint3): DuctRunSpec => keepInlineOnLegs({
     ...spec, path: [...path.slice(0, index + 1), point, lip], legs: [...spec.legs.slice(0, index + 1), runout], nodeOverrides: overridesUpTo(index), end: { ...end, flex: true },
-  });
-  const fromVertex = (index: number): DuctRunSpec => ({
+  }, (leg) => (leg <= index ? leg : null));
+  const fromVertex = (index: number): DuctRunSpec => keepInlineOnLegs({
     ...spec, path: [...path.slice(0, index + 1), lip], legs: [...spec.legs.slice(0, index), runout], nodeOverrides: overridesUpTo(index - 1), end: { ...end, flex: true },
-  });
+  }, (leg) => (leg < index ? leg : null));
   const candidates: DuctRunSpec[] = [];
   // The last leg itself, level into the spigot (300 mm of flexible duct at the least) …
   const into = !dropped ? leave(keep, (length) => length - 300) : null;
@@ -521,7 +530,9 @@ function withRigidRunout(
   const nodeOverrides = Object.fromEntries(Object.entries(spec.nodeOverrides).filter(([node]) => Number(node) < base.length));
   const baseline = errorCodes(planDuctRunSpec(runId, spec, { settings, scene }));
   const accept = (points: DuctPoint3[], legs: DuctLeg[]): DuctRunSpec | null => {
-    const candidate: DuctRunSpec = { ...spec, path: [...base, ...points], legs: [...baseLegs, ...legs], nodeOverrides, end: { ...end, flex: false } };
+    // Every rigid leg keeps its start and heading (the last one runs on, or to a new corner): their accessories stay.
+    const candidate: DuctRunSpec = keepInlineOnLegs({ ...spec, path: [...base, ...points], legs: [...baseLegs, ...legs], nodeOverrides, end: { ...end, flex: false } },
+      (leg) => (before && leg <= base.length - 1 ? leg : null));
     return noNewErrors(baseline, errorCodes(planDuctRunSpec(runId, candidate, { settings, scene }))) ? candidate : null;
   };
   // From a point on the spigot's axis at the run's level: down (or up) to its height, then in; level: straight in.
@@ -661,6 +672,131 @@ function editTerminal(scene: readonly HvacElement[], settings: DuctDesignSetting
   return { updates: settle(scene, changed, settings, notes), notes, action: `Terminal ${element.label}: ${kind !== spec.kind ? terminalLabel(reshaped).toLowerCase() : `neck Ø${neck}`}` };
 }
 
+export const INLINE_TITLES: Record<DuctInlineKind, string> = { damper: 'Volume damper', 'access-door': 'Access door', attenuator: 'Sound attenuator' };
+
+/**
+ * A run's accessories on the legs it keeps after its path changed: `legOf`
+ * maps an old leg to its new index, null where the leg went (and its
+ * accessories with it).
+ */
+export function keepInlineOnLegs(spec: DuctRunSpec, legOf: (legIndex: number) => number | null): DuctRunSpec {
+  if (!spec.inline?.length) return spec;
+  const { inline, ...rest } = spec;
+  const kept = inline.flatMap((item) => {
+    const legIndex = legOf(item.legIndex);
+    return legIndex === null ? [] : [{ ...item, legIndex }];
+  });
+  return kept.length ? { ...rest, inline: kept } : rest;
+}
+
+/** Where along its leg (mm from the leg's start) each of a run's legs starts along the run. */
+function legStarts(spec: DuctRunSpec): number[] {
+  const legs = ductLegs(spec);
+  return legs.map((_, index) => legs.slice(0, index).reduce((total, leg) => total + leg.lengthMm, 0));
+}
+
+const INLINE_CLASH = 'DU_INLINE_CLASH';
+
+/** Spots tried along a straight stretch for an accessory: this far apart at most (mm), and no more than this many per stretch. */
+const PLACE_STEP_MM = 50;
+const PLACE_MAX_STEPS = 60;
+
+/**
+ * The clear spot for an accessory nearest the station asked for: the planner's
+ * own rule (on the leg's straight, clear of fittings, take-offs, walls and the
+ * other accessories), tried at that station and then along the leg's straight
+ * stretches (adjoining sections as one), nearest first; null when none is
+ * clear.
+ */
+export function placeInlineAccessory(
+  scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, spec: DuctRunSpec, accessory: DuctInlineAccessory,
+): DuctInlineAccessory | null {
+  const section = spec.legs[accessory.legIndex];
+  if (!section) return null;
+  const half = inlineAccessoryLengthMm(accessory, section, settings) / 2;
+  const clashes = (candidate: DuctRunSpec) => planDuctRunSpec(runId, candidate, { settings, scene }).issues.filter((issue) => issue.code === INLINE_CLASH).length;
+  const baseline = clashes(spec);
+  const withItem = (stationMm: number): DuctRunSpec => ({ ...spec, inline: [...(spec.inline ?? []), { ...accessory, stationMm }] });
+  // Candidate centres: as asked; then along each straight stretch of the leg (its sections end to end), every step or so.
+  const start = legStarts(spec)[accessory.legIndex] ?? 0;
+  const plan = planDuctRunSpec(runId, spec, { settings, scene });
+  const stretches: Array<{ from: number; to: number }> = [];
+  for (const piece of plan.pieces.filter((candidate) => candidate.legIndex === accessory.legIndex && candidate.kind === 'straight')) {
+    const last = stretches[stretches.length - 1];
+    if (last && Math.abs(piece.stationStartMm - start - last.to) < 0.5) last.to = piece.stationEndMm - start;
+    else stretches.push({ from: piece.stationStartMm - start, to: piece.stationEndMm - start });
+  }
+  const candidates = [accessory.stationMm];
+  for (const stretch of stretches) {
+    const from = stretch.from + half + 20;
+    const to = stretch.to - half - 20;
+    if (to < from) continue;
+    const step = Math.max(PLACE_STEP_MM, (to - from) / PLACE_MAX_STEPS);
+    candidates.push(Math.min(Math.max(accessory.stationMm, from), to), to);
+    for (let at = from; at < to; at += step) candidates.push(at);
+  }
+  const seen = new Set<number>();
+  const ordered = candidates.map((value) => Math.round(value)).filter((value) => value >= half && !seen.has(value) && seen.add(value))
+    .sort((a, b) => Math.abs(a - accessory.stationMm) - Math.abs(b - accessory.stationMm));
+  for (const stationMm of ordered) {
+    if (clashes(withItem(stationMm)) <= baseline) return { ...accessory, stationMm };
+  }
+  return null;
+}
+
+function editInline(
+  scene: readonly HvacElement[],
+  settings: DuctDesignSettings,
+  edit: Extract<DuctSegmentEdit, { kind: 'inline-add' | 'inline-remove' | 'inline-length' }>,
+): DuctSegmentEditResult {
+  const element = scene.find((candidate) => candidate.id === edit.runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  if (!element || !spec) return refuse('The run is no longer in the drawing.');
+  if (spec.legacy) return refuse('An old straight duct stub: redraw it as a duct run to add accessories to it.');
+  if (spec.locked) return refuse('The run is locked: unlock it to change its accessories.');
+  let inline = [...(spec.inline ?? [])];
+  const notes: string[] = [];
+  let action: string;
+  if (edit.kind === 'inline-add') {
+    const id = nextInlineId(spec.inline);
+    let placed = placeInlineAccessory(scene, settings, element.id, spec, { ...edit.accessory, id });
+    // An attenuator too long for any clear straight here: the longest shorter catalogue length that fits.
+    if (!placed && edit.accessory.kind === 'attenuator') {
+      const asked = edit.accessory.lengthMm ?? 900;
+      for (const lengthMm of [...DUCT_ATTENUATOR_LENGTHS_MM].filter((length) => length < asked).sort((a, b) => b - a)) {
+        placed = placeInlineAccessory(scene, settings, element.id, spec, { ...edit.accessory, id, lengthMm });
+        if (placed) {
+          notes.push(`a ${lengthMm} mm attenuator: the ${asked} mm one finds no clear straight here`);
+          break;
+        }
+      }
+    }
+    if (!placed) return refuse(`No clear straight on this leg takes ${edit.accessory.kind === 'access-door' ? 'an' : 'a'} ${INLINE_TITLES[edit.accessory.kind].toLowerCase()} (fittings, take-offs or walls are in the way).`);
+    if (Math.abs(placed.stationMm - edit.accessory.stationMm) > 1) notes.push(`placed ${Math.round(Math.abs(placed.stationMm - edit.accessory.stationMm))} mm ${placed.stationMm > edit.accessory.stationMm ? 'on' : 'back'}, clear of the fittings and take-offs`);
+    inline.push(placed);
+    action = `${INLINE_TITLES[placed.kind]} added`;
+  } else {
+    const item = inline.find((candidate) => candidate.id === edit.id);
+    if (!item) return refuse('The accessory is no longer on the run.');
+    if (edit.kind === 'inline-remove') {
+      inline = inline.filter((candidate) => candidate.id !== edit.id);
+      action = `${INLINE_TITLES[item.kind]} removed`;
+    } else {
+      if (item.kind !== 'attenuator') return refuse('Only a sound attenuator comes in lengths.');
+      // Its new length, at the clear spot nearest where it is (a longer one may need to move off a fitting or take-off).
+      const others: DuctRunSpec = { ...spec, inline: inline.filter((candidate) => candidate.id !== edit.id) };
+      const placed = placeInlineAccessory(scene, settings, element.id, others, { ...item, lengthMm: edit.lengthMm });
+      if (!placed) return refuse(`No clear straight on this leg takes a ${edit.lengthMm} mm attenuator (fittings, take-offs or walls are in the way).`);
+      if (Math.abs(placed.stationMm - item.stationMm) > 1) notes.push(`moved ${Math.round(Math.abs(placed.stationMm - item.stationMm))} mm ${placed.stationMm > item.stationMm ? 'on' : 'back'}, clear of the fittings and take-offs`);
+      inline = inline.map((candidate) => (candidate.id === edit.id ? placed : candidate));
+      action = `Sound attenuator ${edit.lengthMm} mm`;
+    }
+  }
+  const { inline: _previous, ...rest } = spec;
+  const changed = new Map([[element.id, ductRunElementWithSpec(element, inline.length ? { ...rest, inline } : rest)]]);
+  return { updates: settle(scene, changed, settings, notes), notes, action };
+}
+
 /** Apply an edit to the drawing: every element it changes, or why it cannot be made. */
 export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: DuctSegmentEdit): DuctSegmentEditResult {
   switch (edit.kind) {
@@ -673,6 +809,9 @@ export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: Du
     case 'end': return editEnd(scene, settings, edit);
     case 'runout': return editRunout(scene, settings, edit);
     case 'terminal': return editTerminal(scene, settings, edit);
+    case 'inline-add':
+    case 'inline-remove':
+    case 'inline-length': return editInline(scene, settings, edit);
     default: return refuse('Unknown edit.');
   }
 }

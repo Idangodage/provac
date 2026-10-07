@@ -55,6 +55,10 @@ export interface DuctPlanPresentation {
   fireDampers: Array<{ box: Point2D[]; diagonal: [Point2D, Point2D]; labelPoint: Point2D; label: string }>;
   /** Wall penetrations: the sleeve's opening through the wall (drawn dashed) and its mark and size. */
   sleeves: Array<{ outline: Point2D[]; labelPoint: Point2D; label: string; fireDamper: boolean }>;
+  /** Access doors: the door, on the duct's side or (dashed: under it) in its bottom, labelled AD. */
+  accessDoors: Array<{ door: Point2D[]; below: boolean; labelPoint: Point2D; label: string }>;
+  /** Sound attenuators: the casing, its splitters (or pod) and the label SA. */
+  attenuators: Array<{ casing: Point2D[]; splitters: Array<[Point2D, Point2D]>; labelPoint: Point2D; label: string }>;
 }
 
 /** Flange projection drawn beyond the duct side (mm). */
@@ -92,7 +96,9 @@ function pieceOutline(piece: DuctPiece, sheet: number): Point2D[] | null {
     case 'straight':
     case 'plenum':
     case 'damper':
+    case 'access-door':
     case 'fire-damper': return rectangle(piece.start, piece.end, piece.direction, halfWidth);
+    case 'attenuator': return rectangle(piece.start, piece.end, piece.direction, halfWidth + (piece.attenuator?.casingMm ?? 0));
     default: return null;
   }
 }
@@ -320,6 +326,8 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
   const centreline: Point2D[] = [];
   const boxDiagonals: Array<[Point2D, Point2D]> = [];
   const fireDampers: DuctPlanPresentation['fireDampers'] = [];
+  const accessDoors: DuctPlanPresentation['accessDoors'] = [];
+  const attenuators: DuctPlanPresentation['attenuators'] = [];
   const tags: DuctPlanTag[] = [];
   for (const piece of plan.pieces) {
     const sheet = piece.sheetThicknessMm ?? 1;
@@ -473,6 +481,38 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
         centreline.push(piece.start, piece.end);
         break;
       }
+      case 'attenuator': {
+        // The casing proud of the duct, the splitters (a rectangular attenuator) or the pod (a round one) along it.
+        const casing = halfWidth + (piece.attenuator?.casingMm ?? 0);
+        const box = rectangle(piece.start, piece.end, piece.direction, casing);
+        piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: box });
+        marks.push({ point: mid, text: piece.mark });
+        centreline.push(piece.start, piece.end);
+        const n = normalOf(piece.direction);
+        const inset = scale(piece.direction, Math.min(80, piece.lengthMm / 6));
+        const splitters: Array<[Point2D, Point2D]> = piece.attenuator?.type === 'podded'
+          ? [[add(piece.start, inset), sub(piece.end, inset)]]
+          : [-1 / 3, 1 / 3].map((at): [Point2D, Point2D] => [add(add(piece.start, inset), scale(n, halfWidth * at * 2)), add(sub(piece.end, inset), scale(n, halfWidth * at * 2))]);
+        attenuators.push({ casing: box, splitters, labelPoint: add(mid, scale(n, casing + 55)), label: `SA ${piece.mark}` });
+        break;
+      }
+      case 'access-door': {
+        piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: rectangle(piece.start, piece.end, piece.direction, halfWidth) });
+        marks.push({ point: mid, text: piece.mark });
+        centreline.push(piece.start, piece.end);
+        const n = normalOf(piece.direction);
+        const door = piece.accessDoor?.sizeMm ?? 300;
+        const half = scale(piece.direction, door / 2);
+        // A bottom door is seen through the duct (dashed, inside it); a side door stands on the duct's side.
+        const below = piece.accessDoor?.face !== 'side';
+        const across = below ? Math.min(door / 2, halfWidth - 10) : 0;
+        const base = below ? mid : add(mid, scale(n, halfWidth));
+        const doorOutline = below
+          ? [add(sub(base, half), scale(n, across)), add(add(base, half), scale(n, across)), sub(add(base, half), scale(n, across)), sub(sub(base, half), scale(n, across))]
+          : [sub(base, half), add(base, half), add(add(base, half), scale(n, 25)), add(sub(base, half), scale(n, 25))];
+        accessDoors.push({ door: doorOutline, below, labelPoint: add(mid, scale(n, halfWidth + 60)), label: `AD ${door}×${door}` });
+        break;
+      }
       default: {
         piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: rectangle(piece.start, piece.end, piece.direction, halfWidth) });
         marks.push({ point: mid, text: piece.mark });
@@ -571,6 +611,8 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
     risers,
     boxDiagonals,
     fireDampers,
+    accessDoors,
+    attenuators,
     sleeves: (plan.penetrations ?? []).map((penetration) => {
       // The opening across the duct, the wall's depth along it (an oblique crossing's longer zone).
       const half = (penetration.toStationMm - penetration.fromStationMm) / 2;

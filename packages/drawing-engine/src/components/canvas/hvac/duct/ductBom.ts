@@ -110,6 +110,8 @@ function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
       : `Offset,${plane} ogee R${Math.round(offset.throatRadiusMm ?? 0)} throat (SMACNA Type 3), ${Math.round(offset.lateralOffsetMm)} mm`;
   }
   if (piece.kind === 'damper') return piece.damper?.description ?? 'Volume control damper, locking quadrant';
+  if (piece.kind === 'access-door') return `Straight section ${Math.round(piece.lengthMm)} mm, framed opening for an access door`;
+  if (piece.kind === 'attenuator') return `Sound attenuator ${Math.round(piece.lengthMm)} mm, ${piece.attenuator?.type === 'podded' ? 'round podded' : 'rectangular splitter'}`;
   if (piece.kind === 'fire-damper') return `Fire damper, curtain type, in its sleeve ${Math.round(piece.lengthMm)} mm (UL 555 / EN 1366-2; rating to the wall)`;
   if (piece.kind === 'takeoff') {
     return piece.takeoff && piece.takeoff.leadInMm > 0
@@ -272,8 +274,8 @@ export function buildDuctBom(
   const pieces = new Map<string, number>();
   for (const plan of good) {
     for (const piece of plan.pieces) {
-      // A fire damper is bought in with its sleeve: listed under the wall penetrations.
-      if (piece.kind === 'fire-damper') continue;
+      // A fire damper is bought in with its sleeve: listed under the wall penetrations; an attenuator under the accessories.
+      if (piece.kind === 'fire-damper' || piece.kind === 'attenuator') continue;
       if (piece.sheetThicknessMm !== null) {
         sheetArea.set(piece.sheetThicknessMm, (sheetArea.get(piece.sheetThicknessMm) ?? 0) + piece.sheetAreaM2);
         sheetMass.set(piece.sheetThicknessMm, (sheetMass.get(piece.sheetThicknessMm) ?? 0) + piece.massKg);
@@ -324,6 +326,25 @@ export function buildDuctBom(
   for (const [key, count] of [...accessories].sort((a, b) => a[0].localeCompare(b[0]))) {
     const [description, size] = key.split('|') as [string, string];
     rows.push({ category: 'Accessories', description, size, quantity: count, unit: 'no.', basis: 'SMACNA Fig. 2-3 / 2-4' });
+  }
+  // Accessories set into the straights: the doors in their framed sections, the attenuators bought in.
+  const inline = new Map<string, { count: number; basis: string }>();
+  for (const plan of good) {
+    for (const piece of plan.pieces) {
+      if (piece.kind === 'access-door' && piece.accessDoor) {
+        const door = piece.accessDoor;
+        const key = `Access door ${door.sizeMm}×${door.sizeMm}, double skin, insulated, cam locks, in the duct's ${door.face}|${sizeLabel(piece)}`;
+        inline.set(key, { count: (inline.get(key)?.count ?? 0) + 1, basis: 'SMACNA Fig. 7-2 (size: practice)' });
+      }
+      if (piece.kind === 'attenuator') {
+        const key = `${pieceDescription(piece, plan)}, casing ${piece.attenuator?.casingMm ?? 0} mm proud|${sizeLabel(piece)}`;
+        inline.set(key, { count: (inline.get(key)?.count ?? 0) + 1, basis: 'catalogue length; pressure drop a practice estimate until the supplier\'s data' });
+      }
+    }
+  }
+  for (const [key, entry] of [...inline].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))) {
+    const [description, size] = key.split('|') as [string, string];
+    rows.push({ category: 'Accessories', description, size, quantity: entry.count, unit: 'no.', basis: entry.basis });
   }
 
   // Joint hardware, per system.

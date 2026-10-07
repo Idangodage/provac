@@ -1107,9 +1107,27 @@ Plans derive the penetrations every time they are made, so a moved wall never le
 - Canvas: `duct-seg-p4` 15/15 in the Iso view on the generated system, mouse only, project restored exactly: a click selects the main; resting on its leg focuses `leg:0` (3D) and peeks the card; a click pins it beside the leg; hovering *Ø315 spiral* changes the 3D drawing there (the leg larger, a transition) and the card lists the take-off sliding 70 mm; leaving the option restores the drawing pixel for pixel; clicking applies it (one undo) with the card kept on its segment; an orbit carries the card to the leg's other side; Esc closes it. The 2D drivers `duct-seg-p1`–`p3` re-run against the same build.
 - Possible follow-up: hover picks test every duct mesh the ray's bounds admit (per triangle); for very large drawings, a BVH (`three-mesh-bvh`, already a dependency) would make them constant-time.
 
+### Accessories set into straights (Phase 5)
+
+- **Data.** `DuctRunSpec.inline`: `{ id, kind: 'damper' | 'access-door' | 'attenuator', legIndex, stationMm, lengthMm? }` — the accessory's centre along its leg from the leg's start; ids unique on the run (`i1`, `i2`, …), read tolerantly (unknown kinds, duplicate ids and negative stations are left out).
+- **Pieces.** Each is a piece of its own on its leg's straight, laid as a fire damper is (straights before and after, no joint inside it), `piece.inlineId` set:
+  - volume damper: a `damper` piece of the project's VCD length with its blade layout (SMACNA Fig. 2-12 / 2-13);
+  - access door: an `access-door` piece, a straight section framed for the door (SMACNA Fig. 7-2; size practice): 450 mm square where the duct's wider face takes it with 50 mm a side, else 300, else 200, else what fits; in a flat duct's bottom (reached from the ceiling below), a tall or round duct's side; the section 100 mm longer than the door;
+  - sound attenuator: an `attenuator` piece of a catalogue length (600, 900, 1200, 1500 mm), its casing 50 mm proud; rectangular splitter or round podded by the duct's shape; bought in (no sheet of the run's), its mass a 1 mm casing × 2.5 for the infill and splitters.
+  One that would sit on a fitting, a take-off, a wall crossing or another accessory, or on a leg the run no longer has, is `DU_INLINE_CLASH` (error) and is not laid. Edits that change a run's legs carry its accessories with the legs they keep (a re-aimed branch, a runout made rigid or flexible).
+- **Loss.** Damper: the take-off damper's ζ (open). Access door: friction only. Attenuator: ζ 1.5 rectangular splitter, 0.5 round podded, on the duct velocity — practice estimates until the supplier's data — through the same per-piece loss the system pressure sums.
+- **Drawing.** Plan: the damper's blade and quadrant; the door on the duct's side, or dashed through it in its bottom, `AD 450×450`; the attenuator's casing with its splitters (or pod), `SA SA-01`. 3D: the damper as at a take-off; the door a panel on the skin; the attenuator's casing framed shut at its ends.
+- **BOM and price.** The door's section among the fabricated pieces ("framed opening for an access door") and the door itself under Accessories (SMACNA Fig. 7-2); the attenuator under Accessories (catalogue length; its loss flagged as a practice estimate). Price: `econAccessDoorEach`; `econAttenuatorEach` (new, placeholder: a 900 mm attenuator at Ø200, scaled by the girth and the length), in a new `accessories` line of the cost; an inline damper as a take-off damper.
+- **Cards.** A straight's (or riser's) card offers *Add a volume damper / an access door / a sound attenuator here*: the edit puts it at the clear spot nearest the middle of the leg's straights — tried there, then along the leg's straight stretches (adjoining sections as one) every 50 mm, nearest first, each checked by the planner — and says where it went ("placed 61 mm back, clear of the fittings and take-offs"); an attenuator that finds no room at its length takes the longest shorter one that fits. An accessory's own card (`inline:<id>`) takes it out; an attenuator's offers its catalogue lengths, each re-placed at the clear spot nearest where it is (one that fits nowhere is shown disabled, with the reason).
+
+### Verified (Phase 5)
+
+- Tests: `ductInline` (9: reading, laying and the length invariant, no joint inside, clashes, segments, the attenuator's loss rectangular and round, plan symbols and 3D, BOM rows and price, the card's options and its clear-spot placement, an attenuator's lengths and removal), `ductSegmentEdits` (+1: a damper set into a branch stays through a runout made rigid and flexible again). Full suite 237 files / 2059 tests; `DUCT_BENCHMARK` 43/43.
+- Canvas: `duct-seg-p5` 14/14 on the generated system, mouse only, project restored exactly: the main's first leg offers the three accessories; hovering the attenuator previews it (placed 61 mm back, clear of the take-off) and clicking adds it, drawn `SA SA-01`, with no error; its own card offers 600–1500 mm (900 current) and removal; 1200 mm applied (re-placed, the card kept on it; 1500 then disabled: no room); the first leg then has no room for an access door (its row says so), the third leg takes one, drawn `AD`; in the Iso view the attenuator's casing shows and a click on it pins its card from 3D.
+
 ### Next (approved, not yet built)
 
-- Phase 5: inline accessories on straights (volume damper, access door, sound attenuator).
+- Phase 6: the final verification and docs pass (all drivers, the full suite and the benchmark, a closing write-up).
 
 ## Known limits (auto duct, 30 September 2026)
 

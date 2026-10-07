@@ -110,6 +110,17 @@ export function ductRunMarkup(presentation: DuctPlanPresentation, style: DuctMar
     parts.push(`<path d="${pathData(damper.diagonal)}" stroke="${COLORS.fireDamper}" stroke-width="1.4" vector-effect="non-scaling-stroke"/>`);
     parts.push(textMarkup(damper.labelPoint, damper.label, px(10), COLORS.fireDamper));
   }
+  // Sound attenuators: the casing over the duct, its splitters (or pod), SA.
+  for (const attenuator of presentation.attenuators ?? []) {
+    parts.push(`<path d="${pathData(attenuator.casing, true)}" fill="rgba(100,116,139,0.16)" stroke="${stroke}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`);
+    for (const splitter of attenuator.splitters) parts.push(`<path d="${pathData(splitter)}" stroke="${stroke}" stroke-width="3" stroke-opacity="0.45" vector-effect="non-scaling-stroke" stroke-linecap="round"/>`);
+    if (style.showTags) parts.push(textMarkup(attenuator.labelPoint, attenuator.label, px(10), stroke));
+  }
+  // Access doors: a side door on the duct's side, a bottom door dashed through it; AD with its size.
+  for (const door of presentation.accessDoors ?? []) {
+    parts.push(`<path d="${pathData(door.door, true)}" fill="${door.below ? 'none' : '#ffffff'}" stroke="${stroke}" stroke-width="1.3"${door.below ? ' stroke-dasharray="4 3"' : ''} vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`);
+    if (style.showTags) parts.push(textMarkup(door.labelPoint, door.label, px(9.5), stroke));
+  }
   for (const damper of presentation.dampers) {
     parts.push(`<path d="${pathData(damper.blade)}" stroke="${stroke}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linecap="round"/>`);
     parts.push(`<circle cx="${f(damper.quadrant.x)}" cy="${f(damper.quadrant.y)}" r="${f(px(4))}" fill="#ffffff" stroke="${stroke}" stroke-width="1.2" vector-effect="non-scaling-stroke"/>`);

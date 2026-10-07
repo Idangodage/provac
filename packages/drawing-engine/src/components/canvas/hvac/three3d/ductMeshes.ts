@@ -16,7 +16,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { HvacElement, Point2D } from '../../../../types';
 import { tapAttachment } from '../duct/ductBranches';
 import type { DuctElbow, DuctFabricationPlan, DuctJoint, DuctPiece } from '../duct/ductFabricationPlanner';
-import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
+import { ATTENUATOR_CASING_MM, getDuctRunPlan } from '../duct/ductFabricationPlanner';
 import { FLEX_HANGER_WIRE_DIAMETER_MM, FLEX_RULES, flexPointAt, flexSupportStations, saggedFlexPoints } from '../duct/ductFlex';
 import { frameToWorld, sampleArc } from '../duct/ductGeometry';
 import { ductBranchesOf } from '../duct/ductNetwork';
@@ -41,6 +41,7 @@ export const DUCT_3D_COLORS = {
   fireDamper: '#c2410c',
   sleeve: '#78716c',
   accessDoor: '#94a3b8',
+  attenuator: '#64748b',
 } as const;
 
 const MATERIALS = new Map<string, THREE.MeshStandardMaterial>();
@@ -928,6 +929,54 @@ function addFireDamperMeshes(piece: DuctPiece, t: number, metal: THREE.Material,
     orientedBox(new THREE.Vector3(door.x + n.x * (half + 4), door.y + n.y * (half + 4), z), d, 200, 8, doorHeight));
 }
 
+/**
+ * An access door's section (a plain straight) with the door proud of its side
+ * or under its bottom (`duct-door`: the insulation pass stands it on the
+ * skin); a sound attenuator's casing proud of the duct, framed shut at its
+ * ends (bought in: no skin of the run's).
+ */
+function addInlineAccessoryMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push: MeshPush): void {
+  const d = piece.direction;
+  const n = { x: -d.y, y: d.x };
+  const z = piece.centreZ;
+  const mid = { x: (piece.start.x + piece.end.x) / 2, y: (piece.start.y + piece.end.y) / 2 };
+  const along = (distance: number) => ({ x: piece.start.x + d.x * distance, y: piece.start.y + d.y * distance });
+  const round = piece.diameterMm !== undefined;
+  if (piece.kind === 'attenuator') {
+    const casing = piece.attenuator?.casingMm ?? ATTENUATOR_CASING_MM;
+    const shell = material(DUCT_3D_COLORS.attenuator, 0.15, 0.6);
+    for (const [at, step] of [[0, 1], [piece.lengthMm, -1]] as const) {
+      // An end frame: the duct's section to the casing's, a millimetre along.
+      if (round) {
+        const inner = piece.diameterMm! / 2 + t;
+        push('duct-accessories', shell, sweepCircularRings([{ point: along(at), z, radius: inner }, { point: along(at + step), z, radius: inner + casing }]));
+      } else {
+        const halfWidth = piece.widthMm / 2 + t;
+        const halfHeight = piece.heightMm / 2 + t;
+        push('duct-accessories', shell, sweepRectangularRings([
+          { point: along(at), normal: n, halfWidth, halfHeight, centreZ: z },
+          { point: along(at + step), normal: n, halfWidth: halfWidth + casing, halfHeight: halfHeight + casing, centreZ: z },
+        ]));
+      }
+    }
+    push('duct-accessories', shell, round
+      ? sweepCircularRings([{ point: piece.start, z, radius: piece.diameterMm! / 2 + t + casing }, { point: piece.end, z, radius: piece.diameterMm! / 2 + t + casing }])
+      : sweepRectangularTube([piece.start, piece.end], z, piece.widthMm / 2 + t + casing, piece.heightMm / 2 + t + casing));
+    return;
+  }
+  if (round) addRoundPiece({ ...piece, kind: 'straight' }, t, metal, push);
+  else push('duct-metal', metal, sweepRectangularTube([piece.start, piece.end], z, piece.widthMm / 2 + t, piece.heightMm / 2 + t));
+  const size = piece.accessDoor?.sizeMm ?? 300;
+  const door = material(DUCT_3D_COLORS.accessDoor, 0.2, 0.5);
+  if (!round && piece.accessDoor?.face === 'bottom') {
+    push('duct-door', door, orientedBox(new THREE.Vector3(mid.x, mid.y, z - piece.heightMm / 2 - t - 4), d, size, Math.min(size, piece.widthMm - 20), 8));
+    return;
+  }
+  const half = (piece.diameterMm ?? piece.widthMm) / 2 + t;
+  const tall = round ? Math.min(size, piece.diameterMm! * 0.7) : Math.min(size, piece.heightMm - 20);
+  push('duct-door', door, orientedBox(new THREE.Vector3(mid.x + n.x * (half + 4), mid.y + n.y * (half + 4), z), d, size, 8, tall));
+}
+
 /** One piece's sheet metal and its accessories, with the sheet `t` thick (grown by the insulation for its skin). */
 function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push: MeshPush): void {
   if (piece.kind === 'flex' && piece.flex) {
@@ -936,6 +985,10 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
   }
   if (piece.kind === 'fire-damper') {
     addFireDamperMeshes(piece, t, metal, push);
+    return;
+  }
+  if ((piece.kind === 'attenuator' || piece.kind === 'access-door') && !piece.vertical && !piece.frame) {
+    addInlineAccessoryMeshes(piece, t, metal, push);
     return;
   }
   const path3 = piecePath3(piece);
@@ -1116,7 +1169,8 @@ export function ductPiecesOuterGeometry(plan: DuctFabricationPlan, pieceIndices:
     const piece = plan.pieces[index];
     if (!piece) continue;
     // As the run's meshes: no skin on the connector, a split, a flexible runout or a fire damper's sleeve.
-    const skinned = plan.insulationMm > 0 && piece.kind !== 'connector' && piece.kind !== 'split' && piece.kind !== 'flex' && piece.kind !== 'fire-damper';
+    const skinned = plan.insulationMm > 0 && piece.kind !== 'connector' && piece.kind !== 'split' && piece.kind !== 'flex' && piece.kind !== 'fire-damper'
+      && piece.kind !== 'attenuator';
     addPieceMeshes(piece, (piece.sheetThicknessMm ?? 1) + (skinned ? plan.insulationMm : 0), unused, collect);
   }
   unused.dispose();
@@ -1156,8 +1210,10 @@ export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, conte
   // NBR: a black skin at the insulation's outer face over every piece but the flexible connector.
   if (plan.insulationMm > 0) {
     const skin = material(DUCT_3D_COLORS.insulation, 0, 0.92);
-    const skinPush: MeshPush = (name, _mat, geometry) => {
+    const skinPush: MeshPush = (name, mat, geometry) => {
       if (name === 'duct-metal' || name === 'duct-caps') push('duct-insulation', skin, geometry);
+      // An access door stands on the skin (the one on the sheet is inside it).
+      else if (name === 'duct-door') push(name, mat, geometry);
       else geometry?.dispose();
     };
     for (const piece of plan.pieces) {

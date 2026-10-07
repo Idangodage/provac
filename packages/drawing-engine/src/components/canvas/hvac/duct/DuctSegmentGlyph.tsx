@@ -29,6 +29,8 @@ const PATHS: Record<DuctOptionGlyph, string> = {
   open: 'M2 6h14 M2 14h14',
   flex: 'M2 8c2-3 3 3 5 0s3 3 5 0s3 3 5 0 M2 12c2-3 3 3 5 0s3 3 5 0s3 3 5 0',
   terminal: 'M3 4h14v12H3z M6 7h8v6H6z M10 1v3',
+  'access-door': 'M2 6h16 M2 14h16 M7 8h6v4H7z M12 10h0.5',
+  attenuator: 'M2 7h3 M15 7h3 M2 13h3 M15 13h3 M5 4h10v12H5z M8.5 6.5v7 M11.5 6.5v7',
 };
 
 export function DuctSegmentGlyph({ glyph, className }: { glyph: DuctOptionGlyph; className?: string }) {

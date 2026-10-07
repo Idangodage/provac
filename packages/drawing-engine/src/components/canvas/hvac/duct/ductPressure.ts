@@ -53,6 +53,10 @@ export const FITTING_LOSS_COEFFICIENTS = {
   bullhead: 0.5,
   /** Square-to-round, over the transition's own loss. */
   shapeChange: 0.05,
+  /** Rectangular splitter sound attenuator on the duct velocity (practice estimate: ~40 Pa at 6 m/s; the supplier's data rules). */
+  attenuatorSplitter: 1.5,
+  /** Round podded sound attenuator on the duct velocity (practice estimate; the supplier's data rules). */
+  attenuatorPodded: 0.5,
 } as const;
 
 /** Idelchik's A′ by take-off type (practice): C_branch ≈ 2A′ at equal velocities for a 90° branch. */
@@ -217,6 +221,7 @@ function coefficientOf(piece: DuctPiece, fromPlenum: boolean): number {
     case 'takeoff': return fromPlenum ? c.takeoffPlenum : c.takeoffTrunk;
     case 'damper': return c.damper;
     case 'fire-damper': return c.fireDamper;
+    case 'attenuator': return piece.attenuator?.type === 'podded' ? c.attenuatorPodded : c.attenuatorSplitter;
     case 'plenum': return c.plenumEntry;
     default: return 0;
   }

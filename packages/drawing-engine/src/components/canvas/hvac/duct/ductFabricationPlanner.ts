@@ -80,6 +80,8 @@ import {
   isRoundMainTapStyle,
   isRoundTapStyle,
   readDuctRunSpec,
+  roundLeg,
+  type DuctInlineAccessory,
   type DuctLeg,
   type DuctPoint3,
   type DuctRunSpec,
@@ -126,7 +128,8 @@ export type DuctIssueCode =
   | 'DU_PENETRATION_FITTING'
   | 'DU_PENETRATION_JOINT'
   | 'DU_PENETRATION_ANGLE'
-  | 'DU_PENETRATION_EXTERIOR';
+  | 'DU_PENETRATION_EXTERIOR'
+  | 'DU_INLINE_CLASH';
 
 export interface DuctIssue {
   code: DuctIssueCode;
@@ -140,7 +143,9 @@ export interface DuctIssue {
 }
 
 /** 'fire-damper': a curtain fire damper in its sleeve, centred in a wall the run passes through (bought in, not fabricated). */
-export type DuctPieceKind = 'connector' | 'takeoff' | 'damper' | 'straight' | 'elbow' | 'offset' | 'transition' | 'split' | 'plenum' | 'flex' | 'end-cap' | 'fire-damper';
+export type DuctPieceKind =
+  | 'connector' | 'takeoff' | 'damper' | 'straight' | 'elbow' | 'offset' | 'transition' | 'split' | 'plenum' | 'flex' | 'end-cap' | 'fire-damper'
+  | 'access-door' | 'attenuator';
 
 /** A flexible runout to an air terminal (SMACNA §3.5–3.7): its 3D centreline and what it serves. */
 export interface DuctFlexPiece {
@@ -270,6 +275,12 @@ export interface DuctPiece {
   damper?: DuctDamperLayout;
   /** Fire damper: the wall penetration it sits in (its key on the run). */
   penetrationKey?: string;
+  /** An accessory set into the leg's straight: its id in the spec's `inline` list. */
+  inlineId?: string;
+  /** Access door: the door (square, mm) and the face it is in. */
+  accessDoor?: { sizeMm: number; face: 'side' | 'bottom' };
+  /** Sound attenuator: its casing proud of the duct each side (mm), and its make by the duct's shape. */
+  attenuator?: { casingMm: number; type: 'splitter' | 'podded' };
   sheetThicknessMm: number | null;
   sheetAreaM2: number;
   fabricAreaM2: number;
@@ -346,7 +357,35 @@ const PRACTICE = {
   wye: 'Wye leg 3A/2 read as the centreline length to the outlet',
   penetration: 'Wall penetrations: a plain straight through the wall, joints 50 mm clear of its faces, the sleeve clearance',
   fireDamper: 'Fire damper sleeve 1.2 mm, its mass × 1.5 for the frame, curtain and retaining angles; breakaway joints at the sleeve ends',
+  inline: 'Inline accessories: access door 450/300/200 mm square with 50 mm of face each side, its section 100 mm longer; attenuator casing 50 mm proud, its mass a 1 mm casing × 2.5 for the infill and splitters',
 } as const;
+
+/** A sound attenuator's casing beyond the duct, each side (mm), practice. */
+export const ATTENUATOR_CASING_MM = 50;
+const ATTENUATOR_CASING_SHEET_MM = 1;
+const ATTENUATOR_MASS_FACTOR = 2.5;
+
+/**
+ * An access door for a section (SMACNA Fig. 7-2 practice): 450 mm square where
+ * the duct's wider face takes it with 50 mm each side, else 300, else 200,
+ * else what fits; a flat duct's in its bottom (reached from the ceiling below),
+ * a tall or round one's in its side.
+ */
+export function accessDoorFor(section: DuctLeg): { sizeMm: number; face: 'side' | 'bottom' } {
+  const round = isRoundLeg(section);
+  const face = round ? section.diameterMm! * 0.7 : Math.max(section.widthMm, section.heightMm);
+  const size = [450, 300, 200].find((candidate) => face >= candidate + 100) ?? Math.max(100, Math.floor((face - 50) / 50) * 50);
+  return { sizeMm: size, face: !round && section.widthMm >= section.heightMm ? 'bottom' : 'side' };
+}
+
+/** The length an inline accessory takes of its leg (mm). */
+export function inlineAccessoryLengthMm(item: Pick<DuctInlineAccessory, 'kind'> & { lengthMm?: number | undefined }, section: DuctLeg, settings: Pick<DuctDesignSettings, 'vcdLengthMm'>): number {
+  if (item.kind === 'damper') return settings.vcdLengthMm;
+  if (item.kind === 'access-door') return accessDoorFor(section).sizeMm + 100;
+  return item.lengthMm ?? 900;
+}
+
+const INLINE_NAMES: Record<DuctInlineAccessory['kind'], string> = { damper: 'volume damper', 'access-door': 'access door', attenuator: 'sound attenuator' };
 
 /** A fire damper's sleeve sheet and the allowance for its frame, curtain and retaining angles (mass factor), practice. */
 const FIRE_DAMPER_SLEEVE_MM = 1.2;
@@ -835,6 +874,19 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     const entry: LegCrossing = { crossing, fireDamper, from: crossing.zoneFromMm - extra, to: crossing.zoneToMm + extra, fitting: false };
     crossingsByLeg.set(crossing.legIndex, [...(crossingsByLeg.get(crossing.legIndex) ?? []), entry]);
   }
+  // ---- Inline accessories: each on its leg's straight, laid like a fire damper (straights before and after, no joint in it). ----
+  const inlineByLeg = new Map<number, Array<{ item: DuctInlineAccessory; from: number; to: number; ok: boolean }>>();
+  for (const item of spec.inline ?? []) {
+    const section = spec.legs[item.legIndex];
+    if (!section || item.legIndex >= legs.length) {
+      issues.push({ code: 'DU_INLINE_CLASH', severity: 'error',
+        message: `The ${INLINE_NAMES[item.kind]} (${item.id}) is on leg ${item.legIndex + 1}, which this run no longer has (or which is its flexible runout).` });
+      continue;
+    }
+    const length = inlineAccessoryLengthMm(item, section, settings);
+    inlineByLeg.set(item.legIndex, [...(inlineByLeg.get(item.legIndex) ?? []), { item, from: item.stationMm - length / 2, to: item.stationMm + length / 2, ok: true }]);
+  }
+  if (inlineByLeg.size) practice.add(PRACTICE.inline);
   // PN-01 …: the run's own penetration marks (P-nn is the plenum box's piece mark).
   const markOf = (crossing: DuctWallCrossing) => `PN-${String(crossings.indexOf(crossing) + 1).padStart(2, '0')}`;
   const fittingInWall = (entry: LegCrossing, legIndex: number, message: string) => {
@@ -1037,7 +1089,13 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       issues.push({ code: 'DU_TAP_CLASH', severity: 'error', legIndex, point: at(0),
         message: 'A take-off sits on a riser; take-offs are made on level straights.' });
     }
+    const legInline = (inlineByLeg.get(legIndex) ?? []).sort((a, b) => a.from - b.from);
     if (legInsideOffset(legIndex)) {
+      for (const entry of legInline) {
+        entry.ok = false;
+        issues.push({ code: 'DU_INLINE_CLASH', severity: 'error', legIndex, point: at(entry.item.stationMm),
+          message: `The ${INLINE_NAMES[entry.item.kind]} (${entry.item.id}) sits on a leg that is now part of an offset; move it onto a straight.` });
+      }
       if ((windowsByLeg.get(legIndex) ?? []).length > 0) {
         issues.push({ code: 'DU_TAP_CLASH', severity: 'error', legIndex, point: at(leg.lengthMm / 2),
           message: 'A take-off sits on a leg that is now part of an offset; move it onto a straight section.' });
@@ -1176,12 +1234,27 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
           : 'the duct passes through the wall at a fitting (an elbow, transition, connector or damper); a wall needs a plain straight through it. Move the fitting or the wall.');
       }
     }
+    // An inline accessory needs plain straight: clear of the fittings, the take-offs, the walls and the other accessories.
+    legInline.forEach((entry, index) => {
+      const name = `The ${INLINE_NAMES[entry.item.kind]} (${entry.item.id})`;
+      let reason: string | null = null;
+      if (entry.from < straightFrom - STATION_EPSILON_MM || entry.to > straightTo + STATION_EPSILON_MM) reason = 'overlaps an elbow, transition or other fitting';
+      else if (windows.some((window) => window.from < entry.to && window.to > entry.from)) reason = 'overlaps a take-off';
+      else if (legCrossings.some((crossing) => crossing.from < entry.to && crossing.to > entry.from)) reason = 'sits in a wall the duct passes through';
+      else if (legInline.slice(0, index).some((other) => other.ok && other.to > entry.from + STATION_EPSILON_MM)) reason = 'overlaps another accessory';
+      if (!reason) return;
+      entry.ok = false;
+      issues.push({ code: 'DU_INLINE_CLASH', severity: 'error', legIndex, point: at(Math.max(0, Math.min(leg.lengthMm, entry.item.stationMm))),
+        message: `${name} ${reason}; move it along the leg.` });
+    });
+    const laidInline = legInline.filter((entry) => entry.ok);
     const sectionLength = isRoundLeg(section) && settings.roundSeam === 'spiral' ? settings.roundSectionLengthMm : settings.sectionLengthMm;
     // A remainder too short to be a section is taken up in an elbow neck: the next elbow's, or the one just made.
     const remainder = straightTo - straightFrom;
     let stretchNextElbowMm = 0;
     // (Not through a wall: the straight in it stays a straight.)
-    if (remainder > STATION_EPSILON_MM && remainder < settings.minMakeUpPieceMm - STATION_EPSILON_MM && windows.length === 0 && legCrossings.length === 0) {
+    if (remainder > STATION_EPSILON_MM && remainder < settings.minMakeUpPieceMm - STATION_EPSILON_MM && windows.length === 0 && legCrossings.length === 0
+      && laidInline.length === 0) {
       const previous = pieces[pieces.length - 1];
       if (endFitting?.elbow) {
         stretchNextElbowMm = remainder;
@@ -1216,18 +1289,46 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         });
       };
       // A fire damper in its sleeve, centred in the wall: bought in (no sheet of the run's), its mass for the supports.
-      for (const entry of legCrossings.filter((candidate) => candidate.fireDamper).sort((a, b) => a.from - b.from)) {
+      const fireDamper = (entry: LegCrossing) => (from: number, to: number) => {
+        const piece = straightPiece('fire-damper', 'FD', from, to, section, { penetrationKey: entry.crossing.key });
+        const massKg = (girthOf(section, sheetOf(section)) / 1000) * ((to - from) / 1000) * galvanisedSheetMassKgPerM2(FIRE_DAMPER_SLEEVE_MM) * FIRE_DAMPER_MASS_FACTOR;
+        pieces.push({ ...piece, sheetAreaM2: 0, fabricAreaM2: 0, massKg, seamLengthMm: 0 });
+        entry.damperMark = piece.mark;
+        practice.add(PRACTICE.fireDamper);
+      };
+      // An inline accessory: a damper section, a section carrying an access door, or a bought-in attenuator.
+      const accessory = (item: DuctInlineAccessory) => (from: number, to: number) => {
+        if (item.kind === 'damper') {
+          pieces.push(straightPiece('damper', 'D', from, to, section, {
+            inlineId: item.id,
+            damper: isRoundLeg(section)
+              ? roundDamperLayout(section.diameterMm!, sheetOf(section) ?? 0.48, constructionOf(section).pressureClassPa)
+              : rectangularDamperLayout(section.widthMm, section.heightMm),
+          }));
+        } else if (item.kind === 'access-door') {
+          pieces.push(straightPiece('access-door', 'AD', from, to, section, { inlineId: item.id, accessDoor: accessDoorFor(section) }));
+        } else {
+          const piece = straightPiece('attenuator', 'SA', from, to, section, {
+            inlineId: item.id, attenuator: { casingMm: ATTENUATOR_CASING_MM, type: isRoundLeg(section) ? 'podded' : 'splitter' },
+          });
+          const casing: DuctLeg = isRoundLeg(section) ? roundLeg(section.diameterMm! + 2 * ATTENUATOR_CASING_MM)
+            : { widthMm: section.widthMm + 2 * ATTENUATOR_CASING_MM, heightMm: section.heightMm + 2 * ATTENUATOR_CASING_MM };
+          const massKg = (girthOf(casing, ATTENUATOR_CASING_SHEET_MM) / 1000) * ((to - from) / 1000)
+            * galvanisedSheetMassKgPerM2(ATTENUATOR_CASING_SHEET_MM) * ATTENUATOR_MASS_FACTOR;
+          pieces.push({ ...piece, sheetAreaM2: 0, fabricAreaM2: 0, massKg, seamLengthMm: 0 });
+        }
+      };
+      const laid = [
+        ...legCrossings.filter((candidate) => candidate.fireDamper).map((entry) => ({ from: entry.from, to: entry.to, lay: fireDamper(entry) })),
+        ...laidInline.map((entry) => ({ from: entry.from, to: entry.to, lay: accessory(entry.item) })),
+      ].sort((a, b) => a.from - b.from);
+      for (const entry of laid) {
         const from = Math.max(cursor, entry.from - cursor <= STATION_EPSILON_MM ? cursor : entry.from);
         const to = Math.min(entry.to, straightTo);
         if (to - from < STATION_EPSILON_MM) continue;
         if (from > cursor + STATION_EPSILON_MM) straights(from);
         cursor = from;
-        const piece = straightPiece('fire-damper', 'FD', cursor, to, section, { penetrationKey: entry.crossing.key });
-        const length = to - cursor;
-        const massKg = (girthOf(section, sheetOf(section)) / 1000) * (length / 1000) * galvanisedSheetMassKgPerM2(FIRE_DAMPER_SLEEVE_MM) * FIRE_DAMPER_MASS_FACTOR;
-        pieces.push({ ...piece, sheetAreaM2: 0, fabricAreaM2: 0, massKg, seamLengthMm: 0 });
-        entry.damperMark = piece.mark;
-        practice.add(PRACTICE.fireDamper);
+        entry.lay(cursor, to);
         cursor = to;
       }
       if (straightTo > cursor + STATION_EPSILON_MM) straights(straightTo);
