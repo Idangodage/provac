@@ -200,8 +200,10 @@ export interface DuctInlineAccessory {
   kind: DuctInlineKind;
   legIndex: number;
   stationMm: number;
-  /** An attenuator's catalogue length (mm); the others take their own. */
+  /** An attenuator's length (mm); the others take their own. */
   lengthMm?: number;
+  /** An access door's size (square, mm), when not the one its duct's face takes. */
+  doorMm?: number;
 }
 
 /** Tolerant reader of a run's inline accessories (none when absent or unreadable). */
@@ -222,6 +224,7 @@ export function readDuctInlineAccessories(value: unknown): DuctInlineAccessory[]
     out.push({
       id, kind, legIndex, stationMm: candidate.stationMm,
       ...(kind === 'attenuator' && finite(candidate.lengthMm) && candidate.lengthMm >= 300 && candidate.lengthMm <= 3000 ? { lengthMm: candidate.lengthMm } : {}),
+      ...(kind === 'access-door' && finite(candidate.doorMm) && candidate.doorMm >= 100 && candidate.doorMm <= 600 ? { doorMm: candidate.doorMm } : {}),
     });
   }
   return out.length ? out : undefined;

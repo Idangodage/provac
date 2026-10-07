@@ -14,7 +14,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { findAirPort, type DuctAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
 import { tapAttachment } from './ductBranches';
-import { inlineAccessoryLengthMm, planDuctRunSpec } from './ductFabricationPlanner';
+import { accessDoorFor, inlineAccessoryLengthMm, planDuctRunSpec } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds, startAnchor } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
 import { cross, dot, ductLegs } from './ductGeometry';
@@ -60,8 +60,15 @@ export type DuctSegmentEdit =
   | { kind: 'end'; runId: string; end: 'end-cap' | 'open' }
   /** The runout to the terminal the run ends on: flexible, or rigid (spiral duct, dropping onto the spigot's axis). */
   | { kind: 'runout'; runId: string; flex: boolean }
-  /** The terminal a run ends on: another face of its service, or another neck (its runout follows). */
-  | { kind: 'terminal'; terminalId: string; face?: DuctTerminalKind; neckMm?: number }
+  /** The terminal a run ends on: another face of its service, another neck (its runout follows), its design airflow. */
+  | { kind: 'terminal'; terminalId: string; face?: DuctTerminalKind; neckMm?: number; airflowM3h?: number | null }
+  /** A take-off moved along its main leg (mm from the leg's start); its branch keeps its end. */
+  | { kind: 'tap-station'; runId: string; stationMm: number }
+  /** A flexible runout of a given length: the rigid duct before it runs on or stops short. */
+  | { kind: 'runout-length'; runId: string; flexMm: number }
+  /** An accessory moved along its leg (its centre, mm from the leg's start), or an access door of another size. */
+  | { kind: 'inline-move'; runId: string; id: string; stationMm: number }
+  | { kind: 'inline-door'; runId: string; id: string; doorMm: number }
   /** An accessory set into a leg's straight, at the clear spot nearest `stationMm` (along the leg). */
   | { kind: 'inline-add'; runId: string; accessory: Omit<DuctInlineAccessory, 'id'> }
   | { kind: 'inline-remove'; runId: string; id: string }
@@ -628,13 +635,22 @@ function editTerminal(scene: readonly HvacElement[], settings: DuctDesignSetting
   if (!element || !spec) return refuse('The terminal is no longer in the drawing.');
   const kind = edit.face ?? spec.kind;
   const neck = edit.neckMm ?? spec.neckDiameterMm;
-  if (kind === spec.kind && neck === spec.neckDiameterMm) return refuse('It is that already.');
+  const airflow = edit.airflowM3h !== undefined ? (edit.airflowM3h !== null && edit.airflowM3h > 0 ? Math.round(edit.airflowM3h) : null) : spec.designAirflowM3h ?? null;
+  if (kind === spec.kind && neck === spec.neckDiameterMm) {
+    // Its design airflow alone: the system's figures and sizing read it; nothing moves.
+    if (airflow === (spec.designAirflowM3h ?? null)) return refuse('It is that already.');
+    const updated: HvacElement = { ...element, properties: { ...element.properties, terminal: { ...spec, designAirflowM3h: airflow } } };
+    return {
+      updates: [updated], notes: [airflow ? `its design airflow ${airflow} m³/h` : 'an equal share of the system airflow'],
+      action: `Terminal ${element.label}: ${airflow ? `${airflow} m³/h` : 'airflow shared'}`,
+    };
+  }
   const shaped = typicalTerminalSpec(kind, neck, {
     service: spec.service, mount: spec.mount, filter: spec.service === 'return' ? spec.filter ?? null : null,
     ...(spec.slots !== undefined ? { slots: spec.slots } : {}),
     ...(spec.kind === 'linear-slot' && kind === 'linear-slot' ? { lengthMm: spec.faceWidthMm } : {}),
   });
-  const reshaped = { ...shaped, spigotSide: spec.spigotSide, designAirflowM3h: spec.designAirflowM3h ?? null };
+  const reshaped = { ...shaped, spigotSide: spec.spigotSide, designAirflowM3h: airflow };
   const oldTag = terminalTypeTag(spec);
   const retag = TERMINAL_TAG_PATTERN.exec(element.label.trim())?.[1] === oldTag && terminalTypeTag(reshaped) !== oldTag;
   const envelope = terminalEnvelope(reshaped);
@@ -797,6 +813,124 @@ function editInline(
   return { updates: settle(scene, changed, settings, notes), notes, action };
 }
 
+/** An accessory moved along its leg, or a door of the designer's size; the planner says if it no longer fits. */
+function editInlineValue(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'inline-move' | 'inline-door' }>): DuctSegmentEditResult {
+  const element = scene.find((candidate) => candidate.id === edit.runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  if (!element || !spec) return refuse('The run is no longer in the drawing.');
+  if (spec.locked) return refuse('The run is locked: unlock it to change its accessories.');
+  const item = spec.inline?.find((candidate) => candidate.id === edit.id);
+  if (!item) return refuse('The accessory is no longer on the run.');
+  const legLength = ductLegs(spec)[item.legIndex]?.lengthMm ?? 0;
+  let next: DuctInlineAccessory;
+  let action: string;
+  const notes: string[] = [];
+  if (edit.kind === 'inline-move') {
+    const asked = Math.round(Math.max(0, Math.min(legLength, edit.stationMm)));
+    if (Math.abs(asked - item.stationMm) < 0.5) return refuse('It is there already.');
+    // The clear spot nearest the one asked (a fitting, a take-off or a wall may be in the way): an accessory on a clash is not laid.
+    const others: DuctRunSpec = { ...spec, inline: (spec.inline ?? []).filter((candidate) => candidate.id !== edit.id) };
+    const placed = placeInlineAccessory(scene, settings, element.id, others, { ...item, stationMm: asked });
+    if (!placed) return refuse(`No clear straight on this leg takes the ${INLINE_TITLES[item.kind].toLowerCase()} there (fittings, take-offs or walls are in the way).`);
+    if (Math.abs(placed.stationMm - item.stationMm) < 0.5) return refuse('It cannot go further that way: it sits as close to the fittings and take-offs as it can.');
+    if (Math.abs(placed.stationMm - asked) > 1) notes.push(`placed ${Math.round(Math.abs(placed.stationMm - asked))} mm ${placed.stationMm > asked ? 'on' : 'back'} from there, clear of the fittings and take-offs`);
+    next = placed;
+    action = `${INLINE_TITLES[item.kind]} moved to ${Math.round(placed.stationMm)} mm along leg ${item.legIndex + 1}`;
+  } else {
+    if (item.kind !== 'access-door') return refuse('Only an access door has a door size.');
+    const doorMm = Math.round(Math.max(100, Math.min(600, edit.doorMm)) / 10) * 10;
+    const section = spec.legs[item.legIndex];
+    if (doorMm === (section ? accessDoorFor(section, item.doorMm).sizeMm : item.doorMm)) return refuse('It is that size already.');
+    next = { ...item, doorMm };
+    action = `Access door ${doorMm}×${doorMm}`;
+  }
+  const inline = (spec.inline ?? []).map((candidate) => (candidate.id === edit.id ? next : candidate));
+  const changed = new Map([[element.id, ductRunElementWithSpec(element, { ...spec, inline })]]);
+  return { updates: settle(scene, changed, settings, notes), notes, action };
+}
+
+/** A take-off moved along its main leg: the branch's first leg slides with it, its end staying on its terminal. */
+function editTapStation(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'tap-station' }>): DuctSegmentEditResult {
+  const element = scene.find((candidate) => candidate.id === edit.runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  if (!element || !spec) return refuse('The run is no longer in the drawing.');
+  if (spec.start.kind !== 'tap') return refuse('This run does not start on a take-off.');
+  if (spec.locked) return refuse('The run is locked: unlock it to move its take-off.');
+  const parent = ductParentOf(spec, scene);
+  const parentSpec = parent ? readDuctRunSpec(parent) : null;
+  const leg = parentSpec ? ductLegs(parentSpec)[spec.start.legIndex] : undefined;
+  if (!leg) return refuse('The run this branch was taken off is missing.');
+  const stationMm = Math.round(Math.max(0, Math.min(leg.lengthMm, edit.stationMm)));
+  const moved = stationMm - spec.start.stationMm;
+  if (Math.abs(moved) < 0.5) return refuse('It is there already.');
+  const changed = new Map([[element.id, ductRunElementWithSpec(element, { ...spec, start: { ...spec.start, stationMm } })]]);
+  const notes = ['the branch slides with it, still ending where it did'];
+  return { updates: settle(scene, changed, settings, notes), notes, action: `Take-off moved ${Math.round(Math.abs(moved))} mm ${moved > 0 ? 'on' : 'back'} along the main` };
+}
+
+/**
+ * A flexible runout of the length asked: its start moves along the rigid
+ * leg before it (that leg runs on or stops short), a few rounds against the
+ * planner's own curve so the length comes out as asked; never closer to the
+ * fitting the leg starts at than its joint needs.
+ */
+function editRunoutLength(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'runout-length' }>): DuctSegmentEditResult {
+  const element = scene.find((candidate) => candidate.id === edit.runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  if (!element || !spec) return refuse('The run is no longer in the drawing.');
+  if (spec.end.kind !== 'terminal' || !spec.end.flex) return refuse('The run does not end on a flexible runout.');
+  if (spec.locked) return refuse('The run is locked.');
+  const n = spec.path.length;
+  if (n < 3) return refuse('The runout is flexible from its take-off: there is no rigid duct before it to run on or stop short.');
+  const q = spec.path[n - 3]!;
+  const p = spec.path[n - 2]!;
+  if (Math.abs(p.z - q.z) > 1 || Math.hypot(p.x - q.x, p.y - q.y) < 1) return refuse('The rigid duct reaches the runout down a riser; move its end by hand.');
+  const target = Math.max(300, Math.min(3000, edit.flexMm));
+  const d = unitOf({ x: p.x - q.x, y: p.y - q.y });
+  const lip = spec.path[n - 1]!;
+  const now = Math.hypot(p.x - q.x, p.y - q.y);
+  // The stub can be no shorter than its take-off's collar and damper (or than it is, which the planner already takes);
+  // beyond a vertex, no shorter than an elbow's room. It runs on at most to 150 mm short of the spigot.
+  const start = spec.start;
+  const fittings = (start.kind === 'tap' ? settings.tapCollarMm : 0) + ('vcd' in start && start.vcd ? settings.vcdLengthMm : 0);
+  const lo = Math.min(now, n - 3 === 0 ? fittings + 20 : 300);
+  const hi = Math.max(lo, dot(sub2(lip, q), d) - 150);
+  const lengthOf = (along: number) => {
+    const plan = planDuctRunSpec(element.id, withStart(along), { settings, scene });
+    return plan.pieces.find((piece) => piece.kind === 'flex')?.lengthMm ?? null;
+  };
+  function withStart(along: number): DuctRunSpec {
+    return { ...spec!, path: [...spec!.path.slice(0, n - 2), at(add2(q, d, along), p.z), lip] };
+  }
+  // The runout shortens as the stub runs on: bisect for the length asked, within what the stub allows.
+  const longest = lengthOf(lo);
+  const shortest = lengthOf(hi);
+  if (longest === null || shortest === null) return refuse('The runout cannot be made that length here.');
+  const notes: string[] = [];
+  let along: number;
+  if (target >= longest) {
+    along = lo;
+    if (target - longest > 20) notes.push(`${Math.round(longest)} mm: as long as the rigid duct before it allows`);
+  } else if (target <= shortest) {
+    along = hi;
+    if (shortest - target > 20) notes.push(`${Math.round(shortest)} mm: as short as the spigot allows`);
+  } else {
+    let a = lo;
+    let b = hi;
+    for (let round = 0; round < 16 && b - a > 1; round += 1) {
+      const middle = (a + b) / 2;
+      const length = lengthOf(middle) ?? target;
+      if (length > target) a = middle;
+      else b = middle;
+    }
+    along = (a + b) / 2;
+  }
+  const reached = lengthOf(along);
+  if (Math.abs(along - now) < 0.5) return refuse('The runout is that length already, or cannot be made that length here.');
+  const changed = new Map([[element.id, ductRunElementWithSpec(element, withStart(along))]]);
+  return { updates: settle(scene, changed, settings, notes), notes, action: `Flexible runout ${Math.round(reached ?? target)} mm` };
+}
+
 /** Apply an edit to the drawing: every element it changes, or why it cannot be made. */
 export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: DuctSegmentEdit): DuctSegmentEditResult {
   switch (edit.kind) {
@@ -812,6 +946,10 @@ export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: Du
     case 'inline-add':
     case 'inline-remove':
     case 'inline-length': return editInline(scene, settings, edit);
+    case 'inline-move':
+    case 'inline-door': return editInlineValue(scene, settings, edit);
+    case 'tap-station': return editTapStation(scene, settings, edit);
+    case 'runout-length': return editRunoutLength(scene, settings, edit);
     default: return refuse('Unknown edit.');
   }
 }

@@ -371,17 +371,21 @@ const ATTENUATOR_MASS_FACTOR = 2.5;
  * else what fits; a flat duct's in its bottom (reached from the ceiling below),
  * a tall or round one's in its side.
  */
-export function accessDoorFor(section: DuctLeg): { sizeMm: number; face: 'side' | 'bottom' } {
+export function accessDoorFor(section: DuctLeg, doorMm?: number): { sizeMm: number; face: 'side' | 'bottom' } {
   const round = isRoundLeg(section);
   const face = round ? section.diameterMm! * 0.7 : Math.max(section.widthMm, section.heightMm);
-  const size = [450, 300, 200].find((candidate) => face >= candidate + 100) ?? Math.max(100, Math.floor((face - 50) / 50) * 50);
+  const size = doorMm ?? [450, 300, 200].find((candidate) => face >= candidate + 100) ?? Math.max(100, Math.floor((face - 50) / 50) * 50);
   return { sizeMm: size, face: !round && section.widthMm >= section.heightMm ? 'bottom' : 'side' };
 }
 
 /** The length an inline accessory takes of its leg (mm). */
-export function inlineAccessoryLengthMm(item: Pick<DuctInlineAccessory, 'kind'> & { lengthMm?: number | undefined }, section: DuctLeg, settings: Pick<DuctDesignSettings, 'vcdLengthMm'>): number {
+export function inlineAccessoryLengthMm(
+  item: Pick<DuctInlineAccessory, 'kind'> & { lengthMm?: number | undefined; doorMm?: number | undefined },
+  section: DuctLeg,
+  settings: Pick<DuctDesignSettings, 'vcdLengthMm'>,
+): number {
   if (item.kind === 'damper') return settings.vcdLengthMm;
-  if (item.kind === 'access-door') return accessDoorFor(section).sizeMm + 100;
+  if (item.kind === 'access-door') return accessDoorFor(section, item.doorMm).sizeMm + 100;
   return item.lengthMm ?? 900;
 }
 
@@ -1306,7 +1310,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
               : rectangularDamperLayout(section.widthMm, section.heightMm),
           }));
         } else if (item.kind === 'access-door') {
-          pieces.push(straightPiece('access-door', 'AD', from, to, section, { inlineId: item.id, accessDoor: accessDoorFor(section) }));
+          pieces.push(straightPiece('access-door', 'AD', from, to, section, { inlineId: item.id, accessDoor: accessDoorFor(section, item.doorMm) }));
         } else {
           const piece = straightPiece('attenuator', 'SA', from, to, section, {
             inlineId: item.id, attenuator: { casingMm: ATTENUATOR_CASING_MM, type: isRoundLeg(section) ? 'podded' : 'splitter' },
