@@ -1186,9 +1186,13 @@ export function DuctSegmentCardLayer({ enabled, hvacElements, settings, selected
     return () => window.clearTimeout(timer);
   }, [enabled, hovered, pinned, dismissed, peekOpen]);
 
-  // A pinned card closes with its run: deselected, deleted, or another tool taken.
+  // A pinned card closes with its run: deselected, deleted, or another tool taken. Judged when the selection changes (or
+  // the tool), so a card pinned by the same click that selects its run is never closed before that selection arrives.
+  const selectionRef = useRef(selectedIds);
   useEffect(() => {
-    if (pinned && (!enabled || !selectedIds.includes(pinned.runId))) unpin();
+    const selectionChanged = selectionRef.current !== selectedIds;
+    selectionRef.current = selectedIds;
+    if (pinned && (!enabled || (selectionChanged && !selectedIds.includes(pinned.runId)))) unpin();
   }, [enabled, pinned, selectedIds, unpin]);
 
   // After an option is applied the card stays on its segment, or on the leg it became.

@@ -25,9 +25,12 @@ import { copperSocketCoverOutline, copperSocketCupOutline } from "./copperSocket
 import { compileCopperSocketElbowRoute } from "./copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "./copperSocketElbows";
 import { resolveLocalAirPorts } from "./duct/ductAirPorts";
+import { getDuctRunPlan } from "./duct/ductFabricationPlanner";
 import { pickDuctAtWorldPoint } from "./duct/ductPick";
+import { segmentPieceAtPlanPoint } from "./duct/ductSegments";
 import { resolveDuctSettings, type DuctDesignSettings } from "./duct/ductSettings";
 import { localTerminalSpigot, readDuctTerminalSpec } from "./duct/ductTerminals";
+import { isDuctElement } from "./duct/ductTypes";
 import {
   buildDuctedIndoorUnitModel,
   DUCTED_INDOOR_UNIT_COLOR_PALETTE,
@@ -4515,6 +4518,17 @@ export class HvacPlanRenderer {
       x: canvasPointPx.x / MM_TO_PX,
       y: canvasPointPx.y / MM_TO_PX,
     });
+  }
+
+  /** The segment of duct run `runId` under a world point (mm) and the piece of it there, at the duct pick's tolerance. */
+  ductSegmentAtWorldPoint(runId: string, worldPointMm: Point2D): { key: string; mark: string } | null {
+    const element = this.hvacData.get(runId);
+    if (!element || !isDuctElement(element)) return null;
+    const plan = getDuctRunPlan(element, [...this.hvacData.values()], this.ductSettings);
+    const found = plan
+      ? segmentPieceAtPlanPoint(plan, worldPointMm, PIPE_PICK_PADDING_PX / (MM_TO_PX * Math.max(this.canvas.getZoom(), 0.01)))
+      : null;
+    return found ? { key: found.segment.key, mark: found.mark } : null;
   }
 
   setHoveredElement(id: string | null): void {

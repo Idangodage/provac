@@ -20,6 +20,7 @@ import {
   segmentEnds,
   segmentIssues,
   segmentOutlines,
+  segmentPieceAtPlanPoint,
 } from './ductSegments';
 import { resolveDuctSettings } from './ductSettings';
 import { readDuctRunSpec, roundLeg } from './ductTypes';
@@ -115,6 +116,14 @@ describe('the segments of a duct run', () => {
     expect(segmentAtPlanPoint(plan, onArc, 5)!.key).toBe('node:1');
     expect(segmentAtPlanPoint(plan, P(1500), 5)!.key).toBe('leg:0');
     expect(segmentAtPlanPoint(plan, P(1500, 2000), 5)).toBeNull();
+    // With the piece under the point: the one a click pins the card to (its anchor).
+    const onLeg = segmentPieceAtPlanPoint(plan, P(1500), 5)!;
+    expect(onLeg.segment.key).toBe('leg:0');
+    expect(onLeg.segment.marks).toContain(onLeg.mark);
+    const onElbow = segmentPieceAtPlanPoint(plan, onArc, 5)!;
+    expect(onElbow.segment.key).toBe('node:1');
+    expect(onElbow.mark).toBe(ductSegmentOf(plan, 'node:1')!.marks[0]);
+    expect(segmentPieceAtPlanPoint(plan, P(1500, 2000), 5)).toBeNull();
     expect(segmentOutlines(plan, 'leg:0').length).toBe(ductSegmentOf(plan, 'leg:0')!.pieceIndices.length);
     const bounds = segmentBounds(plan, 'leg:0')!;
     // 600 wide, centred on the collar's line.

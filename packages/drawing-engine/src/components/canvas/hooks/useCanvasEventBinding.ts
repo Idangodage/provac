@@ -51,6 +51,7 @@ import {
 import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
 import { followDrainsWithoutHistory } from "../hvac/condensate/condensateEditController";
 import { followDuctsWithoutHistory } from "../hvac/duct/ductEditController";
+import { useDuctSegmentUiStore } from "../hvac/duct/ductSegmentUiStore";
 import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
 import {
   isRefrigerantPipeElementType,
@@ -1256,6 +1257,11 @@ export function useCanvasEventBinding(
           toggleSelectedId(hvacId);
         } else {
           setSelectedIds([hvacId]);
+          // A duct: the click also picks the segment under it, its card opening beside it.
+          const segment = wallPoint ? hvacRendererRef.current?.ductSegmentAtWorldPoint(hvacId, wallPoint) ?? null : null;
+          if (segment) {
+            useDuctSegmentUiStore.getState().pin({ runId: hvacId, key: segment.key, anchorMark: segment.mark, view: "2d" });
+          }
         }
         setHoveredElement(hvacId);
         return;

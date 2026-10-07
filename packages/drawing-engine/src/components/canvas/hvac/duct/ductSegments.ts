@@ -262,14 +262,20 @@ export function segmentOutlines(plan: DuctFabricationPlan, key: string): Point2D
   return getDuctPlanPresentation(plan).piecePolygons.filter((polygon) => marks.has(polygon.mark)).map((polygon) => polygon.polygon);
 }
 
-/** The segment whose outline is nearest a plan point, within `toleranceMm`. */
-export function segmentAtPlanPoint(plan: DuctFabricationPlan, point: Point2D, toleranceMm: number): DuctSegment | null {
+/** The segment whose outline is nearest a plan point, within `toleranceMm`, and the piece of it there. */
+export function segmentPieceAtPlanPoint(plan: DuctFabricationPlan, point: Point2D, toleranceMm: number): { segment: DuctSegment; mark: string } | null {
   let best: { mark: string; distance: number } | null = null;
   for (const polygon of getDuctPlanPresentation(plan).piecePolygons) {
     const distance = distanceToPolygon(point, polygon.polygon);
     if (distance <= toleranceMm && (!best || distance < best.distance)) best = { mark: polygon.mark, distance };
   }
-  return best ? ductSegmentOfMark(plan, best.mark) : null;
+  const segment = best ? ductSegmentOfMark(plan, best.mark) : null;
+  return segment && best ? { segment, mark: best.mark } : null;
+}
+
+/** The segment whose outline is nearest a plan point, within `toleranceMm`. */
+export function segmentAtPlanPoint(plan: DuctFabricationPlan, point: Point2D, toleranceMm: number): DuctSegment | null {
+  return segmentPieceAtPlanPoint(plan, point, toleranceMm)?.segment ?? null;
 }
 
 /** A point inside an outline: its vertex centroid when inside, else the middle of a chord across it. */

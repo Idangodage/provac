@@ -2614,12 +2614,15 @@ export function HybridProjectionLayer({
         const pressed = pickState.ductPressed;
         pickState.ductPressed = null;
         releaseCapture();
-        // A click (not a drag): on a selected run it pins the card of the segment under it; else it selects the run.
+        // A click (not a drag) selects the run and pins the card of the segment under it; with Shift it adds the run to
+        // the selection, or takes it out, and pins nothing.
         if (Math.hypot(e.clientX - pickState.downX, e.clientY - pickState.downY) <= 4) {
-          const focus = !e.shiftKey && selectedIdsRef.current.includes(pressed.runId)
-            ? ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, pressed.runId, pressed.model) : null;
-          if (focus) useDuctSegmentUiStore.getState().pin(focus);
-          else selectWall(pressed.runId, e.shiftKey);
+          if (e.shiftKey) selectWall(pressed.runId, true);
+          else {
+            if (!selectedIdsRef.current.includes(pressed.runId)) selectWall(pressed.runId, false);
+            const focus = ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, pressed.runId, pressed.model);
+            if (focus) useDuctSegmentUiStore.getState().pin(focus);
+          }
         }
         request();
         return;
