@@ -78,15 +78,25 @@ const TAP_GLYPH: Record<DuctTapStyle, DuctOptionGlyph> = {
 
 const round1 = (value: number) => Math.round(value * 10) / 10;
 
+/** The outer height a leg has from its bottom up to the soffit, less its insulation and a 50 mm margin (mm). */
+function voidHeightOf(spec: DuctRunSpec, legIndex: number, settings: DuctDesignSettings): number {
+  const leg = spec.path[Math.min(legIndex, spec.path.length - 1)]!;
+  return Math.max(100, resolveSoffitZ(settings) - leg.z - 2 * spec.insulationThicknessMm - 50);
+}
+
+/** The rectangle of a round section's friction nearest 2 : 1, lying flat and no taller than the round or `maxHeightMm`; null when none fits. */
+function moderateRectangle(diameterMm: number, maxHeightMm: number, maxAspect: number): DuctLeg | null {
+  const rects = rectangularEquivalents(diameterMm, { maxHeightMm: Math.min(maxHeightMm, diameterMm), maxAspect });
+  return [...rects].sort((a, b) => Math.abs(aspectOf(a) - 2) - Math.abs(aspectOf(b) - 2))[0] ?? null;
+}
+
 export function segmentOptionContext(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, key: string): DuctSegmentOptionContext | null {
   const element = scene.find((candidate) => candidate.id === runId);
   const spec = element ? readDuctRunSpec(element) : null;
   const plan = element ? getDuctRunPlan(element, scene, settings) : null;
   const segment = plan ? ductSegmentOf(plan, key) : null;
   if (!element || !spec || !plan || !segment) return null;
-  const leg = spec.path[Math.min(segment.legIndex, spec.path.length - 1)]!;
-  const voidHeightMm = Math.max(100, resolveSoffitZ(settings) - leg.z - 2 * spec.insulationThicknessMm - 50);
-  return { plan, spec, segment, figures: ductSegmentFigures(scene, settings, runId, key), voidHeightMm };
+  return { plan, spec, segment, figures: ductSegmentFigures(scene, settings, runId, key), voidHeightMm: voidHeightOf(spec, segment.legIndex, settings) };
 }
 
 /** The legs a size applies to: the leg alone, or every leg of the run that has the same section. */
@@ -248,8 +258,34 @@ function transitionOptions(runId: string, context: DuctSegmentOptionContext, set
       ...(Math.abs(now - taper) < 0.01 ? { current: true } : {}),
     });
   }
-  if (legIndex < 1) return options;
   const rigid = rigidLegIndices(spec);
+  if (legIndex < 1) {
+    // Off the unit's collar onto a round first leg: that leg — or every round leg of the run — in rectangular duct
+    // of the same friction keeps the duct square; this becomes a rectangular transition (or goes, at the collar's size).
+    const first = spec.legs[0];
+    if (first && isRoundLeg(first) && rigid.includes(0)) {
+      const rect = moderateRectangle(first.diameterMm!, context.voidHeightMm, settings.aspectRatioAdvisory);
+      if (rect) {
+        options.push({
+          id: `rect-first:${rect.widthMm}x${rect.heightMm}`, group: 'swap', glyph: 'rect', title: `Rectangular duct ${sectionLabel(rect)}`,
+          detail: 'the leg after it in rectangular duct of the same friction: this becomes a rectangular transition',
+          edit: { kind: 'leg-section', runId, sections: [{ leg: 0, section: rect }] },
+        });
+      }
+      const run = rigid.filter((index) => isRoundLeg(spec.legs[index]!)).flatMap((index) => {
+        const section = moderateRectangle(spec.legs[index]!.diameterMm!, voidHeightOf(spec, index, settings), settings.aspectRatioAdvisory);
+        return section ? [{ leg: index, section }] : [];
+      });
+      if (run.length > 1) {
+        options.push({
+          id: 'rect-run', group: 'swap', glyph: 'rect', title: 'Rectangular run',
+          detail: `every round leg of the run (${run.length}) in rectangular duct of the same friction; its fittings follow`,
+          edit: { kind: 'leg-section', runId, sections: run },
+        });
+      }
+    }
+    return options;
+  }
   const before = spec.legs[legIndex - 1]!;
   const after = spec.legs[legIndex]!;
   if (rigid.includes(legIndex)) {
@@ -365,6 +401,12 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
           detail: 'the run\'s last leg round, a wye (SMACNA Fig. 3-5); its outlets round, leaving at 45°',
           edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: round }] },
         });
+        const name = now === 'y' ? 'Y split' : 'bullhead tee';
+        options.push({
+          id: `split:keep:${round.diameterMm}`, group: 'swap', glyph: 'round', title: `Round main Ø${round.diameterMm}, ${name} kept`,
+          detail: `the run's last leg round up to a short rectangular neck: a round-to-square before the ${name}, its outlets as they are`,
+          edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: round }], keepSplit: true },
+        });
       }
     } else if (section && last !== undefined) {
       options.push({ id: 'split:wye', group: 'swap', glyph: 'split-y', title: 'Wye', detail: 'SMACNA Fig. 3-5', edit: { kind: 'split', runId, style: 'wye' }, current: true });
@@ -379,6 +421,11 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
             edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: moderate }], splitStyle: style },
           });
         }
+        options.push({
+          id: `split:keep:${moderate.widthMm}x${moderate.heightMm}`, group: 'swap', glyph: 'rect', title: `Rectangular main ${sectionLabel(moderate)}, wye kept`,
+          detail: 'the run\'s last leg rectangular up to a short round neck: a square-to-round before the wye, its outlets as they are',
+          edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: moderate }], keepSplit: true },
+        });
       }
     }
   }

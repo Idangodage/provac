@@ -18,7 +18,7 @@ import { accessDoorFor, inlineAccessoryLengthMm, planDuctRunSpec } from './ductF
 import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds, startAnchor } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
 import { cross, dot, ductLegs } from './ductGeometry';
-import { ductBranchesOf, ductParentOf } from './ductNetwork';
+import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
 import { maxRoundBranchMm } from './ductRoundFittings';
 import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
 import { sectionLabel, TAKEOFF_TITLES } from './ductSegments';
@@ -45,9 +45,14 @@ export type DuctSegmentEdit =
   /**
    * Legs of a run take new sections; `wholeBranches`: a branch made round by a main's new shape is round all along;
    * `splitStyle`: the split ending a last leg that changes shape (else a wye on a round run, a Y — or a bullhead
-   * where the Y's outlets do not fit — on a rectangular one).
+   * where the Y's outlets do not fit — on a rectangular one; where its outlets cannot turn to the new split, the
+   * split stays as it is behind a transition); `keepSplit`: the split stays as it is, behind a transition, whatever
+   * its outlets could do.
    */
-  | { kind: 'leg-section'; runId: string; sections: ReadonlyArray<{ leg: number; section: DuctLeg }>; wholeBranches?: boolean; splitStyle?: DuctSplitStyle }
+  | {
+    kind: 'leg-section'; runId: string; sections: ReadonlyArray<{ leg: number; section: DuctLeg }>; wholeBranches?: boolean; splitStyle?: DuctSplitStyle;
+    keepSplit?: boolean;
+  }
   /** A node's fitting choices (null = the project's). */
   | { kind: 'node'; runId: string; node: number; override: DuctNodeOverride | null }
   /** A branch's take-off fitting, and its first leg with it (a round collar takes a round branch). */
@@ -255,6 +260,143 @@ function outletSection(first: DuctLeg, main: DuctLeg, round: boolean, outlets: n
   return rects.find((leg) => leg.widthMm <= main.widthMm / Math.max(1, outlets) + 0.5) ?? rects[0] ?? null;
 }
 
+/** A take-off on a main leg that changes shape: its fitting follows (and a rectangular branch off a main made round, its first leg); the reason when it cannot. */
+function tapOnNewMain(
+  scene: readonly HvacElement[], settings: DuctDesignSettings, branch: DuctBranchRef, section: DuctLeg, wholeBranches: boolean | undefined, notes: string[],
+): HvacElement | string {
+  if (branch.start.kind !== 'tap') return '';
+  const label = labelOf(branch.element, branch.spec, scene);
+  let branchLegs = branch.spec.legs;
+  const first = branchLegs[0]!;
+  if (isRoundLeg(section) && !isRoundLeg(first)) {
+    const round = roundBranchFor(first, section.diameterMm!, settings.autoRoundSizesMm);
+    const tail = flexTail(branch.spec) ? branchLegs.length - 1 : branchLegs.length;
+    branchLegs = branchLegs.map((leg, index) => (index === 0 || (wholeBranches && index < tail && !isRoundLeg(leg)) ? round : leg));
+    notes.push(`${label}: its ${wholeBranches ? 'duct' : 'first leg'} becomes ${sectionLabel(round)} (was ${sectionLabel(first)})`);
+  }
+  const mapped = tapStyleForMain(branch.start.style, isRoundLeg(section), section, branchLegs[0]!.diameterMm ?? branchLegs[0]!.heightMm, settings);
+  if ('refused' in mapped) return `${label}: ${mapped.refused}.`;
+  if (mapped.style !== branch.start.style) notes.push(`${label} becomes a ${TAKEOFF_TITLES[mapped.style].toLowerCase().replace(/ \(y\)$/, '')}`);
+  return ductRunElementWithSpec(branch.element, { ...branch.spec, legs: branchLegs, start: { ...branch.start, style: mapped.style } });
+}
+
+/** Radius ratios an elbow is tightened through to fit legs the edit left too short (then turning vanes, on a 90° turn). */
+const FIT_RATIOS = [1.25, 1, 0.75] as const;
+
+/**
+ * Elbows of `runId` (in `changed`) whose legs the edit left too short — a round
+ * run made rectangular takes wider elbows: each at either end of such a leg
+ * takes the largest radius ratio that lets the leg fit (and breaks no rule the
+ * run did not break before), else square with turning vanes where it turns
+ * 90°. Notes say which.
+ */
+function fitElbows(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, changed: Map<string, HvacElement>, before: Map<string, number>, notes: string[]): void {
+  const withChanges = () => scene.map((element) => changed.get(element.id) ?? element);
+  let spec = readDuctRunSpec(changed.get(runId)!)!;
+  let plan = planDuctRunSpec(runId, spec, { settings, scene: withChanges() });
+  if ((errorCodes(plan).get('DU_LEG_TOO_SHORT') ?? 0) <= (before.get('DU_LEG_TOO_SHORT') ?? 0)) return;
+  const short = [...new Set(plan.issues.filter((issue) => issue.code === 'DU_LEG_TOO_SHORT' && issue.legIndex !== undefined).map((issue) => issue.legIndex!))];
+  for (const legIndex of short) {
+    for (const node of [legIndex, legIndex + 1]) {
+      const piece = plan.pieces.find((candidate) => candidate.kind === 'elbow' && candidate.nodeIndex === node);
+      const elbow = piece?.elbow;
+      if (!elbow || elbow.style === 'square-vaned' || !plan.issues.some((issue) => issue.code === 'DU_LEG_TOO_SHORT' && issue.legIndex === legIndex)) continue;
+      const override = spec.nodeOverrides[String(node)] ?? {};
+      const ratioNow = (elbow.inPlaneMm ?? piece!.widthMm) > 0 ? elbow.centrelineRadiusMm / (elbow.inPlaneMm ?? piece!.widthMm) : 1.5;
+      const tries: DuctNodeOverride[] = [
+        ...FIT_RATIOS.filter((ratio) => ratio < ratioNow - 0.01).map((ratio) => ({ ...override, ...(elbow.style === 'gored' ? {} : { elbowStyle: 'radius' as const }), centrelineRatio: ratio })),
+        ...(elbow.style !== 'gored' && Math.abs(elbow.angleDeg - 90) < 1 ? [{ ...override, elbowStyle: 'square-vaned' as const, centrelineRatio: undefined }] : []),
+      ];
+      for (const attempt of tries) {
+        const cleaned = Object.fromEntries(Object.entries(attempt).filter(([, value]) => value !== undefined)) as DuctNodeOverride;
+        const next: DuctRunSpec = { ...spec, nodeOverrides: { ...spec.nodeOverrides, [String(node)]: cleaned } };
+        const nextPlan = planDuctRunSpec(runId, next, { settings, scene: withChanges() });
+        const counts = errorCodes(nextPlan);
+        if (nextPlan.issues.some((issue) => issue.code === 'DU_LEG_TOO_SHORT' && issue.legIndex === legIndex)) continue;
+        // Tighter, but within the rules: no error the run did not have, bar the legs still too short elsewhere.
+        if (![...counts].every(([code, count]) => code === 'DU_LEG_TOO_SHORT' || count <= (before.get(code) ?? 0))) continue;
+        spec = next;
+        plan = nextPlan;
+        changed.set(runId, ductRunElementWithSpec(changed.get(runId)!, next));
+        notes.push(attempt.elbowStyle === 'square-vaned'
+          ? `The elbow at node ${node} is square with turning vanes, to fit its legs`
+          : `The elbow at node ${node} takes ${elbow.style === 'gored' ? 'R/D' : 'R/W'} ${attempt.centrelineRatio} to fit its legs`);
+        break;
+      }
+    }
+  }
+}
+
+/** The neck kept before a split (mm): at least this, lengthened in these steps; the leg before it keeps at least this. */
+const NECK_MIN_MM = 150;
+const NECK_STEP_MM = 50;
+const NECK_LEAVE_MM = 150;
+
+/**
+ * A last leg that changes shape while its split stays as it is: the leg is cut
+ * by a straight-through vertex, the part before it in the new section and a
+ * neck of the old one into the split — the planner lays the transition between
+ * them at the vertex. The neck is the shortest (in 50 mm steps) that plans
+ * with no new error. Take-offs and accessories on the neck move onto it;
+ * the split and its outlets do not change.
+ */
+function keepSplitBehindTransition(
+  scene: readonly HvacElement[], settings: DuctDesignSettings, element: HvacElement, spec: DuctRunSpec, legs: DuctLeg[], legSet: ReadonlySet<number>,
+  edit: Extract<DuctSegmentEdit, { kind: 'leg-section' }>, action: string,
+): DuctSegmentEditResult {
+  if (spec.end.kind !== 'split') return refuse('The run does not end in a split.');
+  const last = spec.legs.length - 1;
+  const geometry = ductLegs(spec)[last];
+  const a = spec.path[last];
+  const b = spec.path[last + 1];
+  if (!geometry || !a || !b || geometry.vertical || geometry.sloped) return refuse('The split ends a leg that is not level: redraw its last leg.');
+  const oldSection = spec.legs[last]!;
+  const newSection = legs[last]!;
+  const splitName = spec.end.style === 'wye' ? 'wye' : spec.end.style === 'y' ? 'Y split' : 'bullhead tee';
+  const transitionName = isRoundLeg(oldSection) ? 'square-to-round' : 'round-to-square';
+  const before = errorCodes(planDuctRunSpec(element.id, spec, { settings, scene }));
+  const taps = ductBranchesOf(element.id, scene).filter((branch) => branch.start.kind === 'tap');
+  // Node overrides past the cut move one on (none sit there on a split-ended run, but keep them whole).
+  const nodeOverrides = Object.fromEntries(Object.entries(spec.nodeOverrides).map(([key, value]) => [Number(key) > last ? String(Number(key) + 1) : key, value]));
+  for (let neck = NECK_MIN_MM; neck <= geometry.lengthMm - NECK_LEAVE_MM; neck += NECK_STEP_MM) {
+    const cut = geometry.lengthMm - neck;
+    const vertex = at({ x: a.x + geometry.direction.x * cut, y: a.y + geometry.direction.y * cut }, a.z);
+    let next: DuctRunSpec = {
+      ...spec, path: [...spec.path.slice(0, last + 1), vertex, ...spec.path.slice(last + 1)], legs: [...legs.slice(0, last), newSection, oldSection], nodeOverrides,
+    };
+    if (next.inline?.length) {
+      next = { ...next, inline: next.inline.map((item) => (item.legIndex === last && item.stationMm > cut ? { ...item, legIndex: last + 1, stationMm: item.stationMm - cut } : item)) };
+    }
+    const notes: string[] = [];
+    const changed = new Map<string, HvacElement>([[element.id, ductRunElementWithSpec(element, next)]]);
+    let refusal: string | null = null;
+    for (const branch of taps) {
+      if (branch.start.kind !== 'tap') continue;
+      const start = branch.start;
+      if (start.legIndex === last && start.stationMm > cut) {
+        changed.set(branch.element.id, ductRunElementWithSpec(branch.element, { ...branch.spec, start: { ...start, legIndex: last + 1, stationMm: start.stationMm - cut } }));
+        continue;
+      }
+      if (!legSet.has(start.legIndex) || isRoundLeg(spec.legs[start.legIndex]) === isRoundLeg(legs[start.legIndex])) continue;
+      const mapped = tapOnNewMain(scene, settings, branch, legs[start.legIndex]!, edit.wholeBranches, notes);
+      if (typeof mapped === 'string') {
+        refusal = mapped;
+        break;
+      }
+      changed.set(mapped.id, mapped);
+    }
+    if (refusal) return refuse(refusal);
+    const turned = reaimTurningBranches(scene, settings, element.id, changed, notes);
+    if (turned) return refuse(`${turned}.`);
+    fitElbows(scene, settings, element.id, changed, before, notes);
+    const plan = planDuctRunSpec(element.id, readDuctRunSpec(changed.get(element.id)!)!, { settings, scene: scene.map((candidate) => changed.get(candidate.id) ?? candidate) });
+    if (!noNewErrors(before, errorCodes(plan))) continue;
+    notes.unshift(`The ${splitName} stays as it is: the duct turns back to ${sectionLabel(oldSection)} through a ${transitionName} ${Math.round(neck)} mm before it`);
+    return { updates: settle(scene, changed, settings, notes), notes, action };
+  }
+  return refuse(`No room before the ${splitName} for a ${transitionName}: its last leg is too short (${Math.round(geometry.lengthMm)} mm).`);
+}
+
 function editLegSection(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'leg-section' }>): DuctSegmentEditResult {
   const element = scene.find((candidate) => candidate.id === edit.runId);
   const spec = element ? readDuctRunSpec(element) : null;
@@ -267,9 +409,27 @@ function editLegSection(scene: readonly HvacElement[], settings: DuctDesignSetti
   const legSet = new Set(bySection.keys());
   if (legSet.size === 0) return refuse('That part of the run has no section of its own.');
   const legs = spec.legs.map((leg, index) => bySection.get(index) ?? leg);
+  const lastRigid = Math.max(...allowed);
+  const sizes = [...new Set([...bySection.values()].map(sectionLabel))];
+  const what = legSet.size === allowed.size && allowed.size > 1 ? 'run' : legSet.size > 1 ? `${legSet.size} legs` : `leg ${[...legSet][0]! + 1}`;
+  const action = `Duct ${what}: ${sizes.length === 1 ? sizes[0] : sizes.join(', ')}`;
+  const splitChanges = spec.end.kind === 'split' && legSet.has(lastRigid) && isRoundLeg(spec.legs[lastRigid]) !== isRoundLeg(legs[lastRigid]);
+  if (splitChanges && edit.keepSplit) return keepSplitBehindTransition(scene, settings, element, spec, legs, legSet, edit, action);
+  const converted = convertSections(scene, settings, element, spec, legs, legSet, lastRigid, edit, action);
+  // A split whose outlets cannot take the new fitting (no route turns them) stays as it is, behind a transition
+  // (unless a split style was asked for).
+  if (!converted.refused || !splitChanges || edit.splitStyle) return converted;
+  const kept = keepSplitBehindTransition(scene, settings, element, spec, legs, legSet, edit, action);
+  return kept.refused ? converted : kept;
+}
+
+/** The legs' new sections with the fittings following: a split's style and its outlets, take-offs, branches that turn, elbows that must fit. */
+function convertSections(
+  scene: readonly HvacElement[], settings: DuctDesignSettings, element: HvacElement, spec: DuctRunSpec, legs: DuctLeg[], legSet: ReadonlySet<number>, lastRigid: number,
+  edit: Extract<DuctSegmentEdit, { kind: 'leg-section' }>, action: string,
+): DuctSegmentEditResult {
   const notes: string[] = [];
   let end = spec.end;
-  const lastRigid = Math.max(...allowed);
   // A split at the end of a last leg that changes shape: a wye on a round run; a Y (a bullhead where the Y's
   // outlets would not fit side by side) on a rectangular one. Its outlets take the new shape and turn with it.
   const outletChanges: Array<{ element: HvacElement; spec: DuctRunSpec }> = [];
@@ -294,32 +454,18 @@ function editLegSection(scene: readonly HvacElement[], settings: DuctDesignSetti
   }
   const changed = new Map<string, HvacElement>([[element.id, ductRunElementWithSpec(element, { ...spec, legs, end })]]);
   for (const outlet of outletChanges) changed.set(outlet.element.id, ductRunElementWithSpec(outlet.element, outlet.spec));
-  const stock = settings.autoRoundSizesMm;
   for (const branch of ductBranchesOf(element.id, scene)) {
     if (branch.start.kind !== 'tap' || !legSet.has(branch.start.legIndex)) continue;
-    const before = spec.legs[branch.start.legIndex]!;
-    const section = legs[branch.start.legIndex]!;
-    if (isRoundLeg(before) === isRoundLeg(section)) continue;
-    const label = labelOf(branch.element, branch.spec, scene);
-    let branchLegs = branch.spec.legs;
-    const first = branchLegs[0]!;
-    if (isRoundLeg(section) && !isRoundLeg(first)) {
-      const round = roundBranchFor(first, section.diameterMm!, stock);
-      const tail = flexTail(branch.spec) ? branchLegs.length - 1 : branchLegs.length;
-      branchLegs = branchLegs.map((leg, index) => (index === 0 || (edit.wholeBranches && index < tail && !isRoundLeg(leg)) ? round : leg));
-      notes.push(`${label}: its ${edit.wholeBranches ? 'duct' : 'first leg'} becomes ${sectionLabel(round)} (was ${sectionLabel(first)})`);
-    }
-    const mapped = tapStyleForMain(branch.start.style, isRoundLeg(section), section, branchLegs[0]!.diameterMm ?? branchLegs[0]!.heightMm, settings);
-    if ('refused' in mapped) return refuse(`${label}: ${mapped.refused}.`);
-    if (mapped.style !== branch.start.style) notes.push(`${label} becomes a ${TAKEOFF_TITLES[mapped.style].toLowerCase().replace(/ \(y\)$/, '')}`);
-    changed.set(branch.element.id, ductRunElementWithSpec(branch.element, { ...branch.spec, legs: branchLegs, start: { ...branch.start, style: mapped.style } }));
+    if (isRoundLeg(spec.legs[branch.start.legIndex]) === isRoundLeg(legs[branch.start.legIndex])) continue;
+    const mapped = tapOnNewMain(scene, settings, branch, legs[branch.start.legIndex]!, edit.wholeBranches, notes);
+    if (typeof mapped === 'string') return refuse(mapped);
+    changed.set(mapped.id, mapped);
   }
   // Branches whose fitting now leaves at another angle (a lateral off a main made rectangular, a split's outlets) turn with it.
   const turned = reaimTurningBranches(scene, settings, element.id, changed, notes);
   if (turned) return refuse(`${turned}.`);
-  const sizes = [...new Set([...bySection.values()].map(sectionLabel))];
-  const what = legSet.size === allowed.size && allowed.size > 1 ? 'run' : legSet.size > 1 ? `${legSet.size} legs` : `leg ${[...legSet][0]! + 1}`;
-  return { updates: settle(scene, changed, settings, notes), notes, action: `Duct ${what}: ${sizes.length === 1 ? sizes[0] : sizes.join(', ')}` };
+  fitElbows(scene, settings, element.id, changed, errorCodes(planDuctRunSpec(element.id, spec, { settings, scene })), notes);
+  return { updates: settle(scene, changed, settings, notes), notes, action };
 }
 
 function editNode(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'node' }>): DuctSegmentEditResult {
