@@ -23,7 +23,7 @@ import type { DuctElbow, DuctFabricationPlan, DuctPiece } from './ductFabricatio
 import { ductLegs } from './ductGeometry';
 import type { DuctDesignSettings } from './ductSettings';
 import { frictionPaPerM, velocityMs, velocityPressurePa } from './ductSizing';
-import type { DuctLeg, DuctPoint3, DuctService, DuctSplitStyle, DuctTapStyle } from './ductTypes';
+import { splitAngleOf, type DuctLeg, type DuctPoint3, type DuctService, type DuctSplitAngle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
 
 /** Loss coefficients (on the velocity pressure of the section named). Practice. */
 export const FITTING_LOSS_COEFFICIENTS = {
@@ -49,6 +49,8 @@ export const FITTING_LOSS_COEFFICIENTS = {
   plenumEntry: 1.0,
   /** Y split, on each outlet's velocity. */
   split: 0.3,
+  /** Y junction (outlets at 45°): the Y's 0.3 × 0.6, the 45° elbow-angle factor (practice estimate). */
+  splitY45: 0.18,
   /** Bullhead tee with turning vanes, on each outlet's velocity. */
   bullhead: 0.5,
   /** Square-to-round, over the transition's own loss. */
@@ -119,10 +121,12 @@ export function transitionCoefficient(includedDeg: number, expanding: boolean): 
   return Math.min(1, 0.1 + 0.6 * Math.pow(Math.max(0, includedDeg) / 60, 1.5));
 }
 
-/** Split outlet loss on the outlet velocity (practice). */
-export function splitOutletLossPa(style: DuctSplitStyle, outletVelocityMs: number, mainVelocityMs: number): number {
+/** Split outlet loss on the outlet velocity (practice); a Y junction's 45° outlets lose less than a Y split's. */
+export function splitOutletLossPa(style: DuctSplitStyle, outletVelocityMs: number, mainVelocityMs: number, angleDeg: DuctSplitAngle = 90): number {
   if (style === 'wye') return takeoffBranchLossPa('wye', outletVelocityMs, mainVelocityMs);
-  return (style === 'bullhead' ? FITTING_LOSS_COEFFICIENTS.bullhead : FITTING_LOSS_COEFFICIENTS.split) * velocityPressurePa(outletVelocityMs);
+  const coefficient = style === 'bullhead' ? FITTING_LOSS_COEFFICIENTS.bullhead
+    : angleDeg === 45 ? FITTING_LOSS_COEFFICIENTS.splitY45 : FITTING_LOSS_COEFFICIENTS.split;
+  return coefficient * velocityPressurePa(outletVelocityMs);
 }
 
 /**
@@ -365,10 +369,11 @@ function passageLossPa(tree: DuctFlowTree, run: DuctFlowRun, passed: DuctFlowRun
 function splitLossPa(tree: DuctFlowTree, run: DuctFlowRun, piece: DuctPiece, child: DuctFlowRun): number {
   const first = child.plan.pieces[0];
   const style = piece.split?.style ?? (run.plan.spec.end.kind === 'split' ? run.plan.spec.end.style : 'y');
+  const angle = piece.split?.angleDeg ?? splitAngleOf(run.plan.spec.end);
   const last = run.plan.spec.legs[run.plan.spec.legs.length - 1];
   const combinedFlow = tree.flowAt(run, piece.stationStartMm - 1e-3);
   if (!first || child.airflowM3h <= 0) return 0;
-  return splitOutletLossPa(style, velocityMs(sectionOf(first), child.airflowM3h), last ? velocityMs(last, combinedFlow) : 0);
+  return splitOutletLossPa(style, velocityMs(sectionOf(first), child.airflowM3h), last ? velocityMs(last, combinedFlow) : 0, angle);
 }
 
 /**

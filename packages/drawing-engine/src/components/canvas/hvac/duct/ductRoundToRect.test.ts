@@ -50,30 +50,39 @@ function wyeScene(outMm: number, extra: (main: HvacElement) => HvacElement[] = (
 }
 
 describe('a round main made rectangular with a wye at its end', () => {
-  it('where the outlets turn soon after the wye (as drawn): the wye stays, behind a square-to-round on a round neck', () => {
-    const before = wyeScene(500);
-    expect(specOf(before, 'main').end).toEqual({ kind: 'split', style: 'wye' });
-    expect(noErrors(before)).toBe(true);
-    const result = applyDuctSegmentEdit(before, settings, { kind: 'leg-section', runId: 'main', sections: [{ leg: 0, section: RECT }] });
-    expect(result.refused).toBeUndefined();
-    const after = withUpdates(before, result.updates);
-    const main = specOf(after, 'main');
-    expect(main.end).toEqual({ kind: 'split', style: 'wye' });
-    // The leg cut in two: rectangular up to a straight-through vertex, then the old Ø500 neck into the wye.
-    expect(main.path).toHaveLength(specOf(before, 'main').path.length + 1);
-    expect(main.legs).toEqual([RECT, roundLeg(500)]);
-    expect(result.notes.join(' ')).toMatch(/wye stays as it is.*square-to-round \d+ mm before it/);
-    // The outlets and their branches as they were.
-    for (const id of ['l', 'r']) expect(specOf(after, id)).toEqual(specOf(before, id));
-    const plan = getDuctRunPlan(byId(after, 'main'), after, settings)!;
-    expect(plan.pieces.some((piece) => piece.kind === 'transition' && piece.legIndex === 1)).toBe(true);
-    expect(noErrors(after)).toBe(true);
-    // With 800 mm before they turn, the outlets can leave a rectangular split: the wye becomes one.
-    const roomier = wyeScene(800);
-    const made = withUpdates(roomier, applyDuctSegmentEdit(roomier, settings, { kind: 'leg-section', runId: 'main', sections: [{ leg: 0, section: RECT }] }).updates);
-    expect(specOf(made, 'main').legs).toEqual([RECT]);
-    expect((specOf(made, 'main').end as { style: string }).style).not.toBe('wye');
-    expect(noErrors(made)).toBe(true);
+  it('where the outlets turn soon after the wye (as drawn): the wye becomes a 45° Y junction, nothing re-routed', () => {
+    for (const outMm of [500, 800]) {
+      const before = wyeScene(outMm);
+      expect(specOf(before, 'main').end).toEqual({ kind: 'split', style: 'wye' });
+      expect(noErrors(before)).toBe(true);
+      const result = applyDuctSegmentEdit(before, settings, { kind: 'leg-section', runId: 'main', sections: [{ leg: 0, section: RECT }] });
+      expect(result.refused).toBeUndefined();
+      const after = withUpdates(before, result.updates);
+      const main = specOf(after, 'main');
+      expect(main.end).toEqual({ kind: 'split', style: 'y', angleDeg: 45 });
+      expect(main.legs).toEqual([RECT]);
+      expect(result.notes.join(' ')).toMatch(/split becomes a Y junction/);
+      const heading = (spec: ReturnType<typeof specOf>) => {
+        const [a, b] = [spec.path[0]!, spec.path[1]!];
+        const length = Math.hypot(b.x - a.x, b.y - a.y);
+        return { x: (b.x - a.x) / length, y: (b.y - a.y) / length };
+      };
+      for (const id of ['l', 'r']) {
+        const was = specOf(before, id);
+        const now = specOf(after, id);
+        // Rectangular where it leaves the junction, the two side by side within the run's width, at the same 45°; its end
+        // kept in plan (its bottom now flush with the rectangular run's, where the wye centred it on the round's axis).
+        expect(isRoundLeg(now.legs[0]!)).toBe(false);
+        expect(now.legs[0]!.widthMm * 2).toBeLessThanOrEqual(RECT.widthMm);
+        expect(heading(now).x).toBeCloseTo(heading(was).x, 6);
+        expect(heading(now).y).toBeCloseTo(heading(was).y, 6);
+        expect(now.path.at(-1)!.x).toBeCloseTo(was.path.at(-1)!.x, 6);
+        expect(now.path.at(-1)!.y).toBeCloseTo(was.path.at(-1)!.y, 6);
+        expect(now.path[0]!.z).toBe(main.path.at(-1)!.z);
+      }
+      expect(getDuctRunPlan(byId(after, 'main'), after, settings)!.pieces.find((piece) => piece.kind === 'split')?.split?.angleDeg).toBe(45);
+      expect(noErrors(after)).toBe(true);
+    }
   });
 
   it('where the outlets can turn, the wye becomes a rectangular split; "wye kept" keeps it anyway', () => {

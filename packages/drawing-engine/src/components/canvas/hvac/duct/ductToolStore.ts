@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 
 import type { DuctAngleMode } from './ductDraft';
-import { isRoundLeg, type DuctLeg, type DuctRoundMainTapStyle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
+import { isRoundLeg, type DuctLeg, type DuctRoundMainTapStyle, type DuctSplitAngle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
 
 export interface DuctToolState {
   angleMode: DuctAngleMode;
@@ -20,6 +20,8 @@ export interface DuctToolState {
   branchHeightMm: number;
   tapStyle: Extract<DuctTapStyle, 'shoe-45' | 'straight'>;
   splitStyle: DuctSplitStyle;
+  /** A Y's outlets: 45° (a Y junction) or 90° (a Y split). */
+  splitAngleDeg: DuctSplitAngle;
   /** Branch shape: rectangular, or round (off a rectangular run by a spin-in or conical collar). */
   branchShape: 'rect' | 'round';
   branchDiameterMm: number;
@@ -46,7 +48,7 @@ export interface DuctToolState {
   setAngleMode: (mode: DuctAngleMode) => void;
   setSize: (update: Partial<Pick<DuctToolState, 'sizeMode' | 'widthMm' | 'heightMm'>>) => void;
   setBranchSize: (update: Partial<Pick<DuctToolState, 'branchWidthMm' | 'branchHeightMm'>>) => void;
-  setBranchOptions: (update: Partial<Pick<DuctToolState, 'tapStyle' | 'splitStyle' | 'vcd' | 'freeBottomMm' | 'freeService' | 'branchShape' | 'branchDiameterMm' | 'roundTapStyle' | 'roundMainTapStyle' | 'terminalFlex'>>) => void;
+  setBranchOptions: (update: Partial<Pick<DuctToolState, 'tapStyle' | 'splitStyle' | 'splitAngleDeg' | 'vcd' | 'freeBottomMm' | 'freeService' | 'branchShape' | 'branchDiameterMm' | 'roundTapStyle' | 'roundMainTapStyle' | 'terminalFlex'>>) => void;
   setEndKind: (kind: DuctToolState['endKind']) => void;
   setLevel: (levelMm: number | null) => void;
   setAnchorLevel: (levelMm: number | null) => void;
@@ -64,6 +66,7 @@ export const useDuctToolStore = create<DuctToolState>((set) => ({
   branchHeightMm: 150,
   tapStyle: 'shoe-45',
   splitStyle: 'y',
+  splitAngleDeg: 90,
   branchShape: 'rect',
   branchDiameterMm: 200,
   roundTapStyle: 'spin-in',

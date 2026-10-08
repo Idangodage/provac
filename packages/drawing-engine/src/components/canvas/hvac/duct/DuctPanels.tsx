@@ -21,7 +21,7 @@ import { analyseAirSystems, readAirSystemAssignment } from './ductAirSystems';
 import { buildDuctBom, buildDuctFabricationSchedule, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
 import { findReattachTarget } from './ductBranchTargets';
 import { gaugeLabelForSheet } from './ductCatalog';
-import { commitDuctRunEdit, commitDuctRunSpec, commitDuctTerminalEdit, commitDuctTerminalRetype, isTerminalConnected, reattachDuctRun } from './ductEditController';
+import { commitDuctRunEdit, commitDuctRunSpec, commitDuctSegmentEdit, commitDuctTerminalEdit, commitDuctTerminalRetype, isTerminalConnected, reattachDuctRun } from './ductEditController';
 import { setDuctRiserRise } from './ductEdits';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
@@ -30,6 +30,7 @@ import { ductBranchesOf } from './ductNetwork';
 import { ductPenetrationSchedule, ductPenetrationScheduleToCsv } from './ductPenetrationSchedule';
 import { penetrationHasFireDamper } from './ductPenetrations';
 import { defaultPlenumSize } from './ductPlenum';
+import { applyDuctSegmentEdit } from './ductSegmentEdits';
 import { useDuctSegmentUiStore } from './ductSegmentUiStore';
 import { ductSegmentOf } from './ductSegments';
 import { DUCT_RULE_SOURCES, DUCT_SUPPORTED_PRESSURE_CLASSES_PA, type DuctDesignSettings, type DuctJointSystem } from './ductSettings';
@@ -53,7 +54,7 @@ import {
   type DuctTerminalSpigotSide,
 } from './ductTerminals';
 import { tapStyleFor, useDuctToolStore } from './ductToolStore';
-import { isDuctElement, isRoundLeg, readDuctRunSpec, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
+import { isDuctElement, isRoundLeg, readDuctRunSpec, splitEnd, type DuctLeg, type DuctNodeOverride, type DuctRunSpec } from './ductTypes';
 import { useDuctBuilding } from './useDuctBuilding';
 
 const JOINT_OPTIONS: Array<{ value: DuctJointSystem; label: string }> = [
@@ -81,7 +82,7 @@ function describeStart(spec: DuctRunSpec, hvacElements: readonly HvacElement[]):
 
 function describeEnd(spec: DuctRunSpec): string {
   const end = spec.end;
-  if (end.kind === 'split') return end.style === 'y' ? 'Y split' : end.style === 'wye' ? 'wye' : 'bullhead tee';
+  if (end.kind === 'split') return end.style === 'y' ? (end.angleDeg === 45 ? 'Y junction 45°' : 'Y split') : end.style === 'wye' ? 'wye' : 'bullhead tee';
   if (end.kind === 'plenum') return `plenum ${Math.round(end.widthMm)} × ${Math.round(end.heightMm)} × ${Math.round(end.lengthMm)}`;
   if (end.kind === 'terminal') return `${end.flex ? 'flexible runout to ' : ''}an air terminal`;
   return end.kind === 'end-cap' ? 'end cap' : end.kind;
@@ -414,6 +415,9 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
   const pinnedKey = useDuctSegmentUiStore((state) => (state.pinned?.runId === element.id ? state.pinned.key : null));
   const pinFocus = useDuctSegmentUiStore((state) => state.pin);
   const inspectorRef = useRef<HTMLDivElement | null>(null);
+  /** Why the last change of the split's style could not be made (its outlets could not turn). */
+  const [splitRefusal, setSplitRefusal] = useState<string | null>(null);
+  useEffect(() => setSplitRefusal(null), [element.id]);
   useEffect(() => {
     if (!pinnedKey) return;
     inspectorRef.current?.querySelector(`[data-segment-key="${pinnedKey}"]`)?.scrollIntoView({ block: 'nearest' });
@@ -433,7 +437,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
     [count('takeoff'), 'take-off'], [count('damper'), 'damper'], [count('fire-damper'), 'fire damper'], [count('split'), 'split'],
     [count('connector'), 'connector'], [count('end-cap'), 'cap'],
   ].filter(([n]) => (n as number) > 0).map(([n, label]) => `${n} ${label}${n === 1 || label === 'cap' ? '' : 's'}`).join(' · ');
-  const endValue = spec.end.kind === 'split' ? spec.end.style : spec.end.kind;
+  const endValue = spec.end.kind === 'split' ? (spec.end.style === 'y' && spec.end.angleDeg === 45 ? 'y45' : spec.end.style) : spec.end.kind;
   // While branches leave the split, only its style may change.
   const splitBranches = ductBranchesOf(element.id, hvacElements).filter((branch) => branch.start.kind === 'split-branch').length;
   const spigotBranches = ductBranchesOf(element.id, hvacElements).filter((branch) => branch.start.kind === 'spigot').length;
@@ -607,7 +611,17 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
           <select value={endValue} aria-label="Run end" className={select}
             onChange={(event) => {
               const value = event.target.value;
-              const end: DuctRunSpec['end'] = value === 'y' || value === 'bullhead' || value === 'wye' ? { kind: 'split', style: value }
+              const split = value === 'y' || value === 'y45' || value === 'bullhead' || value === 'wye';
+              const style = value === 'y45' ? 'y' : value;
+              if (split && spec.end.kind === 'split' && splitBranches > 0) {
+                // The split's own edit: outlets that leave at a new angle (a Y junction's 45°) turn with it, keeping their ends.
+                const result = applyDuctSegmentEdit(hvacElements, ductSettings, { kind: 'split', runId: element.id, style: style as 'y' | 'bullhead' | 'wye', angleDeg: value === 'y45' ? 45 : 90 });
+                setSplitRefusal(result.refused ?? null);
+                if (!result.refused) commitDuctSegmentEdit(result.updates, result.action);
+                return;
+              }
+              setSplitRefusal(null);
+              const end: DuctRunSpec['end'] = split ? splitEnd(style as 'y' | 'bullhead' | 'wye', value === 'y45' ? 45 : 90)
                 : value === 'plenum' ? { kind: 'plenum', ...defaultPlenumSize(spec.legs[spec.legs.length - 1]!) }
                   : { kind: value as 'end-cap' | 'open' };
               commit({ ...spec, end }, 'Duct run end');
@@ -618,7 +632,8 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
               <option value="wye" disabled={spigotBranches > 0}>Wye (SMACNA Fig. 3-5)</option>
             ) : (
               <>
-                <option value="y" disabled={spigotBranches > 0}>Y split</option>
+                <option value="y45" disabled={spigotBranches > 0}>Y junction 45°</option>
+                <option value="y" disabled={spigotBranches > 0}>Y split 90°</option>
                 <option value="bullhead" disabled={spigotBranches > 0}>Bullhead tee</option>
               </>
             )}
@@ -627,6 +642,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
           </select>
         )}
       </Row>
+      {splitRefusal ? <p className="pb-1 text-right text-[11px] text-red-600" role="status" data-testid="duct-split-refusal">{splitRefusal}</p> : null}
       {spec.end.kind === 'plenum' ? (
         <Row label="Plenum W × H × L">
           {(['widthMm', 'heightMm', 'lengthMm'] as const).map((key) => (
@@ -755,8 +771,11 @@ export function DuctToolSection() {
         <SourceBadge settingKey="tapCollarMm" />
       </Row>
       <Row label="Split">
-        <select value={tool.splitStyle} onChange={(event) => tool.setBranchOptions({ splitStyle: event.target.value as 'y' | 'bullhead' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Split style">
-          <option value="y">Y (divided flow, radius elbows)</option>
+        <select value={tool.splitStyle === 'y' && tool.splitAngleDeg === 45 ? 'y45' : tool.splitStyle}
+          onChange={(event) => tool.setBranchOptions(event.target.value === 'y45' ? { splitStyle: 'y', splitAngleDeg: 45 }
+            : { splitStyle: event.target.value as 'y' | 'bullhead', splitAngleDeg: 90 })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Split style">
+          <option value="y45">Y junction 45° (pair of pants)</option>
+          <option value="y">Y split 90° (divided flow, radius elbows)</option>
           <option value="bullhead">Bullhead tee with vanes</option>
         </select>
         <span className="ml-1 text-[10px] text-slate-400">a round main splits by a wye</span>

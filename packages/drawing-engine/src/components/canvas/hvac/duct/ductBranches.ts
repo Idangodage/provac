@@ -17,9 +17,11 @@ import {
   isRoundLeg,
   isRoundMainTapStyle,
   isRoundTapStyle,
+  splitAngleOf,
   type DuctLeg,
   type DuctRunSpec,
   type DuctSide,
+  type DuctSplitAngle,
   type DuctSplitStyle,
   type DuctTapStyle,
 } from './ductTypes';
@@ -146,6 +148,8 @@ export interface SplitBranchGeometry {
 
 export interface SplitFittingGeometry {
   style: DuctSplitStyle;
+  /** The outlets' leaving angle: a Y junction's 45°, a Y split's 90° (a wye's legs leave at 45°, a bullhead's at 90°). */
+  angleDeg?: DuctSplitAngle;
   origin: Point2D;
   direction: Point2D;
   normal: Point2D;
@@ -172,6 +176,7 @@ function branchGeometry(
   branch: DuctLeg,
   parentSheetMm: number,
   settings: SplitSettings,
+  angleDeg: DuctSplitAngle,
 ): SplitBranchGeometry {
   const origin = { x: end.leg.end.x, y: end.leg.end.y };
   const d = end.leg.direction;
@@ -196,12 +201,15 @@ function branchGeometry(
       vanes: { spec, lengthMm: branch.heightMm, sections: vaneSectionsFor(branch.heightMm, spec) },
     };
   }
-  // Y (divided flow): this branch keeps its own width of the parent, flush with its side wall.
+  // Y (divided flow): this branch keeps its own width of the parent, flush with its side wall, and turns onto its
+  // outlet on a radius elbow: 90° (outlets square to the run), or 45° (a Y junction, its legs as a wye's).
   const offset = side * (end.section.widthMm / 2 - branch.widthMm / 2);
   const radius = Math.max(0.5, settings.elbowCentrelineRatio) * branch.widthMm;
-  const corner = add(add(origin, scale(n, offset)), scale(d, neck + radius));
-  const elbow = radiusElbowGeometry(corner, d, out, radius, neck);
-  return { side, section: branch, outlet: { side, point: elbow.endPoint, direction: out, bottomZ: end.leg.end.z }, elbow, vaneCount: 0, vanes: null };
+  const leaving = angleDeg === 45 ? roundMainLeavingDirection(45, out, d) : out;
+  const setback = angleDeg === 45 ? radius * Math.tan(Math.PI / 8) : radius;
+  const corner = add(add(origin, scale(n, offset)), scale(d, neck + setback));
+  const elbow = radiusElbowGeometry(corner, d, leaving, radius, neck);
+  return { side, section: branch, outlet: { side, point: elbow.endPoint, direction: leaving, bottomZ: end.leg.end.z }, elbow, vaneCount: 0, vanes: null };
 }
 
 export function splitOutlet(
@@ -211,9 +219,10 @@ export function splitOutlet(
   branch: DuctLeg,
   parentSheetMm: number,
   settings: SplitSettings,
+  angleDeg: DuctSplitAngle = splitAngleOf(parent.end),
 ): SplitOutlet | null {
   const end = parentEnd(parent);
-  return end ? branchGeometry(style, end, side, branch, parentSheetMm, settings).outlet : null;
+  return end ? branchGeometry(style, end, side, branch, parentSheetMm, settings, angleDeg).outlet : null;
 }
 
 export function splitFitting(
@@ -222,6 +231,7 @@ export function splitFitting(
   branches: Array<{ side: DuctSide; section: DuctLeg }>,
   parentSheetMm: number,
   settings: SplitSettings,
+  angleDeg: DuctSplitAngle = splitAngleOf(parent.end),
 ): SplitFittingGeometry | null {
   const end = parentEnd(parent);
   if (!end) return null;
@@ -229,20 +239,28 @@ export function splitFitting(
     .map((side) => branches.find((branch) => branch.side === side))
     .filter((branch): branch is { side: DuctSide; section: DuctLeg } => Boolean(branch));
   const widest = Math.max(0, ...present.map((branch) => branch.section.widthMm));
+  const geometries = present.map((branch) => branchGeometry(style, end, branch.side, branch.section, parentSheetMm, settings, angleDeg));
+  const origin = { x: end.leg.end.x, y: end.leg.end.y };
+  const d = end.leg.direction;
   // A wye reaches 3A/2 along each 45° leg: its depth along the main is that leg's run plus half the widest outlet.
+  // A Y junction reaches as far as its farthest outlet's outer corner.
   const depthMm = style === 'wye'
     ? wyeLegLengthMm(end.section.widthMm) * Math.SQRT1_2 + (widest > 0 ? widest : end.section.widthMm) / 2
-    : settings.elbowNeckMm + (widest > 0 ? widest : end.section.widthMm / 2);
+    : style === 'y' && angleDeg === 45
+      ? Math.max(settings.elbowNeckMm + end.section.widthMm / 2, ...geometries.map((geometry) =>
+        (geometry.outlet.point.x - origin.x) * d.x + (geometry.outlet.point.y - origin.y) * d.y + (geometry.section.widthMm / 2) * Math.SQRT1_2))
+      : settings.elbowNeckMm + (widest > 0 ? widest : end.section.widthMm / 2);
   return {
     style,
-    origin: { x: end.leg.end.x, y: end.leg.end.y },
+    angleDeg: style === 'wye' ? 45 : style === 'y' ? angleDeg : 90,
+    origin,
     direction: end.leg.direction,
     normal: legNormal(end.leg.direction),
     parentSection: end.section,
     bottomZ: end.leg.end.z,
     depthMm,
     neckMm: settings.elbowNeckMm,
-    branches: present.map((branch) => branchGeometry(style, end, branch.side, branch.section, parentSheetMm, settings)),
+    branches: geometries,
     cappedSides: ([1, -1] as const).filter((side) => !present.some((branch) => branch.side === side)),
   };
 }

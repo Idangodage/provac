@@ -35,7 +35,7 @@ import { equivalentDiameterMm, sizeRectangular, sizeRound, velocityMs } from './
 import { resolveSoffitZ } from './ductSupports';
 import { DUCT_TERMINAL_NECKS_MM, TERMINAL_FACE_LABELS, TERMINAL_FACES_BY_SERVICE, terminalLabel } from './ductTerminalCatalog';
 import { readDuctTerminalSpec } from './ductTerminals';
-import { DUCT_ATTENUATOR_LENGTHS_MM, isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
+import { DUCT_ATTENUATOR_LENGTHS_MM, isRoundLeg, readDuctRunSpec, roundLeg, splitAngleOf, type DuctLeg, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
 
 export type DuctOptionGroup = 'size' | 'swap' | 'tune' | 'accessory' | 'terminal';
 
@@ -386,11 +386,15 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
     const last = rigidLegIndices(spec).at(-1);
     const section = last !== undefined ? spec.legs[last]! : null;
     if (now !== 'wye') {
-      for (const style of ['y', 'bullhead'] as const) {
+      const angleNow = splitAngleOf(spec.end);
+      for (const [style, angle] of [['y', 45], ['y', 90], ['bullhead', 90]] as const) {
         options.push({
-          id: `split:${style}`, group: 'swap', glyph: style === 'y' ? 'split-y' : 'split-bullhead',
-          title: style === 'y' ? 'Y split' : 'Bullhead tee', detail: style === 'y' ? 'divides the flow on radius elbows: the lower loss (SMACNA Fig. 2-5)' : 'square tee with turning vanes (SMACNA Fig. 2-5)',
-          edit: { kind: 'split', runId, style }, ...(style === now ? { current: true } : {}),
+          id: style === 'y' && angle === 45 ? 'split:y45' : `split:${style}`, group: 'swap', glyph: style === 'y' ? 'split-y' : 'split-bullhead',
+          title: style === 'bullhead' ? 'Bullhead tee' : angle === 45 ? 'Y junction 45°' : 'Y split 90°',
+          detail: style === 'bullhead' ? 'square tee with turning vanes (SMACNA Fig. 2-5)'
+            : angle === 45 ? 'divides the flow, each half turning 45° on a radius elbow: the lowest loss (SMACNA Fig. 2-5)'
+              : 'divides the flow on radius elbows, each half turning 90° (SMACNA Fig. 2-5)',
+          edit: { kind: 'split', runId, style, angleDeg: angle }, ...(style === now && angle === angleNow ? { current: true } : {}),
         });
       }
       // The same split in spiral duct: the last leg its equal-friction round size, a wye, the outlets round and turned 45°.
@@ -401,7 +405,7 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
           detail: 'the run\'s last leg round, a wye (SMACNA Fig. 3-5); its outlets round, leaving at 45°',
           edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: round }] },
         });
-        const name = now === 'y' ? 'Y split' : 'bullhead tee';
+        const name = now === 'y' ? (angleNow === 45 ? 'Y junction' : 'Y split') : 'bullhead tee';
         options.push({
           id: `split:keep:${round.diameterMm}`, group: 'swap', glyph: 'round', title: `Round main Ø${round.diameterMm}, ${name} kept`,
           detail: `the run's last leg round up to a short rectangular neck: a round-to-square before the ${name}, its outlets as they are`,
@@ -413,12 +417,18 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
       const rects = rectangularEquivalents(section.diameterMm!, { maxHeightMm: Math.min(context.voidHeightMm, section.diameterMm!), maxAspect: settings.aspectRatioAdvisory });
       const moderate = [...rects].sort((a, b) => Math.abs(aspectOf(a) - 2) - Math.abs(aspectOf(b) - 2))[0];
       if (moderate) {
+        // A Y junction leaves at the wye's own 45°: its outlets turn into rectangles where they are, nothing re-routed.
+        options.push({
+          id: `split:y45:${moderate.widthMm}x${moderate.heightMm}`, group: 'swap', glyph: 'split-y', title: `Y junction 45° in ${sectionLabel(moderate)}`,
+          detail: 'the run\'s last leg rectangular, a Y junction (SMACNA Fig. 2-5); its outlets rectangular, leaving at the same 45°',
+          edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: moderate }], splitStyle: 'y', splitAngleDeg: 45 },
+        });
         for (const style of ['y', 'bullhead'] as const) {
           options.push({
             id: `split:${style}:${moderate.widthMm}x${moderate.heightMm}`, group: 'swap', glyph: style === 'y' ? 'split-y' : 'split-bullhead',
-            title: `${style === 'y' ? 'Y split' : 'Bullhead tee'} in ${sectionLabel(moderate)}`,
+            title: `${style === 'y' ? 'Y split 90°' : 'Bullhead tee'} in ${sectionLabel(moderate)}`,
             detail: `the run's last leg rectangular (SMACNA Fig. 2-5); its outlets rectangular, leaving square`,
-            edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: moderate }], splitStyle: style },
+            edit: { kind: 'leg-section', runId, sections: [{ leg: last, section: moderate }], splitStyle: style, splitAngleDeg: 90 },
           });
         }
         options.push({

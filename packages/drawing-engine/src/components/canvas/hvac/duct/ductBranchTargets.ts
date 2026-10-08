@@ -20,10 +20,12 @@ import {
   isRoundMainTapStyle,
   readDuctRunSpec,
   roundLeg,
+  splitAngleOf,
   type DuctLeg,
   type DuctRunSpec,
   type DuctSide,
   type DuctSpigotFace,
+  type DuctSplitAngle,
   type DuctSplitStyle,
   type DuctTapStyle,
 } from './ductTypes';
@@ -72,17 +74,19 @@ export function tapOrigin(
 export function splitOrigin(
   parent: HvacElement,
   settings: DuctDesignSettings,
-  request: { side: DuctSide; style: DuctSplitStyle; vcd: boolean },
+  request: { side: DuctSide; style: DuctSplitStyle; vcd: boolean; angleDeg?: DuctSplitAngle },
   branch: DuctLeg,
 ): DuctDraftOrigin | null {
   const spec = readDuctRunSpec(parent);
   if (!spec) return null;
   const last = spec.legs[spec.legs.length - 1]!;
   const style = spec.end.kind === 'split' ? spec.end.style : splitStyleFor(last, request.style);
-  const outlet = splitOutlet(spec, style, request.side, branch, parentSheetMm(spec, last, settings), settings);
+  // The angle the run's split already has, else the one asked: a Y junction's 45°, otherwise 90°.
+  const angle: DuctSplitAngle = spec.end.kind === 'split' ? splitAngleOf(spec.end) : style === 'y' && request.angleDeg === 45 ? 45 : 90;
+  const outlet = splitOutlet(spec, style, request.side, branch, parentSheetMm(spec, last, settings), settings, angle);
   if (!outlet) return null;
   return {
-    kind: 'split', parentRunId: parent.id, side: request.side, style, vcd: request.vcd,
+    kind: 'split', parentRunId: parent.id, side: request.side, style, ...(style === 'y' && angle === 45 ? { angleDeg: 45 as const } : {}), vcd: request.vcd,
     point: outlet.point, direction: outlet.direction, bottomZ: outlet.bottomZ, service: spec.service, parentHeightMm: last.heightMm,
   };
 }

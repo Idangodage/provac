@@ -16,6 +16,7 @@ import {
   buildDuctRunElement,
   readDuctRunSpec,
   roundLeg,
+  splitEnd,
   type DuctConstruction,
   type DuctPoint3,
   type DuctEnd,
@@ -41,6 +42,8 @@ export type DuctDraftOrigin =
   }
   | {
     kind: 'split'; parentRunId: string; side: DuctSide; style: DuctSplitStyle; vcd: boolean;
+    /** A Y junction's 45° outlets (else 90°). */
+    angleDeg?: 45;
     point: Point2D; direction: Point2D; bottomZ: number; service: DuctService; parentHeightMm: number;
   }
   /** A round branch off a spigot on the parent's plenum. */
@@ -259,7 +262,7 @@ export function buildDuctRunDraft(input: DuctDraftInput, id: string, scene: read
     const parent = scene.find((candidate) => candidate.id === origin.parentRunId);
     const spec = parent ? readDuctRunSpec(parent) : null;
     if (parent && spec && !(spec.end.kind === 'split' && spec.end.style === origin.style)) {
-      changed.push({ ...parent, properties: buildDuctRunElement({ ...spec, end: { kind: 'split', style: origin.style } }).properties ?? parent.properties });
+      changed.push({ ...parent, properties: buildDuctRunElement({ ...spec, end: splitEnd(origin.style, origin.angleDeg ?? 90) }).properties ?? parent.properties });
     }
   }
   return { element, changed };

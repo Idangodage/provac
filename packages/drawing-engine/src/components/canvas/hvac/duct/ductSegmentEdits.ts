@@ -21,8 +21,9 @@ import { cross, dot, ductLegs } from './ductGeometry';
 import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
 import { maxRoundBranchMm } from './ductRoundFittings';
 import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
-import { sectionLabel, TAKEOFF_TITLES } from './ductSegments';
+import { sectionLabel, splitTitle, TAKEOFF_TITLES } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
+import { equivalentDiameterMm } from './ductSizing';
 import { TERMINAL_TAG_PATTERN, terminalLabel, terminalTypeTag, typicalTerminalSpec, type DuctTerminalKind } from './ductTerminalCatalog';
 import { findTerminalPort, nextTerminalTag, readDuctTerminalSpec, terminalEnvelope } from './ductTerminals';
 import {
@@ -31,12 +32,15 @@ import {
   nextInlineId,
   readDuctRunSpec,
   roundLeg,
+  splitAngleOf,
+  splitEnd,
   type DuctInlineAccessory,
   type DuctInlineKind,
   type DuctLeg,
   type DuctNodeOverride,
   type DuctPoint3,
   type DuctRunSpec,
+  type DuctSplitAngle,
   type DuctSplitStyle,
   type DuctTapStyle,
 } from './ductTypes';
@@ -52,6 +56,8 @@ export type DuctSegmentEdit =
   | {
     kind: 'leg-section'; runId: string; sections: ReadonlyArray<{ leg: number; section: DuctLeg }>; wholeBranches?: boolean; splitStyle?: DuctSplitStyle;
     keepSplit?: boolean;
+    /** With `splitStyle` 'y' (or a wye's run made rectangular): the Y's leaving angle; else its outlets' angle now. */
+    splitAngleDeg?: DuctSplitAngle;
   }
   /** A node's fitting choices (null = the project's). */
   | { kind: 'node'; runId: string; node: number; override: DuctNodeOverride | null }
@@ -59,7 +65,8 @@ export type DuctSegmentEdit =
   | { kind: 'tap'; runId: string; style: DuctTapStyle; firstLeg?: DuctLeg }
   /** The volume damper after a take-off, or the flexible connector at the unit. */
   | { kind: 'start'; runId: string; vcd?: boolean; connector?: boolean }
-  | { kind: 'split'; runId: string; style: DuctSplitStyle }
+  /** A split's style; a Y's leaving angle (90° unless given). Outlets that leave at a new angle turn, keeping their ends. */
+  | { kind: 'split'; runId: string; style: DuctSplitStyle; angleDeg?: DuctSplitAngle }
   /** A fire damper at a wall crossing (null = as the project's policy says). */
   | { kind: 'fire-damper'; runId: string; key: string; fireDamper: boolean | null; byPolicy: boolean }
   | { kind: 'end'; runId: string; end: 'end-cap' | 'open' }
@@ -92,6 +99,9 @@ export interface DuctSegmentEditResult {
 }
 
 const refuse = (refused: string): DuctSegmentEditResult => ({ updates: [], notes: [], refused, action: '' });
+
+/** A split as a sentence names it: "a wye", "a Y junction", "a Y split", "a bullhead tee". */
+const splitNoun = (style: DuctSplitStyle, angle: DuctSplitAngle): string => (style === 'wye' ? 'wye' : style === 'bullhead' ? 'bullhead tee' : angle === 45 ? 'Y junction' : 'Y split');
 
 /** Round sizes a branch may take when a main turns round (the stock, else the usual spiral sizes). */
 const DEFAULT_STOCK = [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500];
@@ -257,7 +267,16 @@ function outletSection(first: DuctLeg, main: DuctLeg, round: boolean, outlets: n
   }
   if (!isRoundLeg(first)) return first;
   const rects = rectangularEquivalents(first.diameterMm!, { maxHeightMm: main.heightMm, maxAspect: settings.aspectRatioAdvisory });
-  return rects.find((leg) => leg.widthMm <= main.widthMm / Math.max(1, outlets) + 0.5) ?? rects[0] ?? null;
+  const share = main.widthMm / Math.max(1, outlets);
+  const flat = rects.find((leg) => leg.widthMm <= share + 0.5);
+  if (flat) return flat;
+  // None lies flat within its share of the run's width (a Y's outlets sit side by side): standing at the run's own
+  // height, as narrow as keeps its friction; else its share of the width at that height (the run's own velocity).
+  const height = main.heightMm;
+  for (let width = 50; width <= share + 0.5; width += 10) {
+    if (equivalentDiameterMm({ widthMm: width, heightMm: height }) >= first.diameterMm! - 0.5) return { widthMm: width, heightMm: height };
+  }
+  return share >= 50 ? { widthMm: Math.floor(share / 10) * 10, heightMm: height } : rects[0] ?? null;
 }
 
 /** A take-off on a main leg that changes shape: its fitting follows (and a rectangular branch off a main made round, its first leg); the reason when it cannot. */
@@ -352,7 +371,7 @@ function keepSplitBehindTransition(
   if (!geometry || !a || !b || geometry.vertical || geometry.sloped) return refuse('The split ends a leg that is not level: redraw its last leg.');
   const oldSection = spec.legs[last]!;
   const newSection = legs[last]!;
-  const splitName = spec.end.style === 'wye' ? 'wye' : spec.end.style === 'y' ? 'Y split' : 'bullhead tee';
+  const splitName = splitNoun(spec.end.style, splitAngleOf(spec.end));
   const transitionName = isRoundLeg(oldSection) ? 'square-to-round' : 'round-to-square';
   const before = errorCodes(planDuctRunSpec(element.id, spec, { settings, scene }));
   const taps = ductBranchesOf(element.id, scene).filter((branch) => branch.start.kind === 'tap');
@@ -438,6 +457,8 @@ function convertSections(
     const main = legs[lastRigid]!;
     const outlets = ductBranchesOf(element.id, scene).filter((branch) => branch.start.kind === 'split-branch');
     let style: DuctSplitStyle = round ? 'wye' : edit.splitStyle && edit.splitStyle !== 'wye' ? edit.splitStyle : 'y';
+    // A rectangular Y leaves at the angle its outlets leave now — a wye's 45°: a Y junction — unless another is asked.
+    const angle: DuctSplitAngle = edit.splitAngleDeg ?? splitAngleOf(spec.end);
     for (const outlet of outlets) {
       const section = outletSection(outlet.spec.legs[0]!, main, round, outlets.length, settings);
       if (!section) return refuse(`${labelOf(outlet.element, outlet.spec, scene)}: no ${round ? 'round' : 'rectangular'} outlet of its friction fits the run.`);
@@ -449,8 +470,8 @@ function convertSections(
       }
       outletChanges.push({ element: outlet.element, spec: { ...outlet.spec, legs: branchLegs } });
     }
-    end = { kind: 'split', style };
-    notes.push(`The split becomes a ${style === 'wye' ? 'wye' : style === 'y' ? 'Y split' : 'bullhead tee'}`);
+    end = splitEnd(style, style === 'y' ? angle : 90);
+    notes.push(`The split becomes a ${splitNoun(style, style === 'y' ? angle : 90)}`);
   }
   const changed = new Map<string, HvacElement>([[element.id, ductRunElementWithSpec(element, { ...spec, legs, end })]]);
   for (const outlet of outletChanges) changed.set(outlet.element.id, ductRunElementWithSpec(outlet.element, outlet.spec));
@@ -535,8 +556,13 @@ function editSplit(scene: readonly HvacElement[], settings: DuctDesignSettings, 
   if (spec.locked) return refuse('The run is locked.');
   const round = isRoundLeg(spec.legs[spec.legs.length - 1]);
   if ((edit.style === 'wye') !== round) return refuse(round ? 'A round run splits by a wye.' : 'A wye splits a round run.');
-  const changed = new Map([[element.id, ductRunElementWithSpec(element, { ...spec, end: { kind: 'split', style: edit.style } })]]);
-  return { updates: settle(scene, changed, settings), notes: [], action: `Duct split: ${edit.style === 'y' ? 'Y' : edit.style}` };
+  const angle: DuctSplitAngle = edit.style === 'y' ? edit.angleDeg ?? 90 : 90;
+  const changed = new Map<string, HvacElement>([[element.id, ductRunElementWithSpec(element, { ...spec, end: splitEnd(edit.style, angle) })]]);
+  const notes: string[] = [];
+  // Outlets that now leave at another angle (a Y junction's 45° and a Y split's 90°) turn with it, keeping their ends.
+  const turned = reaimTurningBranches(scene, settings, element.id, changed, notes);
+  if (turned) return refuse(`${turned}.`);
+  return { updates: settle(scene, changed, settings, notes), notes, action: `Duct split: ${splitTitle(edit.style, angle)}` };
 }
 
 function editFireDamper(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'fire-damper' }>): DuctSegmentEditResult {

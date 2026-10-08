@@ -121,8 +121,9 @@ function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
   if (piece.kind === 'split') {
     const split = piece.split!;
     if (split.style === 'wye') return `Wye fitting, 45° legs 3A/2${split.cappedSides.length ? ', one leg capped' : ''} (SMACNA Fig. 3-5)`;
-    return split.style === 'bullhead'
-      ? `Bullhead tee, ${split.branches.reduce((total, branch) => total + branch.vaneCount, 0)} turning vanes`
+    if (split.style === 'bullhead') return `Bullhead tee, ${split.branches.reduce((total, branch) => total + branch.vaneCount, 0)} turning vanes`;
+    return split.angleDeg === 45
+      ? `Y junction, 45° legs (${split.branches.length} radius elbow${split.branches.length === 1 ? '' : 's'}; SMACNA Fig. 2-5)`
       : `Divided-flow Y split (${split.branches.length} radius elbow${split.branches.length === 1 ? '' : 's'})`;
   }
   const elbow = piece.elbow!;

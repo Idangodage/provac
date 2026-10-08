@@ -66,6 +66,8 @@ export function roundLeg(diameterMm: number): DuctLeg {
 }
 /** Rectangular runs split by a Y or a bullhead tee (Fig. 2-5); a round main by a wye (Fig. 3-5). */
 export type DuctSplitStyle = 'bullhead' | 'y' | 'wye';
+/** The angle a split's outlets leave its run at: a Y junction's and a wye's 45°, a Y split's and a bullhead's 90°. */
+export type DuctSplitAngle = 45 | 90;
 export type DuctSide = 1 | -1;
 
 /** A branch taken off the side of a parent run's straight leg. */
@@ -129,7 +131,8 @@ export type DuctEnd =
   | DuctTapStart
   | DuctSplitBranchStart
   | DuctSpigotStart
-  | { kind: 'split'; style: DuctSplitStyle }
+  /** `angleDeg`: a Y's outlets leave at 45° (a Y junction); absent, at 90°. */
+  | { kind: 'split'; style: DuctSplitStyle; angleDeg?: 45 }
   | DuctPlenumEnd
   | DuctTerminalEnd
   | { kind: 'end-cap' }
@@ -343,7 +346,10 @@ function readEnd(value: unknown): DuctEnd {
       style: candidate.style === 'conical' ? 'conical' : 'spin-in', vcd: candidate.vcd !== false,
     };
   }
-  if (candidate.kind === 'split') return { kind: 'split', style: candidate.style === 'bullhead' || candidate.style === 'wye' ? candidate.style : 'y' };
+  if (candidate.kind === 'split') {
+    const style: DuctSplitStyle = candidate.style === 'bullhead' || candidate.style === 'wye' ? candidate.style : 'y';
+    return splitEnd(style, style === 'y' && candidate.angleDeg === 45 ? 45 : 90);
+  }
   if (candidate.kind === 'plenum') {
     return {
       kind: 'plenum',
@@ -556,4 +562,15 @@ export function buildDuctRunElement(spec: DuctRunSpec, options: { id?: string; l
     supplyZoneRatio: 0,
     properties: { ductRun: persisted, ductKind: spec.service },
   };
+}
+
+/** A split end of `style`; a Y leaving at `angle` (only a Y junction's 45° is stored). */
+export function splitEnd(style: DuctSplitStyle, angle: DuctSplitAngle = 90): Extract<DuctEnd, { kind: 'split' }> {
+  return style === 'y' && angle === 45 ? { kind: 'split', style, angleDeg: 45 } : { kind: 'split', style };
+}
+
+/** The angle a run's split outlets leave at (90° for an end that is no split). */
+export function splitAngleOf(end: DuctEnd): DuctSplitAngle {
+  if (end.kind !== 'split') return 90;
+  return end.style === 'wye' || (end.style === 'y' && end.angleDeg === 45) ? 45 : 90;
 }

@@ -68,6 +68,7 @@ import {
   isRoundLeg,
   readDuctRunSpec,
   roundLeg,
+  splitAngleOf,
   type DuctLeg,
   type DuctService,
   type DuctSide,
@@ -186,7 +187,8 @@ function targetLabel(target: DuctBranchTarget): string {
   if (target.kind === "tap" && tool.branchShape === "round") return tool.roundTapStyle === "spin-in" ? "Spin-in collar (round)" : "Conical take-off (round)";
   if (target.kind === "tap") return tool.tapStyle === "shoe-45" ? "Shoe take-off" : "Straight take-off";
   const style = target.spec.end.kind === "split" ? target.spec.end.style : tool.splitStyle;
-  return style === "y" ? "Y split outlet" : "Bullhead tee outlet";
+  const angle = target.spec.end.kind === "split" ? splitAngleOf(target.spec.end) : tool.splitAngleDeg;
+  return style === "y" ? (angle === 45 ? "Y junction outlet (45°)" : "Y split outlet") : "Bullhead tee outlet";
 }
 
 export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
@@ -317,7 +319,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     }
     return start.kind === "tap"
       ? tapOrigin(parent.parent, settings, { legIndex: start.legIndex, stationMm: start.stationMm, side: start.side, style: tapStyleFor(firstSection, parent.spec.legs[start.legIndex]), vcd: tool.vcd }, firstSection)
-      : splitOrigin(parent.parent, settings, { side: start.side, style: splitStyleFor(parent.spec.legs[parent.spec.legs.length - 1]!, tool.splitStyle), vcd: tool.vcd }, firstSection);
+      : splitOrigin(parent.parent, settings, { side: start.side, style: splitStyleFor(parent.spec.legs[parent.spec.legs.length - 1]!, tool.splitStyle), vcd: tool.vcd, angleDeg: tool.splitAngleDeg }, firstSection);
   }, [parentOf]);
 
   /** Sections of the clicked legs plus the live one. */

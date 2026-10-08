@@ -1278,6 +1278,8 @@ about 0.5 m on.
   - **The reverse:** a rectangular Y or bullhead run made round keeps its split behind a round-to-square.
   - **The card's foot says so:** "The wye stays as it is: the duct turns back to Ø500 through a square-to-round 400 mm
     before it".
+  - **Since 8 October:** a wye's run made rectangular becomes a 45° Y junction instead (its outlets keep their angle,
+    see the next section). The split is kept behind a transition when asked ("wye kept"), or when no Y can be built.
 - **Rows:**
   - the wye's card: "Rectangular main W×H, wye kept";
   - a rectangular split's card: "Round main ØD, Y split kept";
@@ -1314,6 +1316,81 @@ about 0.5 m on.
   - Type-check and lint: clean on the changed files.
   - Every card driver re-run, each restoring the project: `duct-seg-p1` 16/16, `-p2` 22/22, `-p3` 29/29, `-p4` 16/16,
     `-p5` 14/14, `duct-seg-views` 8/8, `-v2-highlight` 5/5, `-v2` 10/10, `duct-seg-click` 8/8.
+
+### A rectangular Y junction at 45° (8 October 2026)
+
+**The request:** "why there is no any option of Y junction from square duct. please solve". Approved plan:
+`C:\Users\idang\.claude\plans\duct-rect-y-junction.md`.
+
+**Why there was none:**
+- A rectangular run split only by a "Y split" (each half turning a full 90° on a radius elbow, SMACNA Fig. 2-5 divided
+  flow) or a bullhead tee. Both have outlets leaving at 90°.
+- Only the round wye left at 45°.
+- So a round wye could not become rectangular without its outlets turning to 90°. With outlets that turn soon after it
+  the edit kept the wye round behind a transition: the junction the user saw.
+
+**The Y split takes a leaving angle.**
+- `end.angleDeg: 45` on a Y is a **Y junction** (a "pair of pants"). Absent, it is 90°: every existing drawing reads as
+  before, and the optimiser still lays 90° Ys.
+- **Geometry** (`ductBranches`): the same fitting as the Y. Each half keeps its share of the run's width, flush with its
+  wall, on a radius elbow, turning 45° instead of 90°.
+  - The outlets leave as a wye's do.
+  - The fitting's depth runs to the farthest outlet's outer corner.
+  - `SplitFittingGeometry.angleDeg` carries the angle.
+- **Plan, 3D and BOM:** plan and 3D draw the two 45° elbows with the Y's own code, which takes any angle. The BOM reads
+  "Y junction, 45° legs (2 radius elbows)".
+- **Pressure:** `splitY45` is 0.18, the Y's 0.3 × 0.6, the standard 45° elbow-angle factor (practice estimate).
+- **Validation:** the Y's rules: the outlets side by side within the run's width, no taller than it.
+
+**Where it is offered:**
+- **Duct tool, "Split style":** "Y junction 45° (pair of pants)", "Y split 90°", "Bullhead tee". A new split takes the
+  angle chosen (`splitOrigin` and the draft carry it).
+- **Inspector, "Ends in":** "Y junction 45°", "Y split 90°", "Bullhead tee".
+  - With branches attached, the change goes through the card's split edit, so the outlets turn, keeping their ends.
+  - Where they cannot turn, the reason shows under the choice.
+- **Card, on a rectangular split:** "Y junction 45°", "Y split 90°", "Bullhead tee", the current one marked. The split
+  edit re-aims outlets that leave at a new angle.
+- **Card, on a round wye:** "Y junction 45° in W×H". The run's last leg becomes rectangular and the outlets rectangular,
+  at the same 45°, so nothing is re-routed.
+
+**Round ↔ rectangular follows the outlets' angle.**
+- **A wye's run made rectangular** (from the main, the cone or the wye) becomes a 45° Y junction: the outlets keep their
+  heading and their ends. "Wye kept" remains a row of its own.
+- **A Y junction's run made round** becomes a wye.
+- **The outlets of a Y sit side by side.** Where no flat rectangle of an outlet's friction fits within its share of the
+  run's width, the outlet stands at the run's height:
+  - as narrow as keeps its friction (Ø355 in a 650×350 run: 310×350);
+  - else at its share of the width (the run's own velocity).
+- **Levels:** a rectangular junction's outlets sit flush with the run's bottom, where a wye centred them on the round's
+  axis. A branch's level follows.
+
+**Verified**
+- **Unit tests:**
+  - `ductYJunction` (5):
+    - the 45° geometry, and the 90° as before;
+    - old drawings read as 90°;
+    - the duct tool's split origin and the run's end;
+    - a Y split made a Y junction from its card and back, the outlets turning, keeping their ends, with its title and
+      BOM row;
+    - the 45° loss.
+  - `ductRoundToRect`: the layout as drawn (outlets turning at 500 and 800 mm) now becomes a Y junction, its outlets
+    310×350 at the same heading, no errors.
+  - The duct, 3D and store suites pass (704 tests); type-check clean.
+- **On canvas** (mouse only, the project restored): `duct-y-junction` 9/9.
+  - **The user's layout:** the wye's card, "Y junction 45° in 650×350", gives a rectangular junction, its outlets
+    310×350 at the same heading, no errors. The card's foot said so. Plan and Iso shots; one undo.
+  - **The round main made rectangular in 3D:** the wye becomes a Y junction, no errors; one undo.
+  - **The duct tool:** a main drawn off the unit's return collar and split with "Y junction 45°": the run ends in a Y
+    junction, two branches leaving at exactly 45°, no errors.
+  - **The inspector:** shows "Y junction 45°". Switched to "Y split 90°", it refuses with the reason under the choice:
+    those straight branches cannot turn.
+- **On the final build:**
+  - The full suite: 240 files and 2077 tests pass.
+  - `DUCT_BENCHMARK`: 43/43.
+  - Type-check and lint: clean on the changed files.
+  - Every card driver re-run, each restoring the project: `duct-seg-p1` 16/16, `-p2` 22/22, `-p3` 29/29, `-p4` 16/16,
+    `-p5` 14/14, `duct-seg-views` 8/8, `-v2-highlight` 5/5, `-v2` 10/10, `duct-seg-click` 8/8,
+    `duct-round-rect` 10/10 (now applying "wye kept" from the wye's card too), `duct-y-junction` 9/9.
 
 ### Known limits
 

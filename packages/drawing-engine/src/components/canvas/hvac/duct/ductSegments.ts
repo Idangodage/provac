@@ -21,7 +21,7 @@ import type { Point2D } from '../../../../types';
 import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
 import { DUCT_VANES } from './ductFittingRules';
 import { distanceToPolygon, getDuctPlanPresentation, insidePolygon } from './ductPick';
-import type { DuctLeg, DuctTapStyle } from './ductTypes';
+import { splitAngleOf, type DuctLeg, type DuctSplitAngle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
 
 export type DuctSegmentKind =
   | 'connector' | 'takeoff' | 'damper' | 'straight' | 'riser' | 'elbow' | 'offset' | 'transition'
@@ -101,6 +101,11 @@ export const TAKEOFF_TITLES: Record<DuctTapStyle, string> = {
 
 const SPLIT_TITLES: Record<string, string> = { y: 'Y split', bullhead: 'Bullhead tee', wye: 'Wye' };
 
+/** A split's name: a Y junction (45°), a Y split (90°), a bullhead tee or a wye. */
+export function splitTitle(style: DuctSplitStyle, angle: DuctSplitAngle): string {
+  return style === 'y' && angle === 45 ? 'Y junction 45°' : SPLIT_TITLES[style] ?? 'Split';
+}
+
 const round1 = (value: number) => Math.round(value * 10) / 10;
 const metres = (mm: number) => `${(mm / 1000).toFixed(2)} m`;
 
@@ -177,8 +182,9 @@ function describe(plan: DuctFabricationPlan, kind: DuctSegmentKind, pieces: Duct
     }
     case 'split': {
       const style = first.split?.style ?? (plan.spec.end.kind === 'split' ? plan.spec.end.style : 'y');
+      const angle = first.split?.angleDeg ?? splitAngleOf(plan.spec.end);
       const outlets = first.split?.branches.map((branch) => sectionLabel(branch.section)).join(' + ');
-      return { title: SPLIT_TITLES[style] ?? 'Split', size, detail: outlets ? `to ${outlets}` : 'outlets open' };
+      return { title: splitTitle(style, angle), size, detail: outlets ? `to ${outlets}` : 'outlets open' };
     }
     case 'plenum': {
       const box = first.plenum;
