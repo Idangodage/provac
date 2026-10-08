@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { assignTerminalsToUnit, autoAssignTerminals, setAirSystemTag, toggleTerminalInSystem, unassignTerminals } from '../components/canvas/hvac/duct/airSystemController';
+import {
+  assignTerminalsToUnit, autoAssignTerminals, farPlacementNote, reassignableFarTerminals, reassignToNearestUnits, setAirSystemTag, toggleTerminalInSystem, unassignTerminals,
+} from '../components/canvas/hvac/duct/airSystemController';
 import { airSystemTags, analyseAirSystems, readAirSystemAssignment } from '../components/canvas/hvac/duct/ductAirSystems';
 import { DEFAULT_DUCT_SETTINGS } from '../components/canvas/hvac/duct/ductSettings';
 import { terminalEnvelope, typicalTerminalSpec, type DuctTerminalSpec } from '../components/canvas/hvac/duct/ductTerminals';
@@ -102,5 +104,41 @@ describe('air system commands (one undo each)', () => {
     const tags = airSystemTags(state().hvacElements);
     expect(tags.get('u1')).toBe('DU-1');
     expect(tags.get(copy)).not.toBe('DU-1');
+  });
+});
+
+describe('reassigning terminals served by far units (one undo)', () => {
+  const assigned = (element: HvacElement, unitId: string): HvacElement => ({ ...element, properties: { ...element.properties, airSystem: { unitId } } });
+  // Two units 20 m apart, each with a diffuser of its own and one by the other unit.
+  const swapped: HvacElement[] = [
+    unit('u1', 0), unit('u2', 20000),
+    assigned(terminal('sad-1', { x: 1000, y: -3000 }, supply), 'u2'), assigned(terminal('sad-2', { x: 2500, y: -3000 }, supply), 'u1'),
+    assigned(terminal('sad-3', { x: 19000, y: -3000 }, supply), 'u1'), assigned(terminal('sad-4', { x: 21000, y: -3000 }, supply), 'u2'),
+  ];
+
+  beforeEach(() => {
+    useDrawingStore.setState({ hvacElements: swapped, rooms: [], walls: [], selectedElementIds: [], selectedIds: [], hoveredElementId: null });
+    state().setDuctSettings(DEFAULT_DUCT_SETTINGS);
+    state().clearHistory();
+  });
+
+  afterEach(() => {
+    useDrawingStore.setState({ hvacElements: [], selectedElementIds: [], selectedIds: [], hoveredElementId: null });
+    state().clearHistory();
+  });
+
+  it('gives each far terminal to the nearest unit, balanced, in one step; undo puts them back', () => {
+    expect(reassignableFarTerminals()).toEqual(['sad-1', 'sad-3']);
+    expect(reassignToNearestUnits(reassignableFarTerminals())).toBe('Air systems: SAD-1 → DU-1, SAD-3 → DU-2.');
+    expect(['sad-1', 'sad-2', 'sad-3', 'sad-4'].map(assignmentOf)).toEqual(['u1', 'u1', 'u2', 'u2']);
+    expect(reassignableFarTerminals()).toEqual([]);
+    state().undo();
+    expect(['sad-1', 'sad-2', 'sad-3', 'sad-4'].map(assignmentOf)).toEqual(['u2', 'u1', 'u1', 'u2']);
+    expect(reassignToNearestUnits([])).toContain('no terminal to reassign');
+  });
+
+  it('notes a terminal placed for a far unit, naming the nearer one', () => {
+    expect(farPlacementNote(state().hvacElements, 'sad-1')).toMatch(/^; DU-1 is nearer \(\d+\.\d m, DU-2 \d+\.\d m\)$/);
+    expect(farPlacementNote(state().hvacElements, 'sad-2')).toBe('');
   });
 });

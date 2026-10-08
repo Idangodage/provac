@@ -25,7 +25,7 @@
 import type { HvacElement, Point2D, Room, Wall } from '../../../../types';
 
 import { listAirPorts } from './ductAirPorts';
-import { analyseAirSystems, isAirSystemUnit, roomIdOf } from './ductAirSystems';
+import { airSystemMembers, analyseAirSystems, isAirSystemUnit, roomIdOf, type AirSystem } from './ductAirSystems';
 import type { DuctDesignSettings } from './ductSettings';
 import { basisAirflowM3h } from './ductSystemSizing';
 import { readDuctTerminalSpec, terminalSpigotPort } from './ductTerminals';
@@ -302,4 +302,70 @@ export function assignmentProblemFromScene(
 /** The solver's options from the project's duct settings. */
 export function assignmentOptions(settings: Pick<DuctDesignSettings, 'autoAssignWallPenaltyMm' | 'autoAssignOverloadMm'>): AssignmentOptions {
   return { wallPenaltyMm: settings.autoAssignWallPenaltyMm, overloadMm: settings.autoAssignOverloadMm, nearbyMm: NEARBY_TERMINALS_MM };
+}
+
+export type FarAssignmentRule = Pick<DuctDesignSettings, 'farAssignmentExtraMm' | 'farAssignmentRatio' | 'autoAssignWallPenaltyMm'>;
+
+/** A terminal served by a unit far farther than another unit in its room. */
+export interface FarAssignment {
+  terminalId: string;
+  tag: string;
+  service: DuctService;
+  /** The unit serving it, and the duct to it as the assignment prices it (mm). */
+  unitId: string;
+  unitTag: string;
+  distanceMm: number;
+  /** The nearest other unit in its room with a collar of its service. */
+  nearestUnitId: string;
+  nearestTag: string;
+  nearestDistanceMm: number;
+  /** Its duct already comes from the far unit: serving it from the near one means re-routing it. */
+  ducted: boolean;
+}
+
+/**
+ * Terminals served by a unit far farther than the nearest other unit in their
+ * room with a collar of their service: more than `farAssignmentExtraMm`
+ * farther and more than `farAssignmentRatio` times as far, each priced as the
+ * balanced assignment prices a pairing. The balanced assignment never makes
+ * one while a terminal over a fair share costs less than the margin (moving it
+ * to the near unit would be cheaper), so these are hand assignments, or ducts
+ * already drawn that way. A terminal ducted from a unit other than its own is
+ * left to DU_SYSTEM_MISMATCH.
+ */
+export function farAssignments(
+  scene: readonly HvacElement[],
+  rooms: ReadonlyArray<Pick<Room, 'id' | 'vertices'>>,
+  walls: readonly AssignmentWall[],
+  rule: FarAssignmentRule,
+): FarAssignment[] {
+  const analysis = analyseAirSystems(scene, rooms);
+  if (analysis.systems.length < 2) return [];
+  const units = analysis.systems.map((system) => ({ system, roomId: roomIdOf(system.unit, rooms) }));
+  const out: FarAssignment[] = [];
+  for (const { system } of units) {
+    for (const member of airSystemMembers(system)) {
+      const service = member.spec.service;
+      const collar = system[service].collar;
+      const spigot = terminalSpigotPort(member.terminal);
+      if (member.mismatch || !collar || !spigot) continue;
+      const lip = { x: spigot.lip.x, y: spigot.lip.y };
+      const distanceMm = assignmentCostMm(collar, { lip }, walls, rule.autoAssignWallPenaltyMm);
+      let nearest: { system: AirSystem; distanceMm: number } | null = null;
+      for (const other of units) {
+        const otherCollar = other.system[service].collar;
+        if (other.system === system || other.roomId !== member.roomId || !otherCollar) continue;
+        const candidate = assignmentCostMm(otherCollar, { lip }, walls, rule.autoAssignWallPenaltyMm);
+        if (!nearest || candidate < nearest.distanceMm - 1e-9) nearest = { system: other.system, distanceMm: candidate };
+      }
+      if (!nearest || distanceMm - nearest.distanceMm <= rule.farAssignmentExtraMm || distanceMm <= nearest.distanceMm * rule.farAssignmentRatio) continue;
+      out.push({
+        terminalId: member.terminal.id, tag: member.tag, service,
+        unitId: system.unit.id, unitTag: system.tag, distanceMm,
+        nearestUnitId: nearest.system.unit.id, nearestTag: nearest.system.tag, nearestDistanceMm: nearest.distanceMm,
+        ducted: Boolean(member.connection),
+      });
+    }
+  }
+  return out.sort((a, b) => a.tag.localeCompare(b.tag, undefined, { numeric: true }) || a.terminalId.localeCompare(b.terminalId));
 }

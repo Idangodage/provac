@@ -99,7 +99,7 @@ import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValid
 import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
 import { DuctOverlay, type DuctOverlayHandle } from "./canvas/hvac/duct/DuctOverlay";
 import { DuctSegmentCardLayer } from "./canvas/hvac/duct/DuctSegmentCard";
-import { assignTerminalsToUnit, autoAssignTerminals, unassignTerminals } from "./canvas/hvac/duct/airSystemController";
+import { assignTerminalsToUnit, autoAssignTerminals, reassignToNearestUnits, unassignTerminals } from "./canvas/hvac/duct/airSystemController";
 import { useAirSystemUiStore } from "./canvas/hvac/duct/airSystemUiStore";
 import { listAirPorts } from "./canvas/hvac/duct/ductAirPorts";
 import { airTerminalSchedule, analyseAirSystems, type AirSystemMember } from "./canvas/hvac/duct/ductAirSystems";
@@ -2365,6 +2365,11 @@ export function DrawingCanvas({
       if (issue.fix?.kind === "regenerate-condensate") {
         // Condensate fixes re-run the generator; the user reviews and applies.
         runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope: "drawing", profile: vrfRuleProfile });
+        return;
+      }
+      if (issue.fix?.kind === "reassign-far-terminals") {
+        // Re-solved by the balanced assignment; one undo, the message in the status bar.
+        reassignToNearestUnits(issue.fix.terminalIds);
         return;
       }
       const command = buildVrfValidationFixCommand(issue, hvacElements);

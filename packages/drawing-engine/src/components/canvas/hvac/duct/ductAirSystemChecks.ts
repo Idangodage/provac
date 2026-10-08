@@ -10,11 +10,14 @@
  *  - DU_ROOM_RETURN_PATH: a room a system supplies with no return of that
  *    system, while it has ducted returns elsewhere (needs a return or a
  *    transfer path, which the drawing does not model);
+ *  - DU_SYSTEM_FAR: served by a unit far farther than another in its room
+ *    (airSystemAssignment.farAssignments; the fix re-solves it, balanced);
  *  - DU_TERMINAL_UNASSIGNED (information): a terminal in no system.
  */
 import type { HvacElement, Point2D, Room } from '../../../../types';
-import type { VrfValidationIssue } from '../../../../vrf/rules';
+import type { VrfValidationFix, VrfValidationIssue } from '../../../../vrf/rules';
 
+import { farAssignments, type AssignmentWall } from './airSystemAssignment';
 import { airSystemMembers, analyseAirSystems, roomIdOf, terminalTagOf, type AirSystem } from './ductAirSystems';
 import { footprintCorners } from './ductAutoContext';
 import type { DuctDesignSettings } from './ductSettings';
@@ -58,9 +61,12 @@ export function outlineGapMm(a: readonly Point2D[], b: readonly Point2D[]): numb
   return gap;
 }
 
-function issue(level: VrfValidationIssue['level'], code: string, entityId: string, message: string, suggestedFix?: string): VrfValidationIssue {
-  return { id: `${code}:${entityId}:${message.length}`, level, code, entityId, message, ...(suggestedFix ? { suggestedFix } : {}) };
+function issue(level: VrfValidationIssue['level'], code: string, entityId: string, message: string, suggestedFix?: string, fix?: VrfValidationFix): VrfValidationIssue {
+  return { id: `${code}:${entityId}:${message.length}`, level, code, entityId, message, ...(suggestedFix ? { suggestedFix } : {}), ...(fix ? { fix } : {}) };
 }
+
+/** A duct length in metres, as the checks write it. */
+const metres = (mm: number) => (mm / 1000).toFixed(1);
 
 function systemIssues(system: AirSystem, tagsByUnit: ReadonlyMap<string, string>, roomNames: ReadonlyMap<string, string>): VrfValidationIssue[] {
   const out: VrfValidationIssue[] = [];
@@ -108,16 +114,28 @@ function systemIssues(system: AirSystem, tagsByUnit: ReadonlyMap<string, string>
   return out;
 }
 
-/** The air-system checks for a scene (room polygons place terminals without a room id). */
+/**
+ * The air-system checks for a scene (room polygons place terminals without a
+ * room id; walls price the far-unit check as the assignment does).
+ */
 export function checkAirSystems(
   scene: readonly HvacElement[],
-  settings: Pick<DuctDesignSettings, 'returnSupplyMinGapMm'>,
+  settings: Pick<DuctDesignSettings, 'returnSupplyMinGapMm' | 'farAssignmentExtraMm' | 'farAssignmentRatio' | 'autoAssignWallPenaltyMm'>,
   rooms: ReadonlyArray<Pick<Room, 'id' | 'vertices' | 'name'>> = [],
+  walls: readonly AssignmentWall[] = [],
 ): VrfValidationIssue[] {
   const analysis = analyseAirSystems(scene, rooms);
   const tagsByUnit = new Map(analysis.systems.map((system) => [system.unit.id, system.tag]));
   const roomNames = new Map(rooms.map((room) => [room.id, room.name]));
   const issues: VrfValidationIssue[] = analysis.systems.flatMap((system) => systemIssues(system, tagsByUnit, roomNames));
+  for (const far of farAssignments(scene, rooms, walls, settings)) {
+    issues.push(issue('warning', 'DU_SYSTEM_FAR', far.terminalId,
+      `${far.tag} is served by ${far.unitTag}, about ${metres(far.distanceMm)} m of duct away; ${far.nearestTag} in its room is about ${metres(far.nearestDistanceMm)} m away.`,
+      far.ducted
+        ? `Its duct already comes from ${far.unitTag}. To serve it from ${far.nearestTag}, assign it there and Auto route with Rebuild existing ducts; or keep it, if the long duct is meant.`
+        : `Reassign it to the nearest unit (balanced by airflow, one undo), then route again.`,
+      far.ducted ? undefined : { kind: 'reassign-far-terminals', terminalIds: [far.terminalId] }));
+  }
   // Short circuit: each return face against the nearest supply face in its room.
   const terminals = scene.filter(isDuctTerminalElement).flatMap((element) => {
     const spec = readDuctTerminalSpec(element);

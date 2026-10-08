@@ -21,7 +21,9 @@ export type VrfValidationFix =
   | { kind: 'level-branch' }
   | { kind: 'mark-insulated' }
   /** Condensate issues: re-run the condensate generator (preview, then apply). */
-  | { kind: 'regenerate-condensate' };
+  | { kind: 'regenerate-condensate' }
+  /** Air terminals served by far units: re-solve them with the balanced assignment (one undo). */
+  | { kind: 'reassign-far-terminals'; terminalIds: string[] };
 
 export interface VrfValidationIssue {
   id: string;

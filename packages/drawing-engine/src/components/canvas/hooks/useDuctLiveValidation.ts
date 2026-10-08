@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { HvacElement, Room } from '../../../types';
 import type { VrfValidationReport } from '../../../vrf/rules';
 import { checkAirSystems } from '../hvac/duct/ductAirSystemChecks';
+import type { DuctBuilding } from '../hvac/duct/ductBuilding';
 import type { DuctDesignSettings } from '../hvac/duct/ductSettings';
 import { isDuctTerminalElement } from '../hvac/duct/ductTerminals';
 import { isDuctElement } from '../hvac/duct/ductTypes';
@@ -16,13 +17,14 @@ const NO_ROOMS: ReadonlyArray<Pick<Room, 'id' | 'vertices' | 'name'>> = [];
 /**
  * Debounced duct design checks (DU_*) with the air-system checks; silent (and
  * free) until a duct or an air terminal exists. `building` (the walls the runs
- * pass through, which the plans read) re-runs them when a wall changes.
+ * pass through, which the plans read, and which price the far-unit check)
+ * re-runs them when a wall changes.
  */
 export function useDuctLiveValidation(
   elements: readonly HvacElement[],
   settings: DuctDesignSettings,
   rooms: ReadonlyArray<Pick<Room, 'id' | 'vertices' | 'name'>> = NO_ROOMS,
-  building?: unknown,
+  building?: Pick<DuctBuilding, 'walls'>,
 ): VrfValidationReport {
   const [report, setReport] = useState<VrfValidationReport>(EMPTY);
   useEffect(() => {
@@ -32,7 +34,7 @@ export function useDuctLiveValidation(
     }
     const timer = setTimeout(() => {
       try {
-        setReport(validateDuctRuns(elements, settings, checkAirSystems(elements, settings, rooms)));
+        setReport(validateDuctRuns(elements, settings, checkAirSystems(elements, settings, rooms, building?.walls)));
       } catch (error) {
         setReport({
           issues: [{

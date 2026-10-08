@@ -1,11 +1,15 @@
 'use client';
 
-import { AlertTriangle, CheckCircle2, Circle, Droplets, Focus, Info, Network, Wind } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Circle, Droplets, Focus, Info, Network, Shuffle, Wind } from 'lucide-react';
+import { useMemo } from 'react';
+import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../store';
 
 import { autoRouteDuctFeedback } from './autoRouteDuctFeedback';
 import { buildAutoRouteReview, ductUnitReview } from './autoRouteReview';
+import { farAssignments } from './duct/airSystemAssignment';
+import { assignmentWallsOf, reassignToNearestUnits } from './duct/airSystemController';
 import { formatCost } from './duct/ductEconomics';
 import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
 
@@ -30,8 +34,38 @@ function ServiceCard({ label, value, detail, blocked, icon: Icon }: {
   </div>;
 }
 
-export function AutoRouteResultPanel({ result, approved, toggleHop }: {
+const metres = (mm: number) => (mm / 1000).toFixed(1);
+
+/**
+ * The terminals this proposal routes that are served by a far unit (another
+ * unit in their room is much nearer) and no duct reaches yet: their long ducts
+ * cross the room and box in the other units', so they are worth reassigning
+ * before anything else.
+ */
+function FarTerminalsBanner({ result, onRouteAgain }: { result: UnifiedAutoRouteResult; onRouteAgain?: () => void }) {
+  const { hvacElements, rooms, walls, ductSettings } = useSmartDrawingStore(state => ({
+    hvacElements: state.hvacElements, rooms: state.rooms, walls: state.walls, ductSettings: state.ductSettings,
+  }), shallow);
+  const far = useMemo(() => {
+    const routed = new Set(result.ducts?.units.flatMap(unit => unit.terminalIds ?? []) ?? []);
+    return farAssignments(hvacElements, rooms, assignmentWallsOf(walls), ductSettings).filter(entry => !entry.ducted && routed.has(entry.terminalId));
+  }, [result, hvacElements, rooms, walls, ductSettings]);
+  if (!far.length) return null;
+  return <div className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-900" data-testid="auto-route-far-terminals" role="note">
+    <p className="font-semibold">{far.length} terminal{far.length === 1 ? ' is' : 's are'} served by far units</p>
+    <p className="mt-0.5 text-[11px]">{far.map(entry => `${entry.tag}: ${entry.unitTag} ${metres(entry.distanceMm)} m, ${entry.nearestTag} ${metres(entry.nearestDistanceMm)} m`).join(' · ')}.
+      {' '}Their ducts cross the room and box in the other units' ducts.</p>
+    <button type="button" onClick={() => { reassignToNearestUnits(far.map(entry => entry.terminalId)); onRouteAgain?.(); }}
+      title="Give them to the nearest units in their room, balanced by airflow (one undo), then run Auto route again with the same options"
+      className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-amber-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-700">
+      <Shuffle size={12} aria-hidden="true" /> Reassign and route again</button>
+  </div>;
+}
+
+export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain }: {
   result: UnifiedAutoRouteResult; approved: readonly string[]; toggleHop: (key: string) => void;
+  /** Runs Auto route again with the same options (after a reassignment). */
+  onRouteAgain?: () => void;
 }) {
   const existingElements = useSmartDrawingStore(state => state.hvacElements);
   const existingIds = new Set(existingElements.map(element => element.id));
@@ -50,6 +84,8 @@ export function AutoRouteResultPanel({ result, approved, toggleHop }: {
         <p className="mt-0.5 text-[11px]">{review.state === 'blocked' ? 'Review the highlighted constraints below. The drawing has not changed.'
           : review.state === 'ready' ? 'Routes checked together. Apply saves the preview as one undo step.' : 'Check the selected units and routing options.'}</p></div>
     </div>
+
+    {ducts && <FarTerminalsBanner result={result} onRouteAgain={onRouteAgain} />}
 
     <div className={`grid gap-2 ${activeCount === 3 ? 'grid-cols-3' : activeCount === 2 ? 'grid-cols-2' : 'grid-cols-1'}`} aria-label="Proposed service coverage">
       {ducts && <ServiceCard label="Ducts" icon={Wind} value={`${ducts.units.filter(unit => unit.status === 'designed').length}/${ducts.units.length}`}

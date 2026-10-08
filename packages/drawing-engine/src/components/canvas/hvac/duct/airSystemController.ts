@@ -6,8 +6,8 @@
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
-import { assignmentOptions, assignmentProblemFromScene, solveAirSystemAssignment } from './airSystemAssignment';
-import { airSystemTags, analyseAirSystems, isAirSystemUnit, readAirSystemAssignment, roomIdOf, terminalTagOf } from './ductAirSystems';
+import { assignmentOptions, assignmentProblemFromScene, farAssignments, solveAirSystemAssignment, type AssignmentWall } from './airSystemAssignment';
+import { airSystemTags, analyseAirSystems, isAirSystemUnit, readAirSystemAssignment, roomIdOf, servingUnits, terminalTagOf } from './ductAirSystems';
 import { isDuctTerminalElement, readDuctTerminalSpec } from './ductTerminals';
 
 type ElementUpdate = { id: string; updates: Partial<HvacElement> };
@@ -119,6 +119,61 @@ export function autoAssignTerminals(options: { unitId?: string } = {}): string {
   for (const entry of solved.assignments) byUnit.set(entry.unitId, (byUnit.get(entry.unitId) ?? 0) + 1);
   const left = solved.unassignable.length ? `; ${solved.unassignable.length} left unassigned (${solved.unassignable[0]!.reason})` : '';
   return report(`Air systems: ${[...byUnit].map(([id, count]) => `${tags.get(id)} +${count}`).join(', ')}${left}.`);
+}
+
+/** The drawing's walls as the assignment prices them. */
+export function assignmentWallsOf(walls: ReadonlyArray<{ startPoint: { x: number; y: number }; endPoint: { x: number; y: number } }>): AssignmentWall[] {
+  return walls.map((wall) => ({ a: wall.startPoint, b: wall.endPoint }));
+}
+
+/**
+ * The note a terminal just placed for a unit gets when another unit in its
+ * room is much nearer ("; DU-1 is nearer (4.1 m, DU-4 21.4 m)"), else ''.
+ * `scene` holds the new terminal.
+ */
+export function farPlacementNote(scene: readonly HvacElement[], terminalId: string): string {
+  const state = useSmartDrawingStore.getState();
+  const far = farAssignments(scene, state.rooms, assignmentWallsOf(state.walls), state.ductSettings).find((entry) => entry.terminalId === terminalId);
+  const metres = (mm: number) => (mm / 1000).toFixed(1);
+  return far ? `; ${far.nearestTag} is nearer (${metres(far.nearestDistanceMm)} m, ${far.unitTag} ${metres(far.distanceMm)} m)` : '';
+}
+
+/** The terminals served by far units that no duct reaches yet (those "Reassign to nearest units" moves), optionally only among `among`. */
+export function reassignableFarTerminals(among?: readonly string[]): string[] {
+  const state = useSmartDrawingStore.getState();
+  const wanted = among ? new Set(among) : null;
+  return farAssignments(state.hvacElements, state.rooms, assignmentWallsOf(state.walls), state.ductSettings)
+    .filter((far) => !far.ducted && (!wanted || wanted.has(far.terminalId))).map((far) => far.terminalId);
+}
+
+/**
+ * Reassigns terminals to the nearest units, balanced by airflow: they are
+ * taken out of their systems and solved again with every other terminal kept
+ * where it is (one undo). A terminal a duct already reaches is left alone
+ * (moving it is a re-route), as is one no other unit can take.
+ */
+export function reassignToNearestUnits(terminalIds: readonly string[]): string {
+  const state = useSmartDrawingStore.getState();
+  const scene = state.hvacElements;
+  const serving = servingUnits(scene);
+  const wanted = new Set(terminalIds.filter((id) => !serving.has(id)));
+  const terminals = scene.filter((element) => wanted.has(element.id) && isDuctTerminalElement(element));
+  if (!terminals.length) return report(terminalIds.length ? 'Air systems: their ducts already reach them; re-route them to move them.' : 'Air systems: no terminal to reassign.');
+  const before = new Map(terminals.map((terminal) => [terminal.id, readAirSystemAssignment(terminal)]));
+  const cleared = scene.map((element) => (before.has(element.id) ? { ...element, properties: { ...element.properties, airSystem: null } } : element));
+  const problem = assignmentProblemFromScene(cleared, state.rooms, state.walls, { terminalIds: [...before.keys()] });
+  const solved = solveAirSystemAssignment(problem.units, problem.terminals, problem.walls, assignmentOptions(state.ductSettings));
+  const moves = solved.assignments.filter((entry) => before.get(entry.terminalId) !== entry.unitId);
+  if (!moves.length) return report('Air systems: each of them is already with the nearest unit that can take it.');
+  const tags = airSystemTags(scene);
+  const byId = new Map(terminals.map((terminal) => [terminal.id, terminal]));
+  state.commitHvacElementCommand(moves.length === 1 ? `Reassign ${tagOfTerminal(byId.get(moves[0]!.terminalId)!)} to ${tags.get(moves[0]!.unitId)}` : `Reassign ${moves.length} terminals to nearer units`, {
+    updates: [
+      ...moves.map((entry) => ({ id: entry.terminalId, updates: { properties: { airSystem: { unitId: entry.unitId } } } })),
+      ...tagUpdates(scene, moves.map((entry) => entry.unitId)),
+    ],
+  });
+  return report(`Air systems: ${moves.map((entry) => `${tagOfTerminal(byId.get(entry.terminalId)!)} → ${tags.get(entry.unitId)}`).join(', ')}.`);
 }
 
 /** The terminals of a unit's system, and those the current selection would add (for the card's "Assign selected"). */

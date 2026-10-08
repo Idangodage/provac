@@ -126,6 +126,13 @@ export interface DuctDesignSettings {
   /** Air systems, auto-assign: the price of a wall between a collar and a terminal, and of each terminal past a unit's fair share (mm of duct). */
   autoAssignWallPenaltyMm: number;
   autoAssignOverloadMm: number;
+  /**
+   * Air systems: a terminal is served by a far unit when another unit in its
+   * room (with a collar of its service) is nearer by more than this (mm of
+   * duct) and by more than this factor.
+   */
+  farAssignmentExtraMm: number;
+  farAssignmentRatio: number;
   /** Show every air system on the plan (tethers, rings, unit tags), not only the selected one. */
   showAirSystems: boolean;
   /**
@@ -258,6 +265,8 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   returnSupplyMinGapMm: 1500,
   autoAssignWallPenaltyMm: 4000,
   autoAssignOverloadMm: 2500,
+  farAssignmentExtraMm: 6000,
+  farAssignmentRatio: 2,
   showAirSystems: false,
   penetrationClearanceMm: 25,
   fireDamperPolicy: 'none',
@@ -369,6 +378,8 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   returnSupplyMinGapMm: practice('Keep a return inlet out of a supply outlet\'s primary jet so conditioned air does not go straight back to the unit (ASHRAE Fundamentals ch. 20 principle; the distance is practice).'),
   autoAssignWallPenaltyMm: practice('Auto-assign: a wall between a collar and a terminal costs this much duct (a sleeve and coordination).'),
   autoAssignOverloadMm: practice('Auto-assign: each terminal past a unit\'s fair share (by airflow) costs this much duct, so units share the room.'),
+  farAssignmentExtraMm: practice('A far-served terminal: another unit in its room is nearer by more than this much duct. Keep it above the fair-share cost, so a balanced assignment is never flagged.'),
+  farAssignmentRatio: practice('A far-served terminal: its own unit is more than this many times as far as the nearest one in its room.'),
   showAirSystems: { sourceId: 'project-configuration', verified: false, note: 'Display only.' },
   penetrationClearanceMm: practice('Gap round the duct (its insulation included) in a wall sleeve, packed with mineral wool and sealed.'),
   fireDamperPolicy: {
@@ -414,6 +425,7 @@ export const DUCT_SUPPORTED_PRESSURE_CLASSES_PA = [125, 250, 500] as const;
 export const DUCT_NON_DESIGN_SETTINGS: ReadonlySet<keyof DuctDesignSettings> = new Set<keyof DuctDesignSettings>([
   'showSizeTags', 'showJointTicks', 'showPieceMarks', 'showSupports', 'showAirSystems',
   'returnSupplyMinGapMm', 'autoAssignWallPenaltyMm', 'autoAssignOverloadMm', 'penetrationClearanceMm',
+  'farAssignmentExtraMm', 'farAssignmentRatio',
 ]);
 
 /** The settings a duct design depends on, as a stable key (a proposal is current while it is unchanged). */
@@ -528,6 +540,8 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     returnSupplyMinGapMm: clampNumber(raw.returnSupplyMinGapMm, d.returnSupplyMinGapMm, 0, 10000),
     autoAssignWallPenaltyMm: clampNumber(raw.autoAssignWallPenaltyMm, d.autoAssignWallPenaltyMm, 0, 100000),
     autoAssignOverloadMm: clampNumber(raw.autoAssignOverloadMm, d.autoAssignOverloadMm, 0, 100000),
+    farAssignmentExtraMm: clampNumber(raw.farAssignmentExtraMm, d.farAssignmentExtraMm, 0, 100000),
+    farAssignmentRatio: clampNumber(raw.farAssignmentRatio, d.farAssignmentRatio, 1, 10),
     showAirSystems: bool(raw.showAirSystems, d.showAirSystems),
     penetrationClearanceMm: clampNumber(raw.penetrationClearanceMm, d.penetrationClearanceMm, 0, 150),
     fireDamperPolicy: oneOf(raw.fireDamperPolicy, ['none', 'structural', 'all'] as const, d.fireDamperPolicy),

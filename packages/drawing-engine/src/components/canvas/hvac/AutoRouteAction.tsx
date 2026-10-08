@@ -355,7 +355,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
               <button type="button" onClick={route} disabled={nothingTicked} className="w-full rounded-lg bg-teal-700 py-2 font-medium text-white hover:bg-teal-800 disabled:opacity-40">Auto route</button>
             </>
           ) : unified ? (
-            <AutoRouteResultPanel result={unified} approved={approved} toggleHop={toggleHop} />
+            <AutoRouteResultPanel result={unified} approved={approved} toggleHop={toggleHop} onRouteAgain={route} />
           ) : null}
         </div>
       ) : null}

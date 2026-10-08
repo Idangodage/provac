@@ -88,6 +88,8 @@ export function AirSystemsSection() {
       <SettingNumber settingKey="returnSupplyMinGapMm" label="Return ↔ supply gap at least" step={100} min={0} max={10000} />
       <SettingNumber settingKey="autoAssignWallPenaltyMm" label="Auto-assign: a wall costs" step={500} min={0} max={100000} />
       <SettingNumber settingKey="autoAssignOverloadMm" label="Auto-assign: over a fair share costs" step={500} min={0} max={100000} />
+      <SettingNumber settingKey="farAssignmentExtraMm" label="Far unit: another nearer by over" step={500} min={0} max={100000} />
+      <SettingNumber settingKey="farAssignmentRatio" label="Far unit: and own farther by over" step={0.5} min={1} max={10} unit="×" />
       <div className="flex items-center justify-between pt-1">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Air terminal schedule</span>
         <CopyButton text={airTerminalScheduleToCsv(schedule)} label="Copy CSV" />

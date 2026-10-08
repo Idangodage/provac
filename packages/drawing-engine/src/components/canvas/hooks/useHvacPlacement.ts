@@ -11,6 +11,7 @@ import type { HvacElementCommand } from '../../../store';
 import type { HvacElement, Point2D, Room } from '../../../types';
 import { generateId } from '../../../utils/geometry';
 import { GeometryEngine } from '../../../utils/geometry-engine';
+import { farPlacementNote } from '../hvac/duct/airSystemController';
 import { useAirSystemUiStore } from '../hvac/duct/airSystemUiStore';
 import { airSystemTagOf, isAirSystemUnit, nextAirSystemTag } from '../hvac/duct/ductAirSystems';
 import { nextTerminalTag, readDuctTerminalSpec, terminalCeilingPlane } from '../hvac/duct/ductTerminals';
@@ -635,13 +636,15 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
             // One undo: the terminal, and the unit's tag written down if it only had a derived one.
             const tagged = typeof targetUnit.properties.airSystemTag === 'string' && targetUnit.properties.airSystemTag.trim();
             const unitTag = airSystemTagOf(targetUnit, hvacElements);
+            const placed = { ...element, id: generateId() } as HvacElement;
             commitHvacElementCommand('Add AC equipment', {
-                add: [{ ...element, id: generateId() } as HvacElement],
+                add: [placed],
                 updates: tagged ? [] : [{ id: targetUnit.id, updates: { properties: { airSystemTag: unitTag } } }],
                 // The unit stays selected, so its card and tethers grow with each terminal.
                 selectedIds: [targetUnit.id],
             });
-            setProcessingStatus(`${element.label} placed for ${unitTag}.`, false);
+            // Placed for a far unit: say which unit is nearer (the design check DU_SYSTEM_FAR keeps it in view).
+            setProcessingStatus(`${element.label} placed for ${unitTag}${farPlacementNote([...hvacElements, placed], placed.id)}.`, false);
             onEquipmentPlaced?.(pendingPlacementEquipmentDefinition.id);
             return true;
         }

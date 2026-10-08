@@ -3,15 +3,16 @@
 /**
  * Air system card. With one ducted unit selected: its system tag, the supply
  * and return terminals dedicated to it (airflow share, neck velocity, whether
- * its duct reaches them), the balance against the unit's airflow, the rooms it
- * serves and engineering hints; and how to grow it: place supply or return
- * terminals for it, pick terminals on the plan, assign the selected ones, or
- * auto-assign its room (balanced by airflow). With only terminals selected: a
- * one-line "assign them to" control.
+ * its duct reaches them, and a warning when another unit in the room is much
+ * nearer), the balance against the unit's airflow, the rooms it serves and
+ * engineering hints; and how to grow it: place supply or return terminals for
+ * it, pick terminals on the plan, assign the selected ones, or auto-assign its
+ * room (balanced by airflow). With only terminals selected: a one-line "assign
+ * them to" control.
  *
  * The panel is about 240 px wide: two-line rows, not tables.
  */
-import { AlertTriangle, CheckCircle2, Info, MousePointerClick, Network, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Info, MousePointerClick, Network, Shuffle, Sparkles, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { shallow } from 'zustand/shallow';
 
@@ -19,7 +20,10 @@ import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../../data';
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
-import { assignTerminalsToUnit, autoAssignTerminals, selectedTerminalsForUnit, setAirSystemTag, unassignTerminals } from './airSystemController';
+import { farAssignments, type FarAssignment } from './airSystemAssignment';
+import {
+  assignmentWallsOf, assignTerminalsToUnit, autoAssignTerminals, reassignToNearestUnits, selectedTerminalsForUnit, setAirSystemTag, unassignTerminals,
+} from './airSystemController';
 import { useAirSystemUiStore } from './airSystemUiStore';
 import { AIR_BALANCE_TOLERANCE } from './ductAirSystemChecks';
 import { analyseAirSystems, isAirSystemUnit, type AirSystem, type AirSystemService } from './ductAirSystems';
@@ -55,7 +59,21 @@ function balanceText(group: AirSystemService, airflow: number | null): { text: s
   return { text: `${total} of ${Math.round(airflow)} m³/h`, ok };
 }
 
-function ServiceGroup({ system, group }: { system: AirSystem; group: AirSystemService }) {
+const metres = (mm: number) => (mm / 1000).toFixed(1);
+
+/** A member served from far: another unit in its room is much nearer (its duct would cross the room and box in the others'). */
+function FarNote({ far }: { far: FarAssignment | undefined }) {
+  if (!far) return null;
+  return (
+    <span className="flex items-start gap-0.5 text-amber-700" data-air-system-far={far.terminalId}
+      title={`About ${metres(far.distanceMm)} m of duct from ${far.unitTag}, ${metres(far.nearestDistanceMm)} m from ${far.nearestTag}: a long duct across the room boxes in the other units' ducts.`}>
+      <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+      Far: {far.nearestTag} is {metres(far.nearestDistanceMm)} m away ({far.unitTag} {metres(far.distanceMm)} m)
+    </span>
+  );
+}
+
+function ServiceGroup({ system, group, far }: { system: AirSystem; group: AirSystemService; far: ReadonlyMap<string, FarAssignment> }) {
   const tone = SERVICE_TONE[group.service];
   const balance = balanceText(group, system.airflowM3h);
   return (
@@ -85,6 +103,7 @@ function ServiceGroup({ system, group }: { system: AirSystem; group: AirSystemSe
                   {member.mismatch ? <span className="text-red-600">ducted from another unit</span>
                     : member.connection ? <span className="text-emerald-700">● ducted</span> : <span className="text-slate-400">○ not ducted yet</span>}
                 </span>
+                <FarNote far={far.get(member.terminal.id)} />
               </span>
               {member.source !== 'connected' ? (
                 <button type="button" onClick={() => unassignTerminals([member.terminal.id])} title={`Take ${member.tag} out of ${system.tag}`}
@@ -114,14 +133,20 @@ function hints(system: AirSystem): string[] {
 }
 
 function UnitSystemCard({ unit, selectedIds }: { unit: HvacElement; selectedIds: readonly string[] }) {
-  const { hvacElements, rooms } = useSmartDrawingStore((state) => ({ hvacElements: state.hvacElements, rooms: state.rooms }), shallow);
+  const { hvacElements, rooms, walls, ductSettings } = useSmartDrawingStore((state) => ({
+    hvacElements: state.hvacElements, rooms: state.rooms, walls: state.walls, ductSettings: state.ductSettings,
+  }), shallow);
   const analysis = useMemo(() => analyseAirSystems(hvacElements, rooms), [hvacElements, rooms]);
   const { pickUnitId, setPickUnit, requestPlacement } = useAirSystemUiStore((state) => ({
     pickUnitId: state.pickUnitId, setPickUnit: state.setPickUnit, requestPlacement: state.requestPlacement,
   }), shallow);
   const system = analysis.byUnit.get(unit.id);
   const selectable = useMemo(() => selectedTerminalsForUnit(unit.id, selectedIds, hvacElements), [unit.id, selectedIds, hvacElements]);
+  // This system's terminals another unit in their room is much nearer to (the check DU_SYSTEM_FAR).
+  const far = useMemo(() => new Map(farAssignments(hvacElements, rooms, assignmentWallsOf(walls), ductSettings)
+    .filter((entry) => entry.unitId === unit.id).map((entry) => [entry.terminalId, entry])), [hvacElements, rooms, walls, ductSettings, unit.id]);
   if (!system) return null;
+  const reassignable = [...far.values()].filter((entry) => !entry.ducted).map((entry) => entry.terminalId);
   const roomNames = system.roomIds.map((id) => rooms.find((room) => room.id === id)?.name ?? 'a room');
   const picking = pickUnitId === unit.id;
   const unassignedInScene = analysis.unassigned.length;
@@ -142,8 +167,15 @@ function UnitSystemCard({ unit, selectedIds }: { unit: HvacElement; selectedIds:
         {system.airflowM3h ? `${Math.round(system.airflowM3h)} m³/h at Hi` : 'No airflow data: enter it in the Auto duct card'}
         {roomNames.length ? ` · serves ${roomNames.join(', ')}` : ''}
       </p>
-      <ServiceGroup system={system} group={system.supply} />
-      <ServiceGroup system={system} group={system.return} />
+      <ServiceGroup system={system} group={system.supply} far={far} />
+      <ServiceGroup system={system} group={system.return} far={far} />
+      {reassignable.length ? (
+        <button type="button" onClick={() => reassignToNearestUnits(reassignable)} data-testid="air-system-reassign-far"
+          title="Give them to the nearest units in their room, balanced by airflow; the other terminals stay where they are (one undo)"
+          className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-900 hover:bg-amber-100">
+          <Shuffle size={12} />Reassign {reassignable.length} far terminal{reassignable.length === 1 ? '' : 's'} to nearer units
+        </button>
+      ) : null}
       <div className="flex gap-1" role="group" aria-label="Place terminals for this unit">
         <select className={select} value="" onChange={(event) => place(event.target.value)} aria-label={`Place a supply terminal for ${system.tag}`}>
           <option value="">+ Supply terminal…</option>
