@@ -9,7 +9,7 @@ import type { HvacElement } from '../../../types';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 
 import { autoRouteSourceSignature, prepareAutoRouteCommand } from './autoRouteCommand';
-import { incompleteServiceRouteRefusal } from './autoRouteCompleteness';
+import { incompleteServiceRouteRefusal, partialDuctApplyRefusal } from './autoRouteCompleteness';
 import { effectiveAutoRouteSettings, type AutoRouteCostRates } from './autoRouteEvaluation';
 import { condensateSourceSignature, prepareCondensateCommand, type CondensateCommandSource } from './condensate/condensateCommand';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
@@ -180,8 +180,13 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
   }
 }
 
-/** Commits the open preview as one undo step. Returns the status message shown to the user. */
-export function applyAutoRoutePreview(): string {
+/**
+ * Commits the open preview as one undo step. Returns the status message shown
+ * to the user. `designedUnitsOnly` ("Apply N designed units"): the duct units
+ * with no layout are left out (they have nothing in the preview, and keep the
+ * ducts they have) instead of refusing the whole preview.
+ */
+export function applyAutoRoutePreview(options: { designedUnitsOnly?: boolean } = {}): string {
   const preview = useCondensatePreviewStore.getState();
   const { unified, signatures } = preview;
   if (!unified || !signatures) return 'Run Auto route first.';
@@ -189,8 +194,9 @@ export function applyAutoRoutePreview(): string {
     preview.setMessage(message);
     return message;
   };
-  const incomplete = incompleteServiceRouteRefusal(unified);
+  const incomplete = options.designedUnitsOnly ? partialDuctApplyRefusal(unified) : incompleteServiceRouteRefusal(unified);
   if (incomplete) return refuse(incomplete);
+  const leftOut = options.designedUnitsOnly ? (unified.ducts?.units ?? []).filter((unit) => unit.status !== 'designed').map((unit) => unit.tag ?? unit.unitLabel) : [];
   if (unified.condensate?.hopProposals.some((proposal) => !preview.approvedHopKeys.includes(proposal.key))) {
     return refuse('Review and approve the required refrigerant hops before applying. Nothing was changed.');
   }
@@ -261,7 +267,9 @@ export function applyAutoRoutePreview(): string {
     refrigerantChanged ? `${refrigerantUnits} unit${refrigerantUnits === 1 ? '' : 's'} on refrigerant` : null,
     unified.condensate ? `${drainUnits} drain${drainUnits === 1 ? '' : 's'}` : null,
   ].filter(Boolean);
-  const message = `Auto route applied: ${parts.join(', ')}. One undo reverts it.${hopMessage}`;
+  // The units left out come first: the toolbar shows the start of a long message.
+  const without = leftOut.length ? ` without ${leftOut.join(', ')} (no duct layout; ${leftOut.length === 1 ? 'it keeps its' : 'they keep their'} ducts)` : '';
+  const message = `Auto route applied${without}: ${parts.join(', ')}. One undo reverts it.${hopMessage}`;
   previewProfile = undefined;
   preview.clear();
   preview.setMessage(message);

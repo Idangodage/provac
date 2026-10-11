@@ -164,6 +164,24 @@ describe('atomic coordinated Auto route Apply', () => {
     expect(useSmartDrawingStore.getState().historyIndex).toBe(0);
   });
 
+  it('applies the designed duct units alone when asked, naming the units left out; Apply itself still refuses', () => {
+    initialize([unit('source', true), { ...unit('other', true), position: { x: 6000, y: 0 } }]);
+    const before = structuredClone(useSmartDrawingStore.getState().hvacElements);
+    const current = preview([duct('new-duct', 14000, 0, 2700)], false);
+    const designed = (unitId: string, tag: string, status: 'designed' | 'kept') => ({ unitId, unitLabel: unitId, tag, status, services: [],
+      requiredEspPa: null, maxEspPa: null, firstCost: null, lifeCycleCost: null, currency: 'USD', runIds: status === 'designed' ? ['new-duct'] : [], exact: null, notes: [] });
+    const previewStore = useCondensatePreviewStore.getState();
+    previewStore.setUnified({ ...current, ducts: { ...current.ducts!, units: [designed('source', 'DU-1', 'designed'), designed('other', 'DU-2', 'kept')] } }, previewStore.signatures);
+    expect(applyAutoRoutePreview()).toMatch(/No viable duct layout for 1 unit/);
+    expect(useSmartDrawingStore.getState().historyIndex).toBe(0);
+    expect(applyAutoRoutePreview({ designedUnitsOnly: true }))
+      .toBe('Auto route applied without DU-2 (no duct layout; it keeps its ducts): 1 duct run for 1 unit. One undo reverts it.');
+    expect(useSmartDrawingStore.getState().hvacElements.some((element) => element.id === 'new-duct')).toBe(true);
+    expect(useSmartDrawingStore.getState().historyIndex).toBe(1);
+    useSmartDrawingStore.getState().undo();
+    expect(useSmartDrawingStore.getState().hvacElements).toEqual(before);
+  });
+
   it('applies clear ducts and drainage in one undo step and restores both together', () => {
     initialize([unit('source'), gully()]);
     const before = structuredClone(useSmartDrawingStore.getState().hvacElements);

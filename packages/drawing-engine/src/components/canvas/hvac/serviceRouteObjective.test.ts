@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { rankServiceRouteCandidates, type ServiceRouteCandidate, type ServiceRouteObjective } from './serviceRouteObjective';
-import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
+import { selectServiceRouteCandidate, type UnifiedAutoRouteResult } from './unifiedAutoRoute';
 
 function result(): UnifiedAutoRouteResult {
   return {
@@ -67,6 +67,23 @@ describe('collective service route preference', () => {
     expect(ranked[0]!.diagnostics.servedObligations).toHaveLength(3);
     expect(ranked[1]!.diagnostics.unservedObligations).toEqual(['["condensate","unit-a"]']);
     expect(ranked[0]!.diagnostics.costComparableToBaseline).toBe(false);
+  });
+
+  it('ranks coordinated candidates on their own blockers when a duct unit has no layout in all of them', () => {
+    const refusal = 'No viable duct layout for 1 unit. Resolve duct issues, or turn off ducts and route again.';
+    const ducts: UnifiedAutoRouteResult['ducts'] = { elementsToAdd: [], removeElementIds: [], terminalUpdates: [], issues: [], units: [{
+      unitId: 'du', unitLabel: 'FDUM22', status: 'kept', services: [], requiredEspPa: null, maxEspPa: null, firstCost: null, lifeCycleCost: null,
+      currency: 'EUR', runIds: [], exact: null, notes: [] }] };
+    const choices = candidates();
+    for (const choice of choices) Object.assign(choice.result, { services: { ...choice.result.services, supplyDuct: true }, ducts, blockingIssues: [refusal] });
+    // The cheaper baseline's drain runs into a cassette; the drainage-first one is clean.
+    choices[0]!.result.blockingIssues = [refusal, 'Cassette intersects CD 32; reroute or provide clearance before applying.'];
+    choices[1]!.result.refrigerant!.metrics!.estimatedCost = 300;
+    // Ranked as they are, the shared refusal makes both infeasible and the price decides.
+    expect(rankServiceRouteCandidates(choices, { objective: 'cost' })[0]!.key).toBe('refrigerant-first');
+    const selected = selectServiceRouteCandidate(choices, 'cost');
+    expect(selected.key).toBe('drainage-first');
+    expect(selected.result.blockingIssues).toEqual([refusal]);
   });
 
   it('preserves missing explicit obligations even when a failed planner omits a unit', () => {

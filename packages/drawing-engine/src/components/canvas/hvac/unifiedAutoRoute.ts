@@ -26,7 +26,7 @@
 import type { HvacElement, Room, Wall } from '../../../types';
 
 import { incompleteAutoRouteRefusal } from './autoRouteCommand';
-import { incompleteServiceRouteRefusal } from './autoRouteCompleteness';
+import { incompleteDuctRouteRefusal, incompleteServiceRouteRefusal } from './autoRouteCompleteness';
 import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork } from './autoRouteEvaluation';
 import { aggregateAutoRouteMetrics, planAutoRouteNetwork, replaceableGeneratedRefrigerantIds, type AutoRouteNetworkOptions, type AutoRouteNetworkResult } from './autoRouteNetwork';
 import { incompleteCondensateRefusal } from './condensate/condensateCommand';
@@ -46,7 +46,7 @@ import { getAutoRouteOwnership, retainGeneratedPipeEdit } from './pipeEditRetent
 import { getActivePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { isRefrigerantBranchKitElement, resolveRefrigerantBranchKitLineSelection } from './refrigerantBranchKitModel';
 import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
-import { rankServiceRouteCandidates } from './serviceRouteObjective';
+import { rankServiceRouteCandidates, type ServiceRouteCandidate, type ServiceRouteObjective } from './serviceRouteObjective';
 import { applyServiceRouteCommand, serviceRouteCommitDiagnostics, type ServiceRouteCommand, type ServiceRouteIssue } from './serviceRouteValidation';
 
 export interface AutoRouteServices {
@@ -415,10 +415,14 @@ export async function planUnifiedAutoRoute(originalScene: HvacElement[], options
   progress({ stage: 'Checking clashes between services', completed: 0, total: 0 });
   const baseline = auditUnifiedCandidate(originalScene, { services, ducts, refrigerant, condensate, clashes: [], issues }, options);
   const candidates = [{ key: 'refrigerant-first', result: baseline }];
+  // Ducts are the same in every candidate, so a unit with no duct layout blocks them all alike: it stays in each
+  // result (Apply refuses on it), but the candidates are compared, and the retry decided, on everything else.
+  const ductRefusal = incompleteDuctRouteRefusal({ services, ducts });
+  const blockersOf = (result: UnifiedAutoRouteResult) => (result.blockingIssues ?? []).filter((issue) => issue !== ductRefusal);
   // A second, bounded order reserves the less flexible gravity route first.
   // Ducts are held fixed; compare complete final assemblies, never independently
   // optimized service scores that ignore each other's physical space.
-  const retry = wantsRefrigerant && condensate && (baseline.blockingIssues?.length
+  const retry = wantsRefrigerant && condensate && (blockersOf(baseline).length
     || baseline.clashes.some(clash => !clash.resolvedByHop)
     || condensate.hopProposals.length || condensate.metrics.unitsConnected < condensate.metrics.unitsTotal
     || (refrigerant && !refrigerant.complete) || options.refrigerant.objective === 'cost');
@@ -449,8 +453,22 @@ export async function planUnifiedAutoRoute(originalScene: HvacElement[], options
       }, options) });
     }
   }
-  const selected = rankServiceRouteCandidates(candidates, { objective: options.refrigerant.objective, baselineKey: 'refrigerant-first' })[0]!;
+  const selected = selectServiceRouteCandidate(candidates, options.refrigerant.objective);
   return { ...selected.result, coordination: { strategy: selected.key as 'refrigerant-first' | 'drainage-first', candidatesEvaluated: candidates.length } };
+}
+
+/**
+ * The coordinated candidate to keep (the first is the baseline). Their ducts
+ * are the same, so a duct unit with no layout blocks every candidate alike:
+ * they are ranked on everything else, and the refusal stays in the result
+ * (Apply refuses on it; "Apply N designed units" gets the best of the rest).
+ */
+export function selectServiceRouteCandidate<T extends ServiceRouteCandidate>(candidates: readonly T[], objective?: ServiceRouteObjective): T {
+  const ductRefusal = incompleteDuctRouteRefusal(candidates[0]!.result);
+  const best = rankServiceRouteCandidates(candidates.map((candidate) => ({
+    key: candidate.key, result: { ...candidate.result, blockingIssues: (candidate.result.blockingIssues ?? []).filter((issue) => issue !== ductRefusal) },
+  })), { objective, baselineKey: candidates[0]!.key })[0]!;
+  return candidates.find((candidate) => candidate.key === best.key)!;
 }
 
 const SERVICE_NAMES: Record<RoutedService, string> = {

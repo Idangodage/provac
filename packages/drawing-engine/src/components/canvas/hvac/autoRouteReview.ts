@@ -1,4 +1,4 @@
-import { incompleteServiceRouteRefusal } from './autoRouteCompleteness';
+import { incompleteDuctRouteRefusal, incompleteServiceRouteRefusal, partialDuctApplyRefusal } from './autoRouteCompleteness';
 import type { AutoRouteDuctUnit } from './duct/ductAutoRoute';
 import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
 
@@ -88,8 +88,17 @@ export function buildAutoRouteReview(result: UnifiedAutoRouteResult, approvedHop
   const manufacturerNotes = advisory.filter(message => /manufacturer|capacity ind(?:ex|ices)|equivalent length|component size|branch-kit sizing/i.test(message));
   const manufacturerSet = new Set(manufacturerNotes);
   const installationNotes = advisory.filter(message => !manufacturerSet.has(message));
-  const applyReason = incompleteServiceRouteRefusal(result) ?? issues[0]?.message
-    ?? (pendingHops.length ? `Approve ${pendingHops.length} required pipe hop${pendingHops.length === 1 ? '' : 's'} before applying.` : null);
-  return { issues, failedDuctUnits, pendingHops, hasChanges, applyReason, manufacturerNotes, installationNotes,
+  const hopsReason = pendingHops.length ? `Approve ${pendingHops.length} required pipe hop${pendingHops.length === 1 ? '' : 's'} before applying.` : null;
+  const applyReason = incompleteServiceRouteRefusal(result) ?? issues[0]?.message ?? hopsReason;
+  // "Apply N designed units": blocked only by what blocks the units that have a layout (not by the failed units' refusal).
+  const designedDuctUnits = ducts?.units.filter(unit => unit.status === 'designed') ?? [];
+  const ductRefusal = incompleteDuctRouteRefusal(result);
+  const otherIssues = issues.filter(issue => issue.key !== 'unserved-terminals' && (!ductRefusal || canonical(issue.message) !== canonical(ductRefusal)));
+  const partialApply = failedDuctUnits.length && designedDuctUnits.length ? {
+    units: designedDuctUnits.length,
+    leftOut: failedDuctUnits.map(unit => unit.tag ?? unit.unitLabel),
+    reason: partialDuctApplyRefusal(result) ?? otherIssues[0]?.message ?? hopsReason,
+  } : null;
+  return { issues, failedDuctUnits, pendingHops, hasChanges, applyReason, partialApply, manufacturerNotes, installationNotes,
     state: applyReason ? 'blocked' as const : hasChanges ? 'ready' as const : 'unchanged' as const };
 }

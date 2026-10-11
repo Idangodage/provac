@@ -1,11 +1,12 @@
 'use client';
 
-import { AlertTriangle, CheckCircle2, Circle, Droplets, Focus, Info, Network, Shuffle, Wind } from 'lucide-react';
+import { AlertTriangle, Check, CheckCircle2, Circle, Droplets, Focus, Info, Network, Shuffle, Wind } from 'lucide-react';
 import { useMemo } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../store';
 
+import { applyAutoRoutePreview } from './autoRouteController';
 import { autoRouteDuctFeedback } from './autoRouteDuctFeedback';
 import { buildAutoRouteReview, ductUnitReview } from './autoRouteReview';
 import { farAssignments } from './duct/airSystemAssignment';
@@ -62,6 +63,22 @@ function FarTerminalsBanner({ result, onRouteAgain }: { result: UnifiedAutoRoute
   </div>;
 }
 
+/**
+ * "Apply N designed units": when some ducted units have no layout, the ones
+ * that have one can still be applied (one undo); the panel names the units
+ * left out. The main Apply keeps refusing an incomplete preview.
+ */
+function PartialApply({ units, leftOut, reason }: { units: number; leftOut: readonly string[]; reason: string | null }) {
+  return <div className="ml-[25px] mt-2 border-t border-amber-200 pt-2">
+    <button type="button" data-testid="auto-route-apply-designed" disabled={Boolean(reason)} onClick={() => applyAutoRoutePreview({ designedUnitsOnly: true })}
+      title={reason ?? 'Apply the units that have a layout as one undo step; the others are left as they are'}
+      className="inline-flex items-center gap-1 rounded-md bg-sky-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-sky-800 disabled:opacity-40">
+      <Check size={12} aria-hidden="true" /> Apply {units} designed unit{units === 1 ? '' : 's'}</button>
+    <p className="mt-1 text-[11px]" data-testid="auto-route-left-out">
+      {leftOut.join(', ')} {leftOut.length === 1 ? 'keeps its' : 'keep their'} existing ducts.{reason ? ` Not yet: ${reason}` : ''}</p>
+  </div>;
+}
+
 export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain }: {
   result: UnifiedAutoRouteResult; approved: readonly string[]; toggleHop: (key: string) => void;
   /** Runs Auto route again with the same options (after a reassignment). */
@@ -76,13 +93,16 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
   const activeCount = [ducts, refrigerant, condensate].filter(Boolean).length;
   const StatusIcon = review.state === 'blocked' ? AlertTriangle : review.state === 'ready' ? CheckCircle2 : Circle;
   return <div className="space-y-3 leading-4 text-slate-600" data-testid="auto-route-review">
-    <div className={`flex items-start gap-2 rounded-lg border p-2.5 ${review.state === 'blocked'
+    <div className={`rounded-lg border p-2.5 ${review.state === 'blocked'
       ? 'border-amber-200 bg-amber-50 text-amber-900' : review.state === 'ready'
-        ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-slate-50 text-slate-700'}`} role="status">
-      <StatusIcon size={17} className="mt-0.5 shrink-0" aria-hidden="true" />
-      <div><p className="font-semibold">{review.state === 'blocked' ? 'Resolve before applying' : review.state === 'ready' ? 'Preview ready' : 'No changes proposed'}</p>
-        <p className="mt-0.5 text-[11px]">{review.state === 'blocked' ? 'Review the highlighted constraints below. The drawing has not changed.'
-          : review.state === 'ready' ? 'Routes checked together. Apply saves the preview as one undo step.' : 'Check the selected units and routing options.'}</p></div>
+        ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+      <div className="flex items-start gap-2" role="status">
+        <StatusIcon size={17} className="mt-0.5 shrink-0" aria-hidden="true" />
+        <div><p className="font-semibold">{review.state === 'blocked' ? 'Resolve before applying' : review.state === 'ready' ? 'Preview ready' : 'No changes proposed'}</p>
+          <p className="mt-0.5 text-[11px]">{review.state === 'blocked' ? 'Review the highlighted constraints below. The drawing has not changed.'
+            : review.state === 'ready' ? 'Routes checked together. Apply saves the preview as one undo step.' : 'Check the selected units and routing options.'}</p></div>
+      </div>
+      {review.partialApply ? <PartialApply {...review.partialApply} /> : null}
     </div>
 
     {ducts && <FarTerminalsBanner result={result} onRouteAgain={onRouteAgain} />}

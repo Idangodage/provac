@@ -11,6 +11,21 @@ export function incompleteDuctRouteRefusal(result: Pick<ServiceProposal, 'servic
   return unserved ? `${unserved} selected air terminal${unserved === 1 ? ' has' : 's have'} no duct route. Review their ducted unit and terminal assignments.` : null;
 }
 
+/**
+ * "Apply N designed units": the duct units that have a layout, without the
+ * ones that have none (they keep the ducts they have), when the designer asks
+ * for exactly that. Allowed while some requested unit has no layout, at least
+ * one has, and every other requested service is complete. The refusal, or null.
+ */
+export function partialDuctApplyRefusal(result: ServiceProposal): string | null {
+  if (!result.services.supplyDuct && !result.services.returnDuct) return 'No ducts were routed.';
+  const units = result.ducts?.units ?? [];
+  const designed = units.filter(unit => unit.status === 'designed');
+  if (!designed.length) return 'No unit has a duct layout to apply.';
+  if (designed.length === units.length) return 'Every unit has a layout: use Apply.';
+  return incompleteServiceRouteRefusal({ ...result, ducts: { ...result.ducts!, units: designed, unservedTerminalIds: [] } });
+}
+
 /** Shared by candidate selection, review and Apply. Requested incomplete work
  * is never silently applied as a subset of a coordinated preview. Empty target
  * sets remain legitimate: for example, a duct-only selection has no drains. */

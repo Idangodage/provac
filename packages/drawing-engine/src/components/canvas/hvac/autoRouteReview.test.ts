@@ -45,6 +45,25 @@ describe('coordinated route review', () => {
     const review = buildAutoRouteReview(result({ ducts: { units: [unit()], elementsToAdd: [], removeElementIds: [], terminalUpdates: [], issues: [] } }), []);
     expect(review.state).toBe('blocked');
     expect(review.applyReason).toMatch(/turn off ducts and route again/);
+    expect(review.partialApply).toBeNull();
+  });
+
+  it('offers the designed units alone when only some duct layouts failed, naming the units left out', () => {
+    const services = { gas: false, liquid: false, condensate: false, supplyDuct: true, returnDuct: true };
+    const ducts = { units: [unit({ unitId: 'a', tag: 'DU-1', status: 'designed', runIds: ['run-a'] }), unit({ unitId: 'b', tag: 'DU-2' }), unit({ unitId: 'c', tag: 'DU-3' })],
+      elementsToAdd: [], removeElementIds: [], terminalUpdates: [], issues: [] };
+    // The audit repeats the refusal among the blocking issues: it does not block the designed units.
+    const refusal = 'No viable duct layout for 2 units. Resolve duct issues, or turn off ducts and route again.';
+    const review = buildAutoRouteReview(result({ services, ducts, blockingIssues: [refusal], issues: [refusal] }), []);
+    expect(review.applyReason).toBe(refusal);
+    expect(review.partialApply).toEqual({ units: 1, leftOut: ['DU-2', 'DU-3'], reason: null });
+    // Anything else wrong still blocks them: here a refrigerant connection that was asked for.
+    const refrigerant = { elementsToAdd: [], removeElementIds: [], updates: [], complete: false, connectedIndoorIds: ['a'], unconnectedIndoorIds: ['x'],
+      issues: [], metrics: null, evaluations: [], evaluatedCandidates: 1 } as unknown as UnifiedAutoRouteResult['refrigerant'];
+    const withPipes = buildAutoRouteReview(result({ services: { ...services, gas: true, liquid: true }, ducts, refrigerant, blockingIssues: [refusal] }), []);
+    expect(withPipes.partialApply?.reason).toMatch(/no refrigerant route/);
+    const clash = 'Supply duct DU-1 runs into the cassette.';
+    expect(buildAutoRouteReview(result({ services, ducts, blockingIssues: [refusal, clash] }), []).partialApply?.reason).toBe(clash);
   });
 
   it('retains both selectable drains when different bodies have the same validation message', () => {
