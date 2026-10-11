@@ -13,7 +13,10 @@
  *    their service (a collar with a duct counts as free only with Rebuild
  *    ticked), balanced by airflow and kept short (airSystemAssignment.ts), and
  *    join that unit's air system when the proposal is applied;
- *  - units are designed largest airflow first.
+ *  - units are designed largest airflow first. When a unit then fails on a
+ *    clash after another unit's ducts were proposed (boxed in by them), the
+ *    units are designed once more with such units first, and the pass that
+ *    designs more units (then the one with less duct) is kept.
  *
  * Only a design with no errors is proposed. A unit whose best design still has
  * errors is left as it is and reported, so it can be studied in the Auto duct
@@ -264,77 +267,145 @@ export function planAutoRouteDucts(
   const airflowOf = (unit: HvacElement) => basisAirflowM3h(unit, { airflowM3h: null, fanSpeed: options.fanSpeed }).airflowM3h ?? 0;
   const queue = units.filter((unit) => assigned.has(unit.id))
     .sort((a, b) => airflowOf(b) - airflowOf(a) || assigned.get(b.id)!.length - assigned.get(a.id)!.length || a.id.localeCompare(b.id));
-  let working: HvacElement[] = [...scene];
-  queue.forEach((unit, index) => {
-    const label = unit.label || unit.modelLabel || 'Unit';
-    onProgress({ stage: `${label} (${index + 1} of ${queue.length})`, completed: index, total: queue.length });
-    const group = assigned.get(unit.id)!;
-    const kinds = new Set(group.map((terminal) => terminalPorts.get(terminal.id)!.kind));
-    // The project's sizing method: constant friction at its friction rates and velocity limits, or the life-cycle optimum.
-    const constantFriction = options.settings.autoSizingMethod === 'constant-friction';
-    const auto = generateAutoDuct(working, {
-      unitId: unit.id, terminalIds: group.map((terminal) => terminal.id), fanSpeed: options.fanSpeed, layout: 'auto',
-      services: { supply: kinds.has('supply'), return: kinds.has('return') }, rebuildExisting: options.rebuildExisting, shape: options.shape,
-      ...(options.walls ? { walls: options.walls } : {}),
-      ...(options.rooms ? { rooms: options.rooms } : {}),
-      ...(constantFriction ? {
-        sizing: {
-          supply: defaultSizingBasis(options.settings, 'supply', null, options.fanSpeed),
-          return: defaultSizingBasis(options.settings, 'return', null, options.fanSpeed),
-        },
-      } : {}),
-    }, options.settings);
-    const design = auto.designs[auto.selected] ?? null;
-    const canPropose = Boolean(design && auto.runs.length && design.errors === 0);
-    const diagnostics = [...new Map([...auto.issues, ...auto.services.flatMap((service) => service.issues)]
-      // A rejected candidate has not turned any terminal. Do not report its
-      // speculative spigot adjustments as completed changes.
-      .filter((issue) => canPropose || issue.code !== 'DU_AUTO_SPIGOT')
-      .map((issue) => [`${issue.code}|${issue.severity}|${issue.message}`, issue])).values()];
-    const messages = [...new Set(diagnostics
-      .filter((issue) => issue.severity !== 'info' || issue.code === 'DU_AUTO_SPIGOT').map((issue) => issue.message))];
-    const unitResult: AutoRouteDuctUnit = {
-      unitId: unit.id, unitLabel: label, status: 'kept', services: [], requiredEspPa: auto.requiredEspPa, maxEspPa: auto.maxEspPa,
-      firstCost: design?.firstCost ?? null, lifeCycleCost: design?.lifeCycleCost ?? null, currency: auto.currency, runIds: [],
-      exact: auto.certificate?.exact ?? null, notes: messages, diagnostics, terminalIds: group.map(terminal => terminal.id),
-      tag: tags.get(unit.id) ?? label,
-      supplyTerminals: group.filter((terminal) => terminalPorts.get(terminal.id)!.kind === 'supply').length,
-      returnTerminals: group.filter((terminal) => terminalPorts.get(terminal.id)!.kind === 'return').length,
-    };
-    unitResult.services = auto.services.filter((service) => service.runs.length).map((service) => ({
-      service: service.service,
-      layout: `${service.layout ? AUTO_DUCT_LAYOUT_LABELS[service.layout] : '—'}${auto.sizing?.[service.service] ? ` · constant friction ${auto.sizing[service.service]!.frictionPaPerM.toFixed(2)} Pa/m` : ''}`,
-      trunk: sectionText(service.trunkSections[0]),
-      terminals: service.terminals.length,
-      indexPa: service.pressure?.indexPa ?? null,
-    }));
-    if (!design || !auto.runs.length) {
-      unitResult.notes = messages.length ? messages : ['No duct layout could be built for its terminals.'];
-    } else if (design.errors > 0) {
-      unitResult.notes = [`Its best design still has ${design.errors} issue${design.errors === 1 ? '' : 's'}; left as it is — study it in the Auto duct card.`, ...messages];
-    } else {
-      unitResult.status = 'designed';
-      unitResult.runIds = auto.runs.map((run) => run.id);
-      // The walls its ducts pass through (a unit serving several rooms): each a sleeve, and a fire damper where one goes.
-      for (const service of auto.services) {
-        const penetrations = service.plans.flatMap((plan) => plan.penetrations);
-        if (!penetrations.length) continue;
-        const dampers = penetrations.filter((penetration) => penetration.fireDamper).length;
-        unitResult.notes.unshift(`The ${service.service} duct passes through ${penetrations.length === 1 ? 'a wall' : `${penetrations.length} walls`}: `
-          + `${penetrations.length === 1 ? 'a sleeve' : `${penetrations.length} sleeves`}${dampers ? `, ${dampers === 1 ? 'a fire damper' : `${dampers} fire dampers`}` : ', no fire dampers'} (see the penetration schedule).`);
+  /** Designs the units one after another in `order`, each around the ducts proposed before it. */
+  const designPass = (order: readonly HvacElement[], stage: string): DuctPass => {
+    const pass: DuctPass = { units: [], elementsToAdd: [], removeElementIds: [], terminalUpdates: [] };
+    let working: HvacElement[] = [...scene];
+    order.forEach((unit, index) => {
+      const label = unit.label || unit.modelLabel || 'Unit';
+      onProgress({ stage: `${stage}${label} (${index + 1} of ${order.length})`, completed: index, total: order.length });
+      const group = assigned.get(unit.id)!;
+      const kinds = new Set(group.map((terminal) => terminalPorts.get(terminal.id)!.kind));
+      // The project's sizing method: constant friction at its friction rates and velocity limits, or the life-cycle optimum.
+      const constantFriction = options.settings.autoSizingMethod === 'constant-friction';
+      const auto = generateAutoDuct(working, {
+        unitId: unit.id, terminalIds: group.map((terminal) => terminal.id), fanSpeed: options.fanSpeed, layout: 'auto',
+        services: { supply: kinds.has('supply'), return: kinds.has('return') }, rebuildExisting: options.rebuildExisting, shape: options.shape,
+        ...(options.walls ? { walls: options.walls } : {}),
+        ...(options.rooms ? { rooms: options.rooms } : {}),
+        ...(constantFriction ? {
+          sizing: {
+            supply: defaultSizingBasis(options.settings, 'supply', null, options.fanSpeed),
+            return: defaultSizingBasis(options.settings, 'return', null, options.fanSpeed),
+          },
+        } : {}),
+      }, options.settings);
+      const design = auto.designs[auto.selected] ?? null;
+      const canPropose = Boolean(design && auto.runs.length && design.errors === 0);
+      const diagnostics = [...new Map([...auto.issues, ...auto.services.flatMap((service) => service.issues)]
+        // A rejected candidate has not turned any terminal. Do not report its
+        // speculative spigot adjustments as completed changes.
+        .filter((issue) => canPropose || issue.code !== 'DU_AUTO_SPIGOT')
+        .map((issue) => [`${issue.code}|${issue.severity}|${issue.message}`, issue])).values()];
+      const messages = [...new Set(diagnostics
+        .filter((issue) => issue.severity !== 'info' || issue.code === 'DU_AUTO_SPIGOT').map((issue) => issue.message))];
+      const unitResult: AutoRouteDuctUnit = {
+        unitId: unit.id, unitLabel: label, status: 'kept', services: [], requiredEspPa: auto.requiredEspPa, maxEspPa: auto.maxEspPa,
+        firstCost: design?.firstCost ?? null, lifeCycleCost: design?.lifeCycleCost ?? null, currency: auto.currency, runIds: [],
+        exact: auto.certificate?.exact ?? null, notes: messages, diagnostics, terminalIds: group.map(terminal => terminal.id),
+        tag: tags.get(unit.id) ?? label,
+        supplyTerminals: group.filter((terminal) => terminalPorts.get(terminal.id)!.kind === 'supply').length,
+        returnTerminals: group.filter((terminal) => terminalPorts.get(terminal.id)!.kind === 'return').length,
+      };
+      unitResult.services = auto.services.filter((service) => service.runs.length).map((service) => ({
+        service: service.service,
+        layout: `${service.layout ? AUTO_DUCT_LAYOUT_LABELS[service.layout] : '—'}${auto.sizing?.[service.service] ? ` · constant friction ${auto.sizing[service.service]!.frictionPaPerM.toFixed(2)} Pa/m` : ''}`,
+        trunk: sectionText(service.trunkSections[0]),
+        terminals: service.terminals.length,
+        indexPa: service.pressure?.indexPa ?? null,
+      }));
+      if (!design || !auto.runs.length) {
+        unitResult.notes = messages.length ? messages : ['No duct layout could be built for its terminals.'];
+      } else if (design.errors > 0) {
+        unitResult.notes = [`Its best design still has ${design.errors} issue${design.errors === 1 ? '' : 's'}; left as it is — study it in the Auto duct card.`, ...messages];
+      } else {
+        unitResult.status = 'designed';
+        unitResult.runIds = auto.runs.map((run) => run.id);
+        // The walls its ducts pass through (a unit serving several rooms): each a sleeve, and a fire damper where one goes.
+        for (const service of auto.services) {
+          const penetrations = service.plans.flatMap((plan) => plan.penetrations);
+          if (!penetrations.length) continue;
+          const dampers = penetrations.filter((penetration) => penetration.fireDamper).length;
+          unitResult.notes.unshift(`The ${service.service} duct passes through ${penetrations.length === 1 ? 'a wall' : `${penetrations.length} walls`}: `
+            + `${penetrations.length === 1 ? 'a sleeve' : `${penetrations.length} sleeves`}${dampers ? `, ${dampers === 1 ? 'a fire damper' : `${dampers} fire dampers`}` : ', no fire dampers'} (see the penetration schedule).`);
+        }
+        // The terminals its ducts serve that no system held join its air system, with the runs (one undo).
+        const terminalUpdates = withSystemAssignments(auto.terminalUpdates, auto.runs, working, unit.id);
+        pass.elementsToAdd.push(...auto.runs);
+        pass.removeElementIds.push(...auto.removeIds);
+        pass.terminalUpdates.push(...terminalUpdates);
+        const removed = new Set(auto.removeIds);
+        working = [...withReplaced(working.filter((element) => !removed.has(element.id)), terminalUpdates), ...auto.runs];
       }
-      // The terminals its ducts serve that no system held join its air system, with the runs (one undo).
-      const terminalUpdates = withSystemAssignments(auto.terminalUpdates, auto.runs, working, unit.id);
-      result.elementsToAdd.push(...auto.runs);
-      result.removeElementIds.push(...auto.removeIds);
-      result.terminalUpdates.push(...terminalUpdates);
-      const removed = new Set(auto.removeIds);
-      working = [...withReplaced(working.filter((element) => !removed.has(element.id)), terminalUpdates), ...auto.runs];
+      pass.units.push(unitResult);
+    });
+    return pass;
+  };
+  let chosen = designPass(queue, '');
+  // A unit boxed in by the ducts proposed before it: once more, with such units first; the better pass is kept.
+  const boxed = boxedInUnits(chosen.units);
+  if (boxed.length) {
+    const byId = new Map(queue.map((unit) => [unit.id, unit]));
+    const order = [...boxed, ...queue.map((unit) => unit.id).filter((id) => !boxed.includes(id))].map((id) => byId.get(id)!);
+    const second = designPass(order, 'Second pass, boxed-in units first: ');
+    if (betterDuctPass(second, chosen)) {
+      for (const unit of second.units) {
+        if (boxed.includes(unit.unitId)) unit.notes.unshift('Designed before the other units, on a second pass: on the first, the ducts proposed for units designed before it boxed it in.');
+      }
+      chosen = second;
     }
-    result.units.push(unitResult);
-    for (const note of unitResult.notes) result.issues.push(`${label}: ${note}`);
-  });
+  }
+  result.units.push(...chosen.units);
+  result.elementsToAdd.push(...chosen.elementsToAdd);
+  result.removeElementIds.push(...chosen.removeElementIds);
+  result.terminalUpdates.push(...chosen.terminalUpdates);
+  for (const unit of chosen.units) for (const note of unit.notes) result.issues.push(`${unit.unitLabel}: ${note}`);
   return result;
+}
+
+/** One pass of the duct step: every unit in an order, each designed around the ducts proposed before it. */
+export interface DuctPass {
+  units: AutoRouteDuctUnit[];
+  elementsToAdd: HvacElement[];
+  removeElementIds: string[];
+  terminalUpdates: HvacElement[];
+}
+
+/**
+ * The units a second pass designs first: those whose best design failed on a
+ * clash (DU_CLASH) after another unit's ducts had been proposed, so the order
+ * may have boxed them in. A unit that failed first, or for another reason,
+ * would fail the same way again.
+ */
+export function boxedInUnits(units: readonly AutoRouteDuctUnit[]): string[] {
+  const boxed: string[] = [];
+  let designedAhead = false;
+  for (const unit of units) {
+    if (unit.status === 'designed') designedAhead = true;
+    else if (designedAhead && unit.diagnostics?.some((issue) => issue.code === 'DU_CLASH' && issue.severity === 'error')) boxed.push(unit.unitId);
+  }
+  return boxed;
+}
+
+/** The centreline length of proposed runs (mm). */
+export function proposedDuctLengthMm(runs: readonly HvacElement[]): number {
+  let total = 0;
+  for (const run of runs) {
+    const path = readDuctRunSpec(run)?.path ?? [];
+    for (let index = 1; index < path.length; index += 1) {
+      const a = path[index - 1]!;
+      const b = path[index]!;
+      total += Math.hypot(b.x - a.x, b.y - a.y, (b.z ?? 0) - (a.z ?? 0));
+    }
+  }
+  return total;
+}
+
+/** Of two passes, the one that designs more units, then the one with less duct; the incumbent on a tie. */
+export function betterDuctPass(candidate: Pick<DuctPass, 'units' | 'elementsToAdd'>, incumbent: Pick<DuctPass, 'units' | 'elementsToAdd'>): boolean {
+  const designed = (pass: Pick<DuctPass, 'units'>) => pass.units.filter((unit) => unit.status === 'designed').length;
+  if (designed(candidate) !== designed(incumbent)) return designed(candidate) > designed(incumbent);
+  return proposedDuctLengthMm(candidate.elementsToAdd) < proposedDuctLengthMm(incumbent.elementsToAdd) - 1;
 }
 
 /** The scene as it will be once the duct proposal is applied. */
