@@ -1401,6 +1401,138 @@ about 0.5 m on.
 - Found while verifying, not part of this work: equipment (a diffuser, the FDUM22) does not move under a mouse drag after placing through the Air system card and Auto route (the press selects it; the 28 September driver logged the same after the Duct tool); keyboard nudges work. A selected duct does not move under a mouse drag in plan either.
 - Where a split is kept behind a transition and a take-off sits near the split, the neck reaches back past the take-off (it stays on round duct): the neck can be long (1.3 m in the test).
 
+## Auto route audit: far-served terminals, partial apply, a second pass, readable tags (8–11 October 2026)
+
+**The request:** an audit of the user's 26 m room (four FDUM22 in a row, diffusers along the top, grilles along the
+bottom), where Auto route showed DU-3 "Needs layout / Equipment clearance conflict", Apply was blocked, routes were long
+and labels cluttered; then "you fix the issues as you observed". Approved plan:
+`C:\Users\idang\.claude\plans\duct-autoroute-audit-fixes.md`.
+
+**What was found** (the room rebuilt from the user's screenshot in the test project, `duct-user-repro*.mjs`):
+- **The root cause: terminals served by far-away units.** Terminals had been placed "for DU-n" across the room: DU-4's
+  supply main ran 21 m along the top wall to a diffuser 4 m from DU-1. The balanced assignment never does this; the
+  pairing was the designer's. With two diffusers placed that way, DU-1's duct crosses the room, and DU-2, DU-3 and DU-4
+  then fail with `DU_CLASH`.
+- **One failed unit blocked applying the others** (deliberate: nothing is applied silently as a subset).
+- **Order:** units are designed one after another, each around the ducts proposed before it, so an early long duct
+  boxes in the later units.
+- **The preview's tags were unreadable:** the Auto route preview drew every run's full tags ("Ø200 · GI 0.50 (below
+  26 ga) · spiral · RT-1 · beaded sleeve · BOD 2495") at any zoom; they piled up, covered the terminal tags and ran out
+  of the room.
+- The "VRF checks" count was the units' unconnected refrigerant ports: no change.
+
+### A. Terminals served by far units (e6dc5ee)
+
+- **`farAssignments()`** (`airSystemAssignment.ts`): a terminal whose unit is more than `farAssignmentExtraMm` (6 m)
+  farther than the nearest other unit in its room with a collar of its service, **and** more than
+  `farAssignmentRatio` (2×) as far. Each distance is priced as the balanced assignment prices a pairing (L1 collar lip
+  to spigot lip, twice the depth behind the collar, walls crossed).
+  - The balanced assignment never produces one while the fair-share overload (2.5 m) is under the margin: moving the
+    terminal to the near unit would cost less. A property test checks it (fast-check, 120 cases).
+  - A terminal its far unit already ducts is flagged too, with the re-route advice instead of a fix.
+  - A terminal ducted from another unit than its own is left to `DU_SYSTEM_MISMATCH`.
+- **Design check `DU_SYSTEM_FAR`** (warning): "SAD-1 is served by DU-1, about 25.0 m of duct away; DU-4 in its room is
+  about 7.6 m away." Its **Fix** reassigns it.
+- **`reassignToNearestUnits(ids)`** (`airSystemController.ts`): the terminals are taken out of their systems and solved
+  again by the balanced assignment, every other terminal kept where it is. One undo. A terminal a duct already reaches is
+  left alone.
+- **Offered from:**
+  - the checks panel (Fix);
+  - the unit's Air system card: "Far: DU-1 is 8.2 m away (DU-4 26.0 m)" on the member, and "Reassign N far terminals
+    to nearer units";
+  - the Auto route result: "2 terminals are served by far units", with **Reassign and route again** (one undo for the
+    reassignment, then Auto route with the same options).
+- **When placing:** "SAD-1 placed for DU-1; DU-4 is nearer (7.6 m, DU-1 25.0 m)."
+- **Settings** (Air systems, Rules): "Far unit: another nearer by over" (6000 mm) and "Far unit: and own farther by
+  over" (2×), practice.
+
+### B. Apply the units that have a layout (7bd71fe)
+
+- When some units have no layout, the result panel offers **Apply N designed units** and names what is left out
+  ("DU-2, DU-3, DU-4 keep their existing ducts."). The main Apply still refuses the whole preview.
+- `partialDuctApplyRefusal()` (`autoRouteCompleteness.ts`): allowed while some requested unit has no layout, at least
+  one has, and every other requested service is complete. Anything else that would block Apply still blocks it: a
+  clash or blocking detail from the coordinated audit, unapproved hops, a stale drawing, the final commit check.
+- `applyAutoRoutePreview({ designedUnitsOnly: true })`: one undo. The message names the units left out first, so the
+  toolbar's truncated status keeps them: "Auto route applied without DU-2, DU-3, DU-4 (no duct layout; they keep their
+  ducts): 6 duct runs for 1 unit. One undo reverts it."
+- **Found by the review, fixed here:** every coordinated candidate (refrigerant-first, drainage-first) carried the same
+  duct refusal among its blocking issues, so with a unit kept they all looked infeasible and the ranking fell through to
+  price: a cheaper candidate with a real pipe or drain clash could beat a clean one. It did not matter while Apply was
+  all-or-nothing. `selectServiceRouteCandidate()` now ranks on everything but that shared refusal (kept in the result),
+  and the drainage-first retry is decided the same way.
+
+### C. A second pass, boxed-in units first (d74c33d)
+
+- `planAutoRouteDucts` designs the units as before. When a unit fails on a clash (`DU_CLASH`) after another unit's
+  ducts were proposed (`boxedInUnits()`), it designs them all once more with such units first.
+- `betterDuctPass()`: the pass that designs more units wins, then the one with less duct (centreline length); the first
+  pass on a tie. At most one retry, so routing time grows only when something failed.
+- Each unit designed first on the second pass says so: "Designed before the other units, on a second pass: on the
+  first, the ducts proposed for units designed before it boxed it in."
+- **On the user's room** (two diffusers placed for the far units): the first pass designs DU-1 only (43 s); the second
+  designs DU-2, DU-3 and DU-4, DU-1 left out (its duct to the far diffuser has nowhere to go) — 3 of 4 in 117 s, and
+  "Apply 3 designed units" applies them. Reassigning the two diffusers (A) gives 4 of 4 in one pass.
+
+### D. Readable duct tags (3760b69)
+
+- **Before:** the plan drew each section's full tag on every leg once a duct was a few pixels wide, and the Auto route
+  and Auto duct previews forced every label on at any zoom. On the user's room at 47 % they piled up, covered the
+  terminal tags and ran past their legs and out of the room.
+- **Now** (`ductTagLayout.ts`): every run's size tags, committed and previewed, are laid out together.
+  - **Zoomed out** (under 0.08 screen px per mm, about 105 % at 1:50): each section shows its size alone ("Ø200",
+    "600×300", "PLENUM 600×300"). A flexible runout, whose size the terminal's tag gives, shows nothing.
+  - **Zoomed in, and on a selected run at any zoom:** the full tag.
+  - **Where** (`DuctPlanTag.anchors`): beside the middle of one of its section's three longest straight stretches
+    (level straight pieces end to end along a leg), else a quarter of the way along one; a runout's along the runout
+    where it runs. On either side of the duct, at least 40 mm (and 4 px) off its side, clear of the flange ticks. The
+    tag must fit along the stretch (a selected run's full tag excepted).
+  - **No clutter:** a tag may not cover another tag, a duct piece (or its insulation), a unit, a terminal face or a
+    terminal's tag, or another label the run draws (fire damper, riser, sleeve, attenuator, access door, a volume
+    damper's quadrant). It tries the full text at every anchor and side, then the size; failing all, it is left out.
+  - **Order:** the selected runs first, then bigger sections before smaller, so trunks keep their tags where branches
+    crowd them.
+  - Below 0.012 px per mm there are no section tags. Widths are measured in the plan's font (canvas `measureText`,
+    cached per text).
+- **The previews** draw their other labels by the committed runs' zoom rule. A drag, an edit handle, a hovered card
+  option and a draft (`transientTags`) lay their run's tags out the same way, around everything else, while the
+  originals and their tags hide. The preview's plans are computed once per proposal, not on every zoom step.
+- **Review:** two reviewers and a verifier found duct bodies, runouts, single anchors, other labels and the transient
+  previews unaccounted for in the first version; all are addressed above.
+
+### Verified
+
+- **Unit tests:**
+  - `airSystemFar` (6): the swapped room flagged, the margin and the factor both needed, rooms and services, a ducted
+    terminal, a balanced assignment never flagged (property, 120 cases), the settings.
+  - Store `airSystems` (+2): reassign in one step and undo; the placement note.
+  - `autoRouteReview` (+1), `autoRouteController.coordination` (+1), `serviceRouteObjective` (+1): the partial-apply
+    offer and its blockers, the partial apply and its undo, the coordinated ranking with a kept unit.
+  - `ductAutoRouteOrder` (3): boxed-in units, the better pass, and two units from the user's room where the first
+    order boxes DU-2 in and the second pass designs both.
+  - `ductTagLayout` (9): levels, the fit rule, a selected run's full tag, no overlaps with tags or ducts, every anchor
+    tried, terminals, a real run's tags and markup, a terminal's tag, a runout's tag along it.
+- **On canvas** (mouse only; the user's room rebuilt in the test project; each driver restores it exactly):
+  `duct-far-assign` 14/14, `duct-partial-apply` 6/6, `duct-second-pass` 5/5, `duct-tags` 14/14 (sizes only at the
+  room view and at 47 %, no two tags overlapping, none on a straight duct, the runs drawing none of their own; full
+  tags zoomed in; a selected run's full tag; a hovered card option's tags laid out with the rest).
+- **Regressions:** every segment-card driver (`duct-seg-p1` 16, `-p2` 22, `-p3` 29, `-p4` 16, `-p5` 14, `-views` 8,
+  `-v2-highlight` 5, `-v2` 10, `-click` 8, `duct-round-rect` 10, `duct-y-junction` 9) and the air-system drivers
+  (`air-p1` 25, `-p2` 23, `-p3` 14, `duct-cross-room` 18) pass, each restoring the project.
+- **Final build:** the full suite, 2099 tests (one refrigerant geometry test, near its 60 s limit, timed out under the
+  suite's parallel load and passes alone); `DUCT_BENCHMARK` 43/43; type-check and lint clean on the changed files.
+
+### Found while auditing, not changed
+
+- The design-check markers draw over the Auto route result panel: the floating route bar lives in the pipe overlay's
+  stacking layer (`z-[8]`), below the checks overlay (`z-[12]`).
+- Auto route's ducts, once applied, carry `DU_SUPPORT_RULE` warnings (no support position within 610 mm of an elbow,
+  SMACNA S4.1): the optimiser does not weigh support positions.
+- Reassigning a terminal its duct already reaches, then routing with Rebuild existing ducts, can leave it unserved:
+  the duct step decides which terminals are free per unit, not from every collar being rebuilt.
+- `autoRouteNetwork.geometry` "four cardinal directions" sits near its 60 s limit and can time out under the full
+  suite's parallel load (it passes alone).
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
@@ -1422,7 +1554,7 @@ about 0.5 m on.
 - The design-check chip is still titled "VRF checks" though it lists condensate and duct checks too.
 - The NBR skin in 3D does not box the flanges, so a 30 mm TDC flange shows through a 25 mm skin.
 - Duct-to-duct clash skips a branch and its own parent.
-- Auto duct designs one level per service and adds no risers. A one-room system keeps clear of walls (obstacles in their own height band; there are no beams or storeys in the model); a system spanning rooms passes interior walls by sleeve (see Air systems above). Units are designed one after another (each around the ones before), not jointly.
+- Auto duct designs one level per service and adds no risers. A one-room system keeps clear of walls (obstacles in their own height band; there are no beams or storeys in the model); a system spanning rooms passes interior walls by sleeve (see Air systems above). Units are designed one after another (each around the ones before), with one more pass, boxed-in units first, when a unit failed on a clash after another was designed; not jointly.
 - Auto duct's pressure figures are estimates with practice loss coefficients, not a certified duct calculation.
 - Terminal sizes are typical catalog values (practice) until a supplier's data is entered.
 - A rigid connection to a terminal is checked, not routed: its last leg has to be drawn straight into the spigot.
