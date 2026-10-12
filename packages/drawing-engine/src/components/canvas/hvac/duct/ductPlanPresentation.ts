@@ -13,10 +13,29 @@ import { describeJoint } from './ductGauge';
 import { add, dot, ductLegs, frameToPlan, perpToward, sampleArc, scale, squareElbowGeometry, sub, unit } from './ductGeometry';
 import type { DuctLeg } from './ductTypes';
 
+/** A place the plan's tag layout (ductTagLayout.ts) may put a tag. */
+export interface DuctTagAnchor {
+  /** On the duct's centreline. */
+  point: Point2D;
+  /** The side the tag tries first (unit); the layout also tries the other. */
+  normal: Point2D;
+  /** Half the duct's width there, insulation included: the tag keeps clear of it (mm). */
+  halfWidthMm: number;
+  /** The length along the tag it may take (mm; null: no limit). */
+  spanMm: number | null;
+  angleDeg: number;
+}
+
 export interface DuctPlanTag {
   point: Point2D;
   angleDeg: number;
   text: string;
+  /** The size alone ("Ø200", "600×300"), for a zoomed-out plan; null: no short form (left out there). */
+  short?: string | null;
+  /** Where the plan's tag layout may put it, best first (absent: at `point` only). */
+  anchors?: DuctTagAnchor[];
+  /** The section's area (mm²): bigger sections are labelled first. */
+  areaMm2?: number;
 }
 
 export interface DuctPlanPresentation {
@@ -450,9 +469,19 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
         connectorHatch.push(zig);
         centreline.push(...path);
         const middle = path[Math.floor(path.length / 2)]!;
+        // Along the runout where it is: its middle, then a third of the way along from either end.
+        const flexAnchors = [0.5, 1 / 3, 2 / 3].map((fraction): DuctTagAnchor => {
+          const index = Math.min(path.length - 2, Math.max(0, Math.round((path.length - 1) * fraction) - 1));
+          const tangent = unit(sub(path[index + 1]!, path[index]!));
+          return { point: scale(add(path[index]!, path[index + 1]!), 0.5), normal: scale(normalOf(tangent), -1), halfWidthMm: piece.widthMm / 2, spanMm: null, angleDeg: readableAngle(tangent) };
+        });
         tags.push({
           point: add(middle, { x: 0, y: -(piece.widthMm / 2 + 60) }), angleDeg: 0,
           text: `FLEX Ø${Math.round(piece.widthMm)} · ${(piece.lengthMm / 1000).toFixed(2)} m${piece.flex!.type === 'nm-il' ? ' · insulated' : ''}`,
+          // A runout's size is its terminal's neck, which the terminal's tag gives: no short form.
+          short: null,
+          anchors: flexAnchors,
+          areaMm2: (Math.PI * piece.widthMm * piece.widthMm) / 4,
         });
         break;
       }
@@ -465,6 +494,9 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
         tags.push({
           point: add(mid, scale(normalOf(piece.direction), -(halfWidth + 70))), angleDeg: readableAngle(piece.direction),
           text: `PLENUM ${Math.round(piece.widthMm)}×${Math.round(piece.heightMm)}×${Math.round(piece.lengthMm)} · GI ${sheet.toFixed(2)}`,
+          short: `PLENUM ${Math.round(piece.widthMm)}×${Math.round(piece.heightMm)}`,
+          anchors: [{ point: mid, normal: scale(normalOf(piece.direction), -1), halfWidthMm: halfWidth + plan.insulationMm, spanMm: null, angleDeg: readableAngle(piece.direction) }],
+          areaMm2: piece.widthMm * piece.heightMm,
         });
         break;
       }
@@ -555,21 +587,47 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
     return { a: add(joint.point, scale(n, half)), b: sub(joint.point, scale(n, half)), kind: joint.kind };
   });
 
-  // One tag per distinct section and level, on its longest level straight.
-  const longestBySection = new Map<string, DuctPiece>();
+  // One tag per distinct section and level, at the middle of its longest straight stretch (level straight pieces end
+  // to end along one leg: the tag may take the stretch's length, not just one fabricated section's).
+  const stretches: Array<{ key: string; first: DuctPiece; last: DuctPiece; lengthMm: number }> = [];
   for (const piece of plan.pieces) {
     if (piece.kind !== 'straight' || piece.vertical) continue;
     const key = `${sectionKey(piece)}@${Math.round(piece.bottomZ)}`;
-    const best = longestBySection.get(key);
-    if (!best || piece.lengthMm > best.lengthMm) longestBySection.set(key, piece);
+    const open = stretches[stretches.length - 1];
+    if (open && open.key === key && open.last.legIndex === piece.legIndex && Math.hypot(open.last.end.x - piece.start.x, open.last.end.y - piece.start.y) < 1) {
+      open.last = piece;
+      open.lengthMm += piece.lengthMm;
+    } else stretches.push({ key, first: piece, last: piece, lengthMm: piece.lengthMm });
   }
-  if (longestBySection.size === 0 && plan.pieces[0]) longestBySection.set(sectionKey(plan.pieces[0]), plan.pieces[0]);
-  for (const piece of longestBySection.values()) {
+  const bySection = new Map<string, Array<(typeof stretches)[number]>>();
+  for (const stretch of stretches) bySection.set(stretch.key, [...(bySection.get(stretch.key) ?? []), stretch]);
+  // No level straight at all (a run of fittings, or a riser): one tag on its first piece, where the run draws it.
+  if (bySection.size === 0 && plan.pieces[0]) {
+    const piece = plan.pieces[0];
+    bySection.set(sectionKey(piece), [{ key: sectionKey(piece), first: piece, last: piece, lengthMm: 0 }]);
+  }
+  for (const sectionStretches of bySection.values()) {
+    // The longest stretches first; the tag may go at the middle of any of them, else a quarter of the way along.
+    const ranked = [...sectionStretches].sort((a, b) => b.lengthMm - a.lengthMm).slice(0, 3);
+    const { first: piece, last } = ranked[0]!;
+    const middle = scale(add(piece.start, last.end), 0.5);
+    const round = piece.diameterMm !== undefined;
+    const halfWidthMm = piece.widthMm / 2 + plan.insulationMm;
+    const along = (stretch: (typeof stretches)[number], fraction: number): DuctTagAnchor => ({
+      point: add(stretch.first.start, scale(sub(stretch.last.end, stretch.first.start), fraction)),
+      normal: scale(normalOf(stretch.first.direction), -1), halfWidthMm, angleDeg: readableAngle(stretch.first.direction),
+      // Centred there, the tag may take twice the distance to the nearer end of the stretch.
+      spanMm: 2 * Math.min(fraction, 1 - fraction) * stretch.lengthMm,
+    });
+    const level = ranked[0]!.lengthMm > 0;
     tags.push({
-      point: add(scale(add(piece.start, piece.end), 0.5), scale(normalOf(piece.direction), -(piece.widthMm / 2 + 70))),
+      point: add(middle, scale(normalOf(piece.direction), -(piece.widthMm / 2 + 70))),
       angleDeg: readableAngle(piece.direction),
-      text: ductTagText(plan, { widthMm: piece.widthMm, heightMm: piece.heightMm, ...(piece.diameterMm !== undefined ? { diameterMm: piece.diameterMm } : {}) },
+      text: ductTagText(plan, { widthMm: piece.widthMm, heightMm: piece.heightMm, ...(round ? { diameterMm: piece.diameterMm } : {}) },
         piece.vertical ? undefined : piece.bottomZ),
+      short: round ? `Ø${Math.round(piece.diameterMm!)}` : `${Math.round(piece.widthMm)}×${Math.round(piece.heightMm)}`,
+      ...(level ? { anchors: [...ranked.map((stretch) => along(stretch, 0.5)), ...ranked.flatMap((stretch) => [along(stretch, 0.25), along(stretch, 0.75)])] } : {}),
+      areaMm2: round ? (Math.PI * piece.diameterMm! * piece.diameterMm!) / 4 : piece.widthMm * piece.heightMm,
     });
   }
 

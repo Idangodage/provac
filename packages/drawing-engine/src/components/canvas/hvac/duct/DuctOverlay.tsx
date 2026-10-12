@@ -38,19 +38,24 @@ import { ductLegs } from './ductGeometry';
 import {
   airPortMarkup,
   airTerminalMarkup,
+  airTerminalTagObstacles,
   branchTargetMarkup,
   draftLabelMarkup,
   ductRunMarkup,
+  ductRunTagObstacles,
   ductSupportMarkup,
+  equipmentTagObstacle,
+  placedDuctTagMarkup,
   segmentFocusMarkup,
   type DuctMarkupStyle,
 } from './ductOverlayMarkup';
 import { distanceToPolygon, getDuctPlanPresentation } from './ductPick';
-import { buildDuctPlanPresentation } from './ductPlanPresentation';
+import { buildDuctPlanPresentation, type DuctPlanPresentation } from './ductPlanPresentation';
 import { useDuctSegmentUiStore, type DuctSegmentFocus } from './ductSegmentUiStore';
 import { ductSegmentOfMark, polygonHotspot, segmentEnds, segmentOutlines } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { getDuctSupportPlan } from './ductSupports';
+import { estimateTagTextPx, layoutDuctTags, TAG_FONT_PX, type DuctTagSource, type PlacedDuctTag, type TagObstacle } from './ductTagLayout';
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec } from './ductTypes';
 import type { ScreenRect } from './popoverPlacement';
@@ -77,6 +82,22 @@ export interface DuctOverlayHandle {
   setBranchTarget: (target: DuctOverlayBranchTarget | null) => void;
   /** Where a segment of a run is on screen (client pixels): the piece `anchorMark`, else the whole segment. */
   segmentClientRect: (runId: string, key: string, anchorMark: string | null) => ScreenRect | null;
+}
+
+/** Tag widths on screen (px), measured once per text in the font the plan draws tags in. */
+const TAG_WIDTHS = new Map<string, number>();
+let tagContext: CanvasRenderingContext2D | null | undefined;
+function measureTagText(text: string): number {
+  const known = TAG_WIDTHS.get(text);
+  if (known !== undefined) return known;
+  if (tagContext === undefined) {
+    tagContext = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
+    if (tagContext) tagContext.font = `${TAG_FONT_PX}px system-ui, sans-serif`;
+  }
+  const width = tagContext ? tagContext.measureText(text).width : estimateTagTextPx(text);
+  if (TAG_WIDTHS.size > 5000) TAG_WIDTHS.clear();
+  TAG_WIDTHS.set(text, width);
+  return width;
 }
 
 function markupStyle(k: number, settings: DuctDesignSettings): DuctMarkupStyle {
@@ -149,6 +170,28 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   kRef.current = k;
   const sceneRef = useRef({ hvacElements, settings });
   sceneRef.current = { hvacElements, settings };
+  /** The plan's tag layout as drawn now (set each render): what a transient preview lays its own tags out around. */
+  const tagLayoutRef = useRef<{ placed: PlacedDuctTag[]; obstacles: TagObstacle[] } | null>(null);
+  /**
+   * The size tags of runs drawn for a moment over their hidden selves (a drag,
+   * an edit, an option, a branch draft): laid out by the same rules, around
+   * everything else on the plan.
+   */
+  const transientTags = useCallback((presentations: ReadonlyArray<{ presentation: DuctPlanPresentation; selected: boolean }>, hidden: ReadonlySet<string>): string => {
+    const layout = tagLayoutRef.current;
+    if (!layout) return '';
+    const k = kRef.current;
+    const style = markupStyle(k, sceneRef.current.settings);
+    const obstacles: TagObstacle[] = [
+      ...layout.obstacles.filter((obstacle) => !obstacle.runId || !hidden.has(obstacle.runId)),
+      ...layout.placed.filter((tag) => !hidden.has(tag.runId)).map((tag) => tag.box),
+      ...presentations.flatMap(({ presentation }) => ductRunTagObstacles(presentation, style, measureTagText)),
+    ];
+    const sources: DuctTagSource[] = presentations.map(({ presentation, selected }) => ({
+      runId: presentation.id, service: presentation.service, status: presentation.status, selected, tags: presentation.tags,
+    }));
+    return placedDuctTagMarkup(layoutDuctTags(sources, k, { measure: measureTagText, obstacles }), k);
+  }, []);
 
   const syncViewTransform = useCallback((vpt: readonly number[]) => {
     if (vpt.length < 6) return;
@@ -183,8 +226,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const applyHiddenRun = useCallback(() => {
     const root = runsRef.current;
     if (!root) return;
-    root.querySelectorAll<SVGGElement>('[data-duct-run], [data-duct-supports]').forEach((node) => {
-      const id = node.getAttribute('data-duct-run') ?? node.getAttribute('data-duct-supports') ?? '';
+    root.querySelectorAll<SVGGElement>('[data-duct-run], [data-duct-supports], [data-duct-tags]').forEach((node) => {
+      const id = node.getAttribute('data-duct-run') ?? node.getAttribute('data-duct-supports') ?? node.getAttribute('data-duct-tags') ?? '';
       const hide = hiddenRunsRef.current.has(id) || previewHiddenRef.current.has(id);
       if ((node.style.display === 'none') !== hide) node.style.display = hide ? 'none' : '';
     });
@@ -204,15 +247,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const replaced = new Map((draft.changed ?? []).map((element) => [element.id, element]));
     const scene = [...stored.map((element) => replaced.get(element.id) ?? element), draft.element];
     const plan = planDuctRunSpec(draft.element.id, spec, { settings: current, scene });
-    let markup = ductRunMarkup(buildDuctPlanPresentation(plan), {
-      k: kRef.current, draft: true, showTags: true, showJointTicks: true, showMarks: false,
+    // The run being drawn shows its full tags (as a selected run does), laid out with the rest.
+    const drawn = { presentation: buildDuctPlanPresentation(plan), selected: true };
+    let markup = ductRunMarkup(drawn.presentation, {
+      k: kRef.current, draft: true, showTags: true, sectionTags: false, showJointTicks: true, showMarks: false,
     });
+    const tagged = [drawn];
     const parentId = ductParentRunId(spec);
     const parent = parentId ? scene.find((element) => element.id === parentId) : undefined;
     const parentSpec = parent ? readDuctRunSpec(parent) : null;
     if (parent && parentSpec) {
-      const parentPlan = planDuctRunSpec(parent.id, parentSpec, { settings: current, scene });
-      markup = ductRunMarkup(buildDuctPlanPresentation(parentPlan), markupStyle(kRef.current, current)) + markup;
+      const parentPresentation = buildDuctPlanPresentation(planDuctRunSpec(parent.id, parentSpec, { settings: current, scene }));
+      markup = ductRunMarkup(parentPresentation, { ...markupStyle(kRef.current, current), sectionTags: false }) + markup;
+      tagged.push({ presentation: parentPresentation, selected: false });
     }
     // Hide the committed drawings the draft re-draws: the parent, and the run itself when it is being extended.
     const hidden = [...(parent ? [parent.id] : []), ...(stored.some((element) => element.id === draft.element.id) ? [draft.element.id] : [])];
@@ -220,8 +267,9 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       hiddenRunsRef.current = new Set(hidden);
       applyHiddenRun();
     }
-    target.innerHTML = markup + (draft.label ? draftLabelMarkup(draft.label.point, draft.label.text, kRef.current) : '');
-  }, [applyHiddenRun]);
+    target.innerHTML = markup + transientTags(tagged, new Set(hidden))
+      + (draft.label ? draftLabelMarkup(draft.label.point, draft.label.text, kRef.current) : '');
+  }, [applyHiddenRun, transientTags]);
 
   const selectedIdsRef = useRef(selectedIds);
   selectedIdsRef.current = selectedIds;
@@ -262,13 +310,16 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const result = moveDuctRuns(stored, ids, delta, current);
     const replaced = new Map(result.moved.map((element) => [element.id, element]));
     const scene = stored.map((element) => replaced.get(element.id) ?? element);
-    target.innerHTML = result.moved.map((element) => {
+    const moved = result.moved.flatMap((element) => {
       const plan = getDuctRunPlan(element, scene, current);
-      return plan ? ductRunMarkup(buildDuctPlanPresentation(plan), { ...markupStyle(kRef.current, current), selected: ids.includes(element.id) }) : '';
-    }).join('');
-    hiddenRunsRef.current = new Set(result.moved.map((element) => element.id));
+      return plan ? [{ presentation: buildDuctPlanPresentation(plan), selected: ids.includes(element.id) }] : [];
+    });
+    const hidden = new Set(result.moved.map((element) => element.id));
+    target.innerHTML = moved.map(({ presentation, selected }) => ductRunMarkup(presentation, { ...markupStyle(kRef.current, current), sectionTags: false, selected })).join('')
+      + transientTags(moved, hidden);
+    hiddenRunsRef.current = hidden;
     applyHiddenRun();
-  }, [applyHiddenRun]);
+  }, [applyHiddenRun, transientTags]);
 
   const endMove = useCallback((commit: boolean) => {
     const move = moveRef.current;
@@ -345,13 +396,16 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const { hvacElements: stored, settings: current } = sceneRef.current;
     const replaced = new Map(elements.map((element) => [element.id, element]));
     const scene = stored.map((element) => replaced.get(element.id) ?? element);
-    target.innerHTML = elements.map((element) => {
+    const edited = elements.flatMap((element) => {
       const plan = getDuctRunPlan(element, scene, current);
-      return plan ? ductRunMarkup(buildDuctPlanPresentation(plan), { ...markupStyle(kRef.current, current), selected: element.id === selectedId }) : '';
-    }).join('');
-    hiddenRunsRef.current = new Set(elements.map((element) => element.id));
+      return plan ? [{ presentation: buildDuctPlanPresentation(plan), selected: element.id === selectedId }] : [];
+    });
+    const hidden = new Set(elements.map((element) => element.id));
+    target.innerHTML = edited.map(({ presentation, selected }) => ductRunMarkup(presentation, { ...markupStyle(kRef.current, current), sectionTags: false, selected })).join('')
+      + transientTags(edited, hidden);
+    hiddenRunsRef.current = hidden;
     applyHiddenRun();
-  }, [applyHiddenRun]);
+  }, [applyHiddenRun, transientTags]);
 
   const onHandlePointerDown = useCallback((event: ReactPointerEvent<SVGElement>, handle: DuctEditHandle, elementId: string) => {
     if (event.button !== 0) return;
@@ -435,17 +489,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       const replaced = new Map(preview!.updates.map((element) => [element.id, element]));
       const scene = stored.map((element) => replaced.get(element.id) ?? element);
       const pinnedRun = useDuctSegmentUiStore.getState().pinned?.runId;
-      markup = ducts.map((element) => {
+      const previewed = ducts.flatMap((element) => {
         const plan = getDuctRunPlan(element, scene, current);
-        return plan ? ductRunMarkup(buildDuctPlanPresentation(plan), { ...markupStyle(kRef.current, current), draft: true, selected: element.id === pinnedRun }) : '';
-      }).join('');
+        return plan ? [{ presentation: buildDuctPlanPresentation(plan), selected: element.id === pinnedRun }] : [];
+      });
+      markup = previewed.map(({ presentation, selected }) => ductRunMarkup(presentation, { ...markupStyle(kRef.current, current), draft: true, sectionTags: false, selected })).join('')
+        + transientTags(previewed, ids);
     }
     if (target.innerHTML !== markup) target.innerHTML = markup;
     if ([...ids].join() !== [...previewHiddenRef.current].join()) {
       previewHiddenRef.current = ids;
       applyHiddenRun();
     }
-  }, [applyHiddenRun]);
+  }, [applyHiddenRun, transientTags]);
 
   /** Outline the segment under the pointer and the pinned one (from the segment store; no React render). */
   const paintSegments = useCallback(() => {
@@ -519,22 +575,50 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     });
   }, [hvacElements, autoPreview]);
   const replacedIds = useMemo(() => new Set(autoPreview?.removeIds ?? []), [autoPreview]);
-  const previewMarkup = useMemo(() => {
-    if (!autoPreview?.runs.length) return '';
+  // The proposal's runs, planned over the drawing they were generated from (once per proposal, not per zoom).
+  const previewPresentations = useMemo(() => {
+    if (!autoPreview?.runs.length) return [];
     const turned = new Map(autoPreview.turned.map((element) => [element.id, element]));
     const scene = [...hvacElements.filter((element) => !replacedIds.has(element.id)).map((element) => turned.get(element.id) ?? element), ...autoPreview.runs];
-    return autoPreview.runs.map((run) => {
+    return autoPreview.runs.flatMap((run) => {
       const spec = readDuctRunSpec(run);
-      return spec ? ductRunMarkup(buildDuctPlanPresentation(planDuctRunSpec(run.id, spec, { settings, scene, building })), {
-        k, draft: true, showTags: true, showJointTicks: true, showMarks: false,
-      }) : '';
-    }).join('');
-  }, [autoPreview, hvacElements, replacedIds, settings, building, k]);
+      return spec ? [buildDuctPlanPresentation(planDuctRunSpec(run.id, spec, { settings, scene, building }))] : [];
+    });
+  }, [autoPreview, hvacElements, replacedIds, settings, building]);
+  // Drawn as the committed runs are (their other labels where tags show), the size tags by the layout.
+  const previewMarkup = useMemo(() => previewPresentations.map((presentation) => ductRunMarkup(presentation, {
+    k, draft: true, showTags: markupStyle(k, settings).showTags, sectionTags: false, showJointTicks: true, showMarks: false,
+  })).join(''), [previewPresentations, k, settings]);
   const runs = useMemo(() => hvacElements
     .filter(isDuctElement)
     .map((element) => getDuctRunPlan(element, hvacElements, settings))
     // (The plans read the active building, which `building` tracks.)
     .filter((plan): plan is NonNullable<typeof plan> => plan !== null), [hvacElements, settings, building]);
+  // Every run's size tags, laid out together (ductTagLayout.ts): the size alone when zoomed out, the full tag zoomed in
+  // and on the selected runs; none over another tag, a duct, a unit, a terminal (and its tag) or another label, none
+  // longer than its own straight.
+  const tagLayout = useMemo(() => {
+    if (!settings.showSizeTags) return null;
+    const style = markupStyle(k, settings);
+    const drawn = [
+      ...runs.filter((plan) => !replacedIds.has(plan.elementId)).map((plan) => ({ presentation: getDuctPlanPresentation(plan), selected: selectedSet.has(plan.elementId), draft: false })),
+      ...previewPresentations.map((presentation) => ({ presentation, selected: false, draft: true })),
+    ];
+    const obstacles: TagObstacle[] = [
+      ...hvacElements.filter(isAirSystemUnit).map((unit) => equipmentTagObstacle(unit)),
+      ...terminals.flatMap(({ element, spec }) => airTerminalTagObstacles(element, spec, k, style.showTags, measureTagText)),
+      ...drawn.flatMap(({ presentation }) => ductRunTagObstacles(presentation, style, measureTagText)),
+    ];
+    const sources: DuctTagSource[] = drawn.map(({ presentation, selected, draft }) => ({
+      runId: presentation.id, service: presentation.service, status: presentation.status, selected, draft, tags: presentation.tags,
+    }));
+    return { placed: layoutDuctTags(sources, k, { measure: measureTagText, obstacles }), obstacles };
+  }, [settings, k, hvacElements, terminals, runs, replacedIds, selectedSet, previewPresentations]);
+  tagLayoutRef.current = tagLayout;
+  const tagMarkup = useMemo(() => (tagLayout ? {
+    committed: placedDuctTagMarkup(tagLayout.placed.filter((tag) => !tag.draft), k),
+    preview: placedDuctTagMarkup(tagLayout.placed.filter((tag) => tag.draft), k),
+  } : { committed: '', preview: '' }), [tagLayout, k]);
   const hitAreas = useMemo(() => (moveEnabled ? runs.filter((plan) => selectedSet.has(plan.elementId)) : [])
     .flatMap((plan) => getDuctPlanPresentation(plan).piecePolygons.map((piece) => ({ runId: plan.elementId, mark: piece.mark, polygon: piece.polygon }))),
   [moveEnabled, runs, selectedSet]);
@@ -584,15 +668,16 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
               <g
                 key={plan.elementId}
                 dangerouslySetInnerHTML={{
-                  __html: ductRunMarkup(getDuctPlanPresentation(plan), { ...style, selected: selectedSet.has(plan.elementId) })
+                  __html: ductRunMarkup(getDuctPlanPresentation(plan), { ...style, sectionTags: false, selected: selectedSet.has(plan.elementId) })
                     + (style.showSupports ? ductSupportMarkup(getDuctSupportPlan(plan, hvacElements, settings), k) : ''),
                 }}
               />
             ))}
+            <g data-testid="duct-tags" dangerouslySetInnerHTML={{ __html: tagMarkup.committed }} />
           </g>
           <AirSystemLayer analysis={airSystems} hvacElements={hvacElements} k={k} focusUnitIds={focusUnitIds}
             showAll={settings.showAirSystems} showTags={style.showTags} />
-          <g data-testid="duct-auto-preview" dangerouslySetInnerHTML={{ __html: previewMarkup }} />
+          <g data-testid="duct-auto-preview" dangerouslySetInnerHTML={{ __html: previewMarkup + tagMarkup.preview }} />
           <g ref={optionPreviewRef} data-testid="duct-option-preview" style={{ pointerEvents: 'none' }} />
           <g ref={segmentRef} data-testid="duct-segment-focus" style={{ pointerEvents: 'none' }} />
           <g ref={portsRef} data-testid="duct-ports" />

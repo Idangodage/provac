@@ -9,6 +9,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import type { DuctAirPort } from './ductAirPorts';
 import type { DuctPlanPresentation } from './ductPlanPresentation';
 import type { DuctSupportPlan } from './ductSupports';
+import { polygonObstacle, tagTextBox, TAG_FONT_PX, type PlacedDuctTag, type TagBox, type TagObstacle, type TextMeasure } from './ductTagLayout';
 import { localTerminalSpigot, TERMINAL_TAG_PATTERN, terminalTypeTag, type DuctTerminalSpec } from './ductTerminals';
 
 export interface DuctMarkupStyle {
@@ -17,6 +18,8 @@ export interface DuctMarkupStyle {
   selected?: boolean;
   draft?: boolean;
   showTags: boolean;
+  /** The run draws its own size tags (default); false where the plan's tag layout draws them (ductTagLayout.ts). */
+  sectionTags?: boolean;
   showJointTicks: boolean;
   showMarks: boolean;
   showSupports?: boolean;
@@ -125,8 +128,8 @@ export function ductRunMarkup(presentation: DuctPlanPresentation, style: DuctMar
     parts.push(`<path d="${pathData(damper.blade)}" stroke="${stroke}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linecap="round"/>`);
     parts.push(`<circle cx="${f(damper.quadrant.x)}" cy="${f(damper.quadrant.y)}" r="${f(px(4))}" fill="#ffffff" stroke="${stroke}" stroke-width="1.2" vector-effect="non-scaling-stroke"/>`);
   }
-  if (style.showTags) {
-    for (const tag of presentation.tags) parts.push(textMarkup(tag.point, tag.text, px(11), palette.stroke, tag.angleDeg));
+  if (style.showTags && style.sectionTags !== false) {
+    for (const tag of presentation.tags) parts.push(textMarkup(tag.point, tag.text, px(TAG_FONT_PX), palette.stroke, tag.angleDeg));
   }
   for (const point of presentation.warningPoints) {
     parts.push(`<circle cx="${f(point.x)}" cy="${f(point.y)}" r="${f(px(7))}" fill="none" stroke="${COLORS.warning}" stroke-width="2" stroke-dasharray="3 2" vector-effect="non-scaling-stroke"/>`);
@@ -136,6 +139,56 @@ export function ductRunMarkup(presentation: DuctPlanPresentation, style: DuctMar
   }
   parts.push('</g>');
   return parts.join('');
+}
+
+/**
+ * What a run draws besides its size tags, for the tag layout to keep off: its
+ * pieces (and their insulation), and the labels it draws as `ductRunMarkup`
+ * does — fire dampers always; risers, sleeves, attenuators and access doors
+ * where tags show; piece marks where they show.
+ */
+export function ductRunTagObstacles(presentation: DuctPlanPresentation, style: Pick<DuctMarkupStyle, 'k' | 'showTags' | 'showMarks'>, measure: TextMeasure): TagObstacle[] {
+  const runId = presentation.id;
+  const out: TagObstacle[] = [...presentation.piecePolygons.map((piece) => piece.polygon), ...presentation.insulationOutlines].map((polygon) => polygonObstacle(polygon, runId));
+  const label = (point: Point2D, text: string, fontPx: number, anchor: 'middle' | 'start'): TagObstacle => {
+    const width = (measure(text) * fontPx) / TAG_FONT_PX;
+    const centre = anchor === 'start' ? { x: point.x + width / 2 / Math.max(style.k, 1e-6), y: point.y } : point;
+    return { ...tagTextBox(centre, 0, width, style.k), runId };
+  };
+  for (const damper of presentation.fireDampers) out.push(label(damper.labelPoint, damper.label, 10, 'middle'));
+  // A volume damper's quadrant, drawn just outside the duct.
+  const quadrant = 6 / Math.max(style.k, 1e-6);
+  for (const damper of presentation.dampers) out.push({ centre: damper.quadrant, axis: { x: 1, y: 0 }, halfAlong: quadrant, halfAcross: quadrant, runId });
+  if (style.showTags) {
+    for (const riser of presentation.risers) out.push(label(riser.labelPoint, riser.label, 11, 'start'));
+    for (const sleeve of presentation.sleeves) out.push(label(sleeve.labelPoint, sleeve.label, 9.5, 'start'));
+    for (const attenuator of presentation.attenuators ?? []) out.push(label(attenuator.labelPoint, attenuator.label, 10, 'middle'));
+    for (const door of presentation.accessDoors ?? []) out.push(label(door.labelPoint, door.label, 9.5, 'middle'));
+  }
+  if (style.showMarks) for (const mark of presentation.marks) out.push(label(mark.point, mark.text, 9, 'middle'));
+  return out;
+}
+
+/** A unit's casing on the plan, for the tag layout to keep off. */
+export function equipmentTagObstacle(element: Pick<HvacElement, 'position' | 'width' | 'depth'> & Partial<Pick<HvacElement, 'rotation'>>): TagObstacle {
+  const angle = ((element.rotation ?? 0) * Math.PI) / 180;
+  return {
+    centre: { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 },
+    axis: { x: Math.cos(angle), y: Math.sin(angle) }, halfAlong: element.width / 2, halfAcross: element.depth / 2,
+  };
+}
+
+/** The plan's laid-out size tags (ductTagLayout.ts), one group per run so a run's tags hide with it. */
+export function placedDuctTagMarkup(tags: readonly PlacedDuctTag[], k: number): string {
+  const px = (value: number) => value / Math.max(k, 1e-6);
+  const byRun = new Map<string, PlacedDuctTag[]>();
+  for (const tag of tags) byRun.set(tag.runId, [...(byRun.get(tag.runId) ?? []), tag]);
+  return [...byRun].map(([runId, runTags]) => {
+    const draft = runTags[0]!.draft;
+    const texts = runTags.map((tag) => textMarkup(tag.point, tag.text, px(TAG_FONT_PX),
+      tag.status === 'error' ? COLORS.error.stroke : COLORS[tag.service].stroke, tag.angleDeg));
+    return `<g data-duct-tags="${escapeText(runId)}"${draft ? ' opacity="0.9"' : ''}>${texts.join('')}</g>`;
+  }).join('');
 }
 
 /** Segment focus in plan: violet, apart from the amber of a selected run and the blue / teal of the services. */
@@ -308,14 +361,45 @@ export function airTerminalMarkup(
   const side = (distance: number, across: number) => at(spigot.normal.x * distance - spigot.normal.y * across, spigot.normal.y * distance + spigot.normal.x * across);
   parts.push(`<path d="${pathData([side(from, r), side(to, r), side(to, -r), side(from, -r)], true)}" fill="none" stroke="${color.stroke}" stroke-width="0.9" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>`);
   if (showTags) {
-    const size = spec.kind === 'round' ? `Ø${Math.round(spec.faceWidthMm)}`
-      : spec.kind === 'linear-slot' ? `${Math.round(spec.faceWidthMm)}×${spec.slots ?? 2} slots` : `${Math.round(spec.faceWidthMm)}`;
-    const reach = Math.max(hw, hd);
-    const filter = spec.filter ? ` · ${spec.filter}` : '';
-    parts.push(textMarkup({ x: centre.x, y: centre.y + reach + px(12) }, `${terminalDisplayTag(element, spec)} · ${size} · Ø${Math.round(spec.neckDiameterMm)}${filter}`, px(11), color.stroke));
+    const tag = airTerminalTag(element, spec, k);
+    parts.push(textMarkup(tag.point, tag.text, px(TAG_FONT_PX), color.stroke));
   }
   parts.push('</g>');
   return parts.join('');
+}
+
+/** A terminal's plan tag, under its face: "RAG-2 · 595 · Ø250 · G4". */
+export function airTerminalTag(
+  element: Pick<HvacElement, 'position' | 'width' | 'depth'> & Partial<Pick<HvacElement, 'label'>>,
+  spec: DuctTerminalSpec,
+  k: number,
+): { point: Point2D; text: string } {
+  const size = spec.kind === 'round' ? `Ø${Math.round(spec.faceWidthMm)}`
+    : spec.kind === 'linear-slot' ? `${Math.round(spec.faceWidthMm)}×${spec.slots ?? 2} slots` : `${Math.round(spec.faceWidthMm)}`;
+  const reach = Math.max(spec.faceWidthMm, spec.faceDepthMm) / 2;
+  const filter = spec.filter ? ` · ${spec.filter}` : '';
+  return {
+    point: { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 + reach + 12 / Math.max(k, 1e-6) },
+    text: `${terminalDisplayTag(element, spec)} · ${size} · Ø${Math.round(spec.neckDiameterMm)}${filter}`,
+  };
+}
+
+/** What a terminal covers on the plan, for the duct tags to keep off: its face, and its tag where terminal tags show. */
+export function airTerminalTagObstacles(
+  element: Pick<HvacElement, 'position' | 'width' | 'depth'> & Partial<Pick<HvacElement, 'label' | 'rotation'>>,
+  spec: DuctTerminalSpec,
+  k: number,
+  showTags: boolean,
+  measure: TextMeasure,
+): TagBox[] {
+  const angle = ((element.rotation ?? 0) * Math.PI) / 180;
+  const face: TagBox = {
+    centre: { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 },
+    axis: { x: Math.cos(angle), y: Math.sin(angle) }, halfAlong: spec.faceWidthMm / 2, halfAcross: spec.faceDepthMm / 2,
+  };
+  if (!showTags) return [face];
+  const tag = airTerminalTag(element, spec, k);
+  return [face, tagTextBox(tag.point, 0, measure(tag.text), k)];
 }
 
 /** Collar and terminal-spigot markers shown while the duct tool is active. */
