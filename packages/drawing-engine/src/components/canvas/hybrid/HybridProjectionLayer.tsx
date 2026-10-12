@@ -45,7 +45,7 @@ import type { InteractionViewMode } from "../../../vrf/interaction/view-manipula
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
-import { useDuctSegmentUiStore, type DuctSegmentFocus } from "../hvac/duct/ductSegmentUiStore";
+import { domainOf, useDuctSegmentUiStore, type DuctSegmentFocus } from "../hvac/duct/ductSegmentUiStore";
 import type { DuctDesignSettings } from "../hvac/duct/ductSettings";
 import { useDuctBuilding } from "../hvac/duct/useDuctBuilding";
 import { constrainPipeDraftDelta, resolvePipeDraftAngleMode } from "../hvac/pipeDraftingPolicy";
@@ -1223,8 +1223,10 @@ export function HybridProjectionLayer({
     const sceneState = sceneStateRef.current;
     if (!sceneState) return;
     const { hovered, pinned, preview } = useDuctSegmentUiStore.getState();
+    // A duct's segments outline here; another service's pieces outline with their own focus.
+    const duct = (focus: DuctSegmentFocus | null) => (domainOf(focus) === "duct" ? focus : null);
     refreshOutlineProxies(sceneState, wallsRef.current, selectedIdsRef.current, hoveredRef.current,
-      { scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered, pinned, previewing: Boolean(preview) });
+      { scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered: duct(hovered), pinned: duct(pinned), previewing: Boolean(preview) && domainOf(preview) === "duct" });
     requestFrameRef.current?.();
   };
   const viewStyleRef = useRef<HybridViewStyle>(viewStyle ?? "solid");
@@ -2061,7 +2063,7 @@ export function HybridProjectionLayer({
     /** The segment of a selected run under the pointer in 3D (or none): the same focus the plan writes. */
     const setDuctSegmentHover = (focus: DuctSegmentFocus | null): void => {
       const store = useDuctSegmentUiStore.getState();
-      if (focus || store.hovered?.view === "3d") store.setHovered(focus);
+      if (focus || (store.hovered?.view === "3d" && domainOf(store.hovered) === "duct")) store.setHovered(focus);
     };
 
     const GHOST_MATERIAL_3D = new THREE.LineBasicMaterial({

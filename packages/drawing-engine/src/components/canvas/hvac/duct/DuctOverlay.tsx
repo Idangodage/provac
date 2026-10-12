@@ -51,7 +51,7 @@ import {
 } from './ductOverlayMarkup';
 import { distanceToPolygon, getDuctPlanPresentation } from './ductPick';
 import { buildDuctPlanPresentation, type DuctPlanPresentation } from './ductPlanPresentation';
-import { useDuctSegmentUiStore, type DuctSegmentFocus } from './ductSegmentUiStore';
+import { domainOf, useDuctSegmentUiStore, type DuctSegmentFocus } from './ductSegmentUiStore';
 import { ductSegmentOfMark, polygonHotspot, segmentEnds, segmentOutlines } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { getDuctSupportPlan } from './ductSupports';
@@ -482,7 +482,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     if (!target) return;
     const { preview } = useDuctSegmentUiStore.getState();
     const { hvacElements: stored, settings: current } = sceneRef.current;
-    const ducts = preview ? preview.updates.filter(isDuctElement) : [];
+    const ducts = preview && domainOf(preview) === 'duct' ? preview.updates.filter(isDuctElement) : [];
     const ids = new Set(ducts.map((element) => element.id));
     let markup = '';
     if (ducts.length) {
@@ -508,8 +508,11 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const target = segmentRef.current;
     if (!target) return;
     paintOptionPreview();
-    const { hovered, pinned, preview } = useDuctSegmentUiStore.getState();
-    if (preview) {
+    const state = useDuctSegmentUiStore.getState();
+    // Only a duct's segments are outlined here (another service's pieces are drawn by their own overlay).
+    const hovered = domainOf(state.hovered) === 'duct' ? state.hovered : null;
+    const pinned = domainOf(state.pinned) === 'duct' ? state.pinned : null;
+    if (state.preview && domainOf(state.preview) === 'duct') {
       // While an option is previewed the drawing shows it, not the outline of what it replaces.
       if (target.innerHTML) target.innerHTML = '';
       return;
@@ -625,7 +628,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   // A segment under the pointer belongs to a selected run, in the plan's select tool.
   useEffect(() => {
     const { hovered } = useDuctSegmentUiStore.getState();
-    if (hovered?.view === '2d' && (!moveEnabled || !selectedSet.has(hovered.runId))) useDuctSegmentUiStore.getState().setHovered(null);
+    if (hovered?.view === '2d' && domainOf(hovered) === 'duct' && (!moveEnabled || !selectedSet.has(hovered.runId))) useDuctSegmentUiStore.getState().setHovered(null);
   }, [moveEnabled, selectedSet]);
   // Handles on the run when it alone is selected (legs that start on a collar or parent wall stay put).
   const editTarget = useMemo(() => {
