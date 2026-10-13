@@ -35,10 +35,12 @@ import {
   moveRiserFoot,
   moveRouteVertex,
   offsetRouteLeg,
-  reendRoute,
   removeRouteVertex,
   snapPlanPoint,
   translateRouteInterior,
+  WYE_END_MARGIN_MM,
+  wyeJunctionRoutes,
+  wyeSlideFor,
   type PlanRoute,
   type PlanSnap,
 } from './condensateRouteOps';
@@ -84,30 +86,9 @@ export interface CondensateEditPreview {
   index: number;
 }
 
-/** A branch's wye can slide along its main when the main continues past it. */
-export interface WyeSlide {
-  throughId: string;
-  downstreamId: string;
-  line: [Point2D, Point2D];
-}
+export type { WyeSlide } from './condensateRouteOps';
 
 const SNAP_PX = 8;
-const WYE_END_MARGIN_MM = 150;
-
-function wyeSlideFor(pipe: HvacElement, network: readonly HvacElement[], routes: ReadonlyMap<string, PlanRoute>): WyeSlide | null {
-  const spec = readCondensatePipeSpec(pipe);
-  const nodeId = spec.drainEnd?.kind === 'junction' ? spec.drainEnd.nodeId : undefined;
-  if (!nodeId || !spec.fittings.some((fitting) => fitting.kind === 'wye')) return null;
-  const through = network.find((candidate) => candidate.id !== pipe.id && readCondensatePipeSpec(candidate).drainEnd?.nodeId === nodeId);
-  const downstream = network.find((candidate) => readCondensatePipeSpec(candidate).drainStart?.nodeId === nodeId);
-  if (!through || !downstream) return null;
-  const role = readCondensatePipeSpec(downstream).segmentRole;
-  if (role === 'drop' || role === 'terminal') return null;
-  const t = routes.get(through.id) ?? [];
-  const d = routes.get(downstream.id) ?? [];
-  if (t.length < 2 || d.length < 2) return null;
-  return { throughId: through.id, downstreamId: downstream.id, line: [t[t.length - 2]!, d[1]!] };
-}
 
 export function useCondensateEditing(options: {
   enabled: boolean;
@@ -211,23 +192,7 @@ export function useCondensateEditing(options: {
         const along = closestOnSegment(world, p, q).t * length;
         const t = Math.max(WYE_END_MARGIN_MM, Math.min(length - WYE_END_MARGIN_MM, along)) / length;
         const junction = { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t };
-        const oldJunction = route[route.length - 1]!;
-        const shift2 = { x: junction.x - oldJunction.x, y: junction.y - oldJunction.y };
-        const through = m.routes.get(slide.throughId)!;
-        const downstream = m.routes.get(slide.downstreamId)!;
-        const head = route.slice(0, -1);
-        const leadIn = head[head.length - 1]!;
-        const branchRoute = head.length > prefix
-          ? [...reendRoute(head, { x: leadIn.x + shift2.x, y: leadIn.y + shift2.y }), junction]
-          : [...head, junction];
-        return {
-          routes: new Map([
-            [drag.pipeId, branchRoute],
-            [slide.throughId, [...through.slice(0, -1), junction]],
-            [slide.downstreamId, [junction, ...downstream.slice(1)]],
-          ]),
-          guides: [{ from: p, to: q }],
-        };
+        return { routes: wyeJunctionRoutes(drag.pipeId, route, slide, junction, m.routes, prefix), guides: [{ from: p, to: q }] };
       }
       default:
         return null;

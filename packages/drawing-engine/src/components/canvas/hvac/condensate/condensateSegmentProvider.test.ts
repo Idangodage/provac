@@ -60,7 +60,17 @@ describe('the condensate segment card', () => {
     const card = provider();
     const model = card.model(scene, focusOn(run.id, 'riser'))!;
     expect(model.neighbour(1)).toEqual({ key: 'leg:1', anchorMark: null });
-    expect(model.options).toEqual([]);
+    // A riser's height is its Edit tab's own; nothing of it is a row.
+    expect(model.options.filter((option) => option.group === 'lift').every((option) => model.tabOf(option) === null)).toBe(true);
+    const leg = card.model(scene, focusOn(run.id, 'leg:1'))!;
+    const tabs = (group: string) => [...new Set(leg.options.filter((option) => option.group === group).map((option) => leg.tabOf(option)))];
+    expect(tabs('size')).toEqual(['swap']);
+    expect(tabs('eye')).toEqual(['add']);
+    expect(tabs('add-bend')).toEqual(['add']);
+    for (const group of ['fall', 'level-cap', 'offset']) expect(tabs(group)).toEqual([null]);
+    const host = { evaluate: leg.evaluate, evaluations: new Map(), onPreview: () => undefined, onHover: () => undefined, onApply: () => undefined, result: () => null };
+    expect(leg.edit(host)).not.toBeNull();
+    expect(typeof card.commit).toBe('function');
     expect(card.rekey(scene, focusOn(run.id, 'leg:9'), { kind: 'leg', ordinal: 2 })?.key).toBe('leg:2');
     expect(card.rekey(scene, focusOn(run.id, 'leg:9'), { kind: 'leg', ordinal: 9 })).toBeNull();
     expect(card.rekey(scene.filter((element) => element.id !== run.id), focusOn(run.id, 'leg:1'), null)).toBeNull();

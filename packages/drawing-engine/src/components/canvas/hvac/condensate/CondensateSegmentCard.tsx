@@ -10,24 +10,51 @@
  * the minimum-fall profile, a riser's lift against its pump head, the
  * crossings and the supports — and the design checks about it, kept to the
  * piece where each happens.
+ *
+ * Its options (condensateSegmentOptions) are edits of the drain's network,
+ * solved again along its routes as the drain handles are: Swap — a run's size,
+ * a termination's kind and trap; Edit — the network's fall, a level the run
+ * keeps under, a leg moved sideways, a riser's height, a wye slid along its
+ * main, a termination's level; Add — a bend, a rodding eye, an air vent, or one
+ * taken out. Each shows on the drawing before it is applied, with the engine's
+ * verdict, the change in head margin and the checks it would newly fail.
  */
+import { TriangleAlert } from 'lucide-react';
 import type { ReactNode } from 'react';
 
+import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 import type { VrfValidationReport } from '../../../../vrf/rules/validation-engine';
-import { STATUS_DOT, STATUS_TEXT, formatNumber as number, type FigureStatus } from '../segments/SegmentCardKit';
-import type { SegmentCardModel, SegmentEvaluationLike, SegmentIssueLine, SegmentOptionLike, SegmentProvider } from '../segments/segmentProvider';
+import {
+  ChipRow,
+  EditBlock,
+  STATUS_DOT,
+  STATUS_TEXT,
+  ValueField as SegmentValueField,
+  formatNumber as number,
+  formatSigned as signed,
+  type FigureStatus,
+} from '../segments/SegmentCardKit';
+import type { SegmentCardModel, SegmentFieldHost, SegmentIssueLine, SegmentProvider } from '../segments/segmentProvider';
 import type { SegmentFocus } from '../segments/segmentUiStore';
 
 import type { CondensateEditContext } from './condensateEditing';
-import { condensateNetworkBaseline, condensatePieceFigures, type CondensatePieceFigures } from './condensatePieceFigures';
+import { condensateNetworkBaseline, condensatePieceFigures, condensateSessionFor, type CondensatePieceFigures } from './condensatePieceFigures';
 import { condensatePieceOf, condensateRunOf, neighbourCondensatePiece, type CondensatePiece, type CondensatePieceKind, type CondensateRun } from './condensatePieces';
+import type { PlanRoute } from './condensateRouteOps';
+import {
+  condensateOffsetOption,
+  condensatePieceOptions,
+  condensateValueOption,
+  evaluateCondensateOption,
+  type CondensateOptionEvaluation,
+  type CondensateOptionGlyph,
+  type CondensateSegmentOption,
+} from './condensateSegmentOptions';
 import { formatFallRatio } from './condensateSettings';
-import { getCondensateOwnership, type CondensateSegmentRole, type CondensateTerminalTrap, type CondensateTerminationKind } from './condensateTypes';
+import { getCondensateOwnership, readCondensateGullySpec, type CondensateSegmentRole, type CondensateTerminalTrap, type CondensateTerminationKind } from './condensateTypes';
 
-/** Options arrive with the next phase; until then a drain's card is figures and checks. */
-export type CondensateSegmentOption = SegmentOptionLike;
-export type CondensateOptionEvaluation = SegmentEvaluationLike;
+export type { CondensateOptionEvaluation, CondensateSegmentOption } from './condensateSegmentOptions';
 export type CondensateSegmentProvider = SegmentProvider<CondensateSegmentOption, CondensateOptionEvaluation>;
 type CondensateCardModel = SegmentCardModel<CondensateSegmentOption, CondensateOptionEvaluation>;
 
@@ -220,10 +247,149 @@ interface RekeyToken {
   ordinal: number;
 }
 
-const NO_OPTIONS: CondensateSegmentOption[] = [];
-const refuse = (option: CondensateSegmentOption): CondensateOptionEvaluation => ({
-  optionId: option.id, refused: 'Not available yet.', updates: [], action: option.title, notes: [], newIssues: [],
-});
+// ---------------------------------------------------------------------------------------------------- options on the card
+
+const SWAP_GROUPS = new Set<CondensateSegmentOption['group']>(['size', 'termination', 'trap']);
+const ADD_GROUPS = new Set<CondensateSegmentOption['group']>(['add-bend', 'remove-bend', 'eye', 'vent']);
+
+/** An option's picture. */
+function OptionGlyph({ glyph, className }: { glyph: CondensateOptionGlyph; className?: string }) {
+  const paths: Record<CondensateOptionGlyph, ReactNode> = {
+    size: <circle cx="8" cy="8" r="4.5" />,
+    'size-up': <><circle cx="6.5" cy="9.5" r="3.5" /><path d="M13 9V3M11 5l2-2 2 2" /></>,
+    fall: <><path d="M2 4l10 5" /><path d="M9 11.5l3-2.5-1-3.5" /></>,
+    level: <><path d="M2 12h12" /><path d="M8 2.5v6.5M5.5 6.5L8 9l2.5-2.5" /></>,
+    lift: <><path d="M8 14V3" /><path d="M5 6l3-3 3 3" /><path d="M5 14h6" opacity={0.6} /></>,
+    offset: <><path d="M2 8h12" /><path d="M5 5L2 8l3 3M11 5l3 3-3 3" /></>,
+    wye: <><path d="M1.5 11.5h13" /><path d="M5 4l3.5 7.5" /><path d="M9.5 3.5h4" opacity={0.6} /></>,
+    'add-bend': <><path d="M2 12h6V5" /><path d="M11.5 2.5v5M9 5h5" strokeWidth={1.8} /></>,
+    'remove-bend': <><path d="M2 5h4a5 5 0 0 1 5 5v4" /><path d="M10 3h4" strokeWidth={2} /></>,
+    eye: <><circle cx="8" cy="8" r="5" /><path d="M8 5.5v5M5.5 8h5" /></>,
+    vent: <><path d="M8 14V4" /><path d="M5 6.5L8 3.5l3 3" /></>,
+    gully: <><path d="M8 1.5v8" /><path d="M5 9.5h6l-1 3.5H6z" /></>,
+    trap: <path d="M2 4h3.5v5a2.5 2.5 0 0 0 5 0V4H14" />,
+    auto: <><path d="M3.5 8a4.5 4.5 0 1 0 1.3-3.2" /><path d="M3 2.5v3h3" /></>,
+  };
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths[glyph]}
+    </svg>
+  );
+}
+
+/** What an option does, as chips: the change in the network's head margin and the checks it would newly fail. */
+function DeltaChips({ evaluation }: { evaluation: CondensateOptionEvaluation }) {
+  const chips: ReactNode[] = [];
+  if (evaluation.deltaMarginMm !== null && Math.abs(evaluation.deltaMarginMm) >= 5) {
+    chips.push(<span key="m" className={`rounded px-1 tabular-nums ${evaluation.deltaMarginMm > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}
+      title="Change in the network's least head margin (how far its runs could still drop)">{signed(evaluation.deltaMarginMm)} mm</span>);
+  }
+  const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error');
+  if (errors.length) {
+    chips.push(
+      <span key="err" className="inline-flex items-center gap-0.5 rounded bg-red-50 px-1 font-medium text-red-700" title={errors.map((issue) => `${issue.code}: ${issue.message}`).join('\n')}>
+        <TriangleAlert size={10} aria-hidden="true" />{errors.length}<span className="sr-only"> new error{errors.length === 1 ? '' : 's'}</span>
+      </span>,
+    );
+  }
+  return chips.length ? <span className="flex shrink-0 items-center gap-1 text-[10.5px]">{chips}</span> : null;
+}
+
+/** An option's whole result on one line: the engine's verdict, the margin it gains or loses, the new checks. */
+function ResultLine({ evaluation }: { evaluation: CondensateOptionEvaluation }) {
+  if (evaluation.refused) return <span className="text-red-700">{evaluation.refused}</span>;
+  const parts: ReactNode[] = [<span key="v">{evaluation.verdict}</span>];
+  if (evaluation.deltaMarginMm !== null && Math.abs(evaluation.deltaMarginMm) >= 1) {
+    parts.push(<span key="m" className={evaluation.deltaMarginMm > 0 ? 'text-emerald-700' : 'text-amber-700'}>{signed(evaluation.deltaMarginMm)} mm margin</span>);
+  }
+  const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error').length;
+  const warnings = evaluation.newIssues.length - errors;
+  if (errors) parts.push(<span key="e" className="font-medium text-red-700">{errors} new error{errors === 1 ? '' : 's'}</span>);
+  if (warnings) parts.push(<span key="w" className="text-amber-700">{warnings} new warning{warnings === 1 ? '' : 's'}</span>);
+  if (!errors && !warnings) parts.push(<span key="ok" className="text-emerald-700">no new issues</span>);
+  return <span className="tabular-nums">{parts.map((part, index) => <span key={index}>{index ? ' · ' : ''}{part}</span>)}</span>;
+}
+
+const resultLine = (evaluation: CondensateOptionEvaluation) => <ResultLine evaluation={evaluation} />;
+const ValueField = SegmentValueField<CondensateSegmentOption, CondensateOptionEvaluation>;
+type FieldHost = SegmentFieldHost<CondensateSegmentOption, CondensateOptionEvaluation>;
+
+/** The Edit tab: the network's fall, a level the run keeps under, a leg sideways, a riser's height, a wye, a termination's level. */
+function EditPanel({ host, scene, element, run, piece, figures, route, options }: {
+  host: FieldHost;
+  scene: readonly HvacElement[];
+  element: HvacElement;
+  run: CondensateRun;
+  piece: CondensatePiece;
+  figures: CondensatePieceFigures;
+  route: PlanRoute | undefined;
+  options: readonly CondensateSegmentOption[];
+}): ReactNode {
+  const chipRow = (group: CondensateSegmentOption['group']) => (
+    <ChipRow options={options.filter((option) => option.group === group)} evaluations={host.evaluations} onHover={host.onHover} onApply={host.onApply} />
+  );
+  const has = (group: CondensateSegmentOption['group']) => options.some((option) => option.group === group);
+  const blocks: ReactNode[] = [];
+  if (piece.kind === 'leg') {
+    const fallNow = Math.round((figures.fall?.slopePercent ?? 1) * 100) / 100;
+    blocks.push(
+      <EditBlock key="fall" title="Fall · the whole network">
+        <div className="px-1">{chipRow('fall')}</div>
+        <ValueField host={host} label="Fall" unit="%" current={fallNow} min={0.5} max={10} step={0.25} fineStep={0.05} decimals={2} testId="condensate-segment-fall-field"
+          hint="the least fall on every run; steeper where the head allows"
+          makeOption={(value) => (Math.abs(value - fallNow) < 1e-3 ? null : condensateValueOption(element, run, piece, { kind: 'fall', percent: value }))} />
+      </EditBlock>,
+    );
+    const top = Math.round(Math.max(...run.nodes.map((node) => node.z)));
+    blocks.push(
+      <EditBlock key="level" title="Keep the run lower">
+        <div className="px-1">{chipRow('level-cap')}</div>
+        <ValueField host={host} label="At or below" unit="mm" current={top} min={0} max={30000} step={50} fineStep={10} testId="condensate-segment-level-cap"
+          hint="its highest point, its fall kept"
+          makeOption={(value) => (value >= top ? null : condensateValueOption(element, run, piece, { kind: 'level-cap', levelMm: value }))} />
+      </EditBlock>,
+    );
+    if (has('offset') && route) {
+      const segmentAcross = options.find((option) => option.id === 'offset:100');
+      blocks.push(
+        <EditBlock key="offset" title="Sideways">
+          <div className="px-1">{chipRow('offset')}</div>
+          <ValueField host={host} label="Shift" unit="mm" current={0} min={-5000} max={5000} step={50} fineStep={10} signed testId="condensate-segment-offset"
+            hint={segmentAcross ? `+ moves it ${segmentAcross.detail.replace(/^\d+ mm /, '')}` : undefined}
+            makeOption={(value) => condensateOffsetOption(element, run, piece, route, value)} />
+        </EditBlock>,
+      );
+    }
+  }
+  if (piece.kind === 'riser' && has('lift')) {
+    const head = figures.lift?.pumpHeadMm ?? 600;
+    blocks.push(
+      <EditBlock key="lift" title="Riser height">
+        <div className="px-1">{chipRow('lift')}</div>
+        <ValueField host={host} label="Height" unit="mm" current={Math.round(piece.lengthMm)} min={0} max={Math.round(head)} step={50} fineStep={10} testId="condensate-segment-lift-field"
+          hint={`at most; the pump raises ${number(head)} mm`}
+          makeOption={(value) => condensateValueOption(element, run, piece, { kind: 'lift', liftMm: value })} />
+      </EditBlock>,
+    );
+  }
+  if (piece.kind === 'end' && has('wye')) {
+    blocks.push(<EditBlock key="wye" title="Slide the wye along its main"><div className="px-1">{chipRow('wye')}</div></EditBlock>);
+  }
+  if (piece.kind === 'termination' && run.spec.drainEnd?.gullyId) {
+    const gully = scene.find((candidate) => candidate.id === run.spec.drainEnd!.gullyId);
+    if (gully) {
+      const inlet = Math.round(readCondensateGullySpec(gully).inletElevationMm);
+      blocks.push(
+        <EditBlock key="inlet" title="Termination level">
+          <ValueField host={host} label="Inlet" unit="mm" current={inlet} min={0} max={6000} step={50} fineStep={10} testId="condensate-segment-inlet"
+            hint="rim, stack branch or wall outlet; the network solved again round it"
+            makeOption={(value) => condensateValueOption(element, run, piece, { kind: 'inlet', levelMm: value })} />
+        </EditBlock>,
+      );
+    }
+  }
+  return blocks.length ? <div className="space-y-2" data-testid="condensate-segment-edit-panel">{blocks}</div> : null;
+}
 
 function titleOf(piece: CondensatePiece, figures: CondensatePieceFigures, run: CondensateRun): { title: string; detail: string } {
   const role = ROLE_WORD[run.role];
@@ -262,6 +428,8 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Condensa
   const baseline = networkId ? condensateNetworkBaseline(scene, networkId, context) : null;
   const figures = condensatePieceFigures(scene, element, run, piece, context.settings, baseline);
   const { title, detail } = titleOf(piece, figures, run);
+  const options = condensatePieceOptions(scene, element, run, piece, context);
+  const route = networkId ? condensateSessionFor(scene, networkId, context)?.model.routes.get(element.id) : undefined;
   const token: RekeyToken = { kind: piece.kind, ordinal: piece.ordinal };
   return {
     head: {
@@ -276,10 +444,10 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Condensa
     figures: <FigureStrip figures={figures} piece={piece} />,
     info: <BuildInfo figures={figures} piece={piece} />,
     issues: condensatePieceIssues(context.report, element, run, piece, figures),
-    options: NO_OPTIONS,
-    evaluate: refuse,
-    tabOf: () => null,
-    edit: () => null,
+    options,
+    evaluate: (option) => evaluateCondensateOption(scene, option, context),
+    tabOf: (option) => (SWAP_GROUPS.has(option.group) ? 'swap' : ADD_GROUPS.has(option.group) ? 'add' : null),
+    edit: (host) => EditPanel({ host, scene, element, run, piece, figures, route, options }),
     neighbour: (direction) => {
       const next = neighbourCondensatePiece(run, piece.key, direction);
       return next ? { key: next.key, anchorMark: null } : null;
@@ -304,10 +472,20 @@ export function createCondensateSegmentProvider(context: CondensateCardContext):
       if (!byPiece.has(id)) byPiece.set(id, buildModel(scene, focus, context));
       return byPiece.get(id) ?? null;
     },
-    optionGlyph: () => null,
-    chips: () => null,
-    result: () => null,
-    commit: () => undefined,
+    optionGlyph: (option) => <OptionGlyph glyph={option.glyph} className="h-3.5 w-3.5" />,
+    chips: (evaluation) => <DeltaChips evaluation={evaluation} />,
+    result: resultLine,
+    // A peek's quick picks: the most head margin gained first.
+    quickScore: (evaluation) => -(evaluation.deltaMarginMm ?? 0),
+    // One undo step, as a drain handle's edit is (ids kept; a re-solve may add or take out runs).
+    commit: (evaluation, option) => {
+      const add = evaluation.add ?? [];
+      const removeIds = evaluation.removeIds ?? [];
+      if (!evaluation.updates.length && !add.length && !removeIds.length) return;
+      useSmartDrawingStore.getState().commitHvacElementCommand(evaluation.action || option.title, {
+        add, removeIds, updates: evaluation.updates.map((element) => ({ id: element.id, updates: element })),
+      });
+    },
     rekey: (scene, focus, token) => {
       const element = scene.find((candidate) => candidate.id === focus.runId);
       const run = element ? condensateRunOf(element) : null;

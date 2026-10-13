@@ -202,7 +202,12 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
     const { hovered } = useSegmentUiStore.getState();
     if (hovered?.view === '2d' && domainOf(hovered) === 'condensate') useSegmentUiStore.getState().setHovered(null);
   }, []);
-  const editResult = edit.preview?.result?.ok ? edit.preview.result : null;
+  const dragResult = edit.preview?.result?.ok ? edit.preview.result : null;
+  // A segment card's option shows the same way as a drag: the re-solved runs in place of the committed ones.
+  const cardPreview = useSegmentUiStore((state) => (state.preview && domainOf(state.preview) === 'condensate' ? state.preview : null));
+  const editResult = useMemo(() => dragResult ?? (cardPreview
+    ? { elements: [...cardPreview.updates, ...(cardPreview.add ?? [])].filter(isCondensatePipe), removeIds: cardPreview.removeIds ?? [] }
+    : null), [dragResult, cardPreview]);
   const editIds = useMemo(() => new Set(editResult ? [...editResult.elements.map((element) => element.id), ...editResult.removeIds] : []), [editResult]);
   const editViews = useMemo(() => (editResult?.elements ?? [])
     .map(buildCondensatePlanPresentation)
@@ -260,7 +265,7 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
           })}
 
           {editViews.map((entry) => (
-            <g key={`edit-${entry.id}`} data-testid="condensate-edit-ghost">
+            <g key={`edit-${entry.id}`} data-testid={dragResult ? 'condensate-edit-ghost' : 'condensate-card-preview'}>
               <PipeTube view={entry} hpx={hpx} k={k} selected={entry.id === editPipe?.id} showArrows={showDetail} />
               {showDetail ? entry.fittings.map((fitting) => <FittingGlyph key={fitting.id} fitting={fitting} hpx={hpx} />) : null}
               {settings.showFallTags && entry.fallTag && entry.fallTag.runLengthMm * k > FALL_TAG_MIN_SCREEN_PX

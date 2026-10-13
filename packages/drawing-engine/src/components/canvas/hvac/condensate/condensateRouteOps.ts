@@ -8,9 +8,10 @@
  * handle. Every route's last point is its joint (wye / termination) and only
  * moves when that joint moves.
  */
-import type { Point2D } from '../../../../types';
+import type { HvacElement, Point2D } from '../../../../types';
 
-import { distance, simplifyPolyline, sub } from './condensateGeometry';
+import { closestOnSegment, distance, simplifyPolyline, sub } from './condensateGeometry';
+import { readCondensatePipeSpec } from './condensateTypes';
 
 export type PlanRoute = Point2D[];
 
@@ -158,6 +159,70 @@ export function reendRoute(route: PlanRoute, end: Point2D): PlanRoute {
   const axis = dominantAxis(route[last - 1]!, route[last]!);
   return [...route.slice(0, last), elbowFrom(end, route[last - 1]!, axis), { ...end }]
     .filter((point, index, all) => index === 0 || distance(point, all[index - 1]!) > 0.5);
+}
+
+/** A branch's wye can slide along its main when the main continues past it. */
+export interface WyeSlide {
+  throughId: string;
+  downstreamId: string;
+  line: [Point2D, Point2D];
+}
+
+/** A wye stays this far from either end of the main it slides along (mm). */
+export const WYE_END_MARGIN_MM = 150;
+
+/** Where a branch's wye can slide: along the main through its joint, from the last bend before it to the first after. */
+export function wyeSlideFor(pipe: HvacElement, network: readonly HvacElement[], routes: ReadonlyMap<string, PlanRoute>): WyeSlide | null {
+  const spec = readCondensatePipeSpec(pipe);
+  const nodeId = spec.drainEnd?.kind === 'junction' ? spec.drainEnd.nodeId : undefined;
+  if (!nodeId || !spec.fittings.some((fitting) => fitting.kind === 'wye')) return null;
+  const through = network.find((candidate) => candidate.id !== pipe.id && readCondensatePipeSpec(candidate).drainEnd?.nodeId === nodeId);
+  const downstream = network.find((candidate) => readCondensatePipeSpec(candidate).drainStart?.nodeId === nodeId);
+  if (!through || !downstream) return null;
+  const role = readCondensatePipeSpec(downstream).segmentRole;
+  if (role === 'drop' || role === 'terminal') return null;
+  const t = routes.get(through.id) ?? [];
+  const d = routes.get(downstream.id) ?? [];
+  if (t.length < 2 || d.length < 2) return null;
+  return { throughId: through.id, downstreamId: downstream.id, line: [t[t.length - 2]!, d[1]!] };
+}
+
+/**
+ * The routes with a branch's wye moved to `junction` on its main: the branch re-ends square onto it, the main through
+ * it ends there and the main after it starts there.
+ */
+export function wyeJunctionRoutes(branchId: string, route: PlanRoute, slide: WyeSlide, junction: Point2D, routes: ReadonlyMap<string, PlanRoute>,
+  fixedPrefix: number): Map<string, PlanRoute> {
+  const oldJunction = route[route.length - 1]!;
+  const shift = { x: junction.x - oldJunction.x, y: junction.y - oldJunction.y };
+  const through = routes.get(slide.throughId)!;
+  const downstream = routes.get(slide.downstreamId)!;
+  const head = route.slice(0, -1);
+  const leadIn = head[head.length - 1]!;
+  const branchRoute = head.length > fixedPrefix
+    ? [...reendRoute(head, { x: leadIn.x + shift.x, y: leadIn.y + shift.y }), junction]
+    : [...head, junction];
+  return new Map([
+    [branchId, branchRoute],
+    [slide.throughId, [...through.slice(0, -1), junction]],
+    [slide.downstreamId, [junction, ...downstream.slice(1)]],
+  ]);
+}
+
+/** The routes with a branch's wye slid `shiftMm` along its main (+ downstream), or null where the main has no room. */
+export function slideWyeRoutes(model: { pipes: readonly HvacElement[]; routes: ReadonlyMap<string, PlanRoute> }, branchId: string, shiftMm: number,
+  fixedPrefix = 2): Map<string, PlanRoute> | null {
+  const branch = model.pipes.find((candidate) => candidate.id === branchId);
+  const route = model.routes.get(branchId);
+  const slide = branch ? wyeSlideFor(branch, model.pipes, model.routes) : null;
+  if (!branch || !route || !slide) return null;
+  const [p, q] = slide.line;
+  const length = distance(p, q);
+  if (length < 2 * WYE_END_MARGIN_MM) return null;
+  const along = closestOnSegment(route[route.length - 1]!, p, q).t * length + shiftMm;
+  if (along < WYE_END_MARGIN_MM - 0.5 || along > length - WYE_END_MARGIN_MM + 0.5) return null;
+  const t = Math.max(WYE_END_MARGIN_MM, Math.min(length - WYE_END_MARGIN_MM, along)) / length;
+  return wyeJunctionRoutes(branchId, route, slide, { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }, model.routes, fixedPrefix);
 }
 
 export interface PlanSnap {

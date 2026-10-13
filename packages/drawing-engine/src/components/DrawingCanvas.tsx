@@ -1876,8 +1876,10 @@ export function DrawingCanvas({
   const handleCondensateEditPreview = useCallback((elements: HvacElement[] | null, removeIds: string[]) => {
     setCondensateEditPreview(elements ? { elements, removeIds } : null);
   }, []);
-  // A segment card's option on the drawing before it is applied (any service): 3D draws it as a transient preview.
-  const ductSegmentPreview = useSegmentUiStore((state) => state.preview?.updates ?? null);
+  // A segment card's option on the drawing before it is applied (any service): 3D draws it as a transient preview,
+  // runs it adds as well (a drain's network solved again).
+  const segmentCardPreview = useSegmentUiStore((state) => state.preview);
+  const ductSegmentPreview = useMemo(() => (segmentCardPreview ? [...segmentCardPreview.updates, ...(segmentCardPreview.add ?? [])] : null), [segmentCardPreview]);
   // In plan, a refrigerant card's option is drawn by the pipe overlay in place of the lines it changes.
   const refrigerantCardPreview = useSegmentUiStore((state) => (state.preview && domainOf(state.preview) === "refrigerant" ? state.preview.updates : null));
   const autoRoutePreviewElements = useMemo(() => {
@@ -1887,6 +1889,7 @@ export function DrawingCanvas({
       ...(condensatePreview?.removeElementIds ?? []),
       ...(refrigerantPreview?.removeElementIds ?? []),
       ...(condensateEditPreview?.removeIds ?? []),
+      ...(segmentCardPreview?.removeIds ?? []),
     ]);
     const hidden = hvacElements
       .filter((element) => removed.has(element.id))
@@ -1902,7 +1905,7 @@ export function DrawingCanvas({
       ...(ductSegmentPreview ?? []),
       ...hidden,
     ];
-  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, autoDuctTurned, ductSegmentPreview, hvacElements]);
+  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, autoDuctTurned, ductSegmentPreview, segmentCardPreview, hvacElements]);
   const hybridPlanPaintPendingRef = useRef(false);
   const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the
