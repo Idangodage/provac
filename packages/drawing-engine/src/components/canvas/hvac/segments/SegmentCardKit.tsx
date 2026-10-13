@@ -90,7 +90,8 @@ export function useAnchoredCard(cardRef: RefObject<HTMLDivElement | null>, conta
     let frame = 0;
     let last = '';
     // The card stays put while its anchor does: growing (the hover line at its foot) or shrinking never moves it under
-    // the pointer. It is placed again when the anchor moves, or when it would run off the drawing.
+    // the pointer. It is placed again when the anchor moves, or when it would run off the drawing — once the pointer
+    // is off it.
     let held: { key: string; placed: ReturnType<typeof placePopover> } | null = null;
     trackPointer();
     // Whether the pointer last moved onto this card. A row re-rendered under it (a tab switched, a list redrawn)
@@ -132,7 +133,9 @@ export function useAnchoredCard(cardRef: RefObject<HTMLDivElement | null>, conta
       const inView = (spot: { x: number; y: number }) => pointerOnCard
         || (spot.x + card.offsetWidth <= host.width - 2 && spot.y + card.offsetHeight <= host.height - 2);
       const fits = (spot: { x: number; y: number; overlaps: boolean }) => inView(spot) && !covers(spot) && !overPointer(spot, 0);
-      if (!held || held.key !== anchorKey || !fits(held.placed)) {
+      // Nor does its piece moving or changing size (an option applied, a neighbour stepped to) move it from under the
+      // pointer: its leader follows the piece, and it settles by the piece once the pointer leaves it.
+      if (!held || (!pointerOnCard && (held.key !== anchorKey || !fits(held.placed)))) {
         const size = { width: card.offsetWidth, height: card.offsetHeight };
         const view = { width: host.width, height: host.height };
         const sides = rect.sides ? { sides: rect.sides } : undefined;

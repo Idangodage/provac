@@ -19,6 +19,7 @@ import {
 } from '../hvac/condensate/condensatePieces';
 import type { ScreenRect } from '../hvac/duct/popoverPlacement';
 import type { Vec3 } from '../hvac/pipePortFrame';
+import { accessoryDrawnRadiusMm } from '../hvac/refrigerant/refrigerantAccessories';
 import { KIT_KEY, refrigerantKitOf } from '../hvac/refrigerant/refrigerantKits';
 import {
   pieceMidpoint,
@@ -86,7 +87,9 @@ function pipePieceShape(scene: readonly HvacElement[], runId: string, key: strin
   }
   const line = refrigerantLineOf(element, scene);
   const piece = line ? refrigerantPieceOf(line, key) : null;
-  return line && piece ? { path: piece.path, radius: line.outsideDiameterMm / 2, drainPiece: null } : null;
+  // An accessory's proxy is its body, which stands proud of the insulation.
+  const radius = line && piece?.accessory ? accessoryDrawnRadiusMm(piece.accessory, line.outsideDiameterMm) : (line?.outsideDiameterMm ?? 0) / 2;
+  return line && piece ? { path: piece.path, radius, drainPiece: null } : null;
 }
 
 /** A drain's fittings and joints are points on it: ringed by the plan, not bracketed at two ends. */

@@ -71,6 +71,7 @@ import { buildPipePlanTubes, pipePolylinePath } from './pipePlanPresentation';
 import { createPipePresentationCache } from './pipePresentationCache';
 import { withCanonicalPipeRoute, type PipeRouteNode3D } from './pipeRoute3d';
 import { getActivePipeRoutingSettings } from './pipeRoutingSettings';
+import { refrigerantAccessoryGlyphs, type AccessoryGlyph, type AccessoryGlyphFill } from './refrigerant/refrigerantAccessoryGlyphs';
 import { KIT_KEY, refrigerantKitOf } from './refrigerant/refrigerantKits';
 import {
   pieceMidpoint,
@@ -124,6 +125,11 @@ const KIT_IMG_ASPECT = BRANCH_KIT_SPRITE_ASPECT;
 const DEFAULT_OUTER_DIAMETER_MM = 28;
 const GAS_COLORS = { ins: '#D2E2F1', core: '#1F6FB2', sheen: '#7FB2E0' };
 const LIQUID_COLORS = { ins: '#F1E4CD', core: '#B5742F', sheen: '#E3A968' };
+/** An inline accessory's symbol: a white body inked in its line's colour (red, dashed, where it has no room). */
+const ACCESSORY_FILLS: Record<Exclude<AccessoryGlyphFill, 'ink'>, string> = { body: '#FFFFFF', glass: '#ECFDF5', indicator: '#10B981', none: 'none' };
+const ACCESSORY_PROBLEM_INK = '#DC2626';
+/** An accessory's symbol is never drawn shorter than this on screen (px). */
+const ACCESSORY_MIN_PX = 22;
 // Copper Refnet body pieces (local mm coords), matching the real DIS-22-1G:
 // slim glossy tubes (layered strokes so bends read as cylinders), bamboo swage
 // bulges with ring seams, a bulb junction, and flared end sockets.
@@ -891,6 +897,22 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     }
     return list;
   }, [draftPipes, previewElements, readPipeView]);
+
+  // Each line's inline accessories, as symbols on it: read once per line as it is (a drag renews the drawing every
+  // frame, but only the lines it moves).
+  const accessoryGlyphCacheRef = useRef(new WeakMap<HvacElement, AccessoryGlyph[]>());
+  const accessoryGlyphs = useMemo(() => {
+    const byPipe = new Map<string, AccessoryGlyph[]>();
+    for (const pipe of pipes) {
+      let glyphs = accessoryGlyphCacheRef.current.get(pipe.element);
+      if (!glyphs) {
+        glyphs = refrigerantAccessoryGlyphs(pipe.element, previewElements);
+        accessoryGlyphCacheRef.current.set(pipe.element, glyphs);
+      }
+      if (glyphs.length) byPipe.set(pipe.id, glyphs);
+    }
+    return byPipe;
+  }, [pipes, previewElements]);
 
   // Display one control per design corner, regardless of the number of stored
   // arc samples. Keep this separate from the authoritative pipe artwork.
@@ -2169,6 +2191,33 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                     preview so widths always match. Butt caps: a real cut pipe ends
                     in a flat perpendicular face; bends stay smooth via round joins. */}
                 {renderTubeBody(tubes, insW, coreW, sheenW, `c-${p.id}`)}
+                {accessoryGlyphs.get(p.id)?.map((glyph) => {
+                  // On the body as drawn, turned with its straight; never smaller than legible.
+                  const at = nearestOnPolyline(glyph.centre, bodyPoly);
+                  const scale = Math.max(1, hpx(ACCESSORY_MIN_PX) / glyph.lengthMm);
+                  const ink = glyph.problem ? ACCESSORY_PROBLEM_INK : glyph.lineKind === 'liquid' ? LIQUID_COLORS.core : GAS_COLORS.core;
+                  const line = hpx(1.3) / scale;
+                  return (
+                    <g key={`acc-${glyph.id}`} data-testid="refrigerant-accessory" data-accessory-id={glyph.id} data-accessory-kind={glyph.kind}
+                      data-pipe-id={p.id} data-problem={glyph.problem ? 'true' : undefined} style={{ pointerEvents: 'none' }}
+                      transform={`translate(${at.x} ${at.y}) rotate(${glyph.angleDeg}) scale(${scale})`}>
+                      <title>{glyph.title}</title>
+                      {glyph.shapes.map((shape, index) => {
+                        const paint = {
+                          fill: shape.fill === 'ink' ? ink : ACCESSORY_FILLS[shape.fill],
+                          stroke: shape.weight ? ink : 'none',
+                          strokeWidth: line * shape.weight,
+                          strokeDasharray: glyph.problem && shape.weight ? `${line * 4} ${line * 3}` : undefined,
+                          strokeLinejoin: 'round' as const,
+                          strokeLinecap: 'round' as const,
+                        };
+                        return shape.circle
+                          ? <circle key={index} cx={shape.circle.cx} cy={shape.circle.cy} r={shape.circle.r} {...paint} />
+                          : <path key={index} d={shape.d} {...paint} />;
+                      })}
+                    </g>
+                  );
+                })}
                 {selected && showRouteHandles && showInsertHandles
                   ? hRoute.slice(0, -1).map((_, si) => {
                       const mid = { x: (hRoute[si]!.x + hRoute[si + 1]!.x) / 2, y: (hRoute[si]!.y + hRoute[si + 1]!.y) / 2 };

@@ -11,6 +11,10 @@
  * sockets, a port stub's straight. The plan and the 3D views outline exactly
  * that, and find a piece under the pointer from it.
  *
+ * The line's inline accessories (refrigerantAccessories) are pieces too
+ * (`acc:<id>`), each right after the straight it sits on: its body's length of
+ * that straight, picked before the straight where it sits.
+ *
  * PURE: elements in, pieces out.
  */
 import type { HvacElement, Point2D } from '../../../../types';
@@ -25,7 +29,15 @@ import {
 } from '../refrigerantPipePairModel';
 import type { SegmentFocus } from '../segments/segmentUiStore';
 
-export type RefrigerantPieceKind = 'port' | 'straight' | 'riser' | 'bend';
+import {
+  accessoryDrawnRadiusMm,
+  placeAccessories,
+  readRefrigerantAccessories,
+  type AccessoryStraight,
+  type PlacedRefrigerantAccessory,
+} from './refrigerantAccessories';
+
+export type RefrigerantPieceKind = 'port' | 'straight' | 'riser' | 'bend' | 'accessory';
 
 export interface RefrigerantPiece {
   /** `port:start` | `port:end` | `leg:<legId>` | `joint:<jointId>`. */
@@ -48,6 +60,8 @@ export interface RefrigerantPiece {
   takeoffMm: number | null;
   /** A bend's catalogue part, when it is a catalogued copper socket elbow. */
   catalogueModel: string | null;
+  /** An inline accessory, where it sits on its straight. */
+  accessory?: PlacedRefrigerantAccessory;
 }
 
 export interface RefrigerantLine {
@@ -62,6 +76,9 @@ export interface RefrigerantLine {
   halfWidthMm: number;
   socketElbows: boolean;
   pieces: RefrigerantPiece[];
+  /** The straights an accessory may sit on, and the accessories on them. */
+  straights: AccessoryStraight[];
+  accessories: PlacedRefrigerantAccessory[];
 }
 
 const EPSILON = 1e-9;
@@ -209,7 +226,7 @@ function buildLine(element: HvacElement, scene: readonly HvacElement[]): Refrige
   const startStub = portStubMm(design.ports.start);
   const endStub = portStubMm(design.ports.end);
   const pieces: RefrigerantPiece[] = [];
-  const ordinals = { port: 0, straight: 0, riser: 0, bend: 0 };
+  const ordinals = { port: 0, straight: 0, riser: 0, bend: 0, accessory: 0 };
   const push = (piece: Omit<RefrigerantPiece, 'ordinal' | 'lengthMm'>) => {
     ordinals[piece.kind] += 1;
     pieces.push({ ...piece, ordinal: ordinals[piece.kind], lengthMm: pathLength(piece.path) });
@@ -257,7 +274,28 @@ function buildLine(element: HvacElement, scene: readonly HvacElement[]): Refrige
     }
   });
   if (endPort) push(endPort);
-  return { elementId: element.id, design, ...dimensions, socketElbows, pieces };
+
+  // The straights' free stretches, and the accessories on them, each a piece right after its straight.
+  const straights: AccessoryStraight[] = pieces.filter((piece) => piece.kind === 'straight' && piece.legIndex !== null).map((piece) => {
+    const index = piece.legIndex!;
+    return { legId: legs[index]!.id, legIndex: index, start: nodes[index]!, direction: legs[index]!.direction,
+      freeFromMm: taken[index]!.start, freeToMm: legs[index]!.lengthMm - taken[index]!.end };
+  });
+  const accessories = placeAccessories(straights, readRefrigerantAccessories(element), dimensions.tubeOdMm, dimensions.lineKind);
+  if (!accessories.length) return { elementId: element.id, design, ...dimensions, socketElbows, pieces, straights, accessories };
+  const withAccessories: RefrigerantPiece[] = [];
+  let ordinal = 0;
+  for (const piece of pieces) {
+    withAccessories.push(piece);
+    if (piece.kind !== 'straight') continue;
+    for (const placed of accessories.filter((item) => item.legId === piece.legId).sort((a, b) => a.stationMm - b.stationMm)) {
+      ordinal += 1;
+      const half = scale(placed.direction, placed.lengthMm / 2);
+      withAccessories.push({ ...blank, key: `acc:${placed.accessory.id}`, kind: 'accessory', ordinal, legId: placed.legId, legIndex: placed.legIndex,
+        path: [sub(placed.centre, half), add(placed.centre, half)], lengthMm: placed.lengthMm, accessory: placed });
+    }
+  }
+  return { elementId: element.id, design, ...dimensions, socketElbows, pieces: withAccessories, straights, accessories };
 }
 
 export function refrigerantPieceOf(line: RefrigerantLine, key: string): RefrigerantPiece | null {
@@ -313,7 +351,7 @@ export function distanceToPath(point: Vec3, polyline: readonly Vec3[]): number {
 }
 
 /** Where pieces overlap in plan (a riser under its bends), the smaller fitting wins. */
-const PICK_PRIORITY: Record<RefrigerantPieceKind, number> = { riser: 0, bend: 1, port: 2, straight: 3 };
+const PICK_PRIORITY: Record<RefrigerantPieceKind, number> = { accessory: -1, riser: 0, bend: 1, port: 2, straight: 3 };
 
 /** The piece under a plan point, within the line's half width and `toleranceMm` of it, or null. */
 export function refrigerantPieceAtPlanPoint(line: RefrigerantLine, point: Point2D, toleranceMm = 0): RefrigerantPiece | null {
@@ -334,7 +372,11 @@ export function refrigerantPieceAtModelPoint(line: RefrigerantLine, point: Vec3,
   let best: { piece: RefrigerantPiece; distance: number } | null = null;
   for (const piece of line.pieces) {
     const d = distanceToPath(point, piece.path);
-    if (d <= reachMm && (!best || d < best.distance)) best = { piece, distance: d };
+    if (d > reachMm) continue;
+    // An accessory shares its straight's centreline: where they tie, the accessory (the smaller part) wins.
+    if (!best || d < best.distance - 1 || (Math.abs(d - best.distance) <= 1 && PICK_PRIORITY[piece.kind] < PICK_PRIORITY[best.piece.kind])) {
+      best = { piece, distance: d };
+    }
   }
   return best?.piece ?? null;
 }
@@ -363,10 +405,15 @@ export function pieceMidpoint(piece: RefrigerantPiece): Vec3 {
   return piece.path[0]!;
 }
 
-/** The piece as seen from above: a band of the line's width along it, or a disc for a riser. */
+/** A piece's half width round its centreline: the line's, or an accessory's body where that stands proud of it (mm). */
+export function refrigerantPieceRadiusMm(line: RefrigerantLine, piece: RefrigerantPiece): number {
+  return piece.accessory ? Math.max(line.halfWidthMm, accessoryDrawnRadiusMm(piece.accessory, line.outsideDiameterMm)) : line.halfWidthMm;
+}
+
+/** The piece as seen from above: a band of the line's width along it (an accessory's body width), or a disc for a riser. */
 export function refrigerantPieceOutline(line: RefrigerantLine, piece: RefrigerantPiece): Point2D[] {
   const path = piecePlanPath(piece);
-  const r = line.halfWidthMm;
+  const r = refrigerantPieceRadiusMm(line, piece);
   if (path.length < 2) {
     const centre = path[0] ?? xy(piece.path[0]!);
     return Array.from({ length: 28 }, (_, index) => {
@@ -393,15 +440,16 @@ export function refrigerantPieceEnds(line: RefrigerantLine, piece: RefrigerantPi
     const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
     return { x: (b.x - a.x) / length, y: (b.y - a.y) / length };
   };
+  const halfWidthMm = refrigerantPieceRadiusMm(line, piece);
   return [
-    { point: path[0]!, direction: heading(path[0]!, path[1]!), halfWidthMm: line.halfWidthMm },
-    { point: path[path.length - 1]!, direction: heading(path[path.length - 2]!, path[path.length - 1]!), halfWidthMm: line.halfWidthMm },
+    { point: path[0]!, direction: heading(path[0]!, path[1]!), halfWidthMm },
+    { point: path[path.length - 1]!, direction: heading(path[path.length - 2]!, path[path.length - 1]!), halfWidthMm },
   ];
 }
 
-/** The piece's box in model space, the line's outside radius round its centreline. */
+/** The piece's box in model space, the line's outside radius (an accessory's body) round its centreline. */
 export function refrigerantPieceBounds3D(line: RefrigerantLine, piece: RefrigerantPiece): { min: Vec3; max: Vec3 } {
-  const r = line.outsideDiameterMm / 2;
+  const r = piece.accessory ? accessoryDrawnRadiusMm(piece.accessory, line.outsideDiameterMm) : line.outsideDiameterMm / 2;
   const xs = piece.path.map((point) => point.x);
   const ys = piece.path.map((point) => point.y);
   const zs = piece.path.map((point) => point.z);

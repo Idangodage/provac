@@ -17,9 +17,12 @@
  * level, sideways offset and length, the line's insulation; Add — a route
  * point, a bend taken out. A branch kit's card slides it along its run (a
  * pair's gas and liquid kits together) and lists turning it over and other
- * models with why they cannot be made. Each shows on the drawing before it is
- * applied, with its change in length and charge and the checks it would newly
- * fail.
+ * models with why they cannot be made. A straight's Add tab puts an inline
+ * accessory on it (a ball valve, a flare union; a strainer or a sight glass on
+ * the liquid line; a pair's valves on both lines at once); the accessory's own
+ * card moves it along its straight, swaps its kind or takes it out. Each shows
+ * on the drawing before it is applied, with its change in length and charge
+ * and the checks it would newly fail.
  */
 import { Star, TriangleAlert } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
@@ -41,12 +44,20 @@ import type { SegmentPieceRow } from '../segments/SegmentPieceList';
 import type { SegmentBadge, SegmentCardModel, SegmentFieldHost, SegmentIssueLine, SegmentProvider } from '../segments/segmentProvider';
 import { useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
 
+import { ACCESSORY_NAMES, ACCESSORY_ROLES, accessoryStationRange, type RefrigerantAccessoryKind } from './refrigerantAccessories';
 import { KIT_KEY, refrigerantKitOf, type RefrigerantKit } from './refrigerantKits';
-import { refrigerantCircuitFigures, refrigerantPieceFigures, type RefrigerantCircuitFigures, type RefrigerantPieceFigures } from './refrigerantPieceFigures';
+import {
+  copperInchLabel,
+  refrigerantCircuitFigures,
+  refrigerantPieceFigures,
+  type RefrigerantCircuitFigures,
+  type RefrigerantPieceFigures,
+} from './refrigerantPieceFigures';
 import { distanceToPath, neighbourPiece, pieceMidpoint, refrigerantLineOf, refrigerantPieceOf, type RefrigerantLine, type RefrigerantPiece } from './refrigerantPieces';
 import {
   evaluateRefrigerantOption,
   kitRunAxis,
+  refrigerantAccessoryStationOption,
   refrigerantKitOptions,
   refrigerantKitSlideOption,
   refrigerantPieceOptions,
@@ -67,8 +78,16 @@ export interface RefrigerantCardContext {
   report: VrfValidationReport;
 }
 
-const KIND_TITLES: Record<RefrigerantPiece['kind'], string> = { port: 'Port stub', straight: 'Straight', riser: 'Riser', bend: 'Bend' };
-const KIND_TAGS: Record<RefrigerantPiece['kind'], string> = { port: 'P', straight: 'S', riser: 'R', bend: 'B' };
+const KIND_TITLES: Record<RefrigerantPiece['kind'], string> = { port: 'Port stub', straight: 'Straight', riser: 'Riser', bend: 'Bend', accessory: 'Accessory' };
+const KIND_TAGS: Record<RefrigerantPiece['kind'], string> = { port: 'P', straight: 'S', riser: 'R', bend: 'B', accessory: 'A' };
+
+/** How each accessory is fitted, as site practice has it (the card's ⓘ). */
+const ACCESSORY_PRACTICE: Record<RefrigerantAccessoryKind, string> = {
+  'ball-valve': 'Full-bore, with an access port; set the lever where it can be reached, and insulate the body once the line is leak tested.',
+  strainer: 'Ahead of the expansion device, arrow with the flow; leave room below to draw the screen.',
+  'sight-glass': 'In sight on the liquid line, after the filter-drier: clear liquid means full, bubbles a short charge; its indicator shows moisture.',
+  'flare-union': 'A joint that can be broken: keep it where it can be reached (an access panel in a closed ceiling), never buried.',
+};
 const LINE_TONE: Record<RefrigerantLine['lineKind'], string> = {
   gas: 'bg-orange-50 text-orange-600',
   liquid: 'bg-blue-50 text-blue-600',
@@ -88,6 +107,7 @@ export function PipeSegmentGlyph({ kind, className }: { kind: RefrigerantPiece['
     bend: <><path d="M2 4.5h3.5a7 7 0 0 1 7 7V14" /><path d="M2 9.5h3.5a2 2 0 0 1 2 2V14" /></>,
     port: <><path d="M3 3v10" strokeWidth={2.4} /><path d="M4.5 5.5h9.5M4.5 10.5h9.5" /></>,
     kit: <><path d="M1.5 8h5" /><path d="M6.5 8l7-4.5M6.5 8l7 4.5" /></>,
+    accessory: <><path d="M1.5 8h2.5M12 8h2.5" /><path d="M4 4.5v7l8-7v7z" /></>,
   };
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -269,12 +289,14 @@ export function pieceIssues(report: VrfValidationReport, element: HvacElement, l
 interface RekeyToken {
   kind: RefrigerantPiece['kind'];
   ordinal: number;
+  /** An accessory's straight (its card goes there when it is taken out). */
+  legId?: string | null;
 }
 
 // ---------------------------------------------------------------------------------------------------- options on the card
 
-const SWAP_GROUPS = new Set<RefrigerantSegmentOption['group']>(['size', 'construction', 'radius', 'split-bend', 'plane', 'material', 'kit-flip', 'kit-model']);
-const ADD_GROUPS = new Set<RefrigerantSegmentOption['group']>(['add-point', 'remove-bend']);
+const SWAP_GROUPS = new Set<RefrigerantSegmentOption['group']>(['size', 'construction', 'radius', 'split-bend', 'plane', 'material', 'kit-flip', 'kit-model', 'accessory-kind']);
+const ADD_GROUPS = new Set<RefrigerantSegmentOption['group']>(['add-point', 'remove-bend', 'accessory-add', 'accessory-remove']);
 
 const BADGES: Record<string, SegmentBadge> = {
   recommended: {
@@ -305,6 +327,11 @@ function OptionGlyph({ glyph, className }: { glyph: RefrigerantOptionGlyph; clas
     slide: <><path d="M5 8h9M11 5l3 3-3 3" /><path d="M2 5v6" strokeWidth={2} /></>,
     flip: <><path d="M2 8h12" strokeDasharray="1.5 1.5" /><path d="M4 6.5l4-3.5 4 3.5M4 9.5l4 3.5 4-3.5" /></>,
     kit: <><path d="M1.5 8h5" /><path d="M6.5 8l7-4.5M6.5 8l7 4.5" /></>,
+    'ball-valve': <><path d="M3 4.5v7l10-7v7z" /><circle cx="8" cy="8" r="1.3" fill="currentColor" /></>,
+    strainer: <><path d="M1.5 6h13" /><path d="M5.5 6l4 6" /><path d="M7.6 13.4l3.6-2.6" strokeWidth={2} /></>,
+    'sight-glass': <><path d="M1.5 8h3M11.5 8h3" /><circle cx="8" cy="8" r="3.5" /><circle cx="8" cy="8" r="1.4" fill="currentColor" opacity={0.55} /></>,
+    'flare-union': <><path d="M1.5 8h13" /><path d="M6 4.5v7M10 4.5v7" strokeWidth={2} /></>,
+    'take-out': <><path d="M1.5 8h3.5M11 8h3.5" /><path d="M6.5 5.5l3 5M9.5 5.5l-3 5" /></>,
   };
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -446,6 +473,106 @@ function KitEditPanel({ host, element, options }: { host: FieldHost; element: Hv
   );
 }
 
+/** An accessory's Edit tab: along its straight, by a chip or a distance from the start point of your own. */
+function AccessoryEditPanel({ host, element, line, piece, options }: {
+  host: FieldHost;
+  element: HvacElement;
+  line: RefrigerantLine;
+  piece: RefrigerantPiece;
+  options: readonly RefrigerantSegmentOption[];
+}): ReactNode {
+  const placed = piece.accessory;
+  const straight = placed ? line.straights.find((candidate) => candidate.legId === placed.legId) : undefined;
+  if (!placed || !straight) return null;
+  const range = accessoryStationRange(straight, placed.lengthMm);
+  return (
+    <div className="space-y-2" data-testid="refrigerant-segment-edit-panel">
+      <EditBlock title="Along its straight">
+        <div className="px-1"><ChipRow options={options.filter((option) => option.group === 'accessory-move')} evaluations={host.evaluations} onHover={host.onHover} onApply={host.onApply} /></div>
+        <ValueField host={host} label="From start" unit="mm" current={Math.round(placed.stationMm)} min={Math.floor(straight.freeFromMm)} max={Math.ceil(straight.freeToMm)}
+          step={50} fineStep={10} testId="refrigerant-segment-accessory-station"
+          hint={range ? `its centre, from the corner (or port) its straight starts at · fits ${Math.round(range.from)}–${Math.round(range.to)}` : 'the straight is too short for it'}
+          makeOption={(value) => refrigerantAccessoryStationOption(element, line, piece, value)} />
+      </EditBlock>
+    </div>
+  );
+}
+
+/** An accessory in one strip: the tube it sits on, its body, where it is along its straight. */
+function AccessoryFigures({ line, piece, focus, partner }: { line: RefrigerantLine; piece: RefrigerantPiece; focus: SegmentFocus; partner: { id: string; key: string } | null }) {
+  const placed = piece.accessory!;
+  const inch = copperInchLabel(line.tubeOdMm);
+  return (
+    <div className="space-y-1.5 px-3 pb-2" data-testid="refrigerant-segment-figures">
+      {partner && line.lineKind !== 'pair' ? <LineSwitch focus={focus} lineKind={line.lineKind} partner={partner} /> : null}
+      <div className="flex items-center gap-x-3">
+        {stat(`Ø${number(line.tubeOdMm, 2)}`, inch ?? '', `On copper Ø${number(line.tubeOdMm, 2)} mm${inch ? ` (${inch})` : ''}`)}
+        {stat(number(placed.lengthMm), 'mm', `Body ${number(placed.lengthMm)} mm long, Ø${number(placed.diameterMm)} (practice size, unverified)`)}
+        <span className="ml-auto">
+          {stat(number(placed.stationMm / 1000, 2), 'm from start', placed.problem ?? `Its centre ${number(placed.stationMm)} mm from the corner (or port) its straight starts at`, placed.problem ? 'over' : 'ok')}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function AccessoryInfo({ line, piece }: { line: RefrigerantLine; piece: RefrigerantPiece }) {
+  const placed = piece.accessory!;
+  const kind = placed.accessory.kind;
+  const straight = line.straights.find((candidate) => candidate.legId === placed.legId);
+  const range = straight ? accessoryStationRange(straight, placed.lengthMm) : null;
+  const straightPiece = line.pieces.find((candidate) => candidate.kind === 'straight' && candidate.legId === placed.legId);
+  return (
+    <>
+      <div>{ACCESSORY_NAMES[kind]}: {ACCESSORY_ROLES[kind]}.</div>
+      <div>Body ≈ {number(placed.lengthMm)} mm long, Ø{number(placed.diameterMm)}, for Ø{number(line.tubeOdMm, 2)} copper (practice size from the tube, unverified until a catalogue is loaded).</div>
+      <div>
+        On straight {straightPiece?.ordinal ?? '—'}, its centre {number(placed.stationMm)} mm from the start point
+        {range ? ` · it fits with its centre ${number(range.from)}–${number(range.to)} mm, clear of the fittings` : ''}.
+      </div>
+      <div className="text-slate-400">{ACCESSORY_PRACTICE[kind]}</div>
+    </>
+  );
+}
+
+/** An inline accessory's card: what it is and does, where it sits, moved along its straight, swapped, taken out. */
+function buildAccessoryModel(scene: HvacElement[], focus: SegmentFocus, element: HvacElement, line: RefrigerantLine, piece: RefrigerantPiece,
+  context: RefrigerantCardContext): RefrigerantCardModel | null {
+  const placed = piece.accessory;
+  if (!placed) return null;
+  const partnerElement = partnerOf(element, scene);
+  const partnerLine = partnerElement ? refrigerantLineOf(partnerElement, scene) : null;
+  const partnerPiece = partnerLine ? matchingPiece(partnerLine, piece) : null;
+  const partner = partnerElement && partnerPiece ? { id: partnerElement.id, key: partnerPiece.key } : null;
+  const profile = context.profile ?? PROJECT_FALLBACK_RULE_PROFILE;
+  const options = refrigerantPieceOptions(scene, element, line, piece, null, profile);
+  const inch = copperInchLabel(line.tubeOdMm);
+  const token: RekeyToken = { kind: 'accessory', ordinal: piece.ordinal, legId: placed.legId };
+  return {
+    head: {
+      title: `${LINE_NAME[line.lineKind]} · ${ACCESSORY_NAMES[placed.accessory.kind]}`,
+      size: `Ø${number(line.tubeOdMm, 2)}${inch ? ` (${inch})` : ''}`,
+      detail: placed.problem ? 'no room here' : `${number(placed.lengthMm)} mm body`,
+      tag: `${line.lineKind === 'liquid' ? 'L' : 'G'}-${KIND_TAGS.accessory}${piece.ordinal}`,
+      glyph: <OptionGlyph glyph={placed.accessory.kind} className="h-3.5 w-3.5" />,
+      tone: LINE_TONE[line.lineKind],
+      kind: 'accessory',
+    },
+    figures: <AccessoryFigures line={line} piece={piece} focus={focus} partner={partner} />,
+    info: <AccessoryInfo line={line} piece={piece} />,
+    issues: placed.problem ? [{ severity: 'error', code: 'ACCESSORY_FIT', message: placed.problem }] : [],
+    options,
+    evaluate: (option) => evaluateRefrigerantOption(scene, option, profile),
+    tabOf: (option) => (SWAP_GROUPS.has(option.group) ? 'swap' : ADD_GROUPS.has(option.group) ? 'add' : null),
+    edit: (host) => AccessoryEditPanel({ host, element, line, piece, options }),
+    neighbour: (direction) => {
+      const next = neighbourPiece(line, piece.key, direction);
+      return next ? { key: next.key, anchorMark: null } : null;
+    },
+    rekeyToken: token,
+  };
+}
+
 /** How a kit sits: level, turned over (its branch the other way), or rolled. */
 const rollText = (rollDeg: number) => {
   const roll = ((rollDeg % 360) + 360) % 360;
@@ -529,6 +656,7 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Refriger
   const line = element ? refrigerantLineOf(element, scene) : null;
   const piece = line ? refrigerantPieceOf(line, focus.key) : null;
   if (!element || !line || !piece) return null;
+  if (piece.kind === 'accessory') return buildAccessoryModel(scene, focus, element, line, piece, context);
   const figures = refrigerantPieceFigures(scene, element, line, piece, context.profile ?? PROJECT_FALLBACK_RULE_PROFILE);
   const partnerElement = partnerOf(element, scene);
   const partnerLine = partnerElement ? refrigerantLineOf(partnerElement, scene) : null;
@@ -576,8 +704,10 @@ export function refrigerantPieceRows(element: HvacElement, scene: readonly HvacE
   return line.pieces.map((piece) => ({
     key: piece.key,
     tag: `${prefix}-${KIND_TAGS[piece.kind]}${piece.kind === 'port' ? (piece.endpoint === 'start' ? '1' : '2') : piece.ordinal}`,
-    title: piece.kind === 'port' ? `${KIND_TITLES.port} · ${piece.endpoint === 'start' ? 'start' : 'end'}` : `${KIND_TITLES[piece.kind]} ${piece.ordinal}`,
-    detail: piece.kind === 'bend' && piece.angleDeg !== null ? `${number(piece.angleDeg)}°` : metres(piece.lengthMm),
+    title: piece.kind === 'port' ? `${KIND_TITLES.port} · ${piece.endpoint === 'start' ? 'start' : 'end'}`
+      : piece.accessory ? ACCESSORY_NAMES[piece.accessory.accessory.kind] : `${KIND_TITLES[piece.kind]} ${piece.ordinal}`,
+    detail: piece.kind === 'bend' && piece.angleDeg !== null ? `${number(piece.angleDeg)}°`
+      : piece.accessory ? (piece.accessory.problem ? 'no room' : `${number(piece.accessory.lengthMm)} mm`) : metres(piece.lengthMm),
   }));
 }
 
@@ -618,6 +748,10 @@ export function createRefrigerantSegmentProvider(context: RefrigerantCardContext
           },
         })),
       });
+      // A new accessory's card takes over from its straight's, to place it.
+      const { pinned, pin } = useSegmentUiStore.getState();
+      const added = option.edit.kind === 'accessory-add' ? option.edit.adds.find((item) => item.elementId === pinned?.runId) : undefined;
+      if (pinned && added) pin({ ...pinned, key: `acc:${added.accessory.id}`, anchorMark: null });
     },
     rekey: (scene, focus, token) => {
       const element = scene.find((candidate) => candidate.id === focus.runId);
@@ -626,6 +760,11 @@ export function createRefrigerantSegmentProvider(context: RefrigerantCardContext
       if (!line) return null;
       if (refrigerantPieceOf(line, focus.key)) return focus;
       const wanted = token as RekeyToken | null;
+      // An accessory taken out: its straight.
+      if (wanted?.kind === 'accessory') {
+        const straight = wanted.legId ? refrigerantPieceOf(line, `leg:${wanted.legId}`) : null;
+        return straight ? { ...focus, key: straight.key, anchorMark: null } : null;
+      }
       const same = wanted ? line.pieces.find((piece) => piece.kind === wanted.kind && piece.ordinal === wanted.ordinal) : null;
       return same ? { ...focus, key: same.key, anchorMark: null } : null;
     },

@@ -48,6 +48,7 @@ import {
   buildSweptTubeGeometry,
   unionGeometries,
 } from "./pipeJointGeometry";
+import { addRefrigerantAccessoryMeshes } from "./refrigerantAccessoryMeshes";
 
 const EPSILON = 0.001;
 
@@ -2407,6 +2408,7 @@ export function buildHvacElementMesh(
           lineKind === 'gas' ? REFRIGERANT_PIPE_3D_COLORS.gasCopper : REFRIGERANT_PIPE_3D_COLORS.liquidCopper, {
             start: !startConnection && !openStart, end: !endConnection && !openEnd,
           });
+        addRefrigerantAccessoryMeshes(group, effectiveElement, context.allElements);
         break;
       }
       const insulation = createTubeAlongPoints(points, outerRadius, REFRIGERANT_PIPE_3D_COLORS[lineKind], {
@@ -2426,6 +2428,8 @@ export function buildHvacElementMesh(
           start: !startConnection && !openStart,
           end: !endConnection && !openEnd,
         });
+      // The line's inline accessories (valves, strainers, sight glasses, unions) on its straights.
+      addRefrigerantAccessoryMeshes(group, effectiveElement, context.allElements);
       break;
     }
     case "duct": {

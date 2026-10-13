@@ -18,7 +18,10 @@
  *  - a branch kit slid along its run (a pair's gas and liquid kits together),
  *    its pipes following as they do when it is dragged; turned over (only
  *    while no pipe holds it: turning it over moves its ports across the pair)
- *    or another model (listed with why not: the library draws one kit).
+ *    or another model (listed with why not: the library draws one kit);
+ *  - an inline accessory (a ball valve, a flare union; on the liquid line a
+ *    strainer or a sight glass) added on a straight where it fits, and on its
+ *    own card moved along the straight, swapped for another kind, taken out.
  *
  * Each is evaluated on a copy of the drawing: the elements it changes, what
  * else the engine had to change (notes), the change in length and (on a
@@ -50,14 +53,28 @@ import { refrigerantChangeIssues } from '../refrigerantChangeValidation';
 import { resolveRefrigerantPipeBranchKitReconnectionUpdates, resolveRefrigerantPipeSpec } from '../refrigerantPipePairModel';
 import type { SegmentEvaluationLike, SegmentOptionLike } from '../segments/segmentProvider';
 
+import {
+  ACCESSORY_LINES,
+  ACCESSORY_NAMES,
+  ACCESSORY_ROLES,
+  accessoryBody,
+  accessoryStationRange,
+  freeStationFor,
+  nextAccessoryId,
+  readRefrigerantAccessories,
+  REFRIGERANT_ACCESSORY_KINDS,
+  type RefrigerantAccessoryKind,
+  type RefrigerantInlineAccessory,
+} from './refrigerantAccessories';
 import { refrigerantKitOf } from './refrigerantKits';
 import { COPPER_TUBE_SERIES_MM, copperInchLabel, liquidChargeKgPerM, refrigerantCircuitFigures } from './refrigerantPieceFigures';
-import { pieceMidpoint, type RefrigerantLine, type RefrigerantPiece } from './refrigerantPieces';
+import { pieceMidpoint, refrigerantLineOf, type RefrigerantLine, type RefrigerantPiece } from './refrigerantPieces';
 
 export type RefrigerantOptionGroup =
   | 'size' | 'construction' | 'radius' | 'split-bend' | 'plane'
   | 'length' | 'level' | 'offset' | 'insulation' | 'material' | 'add-point' | 'remove-bend'
-  | 'kit-slide' | 'kit-flip' | 'kit-model';
+  | 'kit-slide' | 'kit-flip' | 'kit-model'
+  | 'accessory-add' | 'accessory-move' | 'accessory-kind' | 'accessory-remove';
 
 export type RefrigerantPieceEdit =
   | { kind: 'size'; elementId: string; tubeOdMm: number }
@@ -73,10 +90,15 @@ export type RefrigerantPieceEdit =
   | { kind: 'remove-bend'; elementId: string; point: { x: number; y: number } }
   | { kind: 'kit-slide'; kitIds: string[]; offset: { x: number; y: number } }
   | { kind: 'kit-flip'; kitIds: string[] }
-  | { kind: 'kit-model'; kitIds: string[] };
+  | { kind: 'kit-model'; kitIds: string[] }
+  | { kind: 'accessory-add'; adds: Array<{ elementId: string; accessory: RefrigerantInlineAccessory }> }
+  | { kind: 'accessory-move'; elementId: string; id: string; stationMm: number; at: Vec3 }
+  | { kind: 'accessory-kind'; elementId: string; id: string; accessoryKind: RefrigerantAccessoryKind }
+  | { kind: 'accessory-remove'; elementId: string; id: string };
 
 export type RefrigerantOptionGlyph = 'size-down' | 'size-up' | 'size' | 'socket' | 'formed' | 'radius' | 'split' | 'roll'
-  | 'level' | 'offset' | 'length' | 'insulation' | 'hard' | 'flexible' | 'add-point' | 'remove-bend' | 'slide' | 'flip' | 'kit';
+  | 'level' | 'offset' | 'length' | 'insulation' | 'hard' | 'flexible' | 'add-point' | 'remove-bend' | 'slide' | 'flip' | 'kit'
+  | RefrigerantAccessoryKind | 'take-out';
 
 export interface RefrigerantSegmentOption extends SegmentOptionLike {
   group: RefrigerantOptionGroup;
@@ -256,6 +278,61 @@ function slideKits(scene: readonly HvacElement[], kitIds: readonly string[], off
   };
 }
 
+/**
+ * The line with a new accessory list, judged where the accessory `checkId` lands: on a line it belongs on, clear of
+ * the fittings and of the bodies beside it. Every accessory is written back where it is placed (its leg, its station,
+ * its centre), so each keeps a fresh place to re-attach to.
+ */
+function withAccessories(element: HvacElement, scene: readonly HvacElement[], list: readonly RefrigerantInlineAccessory[], checkId: string | null):
+  { ok: true; element: HvacElement } | { ok: false; message: string } {
+  const trial = withProperties(element, { inlineAccessories: list.length ? list : undefined });
+  const placed = refrigerantLineOf(trial, scene)?.accessories ?? [];
+  if (checkId !== null) {
+    const own = placed.find((item) => item.accessory.id === checkId);
+    if (!own) return { ok: false, message: 'There is no straight here for it.' };
+    if (own.problem) return { ok: false, message: own.problem };
+  }
+  if (!placed.length) return { ok: true, element: trial };
+  const fresh = list.map((item) => {
+    const where = placed.find((candidate) => candidate.accessory.id === item.id);
+    return where ? { ...item, legId: where.legId, stationMm: Math.round(where.stationMm), at: where.centre } : item;
+  });
+  return { ok: true, element: withProperties(element, { inlineAccessories: fresh }) };
+}
+
+/**
+ * After an edit that renames or splits the line's legs (a corner added or taken out), each accessory re-attached to
+ * the straight where it was — by its centre before the edit — rather than by a leg that may now be another straight.
+ */
+function reanchorAccessories(before: HvacElement, after: HvacElement, scene: readonly HvacElement[]): HvacElement {
+  const list = readRefrigerantAccessories(before);
+  if (!list.length) return after;
+  const centres = new Map((refrigerantLineOf(before, scene)?.accessories ?? []).map((item) => [item.accessory.id, item.centre]));
+  const loose = list.map((item) => ({ ...item, legId: '', at: centres.get(item.id) ?? item.at }));
+  const placed = refrigerantLineOf(withProperties(after, { inlineAccessories: loose }), scene)?.accessories ?? [];
+  const carried = loose.map((item) => {
+    const where = placed.find((candidate) => candidate.accessory.id === item.id);
+    return where ? { ...item, legId: where.legId, stationMm: Math.round(where.stationMm), at: where.centre } : { ...item, legId: list.find((old) => old.id === item.id)!.legId };
+  });
+  return withProperties(after, { inlineAccessories: carried });
+}
+
+/** The accessories an edit leaves without room (that had room before), as new errors. */
+function accessoryFitIssues(scene: readonly HvacElement[], after: readonly HvacElement[], changed: readonly HvacElement[]): Array<{ severity: 'error'; code: string; message: string }> {
+  const issues: Array<{ severity: 'error'; code: string; message: string }> = [];
+  for (const element of changed) {
+    const before = scene.find((candidate) => candidate.id === element.id);
+    if (!before || before.type !== 'refrigerant-pipe' || !readRefrigerantAccessories(element).length) continue;
+    const had = new Map((refrigerantLineOf(before, scene)?.accessories ?? []).map((item) => [item.accessory.id, item.problem]));
+    for (const placed of refrigerantLineOf(element, after)?.accessories ?? []) {
+      if (placed.problem && !had.get(placed.accessory.id)) {
+        issues.push({ severity: 'error', code: 'ACCESSORY_FIT', message: `${ACCESSORY_NAMES[placed.accessory.kind]}: ${placed.problem}` });
+      }
+    }
+  }
+  return issues;
+}
+
 function applyEdit(scene: readonly HvacElement[], edit: RefrigerantPieceEdit): EditResult {
   const find = (id: string) => scene.find((candidate) => candidate.id === id);
   switch (edit.kind) {
@@ -315,7 +392,7 @@ function applyEdit(scene: readonly HvacElement[], edit: RefrigerantPieceEdit): E
       const nodes = designRouteNodes(inserted.design);
       const cornerIndex = inserted.design.nodes.findIndex((node) => node.id === corner.id);
       nodes[cornerIndex] = add(corner, scale(outgoing.direction, edit.chamferMm));
-      const next = pipeWithEditedDesign(element, designWithNodePositions(inserted.design, nodes));
+      const next = reanchorAccessories(element, pipeWithEditedDesign(element, designWithNodePositions(inserted.design, nodes)), scene);
       const conflict = fittingConflict(element, next);
       if (conflict) return { ok: false, message: conflict };
       return { ok: true, elements: [next], action: 'Two 45° bends', notes: [`a ${Math.round(edit.chamferMm * Math.SQRT2)} mm straight between them`] };
@@ -388,7 +465,9 @@ function applyEdit(scene: readonly HvacElement[], edit: RefrigerantPieceEdit): E
       const result = buildPipeTopologyEdit({ elementId: edit.elementId, elements: scene,
         action: { kind: edit.kind === 'add-point' ? 'insert' : 'remove', nearPoint: edit.point } });
       if (!result.ok) return { ok: false, message: result.message };
-      return { ok: true, elements: [result.element, ...result.elementUpdates], action: edit.kind === 'add-point' ? 'Add route point' : 'Remove bend', notes: [] };
+      const element = find(edit.elementId);
+      const carried = element ? reanchorAccessories(element, result.element, scene) : result.element;
+      return { ok: true, elements: [carried, ...result.elementUpdates], action: edit.kind === 'add-point' ? 'Add route point' : 'Remove bend', notes: [] };
     }
     case 'kit-slide':
       return slideKits(scene, edit.kitIds, edit.offset);
@@ -408,6 +487,38 @@ function applyEdit(scene: readonly HvacElement[], edit: RefrigerantPieceEdit): E
     }
     case 'kit-model':
       return { ok: false, message: 'The kit library has no other model.' };
+    case 'accessory-add': {
+      if (!edit.adds.length) return { ok: false, message: 'There is nothing to add.' };
+      const changed = new Map<string, HvacElement>();
+      for (const { elementId, accessory } of edit.adds) {
+        const element = changed.get(elementId) ?? find(elementId);
+        if (!element) return { ok: false, message: 'The line is no longer in the drawing.' };
+        if (locked(element)) return { ok: false, message: 'This line is locked. Unlock it before changing its accessories.' };
+        const result = withAccessories(element, scene, [...readRefrigerantAccessories(element), accessory], accessory.id);
+        if (!result.ok) return result;
+        changed.set(elementId, result.element);
+      }
+      const name = ACCESSORY_NAMES[edit.adds[0]!.accessory.kind].toLowerCase();
+      return { ok: true, elements: [...changed.values()], action: edit.adds.length > 1 ? `Add ${name}s on both lines` : `Add ${name}`, notes: [] };
+    }
+    case 'accessory-move':
+    case 'accessory-kind':
+    case 'accessory-remove': {
+      const element = find(edit.elementId);
+      if (!element) return { ok: false, message: 'The line is no longer in the drawing.' };
+      if (locked(element)) return { ok: false, message: 'This line is locked. Unlock it before changing its accessories.' };
+      const list = readRefrigerantAccessories(element);
+      const item = list.find((candidate) => candidate.id === edit.id);
+      if (!item) return { ok: false, message: 'The accessory is no longer on the line.' };
+      const next = edit.kind === 'accessory-remove' ? list.filter((candidate) => candidate !== item)
+        : list.map((candidate) => (candidate !== item ? candidate
+          : edit.kind === 'accessory-move' ? { ...candidate, stationMm: edit.stationMm, at: edit.at } : { ...candidate, kind: edit.accessoryKind }));
+      const result = withAccessories(element, scene, next, edit.kind === 'accessory-remove' ? null : edit.id);
+      if (!result.ok) return result;
+      const name = ACCESSORY_NAMES[edit.kind === 'accessory-kind' ? edit.accessoryKind : item.kind].toLowerCase();
+      const action = edit.kind === 'accessory-move' ? `Move ${name}` : edit.kind === 'accessory-kind' ? `Make it a ${name}` : `Take out ${ACCESSORY_NAMES[item.kind].toLowerCase()}`;
+      return { ok: true, elements: [result.element], action, notes: [] };
+    }
     default:
       return { ok: false, message: 'Not an edit.' };
   }
@@ -484,7 +595,7 @@ export function evaluateRefrigerantOption(scene: readonly HvacElement[], option:
       }
       evaluation = {
         optionId: option.id, updates: result.elements, action: result.action, notes: result.notes,
-        newIssues: newIssues(scene, after, result.elements.map((element) => element.id), profile),
+        newIssues: [...newIssues(scene, after, result.elements.map((element) => element.id), profile), ...accessoryFitIssues(scene, after, result.elements)],
         deltaLengthMm, deltaChargeKg,
       };
     }
@@ -545,6 +656,8 @@ export function refrigerantPieceOptions(
   const lineName = line.lineKind === 'liquid' ? 'liquid' : 'gas';
   const isLocked = locked(element) ? 'This line is locked. Unlock it before editing it.' : undefined;
   const lock = isLocked ? { disabledReason: isLocked } : {};
+  // An accessory's card is the accessory's own: along its straight, another kind, taken out.
+  if (piece.kind === 'accessory') return accessoryOptions(element, line, piece, lock);
 
   // ---- Size: the line's, one ACR size down or up, and the profile's (or that no sizing table is loaded).
   const at = seriesIndex(line.tubeOdMm);
@@ -633,6 +746,8 @@ export function refrigerantPieceOptions(
       id: 'add-point', group: 'add-point', glyph: 'add-point', title: 'A point at its middle',
       detail: 'splits the straight there, to drag a new bend out of it', edit: { kind: 'add-point', elementId: element.id, point: { x: middle.x, y: middle.y } }, ...lock,
     });
+    // ---- An accessory on it, where it fits (its middle, else the nearest free place); on a pair, on both lines at once.
+    options.push(...accessoryAddOptions(element, line, piece, partner, lock));
   }
 
   if (piece.kind === 'bend' && piece.joint && piece.angleDeg !== null) {
@@ -692,6 +807,94 @@ export function refrigerantPieceOptions(
     }
   }
   return options;
+}
+
+/** A new accessory of `kind` on a line's straight, at its middle (or near `preferred`), or why it cannot go there. */
+function accessoryOn(element: HvacElement, line: RefrigerantLine, legId: string | null, kind: RefrigerantAccessoryKind, preferred?: Vec3):
+  { accessory: RefrigerantInlineAccessory } | { problem: string } | null {
+  const straight = line.straights.find((candidate) => candidate.legId === legId);
+  if (!straight) return null;
+  const along = preferred ? (preferred.x - straight.start.x) * straight.direction.x + (preferred.y - straight.start.y) * straight.direction.y
+    + (preferred.z - straight.start.z) * straight.direction.z : undefined;
+  const place = freeStationFor(straight, kind, line.tubeOdMm, line.accessories, along);
+  if ('problem' in place) return place;
+  return { accessory: { id: nextAccessoryId(readRefrigerantAccessories(element)), kind, legId: straight.legId, stationMm: place.stationMm,
+    at: add(straight.start, scale(straight.direction, place.stationMm)) } };
+}
+
+/** A straight's Add options: each accessory its line takes, here; a valve or a union on both lines of a pair. */
+function accessoryAddOptions(element: HvacElement, line: RefrigerantLine, piece: RefrigerantPiece, partner: RefrigerantPartner | null,
+  lock: { disabledReason?: string }): RefrigerantSegmentOption[] {
+  if (piece.kind !== 'straight' || line.lineKind === 'pair') return [];
+  const lineName = line.lineKind;
+  const options: RefrigerantSegmentOption[] = [];
+  for (const kind of REFRIGERANT_ACCESSORY_KINDS.filter((candidate) => ACCESSORY_LINES[candidate].includes(lineName))) {
+    const here = accessoryOn(element, line, piece.legId, kind);
+    if (!here) continue;
+    const body = accessoryBody(kind, line.tubeOdMm);
+    const detail = `${ACCESSORY_ROLES[kind]} · body ${body.lengthMm} mm`;
+    const base = { group: 'accessory-add' as const, glyph: kind };
+    if ('problem' in here) {
+      options.push({ ...base, id: `accessory:${kind}`, title: `${ACCESSORY_NAMES[kind]} here`, detail, disabledReason: here.problem,
+        edit: { kind: 'accessory-add', adds: [] } });
+      continue;
+    }
+    options.push({ ...base, id: `accessory:${kind}`, title: `${ACCESSORY_NAMES[kind]} here`, detail,
+      edit: { kind: 'accessory-add', adds: [{ elementId: element.id, accessory: here.accessory }] }, ...lock });
+    // Its twin on the pair's other line, beside it.
+    if (!partner || partner.piece.kind !== 'straight' || partner.line.lineKind === 'pair' || !ACCESSORY_LINES[kind].includes(partner.line.lineKind)) continue;
+    const twin = accessoryOn(partner.element, partner.line, partner.piece.legId, kind, here.accessory.at);
+    if (!twin) continue;
+    const twinLock = locked(partner.element) ? { disabledReason: 'The other line is locked. Unlock it before changing its accessories.' } : {};
+    options.push({ ...base, id: `accessory:${kind}:pair`, title: `${ACCESSORY_NAMES[kind]}s on both lines`,
+      detail: `gas and liquid side by side · ${ACCESSORY_ROLES[kind]}`,
+      edit: { kind: 'accessory-add', adds: 'problem' in twin ? [] : [{ elementId: element.id, accessory: here.accessory }, { elementId: partner.element.id, accessory: twin.accessory }] },
+      ...('problem' in twin ? { disabledReason: `The other line: ${twin.problem}` } : { ...twinLock, ...lock }) });
+  }
+  return options;
+}
+
+/** An accessory's own options: along its straight, another kind its line takes, taken out. */
+function accessoryOptions(element: HvacElement, line: RefrigerantLine, piece: RefrigerantPiece, lock: { disabledReason?: string }): RefrigerantSegmentOption[] {
+  const placed = piece.accessory;
+  if (!placed) return [];
+  const options: RefrigerantSegmentOption[] = [];
+  const lineName = line.lineKind === 'liquid' ? 'liquid' : 'gas';
+  for (const shift of [-100, -50, 50, 100]) {
+    const option = refrigerantAccessoryStationOption(element, line, piece, placed.stationMm + shift);
+    if (option) options.push({ ...option, id: `accessory-move:${shift}`, ...lock });
+  }
+  for (const accessoryKind of REFRIGERANT_ACCESSORY_KINDS.filter((kind) => ACCESSORY_LINES[kind].includes(lineName))) {
+    const current = accessoryKind === placed.accessory.kind;
+    options.push({
+      id: `accessory-kind:${accessoryKind}`, group: 'accessory-kind', glyph: accessoryKind, title: ACCESSORY_NAMES[accessoryKind],
+      detail: `${ACCESSORY_ROLES[accessoryKind]} · body ${accessoryBody(accessoryKind, line.tubeOdMm).lengthMm} mm`,
+      edit: { kind: 'accessory-kind', elementId: element.id, id: placed.accessory.id, accessoryKind }, ...(current ? { current: true } : lock),
+    });
+  }
+  options.push({
+    id: 'accessory-remove', group: 'accessory-remove', glyph: 'take-out', title: 'Take it out', detail: 'the straight runs through',
+    edit: { kind: 'accessory-remove', elementId: element.id, id: placed.accessory.id }, ...lock,
+  });
+  return options;
+}
+
+/** An accessory moved to a station of its straight (its centre's distance from the leg's start, mm). */
+export function refrigerantAccessoryStationOption(element: HvacElement, line: RefrigerantLine, piece: RefrigerantPiece, stationMm: number): RefrigerantSegmentOption | null {
+  const placed = piece.accessory;
+  const straight = placed ? line.straights.find((candidate) => candidate.legId === placed.legId) : undefined;
+  if (!placed || !straight || Math.abs(stationMm - placed.stationMm) < 0.5) return null;
+  const shift = Math.round(stationMm - placed.stationMm);
+  const range = accessoryStationRange(straight, placed.lengthMm);
+  const outside = !range ? 'The straight is too short for it.'
+    : stationMm < range.from - 0.5 || stationMm > range.to + 0.5 ? `It would run into a fitting: keep its centre ${Math.round(range.from)}–${Math.round(range.to)} mm from the start point.` : null;
+  const way = screenWay(scale(straight.direction, Math.sign(shift)));
+  return {
+    id: `accessory-station:${Math.round(stationMm)}`, group: 'accessory-move', glyph: 'slide', title: `${way.arrow} ${Math.abs(shift)}`,
+    detail: `${Math.abs(shift)} mm ${shift > 0 ? 'on along' : 'back along'} its straight`,
+    edit: { kind: 'accessory-move', elementId: element.id, id: placed.accessory.id, stationMm, at: add(straight.start, scale(straight.direction, stationMm)) },
+    ...(outside ? { disabledReason: outside } : {}),
+  };
 }
 
 /** The options a straight's own values make (typed in the card's Edit tab). */
