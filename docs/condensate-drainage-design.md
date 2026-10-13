@@ -123,6 +123,9 @@ Rules that keep the preview honest:
 
 ## Micro-editing ("edit the plan, the physics follows")
 
+*A drain's pieces also have segment cards, in plan and 3D (13 October 2026): each piece's figures, its checks, and its
+edits solved through the same edit session, previewed before they are applied. See `hvac-pipe-segment-cards.md`.*
+
 Code: `condensateEditing.ts` (engine), `condensateRouteOps.ts` (pure route operations + snapping),
 `condensateEditController.ts` (store side), `CondensateEditLayer.tsx` (plan handles) and
 `CondensateEditBar.tsx` (contextual bar). Planner support: `CondensatePlanOptions.fixedNetwork`

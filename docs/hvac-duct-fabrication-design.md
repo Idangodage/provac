@@ -1021,6 +1021,9 @@ Plans derive the penetrations every time they are made, so a moved wall never le
 
 ## Segment cards: the options of each piece of a duct run, in 2D and 3D (6–7 October 2026)
 
+*Refrigerant lines and condensate drains got the same cards on a shared shell (12–13 October 2026): see
+`hvac-pipe-segment-cards.md`.*
+
 **The request:** point at a segment of a generated duct path and see its alternatives: a rectangular duct's equivalent spiral duct; for a Y or a bend, rectangular alternatives and parameters such as the inner radius; an easily edited size, the segments around it (round-to-square and so on) following. Every view. The approved plan is in `C:\Users\idang\.claude\plans\duct-segment-options.md` (phases 0–6).
 
 ### Round-main collars fit the main (Phase 0, 73f2627)
