@@ -382,6 +382,28 @@ export function SegmentCardLayer({ enabled, hvacElements, selectedIds, providers
     else if (!sameFocus(next, pinned)) pin(next);
   }, [hvacElements, byDomain, pinned, pin, unpin]);
 
+  // A pinned piece can go while its card is open: another editor changed the run (a drag renumbered its pieces, say).
+  // The card then follows it as after its own edits — the same key, else what its service says it became — or closes.
+  const lastTokenRef = useRef<{ id: string; token: unknown } | null>(null);
+  useEffect(() => {
+    if (!pinned) {
+      lastTokenRef.current = null;
+      return;
+    }
+    const provider = byDomain.get(domainOf(pinned));
+    if (!provider) return;
+    const model = provider.model(hvacElements, pinned);
+    if (model) {
+      lastTokenRef.current = { id: focusId(pinned), token: model.rekeyToken };
+      return;
+    }
+    const last = lastTokenRef.current;
+    if (!last || last.id !== focusId(pinned)) return;
+    const next = provider.rekey(hvacElements, pinned, last.token);
+    if (!next) unpin();
+    else if (!sameFocus(next, pinned)) pin(next);
+  }, [hvacElements, byDomain, pinned, pin, unpin]);
+
   const apply = useCallback<ApplyHandler>((focus, option, evaluation, rekeyToken) => {
     const provider = byDomain.get(domainOf(focus));
     useSegmentUiStore.getState().setPreview(null);

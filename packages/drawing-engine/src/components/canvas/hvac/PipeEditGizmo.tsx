@@ -45,6 +45,10 @@ interface Props {
   unit: LinearUnit;
   onCommitLength: (lengthMm: number) => boolean;
   fixedEndpoints: { start: boolean; end: boolean };
+  /** The model point under the pointer on a segment while no gesture runs, or null as it leaves (a piece's card peeks). */
+  onSegmentHover?: (point: PipeRouteNode3D | null) => void;
+  /** A segment pressed and released without moving, at the model point pressed (a piece's card pins). */
+  onSegmentClick?: (point: PipeRouteNode3D) => void;
 }
 
 type Point = { x: number; y: number; visible: boolean };
@@ -193,10 +197,24 @@ export function PipeEditGizmo(props: Props) {
     }
     setUnavailable(false);
   };
+  /** The model point on segment `index` nearest a client point, along the segment as it is drawn on screen. */
+  const segmentModelPoint = (index: number, clientX: number, clientY: number): PipeRouteNode3D | null => {
+    const shown = projection?.nodes; const model = live.current.previewNodes ?? live.current.nodes;
+    const a = shown?.[index]; const b = shown?.[index + 1]; const from = model[index]; const to = model[index + 1];
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!a || !b || !from || !to || !rect) return null;
+    const dx = b.x - a.x; const dy = b.y - a.y; const squared = dx * dx + dy * dy;
+    const t = squared > 1e-9 ? Math.max(0, Math.min(1, ((clientX - rect.left - a.x) * dx + (clientY - rect.top - a.y) * dy) / squared)) : 0.5;
+    return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t, z: from.z + (to.z - from.z) * t };
+  };
   const finish = (event: ReactPointerEvent) => {
     if (!gesture.current || gesture.current.pointerId !== event.pointerId) return;
-    move(event); const moved = gesture.current.moved; gesture.current = null; setActive(null);
+    move(event); const moved = gesture.current.moved; const selection = gesture.current.selection; gesture.current = null; setActive(null);
     if (moved) live.current.onCommit();
+    else if (selection?.kind === 'segment') {
+      const point = segmentModelPoint(selection.index, event.clientX, event.clientY);
+      if (point) live.current.onSegmentClick?.(point);
+    }
     if (svgRef.current?.hasPointerCapture(event.pointerId)) svgRef.current.releasePointerCapture(event.pointerId);
   };
 
@@ -237,7 +255,9 @@ export function PipeEditGizmo(props: Props) {
       const hitStart = { ...point, x: point.x + (end.x - point.x) * inset, y: point.y + (end.y - point.y) * inset };
       const hitEnd = { ...end, x: end.x - (end.x - point.x) * inset, y: end.y - (end.y - point.y) * inset };
       return <g key={`segment-${index}`} data-pipe-segment={index} style={{ pointerEvents: props.disabled ? 'none' : 'auto', cursor: 'move' }}
-        onPointerEnter={() => setHoveredSegment(index)} onPointerLeave={() => setHoveredSegment(null)}
+        onPointerEnter={() => setHoveredSegment(index)}
+        onPointerMove={event => { if (!gesture.current && event.buttons === 0) props.onSegmentHover?.(segmentModelPoint(index, event.clientX, event.clientY)); }}
+        onPointerLeave={() => { setHoveredSegment(null); props.onSegmentHover?.(null); }}
         onPointerDown={event => start(event, 'free', { kind: 'segment', index })}>
         {(selected || hovered) && <path d={path([point, end])} fill="none" stroke="#0d9488" strokeWidth={3} strokeOpacity={selected ? 0.7 : 0.4} style={{ pointerEvents: 'none' }} />}
         <path d={path([hitStart, hitEnd])} fill="none" stroke="transparent" strokeWidth={14} />

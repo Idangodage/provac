@@ -5,6 +5,7 @@
  */
 export {
   domainOf,
+  focusId,
   sameFocus,
   useSegmentUiStore as useDuctSegmentUiStore,
   type SegmentFocus as DuctSegmentFocus,

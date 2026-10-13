@@ -56,6 +56,8 @@ import {
 import { branchKitSpriteTransform } from './branchKitSpriteTransform';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import type { CopperSocketElbowPlacement } from './copperSocketElbowRoute';
+import { segmentFocusMarkup } from './duct/ductOverlayMarkup';
+import type { ScreenRect } from './duct/popoverPlacement';
 import type { PipeSnapIndicator } from './pipeDraftingPolicy';
 import {
   buildAdaptivePipeEdit, buildPipeTopologyEdit, editablePipeNodes, isEditablePipe, nearestSkeletonLegIndex,
@@ -69,6 +71,15 @@ import { buildPipePlanTubes, pipePolylinePath } from './pipePlanPresentation';
 import { createPipePresentationCache } from './pipePresentationCache';
 import { withCanonicalPipeRoute, type PipeRouteNode3D } from './pipeRoute3d';
 import { getActivePipeRoutingSettings } from './pipeRoutingSettings';
+import { KIT_KEY, refrigerantKitOf } from './refrigerant/refrigerantKits';
+import {
+  pieceMidpoint,
+  refrigerantLineOf,
+  refrigerantPieceAtPlanPoint,
+  refrigerantPieceEnds,
+  refrigerantPieceOf,
+  refrigerantPieceOutline,
+} from './refrigerant/refrigerantPieces';
 import {
   buildRefrigerantBranchKitViewModel,
   resolveRefrigerantBranchKitConnectionIdentity,
@@ -85,6 +96,7 @@ import {
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeLineMode,
 } from './refrigerantPipePairModel';
+import { domainOf, focusId, useSegmentUiStore, type SegmentFocus } from './segments/segmentUiStore';
 
 const PIPE_SELECTION_HIT_PADDING_PX = 12;
 const PIPE_SELECTION_MIN_HIT_WIDTH_PX = 28;
@@ -507,6 +519,8 @@ export interface PipeStudioOverlayHandle {
    * walls instead of trailing the rAF-deferred store by a frame or two.
    */
   syncViewTransform: (viewportTransform: readonly number[]) => void;
+  /** Client rectangle of a refrigerant piece as drawn here (and a point on it), for its segment card; null when it is gone. */
+  segmentClientRect: (runId: string, key: string) => ScreenRect | null;
 }
 
 export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioOverlayProps>(
@@ -538,6 +552,14 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const fittingDisplay = useSmartDrawingStore(state => state.pipeRoutingSettings.fittingDisplay);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const gRef = useRef<SVGGElement | null>(null);
+  /** The refrigerant piece under the pointer and the one whose card is pinned, outlined (painted from the segment store). */
+  const focusRef = useRef<SVGGElement | null>(null);
+  const sceneRef = useRef(hvacElements);
+  sceneRef.current = hvacElements;
+  const kRef = useRef(1);
+  /** A plain press on a pipe: released without moving, it pins the card of the piece under it. */
+  const pieceClickRef = useRef<{ id: string; kind: 'pipe' | 'kit'; world: Point2D; clientX: number; clientY: number } | null>(null);
+  const segmentClientRectRef = useRef<(runId: string, key: string) => ScreenRect | null>(() => null);
   const dragRef = useRef<{
     id: string; vi: number; startWorld: Point2D; startRoute: Point2D[];
     /** Design corner this handle drives, resolved once at press time. */
@@ -663,7 +685,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   useImperativeHandle(
     ref,
     () => ({ setDraftRoute, setDraftPipes, setSnapIndicator, syncViewTransform,
-      beginPlaceKit: () => beginPlaceKitRef.current?.() }),
+      beginPlaceKit: () => beginPlaceKitRef.current?.(),
+      segmentClientRect: (runId: string, key: string) => segmentClientRectRef.current(runId, key) }),
     [syncViewTransform],
   );
   // Extension is unified with the draw tool: grabbing a pipe-end / bundle /
@@ -791,6 +814,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
 
   const view = getCanvasTransform(viewportZoom, panOffset);
   const k = MM_TO_PX * view.zoom;
+  kRef.current = k;
   const matrix = canvasTransformToSvgMatrix(view);
   const hpx = (n: number) => n / Math.max(k, 1e-6); // screen px -> g-space (mm) units
 
@@ -1014,6 +1038,95 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       liveViewportRef.current,
     );
   }, []);
+
+  // ---- Refrigerant pieces: the one under the pointer on a selected pipe (its card peeks), a click pins its card; both
+  // outlined here, in the pipes' own frame, straight from the segment store (no React render). ----
+  const lineFor = useCallback((runId: string) => {
+    const scene = sceneRef.current;
+    const element = scene.find((candidate) => candidate.id === runId);
+    return element ? refrigerantLineOf(element, scene) : null;
+  }, []);
+
+  const kitFor = useCallback((elementId: string) => {
+    const element = sceneRef.current.find((candidate) => candidate.id === elementId);
+    return element ? refrigerantKitOf(element) : null;
+  }, []);
+
+  /** The piece of a pipe at a plan point, within a few screen pixels of its outside. */
+  const pieceFocusAt = useCallback((runId: string, world: Point2D): SegmentFocus | null => {
+    const line = lineFor(runId);
+    const piece = line ? refrigerantPieceAtPlanPoint(line, world, 8 / Math.max(kRef.current, 1e-6)) : null;
+    return piece ? { domain: 'refrigerant', runId, key: piece.key, anchorMark: null, view: '2d' } : null;
+  }, [lineFor]);
+
+  const paintPieceFocus = useCallback(() => {
+    const target = focusRef.current;
+    if (!target) return;
+    const { hovered, pinned, preview } = useSegmentUiStore.getState();
+    const shapes = (focus: SegmentFocus | null, tone: 'hovered' | 'pinned') => {
+      if (!focus || domainOf(focus) !== 'refrigerant') return '';
+      if (focus.key === KIT_KEY) {
+        const kit = kitFor(focus.runId);
+        return kit ? segmentFocusMarkup([kit.outline], tone, [], kRef.current) : '';
+      }
+      const line = lineFor(focus.runId);
+      const piece = line ? refrigerantPieceOf(line, focus.key) : null;
+      if (!line || !piece) return '';
+      return segmentFocusMarkup([refrigerantPieceOutline(line, piece)], tone, tone === 'pinned' ? refrigerantPieceEnds(line, piece) : [], kRef.current);
+    };
+    // While one of its card's options is previewed the drawing shows the option, not the piece it replaces.
+    const markup = preview && domainOf(preview) === 'refrigerant' ? ''
+      : shapes(pinned, 'pinned') + (hovered && focusId(hovered) !== focusId(pinned) ? shapes(hovered, 'hovered') : '');
+    if (target.innerHTML !== markup) target.innerHTML = markup;
+  }, [lineFor, kitFor]);
+  useEffect(() => useSegmentUiStore.subscribe(paintPieceFocus), [paintPieceFocus]);
+  useEffect(() => paintPieceFocus(), [paintPieceFocus, hvacElements, k]);
+
+  // A piece under the pointer belongs to a selected pipe, in the plan's select tool.
+  useEffect(() => {
+    const { hovered } = useSegmentUiStore.getState();
+    if (hovered?.view === '2d' && domainOf(hovered) === 'refrigerant' && (!canInteract || !selectedSet.has(hovered.runId))) {
+      useSegmentUiStore.getState().setHovered(null);
+    }
+  }, [canInteract, selectedSet]);
+
+  const hoverPiece = useCallback((event: ReactPointerEvent, runId: string) => {
+    if (event.buttons !== 0 || moveDragRef.current || dragRef.current) return;
+    const world = toWorld(event.clientX, event.clientY);
+    useSegmentUiStore.getState().setHovered(world ? pieceFocusAt(runId, world) : null);
+  }, [toWorld, pieceFocusAt]);
+
+  const leavePiece = useCallback(() => {
+    const { hovered } = useSegmentUiStore.getState();
+    if (hovered?.view === '2d' && domainOf(hovered) === 'refrigerant') useSegmentUiStore.getState().setHovered(null);
+  }, []);
+
+  segmentClientRectRef.current = (runId: string, key: string): ScreenRect | null => {
+    const matrix = gRef.current?.getScreenCTM();
+    if (key === KIT_KEY) {
+      const kit = kitFor(runId);
+      if (!matrix || !kit) return null;
+      const corners = kit.outline.map((point) => new DOMPoint(point.x, point.y).matrixTransform(matrix));
+      const centre = new DOMPoint(kit.centre.x, kit.centre.y).matrixTransform(matrix);
+      return {
+        left: Math.min(...corners.map((point) => point.x)), right: Math.max(...corners.map((point) => point.x)),
+        top: Math.min(...corners.map((point) => point.y)), bottom: Math.max(...corners.map((point) => point.y)),
+        pinX: centre.x, pinY: centre.y,
+      };
+    }
+    const line = lineFor(runId);
+    const piece = line ? refrigerantPieceOf(line, key) : null;
+    if (!matrix || !line || !piece) return null;
+    const client = refrigerantPieceOutline(line, piece).map((point) => new DOMPoint(point.x, point.y).matrixTransform(matrix));
+    const middle = pieceMidpoint(piece);
+    // The leader line ends on the piece itself, half way along it.
+    const pin = new DOMPoint(middle.x, middle.y).matrixTransform(matrix);
+    return {
+      left: Math.min(...client.map((point) => point.x)), right: Math.max(...client.map((point) => point.x)),
+      top: Math.min(...client.map((point) => point.y)), bottom: Math.max(...client.map((point) => point.y)),
+      pinX: pin.x, pinY: pin.y,
+    };
+  };
 
   const updateNearbyBranchKitPort = useCallback(
     (clientX: number, clientY: number): string | null => {
@@ -1292,6 +1405,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const beginMove = useCallback(
     (e: ReactPointerEvent, pressedId: string) => {
       e.stopPropagation();
+      pieceClickRef.current = null;
       const additive = e.shiftKey || e.ctrlKey || e.metaKey;
       if (additive) {
         const current = new Set(selectedIds);
@@ -1322,6 +1436,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
           if (distance < bestDistance) { bestDistance = distance; bestIndex = index; }
         }
         setSelectedIds([pressedId]);
+        // A click (released here without moving) opens the card of the piece pressed.
+        pieceClickRef.current = { id: pressedId, kind: 'pipe', world: w, clientX: e.clientX, clientY: e.clientY };
         if (bestIndex < 0) return;
         clearMovePreview(); dragConflictRef.current = null;
         adaptiveIdsRef.current.clear(); moveSummaryRef.current = null;
@@ -1330,6 +1446,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         (e.target as Element).setPointerCapture?.(e.pointerId);
         return;
       }
+      if (!pressedPipe) pieceClickRef.current = { id: pressedId, kind: 'kit', world: w, clientX: e.clientX, clientY: e.clientY };
       const bundleIds = pressedPipe?.bundleId
         ? pipes.filter((pipe) => pipe.bundleId === pressedPipe.bundleId).map((pipe) => pipe.id)
         : [pressedId];
@@ -1411,6 +1528,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const onPointerMove = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>) => {
       updateNearbyBranchKitPort(e.clientX, e.clientY);
+      const click = pieceClickRef.current;
+      if (click && Math.hypot(e.clientX - click.clientX, e.clientY - click.clientY) > 4) pieceClickRef.current = null;
 
       // Whole-element move: rigidly translate every snapshot item by the absolute
       // cursor delta from the press point. Ignore the first few screen-pixels of
@@ -1423,7 +1542,14 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         if (!w) return;
         const dx = w.x - md.startWorld.x;
         const dy = w.y - md.startWorld.y;
-        if (!md.moved && Math.hypot(dx, dy) * k > 3) md.moved = true;
+        if (!md.moved && Math.hypot(dx, dy) * k > 3) {
+          md.moved = true;
+          // A drag, not a click: no card opens, and one open on a pipe being moved closes (its pieces are changing).
+          pieceClickRef.current = null;
+          leavePiece();
+          const { pinned } = useSegmentUiStore.getState();
+          if (pinned && domainOf(pinned) === 'refrigerant' && md.items.some((item) => item.id === pinned.runId)) useSegmentUiStore.getState().unpin();
+        }
         if (!md.moved) return;
         // Queue the delta; the solve runs once per frame in the rAF. Passing
         // `buildMovePreview(...)` here instead would evaluate it eagerly on every
@@ -1441,7 +1567,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       // useful, and only for the newest sample.
       scheduleVertexPreview(w.x - drag.startWorld.x, w.y - drag.startWorld.y);
     },
-    [toWorld, k, scheduleMovePreview, scheduleVertexPreview, updateNearbyBranchKitPort, hvacElements, cancelOverlayDrag],
+    [toWorld, k, scheduleMovePreview, scheduleVertexPreview, updateNearbyBranchKitPort, hvacElements, cancelOverlayDrag, leavePiece],
   );
 
   const endDrag = useCallback(() => {
@@ -1555,6 +1681,18 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
     setNearBranchKitPortKey(null);
   }, [clearMovePreview, commitHvacElementCommand, commitRoute, ghost, hvacElements, cancelOverlayDrag,
     solveQueuedMovePreview, solveQueuedVertexPreview]);
+
+  /** Release on the drawing: the end of any drag, and a click on a pipe (no movement) pins its piece's card. */
+  const releasePointer = useCallback((event: ReactPointerEvent<SVGSVGElement>) => {
+    const click = pieceClickRef.current;
+    pieceClickRef.current = null;
+    endDrag();
+    if (!click || Math.hypot(event.clientX - click.clientX, event.clientY - click.clientY) > 4) return;
+    const focus: SegmentFocus | null = click.kind === 'kit'
+      ? { domain: 'refrigerant', runId: click.id, key: KIT_KEY, anchorMark: null, view: '2d' }
+      : pieceFocusAt(click.id, click.world);
+    if (focus) useSegmentUiStore.getState().pin(focus);
+  }, [endDrag, pieceFocusAt]);
 
   const onInsert = useCallback(
     (e: ReactPointerEvent, id: string, si: number, route: Point2D[]) => {
@@ -1928,7 +2066,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         height={height}
         style={{ display: 'block', touchAction: 'none', pointerEvents: 'none' }}
         onPointerMove={canInteract ? onPointerMove : undefined}
-        onPointerUp={canInteract ? endDrag : undefined}
+        onPointerUp={canInteract ? releasePointer : undefined}
         onPointerCancel={cancelOverlayDrag}
         onLostPointerCapture={cancelOverlayDrag}
         onPointerLeave={() => {
@@ -2009,6 +2147,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                         strokeLinejoin="round"
                         style={{ cursor: selected ? 'move' : 'pointer', pointerEvents: 'stroke' }}
                         onPointerDown={(e) => beginMove(e, p.id)}
+                        onPointerMove={selected ? (e) => hoverPiece(e, p.id) : undefined}
+                        onPointerLeave={selected ? leavePiece : undefined}
                       />
                     ))
                   : null}
@@ -2346,6 +2486,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
                 );
               })()
             : null}
+          {/* The refrigerant piece under the pointer and the one whose card is pinned (painted from the segment store). */}
+          <g ref={focusRef} data-testid="refrigerant-segment-focus" style={{ pointerEvents: 'none' }} />
           {/* Snap-hover indicator (pushed by the draw tool): the SAME
               endpoint-handle bullseye a committed pipe shows — white disc, teal
               ring, solid teal dot — so every snap affordance is one component. */}

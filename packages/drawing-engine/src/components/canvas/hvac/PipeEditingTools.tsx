@@ -22,6 +22,8 @@ import { createDrawingPlane, type PipeDrawingPlane } from './pipePointerProjecti
 import { createPipePreviewScheduler } from './pipePreviewScheduler';
 import type { PipeRouteNode3D } from './pipeRoute3d';
 import { buildPipeSegmentLengthEdit } from './pipeSegmentDimensions';
+import { refrigerantFocusAtPoint } from './refrigerant/refrigerantPieces';
+import { domainOf, useSegmentUiStore } from './segments/segmentUiStore';
 
 interface Props {
   elements: HvacElement[];
@@ -44,6 +46,8 @@ interface Props {
   onAppendDrawingLength: (lengthMm: number) => boolean;
   onFinishDrawing: () => void;
   onCancelDrawing: () => void;
+  /** The view the editor is in: a piece pointed at or clicked on the selected line opens its segment card there. */
+  cardView?: '2d' | '3d';
 }
 
 const inputClass = 'min-w-0 w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800 focus:border-teal-600 focus:outline-none';
@@ -272,7 +276,18 @@ export function PipeEditingTools(props: Props) {
       disabled={lock || (bendIndex !== null && !bend)} invalid={invalid} onPreview={(operation, directSelection) => previewScheduler.schedule({ operation, selection: directSelection })} onCommit={apply} onCancel={cancel} rotationAxisOnly={bend ? 'x' : undefined}
       selection={effectiveSelection} showTransform={showTransform} onSelect={next => { changeSelection(next); setShowTransform(false); setOperationMode('translate'); }} workplane={workplane}
       lengthMm={lengthMm} unit={props.unit} onCommitLength={commitLength}
-      fixedEndpoints={{ start: !!(selected.properties.startConnection || selected.properties.startBundleConnection), end: !!(selected.properties.endConnection || selected.properties.endBundleConnection) }} />}
+      fixedEndpoints={{ start: !!(selected.properties.startConnection || selected.properties.startBundleConnection), end: !!(selected.properties.endConnection || selected.properties.endBundleConnection) }}
+      onSegmentHover={point => {
+        // The piece under the pointer peeks its card; leaving the line takes the peek away.
+        const store = useSegmentUiStore.getState();
+        const focus = point ? refrigerantFocusAtPoint(props.elements, selected.id, point, props.cardView ?? '2d') : null;
+        if (focus) store.setHovered(focus);
+        else if (store.hovered && domainOf(store.hovered) === 'refrigerant' && store.hovered.runId === selected.id) store.setHovered(null);
+      }}
+      onSegmentClick={point => {
+        const focus = refrigerantFocusAtPoint(props.elements, selected.id, point, props.cardView ?? '2d');
+        if (focus) useSegmentUiStore.getState().pin(focus);
+      }} />}
     <div className="pointer-events-none absolute left-3 right-3 top-12 z-[25] text-slate-700"
       data-testid="pipe-editing-tools" onPointerDown={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
       <div role="toolbar" aria-label={props.drawing ? 'Draw refrigerant pipe' : 'Edit refrigerant pipe'} className="pointer-events-auto flex w-fit max-w-full flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white/95 p-2 shadow-sm backdrop-blur">

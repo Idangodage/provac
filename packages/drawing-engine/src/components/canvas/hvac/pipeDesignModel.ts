@@ -118,6 +118,8 @@ export interface PipeDesign {
 const EPSILON = 1e-9;
 /** Below this a vertical difference is not a riser. */
 const RISER_EPSILON_MM = 0.5;
+/** A stored corner further than this from the route's is stale (mm). */
+const STALE_DESIGN_TOLERANCE_MM = 0.01;
 
 const subtract = (a: Vec3, b: Vec3): Vec3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
 const magnitude = (a: Vec3): number => Math.hypot(a.x, a.y, a.z);
@@ -419,6 +421,15 @@ function readPersistedDesign(element: HvacElement, scene: readonly HvacElement[]
     return axis && isFiniteNumber(axis.x) && isFiniteNumber(axis.y) && isFiniteNumber(axis.z)
       ? axis : null;
   };
+
+  // The fabrication route stays the rendered truth, and stale metadata must not
+  // override it. An editor that writes the route without the design (an
+  // adaptive drag writes design corners, not the design) leaves the stored
+  // design behind it: when the route no longer runs through the stored corners
+  // the design is rebuilt from the route.
+  const route = readPipeRouteNodes3d(element);
+  if (route.length >= 2 && (route.length !== nodes.length
+    || route.some((point, index) => distance(point, nodes[index]!) > STALE_DESIGN_TOLERANCE_MM))) return null;
 
   return {
     version: PIPE_DESIGN_VERSION,

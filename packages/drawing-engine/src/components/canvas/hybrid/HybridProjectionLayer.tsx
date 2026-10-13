@@ -45,7 +45,7 @@ import type { InteractionViewMode } from "../../../vrf/interaction/view-manipula
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
-import { domainOf, useDuctSegmentUiStore, type DuctSegmentFocus } from "../hvac/duct/ductSegmentUiStore";
+import { domainOf, focusId, useDuctSegmentUiStore, type DuctSegmentFocus } from "../hvac/duct/ductSegmentUiStore";
 import type { DuctDesignSettings } from "../hvac/duct/ductSettings";
 import { useDuctBuilding } from "../hvac/duct/useDuctBuilding";
 import { constrainPipeDraftDelta, resolvePipeDraftAngleMode } from "../hvac/pipeDraftingPolicy";
@@ -113,6 +113,7 @@ import {
   type HybridPipeConstraintKey,
 } from "./hybridPipeEditing";
 import { clearHybridPipePreviewScene, updateHybridPipePreviewScene } from "./hybridPipePreviewScene";
+import { pipePieceEndRings, pipePieceProxy, raycastPipe, refrigerantFocusAt, type PipeHit3D } from "./hybridPipeSegments";
 import { createHybridPointerMoveQueue } from "./hybridPointerMoveQueue";
 import { measureUnrevealedContentBounds } from "./hybridScenePresentation";
 import {
@@ -912,8 +913,8 @@ function createSceneState(canvas: HTMLCanvasElement): SceneState {
   };
 }
 
-/** The duct segments in focus (the cards'), and the drawing they are read from. */
-interface DuctOutlineFocus {
+/** The pieces in focus (the cards'), a duct's segments or a refrigerant line's pieces, and the drawing they are read from. */
+interface SegmentOutlineFocus {
   scene: readonly HvacElement[];
   settings: DuctDesignSettings;
   hovered: DuctSegmentFocus | null;
@@ -925,15 +926,16 @@ interface DuctOutlineFocus {
 /**
  * Outline proxies for hover/selection: a wall's triangles PLUS its two node
  * wedges, so mitered junction corners outline as part of the wall. A duct run
- * outlines with its own meshes; the segment whose card is pinned (instead of
- * its run) and the one hovered, with a proxy of their pieces' outer surface.
+ * outlines with its own meshes; the piece whose card is pinned (instead of
+ * its run) and the one hovered, with a proxy of their outer surface (a duct
+ * segment's pieces, a refrigerant piece's insulated tube).
  */
 function refreshOutlineProxies(
   sceneState: SceneState,
   walls: Wall[],
   selectedIds: readonly string[],
   hoveredId: string | null,
-  ducts: DuctOutlineFocus | null = null,
+  focus: SegmentOutlineFocus | null = null,
 ): void {
   const layer = sceneState.proxyLayer;
   const disposed = new Set<THREE.BufferGeometry>();
@@ -963,20 +965,29 @@ function refreshOutlineProxies(
     layer.add(mesh);
     return mesh;
   };
-  const segmentProxy = (focus: DuctSegmentFocus): THREE.Mesh | null => {
-    const mesh = ducts ? ductSegmentProxy(ducts.scene, ducts.settings, focus.runId, focus.key) : null;
+  const segmentProxy = (piece: DuctSegmentFocus): THREE.Mesh | null => {
+    const domain = domainOf(piece);
+    const mesh = !focus ? null
+      : domain === "duct" ? ductSegmentProxy(focus.scene, focus.settings, piece.runId, piece.key)
+        : domain === "refrigerant" ? pipePieceProxy(focus.scene, piece.runId, piece.key) : null;
     if (mesh) layer.add(mesh);
     return mesh;
   };
-  // A card's segment belongs to a selected run (the card closes with its run). While one of its options is previewed
-  // the drawing shows the option, not the segment it replaces.
-  const pinned = ducts?.pinned && selectedIds.includes(ducts.pinned.runId) && !ducts.previewing ? ducts.pinned : null;
+  const endRings = (piece: DuctSegmentFocus): THREE.Mesh | null => {
+    const domain = domainOf(piece);
+    return !focus ? null
+      : domain === "duct" ? ductSegmentEndRings(focus.scene, focus.settings, piece.runId, piece.key)
+        : domain === "refrigerant" ? pipePieceEndRings(focus.scene, piece.runId, piece.key) : null;
+  };
+  // A card's piece belongs to a selected run (the card closes with its run). While one of its options is previewed
+  // the drawing shows the option, not the piece it replaces.
+  const pinned = focus?.pinned && selectedIds.includes(focus.pinned.runId) && !focus.previewing ? focus.pinned : null;
   const selectionMeshes: THREE.Object3D[] = [];
   const focusMeshes: THREE.Object3D[] = [];
   for (const id of selectedIds) {
     const run = ductRunMeshes(sceneState.root, id);
-    if (run.length && pinned?.runId === id) {
-      // The pinned segment: a thick violet outline and a violet wash over its surface, instead of the run's outline,
+    if (pinned?.runId === id && (run.length || domainOf(pinned) !== "duct")) {
+      // The pinned piece: a thick violet outline and a violet wash over its surface, instead of the run's outline,
       // and a ring round each of its ends.
       const proxy = segmentProxy(pinned);
       if (proxy) {
@@ -985,7 +996,7 @@ function refreshOutlineProxies(
         wash.name = `${proxy.name}-wash`;
         wash.renderOrder = 900;
         layer.add(wash);
-        const rings = ducts ? ductSegmentEndRings(ducts.scene, ducts.settings, pinned.runId, pinned.key) : null;
+        const rings = endRings(pinned);
         if (rings) {
           rings.renderOrder = 901;
           layer.add(rings);
@@ -998,8 +1009,8 @@ function refreshOutlineProxies(
     if (proxy) selectionMeshes.push(proxy);
     else selectionMeshes.push(...run);
   }
-  const hovered = ducts?.hovered && selectedIds.includes(ducts.hovered.runId)
-    && !(pinned && pinned.runId === ducts.hovered.runId && pinned.key === ducts.hovered.key) ? ducts.hovered : null;
+  const hovered = focus?.hovered && selectedIds.includes(focus.hovered.runId) && focusId(focus.hovered) !== focusId(pinned)
+    ? focus.hovered : null;
   const hoverMeshes: THREE.Object3D[] = [];
   if (hovered) {
     const proxy = segmentProxy(hovered);
@@ -1223,10 +1234,8 @@ export function HybridProjectionLayer({
     const sceneState = sceneStateRef.current;
     if (!sceneState) return;
     const { hovered, pinned, preview } = useDuctSegmentUiStore.getState();
-    // A duct's segments outline here; another service's pieces outline with their own focus.
-    const duct = (focus: DuctSegmentFocus | null) => (domainOf(focus) === "duct" ? focus : null);
     refreshOutlineProxies(sceneState, wallsRef.current, selectedIdsRef.current, hoveredRef.current,
-      { scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered: duct(hovered), pinned: duct(pinned), previewing: Boolean(preview) && domainOf(preview) === "duct" });
+      { scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered, pinned, previewing: Boolean(preview) });
     requestFrameRef.current?.();
   };
   const viewStyleRef = useRef<HybridViewStyle>(viewStyle ?? "solid");
@@ -1373,6 +1382,8 @@ export function HybridProjectionLayer({
         lastPointer: { clientX: number; clientY: number; pointerId: number };
       } | null;
       pipePressedId: string | null;
+      /** Where on the pressed pipe (model mm): a click pins the card of a refrigerant line's piece there. */
+      pipePressedModel: { x: number; y: number; z: number } | null;
       /** A press on a duct run: a click selects it, or (selected) pins the card of the segment under it. */
       ductPressed: DuctHit3D | null;
       lastModel: { x: number; y: number } | null;
@@ -1390,6 +1401,7 @@ export function HybridProjectionLayer({
       bodyDrag: null,
       pipeDrag: null,
       pipePressedId: null,
+      pipePressedModel: null,
       ductPressed: null,
       lastModel: null,
       ghost: null,
@@ -2022,7 +2034,13 @@ export function HybridProjectionLayer({
       return resolveWallHitId(hits, s.wallChunk.entityIds, wallIds);
     };
 
-    const raycastPipeElementId = (point: { x: number; y: number }): string | null => {
+    /**
+     * The pipe under the pointer (refrigerant or drain; drain runs are selectable in 3D too, their edit handles live
+     * there) and where on it. Pipe picking never consumes architecture/equipment hits: only the visible pipe roots are
+     * tested, so detailed casings, ducts and wall triangles are not on every hover, and a hidden committed preview is
+     * not selectable.
+     */
+    const raycastPipeHit = (point: { x: number; y: number }): PipeHit3D | null => {
       const s = sceneStateRef.current;
       if (!s) return null;
       const { width: w, height: h } = viewportSize();
@@ -2030,24 +2048,7 @@ export function HybridProjectionLayer({
         new THREE.Vector2((point.x / w) * 2 - 1, 1 - (point.y / h) * 2),
         controller.camera,
       );
-      // Pipe picking never consumes architecture/equipment hits. Excluding
-      // those roots avoids testing detailed casings, ducts and wall triangles
-      // on every hover; a hidden committed preview must not be selectable.
-      const pipes = s.root.children.filter((object) => {
-        const type = object.userData.hvacElementType as HvacElement["type"] | undefined;
-        return object.visible && type && (isRefrigerantPipeElementType(type) || type === "condensate-pipe");
-      });
-      const hits = raycaster.intersectObjects(pipes, true);
-      for (const hit of hits) {
-        const root = objectAncestry(hit.object).find((candidate) => {
-          const type = candidate.userData.hvacElementType as HvacElement["type"] | undefined;
-          // Drain runs are selectable in 3D too (their edit handles live in 3D).
-          return type ? isRefrigerantPipeElementType(type) || type === "condensate-pipe" : false;
-        });
-        const elementId = root?.userData.hvacElementId as string | undefined;
-        if (elementId) return elementId;
-      }
-      return null;
+      return raycastPipe(raycaster, s.root);
     };
 
     const raycastDuct = (point: { x: number; y: number }): DuctHit3D | null => {
@@ -2060,10 +2061,10 @@ export function HybridProjectionLayer({
       );
       return raycastDuctRun(raycaster, s.root);
     };
-    /** The segment of a selected run under the pointer in 3D (or none): the same focus the plan writes. */
-    const setDuctSegmentHover = (focus: DuctSegmentFocus | null): void => {
+    /** The piece of a selected run under the pointer in 3D, a duct's or a refrigerant line's (or none): the same focus the plan writes. */
+    const setSegmentHover = (focus: DuctSegmentFocus | null): void => {
       const store = useDuctSegmentUiStore.getState();
-      if (focus || (store.hovered?.view === "3d" && domainOf(store.hovered) === "duct")) store.setHovered(focus);
+      if (focus || store.hovered?.view === "3d") store.setHovered(focus);
     };
 
     const GHOST_MATERIAL_3D = new THREE.LineBasicMaterial({
@@ -2381,20 +2382,26 @@ export function HybridProjectionLayer({
       const handle = s.handleLayer.hitTest(point.x, point.y, worldToHostScreen, modelToWorldPoint);
       if (handle) {
         if (s.handleLayer.setState(handle.id, "hover")) request();
-        setDuctSegmentHover(null);
+        setSegmentHover(null);
         onHoverWallRef.current?.(null);
         return;
       }
       if (s.handleLayer.setState("", "idle")) request();
-      const pipeId = raycastPipeElementId(point);
+      const pipe = raycastPipeHit(point);
+      const pipeId = pipe?.elementId ?? null;
       const duct = pipeId ? null : raycastDuct(point);
-      // A selected run: the segment under the pointer (its card peeks); another run: the run.
-      if (duct && selectedIdsRef.current.includes(duct.runId)) {
-        setDuctSegmentHover(ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, duct.runId, duct.model));
+      // A selected run: the piece under the pointer (its card peeks); another run: the run.
+      const pieceFocus = pipe && selectedIdsRef.current.includes(pipe.elementId)
+        ? refrigerantFocusAt(hvacElementsRef.current, pipe.elementId, pipe.model)
+        : duct && selectedIdsRef.current.includes(duct.runId)
+          ? ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, duct.runId, duct.model)
+          : null;
+      if (pieceFocus) {
+        setSegmentHover(pieceFocus);
         onHoverWallRef.current?.(null);
         return;
       }
-      setDuctSegmentHover(null);
+      setSegmentHover(null);
       onHoverWallRef.current?.(pipeId ?? duct?.runId ?? raycastWallId(point));
     };
 
@@ -2460,6 +2467,7 @@ export function HybridProjectionLayer({
       pickState.downHandled = false;
       pickState.bodyDrag = null;
       pickState.pipePressedId = null;
+      pickState.pipePressedModel = null;
       pickState.ductPressed = null;
       const handle = s.handleLayer.hitTest(point.x, point.y, worldToHostScreen, modelToWorldPoint);
       if (handle) {
@@ -2494,11 +2502,12 @@ export function HybridProjectionLayer({
       }
       // No handle → press on a wall BODY arms a body-drag-to-move (activates
       // past a 4px threshold; a pure click falls through to select on up).
-      const pipeId = raycastPipeElementId(point);
-      if (pipeId) {
+      const pipeHit = raycastPipeHit(point);
+      if (pipeHit) {
         pickState.pointerId = e.pointerId;
         pickState.downHandled = true;
-        pickState.pipePressedId = pipeId;
+        pickState.pipePressedId = pipeHit.elementId;
+        pickState.pipePressedModel = pipeHit.model;
         e.preventDefault();
         e.stopPropagation();
         interactionElement.setPointerCapture?.(e.pointerId);
@@ -2606,9 +2615,20 @@ export function HybridProjectionLayer({
       }
       if (pickState.pipePressedId) {
         const pipeId = pickState.pipePressedId;
+        const model = pickState.pipePressedModel;
         pickState.pipePressedId = null;
+        pickState.pipePressedModel = null;
         releaseCapture();
-        selectWall(pipeId, e.shiftKey);
+        // A click (not a drag) on a refrigerant line selects it and pins the card of the piece under it, as a duct's;
+        // with Shift it adds the line to the selection, or takes it out, and pins nothing. A drain selects as before.
+        const element = hvacElementsRef.current.find((candidate) => candidate.id === pipeId);
+        const click = Math.hypot(e.clientX - pickState.downX, e.clientY - pickState.downY) <= 4;
+        const focus = click && !e.shiftKey && model && element && isRefrigerantPipeElementType(element.type)
+          ? refrigerantFocusAt(hvacElementsRef.current, pipeId, model) : null;
+        if (focus) {
+          if (!selectedIdsRef.current.includes(pipeId)) selectWall(pipeId, false);
+          useDuctSegmentUiStore.getState().pin(focus);
+        } else selectWall(pipeId, e.shiftKey);
         request();
         return;
       }

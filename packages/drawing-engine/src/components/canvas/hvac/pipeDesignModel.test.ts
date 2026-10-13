@@ -364,3 +364,38 @@ describe('topology — identities survive insertion and removal', () => {
     expect(readPipeSegmentMaterials(written)).toHaveLength(inserted.design.legs.length);
   });
 });
+
+describe('readPipeDesign — a stored design behind its route', () => {
+  // An editor that writes only the route (an adaptive drag) leaves the stored design behind it.
+  const moveRoute = (element: HvacElement, nodes: PipeRouteNode3D[]): HvacElement => ({
+    ...element, properties: { ...element.properties, routePoints: nodes.map(({ x, y }) => ({ x, y })), routeNodes3d: nodes },
+  });
+
+  it('is rebuilt from the route when the route no longer runs through its corners', () => {
+    const written = writePipeDesign(routed(L_ROUTE), readPipeDesign(routed(L_ROUTE)));
+    const dragged = moveRoute(written, [{ x: 0, y: 0, z: 2600 }, { x: 2000, y: 0, z: 2600 }, { x: 2000, y: 2500, z: 2600 }]);
+    const after = readPipeDesign(dragged);
+    // Stale metadata never overrides the route: the design follows the route's corners.
+    expect(after.provenance).not.toBe('authored');
+    expect(after.nodes.map(({ x, y, z }) => ({ x, y, z }))).toEqual([{ x: 0, y: 0, z: 2600 }, { x: 2000, y: 0, z: 2600 }, { x: 2000, y: 2500, z: 2600 }]);
+    expect(after.legs[1]!.lengthMm).toBeCloseTo(2500, 6);
+  });
+
+  it('is rebuilt from the route when the route gained or lost corners', () => {
+    const written = writePipeDesign(routed(L_ROUTE), readPipeDesign(routed(L_ROUTE)));
+    const risen = moveRoute(written, [
+      { x: 0, y: 0, z: 2600 }, { x: 1000, y: 0, z: 2600 }, { x: 1000, y: 0, z: 3000 }, { x: 2000, y: 0, z: 3000 }, { x: 2000, y: 3000, z: 3000 },
+    ]);
+    const after = readPipeDesign(risen);
+    expect(after.provenance).not.toBe('authored');
+    expect(after.nodes).toHaveLength(5);
+    expect(after.joints).toHaveLength(3);
+  });
+
+  it('reads a design whose route agrees with it unchanged', () => {
+    const written = writePipeDesign(routed(L_ROUTE), readPipeDesign(routed(L_ROUTE)));
+    const design = readPipeDesign(written);
+    expect(design.provenance).toBe('authored');
+    expect(design.nodes.map(({ x, y, z }) => ({ x, y, z }))).toEqual(L_ROUTE);
+  });
+});

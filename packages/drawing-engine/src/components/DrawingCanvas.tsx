@@ -129,6 +129,9 @@ import {
 } from "./canvas/hvac/pipeRoute3d";
 import { routingSettingsFromRuleProfile } from "./canvas/hvac/pipeRoutingSettings";
 import { resolvePipeRuleContext } from "./canvas/hvac/pipeRuleModel";
+import { createRefrigerantSegmentProvider } from "./canvas/hvac/refrigerant/RefrigerantSegmentCard";
+import { refrigerantKitOf } from "./canvas/hvac/refrigerant/refrigerantKits";
+import { pieceMidpoint, refrigerantLineOf } from "./canvas/hvac/refrigerant/refrigerantPieces";
 import {
   buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
@@ -157,6 +160,7 @@ import {
 } from "./canvas/hybrid/HybridProjectionLayer";
 import { segmentClientRect3D } from "./canvas/hybrid/hybridDuctSegments";
 import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
+import { pipeSegmentClientRect3D } from "./canvas/hybrid/hybridPipeSegments";
 import type {
   DerivedBoardView,
   HybridCameraView,
@@ -763,16 +767,27 @@ export function DrawingCanvas({
   // A segment's card sits beside its piece: on the plan, where the plan overlay draws it; in a 3D view, where
   // the camera sees it (read every frame, so the card follows an orbit or a zoom).
   const resolveSegmentAnchor = useCallback((focus: SegmentFocus) => {
-    if (domainOf(focus) !== "duct") return null;
-    if (!projectionViewOnly) return ductOverlayRef.current?.segmentClientRect(focus.runId, focus.key, focus.anchorMark) ?? null;
+    const domain = domainOf(focus);
+    if (domain !== "duct" && domain !== "refrigerant") return null;
+    if (!projectionViewOnly) {
+      return domain === "duct"
+        ? ductOverlayRef.current?.segmentClientRect(focus.runId, focus.key, focus.anchorMark) ?? null
+        : pipeStudioOverlayRef.current?.segmentClientRect(focus.runId, focus.key) ?? null;
+    }
     const camera = hybridControllerRef.current?.camera;
     const host = hostRef.current;
     if (!camera || !host) return null;
     const state = useSmartDrawingStore.getState();
-    return segmentClientRect3D(state.hvacElements, state.ductSettings, focus, camera, host.getBoundingClientRect());
+    return domain === "duct"
+      ? segmentClientRect3D(state.hvacElements, state.ductSettings, focus, camera, host.getBoundingClientRect())
+      : pipeSegmentClientRect3D(state.hvacElements, focus, camera, host.getBoundingClientRect());
   }, [projectionViewOnly]);
-  // The services whose runs' pieces have cards.
-  const segmentProviders = useMemo(() => [createDuctSegmentProvider(ductSettings)], [ductSettings]);
+  // The services whose runs' pieces have cards: ducts, and refrigerant lines (read with the active rule profile and
+  // the live design checks).
+  const segmentProviders = useMemo(() => [
+    createDuctSegmentProvider(ductSettings),
+    createRefrigerantSegmentProvider({ profile: vrfRuleProfile, report: vrfValidationReport }),
+  ], [ductSettings, vrfRuleProfile, vrfValidationReport]);
   const selectFromDesignCheck = useCallback((elementId: string, additive = false) => {
     setSelectedIds(selectionAfterMarkerClick(useSmartDrawingStore.getState().selectedIds, elementId, additive));
   }, [setSelectedIds]);
@@ -1020,6 +1035,21 @@ export function DrawingCanvas({
           hotspot: segmentHotspot(plan, segment.key),
         })) : null;
       },
+      /** A refrigerant line's pieces in path order, each with a plan point and a model point half way along it. */
+      getRefrigerantPieces: (runId: string) => {
+        const state = useSmartDrawingStore.getState();
+        const element = state.hvacElements.find((candidate) => candidate.id === runId);
+        const line = element ? refrigerantLineOf(element, state.hvacElements) : null;
+        return line ? line.pieces.map((piece) => {
+          const middle = pieceMidpoint(piece);
+          return { key: piece.key, kind: piece.kind, ordinal: piece.ordinal, lengthMm: piece.lengthMm, hotspot: { x: middle.x, y: middle.y }, hotspot3D: middle };
+        }) : null;
+      },
+      /** A branch kit's ports and outline in plan, as its segment card draws them. */
+      getRefrigerantKit: (elementId: string) => {
+        const element = useSmartDrawingStore.getState().hvacElements.find((candidate) => candidate.id === elementId);
+        return element ? refrigerantKitOf(element) : null;
+      },
       getSegmentFigures: (runId: string, key: string) => {
         const state = useSmartDrawingStore.getState();
         return ductSegmentFigures(state.hvacElements, state.ductSettings, runId, key);
@@ -1038,6 +1068,13 @@ export function DrawingCanvas({
         if (!camera || !host) return null;
         const state = useSmartDrawingStore.getState();
         return segmentClientRect3D(state.hvacElements, state.ductSettings, { runId, key, anchorMark }, camera, host.getBoundingClientRect());
+      },
+      /** A refrigerant piece's box as the 3D camera sees it, in client pixels; null without a 3D camera. */
+      getPipeSegmentClientRect3D: (runId: string, key: string) => {
+        const camera = hybridControllerRef.current?.camera;
+        const host = hostRef.current;
+        if (!camera || !host) return null;
+        return pipeSegmentClientRect3D(useSmartDrawingStore.getState().hvacElements, { runId, key }, camera, host.getBoundingClientRect());
       },
       /** A model point (mm, z up) where the 3D views draw it, in client pixels; null without a 3D camera. */
       modelToClient3D: (point: { x: number; y: number; z: number }) => {
@@ -3579,7 +3616,7 @@ export function DrawingCanvas({
         <SegmentCardLayer enabled={tool === "select"} hvacElements={hvacElements} providers={segmentProviders}
           selectedIds={selectedIds} resolveAnchor={resolveSegmentAnchor} />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
-          showInteriorNodeHandles={projectionViewOnly}
+          showInteriorNodeHandles={projectionViewOnly} cardView={projectionViewOnly ? "3d" : "2d"}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}
           drawingStarted={pipeDrawingStarted} drawingService={pipeDraftLineMode}
           drawingElevationMm={pipeDraftElevationMm} onSetDrawingElevation={setPipeDrawingElevation}
