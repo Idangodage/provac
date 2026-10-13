@@ -51,12 +51,30 @@ describe('the refrigerant segment provider', () => {
     expect(provider.model(scene, focusOn('gas', bend.key))!.head.title).toBe('Gas · Bend 1');
   });
 
-  it('offers no options yet (figures and checks only), and steps along the line', () => {
+  it('sorts its options into Swap, Add and the Edit tab, and steps along the line', () => {
     const model = provider.model(scene, focusOn('gas', straight.key))!;
-    expect(model.options).toEqual([]);
-    expect(model.edit({} as never)).toBeNull();
+    const tabOf = (group: string) => model.options.filter((option) => option.group === group).map((option) => model.tabOf(option));
+    expect(new Set(tabOf('size'))).toEqual(new Set(['swap']));
+    expect(new Set(tabOf('material'))).toEqual(new Set(['swap']));
+    expect(new Set(tabOf('add-point'))).toEqual(new Set(['add']));
+    // A straight's level, offset and insulation are the Edit tab's own fields and chips.
+    for (const group of ['level', 'offset', 'insulation']) expect(new Set(tabOf(group))).toEqual(new Set([null]));
+    const host = { evaluate: model.evaluate, evaluations: new Map(), onPreview: () => undefined, onHover: () => undefined, onApply: () => undefined, result: () => null };
+    expect(model.edit(host)).not.toBeNull();
     expect(model.neighbour(1)).toEqual({ key: bend.key, anchorMark: null });
     expect(model.neighbour(-1)).toBeNull();
+    const bendModel = provider.model(scene, focusOn('gas', bend.key))!;
+    expect(bendModel.options.some((option) => option.group === 'construction' && bendModel.tabOf(option) === 'swap')).toBe(true);
+    expect(bendModel.options.some((option) => option.group === 'remove-bend' && bendModel.tabOf(option) === 'add')).toBe(true);
+  });
+
+  it('commits through the drawing\'s command (one undo) and recommends the profile\'s size', () => {
+    expect(typeof provider.commit).toBe('function');
+    expect(provider.recommendedBadge).toBe('recommended');
+    const model = provider.model(scene, focusOn('gas', straight.key))!;
+    const ranked = provider.rank!(model.options, new Map());
+    // With no sizing table, nothing is recommended.
+    expect([...ranked.values()].flat()).not.toContain('recommended');
   });
 
   it('reads a piece once per drawing and closes on a piece that is gone', () => {
@@ -131,5 +149,19 @@ describe('a branch kit\'s card', () => {
     expect(model.issues.map((line) => line.code)).toEqual(['BRANCH_TILT']);
     expect(provider.rekey([kit], focusOn('kit-1', KIT_KEY), null)?.key).toBe(KIT_KEY);
     expect(provider.rekey([], focusOn('kit-1', KIT_KEY), null)).toBeNull();
+  });
+
+  it('puts turning it over and other models in Swap, and the slide along its run on its Edit tab', () => {
+    const provider = createRefrigerantSegmentProvider({ report: EMPTY_REPORT });
+    const model = provider.model([kit], focusOn('kit-1', KIT_KEY))!;
+    const tabs = (group: string) => [...new Set(model.options.filter((option) => option.group === group).map((option) => model.tabOf(option)))];
+    expect(tabs('kit-flip')).toEqual(['swap']);
+    expect(tabs('kit-model')).toEqual(['swap']);
+    expect(tabs('kit-slide')).toEqual([null]);
+    const host = { evaluate: model.evaluate, evaluations: new Map(), onPreview: () => undefined, onHover: () => undefined, onApply: () => undefined, result: () => null };
+    expect(model.edit(host)).not.toBeNull();
+    // No pipe holds this kit: it can be turned back over.
+    const flip = model.options.find((option) => option.group === 'kit-flip')!;
+    expect(model.evaluate(flip).updates[0]!.properties.branchKitRollDeg).toBe(0);
   });
 });

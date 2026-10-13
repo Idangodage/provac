@@ -49,6 +49,11 @@ const LIQUID_CHARGE_KG_PER_M: ReadonlyArray<[number, number]> = [
   [6.35, 0.022], [9.52, 0.06], [12.7, 0.12], [15.88, 0.18], [19.05, 0.27], [22.22, 0.38], [25.4, 0.52], [28.58, 0.68],
 ];
 
+/** Additional charge per metre of a liquid line of this tube (kg/m, practice, unverified), or null off the table. */
+export function liquidChargeKgPerM(tubeOdMm: number): number | null {
+  return LIQUID_CHARGE_KG_PER_M.find(([od]) => Math.abs(od - tubeOdMm) <= 0.05)?.[1] ?? null;
+}
+
 export interface RefrigerantCircuitFigures {
   outdoorUnitId: string;
   outdoorLabel: string;
@@ -294,10 +299,10 @@ export function refrigerantPieceFigures(
   const lineKind = line.lineKind === 'pair' ? 'gas' : line.lineKind;
   let charge: RefrigerantPieceFigures['charge'] = null;
   if (line.lineKind === 'liquid') {
-    const row = LIQUID_CHARGE_KG_PER_M.find(([od]) => Math.abs(od - line.tubeOdMm) <= 0.05);
-    if (row) {
+    const kgPerM = liquidChargeKgPerM(line.tubeOdMm);
+    if (kgPerM !== null) {
       const lineLength = line.design.legs.reduce((sum, candidate) => sum + candidate.lengthMm, 0);
-      charge = { kgPerM: row[1], pieceKg: (row[1] * piece.lengthMm) / 1000, lineKg: (row[1] * lineLength) / 1000 };
+      charge = { kgPerM, pieceKg: (kgPerM * piece.lengthMm) / 1000, lineKg: (kgPerM * lineLength) / 1000 };
     }
   }
   return {

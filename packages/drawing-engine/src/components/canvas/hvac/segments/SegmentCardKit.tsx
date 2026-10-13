@@ -49,10 +49,36 @@ export interface CardDecor {
   chipRef: RefObject<HTMLDivElement | null>;
 }
 
+/** A new placement keeps this far clear of the pointer (px): a twitch of the hand does not land on it. */
+const POINTER_CLEARANCE_PX = 8;
+
+/**
+ * Where the pointer last moved or pressed, and over what: one listener for the page, so a card that comes up while
+ * the pointer rests (a peek, after its delay) still knows where it is.
+ */
+const lastPointer: { x: number; y: number; target: EventTarget | null } = { x: Number.NaN, y: Number.NaN, target: null };
+let trackingPointer = false;
+function trackPointer(): void {
+  if (trackingPointer || typeof window === 'undefined') return;
+  trackingPointer = true;
+  const update = (event: PointerEvent) => {
+    lastPointer.x = event.clientX;
+    lastPointer.y = event.clientY;
+    lastPointer.target = event.target;
+  };
+  window.addEventListener('pointermove', update, true);
+  window.addEventListener('pointerdown', update, true);
+}
+
 /**
  * Keep a card beside its anchor every frame (no React render), writing its
  * transform directly; with `decor`, also the leader line from the card to the
  * piece and the chip naming it (above the piece, else below it).
+ *
+ * A card never comes up under the pointer: a click meant for the drawing would
+ * land on it (a quick pick applied, a neighbour pinned). Where no side clears
+ * the piece it stands beside the pointer instead, and one that grows under a
+ * still pointer is placed again. A card the pointer moved onto stays put.
  */
 export function useAnchoredCard(cardRef: RefObject<HTMLDivElement | null>, containerRef: RefObject<HTMLDivElement | null>, anchor: () => ScreenRect | null, active: boolean, decor?: CardDecor) {
   const anchorRef = useRef(anchor);
@@ -66,6 +92,10 @@ export function useAnchoredCard(cardRef: RefObject<HTMLDivElement | null>, conta
     // The card stays put while its anchor does: growing (the hover line at its foot) or shrinking never moves it under
     // the pointer. It is placed again when the anchor moves, or when it would run off the drawing.
     let held: { key: string; placed: ReturnType<typeof placePopover> } | null = null;
+    trackPointer();
+    // Whether the pointer last moved onto this card. A row re-rendered under it (a tab switched, a list redrawn)
+    // leaves the event's target detached: the answer stands until the pointer moves again.
+    let pointerOnCard = false;
     const show = (node: HTMLElement | SVGElement | null | undefined, visible: boolean) => {
       if (node && node.style.visibility !== (visible ? 'visible' : 'hidden')) node.style.visibility = visible ? 'visible' : 'hidden';
     };
@@ -86,9 +116,33 @@ export function useAnchoredCard(cardRef: RefObject<HTMLDivElement | null>, conta
       }
       const local = { left: rect.left - host.left, top: rect.top - host.top, right: rect.right - host.left, bottom: rect.bottom - host.top };
       const anchorKey = [local.left, local.top, local.right, local.bottom, host.width, host.height].map((value) => Math.round(value)).join(',');
-      const fits = (at: { x: number; y: number }) => at.x + card.offsetWidth <= host.width - 2 && at.y + card.offsetHeight <= host.height - 2;
+      // A card placed clear of its piece that has since grown over it (its rows and chips arrive after it opens) is
+      // placed again — but never from under the pointer (a hovered row's foot grows it too); one that had no room but
+      // to cover its piece from the start stays.
+      const covers = (at: { x: number; y: number; overlaps: boolean }) => !at.overlaps && !card.matches(':hover')
+        && at.x < local.right && at.x + card.offsetWidth > local.left && at.y < local.bottom && at.y + card.offsetHeight > local.top;
+      // The pointer, in the drawing, unless it moved onto the card: a placement keeps `reach` clear of it.
+      if (lastPointer.target instanceof Node && lastPointer.target.isConnected) pointerOnCard = card.contains(lastPointer.target);
+      const pointerAt = Number.isFinite(lastPointer.x) && !pointerOnCard ? { x: lastPointer.x - host.left, y: lastPointer.y - host.top } : null;
+      const near = pointerAt && pointerAt.x >= 0 && pointerAt.y >= 0 && pointerAt.x <= host.width && pointerAt.y <= host.height ? pointerAt : null;
+      const overPointer = (spot: { x: number; y: number }, reach: number) => near !== null
+        && spot.x < near.x + reach && spot.x + card.offsetWidth > near.x - reach && spot.y < near.y + reach && spot.y + card.offsetHeight > near.y - reach;
+      // A card the pointer is on stays put, even grown past the drawing's edge (a hovered row's foot): moving it would
+      // take the row from under the pointer. It is placed again once the pointer leaves it.
+      const inView = (spot: { x: number; y: number }) => pointerOnCard
+        || (spot.x + card.offsetWidth <= host.width - 2 && spot.y + card.offsetHeight <= host.height - 2);
+      const fits = (spot: { x: number; y: number; overlaps: boolean }) => inView(spot) && !covers(spot) && !overPointer(spot, 0);
       if (!held || held.key !== anchorKey || !fits(held.placed)) {
-        held = { key: anchorKey, placed: placePopover(local, { width: card.offsetWidth, height: card.offsetHeight }, { width: host.width, height: host.height }) };
+        const size = { width: card.offsetWidth, height: card.offsetHeight };
+        const view = { width: host.width, height: host.height };
+        let placed = placePopover(local, size, view);
+        if (near && overPointer(placed, POINTER_CLEARANCE_PX)) {
+          // No side clears both the piece and the pointer: beside the pointer, over the piece.
+          const zone = { left: near.x - POINTER_CLEARANCE_PX, top: near.y - POINTER_CLEARANCE_PX, right: near.x + POINTER_CLEARANCE_PX, bottom: near.y + POINTER_CLEARANCE_PX };
+          const beside = placePopover(zone, size, view);
+          if (!overPointer(beside, 0)) placed = { ...beside, overlaps: true };
+        }
+        held = { key: anchorKey, placed };
       }
       const placed = held.placed;
       const pin = rect.pinX !== undefined && rect.pinY !== undefined

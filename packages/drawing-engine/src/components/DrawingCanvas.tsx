@@ -146,6 +146,7 @@ import {
   type RefrigerantPipeLineMode,
 } from "./canvas/hvac/refrigerantPipePairModel";
 import { SegmentCardLayer } from "./canvas/hvac/segments/SegmentCardLayer";
+import type { SegmentProvider } from "./canvas/hvac/segments/segmentProvider";
 import { domainOf, useSegmentUiStore, type SegmentFocus } from "./canvas/hvac/segments/segmentUiStore";
 import { applyRefrigerantProposal } from "./canvas/hvac/unifiedAutoRoute";
 import {
@@ -788,6 +789,8 @@ export function DrawingCanvas({
     createDuctSegmentProvider(ductSettings),
     createRefrigerantSegmentProvider({ profile: vrfRuleProfile, report: vrfValidationReport }),
   ], [ductSettings, vrfRuleProfile, vrfValidationReport]);
+  const segmentProvidersRef = useRef(segmentProviders);
+  segmentProvidersRef.current = segmentProviders;
   const selectFromDesignCheck = useCallback((elementId: string, additive = false) => {
     setSelectedIds(selectionAfterMarkerClick(useSmartDrawingStore.getState().selectedIds, elementId, additive));
   }, [setSelectedIds]);
@@ -1035,6 +1038,11 @@ export function DrawingCanvas({
           hotspot: segmentHotspot(plan, segment.key),
         })) : null;
       },
+      /** The segment card option being previewed: its service, its id and the elements it changes. */
+      getSegmentPreview: () => {
+        const { preview } = useSegmentUiStore.getState();
+        return preview ? { domain: domainOf(preview), optionId: preview.optionId, ids: preview.updates.map((element) => element.id) } : null;
+      },
       /** A refrigerant line's pieces in path order, each with a plan point and a model point half way along it. */
       getRefrigerantPieces: (runId: string) => {
         const state = useSmartDrawingStore.getState();
@@ -1042,7 +1050,18 @@ export function DrawingCanvas({
         const line = element ? refrigerantLineOf(element, state.hvacElements) : null;
         return line ? line.pieces.map((piece) => {
           const middle = pieceMidpoint(piece);
-          return { key: piece.key, kind: piece.kind, ordinal: piece.ordinal, lengthMm: piece.lengthMm, hotspot: { x: middle.x, y: middle.y }, hotspot3D: middle };
+          return { key: piece.key, kind: piece.kind, ordinal: piece.ordinal, lengthMm: piece.lengthMm, angleDeg: piece.angleDeg ?? null, hotspot: { x: middle.x, y: middle.y }, hotspot3D: middle };
+        }) : null;
+      },
+      /** How long each option of a piece's card takes to judge the first time on this drawing (ms). */
+      timeSegmentOptions: (domain: string, runId: string, key: string) => {
+        const provider = segmentProvidersRef.current.find((candidate) => candidate.domain === domain) as SegmentProvider | undefined;
+        const focus = { domain, runId, key, anchorMark: null, view: '2d' } as SegmentFocus;
+        const model = provider?.model(useSmartDrawingStore.getState().hvacElements, focus);
+        return model ? model.options.map((option) => {
+          const started = performance.now();
+          const evaluation = model.evaluate(option);
+          return { id: option.id, ms: Math.round(performance.now() - started), refused: evaluation.refused ?? null };
         }) : null;
       },
       /** A branch kit's ports and outline in plan, as its segment card draws them. */
@@ -1069,6 +1088,8 @@ export function DrawingCanvas({
         const state = useSmartDrawingStore.getState();
         return segmentClientRect3D(state.hvacElements, state.ductSettings, { runId, key, anchorMark }, camera, host.getBoundingClientRect());
       },
+      /** A refrigerant piece's box (and the point its leader ends on) as the plan draws it, in client pixels. */
+      getPipeSegmentClientRect2D: (runId: string, key: string) => pipeStudioOverlayRef.current?.segmentClientRect(runId, key) ?? null,
       /** A refrigerant piece's box as the 3D camera sees it, in client pixels; null without a 3D camera. */
       getPipeSegmentClientRect3D: (runId: string, key: string) => {
         const camera = hybridControllerRef.current?.camera;
@@ -1841,7 +1862,10 @@ export function DrawingCanvas({
   const handleCondensateEditPreview = useCallback((elements: HvacElement[] | null, removeIds: string[]) => {
     setCondensateEditPreview(elements ? { elements, removeIds } : null);
   }, []);
+  // A segment card's option on the drawing before it is applied (any service): 3D draws it as a transient preview.
   const ductSegmentPreview = useSegmentUiStore((state) => state.preview?.updates ?? null);
+  // In plan, a refrigerant card's option is drawn by the pipe overlay in place of the lines it changes.
+  const refrigerantCardPreview = useSegmentUiStore((state) => (state.preview && domainOf(state.preview) === "refrigerant" ? state.preview.updates : null));
   const autoRoutePreviewElements = useMemo(() => {
     if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview && !autoDuctTurned && !ductSegmentPreview) return null;
     const removed = new Set([
@@ -1882,10 +1906,10 @@ export function DrawingCanvas({
   const pipeDisplayElements = useMemo(() => {
     // The plan pipe studio paints the refrigerant part of an Auto route preview.
     const base = refrigerantPreview ? applyRefrigerantProposal(hvacElements, refrigerantPreview) : hvacElements;
-    if (!pipeEditPreview) return base;
-    const replacements = new Map(pipeEditPreview.map(element => [element.id, element]));
+    if (!pipeEditPreview && !refrigerantCardPreview) return base;
+    const replacements = new Map([...(refrigerantCardPreview ?? []), ...(pipeEditPreview ?? [])].map(element => [element.id, element]));
     return base.map(element => replacements.get(element.id) ?? element);
-  }, [hvacElements, pipeEditPreview, refrigerantPreview]);
+  }, [hvacElements, pipeEditPreview, refrigerantPreview, refrigerantCardPreview]);
   const handleHybridControllerReady = useCallback(
     (controller: HybridViewportController | null) => {
       hybridControllerRef.current = controller;

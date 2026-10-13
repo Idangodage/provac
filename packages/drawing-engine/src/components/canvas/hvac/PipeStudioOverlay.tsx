@@ -1041,14 +1041,16 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
 
   // ---- Refrigerant pieces: the one under the pointer on a selected pipe (its card peeks), a click pins its card; both
   // outlined here, in the pipes' own frame, straight from the segment store (no React render). ----
+  // Pieces are read from the drawing as committed (the cards' own pieces), never from what is drawn while an option or
+  // an Auto route is previewed: a card stays where its piece is while one of its options is shown.
   const lineFor = useCallback((runId: string) => {
-    const scene = sceneRef.current;
+    const scene = useSmartDrawingStore.getState().hvacElements;
     const element = scene.find((candidate) => candidate.id === runId);
     return element ? refrigerantLineOf(element, scene) : null;
   }, []);
 
   const kitFor = useCallback((elementId: string) => {
-    const element = sceneRef.current.find((candidate) => candidate.id === elementId);
+    const element = useSmartDrawingStore.getState().hvacElements.find((candidate) => candidate.id === elementId);
     return element ? refrigerantKitOf(element) : null;
   }, []);
 
@@ -1074,8 +1076,19 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       if (!line || !piece) return '';
       return segmentFocusMarkup([refrigerantPieceOutline(line, piece)], tone, tone === 'pinned' ? refrigerantPieceEnds(line, piece) : [], kRef.current);
     };
-    // While one of its card's options is previewed the drawing shows the option, not the piece it replaces.
-    const markup = preview && domainOf(preview) === 'refrigerant' ? ''
+    // While one of its card's options is previewed the drawing shows the option (the lines it changes, as they would
+    // be, outlined dashed), not the piece it replaces.
+    const previewed = preview && domainOf(preview) === 'refrigerant'
+      ? preview.updates.flatMap((element) => {
+        // The option as drawn: its lines as they would be.
+        const shown = sceneRef.current.find((candidate) => candidate.id === element.id) ?? element;
+        const kit = refrigerantKitOf(shown);
+        if (kit) return [kit.outline];
+        const line = refrigerantLineOf(shown, sceneRef.current);
+        return line ? line.pieces.map((piece) => refrigerantPieceOutline(line, piece)) : [];
+      })
+      : null;
+    const markup = previewed ? segmentFocusMarkup(previewed, 'hovered')
       : shapes(pinned, 'pinned') + (hovered && focusId(hovered) !== focusId(pinned) ? shapes(hovered, 'hovered') : '');
     if (target.innerHTML !== markup) target.innerHTML = markup;
   }, [lineFor, kitFor]);

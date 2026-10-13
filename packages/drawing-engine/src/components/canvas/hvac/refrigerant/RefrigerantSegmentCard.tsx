@@ -10,22 +10,54 @@
  * profile's size recommendation or that no sizing table is loaded) — and the
  * design checks that name it. A coordinated gas + liquid pair is one card with
  * a Gas | Liquid switch.
+ *
+ * Its options (refrigerantSegmentOptions) are edits through the pipe engine:
+ * Swap — the line's size, its bends' construction and radius, a 90° made two
+ * 45°s, a bend turned into another plane, a leg's copper; Edit — a straight's
+ * level, sideways offset and length, the line's insulation; Add — a route
+ * point, a bend taken out. A branch kit's card slides it along its run (a
+ * pair's gas and liquid kits together) and lists turning it over and other
+ * models with why they cannot be made. Each shows on the drawing before it is
+ * applied, with its change in length and charge and the checks it would newly
+ * fail.
  */
-import type { ReactNode } from 'react';
+import { Star, TriangleAlert } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
 
+import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 import { PROJECT_FALLBACK_RULE_PROFILE, type ManufacturerRuleProfile, type RuleValue } from '../../../../vrf/rules/rule-profile';
 import type { VrfValidationReport } from '../../../../vrf/rules/validation-engine';
-import { STATUS_DOT, STATUS_TEXT, formatNumber as number } from '../segments/SegmentCardKit';
-import type { SegmentCardModel, SegmentEvaluationLike, SegmentIssueLine, SegmentOptionLike, SegmentProvider } from '../segments/segmentProvider';
+import {
+  ChipRow,
+  EditBlock,
+  STATUS_DOT,
+  STATUS_TEXT,
+  ValueField as SegmentValueField,
+  formatNumber as number,
+  formatSigned as signed,
+} from '../segments/SegmentCardKit';
+import type { SegmentBadge, SegmentCardModel, SegmentFieldHost, SegmentIssueLine, SegmentProvider } from '../segments/segmentProvider';
 import { useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
 
 import { KIT_KEY, refrigerantKitOf, type RefrigerantKit } from './refrigerantKits';
 import { refrigerantCircuitFigures, refrigerantPieceFigures, type RefrigerantCircuitFigures, type RefrigerantPieceFigures } from './refrigerantPieceFigures';
 import { distanceToPath, neighbourPiece, pieceMidpoint, refrigerantLineOf, refrigerantPieceOf, type RefrigerantLine, type RefrigerantPiece } from './refrigerantPieces';
+import {
+  evaluateRefrigerantOption,
+  kitRunAxis,
+  refrigerantKitOptions,
+  refrigerantKitSlideOption,
+  refrigerantPieceOptions,
+  refrigerantValueOption,
+  screenWay,
+  type RefrigerantOptionEvaluation,
+  type RefrigerantOptionGlyph,
+  type RefrigerantPartner,
+  type RefrigerantSegmentOption,
+} from './refrigerantSegmentOptions';
 
-export type RefrigerantSegmentOption = SegmentOptionLike;
-export type RefrigerantOptionEvaluation = SegmentEvaluationLike;
+export type { RefrigerantOptionEvaluation, RefrigerantSegmentOption } from './refrigerantSegmentOptions';
 export type RefrigerantSegmentProvider = SegmentProvider<RefrigerantSegmentOption, RefrigerantOptionEvaluation>;
 type RefrigerantCardModel = SegmentCardModel<RefrigerantSegmentOption, RefrigerantOptionEvaluation>;
 
@@ -238,10 +270,180 @@ interface RekeyToken {
   ordinal: number;
 }
 
-const NO_OPTIONS: RefrigerantSegmentOption[] = [];
-const refuse = (option: RefrigerantSegmentOption): RefrigerantOptionEvaluation => ({
-  optionId: option.id, refused: 'Not available yet.', updates: [], action: option.title, notes: [], newIssues: [],
-});
+// ---------------------------------------------------------------------------------------------------- options on the card
+
+const SWAP_GROUPS = new Set<RefrigerantSegmentOption['group']>(['size', 'construction', 'radius', 'split-bend', 'plane', 'material', 'kit-flip', 'kit-model']);
+const ADD_GROUPS = new Set<RefrigerantSegmentOption['group']>(['add-point', 'remove-bend']);
+
+const BADGES: Record<string, SegmentBadge> = {
+  recommended: {
+    icon: <Star size={12} aria-hidden="true" />, tone: 'text-emerald-600 fill-emerald-500/20', label: 'Recommended',
+    title: 'The size the profile (or the unit\'s port) asks for',
+  },
+};
+
+/** An option's picture. */
+function OptionGlyph({ glyph, className }: { glyph: RefrigerantOptionGlyph; className?: string }) {
+  const paths: Record<RefrigerantOptionGlyph, ReactNode> = {
+    size: <circle cx="8" cy="8" r="4.5" />,
+    'size-down': <><circle cx="6.5" cy="9.5" r="3.5" /><path d="M13 3v6M11 7l2 2 2-2" /></>,
+    'size-up': <><circle cx="6.5" cy="9.5" r="3.5" /><path d="M13 9V3M11 5l2-2 2 2" /></>,
+    socket: <><path d="M2 5h4a6 6 0 0 1 6 6v3" /><path d="M5 3v4M10 11h4" strokeWidth={2} /></>,
+    formed: <path d="M2 5h3a7 7 0 0 1 7 7v2" />,
+    radius: <><path d="M3 4a9 9 0 0 1 9 9" /><path d="M3 13l6-6" strokeDasharray="2 2" /></>,
+    split: <path d="M2 4h5l5 5v5" />,
+    roll: <><path d="M12.5 6.5A5 5 0 1 0 13 10" /><path d="M13 3v3.5H9.5" /></>,
+    level: <><path d="M8 2v12" /><path d="M5 5l3-3 3 3M5 11l3 3 3-3" /></>,
+    offset: <><path d="M2 8h12" /><path d="M5 5L2 8l3 3M11 5l3 3-3 3" /></>,
+    length: <><path d="M2 8h12" /><path d="M2 5v6M14 5v6" /></>,
+    insulation: <><circle cx="8" cy="8" r="2" /><circle cx="8" cy="8" r="5.5" strokeDasharray="2 1.5" /></>,
+    hard: <path d="M2 6h12M2 10h12" />,
+    flexible: <path d="M2 8c2-3 4 3 6 0s4-3 6 0" />,
+    'add-point': <><path d="M2 8h12" /><path d="M8 5v6" strokeWidth={2} /></>,
+    'remove-bend': <><path d="M2 5h4a5 5 0 0 1 5 5v4" /><path d="M10 3h4" strokeWidth={2} /></>,
+    slide: <><path d="M5 8h9M11 5l3 3-3 3" /><path d="M2 5v6" strokeWidth={2} /></>,
+    flip: <><path d="M2 8h12" strokeDasharray="1.5 1.5" /><path d="M4 6.5l4-3.5 4 3.5M4 9.5l4 3.5 4-3.5" /></>,
+    kit: <><path d="M1.5 8h5" /><path d="M6.5 8l7-4.5M6.5 8l7 4.5" /></>,
+  };
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths[glyph]}
+    </svg>
+  );
+}
+
+/** What an option does, as chips: its change in length and charge, and the checks it would newly fail. */
+function DeltaChips({ evaluation }: { evaluation: RefrigerantOptionEvaluation }) {
+  const chips: ReactNode[] = [];
+  if (Math.abs(evaluation.deltaLengthMm) >= 5) {
+    chips.push(<span key="m" className={`rounded px-1 tabular-nums ${evaluation.deltaLengthMm < 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}
+      title="Change in tube length">{signed(evaluation.deltaLengthMm / 1000, 2)} m</span>);
+  }
+  if (evaluation.deltaChargeKg !== null && Math.abs(evaluation.deltaChargeKg) >= 0.005) {
+    chips.push(<span key="kg" className="rounded bg-slate-100 px-1 tabular-nums text-slate-600"
+      title="Change in the additional refrigerant charge (practice table, unverified)">{signed(evaluation.deltaChargeKg, 2)} kg</span>);
+  }
+  const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error');
+  if (errors.length) {
+    chips.push(
+      <span key="err" className="inline-flex items-center gap-0.5 rounded bg-red-50 px-1 font-medium text-red-700" title={errors.map((issue) => `${issue.code}: ${issue.message}`).join('\n')}>
+        <TriangleAlert size={10} aria-hidden="true" />{errors.length}<span className="sr-only"> new error{errors.length === 1 ? '' : 's'}</span>
+      </span>,
+    );
+  }
+  return chips.length ? <span className="flex shrink-0 items-center gap-1 text-[10.5px]">{chips}</span> : null;
+}
+
+/** An option's whole result on one line. */
+function ResultLine({ evaluation }: { evaluation: RefrigerantOptionEvaluation }) {
+  if (evaluation.refused) return <span className="text-red-700">{evaluation.refused}</span>;
+  const parts: ReactNode[] = [];
+  if (Math.abs(evaluation.deltaLengthMm) >= 1) parts.push(<span key="m" className={evaluation.deltaLengthMm < 0 ? 'text-emerald-700' : 'text-amber-700'}>{signed(evaluation.deltaLengthMm / 1000, 2)} m</span>);
+  if (evaluation.deltaChargeKg !== null && Math.abs(evaluation.deltaChargeKg) >= 0.005) parts.push(<span key="kg">{signed(evaluation.deltaChargeKg, 2)} kg charge</span>);
+  const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error').length;
+  const warnings = evaluation.newIssues.length - errors;
+  if (errors) parts.push(<span key="e" className="font-medium text-red-700">{errors} new error{errors === 1 ? '' : 's'}</span>);
+  if (warnings) parts.push(<span key="w" className="text-amber-700">{warnings} new warning{warnings === 1 ? '' : 's'}</span>);
+  if (!parts.length) parts.push(<span key="ok" className="text-emerald-700">no new issues</span>);
+  return <span className="tabular-nums">{parts.map((part, index) => <span key={index}>{index ? ' · ' : ''}{part}</span>)}</span>;
+}
+
+const resultLine = (evaluation: RefrigerantOptionEvaluation) => <ResultLine evaluation={evaluation} />;
+const ValueField = SegmentValueField<RefrigerantSegmentOption, RefrigerantOptionEvaluation>;
+type FieldHost = SegmentFieldHost<RefrigerantSegmentOption, RefrigerantOptionEvaluation>;
+
+/** A straight's length, its start or its end held. */
+function LengthField({ host, element, piece, partner }: { host: FieldHost; element: HvacElement; piece: RefrigerantPiece; partner: RefrigerantPartner | null }) {
+  const [keep, setKeep] = useState<'start' | 'end'>('start');
+  const current = Math.round(piece.lengthMm);
+  return (
+    <ValueField host={host} label="Length" unit="mm" current={current} min={20} max={100000} step={50} fineStep={10} testId="refrigerant-segment-length"
+      hint={`its ${keep} held; the bends either side follow${partner ? ' · both lines of the pair' : ''}`}
+      extra={(
+        <span className="ml-auto inline-flex rounded-md bg-slate-100 p-0.5" role="radiogroup" aria-label="Held end">
+          {(['start', 'end'] as const).map((value) => (
+            <button key={value} type="button" role="radio" aria-checked={keep === value} title={`Keep its ${value} where it is`}
+              className={`rounded px-1.5 text-[10.5px] font-medium ${keep === value ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+              onClick={() => setKeep(value)}>{value === 'start' ? 'Start' : 'End'}</button>
+          ))}
+        </span>
+      )}
+      makeOption={(value) => refrigerantValueOption(element, piece, partner, { kind: 'length', deltaMm: value - current, keep })} />
+  );
+}
+
+/** The Edit tab: a straight's level, sideways offset and length; the line's insulation. */
+function EditPanel({ host, element, piece, partner, options }: {
+  host: FieldHost;
+  element: HvacElement;
+  piece: RefrigerantPiece;
+  partner: RefrigerantPartner | null;
+  options: readonly RefrigerantSegmentOption[];
+}): ReactNode {
+  const chipRow = (group: RefrigerantSegmentOption['group']) => (
+    <ChipRow options={options.filter((option) => option.group === group)} evaluations={host.evaluations} onHover={host.onHover} onApply={host.onApply} />
+  );
+  const both = partner ? ' · both lines of the pair move' : '';
+  const blocks: ReactNode[] = [];
+  if (piece.kind === 'straight' && piece.legId) {
+    const level = Math.round(piece.path.reduce((sum, point) => sum + point.z, 0) / piece.path.length);
+    blocks.push(
+      <EditBlock key="level" title="Level">
+        <div className="px-1">{chipRow('level')}</div>
+        <ValueField host={host} label="Centreline" unit="mm" current={level} min={0} max={30000} step={50} fineStep={10} testId="refrigerant-segment-level"
+          hint={`risers and offsets are re-made at its ends${both}`}
+          makeOption={(value) => refrigerantValueOption(element, piece, partner, { kind: 'level', deltaMm: value - level })} />
+      </EditBlock>,
+    );
+    const from = piece.path[0]!;
+    const to = piece.path[piece.path.length - 1]!;
+    const run = Math.hypot(to.x - from.x, to.y - from.y);
+    if (run > 1) {
+      const across = { x: -(to.y - from.y) / run, y: (to.x - from.x) / run, z: 0 };
+      const plus = screenWay(across);
+      blocks.push(
+        <EditBlock key="offset" title="Sideways">
+          <div className="px-1">{chipRow('offset')}</div>
+          <ValueField host={host} label="Shift" unit="mm" current={0} min={-10000} max={10000} step={50} fineStep={10} signed testId="refrigerant-segment-offset"
+            hint={`+ moves it ${plus.words}${both}`}
+            makeOption={(value) => (value === 0 ? null : refrigerantValueOption(element, piece, partner, {
+              kind: 'offset', offset: { x: across.x * value, y: across.y * value, z: 0 },
+              label: `${screenWay({ x: across.x * Math.sign(value), y: across.y * Math.sign(value) }).arrow} ${Math.abs(value)}`,
+            }))} />
+        </EditBlock>,
+      );
+    }
+  }
+  if ((piece.kind === 'straight' || piece.kind === 'riser') && piece.legId) {
+    blocks.push(<EditBlock key="length" title="Length"><LengthField host={host} element={element} piece={piece} partner={partner} /></EditBlock>);
+  }
+  blocks.push(
+    <EditBlock key="insulation" title="Insulation">
+      <div className="px-1">{chipRow('insulation')}</div>
+    </EditBlock>,
+  );
+  return <div className="space-y-2" data-testid="refrigerant-segment-edit-panel">{blocks}</div>;
+}
+
+/** The kit's Edit tab: slid along its run (a pair's two kits together), by a chip or a distance of your own. */
+function KitEditPanel({ host, element, options }: { host: FieldHost; element: HvacElement; options: readonly RefrigerantSegmentOption[] }): ReactNode {
+  const slides = options.filter((option) => option.group === 'kit-slide');
+  const axis = kitRunAxis(element);
+  if (!axis || !slides.length) return null;
+  const first = slides[0]!;
+  const kitIds = first.edit.kind === 'kit-slide' ? first.edit.kitIds : [element.id];
+  const plus = screenWay(axis);
+  return (
+    <div className="space-y-2" data-testid="refrigerant-segment-edit-panel">
+      <EditBlock title="Along its run">
+        <div className="px-1"><ChipRow options={slides} evaluations={host.evaluations} onHover={host.onHover} onApply={host.onApply} /></div>
+        <ValueField host={host} label="Slide" unit="mm" current={0} min={-5000} max={5000} step={50} fineStep={10} signed testId="refrigerant-segment-kit-slide"
+          hint={`+ moves it ${plus.words}, towards its outlets; its pipes follow${kitIds.length > 1 ? ' · both kits of the pair' : ''}`}
+          makeOption={(value) => (value === 0 ? null : refrigerantKitSlideOption(kitIds, axis, value, true))} />
+      </EditBlock>
+    </div>
+  );
+}
 
 /** How a kit sits: level, turned over (its branch the other way), or rolled. */
 const rollText = (rollDeg: number) => {
@@ -286,6 +488,7 @@ function buildKitModel(scene: HvacElement[], element: HvacElement, context: Refr
   if (!kit) return null;
   const profile = context.profile ?? PROJECT_FALLBACK_RULE_PROFILE;
   const circuit = kit.lines.map((line) => refrigerantCircuitFigures(scene, element, line, profile)).find((figures) => figures) ?? null;
+  const options = refrigerantKitOptions(scene, element, profile);
   const issues: SegmentIssueLine[] = context.report.issues.flatMap((issue) => (
     issue.entityId && (issue.entityId === element.id || issue.entityId.startsWith(`${element.id}:`)) && (issue.level === 'error' || issue.level === 'warning')
       ? [{ severity: issue.level, code: issue.code, message: issue.message }] : []));
@@ -310,10 +513,10 @@ function buildKitModel(scene: HvacElement[], element: HvacElement, context: Refr
     figures: <KitFigures circuit={circuit} />,
     info: <KitInfo kit={kit} circuit={circuit} />,
     issues,
-    options: NO_OPTIONS,
-    evaluate: refuse,
-    tabOf: () => null,
-    edit: () => null,
+    options,
+    evaluate: (option) => evaluateRefrigerantOption(scene, option, profile),
+    tabOf: (option) => (SWAP_GROUPS.has(option.group) ? 'swap' : null),
+    edit: (host) => KitEditPanel({ host, element, options }),
     neighbour: () => null,
     rekeyToken: null,
   };
@@ -330,6 +533,9 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Refriger
   const partnerLine = partnerElement ? refrigerantLineOf(partnerElement, scene) : null;
   const partnerPiece = partnerLine ? matchingPiece(partnerLine, piece) : null;
   const partner = partnerElement && partnerPiece ? { id: partnerElement.id, key: partnerPiece.key } : null;
+  const pairPiece: RefrigerantPartner | null = partnerElement && partnerLine && partnerPiece ? { element: partnerElement, line: partnerLine, piece: partnerPiece } : null;
+  const profile = context.profile ?? PROJECT_FALLBACK_RULE_PROFILE;
+  const options = refrigerantPieceOptions(scene, element, line, piece, pairPiece, profile);
   const titleBits = piece.kind === 'port' ? `${KIND_TITLES.port}` : `${KIND_TITLES[piece.kind]} ${piece.ordinal}`;
   const detail = figures.bend
     ? `${number(figures.bend.angleDeg)}° ${figures.bend.construction === 'socket-elbow' ? `socket elbow${figures.bend.catalogueModel ? ` ${figures.bend.catalogueModel}` : ''}` : 'formed bend'}`
@@ -349,10 +555,10 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Refriger
     figures: <FigureStrip figures={figures} piece={piece} focus={focus} partner={partner} />,
     info: <BuildInfo figures={figures} piece={piece} line={line} />,
     issues: pieceIssues(context.report, element, line, piece),
-    options: NO_OPTIONS,
-    evaluate: refuse,
-    tabOf: () => null,
-    edit: () => null,
+    options,
+    evaluate: (option) => evaluateRefrigerantOption(scene, option, profile),
+    tabOf: (option) => (SWAP_GROUPS.has(option.group) ? 'swap' : ADD_GROUPS.has(option.group) ? 'add' : null),
+    edit: (host) => EditPanel({ host, element, piece, partner: pairPiece, options }),
     neighbour: (direction) => {
       const next = neighbourPiece(line, piece.key, direction);
       return next ? { key: next.key, anchorMark: null } : null;
@@ -377,10 +583,28 @@ export function createRefrigerantSegmentProvider(context: RefrigerantCardContext
       if (!byPiece.has(id)) byPiece.set(id, buildModel(scene, focus, context));
       return byPiece.get(id) ?? null;
     },
-    optionGlyph: () => null,
-    chips: () => null,
-    result: () => null,
-    commit: () => undefined,
+    // The size the profile (or the unit's port) asks for is the recommended one.
+    rank: (options) => new Map(options.flatMap((option) => (option.group === 'size' && !option.current && /profile's size|port size/.test(option.detail)
+      ? [[option.id, ['recommended']] as [string, string[]]] : []))),
+    badges: BADGES,
+    recommendedBadge: 'recommended',
+    optionGlyph: (option) => <OptionGlyph glyph={option.glyph} className="h-3.5 w-3.5" />,
+    chips: (evaluation) => <DeltaChips evaluation={evaluation} />,
+    result: resultLine,
+    // A peek's quick picks after the recommended one: the least tube first.
+    quickScore: (evaluation) => evaluation.deltaLengthMm,
+    commit: (evaluation, option) => {
+      if (!evaluation.updates.length) return;
+      useSmartDrawingStore.getState().commitHvacElementCommand(evaluation.action || option.title, {
+        updates: evaluation.updates.map((element) => ({
+          id: element.id,
+          updates: {
+            position: element.position, rotation: element.rotation, width: element.width, depth: element.depth,
+            height: element.height, elevation: element.elevation, properties: element.properties,
+          },
+        })),
+      });
+    },
     rekey: (scene, focus, token) => {
       const element = scene.find((candidate) => candidate.id === focus.runId);
       if (focus.key === KIT_KEY) return element && refrigerantKitOf(element) ? focus : null;
