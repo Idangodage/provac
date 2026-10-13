@@ -135,11 +135,12 @@ export function useAnchoredCard(cardRef: RefObject<HTMLDivElement | null>, conta
       if (!held || held.key !== anchorKey || !fits(held.placed)) {
         const size = { width: card.offsetWidth, height: card.offsetHeight };
         const view = { width: host.width, height: host.height };
-        let placed = placePopover(local, size, view);
+        const sides = rect.sides ? { sides: rect.sides } : undefined;
+        let placed = placePopover(local, size, view, sides);
         if (near && overPointer(placed, POINTER_CLEARANCE_PX)) {
           // No side clears both the piece and the pointer: beside the pointer, over the piece.
           const zone = { left: near.x - POINTER_CLEARANCE_PX, top: near.y - POINTER_CLEARANCE_PX, right: near.x + POINTER_CLEARANCE_PX, bottom: near.y + POINTER_CLEARANCE_PX };
-          const beside = placePopover(zone, size, view);
+          const beside = placePopover(zone, size, view, sides);
           if (!overPointer(beside, 0)) placed = { ...beside, overlaps: true };
         }
         held = { key: anchorKey, placed };

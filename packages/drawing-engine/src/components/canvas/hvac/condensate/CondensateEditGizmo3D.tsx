@@ -19,10 +19,12 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { beginDrag, createWorkplane, updateDrag, type TransformConstraint } from '../../../../vrf/interaction/interaction-coordinate-service';
 import type { HybridViewportController } from '../../hybrid/hybridViewportController';
 import { modelPointToWorld, worldPointToModel } from '../../modelSpace';
+import { domainOf, focusId, useSegmentUiStore } from '../segments/segmentUiStore';
 
 import { CondensateEditBar } from './CondensateEditBar';
 import { useCondensateEditing, type CondensateDragKind, type CondensatePointerResolver } from './CondensateEditLayer';
 import { isUnitBranchSpec } from './condensateEditing';
+import { condensateFocusAtPoint } from './condensatePieces';
 import { getIndoorUnitDrainPort } from './condensatePorts';
 import { fixedPrefixLength } from './condensateRouteOps';
 import type { CondensateDesignSettings } from './condensateSettings';
@@ -108,9 +110,16 @@ export function CondensateEditGizmo3D(props: {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const unusedPlanRef = useRef<SVGGElement | null>(null);
   const mmPerPxRef = useRef(5);
+  const elementsRef = useRef(hvacElements);
+  elementsRef.current = hvacElements;
+  // A press released where it began pins the card of the piece there (as a click on the pipe does in the 3D view).
   const api = useCondensateEditing({
     enabled: pipe !== null, pipe, hvacElements, selectedIds, settings, gRef: unusedPlanRef,
     hpx: (n) => n * mmPerPxRef.current, onPreviewChange,
+    onClick: (pipeId, at) => {
+      const focus = at.z === null ? null : condensateFocusAtPoint(elementsRef.current, pipeId, { ...at.plan, z: at.z }, '3d');
+      if (focus) useSegmentUiStore.getState().pin(focus);
+    },
   });
   const [projection, setProjection] = useState<Projection | null>(null);
   const [active, setActive] = useState<string | null>(null);
@@ -273,7 +282,20 @@ export function CondensateEditGizmo3D(props: {
   return (
     // data-pipe-edit-gizmo: the 3D layer leaves these pointer events to the editor.
     <div className="pointer-events-none absolute inset-0 z-[24]" data-testid="condensate-edit-3d" data-pipe-edit-gizmo="condensate">
-      <svg ref={svgRef} width={width} height={height} className="absolute left-0 top-0" style={{ pointerEvents: 'none', overflow: 'visible' }}>
+      <svg ref={svgRef} width={width} height={height} className="absolute left-0 top-0" style={{ pointerEvents: 'none', overflow: 'visible' }}
+        onPointerMove={(event) => {
+          // Resting on the run or a handle peeks the card of the piece there (the 3D layer does not see these pointers).
+          if (api.dragging.current || event.buttons !== 0 || !svgRef.current) return;
+          const rect = svgRef.current.getBoundingClientRect();
+          const at = modelAtScreen(event.clientX - rect.left, event.clientY - rect.top);
+          const focus = at ? condensateFocusAtPoint(hvacElements, pipe.id, at, '3d') : null;
+          const store = useSegmentUiStore.getState();
+          if (focusId(store.hovered) !== focusId(focus)) store.setHovered(focus);
+        }}
+        onPointerLeave={() => {
+          const { hovered } = useSegmentUiStore.getState();
+          if (hovered?.view === '3d' && domainOf(hovered) === 'condensate') useSegmentUiStore.getState().setHovered(null);
+        }}>
         {/* The run: grab to move it on the view's surface, double-click adds a bend, eye mode places rodding eyes. */}
         <path d={runPath} fill="none" stroke="#0ea5e9" strokeOpacity={0.35} strokeWidth={7} strokeLinecap="round" strokeLinejoin="round" style={{ pointerEvents: 'none' }} />
         <path d={runPath} fill="none" stroke="rgba(0,0,0,0.001)" strokeWidth={16} strokeLinecap="round" strokeLinejoin="round"

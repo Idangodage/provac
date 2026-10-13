@@ -113,7 +113,7 @@ import {
   type HybridPipeConstraintKey,
 } from "./hybridPipeEditing";
 import { clearHybridPipePreviewScene, updateHybridPipePreviewScene } from "./hybridPipePreviewScene";
-import { pipePieceEndRings, pipePieceProxy, raycastPipe, refrigerantFocusAt, type PipeHit3D } from "./hybridPipeSegments";
+import { condensateFocusAt, pipePieceEndRings, pipePieceProxy, raycastPipe, refrigerantFocusAt, type PipeHit3D } from "./hybridPipeSegments";
 import { createHybridPointerMoveQueue } from "./hybridPointerMoveQueue";
 import { measureUnrevealedContentBounds } from "./hybridScenePresentation";
 import {
@@ -969,7 +969,7 @@ function refreshOutlineProxies(
     const domain = domainOf(piece);
     const mesh = !focus ? null
       : domain === "duct" ? ductSegmentProxy(focus.scene, focus.settings, piece.runId, piece.key)
-        : domain === "refrigerant" ? pipePieceProxy(focus.scene, piece.runId, piece.key) : null;
+        : domain === "refrigerant" || domain === "condensate" ? pipePieceProxy(focus.scene, piece.runId, piece.key) : null;
     if (mesh) layer.add(mesh);
     return mesh;
   };
@@ -977,7 +977,7 @@ function refreshOutlineProxies(
     const domain = domainOf(piece);
     return !focus ? null
       : domain === "duct" ? ductSegmentEndRings(focus.scene, focus.settings, piece.runId, piece.key)
-        : domain === "refrigerant" ? pipePieceEndRings(focus.scene, piece.runId, piece.key) : null;
+        : domain === "refrigerant" || domain === "condensate" ? pipePieceEndRings(focus.scene, piece.runId, piece.key) : null;
   };
   // A card's piece belongs to a selected run (the card closes with its run). While one of its options is previewed
   // the drawing shows the option, not the piece it replaces.
@@ -2392,7 +2392,9 @@ export function HybridProjectionLayer({
       const duct = pipeId ? null : raycastDuct(point);
       // A selected run: the piece under the pointer (its card peeks); another run: the run.
       const pieceFocus = pipe && selectedIdsRef.current.includes(pipe.elementId)
-        ? refrigerantFocusAt(hvacElementsRef.current, pipe.elementId, pipe.model)
+        ? (hvacElementsRef.current.find((element) => element.id === pipe.elementId)?.type === "condensate-pipe"
+          ? condensateFocusAt(hvacElementsRef.current, pipe.elementId, pipe.model)
+          : refrigerantFocusAt(hvacElementsRef.current, pipe.elementId, pipe.model))
         : duct && selectedIdsRef.current.includes(duct.runId)
           ? ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, duct.runId, duct.model)
           : null;
@@ -2619,12 +2621,13 @@ export function HybridProjectionLayer({
         pickState.pipePressedId = null;
         pickState.pipePressedModel = null;
         releaseCapture();
-        // A click (not a drag) on a refrigerant line selects it and pins the card of the piece under it, as a duct's;
-        // with Shift it adds the line to the selection, or takes it out, and pins nothing. A drain selects as before.
+        // A click (not a drag) on a refrigerant line or a drain selects it and pins the card of the piece under it, as a
+        // duct's; with Shift it adds the pipe to the selection, or takes it out, and pins nothing.
         const element = hvacElementsRef.current.find((candidate) => candidate.id === pipeId);
         const click = Math.hypot(e.clientX - pickState.downX, e.clientY - pickState.downY) <= 4;
-        const focus = click && !e.shiftKey && model && element && isRefrigerantPipeElementType(element.type)
-          ? refrigerantFocusAt(hvacElementsRef.current, pipeId, model) : null;
+        const focus = !click || e.shiftKey || !model || !element ? null
+          : isRefrigerantPipeElementType(element.type) ? refrigerantFocusAt(hvacElementsRef.current, pipeId, model)
+            : element.type === "condensate-pipe" ? condensateFocusAt(hvacElementsRef.current, pipeId, model) : null;
         if (focus) {
           if (!selectedIdsRef.current.includes(pipeId)) selectWall(pipeId, false);
           useDuctSegmentUiStore.getState().pin(focus);

@@ -88,9 +88,11 @@ import { selectionAfterMarkerClick, VrfValidationOverlay } from "./canvas/hvac/V
 import { applyAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteController";
 import { CondensateEditGizmo3D } from "./canvas/hvac/condensate/CondensateEditGizmo3D";
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
+import { createCondensateSegmentProvider } from "./canvas/hvac/condensate/CondensateSegmentCard";
 import { condensateEditContext, condensateNetworkIdOf, followDrainsForMove } from "./canvas/hvac/condensate/condensateEditController";
 import { createCondensateEditSession, isUnitBranchSpec } from "./canvas/hvac/condensate/condensateEditing";
 import { generateCondensateNetwork } from "./canvas/hvac/condensate/condensateGenerator";
+import { condensatePieceMidpoint, condensateRunOf } from "./canvas/hvac/condensate/condensatePieces";
 import { getIndoorUnitDrainPorts } from "./canvas/hvac/condensate/condensatePorts";
 import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePreviewStore";
 import { fixedPrefixLength, translateRouteInterior } from "./canvas/hvac/condensate/condensateRouteOps";
@@ -769,11 +771,12 @@ export function DrawingCanvas({
   // the camera sees it (read every frame, so the card follows an orbit or a zoom).
   const resolveSegmentAnchor = useCallback((focus: SegmentFocus) => {
     const domain = domainOf(focus);
-    if (domain !== "duct" && domain !== "refrigerant") return null;
     if (!projectionViewOnly) {
       return domain === "duct"
         ? ductOverlayRef.current?.segmentClientRect(focus.runId, focus.key, focus.anchorMark) ?? null
-        : pipeStudioOverlayRef.current?.segmentClientRect(focus.runId, focus.key) ?? null;
+        : domain === "condensate"
+          ? condensateOverlayRef.current?.segmentClientRect(focus.runId, focus.key) ?? null
+          : pipeStudioOverlayRef.current?.segmentClientRect(focus.runId, focus.key) ?? null;
     }
     const camera = hybridControllerRef.current?.camera;
     const host = hostRef.current;
@@ -783,12 +786,13 @@ export function DrawingCanvas({
       ? segmentClientRect3D(state.hvacElements, state.ductSettings, focus, camera, host.getBoundingClientRect())
       : pipeSegmentClientRect3D(state.hvacElements, focus, camera, host.getBoundingClientRect());
   }, [projectionViewOnly]);
-  // The services whose runs' pieces have cards: ducts, and refrigerant lines (read with the active rule profile and
-  // the live design checks).
+  // The services whose runs' pieces have cards: ducts, refrigerant lines (read with the active rule profile and the
+  // live design checks) and condensate drains (with the project's drainage settings and checks).
   const segmentProviders = useMemo(() => [
     createDuctSegmentProvider(ductSettings),
     createRefrigerantSegmentProvider({ profile: vrfRuleProfile, report: vrfValidationReport }),
-  ], [ductSettings, vrfRuleProfile, vrfValidationReport]);
+    createCondensateSegmentProvider({ settings: condensateSettings, routingSettings: pipeRoutingSettings, walls, rooms, report: condensateValidationReport }),
+  ], [ductSettings, vrfRuleProfile, vrfValidationReport, condensateSettings, pipeRoutingSettings, walls, rooms, condensateValidationReport]);
   const segmentProvidersRef = useRef(segmentProviders);
   segmentProvidersRef.current = segmentProviders;
   const selectFromDesignCheck = useCallback((elementId: string, additive = false) => {
@@ -1064,6 +1068,16 @@ export function DrawingCanvas({
           return { id: option.id, ms: Math.round(performance.now() - started), refused: evaluation.refused ?? null };
         }) : null;
       },
+      /** A drain run's pieces in flow order, with a point on each to rest on (plan and 3D). */
+      getCondensatePieces: (runId: string) => {
+        const element = useSmartDrawingStore.getState().hvacElements.find((candidate) => candidate.id === runId);
+        const run = element ? condensateRunOf(element) : null;
+        return run ? run.pieces.map((piece) => {
+          const middle = condensatePieceMidpoint(piece);
+          return { key: piece.key, kind: piece.kind, ordinal: piece.ordinal, lengthMm: piece.lengthMm, hotspot: { x: middle.x, y: middle.y }, hotspot3D: middle };
+        }) : null;
+      },
+      getCondensateSegmentClientRect2D: (runId: string, key: string) => condensateOverlayRef.current?.segmentClientRect(runId, key) ?? null,
       /** A branch kit's ports and outline in plan, as its segment card draws them. */
       getRefrigerantKit: (elementId: string) => {
         const element = useSmartDrawingStore.getState().hvacElements.find((candidate) => candidate.id === elementId);

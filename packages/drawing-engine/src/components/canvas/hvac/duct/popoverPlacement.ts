@@ -14,6 +14,8 @@ export interface ScreenRect {
   /** A point on the thing anchored to (screen pixels), where a leader line from the card ends; else the rect's centre. */
   pinX?: number;
   pinY?: number;
+  /** The sides a card tries first: across a pipe's run, so it never lies along the pipe it describes. */
+  sides?: readonly PopoverSide[];
 }
 
 export type PopoverSide = 'right' | 'left' | 'bottom' | 'top';

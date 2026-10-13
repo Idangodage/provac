@@ -11,11 +11,13 @@
  * Condensate pipes are picked geometrically by the plan renderer, so select
  * works like any other element. A selected drain run gets micro-editing
  * handles and the drain edit bar (CondensateEditLayer / CondensateEditBar);
+ * resting on one of its pieces peeks that piece's segment card and a click
+ * (a press released where it began) pins it, the piece outlined here;
  * while a handle is dragged the re-solved network is drawn live in place of
  * the committed one. It shares the same-frame viewport bond as the pipe
  * studio overlay.
  */
-import { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useMemo, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 
 import type { HvacElement, Point2D } from '../../../../types';
 import {
@@ -26,9 +28,21 @@ import {
   type FabricViewportMatrix,
 } from '../../coordinateTransform';
 import { MM_TO_PX } from '../../scale';
+import { segmentFocusMarkup } from '../duct/ductOverlayMarkup';
+import type { ScreenRect } from '../duct/popoverPlacement';
+import { domainOf, focusId, useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
 
 import { CondensateEditBar } from './CondensateEditBar';
 import { CondensateEditHandles, useCondensateEditing } from './CondensateEditLayer';
+import {
+  condensatePieceAtPlanPoint,
+  condensatePieceEnds,
+  condensatePieceMidpoint,
+  condensatePieceOf,
+  condensatePieceOutline,
+  condensatePieceRunDirection,
+  condensateRunOf,
+} from './condensatePieces';
 import { FittingGlyph, PipeTube, Tag, pathData } from './condensatePlanGlyphs';
 import {
   buildCondensatePlanPresentation,
@@ -43,6 +57,8 @@ import { isCondensateGully, isCondensatePipe, readCondensateGullySpec, readConde
 
 export interface CondensateOverlayHandle {
   syncViewTransform: (viewport: readonly number[]) => void;
+  /** A drain piece's box on screen (client pixels), its middle the pin; null when it is not drawn. */
+  segmentClientRect: (runId: string, key: string) => ScreenRect | null;
 }
 
 export interface CondensateOverlayProps {
@@ -81,12 +97,72 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
   useLayoutEffect(() => {
     if (liveViewportRef.current) syncViewTransform(liveViewportRef.current);
   });
-  useImperativeHandle(ref, () => ({ syncViewTransform }), [syncViewTransform]);
-
   const view = getCanvasTransform(viewportZoom, panOffset);
   const k = MM_TO_PX * view.zoom;
   const hpx = (n: number) => n / Math.max(k, 1e-6);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  // ---- Drain pieces: the one under the pointer on the selected run (its card peeks), a click pins it; both outlined
+  // here, in the drawing's own frame, straight from the segment store (no React render). Pieces are read from the
+  // drawing as committed, so a card stays on its piece while one of its options is previewed. ----
+  const elementsRef = useRef(hvacElements);
+  elementsRef.current = hvacElements;
+  const kRef = useRef(k);
+  kRef.current = k;
+  const focusRef = useRef<SVGGElement | null>(null);
+  const runOf = useCallback((runId: string) => {
+    const element = elementsRef.current.find((candidate) => candidate.id === runId);
+    return element ? condensateRunOf(element) : null;
+  }, []);
+  const segmentClientRect = useCallback((runId: string, key: string): ScreenRect | null => {
+    const ctm = gRef.current?.getScreenCTM();
+    const run = runOf(runId);
+    const piece = run ? condensatePieceOf(run, key) : null;
+    if (!ctm || !run || !piece) return null;
+    const corners = condensatePieceOutline(run, piece).map((point) => new DOMPoint(point.x, point.y).matrixTransform(ctm));
+    const middle = condensatePieceMidpoint(piece);
+    const pin = new DOMPoint(middle.x, middle.y).matrixTransform(ctm);
+    // Across the run on screen, so the card never lies along the drain (and over the next piece).
+    const direction = condensatePieceRunDirection(run, piece);
+    const ahead = direction ? new DOMPoint(middle.x + direction.x * 100, middle.y + direction.y * 100).matrixTransform(ctm) : null;
+    const sides = ahead
+      ? (Math.abs(ahead.x - pin.x) >= Math.abs(ahead.y - pin.y) ? ['top', 'bottom', 'right', 'left'] as const : ['right', 'left', 'top', 'bottom'] as const)
+      : undefined;
+    return {
+      left: Math.min(...corners.map((point) => point.x)), top: Math.min(...corners.map((point) => point.y)),
+      right: Math.max(...corners.map((point) => point.x)), bottom: Math.max(...corners.map((point) => point.y)),
+      pinX: pin.x, pinY: pin.y, ...(sides ? { sides } : {}),
+    };
+  }, [runOf]);
+  useImperativeHandle(ref, () => ({ syncViewTransform, segmentClientRect }), [syncViewTransform, segmentClientRect]);
+
+  const paintPieceFocus = useCallback(() => {
+    const target = focusRef.current;
+    if (!target) return;
+    const { hovered, pinned } = useSegmentUiStore.getState();
+    const shapes = (focus: SegmentFocus | null, tone: 'hovered' | 'pinned') => {
+      if (!focus || domainOf(focus) !== 'condensate') return '';
+      const run = runOf(focus.runId);
+      const piece = run ? condensatePieceOf(run, focus.key) : null;
+      if (!run || !piece) return '';
+      return segmentFocusMarkup([condensatePieceOutline(run, piece)], tone, tone === 'pinned' ? condensatePieceEnds(run, piece) : [], kRef.current);
+    };
+    const markup = shapes(pinned, 'pinned') + (hovered && focusId(hovered) !== focusId(pinned) ? shapes(hovered, 'hovered') : '');
+    if (target.innerHTML !== markup) target.innerHTML = markup;
+  }, [runOf]);
+  useEffect(() => useSegmentUiStore.subscribe(paintPieceFocus), [paintPieceFocus]);
+  useEffect(() => paintPieceFocus(), [paintPieceFocus, hvacElements, k]);
+
+  /** The piece of a drain run at a plan point, within a few screen pixels of its outside. */
+  const pieceFocusAt = useCallback((runId: string, world: Point2D): SegmentFocus | null => {
+    const run = runOf(runId);
+    const piece = run ? condensatePieceAtPlanPoint(run, world, 8 / Math.max(kRef.current, 1e-6)) : null;
+    return piece ? { domain: 'condensate', runId, key: piece.key, anchorMark: null, view: '2d' } : null;
+  }, [runOf]);
+  const pinPieceAt = useCallback((runId: string, at: { plan: Point2D }) => {
+    const focus = pieceFocusAt(runId, at.plan);
+    if (focus) useSegmentUiStore.getState().pin(focus);
+  }, [pieceFocusAt]);
 
   const committed = useMemo(() => hvacElements
     .filter(isCondensatePipe)
@@ -108,7 +184,24 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
   }, [enabled, interactive, preview, selectedIds, hvacElements]);
   const edit = useCondensateEditing({
     enabled: editPipe !== null, pipe: editPipe, hvacElements, selectedIds, settings, gRef, hpx, onPreviewChange: onEditPreviewChange,
+    onClick: pinPieceAt,
   });
+  // A plan hover belongs to the run being edited: it goes with the run (deselected, another tool, the 3D view).
+  useEffect(() => {
+    const { hovered } = useSegmentUiStore.getState();
+    if (hovered?.view === '2d' && domainOf(hovered) === 'condensate' && hovered.runId !== editPipe?.id) useSegmentUiStore.getState().setHovered(null);
+  }, [editPipe]);
+  const hoverPiece = useCallback((event: ReactPointerEvent<SVGGElement>) => {
+    if (!editPipe || edit.dragging.current || event.buttons !== 0) return;
+    const world = edit.toWorld(event.clientX, event.clientY);
+    const focus = world ? pieceFocusAt(editPipe.id, world) : null;
+    const store = useSegmentUiStore.getState();
+    if (focusId(store.hovered) !== focusId(focus)) store.setHovered(focus);
+  }, [editPipe, edit, pieceFocusAt]);
+  const leavePiece = useCallback(() => {
+    const { hovered } = useSegmentUiStore.getState();
+    if (hovered?.view === '2d' && domainOf(hovered) === 'condensate') useSegmentUiStore.getState().setHovered(null);
+  }, []);
   const editResult = edit.preview?.result?.ok ? edit.preview.result : null;
   const editIds = useMemo(() => new Set(editResult ? [...editResult.elements.map((element) => element.id), ...editResult.removeIds] : []), [editResult]);
   const editViews = useMemo(() => (editResult?.elements ?? [])
@@ -226,7 +319,12 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
               })}
             </g>
           ) : null}
-          {editPipe && edit.model ? <CondensateEditHandles api={edit} pipe={editPipe} hpx={hpx} settings={settings} /> : null}
+          <g ref={focusRef} data-testid="condensate-segment-focus" style={{ pointerEvents: 'none' }} />
+          {editPipe && edit.model ? (
+            <g onPointerMove={hoverPiece} onPointerLeave={leavePiece}>
+              <CondensateEditHandles api={edit} pipe={editPipe} hpx={hpx} settings={settings} />
+            </g>
+          ) : null}
         </g>
       </svg>
       {editPipe && edit.model ? <CondensateEditBar pipe={editPipe} api={edit} pumpMaxLiftMm={pumpMaxLiftMm} /> : null}

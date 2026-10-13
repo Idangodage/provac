@@ -118,8 +118,12 @@ export function useCondensateEditing(options: {
   gRef: RefObject<SVGGElement | null>;
   hpx: (n: number) => number;
   onPreviewChange?: (elements: HvacElement[] | null, removeIds: string[]) => void;
+  /** A press on the run released where it began: a click, at that plan point (and level, in 3D). */
+  onClick?: (pipeId: string, at: CondensatePointerPoint) => void;
 }) {
   const { enabled, pipe, hvacElements, settings, gRef, hpx, onPreviewChange } = options;
+  const onClickRef = useRef(options.onClick);
+  onClickRef.current = options.onClick;
   const sessionRef = useRef<{ key: string; elements: HvacElement[]; session: CondensateEditSession } | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const latestRef = useRef<{ world: Point2D; z: number | null; shift: boolean } | null>(null);
@@ -284,7 +288,7 @@ export function useCondensateEditing(options: {
           const label = drag.kind !== 'riser-top' && levelMoved && !planMoved ? 'Set drain level limit' : labels[drag.kind];
           commitCondensateEdit(final, label, [drag.pipeId]);
         }
-      }
+      } else onClickRef.current?.(drag.pipeId, { plan: drag.startWorld, z: drag.startZ });
     }
     latestRef.current = null;
     publish(null);
@@ -467,6 +471,14 @@ export function CondensateEditHandles({ api, pipe, hpx, settings }: {
         style={{ pointerEvents: 'stroke', cursor: api.eyeMode ? 'copy' : 'move' }}>
         <title>{api.eyeMode ? 'Click to place a rodding eye' : 'Drag to move the run · Double-click to add a bend'}</title>
       </path>
+      {/* A drop (no length in plan) is a point: a ring to rest on and click. */}
+      {route.every((point) => distance(point, route[0]!) < 1) ? (
+        <circle cx={route[0]!.x} cy={route[0]!.y} r={Math.max(insulated / 2, hpx(10))} fill="rgba(0,0,0,0.001)"
+          style={{ pointerEvents: 'auto', cursor: 'pointer' }} data-condensate-drop="1"
+          onPointerDown={(event) => api.beginDrag('body', 0, event)}>
+          <title>The drop to the termination</title>
+        </circle>
+      ) : null}
       {api.eyeMode ? spec.fittings.filter((fitting) => fitting.kind === 'cleanout').map((fitting) => (
         <circle key={`eye${fitting.id}`} cx={fitting.point.x} cy={fitting.point.y} r={hpx(10)} fill="rgba(220,38,38,0.12)" stroke="#dc2626"
           strokeWidth={hpx(1.2)} style={{ pointerEvents: 'auto', cursor: 'pointer' }}

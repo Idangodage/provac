@@ -1,14 +1,22 @@
 /**
- * Refrigerant lines in the 3D views: the line and the point on it under the
- * pointer, the piece there (the same keys the plan uses, so a piece has one card
- * whichever view points at it), a piece's outline proxy and the rings at its two
- * ends (square to the pipe's own axis, risers included), and a piece's box as the
- * camera sees it (where its card goes).
+ * Refrigerant lines and condensate drains in the 3D views: the pipe and the
+ * point on it under the pointer, the piece there (the same keys the plan uses,
+ * so a piece has one card whichever view points at it), a piece's outline proxy
+ * and the rings at its two ends (square to the pipe's own axis, risers
+ * included), and a piece's box as the camera sees it (where its card goes).
  */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 import type { HvacElement } from '../../../types';
+import {
+  condensateFocusAtPoint,
+  condensatePieceBounds3D,
+  condensatePieceMidpoint,
+  condensatePieceOf,
+  condensateRunOf,
+  type CondensatePiece,
+} from '../hvac/condensate/condensatePieces';
 import type { ScreenRect } from '../hvac/duct/popoverPlacement';
 import type { Vec3 } from '../hvac/pipePortFrame';
 import { KIT_KEY, refrigerantKitOf } from '../hvac/refrigerant/refrigerantKits';
@@ -62,6 +70,28 @@ export function refrigerantFocusAt(scene: readonly HvacElement[], runId: string,
   return refrigerantFocusAtPoint(scene, runId, model, '3d');
 }
 
+/** The piece of a condensate drain at a picked model point, as a 3D focus, or null. */
+export function condensateFocusAt(scene: readonly HvacElement[], runId: string, model: Vec3): SegmentFocus | null {
+  return condensateFocusAtPoint(scene, runId, model, '3d');
+}
+
+/** The piece of a pipe of either service, a drain's own by its run, with its centreline and the pipe's outside radius. */
+function pipePieceShape(scene: readonly HvacElement[], runId: string, key: string): { path: Vec3[]; radius: number; drainPiece: CondensatePiece | null } | null {
+  const element = scene.find((candidate) => candidate.id === runId);
+  if (!element) return null;
+  if (element.type === 'condensate-pipe') {
+    const run = condensateRunOf(element);
+    const piece = run ? condensatePieceOf(run, key) : null;
+    return run && piece ? { path: piece.path, radius: run.radiusMm, drainPiece: piece } : null;
+  }
+  const line = refrigerantLineOf(element, scene);
+  const piece = line ? refrigerantPieceOf(line, key) : null;
+  return line && piece ? { path: piece.path, radius: line.outsideDiameterMm / 2, drainPiece: null } : null;
+}
+
+/** A drain's fittings and joints are points on it: ringed by the plan, not bracketed at two ends. */
+const DRAIN_POINT_KINDS = new Set<CondensatePiece['kind']>(['eye', 'vent', 'sleeve', 'end']);
+
 /** A swept tube along a polyline: one ring of `sides` vertices per path point, its frame carried along the path. */
 function tubeGeometry(path: readonly Vec3[], radius: number, sides = 16): THREE.BufferGeometry | null {
   const points = path.map((point) => new THREE.Vector3(point.x, point.y, point.z));
@@ -113,9 +143,10 @@ function tubeGeometry(path: readonly Vec3[], radius: number, sides = 16): THREE.
 
 /** A piece's outline proxy: its insulated surface (drawing nothing itself), or null. */
 export function pipePieceProxy(scene: readonly HvacElement[], runId: string, key: string): THREE.Mesh | null {
-  const line = lineIn(scene, runId);
-  const piece = line ? refrigerantPieceOf(line, key) : null;
-  const geometry = line && piece ? tubeGeometry(piece.path, line.outsideDiameterMm / 2 + 1.5) : null;
+  const shape = pipePieceShape(scene, runId, key);
+  const geometry = !shape ? null
+    : shape.drainPiece && DRAIN_POINT_KINDS.has(shape.drainPiece.kind) ? pointGeometry(shape)
+      : tubeGeometry(shape.path, shape.radius + 1.5) ?? pointGeometry(shape);
   if (!geometry) return null;
   const mesh = new THREE.Mesh(geometry, OUTLINE_PROXY_MATERIAL);
   mesh.name = `pipe-segment-proxy-${runId}-${key}`;
@@ -134,14 +165,22 @@ function endRing(centre: Vec3, axis: THREE.Vector3, radius: number): THREE.Buffe
   return ring;
 }
 
-/** Rings round a piece's two ends, square to the pipe's axis there (a riser's are level). */
+/** A short drain fitting with no length to sweep: a ball round its point. */
+function pointGeometry(shape: { path: Vec3[]; radius: number; drainPiece: CondensatePiece | null }): THREE.BufferGeometry | null {
+  const at = shape.drainPiece?.point ?? shape.path[0];
+  if (!at) return null;
+  const ball = new THREE.SphereGeometry(shape.radius * 1.6 + 1.5, 20, 14);
+  ball.translate(at.x, at.y, at.z);
+  return ball;
+}
+
+/** Rings round a piece's two ends, square to the pipe's axis there (a riser's are level); none for a drain's fitting. */
 export function pipePieceEndRings(scene: readonly HvacElement[], runId: string, key: string): THREE.Mesh | null {
-  const line = lineIn(scene, runId);
-  const piece = line ? refrigerantPieceOf(line, key) : null;
-  if (!line || !piece || piece.path.length < 2) return null;
+  const shape = pipePieceShape(scene, runId, key);
+  if (!shape || shape.path.length < 2 || (shape.drainPiece && DRAIN_POINT_KINDS.has(shape.drainPiece.kind))) return null;
   const at = (a: Vec3, b: Vec3) => new THREE.Vector3(b.x - a.x, b.y - a.y, b.z - a.z);
-  const path = piece.path;
-  const radius = line.outsideDiameterMm / 2;
+  const path = shape.path;
+  const radius = shape.radius;
   const parts = [endRing(path[0]!, at(path[0]!, path[1]!), radius), endRing(path[path.length - 1]!, at(path[path.length - 2]!, path[path.length - 1]!), radius)];
   const geometry = mergeGeometries(parts, false);
   parts.forEach((part) => part.dispose());
@@ -153,8 +192,10 @@ export function pipePieceEndRings(scene: readonly HvacElement[], runId: string, 
 
 /** The meshes a pipe is drawn with (visible ones), for an outline of the whole line; none for another element. */
 export function pipeElementMeshes(root: THREE.Object3D, elementId: string): THREE.Mesh[] {
-  const group = root.children.find((object) => object.userData.hvacElementId === elementId && object.visible
-    && isRefrigerantPipeElementType(object.userData.hvacElementType as HvacElement['type']));
+  const group = root.children.find((object) => {
+    const type = object.userData.hvacElementType as HvacElement['type'];
+    return object.userData.hvacElementId === elementId && object.visible && (isRefrigerantPipeElementType(type) || type === 'condensate-pipe');
+  });
   const meshes: THREE.Mesh[] = [];
   group?.traverse((object) => {
     if (object instanceof THREE.Mesh && object.visible) meshes.push(object);
@@ -185,11 +226,17 @@ export function pipeSegmentClientRect3D(
   // A branch kit's card: its plan outline at its level; a piece's: its box round its centreline.
   const kitElement = focus.key === KIT_KEY ? scene.find((candidate) => candidate.id === focus.runId) : undefined;
   const kit = kitElement ? refrigerantKitOf(kitElement) : null;
-  const line = kit ? null : lineIn(scene, focus.runId);
+  const drainElement = scene.find((candidate) => candidate.id === focus.runId && candidate.type === 'condensate-pipe');
+  const drain = drainElement ? condensateRunOf(drainElement) : null;
+  const drainPiece = drain ? condensatePieceOf(drain, focus.key) : null;
+  const line = kit || drain ? null : lineIn(scene, focus.runId);
   const piece: RefrigerantPiece | null = line ? refrigerantPieceOf(line, focus.key) : null;
   let bounds: { min: Vec3; max: Vec3 };
   let middle: Vec3;
-  if (kit) {
+  if (drain && drainPiece) {
+    bounds = condensatePieceBounds3D(drain, drainPiece);
+    middle = condensatePieceMidpoint(drainPiece);
+  } else if (kit) {
     const xs = kit.outline.map((point) => point.x);
     const ys = kit.outline.map((point) => point.y);
     bounds = { min: { x: Math.min(...xs), y: Math.min(...ys), z: kit.levelMm - 60 }, max: { x: Math.max(...xs), y: Math.max(...ys), z: kit.levelMm + 60 } };
