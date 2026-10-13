@@ -8,7 +8,6 @@ import type { HybridViewportController } from '../hybrid/hybridViewportControlle
 import { modelPointToWorld } from '../modelSpace';
 import { fromMillimeters, getUnitLabel, toMillimeters, type LinearUnit } from '../scale';
 
-import { PipeDimensionInput } from './PipeDimensionInput';
 import { PipeEditGizmo } from './PipeEditGizmo';
 import { PipeDrawingControls } from './PipeRoutingToolbar';
 import { resolvePipeBendEdit } from './pipeBendEdit';
@@ -298,19 +297,12 @@ export function PipeEditingTools(props: Props) {
               : event.target.value === 'node' ? { kind: 'node', index: 0 } : { kind: 'run' }); }}>
           <option value="run">{selectedPipes.length > 1 ? `${selectedPipes.length} runs` : 'Whole run'}</option><option value="segment">{selection.kind === 'segment' ? `Segment ${selection.index + 1}` : 'Segment'}</option>
           <option value="node">{selection.kind === 'node' ? `Point ${selection.index + 1}` : 'Point'}</option><option value="advanced">More scopes…</option></select>
-          {lengthMm !== null && <><span className="text-xs text-slate-500">Length</span><PipeDimensionInput valueMm={lengthMm} unit={props.unit} onCommit={commitLength} disabled={lock} />
-            <select aria-label="Length fixed endpoint" className={`${inputClass} !w-auto`} value={pivot} onChange={event => { cancel(); setPivot(event.target.value as typeof pivot); }}>
-              <option value="start">Keep start</option><option value="end">Keep end</option></select></>}
           <span className="h-5 border-l border-slate-200" aria-hidden="true" />
           <button type="button" className={`${buttonClass} ${showTransform && operationMode === 'translate' ? 'bg-teal-50 text-teal-800' : ''}`} aria-label="Move pipe selection" aria-pressed={showTransform && operationMode === 'translate'} disabled={lock}
           onClick={() => { cancel(); setOperationMode('translate'); setShowTransform(operationMode !== 'translate' || !showTransform); }}>Move</button>
           <button type="button" className={`${buttonClass} ${showTransform && operationMode === 'rotate' ? 'bg-teal-50 text-teal-800' : ''}`} aria-label="Rotate pipe selection" aria-pressed={showTransform && operationMode === 'rotate'} disabled={lock || selection.kind === 'node'}
             onClick={() => { cancel(); setOperationMode('rotate'); setShowTransform(operationMode !== 'rotate' || !showTransform); }}>Rotate</button>
-          {selection.kind === 'segment' && <button type="button" className={buttonClass} disabled={lock} title="Add a route point at this segment's midpoint" onClick={() => {
-            makePreview({ kind: 'insert' });
-            if (pendingEdit.current) { apply(); changeSelection({ kind: 'node', index: selection.index + 1 }); }
-          }}>Split</button>}
-          {selection.kind === 'node' && selection.index > 0 && selection.index < nodes.length - 1 && <button type="button" className={buttonClass} disabled={lock} onClick={() => { makePreview({ kind: 'remove' }); apply(); }}>Remove point</button>}
+          {/* A piece's length, a point added or a bend taken out: its segment card (click the piece). */}
           <button type="button" className={buttonClass} onClick={props.onPlaceBranchKit}>Branch kit</button></>}
         {props.drawing && <><PipeDrawingControls unit={props.unit} serviceLocked={props.drawingStarted} serviceMode={props.drawingService}
           elevationMm={props.drawingElevationMm ?? workplane?.origin.z ?? defaultDrawingLevel} elevationDisabled={!horizontalPlane}

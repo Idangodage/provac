@@ -49,11 +49,10 @@ import {
   headMarginColor,
   type CondensatePlanPresentation,
 } from './condensatePlanPresentation';
-import { getIndoorUnitDrainPort } from './condensatePorts';
 import { useCondensatePreviewStore } from './condensatePreviewStore';
 import type { CondensateDesignSettings } from './condensateSettings';
 import { layoutCondensateSupports } from './condensateSupports';
-import { isCondensateGully, isCondensatePipe, readCondensateGullySpec, readCondensatePipeSpec } from './condensateTypes';
+import { isCondensateGully, isCondensatePipe, readCondensateGullySpec } from './condensateTypes';
 
 export interface CondensateOverlayHandle {
   syncViewTransform: (viewport: readonly number[]) => void;
@@ -212,11 +211,6 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
   const editViews = useMemo(() => (editResult?.elements ?? [])
     .map(buildCondensatePlanPresentation)
     .filter((entry): entry is CondensatePlanPresentation => entry !== null), [editResult]);
-  const pumpMaxLiftMm = useMemo(() => {
-    const unitId = editPipe ? readCondensatePipeSpec(editPipe).drainStart?.unitId : undefined;
-    const unit = unitId ? hvacElements.find((element) => element.id === unitId) : undefined;
-    return (unit ? getIndoorUnitDrainPort(unit, settings)?.pumpMaxLiftMm : undefined) ?? settings.defaultPumpMaxLiftMm;
-  }, [editPipe, hvacElements, settings]);
   const slackLookup = useMemo(() => {
     const map = new Map<string, number>();
     for (const network of preview?.networks ?? []) {
@@ -332,7 +326,7 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
           ) : null}
         </g>
       </svg>
-      {editPipe && edit.model ? <CondensateEditBar pipe={editPipe} api={edit} pumpMaxLiftMm={pumpMaxLiftMm} /> : null}
+      {editPipe && edit.model ? <CondensateEditBar pipe={editPipe} api={edit} /> : null}
     </div>
   );
 });

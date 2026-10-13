@@ -35,6 +35,7 @@ import {
   formatSigned as signed,
   type FigureStatus,
 } from '../segments/SegmentCardKit';
+import type { SegmentPieceRow } from '../segments/SegmentPieceList';
 import type { SegmentCardModel, SegmentFieldHost, SegmentIssueLine, SegmentProvider } from '../segments/segmentProvider';
 import type { SegmentFocus } from '../segments/segmentUiStore';
 
@@ -69,6 +70,13 @@ const TERMINATION_WORD: Record<CondensateTerminationKind, string> = { 'floor-gul
 const TONE = 'bg-cyan-50 text-cyan-700';
 
 const metres = (mm: number, digits = 2) => `${number(mm / 1000, digits)} m`;
+const NUMBERED = new Set<CondensatePieceKind>(['leg', 'bend', 'eye', 'vent', 'sleeve']);
+/** A piece's short tag, on the card's header, its chip and the inspector's list ("CD-L2", "CD-R"). */
+const pieceTag = (piece: CondensatePiece) => `CD-${KIND_TAG[piece.kind]}${NUMBERED.has(piece.kind) ? piece.ordinal : ''}`;
+const KIND_WORD: Record<CondensatePieceKind, string> = {
+  connection: 'Unit connection', riser: 'Riser', leg: 'Leg', bend: 'Elbow', end: 'Joint', termination: 'Termination',
+  eye: 'Rodding eye', vent: 'Air vent', sleeve: 'Wall sleeve',
+};
 const percent = (value: number) => `${number(value, value < 10 ? 1 : 0)} %`;
 
 /** A piece's picture. */
@@ -436,7 +444,7 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Condensa
       title,
       size: `CD ${figures.nominalSize} · ${ROLE_WORD[run.role].toLowerCase()}`,
       detail,
-      tag: `CD-${KIND_TAG[piece.kind]}${piece.kind === 'leg' || piece.kind === 'bend' || piece.kind === 'eye' || piece.kind === 'vent' || piece.kind === 'sleeve' ? piece.ordinal : ''}`,
+      tag: pieceTag(piece),
       glyph: <DrainSegmentGlyph kind={piece.kind} className="h-3.5 w-3.5" />,
       tone: TONE,
       kind: piece.kind,
@@ -454,6 +462,23 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Condensa
     },
     rekeyToken: token,
   };
+}
+
+/** A drain run's pieces as its inspector lists them: the card's own tags, a name, a length, a rise or an angle. */
+export function condensatePieceRows(element: HvacElement): SegmentPieceRow[] {
+  const run = condensateRunOf(element);
+  if (!run) return [];
+  return run.pieces.map((piece) => ({
+    key: piece.key,
+    tag: pieceTag(piece),
+    title: piece.kind === 'connection' ? (run.spec.pumped ? 'Pumped hose' : 'Outlet stub')
+      : piece.kind === 'end' ? (piece.fittings.some((fitting) => fitting.kind === 'wye') ? 'Wye into its main' : 'Joint')
+        : `${KIND_WORD[piece.kind]}${NUMBERED.has(piece.kind) && piece.kind !== 'bend' ? ` ${piece.ordinal}` : ''}`,
+    detail: piece.kind === 'bend' ? `${number(piece.angleDeg ?? 0)}°`
+      : piece.kind === 'riser' ? `↑ ${number(piece.lengthMm)} mm`
+        : piece.kind === 'termination' ? `↓ ${metres(piece.fallMm)}`
+          : piece.planLengthMm > 0 ? metres(piece.planLengthMm) : '',
+  }));
 }
 
 /** The condensate drains' segment cards, read with the project's condensate settings and the live design checks. */

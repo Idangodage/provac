@@ -37,6 +37,7 @@ import {
   formatNumber as number,
   formatSigned as signed,
 } from '../segments/SegmentCardKit';
+import type { SegmentPieceRow } from '../segments/SegmentPieceList';
 import type { SegmentBadge, SegmentCardModel, SegmentFieldHost, SegmentIssueLine, SegmentProvider } from '../segments/segmentProvider';
 import { useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
 
@@ -565,6 +566,19 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Refriger
     },
     rekeyToken: token,
   };
+}
+
+/** A line's pieces as its inspector lists them: the card's own tags and names, a length or an angle. */
+export function refrigerantPieceRows(element: HvacElement, scene: readonly HvacElement[]): SegmentPieceRow[] {
+  const line = refrigerantLineOf(element, scene);
+  if (!line) return [];
+  const prefix = line.lineKind === 'liquid' ? 'L' : line.lineKind === 'pair' ? 'P' : 'G';
+  return line.pieces.map((piece) => ({
+    key: piece.key,
+    tag: `${prefix}-${KIND_TAGS[piece.kind]}${piece.kind === 'port' ? (piece.endpoint === 'start' ? '1' : '2') : piece.ordinal}`,
+    title: piece.kind === 'port' ? `${KIND_TITLES.port} · ${piece.endpoint === 'start' ? 'start' : 'end'}` : `${KIND_TITLES[piece.kind]} ${piece.ordinal}`,
+    detail: piece.kind === 'bend' && piece.angleDeg !== null ? `${number(piece.angleDeg)}°` : metres(piece.lengthMm),
+  }));
 }
 
 /** The refrigerant lines' segment cards, read with the active rule profile and the live design checks. */

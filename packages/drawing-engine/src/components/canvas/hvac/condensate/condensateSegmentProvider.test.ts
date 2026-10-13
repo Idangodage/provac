@@ -5,7 +5,7 @@ import type { VrfValidationReport } from '../../../../vrf/rules/validation-engin
 import { DEFAULT_PIPE_ROUTING_SETTINGS, setActivePipeRoutingSettings } from '../pipeRoutingSettings';
 import type { SegmentFocus } from '../segments/segmentUiStore';
 
-import { condensatePieceIssues, createCondensateSegmentProvider } from './CondensateSegmentCard';
+import { condensatePieceIssues, condensatePieceRows, createCondensateSegmentProvider } from './CondensateSegmentCard';
 import { generateCondensateNetwork } from './condensateGenerator';
 import { condensateNetworkBaseline, condensatePieceFigures } from './condensatePieceFigures';
 import { condensatePieceOf, condensateRunOf } from './condensatePieces';
@@ -95,5 +95,16 @@ describe('the condensate segment card', () => {
     expect(codesOn('end')).toEqual(['CD_JOIN_FROM_TOP']);
     expect(codesOn('leg:1')).toEqual(['CD_SIZE_CAPACITY']);
     expect(codesOn('bend:1')).toEqual([]);
+  });
+
+  it("lists the run's pieces for its inspector with the card's tags", () => {
+    const run = branch('c-1');
+    const rows = condensatePieceRows(run);
+    expect(rows.map((row) => row.key)).toEqual(['start', 'riser', 'leg:1', 'bend:1', 'leg:2', 'end']);
+    expect(rows.find((row) => row.key === 'riser')).toMatchObject({ tag: 'CD-R', title: 'Riser' });
+    expect(rows.find((row) => row.key === 'riser')!.detail).toMatch(/^↑ \d+ mm$/);
+    expect(rows.find((row) => row.key === 'leg:2')!.tag).toBe('CD-L2');
+    expect(rows.find((row) => row.key === 'bend:1')!.detail).toBe('90°');
+    expect(rows.find((row) => row.key === 'start')!.title).toBe('Pumped hose');
   });
 });

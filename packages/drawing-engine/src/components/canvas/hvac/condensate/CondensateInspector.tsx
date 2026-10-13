@@ -8,7 +8,9 @@
 import type React from 'react';
 
 import type { HvacElement } from '../../../../types';
+import { SegmentPieceList } from '../segments/SegmentPieceList';
 
+import { condensatePieceRows } from './CondensateSegmentCard';
 import { getCondensatePipeSystem } from './condensatePipeCatalog';
 import { getIndoorUnitDrainPort } from './condensatePorts';
 import { formatFallRatio, type CondensateDesignSettings } from './condensateSettings';
@@ -277,6 +279,7 @@ export function CondensatePipeInspector({ element, onUpdate }: {
       {owner ? (
         <p className="pt-1 text-[11px] leading-4 text-slate-400">Generated network {owner.networkId.slice(0, 8)} · {owner.unitIds.length} units{owner.editPolicy === 'retain' ? ' · edited (kept on regenerate)' : ''}</p>
       ) : null}
+      <SegmentPieceList domain="condensate" runId={element.id} rows={condensatePieceRows(element)} testId="condensate-piece-list" />
     </div>
   );
 }

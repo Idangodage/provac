@@ -5,7 +5,7 @@ import type { VrfValidationIssue, VrfValidationReport } from '../../../../vrf/ru
 import type { PipeRouteNode3D } from '../pipeRoute3d';
 import type { SegmentFocus } from '../segments/segmentUiStore';
 
-import { createRefrigerantSegmentProvider, matchingPiece, partnerOf, pieceIssues } from './RefrigerantSegmentCard';
+import { createRefrigerantSegmentProvider, matchingPiece, partnerOf, pieceIssues, refrigerantPieceRows } from './RefrigerantSegmentCard';
 import { KIT_KEY, refrigerantKitOf } from './refrigerantKits';
 import { refrigerantLineOf } from './refrigerantPieces';
 
@@ -163,5 +163,17 @@ describe('a branch kit\'s card', () => {
     // No pipe holds this kit: it can be turned back over.
     const flip = model.options.find((option) => option.group === 'kit-flip')!;
     expect(model.evaluate(flip).updates[0]!.properties.branchKitRollDeg).toBe(0);
+  });
+});
+
+describe('a refrigerant line in its inspector', () => {
+  it("lists its pieces with the card's tags, lengths and angles", () => {
+    const gas = line('gas', 'gas', GAS);
+    const rows = refrigerantPieceRows(gas, [gas]);
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.every((row) => /^G-[PSRB]\d+$/.test(row.tag))).toBe(true);
+    const bend = rows.find((row) => row.title.startsWith('Bend'));
+    if (bend) expect(bend.detail).toMatch(/^\d+°$/);
+    expect(rows.filter((row) => row.title.startsWith('Straight')).every((row) => /^\d+\.\d\d m$/.test(row.detail))).toBe(true);
   });
 });

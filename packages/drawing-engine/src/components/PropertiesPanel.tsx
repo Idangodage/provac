@@ -56,12 +56,14 @@ import {
   DEFAULT_PIPE_ROUTING_SETTINGS,
   type PipeRoutingSettings,
 } from "./canvas/hvac/pipeRoutingSettings";
+import { refrigerantPieceRows } from "./canvas/hvac/refrigerant/RefrigerantSegmentCard";
 import {
   buildRefrigerantPipeVisual,
   resolveRefrigerantPipeSpec,
   type RefrigerantPipeLineMode,
   type RefrigerantPipeMaterial,
 } from "./canvas/hvac/refrigerantPipePairModel";
+import { SegmentPieceList } from "./canvas/hvac/segments/SegmentPieceList";
 import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
 import {
   circularMeetingFootprintMm,
@@ -1699,6 +1701,8 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         {geometryLocked && <p role="status" className="rounded bg-amber-50 p-2 text-xs text-amber-800">
           This route is locked. Release its geometry lock before changing points or materials.
         </p>}
+
+        <SegmentPieceList domain="refrigerant" runId={selectedEquipment.id} rows={refrigerantPieceRows(selectedEquipment, hvacElements)} testId="refrigerant-piece-list" />
 
         <div className="rounded border border-amber-200/80 bg-white/90 p-2">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">

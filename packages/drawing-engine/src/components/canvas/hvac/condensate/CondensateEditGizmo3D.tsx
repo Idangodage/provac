@@ -25,7 +25,6 @@ import { CondensateEditBar } from './CondensateEditBar';
 import { useCondensateEditing, type CondensateDragKind, type CondensatePointerResolver } from './CondensateEditLayer';
 import { isUnitBranchSpec } from './condensateEditing';
 import { condensateFocusAtPoint } from './condensatePieces';
-import { getIndoorUnitDrainPort } from './condensatePorts';
 import { fixedPrefixLength } from './condensateRouteOps';
 import type { CondensateDesignSettings } from './condensateSettings';
 import { isCondensatePipe, readCondensatePipeSpec, type Point3 } from './condensateTypes';
@@ -274,9 +273,6 @@ export function CondensateEditGizmo3D(props: {
   const runPath = projection.run.map((point, index) => `${index ? 'L' : 'M'}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
   const dragging = api.preview !== null;
   const tone = !api.preview?.result ? '#0c4a6e' : !api.preview.result.ok ? '#b91c1c' : /hop/.test(api.preview.result.message) ? '#92400e' : '#166534';
-  const unitId = readCondensatePipeSpec(pipe).drainStart?.unitId;
-  const unit = unitId ? hvacElements.find((element) => element.id === unitId) : undefined;
-  const pumpMaxLiftMm = (unit ? getIndoorUnitDrainPort(unit, settings)?.pumpMaxLiftMm : undefined) ?? settings.defaultPumpMaxLiftMm;
   const surfaceLabel = { xy: 'XY', xz: 'XZ', yz: 'YZ' }[projection.surface];
 
   return (
@@ -416,7 +412,7 @@ export function CondensateEditGizmo3D(props: {
           <text x={16} y={height - 90} fontSize={11} fill="#92400e" fontFamily="system-ui, sans-serif">That direction is edge-on in this view — pick another axis or surface.</text>
         ) : null}
       </svg>
-      <CondensateEditBar pipe={pipe} api={api} pumpMaxLiftMm={pumpMaxLiftMm} surface={surfaceLabel} />
+      <CondensateEditBar pipe={pipe} api={api} surface={surfaceLabel} />
     </div>
   );
 }
