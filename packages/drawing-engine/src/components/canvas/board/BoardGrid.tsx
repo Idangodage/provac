@@ -20,6 +20,7 @@ export interface BoardGridProps {
   majorColor?: string;
   xAxisColor?: string;
   yAxisColor?: string;
+  testId?: string;
 }
 
 const DEFAULT_SUB = 'rgba(100, 116, 139, 0.10)';
@@ -33,7 +34,8 @@ const MAX_LINES_PER_AXIS = 4000;
 /**
  * Viewport-filling adaptive grid (sub / minor / major + tinted world axes),
  * drawn on a DPR-crisp Canvas2D using the same world-mm↔screen transform as the
- * pipe overlay so the two never drift. Replaces the legacy page-clipped Grid.
+ * pipe overlay so the two never drift. The plan's grid when the 3D layer cannot
+ * draw its shader grid (no WebGL); the same 1-2-5 steps as that grid and the rulers.
  */
 export const BoardGrid: React.FC<BoardGridProps> = ({
   width,
@@ -46,6 +48,7 @@ export const BoardGrid: React.FC<BoardGridProps> = ({
   majorColor = DEFAULT_MAJOR,
   xAxisColor = DEFAULT_X_AXIS,
   yAxisColor = DEFAULT_Y_AXIS,
+  testId,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -144,6 +147,7 @@ export const BoardGrid: React.FC<BoardGridProps> = ({
   return (
     <canvas
       ref={canvasRef}
+      data-testid={testId}
       className="absolute inset-0 block"
       style={{ width: '100%', height: '100%', pointerEvents: 'none', zIndex: 1 }}
     />

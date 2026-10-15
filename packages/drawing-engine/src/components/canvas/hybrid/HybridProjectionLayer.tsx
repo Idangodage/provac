@@ -214,6 +214,8 @@ export interface HybridProjectionLayerProps {
   /** Disable legacy mesh grips when the shared pipe gizmo owns editing. */
   showPipeEditHandles?: boolean;
   onWebglUnavailable?: () => void;
+  /** Called each time the renderer is created and drawing again: on mount, and after a lost WebGL context is restored. */
+  onWebglAvailable?: () => void;
   /** Wall selection (edge ids) + hover for 3D outlines/handles. */
   selectedIds?: string[];
   hoveredElementId?: string | null;
@@ -1107,6 +1109,7 @@ export function HybridProjectionLayer({
   pipeEditPreviewElements = null,
   showPipeEditHandles = true,
   onWebglUnavailable,
+  onWebglAvailable,
   selectedIds,
   hoveredElementId,
   viewStyle,
@@ -1137,6 +1140,9 @@ export function HybridProjectionLayer({
   const sceneStateRef = useRef<SceneState | null>(null);
   const controllerRef = useRef<HybridViewportController | null>(null);
   const requestFrameRef = useRef<(() => void) | null>(null);
+  // Kept in a ref: a new callback must not re-create the renderer.
+  const onWebglAvailableRef = useRef(onWebglAvailable);
+  onWebglAvailableRef.current = onWebglAvailable;
   const [glbLoadRevision, setGlbLoadRevision] = useState(0);
   const [rendererRevision, setRendererRevision] = useState(0);
   const draftPipesRef = useRef<HvacElement[] | null>(null);
@@ -1296,6 +1302,7 @@ export function HybridProjectionLayer({
     }
     canvas.style.visibility = "";
     sceneStateRef.current = sceneState;
+    onWebglAvailableRef.current?.();
     if (draftPipesRef.current) schedulePreviewRebuild();
 
     const controller = new HybridViewportController();
@@ -1317,6 +1324,9 @@ export function HybridProjectionLayer({
     }
 
     let renderingDisabled = false;
+    // Set when the browser gives a lost context back: the renderer is re-created on it, so this effect's cleanup
+    // must not force that same context lost again (the canvas has one context, shared by old and new renderer).
+    let restoringContext = false;
     const resetPlanSheet = (): void => {
       const sheet = planSheetRefRef.current?.current ?? null;
       if (!sheet) return;
@@ -1345,6 +1355,7 @@ export function HybridProjectionLayer({
     };
     const handleContextRestored = () => {
       if (!renderingDisabled) return;
+      restoringContext = true;
       setRendererRevision((revision) => revision + 1);
     };
     canvas.addEventListener("webglcontextlost", handleContextLost, false);
@@ -2812,6 +2823,8 @@ export function HybridProjectionLayer({
     let raf: number | null = null;
     let lastTs = typeof performance !== "undefined" ? performance.now() : 0;
     let pumpActive = false;
+    // Frames that failed in a row: one is tried again, a second in a row turns the renderer off.
+    let failedFrames = 0;
     let lastW = -1;
     let lastH = -1;
     let lastPixelRatio = -1;
@@ -2998,9 +3011,16 @@ export function HybridProjectionLayer({
       lastTs = ts;
       try {
         pumpActive = renderScene(delta, elapsedDelta);
+        failedFrames = 0;
         if (pumpActive) request();
       } catch (error) {
-        disableWebgl(error);
+        failedFrames += 1;
+        if (failedFrames >= 2) {
+          disableWebgl(error);
+        } else {
+          console.warn("Hybrid frame failed; drawing it once more.", error);
+          request();
+        }
       }
     };
     const request = (): void => {
@@ -3077,7 +3097,7 @@ export function HybridProjectionLayer({
       GHOST_MATERIAL_3D.dispose();
       sceneState.renderer.renderLists.dispose();
       sceneState.renderer.dispose();
-      sceneState.renderer.forceContextLoss();
+      if (!restoringContext) sceneState.renderer.forceContextLoss();
       sceneStateRef.current = null;
     };
   }, [interactionElement, onWebglUnavailable, rendererRevision]);

@@ -68,6 +68,7 @@ import {
   HvacPlanRenderer,
 } from "./canvas";
 import {
+  BoardGrid,
   BoardRulers,
   cycleBoardUnit,
   type BoardUnit,
@@ -169,6 +170,7 @@ import type {
   HybridCameraView,
   HybridViewportController,
 } from "./canvas/hybrid/hybridViewportController";
+import { clampOrthoZoom } from "./canvas/hybrid/hybridViewportMath";
 import { modelPointToWorld } from "./canvas/modelSpace";
 import {
   installCanvasRenderScheduler,
@@ -501,6 +503,9 @@ export function DrawingCanvas({
   const [viewStyle, setViewStyle] = useState<HybridViewStyle>("solid");
   const [interactionViewMode, setInteractionViewMode] =
     useState<InteractionViewMode>("plan-2d");
+  // Whether the 3D layer is drawing. Without WebGL (hardware acceleration off, the GPU blocklisted, an extension
+  // blocking it, or a lost context) the plan keeps working, drawn over a 2D grid, and the 3D views are offered disabled.
+  const [hybridWebglAvailable, setHybridWebglAvailable] = useState(true);
   const cycleViewStyle = useCallback(() => {
     setViewStyle((prev) => (prev === "solid" ? "xray" : prev === "xray" ? "wire" : "solid"));
   }, []);
@@ -737,7 +742,7 @@ export function DrawingCanvas({
   // Derived values
   const resolvedRealWorldUnit = realWorldUnit ?? displayUnit;
   const _resolvedGridSize = gridSize ?? storeGridSize ?? 20;
-  const _resolvedShowGrid = showGrid ?? storeShowGrid ?? true;
+  const resolvedShowGrid = showGrid ?? storeShowGrid ?? true;
   const resolvedShowRulers = showRulers ?? storeShowRulers ?? true;
   const resolvedSnapToGrid = snapToGrid ?? storeSnapToGrid ?? true;
   const safeScaleDrawing =
@@ -1530,7 +1535,14 @@ export function DrawingCanvas({
     // flat state. Restore the editable plan directly for this fallback.
     hybridDragRef.current = null;
     animateHybridBlend(0);
+    setHybridWebglAvailable(false);
+    setInteractionViewMode("plan-2d");
+    useSmartDrawingStore.getState().setProcessingStatus(
+      "3D view unavailable: WebGL is off in this browser. The plan works on a 2D grid; Front, Side, Iso and Fit need WebGL.",
+      false,
+    );
   }, [animateHybridBlend]);
+  const handleHybridWebglAvailable = useCallback(() => setHybridWebglAvailable(true), []);
 
   // Keep React out of the per-frame camera animation. Presentation is written
   // by the render pump; this coarse state only locks editing and screen chrome.
@@ -1937,6 +1949,8 @@ export function DrawingCanvas({
     setInteractionViewMode(CAMERA_TO_INTERACTION_VIEW[view]);
   }, []);
   const setCameraView = useCallback((view: HybridCameraView) => {
+    // With no 3D layer there is only the plan to show.
+    if (!hybridControllerRef.current && view !== "plan") return;
     setInteractionViewMode(CAMERA_TO_INTERACTION_VIEW[view]);
     hybridControllerRef.current?.setCameraView(view, true);
   }, []);
@@ -2064,13 +2078,19 @@ export function DrawingCanvas({
   // programmatic pans), push it into the camera — the one navigation owner.
   useEffect(() => {
     const controller = hybridControllerRef.current;
-    if (!controller) return;
     if (
       !Number.isFinite(viewportZoom) ||
       viewportZoom <= 0 ||
       !Number.isFinite(panOffset.x) ||
       !Number.isFinite(panOffset.y)
     ) {
+      return;
+    }
+    // No camera (no WebGL): the plan itself shows the store's view.
+    if (!controller) {
+      if (!hybridWebglAvailable) {
+        applyDerivedHybridView({ zoom: viewportZoom, panPxX: -panOffset.x * viewportZoom, panPxY: -panOffset.y * viewportZoom }, true);
+      }
       return;
     }
     const isCameraEcho =
@@ -2091,7 +2111,96 @@ export function DrawingCanvas({
       y: (hostHeight / 2 + panOffset.y * viewportZoom) / pxPerMm,
     });
     controller.setBoardView(pxPerMm, centerWorld.x, centerWorld.y, 0);
-  }, [viewportZoom, panOffset.x, panOffset.y, hostWidth, hostHeight]);
+  }, [viewportZoom, panOffset.x, panOffset.y, hostWidth, hostHeight, hybridWebglAvailable, applyDerivedHybridView]);
+
+  // 2D NAVIGATION FALLBACK. The camera owns navigation; with no WebGL there is no camera, so the plan is zoomed and
+  // panned here instead: the wheel zooms about the pointer (within the camera's own limits), a middle-button drag,
+  // Space + drag or the Pan tool pans. Every change goes through the same path the camera's views do.
+  const fallbackToolRef = useRef(tool);
+  fallbackToolRef.current = tool;
+  useEffect(() => {
+    const host = hostRef.current;
+    if (hybridWebglAvailable || !host) return undefined;
+    const showView = (zoom: number, pan: Point2D) => {
+      applyDerivedHybridView({ zoom, panPxX: -pan.x * zoom, panPxY: -pan.y * zoom }, true);
+    };
+    const local = (event: { clientX: number; clientY: number }) => {
+      const rect = host.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey && event.deltaY === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const lines = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
+      const zoom = zoomRef.current;
+      const nextZoom = clampOrthoZoom(MM_TO_PX * zoom * Math.exp(-event.deltaY * lines * 0.0015)) / MM_TO_PX;
+      if (Math.abs(nextZoom - zoom) < 1e-9) return;
+      // The scene point under the pointer stays under it.
+      const at = local(event);
+      const pan = panOffsetRef.current;
+      const scene = { x: at.x / zoom + pan.x, y: at.y / zoom + pan.y };
+      showView(nextZoom, { x: scene.x - at.x / nextZoom, y: scene.y - at.y / nextZoom });
+    };
+    let spaceHeld = false;
+    let drag: { pointerId: number; x: number; y: number } | null = null;
+    const typing = (target: EventTarget | null) => target instanceof HTMLElement
+      && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "Space" && !typing(event.target)) spaceHeld = true;
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") spaceHeld = false;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const pans = event.button === 1 || (event.button === 0 && (spaceHeld || fallbackToolRef.current === "pan"));
+      if (!pans) return;
+      event.preventDefault();
+      event.stopPropagation();
+      drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+      host.setPointerCapture?.(event.pointerId);
+      host.style.cursor = "grabbing";
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const zoom = zoomRef.current;
+      const pan = panOffsetRef.current;
+      showView(zoom, { x: pan.x - (event.clientX - drag.x) / zoom, y: pan.y - (event.clientY - drag.y) / zoom });
+      drag.x = event.clientX;
+      drag.y = event.clientY;
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      event.stopPropagation();
+      drag = null;
+      host.releasePointerCapture?.(event.pointerId);
+      host.style.cursor = "";
+    };
+    const onAuxClick = (event: MouseEvent) => {
+      if (event.button === 1) event.preventDefault();
+    };
+    host.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    host.addEventListener("pointerdown", onPointerDown, true);
+    host.addEventListener("pointermove", onPointerMove, true);
+    host.addEventListener("pointerup", onPointerUp, true);
+    host.addEventListener("pointercancel", onPointerUp, true);
+    host.addEventListener("auxclick", onAuxClick, true);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      host.removeEventListener("wheel", onWheel, { capture: true });
+      host.removeEventListener("pointerdown", onPointerDown, true);
+      host.removeEventListener("pointermove", onPointerMove, true);
+      host.removeEventListener("pointerup", onPointerUp, true);
+      host.removeEventListener("pointercancel", onPointerUp, true);
+      host.removeEventListener("auxclick", onAuxClick, true);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      host.style.cursor = "";
+    };
+  }, [hybridWebglAvailable, applyDerivedHybridView]);
   // Last committed vertex of the pipe draft (real mm) — the HUD measures the
   // active run from here. Guarded set: the route updates on every mouse move.
   const [draftPipeAnchorMm, setDraftPipeAnchorMm] = useState<Point2D | null>(
@@ -3434,6 +3543,11 @@ export function DrawingCanvas({
           overflow: "hidden",
         }}
       >
+          {/* The plan's grid when the 3D layer cannot draw its shader grid (no WebGL): the same steps, under the sheet. */}
+          {!hybridWebglAvailable ? (
+            <BoardGrid width={hostWidth} height={hostHeight} viewportZoom={viewportZoom} panOffset={panOffset}
+              show={resolvedShowGrid} testId="board-grid-fallback" />
+          ) : null}
           <div
             ref={planSheetRef}
             className="absolute inset-0"
@@ -3635,6 +3749,7 @@ export function DrawingCanvas({
           pipeEditPreviewElements={hybridEditPreviewElements}
           activePipeWorkplane={activePipeWorkplane}
           onWebglUnavailable={handleHybridWebglUnavailable}
+          onWebglAvailable={handleHybridWebglAvailable}
           selectedIds={selectedIds}
           hoveredElementId={hoveredElementId}
           viewStyle={viewStyle}
@@ -3874,15 +3989,17 @@ export function DrawingCanvas({
         ] as const).map(([cameraView, label]) => {
           const active =
             interactionViewMode === CAMERA_TO_INTERACTION_VIEW[cameraView];
+          const unavailable = !hybridWebglAvailable && cameraView !== "plan";
           return (
             <button
               key={cameraView}
               type="button"
-              title={`${label} manipulation view`}
+              title={unavailable ? `${label} view needs WebGL, which is off in this browser` : `${label} manipulation view`}
               aria-pressed={active}
+              disabled={unavailable}
               onClick={() => setCameraView(cameraView)}
               className={`shrink-0 px-2.5 py-1 transition-colors ${
-                active ? "bg-slate-800 text-white" : "hover:bg-slate-100"
+                active ? "bg-slate-800 text-white" : unavailable ? "cursor-not-allowed text-slate-300" : "hover:bg-slate-100"
               }`}
             >
               {label}
@@ -3891,18 +4008,23 @@ export function DrawingCanvas({
         })}
         <button
           type="button"
-          title="Fit all visible drawing content"
+          title={hybridWebglAvailable ? "Fit all visible drawing content" : "Fit needs WebGL, which is off in this browser"}
+          disabled={!hybridWebglAvailable}
           onClick={fitCameraContent}
-          className="shrink-0 border-l border-slate-300 px-2.5 py-1 transition-colors hover:bg-slate-100"
+          className={`shrink-0 border-l border-slate-300 px-2.5 py-1 transition-colors ${
+            hybridWebglAvailable ? "hover:bg-slate-100" : "cursor-not-allowed text-slate-300"
+          }`}
         >
           Fit
         </button>
         <button
           type="button"
-          title="View style: Solid → X-ray → Wire (X)"
+          title={hybridWebglAvailable ? "View style: Solid → X-ray → Wire (X)" : "View styles need WebGL, which is off in this browser"}
+          disabled={!hybridWebglAvailable}
           onClick={cycleViewStyle}
           className={`shrink-0 border-l border-slate-300 px-2.5 py-1 capitalize transition-colors ${
-            viewStyle !== "solid" ? "bg-[#4f8cff] text-white" : "hover:bg-slate-100"
+            !hybridWebglAvailable ? "cursor-not-allowed text-slate-300"
+              : viewStyle !== "solid" ? "bg-[#4f8cff] text-white" : "hover:bg-slate-100"
           }`}
         >
           {viewStyle}
