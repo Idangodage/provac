@@ -95,8 +95,33 @@ describe('the basis: main velocity ⇄ friction rate', () => {
   });
 });
 
-describe('a rectangular trunk with four take-offs (1500 m³/h)', () => {
+/**
+ * A main from the supply collar to 9 m with four spin-in take-offs (2.5, 4.3, 6.1 and 7.9 m), each a Ø200 branch and
+ * a flexible runout to its diffuser. The last 1.1 m, past the last take-off, carries no air. The main is drawn at
+ * `mainSection` all along, as a generated layout draws it before sizing.
+ */
+function fourTapScene(rootId: string, mainSection: DuctLeg): HvacElement[] {
   const terminals = [0, 1, 2, 3].map((k) => ({ ...diffuser(`d${k}`, S(2500 + k * 1800, 2000)), rotation: 270 }));
+  const root = buildDuctRunDraftElement({ port, points: [S(9000)], legSizes: [mainSection] }, rootId);
+  const branchSection: DuctLeg = { widthMm: 200, heightMm: 200, diameterMm: 200 };
+  const branches = terminals.map((terminal, index) => {
+    const origin = tapOrigin(root, settings, { legIndex: 0, stationMm: 2500 + index * 1800, side: 1, style: 'spin-in', vcd: true }, branchSection)!;
+    if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
+    const terminalPort = terminalSpigotPort(terminal)!;
+    return buildDuctRunDraftElement({
+      origin,
+      points: [
+        { x: origin.point.x + origin.direction.x * 400, y: origin.point.y + origin.direction.y * 400 },
+        { x: terminalPort.lip.x, y: terminalPort.lip.y, z: terminalPort.lip.z - terminalPort.heightMm / 2 },
+      ],
+      legSizes: [branchSection, branchSection],
+      end: { kind: 'terminal', terminalId: terminal.id, portId: terminalPort.portId, flex: true },
+    }, `branch-${terminal.id}`);
+  });
+  return [unit, ...terminals, root, ...branches];
+}
+
+describe('a rectangular trunk with four take-offs (1500 m³/h)', () => {
   let scene: HvacElement[] = [];
   let rootId = '';
 
@@ -104,23 +129,7 @@ describe('a rectangular trunk with four take-offs (1500 m³/h)', () => {
     // These tests exercise sizing a capped main with four take-offs. Build
     // that topology explicitly so the optimiser may choose other layouts.
     rootId = 'four-tap-main';
-    const root = buildDuctRunDraftElement({ port, points: [S(9000)], legSizes: [{ widthMm: 250, heightMm: 250 }] }, rootId);
-    const branchSection: DuctLeg = { widthMm: 200, heightMm: 200, diameterMm: 200 };
-    const branches = terminals.map((terminal, index) => {
-      const origin = tapOrigin(root, settings, { legIndex: 0, stationMm: 2500 + index * 1800, side: 1, style: 'spin-in', vcd: true }, branchSection)!;
-      if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
-      const terminalPort = terminalSpigotPort(terminal)!;
-      return buildDuctRunDraftElement({
-        origin,
-        points: [
-          { x: origin.point.x + origin.direction.x * 400, y: origin.point.y + origin.direction.y * 400 },
-          { x: terminalPort.lip.x, y: terminalPort.lip.y, z: terminalPort.lip.z - terminalPort.heightMm / 2 },
-        ],
-        legSizes: [branchSection, branchSection],
-        end: { kind: 'terminal', terminalId: terminal.id, portId: terminalPort.portId, flex: true },
-      }, `branch-${terminal.id}`);
-    });
-    scene = [unit, ...terminals, root, ...branches];
+    scene = fourTapScene(rootId, { widthMm: 250, heightMm: 250 });
     expect(sizeDuctSystem(scene, rootId, { basis: basisAt(0.8), measure: true }, settings).report.errors).toBe(0);
   });
 
@@ -272,6 +281,35 @@ describe('a rectangular trunk with four take-offs (1500 m³/h)', () => {
     expect(capped.issues.find((issue) => issue.code === 'DU_SIZE_VELOCITY')?.severity).toBe('info');
     // Measuring says nothing of the kind (nothing is being sized).
     expect(sizeDuctSystem(scene, rootId, { basis: fast, measure: true }, settings).report.issues.some((issue) => issue.code === 'DU_SIZE_VELOCITY')).toBe(false);
+  });
+
+  it('steps a main drawn larger than it needs down with the airflow: the end past the last take-off follows, never holds it up', () => {
+    // A generated layout draws its main at one size end to end; 600 × 250 is more than any section needs at 1500 m³/h.
+    // Before, the end past the last take-off kept 600 and "nothing grows downstream" held every section at it.
+    const wideId = 'wide-main';
+    const wide = fourTapScene(wideId, { widthMm: 600, heightMm: 250 });
+    const basis = linkSizingBasis(basisAt(0.8), 1500);
+    const sized = sizeDuctSystem(wide, wideId, { basis }, settings);
+    const main = sized.report.sections.filter((section) => section.runId === wideId);
+    expect(main.map((section) => section.airflowM3h)).toEqual([1500, 1125, 750, 375, 0]);
+    // Each section with air is the friction rate's at the kept 250 mm height, or carries the one before it on where
+    // the step would be under the reducer step.
+    main.slice(0, 4).forEach((section, index) => {
+      expect(section.setBy).not.toBe('downstream');
+      if (section.setBy === 'carried') {
+        expect(section.section).toEqual(main[index - 1]!.section);
+        return;
+      }
+      const expected = sizeRectangular(section.airflowM3h, 250, basisLimits(basis, section.part), { stepMm: 50, minWidthMm: 250, maxAspect: settings.aspectRatioAdvisory });
+      expect(section.section).toEqual({ widthMm: expected.widthMm, heightMm: 250 });
+    });
+    expect(main[0]!.setBy).toBe('friction');
+    expect(main[3]!.section.widthMm).toBeLessThan(main[0]!.section.widthMm);
+    // The dead end carries on as the last section with air.
+    expect(main[4]!.section).toEqual(main[3]!.section);
+    expect(main[4]!.setBy).toBe('no-flow');
+    // Sized again, nothing changes.
+    expect(sizeDuctSystem(applied(wide, sized), wideId, { basis }, settings).report.changedRunIds).toEqual([]);
   });
 
   it('links the basis at the airflow the main carries when the terminals\' own airflows do not add up to the system\'s', () => {

@@ -672,7 +672,11 @@ export function sizeDuctSystem(
     });
 
     // ---- Nothing grows downstream (a flat bottom: the height never rises either) ----
-    for (let k = last - 1; k >= 0; k -= 1) {
+    // From the last section with air: past the last take-off the main carries nothing and follows the section before
+    // it (below), so the size it was drawn at must not hold the main up.
+    let lastWithAir = last;
+    while (lastWithAir > 0 && segments[lastWithAir]!.airflow <= 0) lastWithAir -= 1;
+    for (let k = lastWithAir - 1; k >= 0; k -= 1) {
       const up = segments[k]!.section;
       const down = segments[k + 1]!.section;
       if (isRoundLeg(up) && isRoundLeg(down)) raise(k, { diameter: down.diameterMm! }, 'downstream', 'the section after it');
