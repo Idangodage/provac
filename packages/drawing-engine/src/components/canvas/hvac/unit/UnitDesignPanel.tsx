@@ -37,7 +37,7 @@ import type { DuctDesignSettings } from '../duct/ductSettings';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from '../duct/ductSizing';
 import { draftAirflow, draftBases, draftBasis, draftServices, useDuctSizingDraft, useDuctSizingDraftStore, type DuctSizingDraft } from '../duct/ductSizingDraft';
 import {
-  DUCT_SECTION_SET_BY_LABELS, diameterAtVelocityMm, velocityAtFriction, type DuctMainCheck, type DuctSystemSizingReport,
+  DUCT_SECTION_SET_BY_LABELS, diameterAtVelocityMm, velocityAtFriction, type DuctMainCheck, type DuctSectionSetBy, type DuctSystemSizingReport,
 } from '../duct/ductSystemSizing';
 import { readDuctTerminalSpec } from '../duct/ductTerminals';
 import type { DuctRunSpec, DuctService, DuctSizingRecord, DuctSystemSizing } from '../duct/ductTypes';
@@ -386,6 +386,21 @@ function ConstantFrictionSteps({ report, sized, sizedMatchesDrawing, basis, serv
 
 // ---- Applied ducts: continuing by constant friction ----
 
+/** Why a main keeps its size when its velocity limit is raised: what sizes it at the raised limit. */
+const RAISE_KEPT_BY: Partial<Record<DuctSectionSetBy, string>> = {
+  friction: 'the friction rate gives the same section',
+  velocity: 'the raised limit gives the same section',
+  split: 'the split it feeds needs that width',
+  'take-off': 'a take-off cut in it needs that size',
+  downstream: 'the section after it is as large',
+  minimum: 'it is already its smallest section',
+  aspect: 'the aspect limit sets it',
+  capped: 'the ceiling void caps it',
+  neck: "the terminal's neck sets it",
+  carried: 'a step under the reducer step carries it on',
+  locked: 'it is locked',
+};
+
 /** The main as the basis sizes it (as drawn while the drawing differs): section, velocity, friction, and what set it. */
 function MainResult({ main, basis, drawn }: { main: DuctMainCheck; basis: DuctSystemSizing; drawn: boolean }) {
   let why: string;
@@ -426,12 +441,21 @@ function AppliedSizing({ unit, service, root, rootSpec, report, settings, scene,
   const resize = (next: DuctSystemSizing, what: string, airflows?: Record<string, number | null>) => {
     resizeDuctSystemOnDrawing(unit.id, service, next, airflows, `Duct sizing (${service}): ${what}`);
   };
+  // By tag (SAD-1, SAD-2 … SAD-10), not in the order the duct tree reaches them.
   const rows: TerminalAirflowRow[] = (report?.terminals ?? []).map((terminal) => ({
     id: terminal.terminalId, label: terminal.label, airflowM3h: terminal.airflowM3h, fixed: terminal.fixed,
     neckMm: terminal.neckMm, neckVelocityMs: terminal.neckVelocityMs,
     nextNeckMm: settings.autoNecksFollowAirflow ? growing.find((growth) => growth.terminalId === terminal.terminalId)?.toMm ?? null : null,
-  }));
+  })).sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
   const capped = report?.main?.velocityCapped ? report.main : null;
+  // Raising the limit is offered only when it would change the ducts (another fitting may size the main as well).
+  const raisedLimit = capped ? Math.ceil(basis.mainVelocityMs * 10) / 10 : null;
+  const raising = useMemo(() => {
+    if (!capped || raisedLimit === null) return null;
+    const raised = { ...continued.basis, maxVelocity: { ...continued.basis.maxVelocity, [capped.part]: raisedLimit } };
+    const dryRaised = dryRunSizing(scene, root.id, raised, settings);
+    return { changes: dryRaised.driftRunIds.length > 0, mainSetBy: dryRaised.report.main?.setBy ?? null };
+  }, [capped, raisedLimit, continued.basis, scene, root.id, settings]);
   // What the basis makes of the main (the drawing is that when it matches; else the main as drawn).
   const mainNow = matches ? dry.report.main : report?.main ?? null;
   const issues = (report?.issues ?? []).filter((issue) => issue.severity !== 'info');
@@ -479,15 +503,19 @@ function AppliedSizing({ unit, service, root, rootSpec, report, settings, scene,
         {capped ? (
           <Notice tone="warn" testId="unit-sizing-governs">
             The main velocity {basis.mainVelocityMs.toFixed(1)} m/s is over the {capped.part} limit ({basis.maxVelocity[capped.part].toFixed(1)} m/s): the limit sizes it ({capped.velocityMs.toFixed(1)} m/s, {capped.frictionPaPerM.toFixed(2)} Pa/m).
-            <span className="mt-1 block">
-              <SmallButton testId="unit-sizing-raise-limit" title="Raise the limit so the friction rate sizes the main (one undo)"
-                onClick={() => {
-                  const raised = Math.ceil(basis.mainVelocityMs * 10) / 10;
-                  resize({ ...continued.basis, maxVelocity: { ...continued.basis.maxVelocity, [capped.part]: raised } }, `${capped.part} limit ${basis.maxVelocity[capped.part].toFixed(1)} → ${raised.toFixed(1)} m/s`);
-                }}>
-                Raise the {capped.part} limit to {(Math.ceil(basis.mainVelocityMs * 10) / 10).toFixed(1)} m/s
-              </SmallButton>
-            </span>
+            {raising?.changes && raisedLimit !== null ? (
+              <span className="mt-1 block">
+                <SmallButton testId="unit-sizing-raise-limit" title="Raise the limit so the friction rate sizes the main (one undo)"
+                  onClick={() => resize({ ...continued.basis, maxVelocity: { ...continued.basis.maxVelocity, [capped.part]: raisedLimit } },
+                    `${capped.part} limit ${basis.maxVelocity[capped.part].toFixed(1)} → ${raisedLimit.toFixed(1)} m/s`)}>
+                  Raise the {capped.part} limit to {raisedLimit.toFixed(1)} m/s
+                </SmallButton>
+              </span>
+            ) : (
+              <span className="mt-1 block text-[10px]">
+                Raising the limit would not change these ducts: {(raising?.mainSetBy && RAISE_KEPT_BY[raising.mainSetBy]) ?? 'another rule sizes the main as well'}.
+              </span>
+            )}
           </Notice>
         ) : null}
         <label className="flex items-center gap-1.5 text-[10px] text-slate-600" title="A terminal whose airflow needs more than its neck's velocity cap takes the next catalogue neck, its flexible runout with it (necks never shrink on their own)">
