@@ -576,7 +576,7 @@ In this mode the engine does not claim SMACNA reinforcement compliance.
 
 ## Unit air ports: MHI FDUM22KXE6F-W (measured)
 
-The only ducted unit in the catalog is a GLB converted by ifcopenshell and trimesh from the MEPcontent MACO VRF IFC4 file. The file holds 7 meshes, but only the last is placed in the node tree (the loader now places the other six itself; see the design doc), and the IFC distribution ports were dropped. The collars were measured from the geometry itself: flat collar lips 30 mm proud of the casing faces.
+The first ducted unit in the catalog (the high-capacity units follow in the next section) is a GLB converted by ifcopenshell and trimesh from the MEPcontent MACO VRF IFC4 file. The file holds 7 meshes, but only the last is placed in the node tree (the loader now places the other six itself; see the design doc), and the IFC distribution ports were dropped. The collars were measured from the geometry itself: flat collar lips 30 mm proud of the casing faces.
 
 The GLB is rendered with its bounding-box centre at the element centre and its bottom face at the element's elevation (`glbModelCache.ts:121-126`). The bounding box is 1084 × 697 × 300 mm and runs from x −425 to 659 in the model's own frame. Converted to element-local coordinates (origin at the footprint centre, z up from the unit's bottom face):
 
@@ -589,6 +589,48 @@ The GLB is rendered with its bounding-box centre at the element centre and its b
 - This is the **opposite** of the procedural `ducted-ac` convention (supply on +Y), which remains only as the fallback for units without measured ports.
 - The procedural openings that the old duct tool used are centred at x = 0, i.e. 117 mm off the real collars.
 - The duct inside dimension equals the collar outer dimension (the duct slips over the collar).
+
+## High-capacity ducted units: MHI FDUM140/160KXE6F and FDU224/280KXZE1 (17 October 2026)
+
+**Sources** (local copies on D:, outside the repository):
+- MHI spec sheet '12•KX-DB-175, *KX VRF FDUM KXE6F* (duct connected, low/middle static pressure), specifications
+  PJG000Z033: capacity, airflow by fan speed, maximum and rated ESP, casing, weight, pipes, drain and drain pump, power,
+  sound, fan. `D:\claude-tmp-vrf-check\dl-fdum-spec\`.
+- MHI technical manual '14•KX-T-222, *FDU224/280KXZE1* (duct connected, high static pressure): §1.1 specifications,
+  §2.1 exterior dimensions (drawing PJG000Z287, p.5), §4.1 characteristics of fan (curves, p.15).
+  `D:\claude-tmp-vrf-check\dl-kxt222\kx-t-222.pdf`.
+- MEPcontent MACO VRF IFC, FDUM140KXE6F: duct connection properties (supply 1200 × 170, return 1280 × 235) and the 3D
+  body, converted to GLB by the reference converter (`D:\myWorks\Advance canvas board\tools\ifc\toGlb.mjs`).
+
+**Maker data used** (`data/unitSpecifications.ts`, each value with its source; a value not in a source is left out):
+
+| Model | kW cool / heat | m³/min P-Hi / Hi / Me / Lo | Max ESP (at m³/min) | Rated at | Casing H × W × D | Drain |
+|---|---|---|---|---|---|---|
+| FDUM140KXE6F | 14.0 / 16.0 | 39 / 32 / 26 / 20 | 100 Pa (39) | 60 Pa | 280 × 1370 × 740, 54 kg | VP20, pump built in |
+| FDUM160KXE6F | 16.0 / 18.0 | 48 / 35 / 28 / 22 | 100 Pa (48) | 60 Pa | as FDUM140 | VP20, pump built in |
+| FDU224KXZE1 | 22.4 / 25.0 | 80 / 72 / 64 / 56 | 200 Pa (80) | 72 Pa | 379 × 1600 × 893, 89 kg | VP25 (O.D. 32), gravity |
+| FDU280KXZE1 | 28.0 / 31.5 | 80 / 72 / 64 / 56 | 200 Pa (80) | 72 Pa | as FDU224 | VP25 (O.D. 32), gravity |
+
+- **FDU ESP settings:** 80–150 Pa as delivered; 10–200 Pa with SW8-4 ON, set from the RC-EX1A / RC-E5 wired remote.
+  The unit panel recommends the smallest setting at or above supply + return index pressure.
+- **FDUM160** has no IFC of its own in hand; the sheet gives it the FDUM140's cabinet (280 × 1370 × 740, 54 kg), so it
+  reuses the FDUM140 model and ports (noted on the unit).
+- **No maker 3D file for FDU224/280 in hand.** The body is drawn to PJG000Z287. MEPcontent lists an "fdu kxze1" IFC
+  (sign-in required); converted with the tool above, it would replace the drawn body.
+
+**Air ports** (element-local: origin at the footprint centre, z up from the unit's bottom face; `ductAirPorts.ts`):
+
+| Units | Port | Face | Collar W × H (mm) | Lip centre (x, y, z) | Collar depth | From |
+|---|---|---|---|---|---|---|
+| FDUM140/160 | supply | −Y | 1194 × 164 | (−127, −401, 152) | 30 | measured on the GLB (box 1684 × 802 × 300); IFC 1200 × 170 |
+| FDUM140/160 | return | +Y | 1274 × 229 | (−127, 401, 139) | 30 | measured on the GLB; IFC 1280 × 235 |
+| FDU224/280 | supply | +Y | 1450 × 250 | (0, 471.5, 204) | 25 (flange) | PJG000Z287: centred, top 50 mm below the casing top |
+| FDU224/280 | return | −Y | 1450 × 250 | (0, −471.5, 175) | 25 (flange) | PJG000Z287: centred, bottom 50 mm above the casing bottom |
+
+- The FDU supply is on the long face nearer the refrigerant connections; the control box and connections are at the
+  +X end (read from the drawing's third-angle views).
+- As for the FDUM22, the measured FDUM collars are a few millimetres under the maker's nominal sizes (the lip's outer
+  edge on the model); the duct takes the measured size.
 
 ## Nitrile rubber (NBR / elastomeric) insulation
 
@@ -759,6 +801,8 @@ The rule IDs are referenced by `DUCT_RULE_SOURCES` in the engine.
 | P-04 | PID supports: 4 m / 2 m by the longer side; a profile above 600 mm. | P3 §20 |
 | P-05 | PID reinforcement count unverified until the graphical table is transcribed. | gap |
 | U-01 | FDUM22KXE6F-W air ports as measured: supply −Y 674 × 164, return +Y 654 × 194. | measured; face assignment confirmed by user against MHI dimensions |
+| U-02 | FDUM140/160KXE6F air ports as measured: supply −Y 1194 × 164, return +Y 1274 × 229. FDU224/280KXZE1: supply +Y and return −Y, both 1450 × 250 with 25 mm flanges. | measured on the MEPcontent GLB; MHI '14•KX-T-222 drawing PJG000Z287 |
+| U-03 | A unit's fan delivers supply and return together: the two index paths add up against its maximum ESP; the setting to make is the smallest the maker offers at or above that sum. | MHI fan data ('12•KX-DB-175, '14•KX-T-222 §4.1); practice |
 
 ## Open gaps
 

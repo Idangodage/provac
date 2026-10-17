@@ -845,8 +845,8 @@ Your decisions (28 September 2026):
 **Where it is used**
 - **Generate** (`ductAutoLayout.ts`): with Constant friction every verified route is sized again at the basis and verified again exactly as the optimiser's own (plans, clashes, walls, pressure, price); the frontier and the three picks come from those. Labels read "… · constant friction"; the root run stores the basis. Terminal airflows typed in the card are used in the design and written to the terminals on Apply (same command as the runs and any turned spigots).
 - **The preview, live** (`resizeAutoDuctPreview`, debounced 150 ms): the shown design is re-sized at once from the drawing the preview was made on (runs, plans, pressure, price, issues), the others one at a time after it, and the picks are found again. The drawing is untouched; Apply commits the sizes shown. Switching to Constant friction with a preview open re-sizes it; switching back asks for Generate.
-- **Applied ducts, on the drawing** (`resizeDuctSystemOnDrawing`): the card shows "Ducts on this unit — sizing" for a unit whose collars have ducts (prefilled from the stored basis, else the project defaults): fan speed or airflow, main velocity ⇄ friction, the limits and each terminal's airflow. Each committed change (Enter, blur, a − / + step, a select) is one command, e.g. "Duct sizing (supply): friction 0.80 → 1.20 Pa/m", holding the resized runs, the branches that follow and the terminals whose airflow changed. Undo restores the earlier sizes. The table shows the sections as drawn, those over the rate or a limit marked.
-- **Run inspector:** a System line ("FDUM22 supply · constant friction 1.20 Pa/m · 3.0 m/s", or "life-cycle optimum") and a *Size this system* button that selects the unit.
+- **Applied ducts, on the drawing** (`resizeDuctSystemOnDrawing`; since 17 October 2026 in the unit panel on the left, and the card keeps a one-line summary — see "The unit panel" below): the card shows "Ducts on this unit — sizing" for a unit whose collars have ducts (prefilled from the stored basis, else the project defaults): fan speed or airflow, main velocity ⇄ friction, the limits and each terminal's airflow. Each committed change (Enter, blur, a − / + step, a select) is one command, e.g. "Duct sizing (supply): friction 0.80 → 1.20 Pa/m", holding the resized runs, the branches that follow and the terminals whose airflow changed. Undo restores the earlier sizes. The table shows the sections as drawn, those over the rate or a limit marked.
+- **Run inspector:** a System line ("FDUM22 supply · constant friction 1.20 Pa/m · 3.0 m/s", or "life-cycle optimum") and a *Size this system* button that selects the unit (and, since 17 October 2026, opens its unit panel).
 - **Unified Auto route:** a Sizing select next to Trunk shape (the project setting); with Constant friction each unit's design is sized at the project's friction rates and limits, and its result reads "· constant friction 0.80 Pa/m".
 
 **Verified (1 October 2026)**
@@ -1535,6 +1535,190 @@ and labels cluttered; then "you fix the issues as you observed". Approved plan:
   the duct step decides which terminals are free per unit, not from every collar being rebuilt.
 - `autoRouteNetwork.geometry` "four cardinal directions" sits near its 60 s limit and can time out under the full
   suite's parallel load (it passes alone).
+
+## The unit panel, a constant-friction audit and high-capacity ducted units (17 October 2026)
+
+**The request:** recheck the constant-friction sizing logic. Clicking an AC unit should turn the left panel into that
+unit's: its specification, the parameters its ducts were first sized with, how constant friction continues, and
+velocity and diffuser-airflow controls that resize the ducts. Add a high-capacity unit. Approved plan:
+`C:\Users\idang\.claude\plans\unit-design-panel-constant-friction.md`.
+
+**Your decisions (17 October 2026):** "you decide … professional and modern", so every recommended option:
+- The left panel holds the specification and the sizing. Generate and Apply stay in the Auto duct card (right).
+- The card's applied-sizing editor becomes a one-line summary with "◂ Size it in the unit panel".
+- A main velocity over the trunk limit is reported, with a one-click "Raise the trunk limit".
+- A terminal whose airflow needs more than its neck's velocity cap takes the next catalogue neck, its flexible runout
+  with it. Necks never shrink on their own.
+- Continuing constant friction on a life-cycle design starts from the main as drawn.
+- All four high-capacity units. Drain pumps per MHI data on the new units only. A Ø300 square diffuser and a Ø300
+  egg-crate return grille in the toolbox.
+- The unit panel opens when a unit is selected, with a toggle.
+
+### The audit (22d32fe)
+
+**Verified correct:** Darcy–Weisbach with the Altshul–Tsal factor is within ±1.3 % of Colebrook (ASHRAE's reference
+equation) from Ø200 at 400 m³/h to Ø800 at 4800 m³/h; the ASHRAE SI chart point 1000 L/s → Ø450, 6.3 m/s, 0.91 Pa/m
+matches. Huebscher's equivalent diameter for rectangles, velocity on the real rectangle; air 1.2 kg/m³, ν 1.51e-5 m²/s,
+ε 0.09 mm galvanised and 3 mm flex. The method order is ASHRAE Fundamentals ch. 21 equal friction (main velocity at the
+system airflow → friction rate → every section at that rate under its velocity limit → index path → damper throttling).
+
+**Fixed:**
+1. **One fan for both services.** Applied sizing compared each service alone with the unit's maximum ESP, so supply
+   64 + return 48 = 112 Pa on a 100 Pa unit raised nothing. Sizing now takes the other service's index pressure
+   (`otherServicePa`); `DU_AUTO_ESP` reads "supply 64 + return 48 = 112 Pa of 100". Generate already summed them.
+2. **How a system was first sized is kept** (`DuctRunSpec.initialSizing`, `ductSizingRecord.ts`), on the run off the
+   collar. It holds the method, where from (Auto duct or Auto route), the design's label, the fan speed, the airflow
+   and its source, the main as measured (velocity, friction), the limits, the basis (constant friction), each
+   terminal's airflow and the date. Auto duct's Apply and the unified Auto route write it; later resizes never change
+   it. Before, a life-cycle design kept no fan speed or airflow: one designed at P-Hi 780 m³/h was re-sized for Hi
+   600 m³/h at the first change.
+3. **The main's governing constraint is reported** (`DuctMainCheck`): its section, real velocity and friction, what
+   set it, the linked velocity, and whether the basis velocity is over the part's limit (`velocityCapped`). Before, a
+   28 kW unit at the default 0.80 Pa/m showed 6.25 m/s while the main was quietly sized at the 5.0 m/s trunk limit.
+4. **Round stock reaches Ø1000:** Ø560, 630, 710, 800, 900 and 1000 (EN 1506 series) follow Ø500. A project whose
+   stored list is the old default reads the new one (`resolveRoundStock`); edited lists are kept.
+5. **The basis is linked at the airflow the main carries** (the system's when the terminals' shares fill it), not the
+   unit's.
+6. **Necks follow airflow** (`autoNecksFollowAirflow`, on by default, practice): `necksToGrow` gives each terminal over
+   its cap the smallest catalogue neck within it; the neck, its runout and the resized runs are one command.
+7. **Drift:** `dryRunSizing` sizes at the stored basis without changing anything and lists the runs that differ (a hand
+   edit, a new branch, a changed airflow), for "Re-size at this basis".
+
+`unitAirSide.ts` gathers a unit's air side: its systems, the combined ESP check with the setting to make where the maker
+lists settings, and the basis a service continues from — stored, else the first sizing's, else the main as drawn
+(velocity drives), else the project defaults.
+
+**Kept as practice, and said so in the panel:** rectangles are never narrower than tall (so low-flow tails are
+oversized), heights step from the collar's, fitting coefficients are practice values, not ASHRAE DFDB.
+
+### High-capacity ducted units (b47c9b1)
+
+| Model | kW cool / heat | m³/h at Hi | Max ESP | Body | Collars supply / return |
+|---|---|---|---|---|---|
+| FDUM140KXE6F | 14.0 / 16.0 | 1920 | 100 Pa | the maker's 3D model (MEPcontent IFC → GLB) | 1194 × 164 / 1274 × 229 (measured) |
+| FDUM160KXE6F | 16.0 / 18.0 | 2100 | 100 Pa | the FDUM140's (same cabinet per MHI) | as FDUM140 |
+| FDU224KXZE1 | 22.4 / 25.0 | 4320 | 200 Pa (settings 10–200) | drawn to MHI drawing PJG000Z287, 379 × 1600 × 893 | 1450 × 250 / 1450 × 250, 25 mm flanges |
+| FDU280KXZE1 | 28.0 / 31.5 | 4320 | 200 Pa (settings 10–200) | as FDU224 | as FDU224 |
+
+- Each unit carries its specification (`data/unitSpecifications.ts`) with sources; the research doc lists them.
+- The drawn FDU body (`buildHvacElementMesh.ts`) has the declared collars, their flanges and the control box, so the
+  ducts meet it in 3D. The plan already drew declared collars.
+- In the toolbox they are titled by capacity ("Ducted 14 kW" … "Ducted 28 kW"). FDUM140/160 have the built-in drain
+  pump, FDU224/280 drain by gravity (VP25).
+
+### The unit panel (left)
+
+- **Opening:** selecting exactly one AC unit (a unit with its terminals counts) turns the left panel into the unit's;
+  deselecting brings back the toolbox mode it replaced. The mode switch reads Building | AC Equipment | Unit (a dot when
+  a unit is selected), and "◂ Toolbox" in the panel's header returns to the toolbox with the unit still selected.
+  Starting a placement still shows the toolbox. "Open this panel when a unit is selected" is remembered with the panel
+  layout; a reload opens the toolbox the panel stood in for. A narrower panel widens to 312 px while it is open.
+- **Specification:** the maker's data with its sources: capacity, airflow by fan speed (m³/h and L/s), the fan's ESP
+  (maximum, rated, settings, as delivered), collars, casing and weight, refrigerant and pipes, drain and pump (with a
+  note when the drawing treats a pump unit as gravity), power, sound, fan, and where the 3D body comes from. A unit
+  without a sheet in the catalogue (the cassette, the outdoor units) shows its maker, capacity and size as placed, and
+  says what is missing.
+- **Duct sizing,** per service:
+  - *Before ducts:* what Generate sizes at — the method, fan speed, system airflow, main velocity ⇄ friction rate,
+    limits and each terminal's airflow. They are the unit's draft (`ductSizingDraft.ts`), which the Auto duct card
+    reads and writes too, so both show the same values. With a preview open, a change resizes it live and the card
+    keeps it (its request and inputs still agree).
+  - *Applied ducts:* the status (constant friction, its rate and velocity, and where the basis comes from); the first
+    sizing with what changed since and "Reset to the first sizing" (its basis and airflows, one undo); "Continue by
+    constant friction": fan speed, system airflow, main velocity ⇄ friction rate and limits, each committed change
+    resizing the ducts on the drawing (one undo, named in the status bar). Under them, the main as that basis sizes it
+    — section, velocity, friction and what set it. When the main is already at its smallest section and runs under
+    the basis, the line says where it starts to grow ("≤ 0.39 Pa/m or ≤ 2.8 m/s", rounded down so the figure typed
+    enlarges it). When the trunk limit governs, a notice offers "Raise the trunk limit to X m/s" — only when a dry run
+    at the raised limit changes the ducts; otherwise it says what else sizes the main ("the split it feeds needs that
+    width").
+  - *Terminal airflow:* each terminal typed or an equal share, its neck and neck velocity, and "→ Ø250" where its neck
+    will grow; "Share equally".
+  - *Step by step:* Q and its source; V → Ø = √(4Q/πV) → R; every section at R (or as drawn when the drawing differs);
+    supply + return against the fan; each terminal's damper throttling.
+  - *Drift:* "N runs no longer match 0.80 Pa/m … Re-size at this basis".
+- **Fan:** supply + return index pressure against the fan's maximum, with a bar, and the ESP to set on the wired
+  remote where the maker lists settings.
+- **Numbers that follow** (the friction rate while the velocity drives, and the other way round) read rounded to two
+  decimals, and − / + step from the rounded value. Typed values keep their own precision.
+- **The right panel:** the Auto duct card shows "Ducts on this unit" (one line per service) with "◂ Size it in the
+  unit panel". The unit's generic fields show the maker's airflow, heating capacity, ESP, voltage and refrigerant as
+  placeholders instead of zeros; a typed value still overrides, and clearing it returns to the maker's.
+
+### Found while verifying on canvas
+
+- **A main generated at one size stayed that size to its end** (constant friction). Past its last take-off a main
+  carries no air; that stretch is meant to carry on as the section before it. But the "nothing grows downstream" pass
+  read the size it was drawn at first, so it held every section upstream at that size. Generate draws a main at one
+  size end to end, so the FDU280's main stayed 700 × 350 from 4320 m³/h down to its last 720 m³/h (0.8 m/s). The same
+  thing made "Raise the trunk limit" change nothing there. The pass now starts at the last section with air, and the
+  dead end follows once the rest is final (`ductSystemSizing.ts`; test "steps a main drawn larger than it needs down
+  with the airflow"). The FDUM22 systems tested so far sat at their smallest sections, so it never showed there.
+- **The 30 m² test room is too small for a 28 kW unit** (it serves about 150 m² and up). With six Ø300 diffusers on a
+  1.4 m grid there, Auto duct ran the trunk out through a wall and its runouts clashed (`DU_AUTO_WALL`, `DU_CLASH`,
+  `DU_TAP_CLASH`, `DU_FLEX_BEND`). That is the tight-room limit below, not the sizing. The canvas check builds a
+  12 × 9 m room instead.
+
+### Verified
+
+- **Unit tests:**
+  - P1 (22d32fe): `ductSystemSizing` (+5: the fan against both services, the main and what governs it, the link at
+    the main's airflow, the first-sizing record read tolerantly, round stock to Ø1000 with the old list migrated);
+    `unitAirSide` (new, 7: necks over their cap and the one each takes, the grown necks sized as one set of changes,
+    drift, the basis a system continues from, the fan's setting, the first-sizing record measured on the design and
+    keeping its basis); the store (+4: the record kept at Apply, dated; a neck grown in the same command as the resize;
+    the reset to the first sizing as one command; a life-cycle design refused a reset, a hand-edited one re-sized at
+    its basis).
+  - P2 (b47c9b1): the library (counts; each new unit GLB-backed or drawn to a cited drawing), the measured ports, the
+    drawn FDU body's collars in 3D, and `highCapacityUnits` (an FDU280 with six Ø300 diffusers by constant friction:
+    nothing capped, the trunk limit sizing the main, the fan covering it).
+  - P3 (47c24f7): `ductSizingDraft` (12: the airflow it is linked at, the bases, the services, the per-unit store).
+  - The dead end (72f055b): a four-take-off main drawn 600 × 250 steps down with the airflow (400 → 300, then carried
+    on under the reducer step), its dead end follows, sizing again changes nothing; the test fails without the fix.
+  - Full suite after the fix: 258 files, 2243 tests passed (43 skipped as before); type-check and lint clean on the
+    changed files.
+- **On canvas** (real toolbox, mouse and inputs; each driver restores the project exactly; nothing is saved):
+  - `unit-panel` 34/34: a cassette shows its specification only; an FDUM22 with two Ø200 diffusers — the maker's
+    data, Generate's parameters set from the panel and shown in the card, a preview resized live from the panel with
+    the card keeping it, Apply and its first-sizing record, the fan card, the steps; "◂ Toolbox" and the card's
+    "Size it in the unit panel"; 3.0 m/s changing no duct and the panel saying where the main grows, its figure
+    (2.8 m/s) enlarging the main 250 × 250 → 300 × 250; a diffuser at 500 m³/h taking a Ø250 neck; the reset; the undo
+    chain; deselecting brings the toolbox back.
+  - `unit-hc-probe` 4/4: the four units in the toolbox titled by capacity; FDU280 and FDUM140 placed with their
+    collars (1450 × 250 from the drawing; 1194 × 164 / 1274 × 229 measured), in plan and Iso.
+  - `unit-high-capacity` 19/19: an FDU280 in a 12 × 9 m room with six Ø300 diffusers — the specification,
+    constant friction from the panel, Generate (about 10 s: no errors, nothing capped, 720 m³/h each, 46 Pa of the
+    fan's 200), Apply, the main sized by the 5 m/s trunk limit and said so, "raising the limit would not change these
+    ducts: the split it feeds needs that width" (its Y's two 350 × 350 outlets side by side), the ESP to set (60 Pa),
+    the steps; plan and Iso.
+- **Regressions:** `air-p2` 23/23, `air-p3` 14/14, `duct-seg-click` 8/8, `duct-far-assign` 14/14, `duct-tags` 14/14,
+  `pipe-seg-inspector` 8/8, `duct-cross-room` 18/18; `air-p1` 25/25 (its toolbox counts now include the
+  Ø300 pair). `duct-sizing` 23/26 with its applied-sizing steps moved to the unit panel: two of its three failures
+  happen the same way on the code before this work (f44ec66) — the same preview crosses the same wall, the same
+  runouts bend at 149 and 177 mm — and the third is those two runouts again once their necks grow to Ø300 (see
+  below).
+
+### Known limits
+
+- The FDU224/280 body is drawn to the maker's dimensions until a maker 3D file is provided; their refrigerant and drain
+  connection points stay procedural, as for the FDUM22. The 28 kW refrigerant side (branch kits above DIS-22-1G) is out
+  of scope.
+- Small systems sit at their smallest sections (as wide as tall at the collar's height): a velocity or friction change
+  above the main's own changes no duct. The panel says where it starts to grow.
+- The cassette and the outdoor units have no maker sheet in the catalogue yet: capacity and size only.
+- The draft (Generate's parameters set in either panel) lasts the session; it is not saved with the project.
+- Auto duct with 9–12 terminals is still the known limit below; a 28 kW unit at Ø300 needs about six diffusers.
+- A neck that grows with its airflow keeps its runout's route: a bend that was tight for Ø200 falls further under one
+  diameter at Ø300 (`DU_FLEX_BEND`, shown on the run). Generate again routes for the new sizes.
+
+### Found while verifying, not changed
+
+- **`duct-sizing` (25/25 on 1 October) now fails on its layout, on the code before this work too:** in the 30 m²
+  room its FDUM22 design's straight trunk ends in a wall (`DU_AUTO_WALL`), and after the live resize to 3 m/s two Ø200
+  runouts bend at 149 and 177 mm (`DU_FLEX_BEND`); at 1.2 Pa/m their necks grow to Ø300 and the same bends fail
+  again. Something merged between 1 and 17 October changed that layout; a bisect over those commits would find it.
+- **Panning with Space + drag from inside a room selects the room** (from on a wall it does not;
+  `probe-space-pan.mjs`). A canvas behaviour older than this work.
 
 ## Known limits (auto duct, 30 September 2026)
 
