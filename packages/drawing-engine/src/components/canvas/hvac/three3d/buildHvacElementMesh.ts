@@ -7,6 +7,7 @@ import { markMaterialOwned } from "../../threeResourceLifecycle";
 import { buildCeilingCassetteModel } from "../ceilingCassetteModel";
 import { compileCopperSocketElbowRoute } from "../copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "../copperSocketElbows";
+import { resolveLocalAirPorts, type LocalAirPortSpec } from "../duct/ductAirPorts";
 import type { DuctDesignSettings } from "../duct/ductSettings";
 import { localTerminalSpigot, readDuctTerminalSpec, TERMINAL_FILTER_THICKNESS_MM } from "../duct/ductTerminals";
 import {
@@ -181,6 +182,49 @@ function createLocalBoxMesh(
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
+}
+
+/** Sheet edge drawn round a ducted unit's collar (mm). */
+const DUCTED_COLLAR_SHEET_MM = 6;
+
+/**
+ * A ducted unit's duct collar where it really is: a sheet frame standing out
+ * of the casing face to the collar lip, round a dark opening flush with the face.
+ */
+function addDuctedUnitCollar(group: THREE.Group, port: LocalAirPortSpec): void {
+  const alongY = Math.abs(port.normal.y) >= Math.abs(port.normal.x);
+  const sheet = DUCTED_COLLAR_SHEET_MM;
+  const depth = Math.max(1, port.collarDepthMm);
+  const width = port.widthMm;
+  const height = port.heightMm;
+  const tangent = alongY ? { x: 1, y: 0 } : { x: 0, y: 1 };
+  const centre = { x: port.lip.x - port.normal.x * depth * 0.5, y: port.lip.y - port.normal.y * depth * 0.5 };
+  const box = (along: number, across: number, tall: number, offsetAcross: number, offsetZ: number, color: string) => {
+    group.add(createLocalBoxMesh(
+      alongY ? across : along,
+      alongY ? along : across,
+      tall,
+      color,
+      new THREE.Vector3(centre.x + tangent.x * offsetAcross, centre.y + tangent.y * offsetAcross, port.lip.z + offsetZ),
+      { renderOrder: 20 },
+    ));
+  };
+  const collar = DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCollar;
+  box(depth, width + 2 * sheet, sheet, 0, height / 2 + sheet / 2, collar);
+  box(depth, width + 2 * sheet, sheet, 0, -(height / 2 + sheet / 2), collar);
+  box(depth, sheet, height, width / 2 + sheet / 2, 0, collar);
+  box(depth, sheet, height, -(width / 2 + sheet / 2), 0, collar);
+  // The opening: a dark panel standing a hair out of the casing face (not coincident with it).
+  const mouth = port.kind === "return" ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCavityReturn : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingCavitySupply;
+  const faceOffset = depth - 1;
+  group.add(createLocalBoxMesh(
+    alongY ? width : 2,
+    alongY ? 2 : width,
+    height,
+    mouth,
+    new THREE.Vector3(port.lip.x - port.normal.x * faceOffset, port.lip.y - port.normal.y * faceOffset, port.lip.z),
+    { renderOrder: 20 },
+  ));
 }
 
 function createLocalCylinderMesh(
@@ -2468,24 +2512,44 @@ export function buildHvacElementMesh(
           { bevelEnabled: false, renderOrder: 19 },
         ),
       );
-      ducted.airOpenings.forEach((opening) => {
+      // Known collars (measured on a maker's model, or from its dimension drawing) are drawn as they are, so
+      // the ducts meet them; the procedural openings stand in only for a unit with none.
+      const declaredPorts = resolveLocalAirPorts(effectiveElement);
+      if (declaredPorts.source !== "procedural") {
+        declaredPorts.ports.forEach((port) => addDuctedUnitCollar(group, port));
+      } else {
+        ducted.airOpenings.forEach((opening) => {
+          group.add(
+            createLocalBoxMesh(
+              opening.openingWidth,
+              Math.max(20, opening.frameDepth * 1.4),
+              Math.max(16, opening.openingHeight * 0.22),
+              opening.kind === "return"
+                ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthReturn
+                : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthSupply,
+              new THREE.Vector3(
+                opening.x,
+                opening.kind === "return" ? -ducted.baseDepth * 0.42 : ducted.baseDepth * 0.42,
+                opening.z,
+              ),
+              { renderOrder: 20 },
+            ),
+          );
+        });
+      }
+      if (ducted.controlBox) {
+        const box = ducted.controlBox;
         group.add(
           createLocalBoxMesh(
-            opening.openingWidth,
-            Math.max(20, opening.frameDepth * 1.4),
-            Math.max(16, opening.openingHeight * 0.22),
-            opening.kind === "return"
-              ? DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthReturn
-              : DUCTED_INDOOR_UNIT_COLOR_PALETTE.openingMouthSupply,
-            new THREE.Vector3(
-              opening.x,
-              opening.kind === "return" ? -ducted.baseDepth * 0.42 : ducted.baseDepth * 0.42,
-              opening.z,
-            ),
-            { renderOrder: 20 },
+            box.width,
+            box.depth,
+            box.height,
+            DUCTED_INDOOR_UNIT_COLOR_PALETTE.serviceBox,
+            new THREE.Vector3(box.x, box.y, box.z),
+            { renderOrder: 19 },
           ),
         );
-      });
+      }
       ducted.pipePorts.forEach((port) => {
         addHvacPipePort(group, {
           anchor: new THREE.Vector3(port.x, port.y, port.z),

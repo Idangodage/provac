@@ -22,6 +22,8 @@ import type {
   HvacMountType,
 } from "../types";
 
+import { UNIT_SPECIFICATIONS } from "./unitSpecifications";
+
 export type AcEquipmentLibraryCategory =
   | "indoor-units"
   | "outdoor-units"
@@ -115,6 +117,34 @@ function airTerminal(
   };
 }
 
+/**
+ * A ducted unit's properties from its specification (data/unitSpecifications.ts):
+ * the air data duct design reads (airflow per fan speed, the fan's maximum
+ * ESP), the capacity and refrigerant connections, and the drain pump.
+ */
+function ductedUnitProperties(modelCode: string, extra: Record<string, unknown>): Record<string, unknown> {
+  const spec = UNIT_SPECIFICATIONS[modelCode]!;
+  return {
+    modelCode,
+    manufacturer: spec.manufacturer,
+    model: modelCode,
+    capacityKw: spec.coolingKw,
+    ...(spec.heatingKw ? { heatingCapacityKw: spec.heatingKw } : {}),
+    mountingType: "ducted",
+    ...(spec.airflowM3min ? { airflowM3min: { ...spec.airflowM3min } } : {}),
+    ...(spec.esp ? { maxEspPa: spec.esp.maxPa } : {}),
+    airDataSource: spec.sources[0]!.id,
+    refrigerantType: spec.refrigerant,
+    refrigerantGasPipeDiameterMm: spec.gasMm,
+    refrigerantLiquidPipeDiameterMm: spec.liquidMm,
+    hasDrainPump: spec.drain.pump,
+    ...extra,
+  };
+}
+
+/** FDU224/280KXZE1: the control box on the connection end (MHI drawing PJG000Z287: 85 mm out, near the return face). */
+const FDU_CONTROL_BOX_MM = { protrusionMm: 85, lengthMm: 265, heightMm: 200, centreYMm: -239 };
+
 export const DEFAULT_AC_EQUIPMENT_LIBRARY: AcEquipmentDefinition[] = [
   // --- Indoor units (real GLB) ---
   equipment({
@@ -175,6 +205,103 @@ export const DEFAULT_AC_EQUIPMENT_LIBRARY: AcEquipmentDefinition[] = [
       airflowM3min: { "p-hi": 13, hi: 10, me: 9, lo: 8 },
       maxEspPa: 100,
       airDataSource: "mhi-fdum22-data",
+    },
+  }),
+  // --- High-capacity ducted indoor units ---
+  equipment({
+    id: "vrf-fdum140kxe6f",
+    name: "MHI Ducted Indoor — FDUM140KXE6F (3D)",
+    category: "indoor-units",
+    equipmentCategory: "indoor-unit",
+    type: "ducted-ac",
+    subtype: "maco-vrf-glb",
+    modelLabel: "MHI FDUM140KXE6F",
+    placementMode: "room",
+    mountType: "ceiling",
+    widthMm: 1684,
+    depthMm: 802,
+    heightMm: 300,
+    elevationMm: DEFAULT_CEILING_ELEVATION_MM,
+    supplyZoneRatio: 0.5,
+    description:
+      "Mitsubishi Heavy Industries FDUM140KXE6F concealed ducted indoor unit, 14.0 kW (low/middle static pressure, up to 100 Pa; 1920 m³/h at Hi) — real 3D geometry from the MEPcontent MACO VRF IFC. Duct collars 1200 × 170 supply, 1280 × 235 return.",
+    tags: ["ducted", "ceiling", "indoor", "vrf", "mhi", "maco", "glb", "fdum140kxe6f", "high-capacity"],
+    defaultProperties: {
+      source: "ifc-glb",
+      modelUrl: "/models/vrf/maco-vrf-fdum140kxe6f.glb",
+      ...ductedUnitProperties("FDUM140KXE6F", { drainPipeDiameter1Mm: 32 }),
+    },
+  }),
+  equipment({
+    id: "vrf-fdum160kxe6f",
+    name: "MHI Ducted Indoor — FDUM160KXE6F (3D)",
+    category: "indoor-units",
+    equipmentCategory: "indoor-unit",
+    type: "ducted-ac",
+    subtype: "maco-vrf-glb",
+    modelLabel: "MHI FDUM160KXE6F",
+    placementMode: "room",
+    mountType: "ceiling",
+    widthMm: 1684,
+    depthMm: 802,
+    heightMm: 300,
+    elevationMm: DEFAULT_CEILING_ELEVATION_MM,
+    supplyZoneRatio: 0.5,
+    description:
+      "Mitsubishi Heavy Industries FDUM160KXE6F concealed ducted indoor unit, 16.0 kW (low/middle static pressure, up to 100 Pa; 2100 m³/h at Hi) — the FDUM140KXE6F's cabinet (same 3D geometry, MHI spec sheet). Duct collars 1200 × 170 supply, 1280 × 235 return.",
+    tags: ["ducted", "ceiling", "indoor", "vrf", "mhi", "maco", "glb", "fdum160kxe6f", "high-capacity"],
+    defaultProperties: {
+      source: "ifc-glb",
+      modelUrl: "/models/vrf/maco-vrf-fdum140kxe6f.glb",
+      ...ductedUnitProperties("FDUM160KXE6F", { drainPipeDiameter1Mm: 32 }),
+    },
+  }),
+  equipment({
+    id: "vrf-fdu224kxze1",
+    name: "MHI Ducted High Static — FDU224KXZE1",
+    category: "indoor-units",
+    equipmentCategory: "indoor-unit",
+    type: "ducted-ac",
+    subtype: "mhi-drawing-procedural",
+    modelLabel: "MHI FDU224KXZE1",
+    placementMode: "room",
+    mountType: "ceiling",
+    widthMm: 1600,
+    depthMm: 893,
+    heightMm: 379,
+    elevationMm: DEFAULT_CEILING_ELEVATION_MM,
+    supplyZoneRatio: 0.5,
+    description:
+      "Mitsubishi Heavy Industries FDU224KXZE1 high static pressure ducted indoor unit, 22.4 kW (ESP 10–200 Pa; 4320 m³/h at Hi). Body drawn to the MHI dimension drawing PJG000Z287 (no maker 3D file yet); duct collars 1450 × 250 supply and return.",
+    tags: ["ducted", "ceiling", "indoor", "vrf", "mhi", "high-static", "fdu224kxze1", "high-capacity"],
+    defaultProperties: {
+      source: "mhi-drawing",
+      drawingReference: "MHI '14•KX-T-222 §2.1, PJG000Z287",
+      ...ductedUnitProperties("FDU224KXZE1", { drainPipeDiameter1Mm: 32, controlBoxMm: FDU_CONTROL_BOX_MM }),
+    },
+  }),
+  equipment({
+    id: "vrf-fdu280kxze1",
+    name: "MHI Ducted High Static — FDU280KXZE1",
+    category: "indoor-units",
+    equipmentCategory: "indoor-unit",
+    type: "ducted-ac",
+    subtype: "mhi-drawing-procedural",
+    modelLabel: "MHI FDU280KXZE1",
+    placementMode: "room",
+    mountType: "ceiling",
+    widthMm: 1600,
+    depthMm: 893,
+    heightMm: 379,
+    elevationMm: DEFAULT_CEILING_ELEVATION_MM,
+    supplyZoneRatio: 0.5,
+    description:
+      "Mitsubishi Heavy Industries FDU280KXZE1 high static pressure ducted indoor unit, 28.0 kW (ESP 10–200 Pa; 4320 m³/h at Hi) — pairs with the FDC280KXZE1 outdoor unit. Body drawn to the MHI dimension drawing PJG000Z287 (no maker 3D file yet); duct collars 1450 × 250 supply and return.",
+    tags: ["ducted", "ceiling", "indoor", "vrf", "mhi", "high-static", "fdu280kxze1", "high-capacity"],
+    defaultProperties: {
+      source: "mhi-drawing",
+      drawingReference: "MHI '14•KX-T-222 §2.1, PJG000Z287",
+      ...ductedUnitProperties("FDU280KXZE1", { drainPipeDiameter1Mm: 32, controlBoxMm: FDU_CONTROL_BOX_MM }),
     },
   }),
 
@@ -403,11 +530,14 @@ export const DEFAULT_AC_EQUIPMENT_LIBRARY: AcEquipmentDefinition[] = [
   // --- Supply air terminals (typical sizes, practice-flagged; see duct/ductTerminalCatalog.ts) ---
   airTerminal("terminal-square-595-200", "Square Ceiling Diffuser 595 — Ø200", "square-4way", 200),
   airTerminal("terminal-square-595-250", "Square Ceiling Diffuser 595 — Ø250", "square-4way", 250),
+  // The largest catalogue neck: about 760 m³/h at 3 m/s, so a large unit needs fewer terminals.
+  airTerminal("terminal-square-595-300", "Square Ceiling Diffuser 595 — Ø300", "square-4way", 300),
   airTerminal("terminal-round-200", "Round Ceiling Diffuser — Ø200", "round", 200),
   airTerminal("terminal-linear-2slot-1200-150", "Linear Slot Diffuser 2-slot 1200 — Ø150", "linear-slot", 150, { slots: 2, lengthMm: 1200 }),
 
   // --- Return air terminals (each ducted back to its unit's return collar) ---
   airTerminal("terminal-return-eggcrate-595-250", "Egg-crate Return Grille 595 — Ø250", "return-egg-crate", 250),
+  airTerminal("terminal-return-eggcrate-595-300", "Egg-crate Return Grille 595 — Ø300", "return-egg-crate", 300),
   airTerminal("terminal-return-louvred-595-250", "Louvred Return Grille 595 — Ø250", "louvred", 250, { service: "return" }),
   airTerminal("terminal-return-perforated-595-250", "Perforated Return Diffuser 595 — Ø250", "perforated", 250, { service: "return" }),
   airTerminal("terminal-return-square-595-250", "Square Return Diffuser 595 — Ø250", "square-4way", 250, { service: "return" }),

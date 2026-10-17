@@ -50,6 +50,28 @@ export interface DuctAirPort {
 }
 
 /**
+ * FDUM140/160KXE6F (one cabinet): collars measured on the MEPcontent MACO VRF
+ * GLB (bounding box 1684 × 802 × 300) the same way as the FDUM22's; the IFC
+ * gives the duct connections as 1200 × 170 (supply) and 1280 × 235 (return).
+ */
+const FDUM_LARGE_AIR_PORTS: readonly LocalAirPortSpec[] = [
+  { id: 'supply', kind: 'supply', lip: { x: -127, y: -401, z: 152 }, normal: { x: 0, y: -1 }, widthMm: 1194, heightMm: 164, collarDepthMm: 30 },
+  { id: 'return', kind: 'return', lip: { x: -127, y: 401, z: 139 }, normal: { x: 0, y: 1 }, widthMm: 1274, heightMm: 229, collarDepthMm: 30 },
+];
+
+/**
+ * FDU224/280KXZE1 (one cabinet, 1600 × 893 × 379): MHI dimension drawing
+ * PJG000Z287. Both duct connections 1450 × 250, centred on the casing, with
+ * 25 mm flanges; the supply's top 50 mm below the casing top, the return's
+ * bottom 50 mm above the casing bottom. Supply on the long face nearer the
+ * refrigerant connections (the control-box end is +X), return opposite.
+ */
+const FDU_AIR_PORTS: readonly LocalAirPortSpec[] = [
+  { id: 'supply', kind: 'supply', lip: { x: 0, y: 471.5, z: 204 }, normal: { x: 0, y: 1 }, widthMm: 1450, heightMm: 250, collarDepthMm: 25 },
+  { id: 'return', kind: 'return', lip: { x: 0, y: -471.5, z: 175 }, normal: { x: 0, y: -1 }, widthMm: 1450, heightMm: 250, collarDepthMm: 25 },
+];
+
+/**
  * Collars measured on the MEPcontent MACO VRF GLB (bounding box 1084 × 697 ×
  * 300, rendered centred with its bottom at the element elevation). Face
  * assignment confirmed against the MHI dimensions: pressure side ≈680 × 170,
@@ -60,6 +82,10 @@ export const MEASURED_UNIT_AIR_PORTS: Record<string, readonly LocalAirPortSpec[]
     { id: 'supply', kind: 'supply', lip: { x: -117, y: -348.5, z: 152 }, normal: { x: 0, y: -1 }, widthMm: 674, heightMm: 164, collarDepthMm: 30 },
     { id: 'return', kind: 'return', lip: { x: -117, y: 348.5, z: 139 }, normal: { x: 0, y: 1 }, widthMm: 654, heightMm: 194, collarDepthMm: 30 },
   ],
+  FDUM140KXE6F: FDUM_LARGE_AIR_PORTS,
+  FDUM160KXE6F: FDUM_LARGE_AIR_PORTS,
+  FDU224KXZE1: FDU_AIR_PORTS,
+  FDU280KXZE1: FDU_AIR_PORTS,
 };
 
 /** What port resolution reads from a unit. */
@@ -67,6 +93,13 @@ type UnitShape = Pick<HvacElement, 'type' | 'width' | 'depth' | 'height' | 'prop
 
 const MEASURED_PROVENANCE: DuctRuleProvenance = {
   sourceId: 'fdum22-glb-measured', verified: true, reference: 'docs/hvac-duct-smacna-research.md, "Unit air ports"',
+};
+/** Where each model's measured collars come from (the FDUM22's unless listed). */
+const MEASURED_PROVENANCE_BY_MODEL: Record<string, DuctRuleProvenance> = {
+  FDUM140KXE6F: { sourceId: 'fdum140-glb-measured', verified: true, reference: 'MEPcontent MACO VRF IFC (duct sizes); collars measured on its GLB' },
+  FDUM160KXE6F: { sourceId: 'fdum140-glb-measured', verified: true, reference: 'Same cabinet as FDUM140KXE6F (MHI \'12•KX-DB-175)' },
+  FDU224KXZE1: { sourceId: 'mhi-kx-t-222-drawing', verified: true, reference: 'MHI \'14•KX-T-222 §2.1, drawing PJG000Z287' },
+  FDU280KXZE1: { sourceId: 'mhi-kx-t-222-drawing', verified: true, reference: 'MHI \'14•KX-T-222 §2.1, drawing PJG000Z287' },
 };
 const PROCEDURAL_PROVENANCE: DuctRuleProvenance = {
   sourceId: 'fabricator-practice', verified: false,
@@ -138,6 +171,7 @@ export function toWorldAirPort(
   element: Pick<HvacElement, 'id' | 'position' | 'width' | 'depth' | 'rotation' | 'elevation'>,
   local: LocalAirPortSpec,
   source: DuctAirPort['source'],
+  provenance?: DuctRuleProvenance,
 ): DuctAirPort {
   const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 };
   const rotation = element.rotation ?? 0;
@@ -162,22 +196,22 @@ export function toWorldAirPort(
     edgeA: toWorld({ x: local.lip.x - tangent.x * half, y: local.lip.y - tangent.y * half }),
     edgeB: toWorld({ x: local.lip.x + tangent.x * half, y: local.lip.y + tangent.y * half }),
     source,
-    provenance: source === 'measured' ? MEASURED_PROVENANCE : source === 'element' ? ELEMENT_PROVENANCE : PROCEDURAL_PROVENANCE,
+    provenance: provenance ?? (source === 'measured' ? MEASURED_PROVENANCE : source === 'element' ? ELEMENT_PROVENANCE : PROCEDURAL_PROVENANCE),
   };
 }
 
 /** The unit's ports in its local frame, with where they came from. */
-export function resolveLocalAirPorts(element: UnitShape): { ports: LocalAirPortSpec[]; source: DuctAirPort['source'] } {
+export function resolveLocalAirPorts(element: UnitShape): { ports: LocalAirPortSpec[]; source: DuctAirPort['source']; provenance: DuctRuleProvenance } {
   const own = readElementAirPorts(element);
-  if (own) return { ports: own, source: 'element' };
+  if (own) return { ports: own, source: 'element', provenance: ELEMENT_PROVENANCE };
   const code = modelCodeOf(element);
-  if (code) return { ports: [...MEASURED_UNIT_AIR_PORTS[code]!], source: 'measured' };
-  return { ports: proceduralAirPorts(element), source: 'procedural' };
+  if (code) return { ports: [...MEASURED_UNIT_AIR_PORTS[code]!], source: 'measured', provenance: MEASURED_PROVENANCE_BY_MODEL[code] ?? MEASURED_PROVENANCE };
+  return { ports: proceduralAirPorts(element), source: 'procedural', provenance: PROCEDURAL_PROVENANCE };
 }
 
 export function resolveUnitAirPorts(element: HvacElement): DuctAirPort[] {
-  const { ports, source } = resolveLocalAirPorts(element);
-  return ports.map((port) => toWorldAirPort(element, port, source));
+  const { ports, source, provenance } = resolveLocalAirPorts(element);
+  return ports.map((port) => toWorldAirPort(element, port, source, provenance));
 }
 
 /** Every air port in the scene (ducted units only for now). */

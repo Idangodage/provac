@@ -106,6 +106,34 @@ export interface DuctedIndoorUnitModelSpec {
   airOpenings: DuctedIndoorUnitInlineOpeningSpec[];
   giDucts: DuctedIndoorUnitGIDuctSpec[];
   pipePorts: DuctedIndoorUnitPipePortSpec[];
+  /** A control box standing out of the +X end (units drawn to a maker's dimensions), else null. */
+  controlBox: DuctedIndoorUnitBoxSpec | null;
+}
+
+/**
+ * `properties.controlBoxMm` of a unit drawn to its maker's dimensions: how far
+ * the control box stands out of the +X end, its length along the end, its
+ * height, and its centre along Y (from the casing centre).
+ */
+function readControlBox(properties: Record<string, unknown>, baseWidth: number, unitHeight: number): DuctedIndoorUnitBoxSpec | null {
+  const raw = properties.controlBoxMm;
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const positive = (entry: unknown) => (typeof entry === "number" && Number.isFinite(entry) && entry > 0 ? entry : null);
+  const protrusion = positive(value.protrusionMm);
+  const length = positive(value.lengthMm);
+  if (!protrusion || !length) return null;
+  const height = Math.min(unitHeight, positive(value.heightMm) ?? unitHeight * 0.6);
+  const centreY = typeof value.centreYMm === "number" && Number.isFinite(value.centreYMm) ? value.centreYMm : 0;
+  return {
+    x: baseWidth / 2 + protrusion / 2,
+    y: centreY,
+    z: unitHeight / 2,
+    width: protrusion,
+    depth: length,
+    height,
+    cornerRadius: 4,
+  };
 }
 
 export interface DuctedIndoorUnitOpeningPlanProjection {
@@ -576,6 +604,7 @@ export function buildDuctedIndoorUnitModel(
     airOpenings,
     giDucts,
     pipePorts,
+    controlBox: readControlBox(element.properties, baseWidth, unitHeight),
   };
 }
 
@@ -583,12 +612,15 @@ export function getDuctedIndoorUnitPlanBounds(
   model: Pick<
     DuctedIndoorUnitModelSpec,
     "baseWidth" | "baseDepth" | "airOpenings" | "giDucts"
-  >,
+  > & Partial<Pick<DuctedIndoorUnitModelSpec, "controlBox">>,
 ): { minX: number; maxX: number; minY: number; maxY: number } {
   let minX = -model.baseWidth / 2;
   let maxX = model.baseWidth / 2;
   let minY = -model.baseDepth / 2;
   let maxY = model.baseDepth / 2;
+  if (model.controlBox) {
+    maxX = Math.max(maxX, model.controlBox.x + model.controlBox.width / 2);
+  }
 
   model.airOpenings.forEach((opening) => {
     const projection = getDuctedIndoorUnitOpeningPlanProjection(model, opening);

@@ -16,6 +16,7 @@ import {
   type AcEquipmentDefinition,
   type AcEquipmentLibraryCategory,
 } from '../data';
+import { unitSpecificationFor } from '../data/unitSpecifications';
 import { useSmartDrawingStore } from '../store';
 
 import { useAirSystemUiStore } from './canvas/hvac/duct/airSystemUiStore';
@@ -83,7 +84,11 @@ export function equipmentTileText(definition: AcEquipmentDefinition): TileText {
     case 'ceiling-cassette-ac': return { title: 'Cassette', caption: modelCode(definition), tone: null };
     case 'wall-mounted-ac': return { title: 'Wall unit', caption: modelCode(definition), tone: null };
     case 'ceiling-suspended-ac': return { title: 'Suspended', caption: modelCode(definition), tone: null };
-    case 'ducted-ac': return { title: 'Ducted', caption: modelCode(definition), tone: null };
+    case 'ducted-ac': {
+      // The capacity tells the units apart at a glance (2.2 kW … 28 kW); the caption names the model.
+      const kw = definition.defaultProperties?.capacityKw;
+      return { title: typeof kw === 'number' ? `Ducted ${kw} kW` : 'Ducted', caption: modelCode(definition), tone: null };
+    }
     case 'outdoor-unit': return { title: 'Outdoor', caption: modelCode(definition), tone: null };
     case 'refrigerant-branch-kit': {
       const liquid = /liquid/i.test(`${definition.subtype} ${definition.modelLabel}`);
@@ -143,6 +148,7 @@ function EquipmentHoverCard({ hover, placedCount, id }: { hover: HoverState; pla
     setTop(Math.max(8, Math.min(anchor.top - 6, window.innerHeight - height - 8)));
   }, [anchor]);
   const text = equipmentTileText(definition);
+  const spec = unitSpecificationFor({ properties: definition.defaultProperties ?? {} });
   return (
     <div ref={ref} id={id} role="tooltip" data-testid="equipment-hover-card" style={{ left, top, width: CARD_WIDTH }}
       className="pointer-events-none fixed z-[1000] rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-xl ring-1 ring-black/5">
@@ -163,6 +169,24 @@ function EquipmentHoverCard({ hover, placedCount, id }: { hover: HoverState; pla
         <dd className="text-slate-700">{Math.round(definition.widthMm)} × {Math.round(definition.depthMm)} × {Math.round(definition.heightMm)} mm</dd>
         <dt className="text-slate-400">Placement</dt>
         <dd className="text-slate-700">{PLACEMENT_LABELS[definition.placementMode]}{MOUNT_LABELS[definition.mountType] ? ` · ${MOUNT_LABELS[definition.mountType]} mounted` : ''}</dd>
+        {spec ? (
+          <>
+            <dt className="text-slate-400">Capacity</dt>
+            <dd className="text-slate-700">{spec.coolingKw} kW cooling{spec.heatingKw ? ` · ${spec.heatingKw} kW heating` : ''}</dd>
+            {spec.airflowM3min ? (
+              <>
+                <dt className="text-slate-400">Airflow</dt>
+                <dd className="text-slate-700">{Math.round(spec.airflowM3min.hi * 60)} m³/h at Hi · {Math.round(spec.airflowM3min['p-hi'] * 60)} at P-Hi</dd>
+              </>
+            ) : null}
+            {spec.esp ? (
+              <>
+                <dt className="text-slate-400">ESP</dt>
+                <dd className="text-slate-700">up to {spec.esp.maxPa} Pa</dd>
+              </>
+            ) : null}
+          </>
+        ) : null}
         <dt className="text-slate-400">Placed</dt>
         <dd className="text-slate-700">{placedCount}</dd>
       </dl>

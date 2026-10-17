@@ -15,7 +15,11 @@ export type DuctSourceId =
   | 'project-practice'
   | 'project-configuration'
   | 'armacell-520'
-  | 'mhi-fdum22-data';
+  | 'mhi-fdum22-data'
+  | 'mhi-kx-db-175'
+  | 'mhi-kx-t-222'
+  | 'mhi-kx-t-222-drawing'
+  | 'fdum140-glb-measured';
 
 export interface DuctSource {
   document: string;
@@ -56,6 +60,21 @@ export const DUCT_SOURCES: Record<DuctSourceId, DuctSource> = {
   'mhi-fdum22-data': {
     document: 'MHI FDUM22KXE6F product data: airflow P-Hi 13 / Hi 10 / Me 9 / Lo 8 m³/min (cooling), maximum external static pressure 100 Pa (MHIAE and Form MHI product pages, read 28 September 2026)',
     url: 'https://mhiae.com/units/fdum22kxe6f/',
+  },
+  'mhi-kx-db-175': {
+    document: 'MHI spec sheet \'12•KX-DB-175 (PJG000Z033): FDUM KXE6F duct connected, low/middle static pressure — capacity, airflow per fan speed, maximum ESP',
+    url: 'https://mhi-hvac.co.uk/wp-content/uploads/FDUM-KXE6F-Spec-sheet.pdf',
+  },
+  'mhi-kx-t-222': {
+    document: 'MHI technical manual \'14•KX-T-222: FDU224/280KXZE1 duct connected, high static pressure — specifications, ESP settings, fan characteristics',
+    url: 'https://www.coolmark.nl/media/files/handboek/mhi/2014%20(FDU224-280KXZE1)%20KX-T-222.pdf',
+  },
+  'mhi-kx-t-222-drawing': {
+    document: 'MHI technical manual \'14•KX-T-222 §2.1, exterior dimensions drawing PJG000Z287 (FDU224/280KXZE1 duct connections and casing)',
+    url: 'https://www.coolmark.nl/media/files/handboek/mhi/2014%20(FDU224-280KXZE1)%20KX-T-222.pdf',
+  },
+  'fdum140-glb-measured': {
+    document: 'Collars measured on the MEPcontent MACO VRF FDUM140KXE6F model (the FDUM160KXE6F\'s cabinet); sizes as the IFC\'s duct properties',
   },
   'armacell-520': {
     document: 'Armacell ArmaFlex 520 adhesive product brochure (coverage 7–9 m²/L, both faces, sheet)',

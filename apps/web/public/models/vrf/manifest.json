@@ -66,6 +66,21 @@
         "z": 300.0
       },
       "triangles": 3060
+    },
+    {
+      "code": "FDUM140KXE6F",
+      "file": "models/vrf/maco-vrf-fdum140kxe6f.glb",
+      "category": "indoor",
+      "unit": "mm",
+      "upAxis": "Z",
+      "sizeMm": {
+        "x": 1684.0,
+        "y": 802.0,
+        "z": 300.0
+      },
+      "triangles": 2664,
+      "converter": "hvac-studio ifc->glb (Advance canvas board tools/ifc/toGlb.mjs)",
+      "note": "Also the body of FDUM160KXE6F (same cabinet per MHI KX-DB-175)"
     }
   ]
 }

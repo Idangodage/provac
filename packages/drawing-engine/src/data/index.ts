@@ -32,3 +32,11 @@ export {
   type AcEquipmentLibraryCategory,
   type AcEquipmentPlacementMode,
 } from './ac-equipment-library';
+
+export {
+  UNIT_SPECIFICATIONS,
+  unitSpecificationFor,
+  type AcUnitSpecification,
+  type UnitEspSpecification,
+  type UnitSpecSource,
+} from './unitSpecifications';

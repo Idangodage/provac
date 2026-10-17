@@ -3514,6 +3514,15 @@ export class HvacPlanRenderer {
           strokeWidth: 0.8,
         });
 
+        if (ducted.controlBox) {
+          // A unit drawn to its maker's dimensions: the control box standing out of its connection end.
+          renderRect(ducted.controlBox, {
+            fill: serviceFill,
+            stroke: shellStroke,
+            strokeWidth: 0.9,
+          });
+        }
+
         ducted.hangerBrackets.forEach((bracket) => {
           renderRect(bracket, {
             fill: bracketFill,

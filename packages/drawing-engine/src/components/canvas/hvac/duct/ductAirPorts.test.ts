@@ -76,10 +76,10 @@ function readGlbPositions(bytes: Uint8Array): Float32Array[] {
   }));
 }
 
-describe('measured ports agree with the real GLB collars', () => {
-  it('each port lip matches the outermost collar face of the model within 2 mm', async () => {
+/** Each port lip matches the outermost collar face of the unit's GLB within 2 mm. */
+async function expectPortsOnGlb(file: string, element: HvacElement): Promise<void> {
     const fs = (await import(/* @vite-ignore */ `node:${'fs'}`)) as { readFileSync(path: URL): Uint8Array };
-    const bytes = fs.readFileSync(new URL('../../../../../../../apps/web/public/models/vrf/maco-vrf-fdum22kxe6f-w.glb', import.meta.url));
+    const bytes = fs.readFileSync(new URL(`../../../../../../../apps/web/public/models/vrf/${file}`, import.meta.url));
     const vertices: Array<[number, number, number]> = [];
     for (const positions of readGlbPositions(bytes)) {
       for (let index = 0; index < positions.length; index += 3) vertices.push([positions[index]!, positions[index + 1]!, positions[index + 2]!]);
@@ -105,7 +105,6 @@ describe('measured ports agree with the real GLB collars', () => {
         height: Math.max(...lz) - Math.min(...lz),
       };
     };
-    const element = fdum22({ position: { x: -1084 / 2, y: -697 / 2 }, elevation: 0 });
     for (const port of resolveUnitAirPorts(element)) {
       const lip = lipOn(port.normal.y > 0 ? 1 : -1);
       expect(Math.abs(port.lip.y - lip.y)).toBeLessThan(2);
@@ -113,6 +112,50 @@ describe('measured ports agree with the real GLB collars', () => {
       expect(Math.abs(port.lip.z - lip.centreZ)).toBeLessThan(2);
       expect(Math.abs(port.widthMm - lip.width)).toBeLessThan(2);
       expect(Math.abs(port.heightMm - lip.height)).toBeLessThan(2);
+    }
+}
+
+describe('measured ports agree with the real GLB collars', () => {
+  it('FDUM22KXE6F-W', async () => {
+    await expectPortsOnGlb('maco-vrf-fdum22kxe6f-w.glb', fdum22({ position: { x: -1084 / 2, y: -697 / 2 }, elevation: 0 }));
+  });
+
+  it('FDUM140KXE6F (and the FDUM160KXE6F, its cabinet)', async () => {
+    const unit = (modelCode: string) => fdum22({
+      position: { x: -1684 / 2, y: -802 / 2 }, elevation: 0, width: 1684, depth: 802,
+      properties: { source: 'ifc-glb', modelUrl: '/models/vrf/maco-vrf-fdum140kxe6f.glb', modelCode },
+    });
+    await expectPortsOnGlb('maco-vrf-fdum140kxe6f.glb', unit('FDUM140KXE6F'));
+    const ports = resolveUnitAirPorts(unit('FDUM140KXE6F'));
+    expect(ports.map((port) => [port.kind, port.widthMm, port.heightMm])).toEqual([['supply', 1194, 164], ['return', 1274, 229]]);
+    expect(ports[0]!.provenance.sourceId).toBe('fdum140-glb-measured');
+    expect(resolveUnitAirPorts(unit('FDUM160KXE6F')).map((port) => port.lip)).toEqual(ports.map((port) => port.lip));
+  });
+});
+
+describe('FDU224/280KXZE1 air ports (MHI dimension drawing)', () => {
+  const fdu = (modelCode: string): HvacElement => fdum22({
+    position: { x: 0, y: 0 }, width: 1600, depth: 893, height: 379, elevation: 2400,
+    properties: { source: 'mhi-drawing', modelCode },
+  });
+
+  it('both collars are 1450 × 250, centred, standing 25 mm out of the casing; supply up top, return low', () => {
+    for (const code of ['FDU224KXZE1', 'FDU280KXZE1']) {
+      const ports = resolveUnitAirPorts(fdu(code));
+      const supply = ports.find((port) => port.kind === 'supply')!;
+      const ret = ports.find((port) => port.kind === 'return')!;
+      expect([supply.widthMm, supply.heightMm, ret.widthMm, ret.heightMm]).toEqual([1450, 250, 1450, 250]);
+      expect(supply.normal).toEqual({ x: 0, y: 1 });
+      expect(ret.normal).toEqual({ x: 0, y: -1 });
+      expect(supply.lip.x).toBeCloseTo(800, 6);
+      expect(supply.lip.y).toBeCloseTo(893 / 2 + 893 / 2 + 25, 6);
+      expect(ret.lip.y).toBeCloseTo(893 / 2 - 893 / 2 - 25, 6);
+      // Top 50 below the casing top (379 − 50 − 125); bottom 50 above the casing bottom (50 + 125).
+      expect(supply.lip.z).toBeCloseTo(2400 + 204, 6);
+      expect(ret.lip.z).toBeCloseTo(2400 + 175, 6);
+      expect(supply.collarDepthMm).toBe(25);
+      expect(supply.source).toBe('measured');
+      expect(supply.provenance).toMatchObject({ sourceId: 'mhi-kx-t-222-drawing', verified: true });
     }
   });
 });
