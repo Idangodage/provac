@@ -28,6 +28,7 @@ import {
   RotateCw,
   Layers,
   Fan,
+  Gauge,
 } from 'lucide-react';
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { shallow } from 'zustand/shallow';
@@ -44,6 +45,7 @@ import {
   AcEquipmentPanel,
 } from './components';
 import { useAirSystemUiStore } from './components/canvas/hvac/duct/airSystemUiStore';
+import { UnitDesignPanel } from './components/canvas/hvac/unit/UnitDesignPanel';
 import {
   boardSettingsToCanvasProps,
   boardValueFromMm,
@@ -85,6 +87,17 @@ export interface SmartDrawingEditorProps {
   className?: string;
   /** Verified manufacturer engineering profile used for VRF routing and validation. */
   vrfRuleProfile?: ManufacturerRuleProfile;
+}
+
+/** The toolbox's own modes, and the unit panel that takes their place while an AC unit is selected. */
+type ToolboxMode = 'building' | 'ac-equipment';
+type LeftPanelMode = ToolboxMode | 'unit';
+
+const AC_UNIT_TYPES: ReadonlySet<string> = new Set(['ducted-ac', 'ceiling-cassette-ac', 'wall-mounted-ac', 'ceiling-suspended-ac', 'split-ac', 'outdoor-unit']);
+
+/** An AC unit (indoor or outdoor), as the unit panel takes it. */
+function isAcUnit(element: { type: string; category?: string }): boolean {
+  return AC_UNIT_TYPES.has(element.type) || element.category === 'indoor-unit' || element.category === 'outdoor-unit';
 }
 
 // =============================================================================
@@ -644,7 +657,11 @@ export function SmartDrawingEditor({
   const [maxLeftWidth, setMaxLeftWidth] = useState(320);
   const [leftPanelWidth, setLeftPanelWidth] = useState(248);
   const [isResizingLeft, setIsResizingLeft] = useState(false);
-  const [leftPanelMode, setLeftPanelMode] = useState<'building' | 'ac-equipment'>('building');
+  const [leftPanelMode, setLeftPanelMode] = useState<LeftPanelMode>('building');
+  /** The unit panel opens by itself when one AC unit is selected (remembered with the layout). */
+  const [unitPanelAutoOpen, setUnitPanelAutoOpen] = useState(true);
+  /** The toolbox mode the unit panel replaced, so deselecting returns to it. */
+  const unitPanelReturnMode = useRef<ToolboxMode | null>(null);
   const [leftPanelTab, setLeftPanelTab] = useState<'symbols' | 'objects'>('symbols');
   const [layoutReady, setLayoutReady] = useState(false);
   const [pendingPlacementObjectId, setPendingPlacementObjectId] = useState<string | null>(null);
@@ -689,6 +706,13 @@ export function SmartDrawingEditor({
     boardSettings: state.boardSettings,
     hvacElements: state.hvacElements,
   }), shallow);
+  const selectedElementIds = useSmartDrawingStore((state) => state.selectedElementIds);
+  /** The one AC unit the selection holds (a unit selected with its terminals counts), else null. */
+  const selectedAcUnitId = useMemo(() => {
+    const selected = new Set(selectedElementIds);
+    const units = hvacElements.filter((element) => selected.has(element.id) && isAcUnit(element));
+    return units.length === 1 ? units[0]!.id : null;
+  }, [hvacElements, selectedElementIds]);
   const {
     loadData,
     exportData,
@@ -834,7 +858,44 @@ export function SmartDrawingEditor({
     if (leftPanelMode === 'ac-equipment' && leftPanelWidth < 220) {
       setLeftPanelWidth(Math.min(Math.max(248, minLeftWidth), maxLeftWidth));
     }
+    // The unit panel's two-line rows need about 300 px.
+    if (leftPanelMode === 'unit' && leftPanelWidth < 300) {
+      setLeftPanelWidth(Math.min(312, maxLeftWidth));
+    }
   }, [leftPanelMode, leftPanelWidth, maxLeftWidth, minLeftWidth]);
+
+  // One AC unit selected: the left panel becomes its unit panel; deselected, the toolbox it replaced comes back.
+  // Not while something is being placed (the toolbox shows what is placed).
+  const lastSelectedUnitId = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = lastSelectedUnitId.current;
+    lastSelectedUnitId.current = selectedAcUnitId;
+    if (selectedAcUnitId && selectedAcUnitId !== previous) {
+      if (!unitPanelAutoOpen || pendingPlacementEquipmentId || pendingPlacementObjectId) return;
+      setLeftPanelMode((mode) => {
+        if (mode !== 'unit') unitPanelReturnMode.current = mode;
+        return 'unit';
+      });
+    } else if (!selectedAcUnitId && previous) {
+      const back = unitPanelReturnMode.current;
+      if (!back) return;
+      unitPanelReturnMode.current = null;
+      setLeftPanelMode((mode) => (mode === 'unit' ? back : mode));
+    }
+  }, [selectedAcUnitId, unitPanelAutoOpen, pendingPlacementEquipmentId, pendingPlacementObjectId]);
+
+  // A panel asked for the unit panel (the Auto duct card's "Size it in the unit panel", the run inspector).
+  useEffect(() => {
+    const open = () => {
+      setShowLeftPanel(true);
+      setLeftPanelMode((mode) => {
+        if (mode !== 'unit') unitPanelReturnMode.current = mode;
+        return 'unit';
+      });
+    };
+    window.addEventListener('smart-drawing:open-unit-panel', open);
+    return () => window.removeEventListener('smart-drawing:open-unit-panel', open);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -889,8 +950,9 @@ export function SmartDrawingEditor({
         showLeftPanel?: boolean;
         showRightPanel?: boolean;
         leftPanelWidth?: number;
-        leftPanelMode?: 'building' | 'ac-equipment';
+        leftPanelMode?: ToolboxMode;
         leftPanelTab?: 'symbols' | 'objects';
+        unitPanelAutoOpen?: boolean;
       };
 
       setShowLeftPanel(typeof parsed.showLeftPanel === 'boolean' ? parsed.showLeftPanel : fallbackLeftOpen);
@@ -903,6 +965,9 @@ export function SmartDrawingEditor({
       }
       if (parsed.leftPanelTab === 'symbols' || parsed.leftPanelTab === 'objects') {
         setLeftPanelTab(parsed.leftPanelTab);
+      }
+      if (typeof parsed.unitPanelAutoOpen === 'boolean') {
+        setUnitPanelAutoOpen(parsed.unitPanelAutoOpen);
       }
     } catch {
       setShowLeftPanel(fallbackLeftOpen);
@@ -918,10 +983,12 @@ export function SmartDrawingEditor({
       showLeftPanel,
       showRightPanel,
       leftPanelWidth,
-      leftPanelMode,
+      // The unit panel belongs to a selection: a reload opens the toolbox it stands in for.
+      leftPanelMode: leftPanelMode === 'unit' ? unitPanelReturnMode.current ?? 'ac-equipment' : leftPanelMode,
       leftPanelTab,
+      unitPanelAutoOpen,
     });
-  }, [layoutReady, showLeftPanel, showRightPanel, leftPanelWidth, leftPanelMode, leftPanelTab]);
+  }, [layoutReady, showLeftPanel, showRightPanel, leftPanelWidth, leftPanelMode, leftPanelTab, unitPanelAutoOpen]);
 
   useEffect(() => {
     const handleOpenRoomProperties = () => {
@@ -1053,13 +1120,29 @@ export function SmartDrawingEditor({
   }, []);
 
   const handleShowBuildingPanel = useCallback(() => {
+    unitPanelReturnMode.current = null;
     setLeftPanelMode('building');
     setPendingPlacementEquipmentId(null);
   }, []);
 
   const handleShowEquipmentPanel = useCallback(() => {
+    unitPanelReturnMode.current = null;
     setLeftPanelMode('ac-equipment');
     setPendingPlacementObjectId(null);
+  }, []);
+
+  const handleShowUnitPanel = useCallback(() => {
+    setLeftPanelMode((mode) => {
+      if (mode !== 'unit') unitPanelReturnMode.current = mode;
+      return 'unit';
+    });
+  }, []);
+
+  /** "◂ Toolbox" in the unit panel: the toolbox it replaced; the unit stays selected. */
+  const handleUnitPanelBack = useCallback(() => {
+    const back = unitPanelReturnMode.current ?? 'ac-equipment';
+    unitPanelReturnMode.current = null;
+    setLeftPanelMode(back);
   }, []);
 
   const handleStartEquipmentPlacement = useCallback((definition: AcEquipmentDefinition, options: { forUnitId?: string } = {}) => {
@@ -1255,6 +1338,7 @@ export function SmartDrawingEditor({
         {showLeftPanel && (
           <aside
             ref={leftPanelRef}
+            data-testid="left-panel"
             className={`relative shrink-0 bg-[#fbf7ee] border-r border-amber-200/70 ${
               isResizingLeft ? 'transition-none' : 'transition-[width] duration-200'
             }`}
@@ -1282,6 +1366,15 @@ export function SmartDrawingEditor({
                       title="AC equipment tools"
                     >
                       <Fan size={18} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleShowUnitPanel}
+                      className={`relative flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200/80 bg-white/80 ${leftPanelMode === 'unit' ? 'text-amber-700' : ''}`}
+                      title="Unit design (specification and duct sizing of the selected unit)"
+                    >
+                      <Gauge size={18} />
+                      {selectedAcUnitId ? <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-sky-600" aria-hidden="true" /> : null}
                     </button>
                     <button
                       type="button"
@@ -1334,7 +1427,7 @@ export function SmartDrawingEditor({
                     <div>
                       <p className="text-[11px] uppercase tracking-wide text-slate-500">Toolbox</p>
                       <h2 className="text-xs font-semibold text-slate-800">
-                        {leftPanelMode === 'ac-equipment' ? 'AC Planning Tools' : 'Drawing Tools'}
+                        {leftPanelMode === 'ac-equipment' ? 'AC Planning Tools' : leftPanelMode === 'unit' ? 'Unit design' : 'Drawing Tools'}
                       </h2>
                     </div>
                     <div className="text-[11px] text-slate-500">{elementCount} elements</div>
@@ -1361,6 +1454,19 @@ export function SmartDrawingEditor({
                       }`}
                     >
                       AC Equipment
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleShowUnitPanel}
+                      title="Specification and duct sizing of the selected unit"
+                      className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] ${
+                        leftPanelMode === 'unit'
+                          ? 'bg-amber-200 text-amber-900'
+                          : 'text-slate-600 hover:bg-amber-50'
+                      }`}
+                    >
+                      Unit
+                      {selectedAcUnitId ? <span className="h-1.5 w-1.5 rounded-full bg-sky-600" aria-hidden="true" /> : null}
                     </button>
                   </div>
                 </div>
@@ -1456,6 +1562,13 @@ export function SmartDrawingEditor({
                         </div>
                       </div>
                     </div>
+                  ) : leftPanelMode === 'unit' ? (
+                    <UnitDesignPanel
+                      unitId={selectedAcUnitId}
+                      onShowToolbox={handleUnitPanelBack}
+                      autoOpen={unitPanelAutoOpen}
+                      onAutoOpenChange={setUnitPanelAutoOpen}
+                    />
                   ) : (
                     <AcEquipmentPanel
                       className="h-full"

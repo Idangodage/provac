@@ -17,6 +17,7 @@ import {
   getArchitecturalMaterial,
   resolveWallMaterialFromLibrary,
 } from "../attributes";
+import { unitSpecificationFor } from "../data/unitSpecifications";
 import { useSmartDrawingStore } from "../store";
 import type {
   CompassDirection,
@@ -1533,8 +1534,12 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   const refrigerantType = propertyAsString(
     selectedEquipment.properties,
     "refrigerantType",
-    "-",
+    "",
   );
+  // The maker's figures stand in (as placeholders) until a value is typed; a typed value overrides them.
+  const makerSpec = unitSpecificationFor(selectedEquipment);
+  const makerAirflowLps = makerSpec?.airflowM3min ? Math.round((makerSpec.airflowM3min.hi * 60) / 3.6) : null;
+  const makerVoltage = makerSpec ? /(\d{3})\D(\d{3}) V/.exec(makerSpec.power.supply) : null;
 
   const updateProperties = (properties: Record<string, unknown>) => {
     updateHvacElement(selectedEquipment.id, { properties });
@@ -1942,8 +1947,14 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="number"
           step={1}
-          value={airflowLps.toFixed(0)}
+          value={airflowLps > 0 ? airflowLps.toFixed(0) : ""}
+          placeholder={makerAirflowLps ? `${makerAirflowLps} (Hi)` : undefined}
+          title={makerAirflowLps ? "Empty: the maker's airflow at the fan speed. A value here overrides it in duct sizing." : undefined}
           onChange={(e) => {
+            if (e.target.value.trim() === "") {
+              updateProperties({ airflowLps: undefined });
+              return;
+            }
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
             updateProperties({ airflowLps: parsed });
@@ -1956,8 +1967,13 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="number"
           step={0.1}
-          value={heatingCapacityKw.toFixed(1)}
+          value={heatingCapacityKw > 0 ? heatingCapacityKw.toFixed(1) : ""}
+          placeholder={makerSpec?.heatingKw ? String(makerSpec.heatingKw) : undefined}
           onChange={(e) => {
+            if (e.target.value.trim() === "") {
+              updateProperties({ heatingCapacityKw: undefined });
+              return;
+            }
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
             updateProperties({ heatingCapacityKw: parsed });
@@ -1970,8 +1986,14 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="number"
           step={1}
-          value={staticPressurePa.toFixed(0)}
+          value={staticPressurePa > 0 ? staticPressurePa.toFixed(0) : ""}
+          placeholder={makerSpec?.esp ? `max ${makerSpec.esp.maxPa}` : undefined}
+          title={makerSpec?.esp ? `The maker's fan gives up to ${makerSpec.esp.maxPa} Pa; the unit panel (left) checks the ducts against it.` : undefined}
           onChange={(e) => {
+            if (e.target.value.trim() === "") {
+              updateProperties({ staticPressurePa: undefined, espPa: undefined });
+              return;
+            }
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
             updateProperties({ staticPressurePa: parsed, espPa: parsed });
@@ -1984,8 +2006,13 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="number"
           step={1}
-          value={voltage.toFixed(0)}
+          value={voltage > 0 ? voltage.toFixed(0) : ""}
+          placeholder={makerVoltage ? `${makerVoltage[1]}–${makerVoltage[2]}` : undefined}
           onChange={(e) => {
+            if (e.target.value.trim() === "") {
+              updateProperties({ voltage: undefined });
+              return;
+            }
             const parsed = Number.parseFloat(e.target.value);
             if (!Number.isFinite(parsed)) return;
             updateProperties({ voltage: parsed });
@@ -1998,6 +2025,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         <input
           type="text"
           value={refrigerantType}
+          placeholder={makerSpec?.refrigerant ?? "-"}
           onChange={(e) =>
             updateProperties({ refrigerantType: e.target.value })
           }

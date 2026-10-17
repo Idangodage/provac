@@ -22,7 +22,7 @@ import { useSmartDrawingStore } from '../../../../store';
 
 import { DuctFrontierChart } from './DuctFrontierChart';
 import {
-  AppliedSystemSizing,
+  AppliedSizingSummary,
   BasisEditor,
   ServiceTabs,
   SizingMethodSwitch,
@@ -47,6 +47,7 @@ import { sameAutoDuctInputs } from './ductAutoWorkflow';
 import { formatCost, type DuctCostBreakdown } from './ductEconomics';
 import { parseDuctNumber } from './ductNumericValue';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
+import { useDuctSizingDraft, useDuctSizingDraftStore, type DuctSizingDraft } from './ductSizingDraft';
 import { basisAirflowM3h, defaultSizingBasis, linkSizingBasis } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
@@ -238,26 +239,28 @@ export function DuctAutoCard() {
   }), shallow);
   const { result, message, running, request, resizing } = preview;
   const cardRef = useRef<HTMLDivElement>(null);
-  const [fanSpeed, setFanSpeed] = useState<FanSpeed>('hi');
-  const [airflowDraft, setAirflowDraft] = useState('');
   const [airflowBadInput, setAirflowBadInput] = useState(false);
   const [layout, setLayout] = useState<AutoDuctLayoutChoice>('auto');
   const [shape, setShape] = useState<AutoDuctShape>('optimal');
-  const [services, setServices] = useState({ supply: true, return: true });
   const [rebuild, setRebuild] = useState(false);
   const { ductSettings, setDuctSettings } = useSmartDrawingStore((state) => ({ ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings }), shallow);
-  /** Constant-friction bases the designer changed (per service), and terminal airflows typed in the card. */
-  const [bases, setBases] = useState<Partial<Record<DuctService, DuctSystemSizing>>>({});
-  const [terminalAirflows, setTerminalAirflows] = useState<TerminalAirflows>({});
   const [sizingTab, setSizingTab] = useState<DuctService>('supply');
   const rooms = useSmartDrawingStore((state) => state.rooms);
   const selection = useMemo(() => autoDuctSelection(selectedElementIds, hvacElements, { includeConnected: rebuild, rooms }), [selectedElementIds, hvacElements, rebuild, rooms]);
   const systemTag = selection ? airSystemTags(hvacElements).get(selection.unit.id) ?? (selection.unit.label || 'Unit') : '';
   const unitId = selection?.unit.id ?? null;
+  // Fan speed, typed airflow, services, constant-friction bases and terminal airflows: the unit's draft, shared with
+  // the unit panel (left), kept per unit for the session.
+  const draft = useDuctSizingDraft(unitId);
+  const updateDraft = useDuctSizingDraftStore((state) => state.update);
+  const { fanSpeed, airflowDraft, services, bases, terminalAirflows } = draft;
+  const patchDraft = (patch: Partial<DuctSizingDraft>) => { if (unitId) updateDraft(unitId, patch); };
+  const setFanSpeed = (value: FanSpeed) => patchDraft({ fanSpeed: value });
+  const setAirflowDraft = (value: string) => patchDraft({ airflowDraft: value });
+  const setServices = (value: { supply: boolean; return: boolean }) => patchDraft({ services: value });
+  const setBases = (value: Partial<Record<DuctService, DuctSystemSizing>>) => patchDraft({ bases: value });
+  const setTerminalAirflows = (value: TerminalAirflows) => patchDraft({ terminalAirflows: value });
   useEffect(() => {
-    setBases({});
-    setTerminalAirflows({});
-    setAirflowDraft('');
     setAirflowBadInput(false);
     setRebuild(false);
   }, [unitId]);
@@ -465,7 +468,7 @@ export function DuctAutoCard() {
       {inputsChanged && !resizing ? <p className="text-[10px] text-amber-700" role="status">Inputs changed. Regenerate ducts to review and apply a matching design.</p> : null}
       {stale ? <p className="text-[10px] text-amber-700" role="status">The drawing or duct settings changed since the preview. Regenerate ducts.</p> : null}
       {message && !current ? <p className="text-[10px] text-slate-600" role="status">{message}</p> : null}
-      {occupied && !current && !busy && !rebuild ? <AppliedSystemSizing unit={unit} /> : null}
+      {occupied && !current && !busy && !rebuild ? <AppliedSizingSummary unit={unit} /> : null}
       {current ? <Designs result={current} /> : null}
       {current ? <Summary result={current} /> : null}
     </div>

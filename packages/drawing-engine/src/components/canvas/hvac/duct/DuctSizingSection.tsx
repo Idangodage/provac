@@ -1,36 +1,31 @@
 'use client';
 
 /**
- * Constant-friction sizing in the Auto duct card. Per service: the main's
- * velocity and the friction rate, linked (the one set last drives, the other
- * follows at the system airflow), the velocity limits by part, and each
- * terminal's airflow. Before Generate it sets what Generate sizes at; with a
- * preview it re-sizes the preview live; on ducts already in the drawing each
- * committed change re-sizes them there as one undo step. The table shows each
- * section: its airflow, size, velocity, friction and what set it.
+ * Constant-friction sizing controls, shared by the Auto duct card and the
+ * unit panel. Per service: the main's velocity and the friction rate, linked
+ * (the one set last drives, the other follows at the system airflow), the
+ * velocity limits by part, and each terminal's airflow. Before Generate they
+ * set what Generate sizes at; with a preview they re-size it live; on ducts
+ * already in the drawing (the unit panel) each committed change re-sizes them
+ * there as one undo step. The table shows each section: its airflow, size,
+ * velocity, friction and what set it. The card's summary of applied ducts
+ * points to the unit panel.
  */
 import { Link2, Ruler, Wind } from 'lucide-react';
-import { useMemo, useState, type ReactNode } from 'react';
-import { shallow } from 'zustand/shallow';
+import { useMemo, type ReactNode } from 'react';
 
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
 import { DuctNumberInput } from './DuctNumberInput';
-import { measureDuctSystem, resizeDuctSystemOnDrawing } from './ductAutoController';
 import type { DuctDesignSettings } from './ductSettings';
-import { FAN_SPEED_LABELS, FAN_SPEEDS, readUnitAirData, type FanSpeed } from './ductSizing';
 import {
-  basisAirflowM3h,
-  defaultSizingBasis,
   DUCT_SECTION_SET_BY_LABELS,
   ductSystemRootOf,
-  linkSizingBasis,
   type DuctSystemSizingReport,
 } from './ductSystemSizing';
 import { readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
 import { legLabel } from './optimizer/sizingModel';
-import { continueBasis } from './unitAirSide';
 
 export type SizingMethod = DuctDesignSettings['autoSizingMethod'];
 export type TerminalAirflows = Record<string, number | null>;
@@ -40,13 +35,13 @@ const SERVICE_LABEL: Record<DuctService, string> = { supply: 'Supply', return: '
 const fixed = (value: number, digits: number) => (Number.isFinite(value) ? value.toFixed(digits) : '–');
 
 /** A number field with − / + steps: live (every valid keystroke) or committed on Enter / blur. */
-function StepNumber({ value, onChange, step, min, max, label, live, derived, placeholder, allowEmpty = false }: {
+function StepNumber({ value, onChange, step, min, max, label, live, derived, digits, placeholder, allowEmpty = false }: {
   value: number | null; onChange: (value: number | null) => void; step: number; min: number; max: number;
-  label: string; live: boolean; derived?: boolean; placeholder?: string; allowEmpty?: boolean;
+  label: string; live: boolean; derived?: boolean; digits?: number; placeholder?: string; allowEmpty?: boolean;
 }) {
   return (
     <DuctNumberInput value={value} onChange={onChange} step={step} min={min} max={max} label={label}
-      live={live} derived={derived} steppers allowEmpty={allowEmpty} placeholder={placeholder} className="w-14" />
+      live={live} derived={derived} digits={digits} steppers allowEmpty={allowEmpty} placeholder={placeholder} className="w-14" />
   );
 }
 
@@ -110,13 +105,13 @@ export function BasisEditor({ basis, live, onChange }: { basis: DuctSystemSizing
     <div className="space-y-0.5" data-testid="duct-sizing-basis">
       <Row label="Main velocity" hint="Velocity in the main at the system airflow; the friction rate follows from it">
         {marker(drivesVelocity)}
-        <StepNumber label="Main velocity" value={basis.mainVelocityMs} step={0.1} min={1} max={15} live={live} derived={!drivesVelocity}
+        <StepNumber label="Main velocity" value={basis.mainVelocityMs} step={0.1} min={1} max={15} live={live} derived={!drivesVelocity} digits={2}
           onChange={(value) => value !== null && onChange({ ...basis, drive: 'velocity', mainVelocityMs: value }, `main velocity ${fixed(basis.mainVelocityMs, 1)} → ${fixed(value, 1)} m/s`)} />
         <span className="w-8 text-[10px] text-slate-400">m/s</span>
       </Row>
       <Row label="Friction rate" hint="Every section is sized at this friction loss per metre (equal friction)">
         {marker(!drivesVelocity)}
-        <StepNumber label="Friction rate" value={basis.frictionPaPerM} step={0.05} min={0.1} max={5} live={live} derived={drivesVelocity}
+        <StepNumber label="Friction rate" value={basis.frictionPaPerM} step={0.05} min={0.1} max={5} live={live} derived={drivesVelocity} digits={2}
           onChange={(value) => value !== null && onChange({ ...basis, drive: 'friction', frictionPaPerM: value }, `friction ${fixed(basis.frictionPaPerM, 2)} → ${fixed(value, 2)} Pa/m`)} />
         <span className="w-8 text-[10px] text-slate-400">Pa/m</span>
       </Row>
@@ -138,6 +133,8 @@ export interface TerminalAirflowRow {
   fixed: boolean;
   neckMm: number;
   neckVelocityMs: number;
+  /** The neck it takes at the next resize (necks follow airflow), when larger than its own. */
+  nextNeckMm?: number | null;
 }
 
 /** Each terminal's airflow: typed, or blank for an equal share of the rest. */
@@ -166,6 +163,9 @@ export function TerminalAirflowList({ rows, neckCapMs, live, onChange, systemAir
             <div className="flex items-center gap-1">
               <span className="min-w-0 flex-1 truncate" title={row.label}>{row.label}</span>
               <span className="text-slate-500">Ø{row.neckMm}</span>
+              {row.nextNeckMm && row.nextNeckMm > row.neckMm ? (
+                <span className="rounded bg-amber-100 px-1 font-medium text-amber-800" title="Its airflow needs a larger neck: it takes this one at the next resize, its runout with it">→ Ø{row.nextNeckMm}</span>
+              ) : null}
               <span className={row.neckVelocityMs > neckCapMs + 1e-6 ? 'font-semibold text-amber-700' : 'text-slate-500'} title={`Neck velocity (cap ${neckCapMs} m/s)`}>
                 {fixed(row.neckVelocityMs, 1)} m/s
               </span>
@@ -226,81 +226,42 @@ export function SizingTable({ report }: { report: DuctSystemSizingReport }) {
   );
 }
 
-/** The basis a service of a unit is shown with: stored on its root run, else the project's defaults. */
-export function basisForUnit(unit: HvacElement, service: DuctService, settings: DuctDesignSettings, stored: DuctSystemSizing | undefined, fanSpeed: FanSpeed = 'hi'): DuctSystemSizing {
-  const basis = stored ?? defaultSizingBasis(settings, service, null, fanSpeed);
-  return linkSizingBasis(basis, basisAirflowM3h(unit, basis).airflowM3h);
+/** Asks the editor to show the unit panel (left side) for the selected unit. */
+export function openUnitPanel(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('smart-drawing:open-unit-panel'));
 }
 
 /**
- * The ducts already on the unit's collars: their sizing basis (stored, or the
- * project's defaults when the optimiser sized them), and their sections as
- * drawn. Each committed change re-sizes the system on the drawing (one undo).
+ * The ducts already on the unit's collars, one line per service: how each is
+ * sized now. Continuing it — velocity, friction, each terminal's airflow, the
+ * first sizing, the method step by step — is the unit panel's (left side).
  */
-export function AppliedSystemSizing({ unit }: { unit: HvacElement }) {
-  const { hvacElements, ductSettings } = useSmartDrawingStore((state) => ({ hvacElements: state.hvacElements, ductSettings: state.ductSettings }), shallow);
+export function AppliedSizingSummary({ unit }: { unit: HvacElement }) {
+  const hvacElements = useSmartDrawingStore((state) => state.hvacElements);
   const roots = useMemo(() => (['supply', 'return'] as const).flatMap((service) => {
     const root = ductSystemRootOf(hvacElements, unit.id, service);
-    return root ? [{ service, root, spec: readDuctRunSpec(root)! }] : [];
+    return root ? [{ service, spec: readDuctRunSpec(root)! }] : [];
   }), [hvacElements, unit.id]);
-  const [tab, setTab] = useState<DuctService>('supply');
-  const active = roots.find((entry) => entry.service === tab) ?? roots[0];
-  // The basis it continues from: stored, else its first sizing (fan speed and airflow as designed), else the main as drawn.
-  const basis = useMemo(() => {
-    if (!active) return null;
-    const continued = continueBasis(hvacElements, unit.id, active.service, ductSettings).basis;
-    return linkSizingBasis(continued, basisAirflowM3h(unit, continued).airflowM3h);
-  }, [active, hvacElements, unit, ductSettings]);
-  const report = useMemo(() => (active && basis ? measureDuctSystem(unit.id, active.service, basis) : null),
-    // The drawing (and so the stored basis) is what the report follows.
-    [hvacElements, ductSettings, active, basis, unit.id]);
-  if (!active || !basis) return null;
-  const air = readUnitAirData(unit);
-  const neckCap = active.service === 'return' ? ductSettings.autoMaxNeckVelocityReturnMs : ductSettings.autoMaxNeckVelocitySupplyMs;
-  const resize = (next: DuctSystemSizing, what: string, terminalAirflows?: TerminalAirflows) => {
-    const linked = linkSizingBasis(next, basisAirflowM3h(unit, next).airflowM3h);
-    resizeDuctSystemOnDrawing(unit.id, active.service, linked, terminalAirflows, `Duct sizing (${active.service}): ${what}`);
-  };
-  const airflow = basisAirflowM3h(unit, basis);
+  if (!roots.length) return null;
   return (
-    <details className="rounded-md border border-sky-100 bg-white/70 p-1.5" open data-testid="duct-sizing-applied">
-      <summary className="cursor-pointer text-[11px] font-semibold text-slate-700">Ducts on this unit — sizing</summary>
-      <div className="mt-1 space-y-1">
-        <ServiceTabs services={roots.map((entry) => entry.service)} active={active.service} onChange={setTab} />
-        <p className="text-[10px] text-slate-500">
-          {active.spec.sizing
-            ? `Constant friction ${fixed(basis.frictionPaPerM, 2)} Pa/m · ${fixed(basis.mainVelocityMs, 1)} m/s in the main.`
-            : 'Sized by the life-cycle optimum (or by hand): a change below sizes it by constant friction.'}
-          {' '}Each change resizes the ducts on the drawing (one undo).
-        </p>
-        {air.airflowM3h ? (
-          <Row label="Fan speed" hint="The unit's airflow at this speed is the system airflow, unless one is typed below">
-            <select value={basis.fanSpeed} aria-label="Applied sizing fan speed" className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-xs"
-              onChange={(event) => resize({ ...basis, fanSpeed: event.target.value as FanSpeed, airflowM3h: null }, `fan speed ${FAN_SPEED_LABELS[basis.fanSpeed]} → ${FAN_SPEED_LABELS[event.target.value as FanSpeed]}`)}>
-              {FAN_SPEEDS.map((speed) => <option key={speed} value={speed}>{FAN_SPEED_LABELS[speed]} · {Math.round(air.airflowM3h![speed])} m³/h</option>)}
-            </select>
-          </Row>
-        ) : null}
-        <Row label="Airflow" hint="System airflow the friction rate and the main velocity are linked at (blank = the fan speed's)">
-          <StepNumber key={`${unit.id}:${active.service}`} label="Applied sizing airflow" value={basis.airflowM3h} step={10} min={0.01} max={50000} live={false} allowEmpty
-            onChange={(value) => resize({ ...basis, airflowM3h: value }, `airflow ${airflow.airflowM3h ? Math.round(airflow.airflowM3h) : '–'} → ${value === null ? 'fan speed' : Math.round(value)} m³/h`)} />
-          <span className="w-8 text-[10px] text-slate-400">{basis.airflowM3h ? 'm³/h' : `${airflow.airflowM3h ? Math.round(airflow.airflowM3h) : '–'}`}</span>
-        </Row>
-        <BasisEditor key={`${unit.id}:${active.service}`} basis={basis} live={false} onChange={(next, what) => resize(next, what)} />
-        {report ? (
-          <TerminalAirflowList neckCapMs={neckCap} live={false} systemAirflowM3h={airflow.airflowM3h}
-            rows={report.terminals.map((terminal) => ({ id: terminal.terminalId, label: terminal.label, airflowM3h: terminal.airflowM3h, fixed: terminal.fixed, neckMm: terminal.neckMm, neckVelocityMs: terminal.neckVelocityMs }))}
-            onChange={(id, value, what) => resize(basis, what, { [id]: value })} />
-        ) : null}
-        {report ? <SizingTable report={report} /> : null}
-        {report && report.issues.some((issue) => issue.severity !== 'info') ? (
-          <ul className="space-y-0.5 text-[10px]">
-            {report.issues.filter((issue) => issue.severity !== 'info').slice(0, 6).map((issue, index) => (
-              <li key={index} className={issue.severity === 'error' ? 'text-red-600' : 'text-amber-700'}>{issue.code}: {issue.message}</li>
-            ))}
-          </ul>
-        ) : null}
-      </div>
-    </details>
+    <div className="space-y-1 rounded-md border border-sky-100 bg-white/70 p-1.5" data-testid="duct-sizing-applied-summary">
+      <p className="text-[11px] font-semibold text-slate-700">Ducts on this unit</p>
+      <ul className="space-y-0.5 text-[10px] text-slate-600">
+        {roots.map(({ service, spec }) => (
+          <li key={service} className="flex min-w-0 items-center gap-1">
+            <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${service === 'supply' ? 'bg-blue-600' : 'bg-teal-600'}`} aria-hidden="true" />
+            <span className="font-medium text-slate-700">{SERVICE_LABEL[service]}</span>
+            <span className="truncate">
+              {spec.sizing ? `constant friction ${fixed(spec.sizing.frictionPaPerM, 2)} Pa/m · ${fixed(spec.sizing.mainVelocityMs, 1)} m/s`
+                : spec.initialSizing ? 'life-cycle optimum' : 'no sizing basis'}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <button type="button" onClick={openUnitPanel} data-testid="duct-sizing-open-unit-panel"
+        className="w-full rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[11px] font-medium text-sky-800 hover:bg-sky-100">
+        ◂ Size it in the unit panel
+      </button>
+    </div>
   );
 }

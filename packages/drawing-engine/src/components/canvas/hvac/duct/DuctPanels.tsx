@@ -16,6 +16,7 @@ import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 
 import { DuctNumberInput } from './DuctNumberInput';
+import { openUnitPanel } from './DuctSizingSection';
 import { assignTerminalsToUnit, unassignTerminals } from './airSystemController';
 import { analyseAirSystems, readAirSystemAssignment } from './ductAirSystems';
 import { buildDuctBom, buildDuctFabricationSchedule, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
@@ -394,7 +395,7 @@ function SystemLine({ element }: { element: HvacElement }) {
           : 'life-cycle optimum'}
       </span>
       {unit ? (
-        <button type="button" onClick={() => selectElement(unitId)} title="Select the unit: its Auto duct card sizes the ducts on it"
+        <button type="button" onClick={() => { selectElement(unitId); openUnitPanel(); }} title="Select the unit: the unit panel (left) sizes the ducts on it"
           className="ml-1 rounded border border-sky-200 bg-sky-50 px-1 text-[10px] text-sky-800 hover:bg-sky-100">
           Size this system
         </button>

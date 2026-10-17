@@ -5,7 +5,7 @@ import { useId, useState } from 'react';
 import { parseDuctNumber } from './ductNumericValue';
 
 /** Shared numeric editing for sizing, fabrication settings and terminal airflow. */
-export function DuctNumberInput({ value, onChange, step, min, max, label, live = false, allowEmpty = false, steppers = false, derived = false, placeholder, className = 'w-16' }: {
+export function DuctNumberInput({ value, onChange, step, min, max, label, live = false, allowEmpty = false, steppers = false, derived = false, digits, placeholder, className = 'w-16' }: {
   value: number | null;
   onChange: (value: number | null) => void;
   step: number;
@@ -16,6 +16,8 @@ export function DuctNumberInput({ value, onChange, step, min, max, label, live =
   allowEmpty?: boolean;
   steppers?: boolean;
   derived?: boolean;
+  /** Decimals a derived value is shown (and nudged from) with; typed values keep their own. */
+  digits?: number;
   placeholder?: string;
   className?: string;
 }) {
@@ -24,11 +26,13 @@ export function DuctNumberInput({ value, onChange, step, min, max, label, live =
   const [badInput, setBadInput] = useState(false);
   const parsed = draft === null ? null : parseDuctNumber(draft, min, max, allowEmpty);
   const error = badInput ? 'Enter a number.' : parsed && !parsed.valid ? parsed.message : null;
+  // A value that follows from another (e.g. the friction rate at a set velocity) reads rounded: 0.45, not 0.448.
+  const shown = value === null ? null : derived && digits !== undefined ? Number(value.toFixed(digits)) : Number(value.toPrecision(12));
   const commit = (next: number | null) => {
     if (next !== value) onChange(next);
   };
   const nudge = (direction: -1 | 1) => {
-    const base = parsed?.valid ? parsed.value : value;
+    const base = parsed?.valid ? parsed.value : shown;
     // Round only floating-point step noise; typed values retain their precision.
     const next = Number(Math.min(max, Math.max(min, (base ?? 0) + direction * step)).toPrecision(12));
     setDraft(null);
@@ -43,7 +47,7 @@ export function DuctNumberInput({ value, onChange, step, min, max, label, live =
           type="number" step={step} min={min} max={max} required={!allowEmpty} aria-label={label}
           aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined}
           placeholder={placeholder}
-          value={draft ?? (value === null ? '' : String(Number(value.toPrecision(12))))}
+          value={draft ?? (shown === null ? '' : String(shown))}
           onChange={(event) => {
             const text = event.target.value;
             const invalid = event.target.validity.badInput;
