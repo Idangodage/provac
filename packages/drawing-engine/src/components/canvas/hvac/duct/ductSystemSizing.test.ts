@@ -24,7 +24,9 @@ import {
   type DuctSystemSizingResult,
 } from './ductSystemSizing';
 import { terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from './ductTerminals';
-import { buildDuctRunElement, isDuctElement, readDuctRunSpec, type DuctLeg, type DuctRunSpec, type DuctSystemSizing } from './ductTypes';
+import {
+  buildDuctRunElement, isDuctElement, readDuctRunSpec, readDuctSizingRecord, type DuctLeg, type DuctRunSpec, type DuctSizingRecord, type DuctSystemSizing,
+} from './ductTypes';
 import { areaOf } from './optimizer/sizingModel';
 
 const settings = resolveDuctSettings({});
@@ -236,6 +238,77 @@ describe('a rectangular trunk with four take-offs (1500 m³/h)', () => {
     expect(sized.report.terminals.filter((terminal) => terminal.terminalId !== 'd3').map((terminal) => terminal.airflowM3h)).toEqual([300, 300, 300]);
     const main = sized.report.sections.filter((section) => section.runId === rootId);
     expect(main[main.length - 2]!.airflowM3h).toBe(600);
+  });
+
+  it('checks the fan against both services together (one fan delivers supply and return)', () => {
+    const alone = sizeDuctSystem(scene, rootId, { basis: basisAt(0.8) }, settings).report;
+    const indexPa = alone.pressure!.indexPa;
+    expect(alone.requiredEspPa).toBeCloseTo(indexPa, 6);
+    expect(alone.maxEspPa).toBe(100);
+    // The return needs what is left of the fan and a little more: over 100 Pa together, though each is under.
+    const other = 100 - indexPa + 5;
+    const together = sizeDuctSystem(scene, rootId, { basis: basisAt(0.8), otherServicePa: other }, settings).report;
+    expect(together.otherServicePa).toBeCloseTo(other, 6);
+    expect(together.requiredEspPa).toBeCloseTo(indexPa + other, 6);
+    const esp = together.issues.find((issue) => issue.code === 'DU_AUTO_ESP');
+    expect(esp?.message).toMatch(/together/);
+    expect(alone.issues.some((issue) => issue.code === 'DU_AUTO_ESP')).toBe(indexPa > 100);
+    // A caller checking the whole design turns the per-service check off.
+    expect(sizeDuctSystem(scene, rootId, { basis: basisAt(0.8), otherServicePa: other, espCheck: false }, settings).report.issues
+      .some((issue) => issue.code === 'DU_AUTO_ESP')).toBe(false);
+  });
+
+  it('reports the main and what governs it; a main velocity over the trunk limit is said, and the limit sizes the trunk', () => {
+    const byFriction = sizeDuctSystem(scene, rootId, { basis: basisAt(0.8) }, settings).report;
+    expect(byFriction.main).not.toBeNull();
+    expect(byFriction.main!.airflowM3h).toBe(1500);
+    expect(byFriction.main!.part).toBe('trunk');
+    expect(byFriction.main!.velocityCapped).toBe(false);
+    const fast = linkSizingBasis({ ...basisAt(0.8), drive: 'velocity', mainVelocityMs: 6.5 }, 1500);
+    const capped = sizeDuctSystem(scene, rootId, { basis: fast }, settings).report;
+    expect(capped.main!.velocityCapped).toBe(true);
+    expect(capped.main!.velocityMs).toBeLessThanOrEqual(settings.autoMaxVelocityTrunkMs * 1.001);
+    expect(capped.main!.linkedVelocityMs).toBe(6.5);
+    expect(capped.issues.find((issue) => issue.code === 'DU_SIZE_VELOCITY')?.severity).toBe('info');
+    // Measuring says nothing of the kind (nothing is being sized).
+    expect(sizeDuctSystem(scene, rootId, { basis: fast, measure: true }, settings).report.issues.some((issue) => issue.code === 'DU_SIZE_VELOCITY')).toBe(false);
+  });
+
+  it('links the basis at the airflow the main carries when the terminals\' own airflows do not add up to the system\'s', () => {
+    const fixed = { d0: 300, d1: 300, d2: 300, d3: 300 };
+    const { report } = sizeDuctSystem(scene, rootId, { basis: basisAt(0.8), terminalAirflows: fixed }, settings);
+    expect(report.airflowM3h).toBe(1500);
+    expect(report.terminalsAirflowM3h).toBe(1200);
+    expect(report.basis.mainVelocityMs).toBeCloseTo(velocityAtFriction(1200, 0.8), 1);
+    expect(report.main!.airflowM3h).toBe(1200);
+    expect(report.issues.some((issue) => issue.code === 'DU_AUTO_AIRFLOW')).toBe(true);
+  });
+});
+
+describe('the stored records and the round stock', () => {
+  it('reads a first-sizing record tolerantly and keeps it on the run', () => {
+    const run = buildDuctRunDraftElement({ port, points: [S(2000)] }, 'r');
+    const record: DuctSizingRecord = {
+      method: 'life-cycle', origin: 'auto-duct', label: 'Straight trunk + branches', fanSpeed: 'p-hi', airflowM3h: 780, airflowSource: 'manufacturer',
+      mainVelocityMs: 3.1, mainFrictionPaPerM: 0.52, maxVelocity: { trunk: 5, branch: 4, runout: 3 }, basis: null,
+      terminals: [{ terminalId: 'd0', airflowM3h: 390, fixed: false }], designedAt: '2026-10-17T10:00:00.000Z',
+    };
+    const stored = ductRunElementWithSpec(run, { ...readDuctRunSpec(run)!, initialSizing: record });
+    expect(readDuctRunSpec(stored)!.initialSizing).toEqual(record);
+    expect(readDuctSizingRecord({ method: 'guess' })).toBeUndefined();
+    const messy = readDuctSizingRecord({ ...record, fanSpeed: 'turbo', terminals: [{ terminalId: 3 }, { terminalId: 'd1', airflowM3h: 200 }], designedAt: 'yesterday' })!;
+    expect(messy.fanSpeed).toBe('hi');
+    expect(messy.terminals).toEqual([{ terminalId: 'd1', airflowM3h: 200, fixed: false }]);
+    expect(messy.designedAt).toBeUndefined();
+  });
+
+  it('stocks round sizes to Ø1000; a project saved on the old list reads the new one, a list of its own is kept', () => {
+    expect(settings.autoRoundSizesMm.at(-1)).toBe(1000);
+    expect(settings.autoRoundSizesMm).toEqual(expect.arrayContaining([560, 630, 710, 800, 900]));
+    const old = [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500];
+    expect(resolveDuctSettings({ autoRoundSizesMm: old }).autoRoundSizesMm).toEqual(settings.autoRoundSizesMm);
+    expect(resolveDuctSettings({ autoRoundSizesMm: [500, 200, 315] }).autoRoundSizesMm).toEqual([200, 315, 500]);
+    expect(settings.autoNecksFollowAirflow).toBe(true);
   });
 });
 

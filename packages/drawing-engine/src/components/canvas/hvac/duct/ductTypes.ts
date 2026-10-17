@@ -170,6 +170,36 @@ export interface DuctSystemSizing {
 
 const FAN_SPEED_KEYS: readonly FanSpeed[] = ['p-hi', 'hi', 'me', 'lo'];
 
+/**
+ * How a duct system was first sized, kept on the run off the unit's collar
+ * when its design is applied (Auto duct or Auto route) and never changed by
+ * later resizes: the method, the fan speed and airflow it was designed for,
+ * the main's velocity and friction as designed, the velocity limits, each
+ * terminal's airflow, and the basis when it was sized by constant friction.
+ * A life-cycle design has no basis; the record keeps what continuing it by
+ * constant friction needs (its airflow and the main's friction rate).
+ */
+export interface DuctSizingRecord {
+  method: 'constant-friction' | 'life-cycle';
+  origin: 'auto-duct' | 'auto-route';
+  /** The design's name as it was shown (layout, shape, method). */
+  label: string | null;
+  fanSpeed: FanSpeed;
+  /** The system airflow it was designed for (m³/h) and where that came from. */
+  airflowM3h: number | null;
+  airflowSource: 'entered' | 'unit' | 'manufacturer' | null;
+  /** The main's first section at that airflow, as designed. */
+  mainVelocityMs: number | null;
+  mainFrictionPaPerM: number | null;
+  maxVelocity: { trunk: number; branch: number; runout: number };
+  /** Constant friction: the basis it was sized at (linked at the main's airflow). */
+  basis: DuctSystemSizing | null;
+  /** Each terminal's airflow as designed (m³/h); `fixed` = set on it, else an equal share. */
+  terminals: Array<{ terminalId: string; airflowM3h: number; fixed: boolean }>;
+  /** When it was applied (ISO 8601); absent until then. */
+  designedAt?: string;
+}
+
 /** A run's choice at one wall penetration: a fire damper there or not (absent = the project policy). */
 export interface DuctPenetrationOverride {
   fireDamper?: boolean;
@@ -261,6 +291,8 @@ export interface DuctRunSpec {
   locked: boolean;
   /** The system's constant-friction basis (on the run off the unit's collar only). */
   sizing?: DuctSystemSizing;
+  /** How the system was first sized (on the run off the unit's collar only; never changed by a resize). */
+  initialSizing?: DuctSizingRecord;
   /**
    * The run's own choices at its wall penetrations, keyed `${wallId}:${n}` (the
    * n-th time it crosses that wall). Only overrides are kept: a crossing not
@@ -406,6 +438,37 @@ export function readDuctSystemSizing(value: unknown): DuctSystemSizing | undefin
   };
 }
 
+/** The stored first-sizing record, or undefined when absent or unusable (a corrupt field is dropped, never thrown). */
+export function readDuctSizingRecord(value: unknown): DuctSizingRecord | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.method !== 'constant-friction' && record.method !== 'life-cycle') return undefined;
+  const positiveOrNull = (raw: unknown) => (finite(raw) && raw > 0 ? raw : null);
+  const limits = (record.maxVelocity && typeof record.maxVelocity === 'object' ? record.maxVelocity : {}) as Record<string, unknown>;
+  const limit = (raw: unknown, fallback: number) => (finite(raw) && raw > 0 ? Math.min(20, raw) : fallback);
+  const terminals = (Array.isArray(record.terminals) ? record.terminals : []).flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate.terminalId !== 'string' || !finite(candidate.airflowM3h) || candidate.airflowM3h < 0) return [];
+    return [{ terminalId: candidate.terminalId, airflowM3h: candidate.airflowM3h, fixed: candidate.fixed === true }];
+  });
+  const source = record.airflowSource;
+  return {
+    method: record.method,
+    origin: record.origin === 'auto-route' ? 'auto-route' : 'auto-duct',
+    label: typeof record.label === 'string' ? record.label : null,
+    fanSpeed: FAN_SPEED_KEYS.includes(record.fanSpeed as FanSpeed) ? record.fanSpeed as FanSpeed : 'hi',
+    airflowM3h: positiveOrNull(record.airflowM3h),
+    airflowSource: source === 'entered' || source === 'unit' || source === 'manufacturer' ? source : null,
+    mainVelocityMs: positiveOrNull(record.mainVelocityMs),
+    mainFrictionPaPerM: positiveOrNull(record.mainFrictionPaPerM),
+    maxVelocity: { trunk: limit(limits.trunk, 5), branch: limit(limits.branch, 4), runout: limit(limits.runout, 3) },
+    basis: readDuctSystemSizing(record.basis) ?? null,
+    terminals,
+    ...(typeof record.designedAt === 'string' && !Number.isNaN(Date.parse(record.designedAt)) ? { designedAt: record.designedAt } : {}),
+  };
+}
+
 function readJointSystem(value: unknown): DuctJointSystem | null {
   return value === 'auto' || value === 'tdc' || value === 'ductmate' || value === 'angle-flange' ? value : null;
 }
@@ -478,6 +541,7 @@ export function readDuctRunSpec(
     }
   }
   const sizing = readDuctSystemSizing(record.sizing);
+  const initialSizing = readDuctSizingRecord(record.initialSizing);
   const penetrations = readDuctPenetrationOverrides(record.penetrations);
   const inline = readDuctInlineAccessories(record.inline);
   return {
@@ -495,6 +559,7 @@ export function readDuctRunSpec(
     nodeOverrides: overrides,
     locked: record.locked === true,
     ...(sizing ? { sizing } : {}),
+    ...(initialSizing ? { initialSizing } : {}),
     ...(penetrations ? { penetrations } : {}),
     ...(inline ? { inline } : {}),
   };

@@ -212,11 +212,31 @@ export interface DuctSystemTerminalReport {
   throttlePa: number | null;
 }
 
+/**
+ * The main's first section and what governs it. The friction rate is linked to
+ * the main's velocity through its ROUND equivalent, so a rectangular main runs
+ * slower than the velocity set; and where the velocity set is over the trunk
+ * limit, the limit sizes the trunk (at less friction than the rate set).
+ */
+export interface DuctMainCheck {
+  airflowM3h: number;
+  section: DuctLeg;
+  /** Its real velocity and friction at that airflow. */
+  velocityMs: number;
+  frictionPaPerM: number;
+  setBy: DuctSectionSetBy;
+  part: DuctSizingPart;
+  /** The basis's main velocity (round equivalent at the main's airflow). */
+  linkedVelocityMs: number;
+  /** The basis's velocity is over the main's velocity limit: the limit governs. */
+  velocityCapped: boolean;
+}
+
 export interface DuctSystemSizingReport {
   service: DuctService;
   rootRunId: string;
   unitId: string | null;
-  /** The basis as linked at the system airflow. */
+  /** The basis as linked at the main's airflow (the system airflow when the terminals' shares fill it). */
   basis: DuctSystemSizing;
   airflowM3h: number | null;
   airflowSource: DuctAirflowSource | null;
@@ -227,6 +247,12 @@ export interface DuctSystemSizingReport {
   plans: DuctFabricationPlan[];
   pressure: ServicePressure | null;
   maxEspPa: number | null;
+  /** The main's first sized section, as sized (or as drawn when measured). */
+  main: DuctMainCheck | null;
+  /** The unit's other service's index pressure counted in the fan check (Pa), when given. */
+  otherServicePa: number | null;
+  /** What the fan must deliver: this service's index path plus the other's (Pa); null without pressure. */
+  requiredEspPa: number | null;
   issues: AutoDuctIssue[];
   errors: number;
   warnings: number;
@@ -242,6 +268,13 @@ export interface DuctSystemSizingInput {
   verify?: boolean;
   /** Change nothing: report the sections as drawn, their airflow, velocity and friction (the basis only links). */
   measure?: boolean;
+  /**
+   * The index pressure of the unit's other service (Pa): one fan delivers
+   * supply and return, so the ESP check adds it. Absent = none or unknown.
+   */
+  otherServicePa?: number | null;
+  /** Check the fan's ESP here (default true); a caller that checks a whole design (both services) passes false. */
+  espCheck?: boolean;
 }
 
 export interface DuctSystemSizingResult {
@@ -368,7 +401,8 @@ function emptyReport(rootRunId: string, basis: DuctSystemSizing, service: DuctSe
     terminals: [],
     report: {
       service, rootRunId, unitId: null, basis, airflowM3h: null, airflowSource: null, terminalsAirflowM3h: 0, sections: [], terminals: [], plans: [],
-      pressure: null, maxEspPa: null, issues: [{ code: 'DU_SIZE_SYSTEM', severity: 'error', service, message }], errors: 1, warnings: 0, changedRunIds: [],
+      pressure: null, maxEspPa: null, main: null, otherServicePa: null, requiredEspPa: null,
+      issues: [{ code: 'DU_SIZE_SYSTEM', severity: 'error', service, message }], errors: 1, warnings: 0, changedRunIds: [],
     },
   };
 }
@@ -469,7 +503,10 @@ export function sizeDuctSystem(
   if (systemAirflow && Math.abs(terminalsAirflow - systemAirflow) > systemAirflow * 0.1) {
     issues.push({ code: 'DU_AUTO_AIRFLOW', severity: 'warning', service, message: `The ${service} terminals add up to ${Math.round(terminalsAirflow)} m³/h, not the system's ${Math.round(systemAirflow)} m³/h.` });
   }
-  const basis = linkSizingBasis(input.basis, systemAirflow);
+  // The main carries what its terminals take; linked there, "the main's velocity" is the main's (when fixed terminal
+  // airflows don't add up to the system's, the mismatch is reported above).
+  const mainAirflow = terminalsAirflow > 0 ? terminalsAirflow : systemAirflow;
+  const basis = linkSizingBasis(input.basis, mainAirflow);
   const stock = [...settings.autoRoundSizesMm].sort((a, b) => a - b);
 
   // ---- Sizes, bottom-up: children first (a take-off or a split needs its branches' sections) ----
@@ -930,10 +967,34 @@ export function sizeDuctSystem(
       neckMm: node.terminal!.neckMm, neckVelocityMs: roundTo(neckVelocity, 2), runId: node.id, throttlePa: null,
     };
   });
+  // ---- The main: its first stretch (the longest piece of it when measured: past the collar and its transition) ----
+  const rootSegments = reportSegments(root).filter((segment) => segment.airflow > 0);
+  const firstFlow = rootSegments[0]?.airflow;
+  const mainSegment = rootSegments.filter((segment) => segment.airflow === firstFlow)
+    .reduce<Segment | null>((best, segment) => (!best || segment.to - segment.from > best.to - best.from + 1e-6 ? segment : best), null);
+  const main: DuctMainCheck | null = mainSegment ? {
+    airflowM3h: mainSegment.airflow,
+    section: mainSegment.section,
+    velocityMs: roundTo(velocityMs(mainSegment.section, mainSegment.airflow), 2),
+    frictionPaPerM: roundTo(frictionPaPerM(mainSegment.section, mainSegment.airflow), 3),
+    setBy: mainSegment.setBy,
+    part: mainSegment.part,
+    linkedVelocityMs: basis.mainVelocityMs,
+    velocityCapped: basis.mainVelocityMs > basis.maxVelocity[mainSegment.part] + 1e-6,
+  } : null;
+  if (main?.velocityCapped && !input.measure) {
+    const limit = basis.maxVelocity[main.part];
+    issues.push({
+      code: 'DU_SIZE_VELOCITY', severity: 'info', service, runId: root.id,
+      message: `The main velocity ${basis.mainVelocityMs.toFixed(1)} m/s is over the ${main.part} limit (${limit.toFixed(1)} m/s): the limit sizes the ${main.part}, so the main runs at ${main.velocityMs.toFixed(1)} m/s and ${main.frictionPaPerM.toFixed(2)} Pa/m, under the ${basis.frictionPaPerM.toFixed(2)} Pa/m set. Raise the limit to size it at the friction rate.`,
+    });
+  }
   const unitAir = unit ? readUnitAirData(unit) : null;
+  const otherServicePa = input.otherServicePa !== undefined && input.otherServicePa !== null && input.otherServicePa > 0 ? input.otherServicePa : null;
   const report: DuctSystemSizingReport = {
     service, rootRunId, unitId, basis, airflowM3h: systemAirflow, airflowSource, terminalsAirflowM3h: terminalsAirflow,
-    sections, terminals, plans: [], pressure: null, maxEspPa: unitAir?.maxEspPa ?? null, issues, errors: 0, warnings: 0, changedRunIds,
+    sections, terminals, plans: [], pressure: null, maxEspPa: unitAir?.maxEspPa ?? null, main, otherServicePa, requiredEspPa: null,
+    issues, errors: 0, warnings: 0, changedRunIds,
   };
   if (input.verify !== false) {
     const replaced = new Map<string, HvacElement>([...runs, ...changedTerminals].map((element) => [element.id, element]));
@@ -956,9 +1017,15 @@ export function sizeDuctSystem(
     report.pressure = systemPressure(report.plans, new Map(shares.map((share) => [share.terminalId, share.airflowM3h])), settings, service,
       terminalDropLookup(nextScene, settings));
     for (const terminal of terminals) terminal.throttlePa = Math.round(report.pressure.throttlePa[terminal.terminalId] ?? 0);
-    if (report.maxEspPa !== null && report.pressure.indexPa > report.maxEspPa) {
+    // One fan delivers both services: the check is against the two index paths together.
+    const indexPa = report.pressure.indexPa;
+    report.requiredEspPa = indexPa + (otherServicePa ?? 0);
+    if (input.espCheck !== false && report.maxEspPa !== null && report.requiredEspPa > report.maxEspPa) {
+      const other = service === 'supply' ? 'return' : 'supply';
       issues.push({ code: 'DU_AUTO_ESP', severity: 'warning', service,
-        message: `The ${service} ducts need about ${Math.round(report.pressure.indexPa)} Pa; ${unit?.label || 'the unit'} gives at most ${report.maxEspPa} Pa (supply and return together). Lower the friction rate or shorten the index run.` });
+        message: otherServicePa
+          ? `The ${service} ducts need about ${Math.round(indexPa)} Pa and the ${other} ducts ${Math.round(otherServicePa)} Pa: ${Math.round(report.requiredEspPa)} Pa together; ${unit?.label || 'the unit'} gives at most ${report.maxEspPa} Pa. Lower the friction rate or shorten the index runs.`
+          : `The ${service} ducts need about ${Math.round(indexPa)} Pa; ${unit?.label || 'the unit'} gives at most ${report.maxEspPa} Pa. Lower the friction rate or shorten the index run.` });
     }
   }
   report.errors = issues.filter((issue) => issue.severity === 'error').length;

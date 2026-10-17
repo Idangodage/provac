@@ -18,6 +18,7 @@ import { terminalSpigotUpdates, type AutoDuctShape } from './duct/ductAutoLayout
 import { ductSourceSignature } from './duct/ductAutoRoute';
 import { ductWallInputs } from './duct/ductBuilding';
 import type { FanSpeed } from './duct/ductSizing';
+import { stampDesignedAt } from './duct/ductSizingRecord';
 import { isDuctTerminalElement } from './duct/ductTerminals';
 import { applyServiceRouteCommand, serviceRouteCommitIssues } from './serviceRouteValidation';
 import {
@@ -210,7 +211,7 @@ export function applyAutoRoutePreview(options: { designedUnitsOnly?: boolean } =
     if (ductSourceSignature(state.hvacElements, state.ductSettings, ductWallInputs(state.walls)) !== signatures.ducts) {
       return refuse('The drawing or duct settings changed since the preview. Run Auto route again.');
     }
-    add.push(...ducts.elementsToAdd);
+    add.push(...stampDesignedAt(ducts.elementsToAdd, new Date().toISOString()));
     removeIds.push(...ducts.removeElementIds);
     updates.push(...terminalSpigotUpdates(ducts.terminalUpdates ?? []));
   }

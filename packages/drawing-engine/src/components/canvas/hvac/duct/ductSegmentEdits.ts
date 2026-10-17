@@ -860,6 +860,15 @@ function editTerminal(scene: readonly HvacElement[], settings: DuctDesignSetting
   return { updates: settle(scene, changed, settings, notes), notes, action: `Terminal ${element.label}: ${kind !== spec.kind ? terminalLabel(reshaped).toLowerCase() : `neck Ø${neck}`}` };
 }
 
+/**
+ * A terminal given another catalogue neck (face, service, filter and spigot
+ * side kept), its runout following: what constant-friction sizing does when a
+ * terminal's airflow needs a larger neck. Pure; refused when it is that already.
+ */
+export function terminalNeckChange(scene: readonly HvacElement[], settings: DuctDesignSettings, terminalId: string, neckMm: number): DuctSegmentEditResult {
+  return editTerminal(scene, settings, { kind: 'terminal', terminalId, neckMm });
+}
+
 export const INLINE_TITLES: Record<DuctInlineKind, string> = { damper: 'Volume damper', 'access-door': 'Access door', attenuator: 'Sound attenuator' };
 
 /**

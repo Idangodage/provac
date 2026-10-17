@@ -20,11 +20,12 @@ import {
 } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { ductWallInputs } from './ductBuilding';
-import { toElementUpdate } from './ductFollow';
-import { ductSystemRootOf, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
-import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
-import type { DuctService, DuctSystemSizing } from './ductTypes';
+import { stampDesignedAt, withInitialSizingRecords } from './ductSizingRecord';
+import { ductSystemRootOf, type DuctSystemSizingReport } from './ductSystemSizing';
+import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
+import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
 import { cancelAutoDuctWorker, runAutoDuctInWorker } from './optimizer/ductOptimizerClient';
+import { continueBasis, measureUnitService, sizeUnitService } from './unitAirSide';
 
 /** Distance within which unconnected terminals count as a unit's when none are selected (mm). */
 const NEARBY_TERMINALS_MM = 10000;
@@ -239,18 +240,24 @@ export function resizeAutoDuctPreview(bases: AutoDuctSizingBases, terminalAirflo
 
 // ---- Constant friction on the drawing ----
 
-/** The applied system of a unit's collar, its sections as drawn (nothing changes). */
-export function measureDuctSystem(unitId: string, service: DuctService, basis: DuctSystemSizing): DuctSystemSizingReport | null {
+/** The applied system of a unit's collar, its sections as drawn (nothing changes); the other service counts in the fan check. */
+export function measureDuctSystem(unitId: string, service: DuctService, basis?: DuctSystemSizing): DuctSystemSizingReport | null {
   const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
-  const root = ductSystemRootOf(hvacElements, unitId, service);
-  return root ? sizeDuctSystem(hvacElements, root.id, { basis, measure: true }, ductSettings).report : null;
+  return measureUnitService(hvacElements, unitId, service, ductSettings, basis);
+}
+
+/** An element as the command stores it (a terminal given another neck moves and resizes its box). */
+function elementUpdate(element: HvacElement): { id: string; updates: Partial<HvacElement> } {
+  const { position, width, depth, height, elevation, label, properties } = element;
+  return { id: element.id, updates: { position, width, depth, height, elevation, label, properties } };
 }
 
 /**
  * Sizes the ducts on a unit's collar by constant friction at `basis`, on the
- * drawing, as one command (one undo): the resized runs, the branches that
- * follow them, the terminals whose airflow changed, the basis kept on the
- * run off the collar. Returns the report (null without such a system).
+ * drawing, as one command (one undo): terminal necks grown to their airflow
+ * (the project's choice), the resized runs, the branches that follow them,
+ * the terminals whose airflow changed, the basis kept on the run off the
+ * collar. Returns the report (null without such a system).
  */
 export function resizeDuctSystemOnDrawing(
   unitId: string,
@@ -260,19 +267,48 @@ export function resizeDuctSystemOnDrawing(
   action = `Duct sizing (${service})`,
 ): DuctSystemSizingReport | null {
   const state = useSmartDrawingStore.getState();
-  const root = ductSystemRootOf(state.hvacElements, unitId, service);
-  if (!root) return null;
-  const sized = sizeDuctSystem(state.hvacElements, root.id, { basis, ...(terminalAirflows ? { terminalAirflows } : {}) }, state.ductSettings);
-  const changed = new Set(sized.report.changedRunIds);
-  const updates = [
-    ...sized.runs.filter((run) => changed.has(run.id)).map(toElementUpdate),
-    ...sized.terminals.map((terminal) => ({ id: terminal.id, updates: { properties: terminal.properties } })),
-  ];
-  if (updates.length) {
-    state.commitHvacElementCommand(action, { updates });
-    state.setProcessingStatus(`${action}: ${changed.size} run${changed.size === 1 ? '' : 's'} resized${sized.terminals.length ? `, ${sized.terminals.length} terminal airflow${sized.terminals.length === 1 ? '' : 's'}` : ''}.`, false);
+  const sized = sizeUnitService(state.hvacElements, unitId, service, basis, terminalAirflows, state.ductSettings,
+    { necks: state.ductSettings.autoNecksFollowAirflow });
+  if (!sized) return null;
+  if (sized.updates.length) {
+    state.commitHvacElementCommand(action, { updates: sized.updates.map(elementUpdate) });
+    const runs = sized.updates.filter(isDuctElement).length;
+    const airflowOf = (element: HvacElement | undefined) => (element ? readDuctTerminalSpec(element)?.designAirflowM3h ?? null : null);
+    const airflows = sized.updates.filter((element) => isDuctTerminalElement(element)
+      && airflowOf(element) !== airflowOf(state.hvacElements.find((candidate) => candidate.id === element.id))).length;
+    const parts = [
+      `${runs} run${runs === 1 ? '' : 's'} resized`,
+      ...(sized.necks.length ? [sized.necks.map((growth) => `${growth.label} neck Ø${growth.fromMm} → Ø${growth.toMm}`).join(', ')] : []),
+      ...(airflows > 0 ? [`${airflows} terminal airflow${airflows === 1 ? '' : 's'}`] : []),
+    ];
+    state.setProcessingStatus(`${action}: ${parts.join(', ')}.`, false);
   }
   return sized.report;
+}
+
+/**
+ * Sizes the system again at the basis it continues from (after hand edits or
+ * new branches), as one command. Null without a system on that collar.
+ */
+export function resizeDuctSystemAtBasis(unitId: string, service: DuctService): DuctSystemSizingReport | null {
+  const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
+  const { basis } = continueBasis(hvacElements, unitId, service, ductSettings);
+  return resizeDuctSystemOnDrawing(unitId, service, basis, undefined, `Duct sizing (${service}): re-sized at ${basis.frictionPaPerM.toFixed(2)} Pa/m`);
+}
+
+/**
+ * Back to how the system was first sized by constant friction: its basis and
+ * each terminal's airflow as designed (set ones set again, shares shared), as
+ * one command. A life-cycle design has no basis to return to: the reason.
+ */
+export function resetDuctSystemToInitial(unitId: string, service: DuctService): { report: DuctSystemSizingReport | null; refused?: string } {
+  const { hvacElements } = useSmartDrawingStore.getState();
+  const root = ductSystemRootOf(hvacElements, unitId, service);
+  const record = root ? readDuctRunSpec(root)?.initialSizing : undefined;
+  if (!record) return { report: null, refused: 'This system has no record of how it was first sized (it was applied before records were kept).' };
+  if (!record.basis) return { report: null, refused: 'Its first sizes came from the life-cycle optimiser, not a basis: use Undo, or generate it again.' };
+  const airflows = Object.fromEntries(record.terminals.map((terminal) => [terminal.terminalId, terminal.fixed ? terminal.airflowM3h : null]));
+  return { report: resizeDuctSystemOnDrawing(unitId, service, record.basis, airflows, `Duct sizing (${service}): back to the initial basis`) };
 }
 
 /** Commits the preview as one command; returns what happened. */
@@ -308,7 +344,13 @@ export function applyAutoDuctPreview(): string {
   const unitTagged = typeof unit?.properties.airSystemTag === 'string' && unit.properties.airSystemTag.trim();
   const tag = airSystemTags(state.hvacElements).get(result.unitId) ?? 'its unit';
   const tagUpdates = unit && !unitTagged && joined ? [{ id: unit.id, updates: { properties: { airSystemTag: tag } } }] : [];
-  state.commitHvacElementCommand('Auto duct', { add: result.runs, removeIds: result.removeIds, updates: [...terminalSpigotUpdates(assigned), ...tagUpdates], selectedIds: ids });
+  // Each system keeps how it was first sized: the method, fan speed, airflow, the main as designed, the basis.
+  const runs = stampDesignedAt(withInitialSizingRecords({
+    fanSpeed: result.fanSpeed, airflowM3h: result.airflowM3h, airflowSource: result.airflowSource,
+    runs: result.runs, removeIds: result.removeIds, terminalUpdates: result.terminalUpdates, terminalAirflowUpdates: result.terminalAirflowUpdates,
+    services: result.services,
+  }, state.hvacElements, state.ductSettings, 'auto-duct'), new Date().toISOString());
+  state.commitHvacElementCommand('Auto duct', { add: runs, removeIds: result.removeIds, updates: [...terminalSpigotUpdates(assigned), ...tagUpdates], selectedIds: ids });
   const message = `Auto duct: ${result.runs.length} run${result.runs.length === 1 ? '' : 's'} added${result.removeIds.length ? `, ${result.removeIds.length} replaced` : ''}`
     + `${turned.length ? `, ${turned.length} spigot${turned.length === 1 ? '' : 's'} turned` : ''}${joined ? `, ${joined} terminal${joined === 1 ? '' : 's'} joined ${tag}` : ''}.`;
   useDuctAutoPreviewStore.getState().clear(message);

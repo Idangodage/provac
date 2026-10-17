@@ -34,6 +34,7 @@ import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuct, removalTree, type AutoDuctSh
 import type { DuctWallInput } from './ductBuilding';
 import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
+import { withInitialSizingRecords } from './ductSizingRecord';
 import { basisAirflowM3h, defaultSizingBasis } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService } from './ductTypes';
@@ -331,11 +332,16 @@ export function planAutoRouteDucts(
         }
         // The terminals its ducts serve that no system held join its air system, with the runs (one undo).
         const terminalUpdates = withSystemAssignments(auto.terminalUpdates, auto.runs, working, unit.id);
-        pass.elementsToAdd.push(...auto.runs);
+        // Each system keeps how it was first sized (dated when the preview is applied).
+        const runs = withInitialSizingRecords({
+          fanSpeed: auto.fanSpeed, airflowM3h: auto.airflowM3h, airflowSource: auto.airflowSource,
+          runs: auto.runs, removeIds: auto.removeIds, terminalUpdates: auto.terminalUpdates, services: auto.services,
+        }, working, options.settings, 'auto-route');
+        pass.elementsToAdd.push(...runs);
         pass.removeElementIds.push(...auto.removeIds);
         pass.terminalUpdates.push(...terminalUpdates);
         const removed = new Set(auto.removeIds);
-        working = [...withReplaced(working.filter((element) => !removed.has(element.id)), terminalUpdates), ...auto.runs];
+        working = [...withReplaced(working.filter((element) => !removed.has(element.id)), terminalUpdates), ...runs];
       }
       pass.units.push(unitResult);
     });

@@ -30,6 +30,7 @@ import {
 } from './ductSystemSizing';
 import { readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
 import { legLabel } from './optimizer/sizingModel';
+import { continueBasis } from './unitAirSide';
 
 export type SizingMethod = DuctDesignSettings['autoSizingMethod'];
 export type TerminalAirflows = Record<string, number | null>;
@@ -191,8 +192,11 @@ export function SizingTable({ report }: { report: DuctSystemSizingReport }) {
       <div className="flex items-center justify-between text-[10px] text-slate-500">
         <span className="flex items-center gap-1"><Ruler size={11} />{SERVICE_LABEL[report.service]} sections at {fixed(basis.frictionPaPerM, 2)} Pa/m</span>
         {report.pressure ? (
-          <span className={report.maxEspPa !== null && report.pressure.indexPa > report.maxEspPa ? 'font-semibold text-red-600' : 'text-emerald-700'}>
-            {Math.round(report.pressure.indexPa)} Pa{report.maxEspPa !== null ? <span className="text-slate-500"> of {report.maxEspPa} max</span> : null}
+          <span className={report.maxEspPa !== null && (report.requiredEspPa ?? report.pressure.indexPa) > report.maxEspPa ? 'font-semibold text-red-600' : 'text-emerald-700'}
+            title="One fan delivers supply and return: their index paths together against its maximum ESP">
+            {Math.round(report.pressure.indexPa)} Pa
+            {report.otherServicePa ? <span className="text-slate-500"> + {report.service === 'supply' ? 'return' : 'supply'} {Math.round(report.otherServicePa)} = {Math.round(report.requiredEspPa ?? 0)} Pa</span> : null}
+            {report.maxEspPa !== null ? <span className="text-slate-500"> of {report.maxEspPa} max</span> : null}
           </span>
         ) : null}
       </div>
@@ -241,8 +245,12 @@ export function AppliedSystemSizing({ unit }: { unit: HvacElement }) {
   }), [hvacElements, unit.id]);
   const [tab, setTab] = useState<DuctService>('supply');
   const active = roots.find((entry) => entry.service === tab) ?? roots[0];
-  const basis = useMemo(() => active ? basisForUnit(unit, active.service, ductSettings, active.spec.sizing) : null,
-    [active, unit, ductSettings]);
+  // The basis it continues from: stored, else its first sizing (fan speed and airflow as designed), else the main as drawn.
+  const basis = useMemo(() => {
+    if (!active) return null;
+    const continued = continueBasis(hvacElements, unit.id, active.service, ductSettings).basis;
+    return linkSizingBasis(continued, basisAirflowM3h(unit, continued).airflowM3h);
+  }, [active, hvacElements, unit, ductSettings]);
   const report = useMemo(() => (active && basis ? measureDuctSystem(unit.id, active.service, basis) : null),
     // The drawing (and so the stored basis) is what the report follows.
     [hvacElements, ductSettings, active, basis, unit.id]);

@@ -1247,7 +1247,8 @@ export function resizeAutoDuctDesign(
     const basis = linked[service.service];
     const root = service.runs.find((run) => readDuctRunSpec(run)?.start.kind === 'unit-port');
     if (!basis || !root) return service;
-    const sized = sizeDuctSystem([...base, ...runs], root.id, { basis, ...(terminalAirflows ? { terminalAirflows } : {}) }, settings);
+    // The fan check is the design's (supply + return together: selectAutoDuctDesign), not each service's alone.
+    const sized = sizeDuctSystem([...base, ...runs], root.id, { basis, espCheck: false, ...(terminalAirflows ? { terminalAirflows } : {}) }, settings);
     const byId = new Map(sized.runs.map((run) => [run.id, run]));
     runs = runs.map((run) => byId.get(run.id) ?? run);
     const report = sized.report;

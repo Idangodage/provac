@@ -160,6 +160,11 @@ export interface DuctDesignSettings {
   /** How Auto duct sizes the sections: the life-cycle optimum, or constant friction (equal friction) at the card's basis. */
   autoSizingMethod: 'life-cycle' | 'constant-friction';
   /**
+   * Resizing applied ducts: a terminal whose airflow needs more than its neck's
+   * velocity cap takes the next catalogue neck, its runout with it (grows only).
+   */
+  autoNecksFollowAirflow: boolean;
+  /**
    * Economics (auto duct optimiser), in `econCurrency`. First cost: galvanised
    * sheet by mass, fabrication and installation by sheet area (fittings at a
    * multiple), NBR by area, flexible duct per metre at Ø200 (scaled by the
@@ -271,7 +276,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   penetrationClearanceMm: 25,
   fireDamperPolicy: 'none',
   fireDamperSleeveExtensionMm: 100,
-  autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500],
+  autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500, 560, 630, 710, 800, 900, 1000],
   autoReducerStepMm: 100,
   autoExactTerminals: 8,
   autoTimeBudgetMs: 20000,
@@ -279,6 +284,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoRoundMainStyles: ['round-conical', 'round-tee', 'round-lateral'],
   autoAllowWye: true,
   autoSizingMethod: 'life-cycle',
+  autoNecksFollowAirflow: true,
   econCurrency: 'USD',
   econSheetPerKg: 1.6,
   econFabricationRectPerM2: 14,
@@ -387,7 +393,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
     note: 'The drawing\'s walls carry no fire rating: fire dampers go where the project\'s fire strategy puts them (none, masonry and concrete walls, or every wall), and each crossing can be set on its run.',
   },
   fireDamperSleeveExtensionMm: practice('Fire damper sleeve beyond each wall face for its breakaway connection; UL 555 installation instructions commonly allow up to 152 mm (6 in).'),
-  autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex).' },
+  autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex); Ø560–Ø1000 follow the EN 1506 series for the mains of large units.' },
   autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
   autoTimeBudgetMs: practice('The optimiser stops learning (routing again after a failed check) past this time and keeps the best verified design; the result says so.'),
@@ -395,6 +401,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   autoRoundMainStyles: { sourceId: 'smacna-1995', reference: 'Fig. 3-4 (p.3.11), Fig. 3-5 (p.3.12)', verified: true, note: 'Which of the SMACNA round-main fittings the optimiser may choose; it picks per branch by cost and loss.' },
   autoAllowWye: { sourceId: 'smacna-1995', reference: 'Fig. 3-5 (p.3.12)', verified: true, note: 'A round main may end in a wye.' },
   autoSizingMethod: practice('Constant friction is the equal-friction method (ASHRAE Fundamentals ch. 21); the life-cycle optimum trades first cost against fan energy.'),
+  autoNecksFollowAirflow: practice('A neck over its velocity cap is noisy; the next catalogue neck (and its flexible runout) keeps it within. Necks never shrink on their own: a smaller one is the designer\'s choice.'),
   econCurrency: { sourceId: 'project-configuration', verified: false, note: 'Currency of the rates below.' },
   econSheetPerKg: practice('Placeholder: galvanised coil price per kg; enter the supplier\'s.'),
   econFabricationRectPerM2: practice('Placeholder: rectangular duct fabrication (brake, seams, flanges) per m² of sheet.'),
@@ -426,7 +433,12 @@ export const DUCT_NON_DESIGN_SETTINGS: ReadonlySet<keyof DuctDesignSettings> = n
   'showSizeTags', 'showJointTicks', 'showPieceMarks', 'showSupports', 'showAirSystems',
   'returnSupplyMinGapMm', 'autoAssignWallPenaltyMm', 'autoAssignOverloadMm', 'penetrationClearanceMm',
   'farAssignmentExtraMm', 'farAssignmentRatio',
+  // Read when applied ducts are resized, never by a design or its preview.
+  'autoNecksFollowAirflow',
 ]);
+
+/** The round stock before Ø560–Ø1000 were added (October 2026): a project still on exactly it reads the current list. */
+const PREVIOUS_ROUND_STOCK_MM: readonly number[] = [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500];
 
 /** The settings a duct design depends on, as a stable key (a proposal is current while it is unchanged). */
 export function ductDesignSettingsKey(settings: DuctDesignSettings): string {
@@ -457,6 +469,14 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
 
 function oneOf<T extends string>(value: unknown, options: readonly T[], fallback: T): T {
   return options.includes(value as T) ? (value as T) : fallback;
+}
+
+/** The stocked round sizes, ascending; the list a project saved before the large sizes existed reads as today's. */
+function resolveRoundStock(value: unknown, fallback: readonly number[]): number[] {
+  if (!Array.isArray(value) || !value.every((size) => finite(size) && size >= 50 && size <= 2000)) return [...fallback];
+  const sizes = [...new Set(value as number[])].sort((a, b) => a - b);
+  const previous = sizes.length === PREVIOUS_ROUND_STOCK_MM.length && sizes.every((size, index) => size === PREVIOUS_ROUND_STOCK_MM[index]);
+  return previous ? [...fallback] : sizes;
 }
 
 function resolveSheetStock(value: unknown): number[] {
@@ -547,8 +567,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     fireDamperPolicy: oneOf(raw.fireDamperPolicy, ['none', 'structural', 'all'] as const, d.fireDamperPolicy),
     // At least the joint margin either side, at most what UL 555 installations allow (6 in).
     fireDamperSleeveExtensionMm: clampNumber(raw.fireDamperSleeveExtensionMm, d.fireDamperSleeveExtensionMm, 50, 152),
-    autoRoundSizesMm: Array.isArray(raw.autoRoundSizesMm) && raw.autoRoundSizesMm.every((size) => typeof size === 'number' && size >= 50 && size <= 2000)
-      ? [...new Set(raw.autoRoundSizesMm as number[])].sort((a, b) => a - b) : [...d.autoRoundSizesMm],
+    autoRoundSizesMm: resolveRoundStock(raw.autoRoundSizesMm, d.autoRoundSizesMm),
     autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),
     autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 10)),
     autoTimeBudgetMs: Math.round(clampNumber(raw.autoTimeBudgetMs, d.autoTimeBudgetMs, 1000, 60000)),
@@ -558,6 +577,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
       : [...d.autoRoundMainStyles],
     autoAllowWye: bool(raw.autoAllowWye, d.autoAllowWye),
     autoSizingMethod: oneOf(raw.autoSizingMethod, ['life-cycle', 'constant-friction'] as const, d.autoSizingMethod),
+    autoNecksFollowAirflow: bool(raw.autoNecksFollowAirflow, d.autoNecksFollowAirflow),
     econCurrency: typeof raw.econCurrency === 'string' && /^[A-Za-z]{3}$/.test(raw.econCurrency) ? raw.econCurrency.toUpperCase() : d.econCurrency,
     econSheetPerKg: clampNumber(raw.econSheetPerKg, d.econSheetPerKg, 0, 1e4),
     econFabricationRectPerM2: clampNumber(raw.econFabricationRectPerM2, d.econFabricationRectPerM2, 0, 1e5),

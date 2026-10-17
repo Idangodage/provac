@@ -9,11 +9,14 @@ import { resolveUnitAirPorts } from '../components/canvas/hvac/duct/ductAirPorts
 import {
   applyAutoDuctPreview,
   generateAutoDuctPreview,
+  resetDuctSystemToInitial,
   resizeAutoDuctPreviewNow,
+  resizeDuctSystemAtBasis,
   resizeDuctSystemOnDrawing,
 } from '../components/canvas/hvac/duct/ductAutoController';
 import type { AutoDuctRequest } from '../components/canvas/hvac/duct/ductAutoLayout';
 import { useDuctAutoPreviewStore } from '../components/canvas/hvac/duct/ductAutoPreviewStore';
+import { ductRunElementWithSpec } from '../components/canvas/hvac/duct/ductFollow';
 import { DEFAULT_DUCT_SETTINGS } from '../components/canvas/hvac/duct/ductSettings';
 import { defaultSizingBasis, ductSystemRootOf } from '../components/canvas/hvac/duct/ductSystemSizing';
 import { readDuctTerminalSpec, terminalEnvelope, typicalTerminalSpec } from '../components/canvas/hvac/duct/ductTerminals';
@@ -125,5 +128,72 @@ describe('constant-friction sizing in the store', () => {
     state().undo();
     expect(readDuctTerminalSpec(state().hvacElements.find((element) => element.id === 'sd0')!)!.designAirflowM3h ?? null).toBeNull();
     expect(state().hvacElements.some(isDuctElement)).toBe(false);
+  }, 120000);
+
+  it('keeps how each system was first sized when it is applied, dated', async () => {
+    await generateAutoDuctPreview(request);
+    applyAutoDuctPreview();
+    const record = rootSpec().initialSizing!;
+    expect(record).toMatchObject({ method: 'life-cycle', origin: 'auto-duct', fanSpeed: 'hi', airflowM3h: 1500, airflowSource: 'entered', basis: null });
+    expect(record.mainFrictionPaPerM).toBeGreaterThan(0);
+    expect(record.terminals.map((terminal) => terminal.terminalId).sort()).toEqual(['sd0', 'sd1', 'sd2', 'sd3']);
+    expect(Number.isNaN(Date.parse(record.designedAt!))).toBe(false);
+    // A resize never changes it.
+    resizeDuctSystemOnDrawing('fdum', 'supply', basisAt(0.6));
+    expect(rootSpec().initialSizing).toEqual(record);
+  }, 120000);
+
+  it('grows a neck its airflow needs with its runout, in the same command as the resize', async () => {
+    await generateAutoDuctPreview(request);
+    applyAutoDuctPreview();
+    const applied = state().hvacElements;
+    const neck = (id: string) => readDuctTerminalSpec(state().hvacElements.find((element) => element.id === id)!)!.neckDiameterMm;
+    // 1500 m³/h over four Ø200 necks: 3.3 m/s each, over the 3 m/s cap.
+    const report = resizeDuctSystemOnDrawing('fdum', 'supply', basisAt(0.8))!;
+    for (const id of ['sd0', 'sd1', 'sd2', 'sd3']) {
+      const kept = report.issues.some((issue) => issue.code === 'DU_SIZE_NECK_KEPT' && issue.message.startsWith(id.toUpperCase()));
+      expect(neck(id) === 250 || kept).toBe(true);
+    }
+    expect(['sd0', 'sd1', 'sd2', 'sd3'].some((id) => neck(id) === 250)).toBe(true);
+    expect(report.errors).toBe(0);
+    state().undo();
+    expect(state().hvacElements).toEqual(applied);
+    // Turned off: the necks stay.
+    state().setDuctSettings({ autoNecksFollowAirflow: false });
+    resizeDuctSystemOnDrawing('fdum', 'supply', basisAt(0.8));
+    expect(['sd0', 'sd1', 'sd2', 'sd3'].every((id) => neck(id) === 200)).toBe(true);
+  }, 120000);
+
+  it('goes back to the initial basis and the airflows as designed, as one command', async () => {
+    await generateAutoDuctPreview({ ...request, sizing: { supply: basisAt(0.6) } });
+    applyAutoDuctPreview();
+    state().setDuctSettings({ autoNecksFollowAirflow: false });
+    const applied = state().hvacElements;
+    resizeDuctSystemOnDrawing('fdum', 'supply', basisAt(1.0), { sd2: 500 });
+    expect(rootSpec().sizing?.frictionPaPerM).toBe(1);
+    const reset = resetDuctSystemToInitial('fdum', 'supply');
+    expect(reset.refused).toBeUndefined();
+    expect(rootSpec().sizing?.frictionPaPerM).toBe(0.6);
+    expect(readDuctTerminalSpec(state().hvacElements.find((element) => element.id === 'sd2')!)!.designAirflowM3h ?? null).toBeNull();
+    expect(sections(state().hvacElements)).toEqual(sections(applied));
+    state().undo();
+    expect(rootSpec().sizing?.frictionPaPerM).toBe(1);
+  }, 120000);
+
+  it('refuses to reset a life-cycle design, and re-sizes a hand-edited system at its basis', async () => {
+    await generateAutoDuctPreview(request);
+    applyAutoDuctPreview();
+    state().setDuctSettings({ autoNecksFollowAirflow: false });
+    expect(resetDuctSystemToInitial('fdum', 'supply').refused).toMatch(/life-cycle/);
+    resizeDuctSystemOnDrawing('fdum', 'supply', basisAt(0.8));
+    const sized = state().hvacElements;
+    // A hand edit of the main (the generated branches are collar-and-damper stubs, which keep their sizes).
+    const main = ductSystemRootOf(sized, 'fdum', 'supply')!;
+    const spec = readDuctRunSpec(main)!;
+    const widened = spec.legs.map((leg, index) => (index === 0 && !leg.diameterMm ? { ...leg, widthMm: leg.widthMm + 300 } : leg));
+    state().commitHvacElementCommand('Hand edit', { updates: [{ id: main.id, updates: ductRunElementWithSpec(main, { ...spec, legs: widened }) }] });
+    expect(sections(state().hvacElements)).not.toEqual(sections(sized));
+    resizeDuctSystemAtBasis('fdum', 'supply');
+    expect(sections(state().hvacElements)).toEqual(sections(sized));
   }, 120000);
 });
