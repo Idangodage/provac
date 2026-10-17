@@ -201,6 +201,8 @@ export interface UseCanvasEventBindingOptions {
 
   // State values
   tool: string;
+  /** Space is held: the canvas pans (the tool stays as it is), so a press selects nothing. */
+  isSpacePressed?: boolean;
   selectedIds: string[];
   symbols: SymbolInstance2D[];
   hvacElements: HvacElement[];
@@ -935,6 +937,7 @@ export function useCanvasEventBinding(
         pendingPlacementDefinition,
         pendingPlacementEquipmentDefinition,
         tool,
+        isSpacePressed,
         suppressFabricSelectionSyncRef,
         openingPointerInteractionRef,
         setOpeningInteractionActive,
@@ -979,7 +982,9 @@ export function useCanvasEventBinding(
       }
       if (pendingPlacementDefinition || pendingPlacementEquipmentDefinition)
         return;
-      if (tool !== "select") return;
+      // Space + drag pans with the select tool still active: rooms are found by geometry, not by
+      // Fabric targets (made inert while Space is held), so a pan would otherwise select the room under it.
+      if (tool !== "select" || isSpacePressed) return;
       suppressFabricSelectionSyncRef.current = 0;
       const suppressNextFabricSelectionSync = (count: number = 3) => {
         suppressFabricSelectionSyncRef.current = Math.max(

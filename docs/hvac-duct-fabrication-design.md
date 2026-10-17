@@ -1717,8 +1717,10 @@ oversized), heights step from the collar's, fitting coefficients are practice va
   room its FDUM22 design's straight trunk ends in a wall (`DU_AUTO_WALL`), and after the live resize to 3 m/s two Ø200
   runouts bend at 149 and 177 mm (`DU_FLEX_BEND`); at 1.2 Pa/m their necks grow to Ø300 and the same bends fail
   again. Something merged between 1 and 17 October changed that layout; a bisect over those commits would find it.
-- **Panning with Space + drag from inside a room selects the room** (from on a wall it does not;
-  `probe-space-pan.mjs`). A canvas behaviour older than this work.
+- **Panning with Space + drag from inside a room selected the room** (from on a wall it did not). Fixed afterwards: the
+  canvas's selection listener checked the tool, which stays Select while Space is held, and finds rooms by geometry
+  rather than through Fabric targets (made inert while panning); it now skips while Space is held. `probe-space-pan`
+  3/3 (no selection from a room or a wall; a plain click still selects the room).
 
 ## Known limits (auto duct, 30 September 2026)
 

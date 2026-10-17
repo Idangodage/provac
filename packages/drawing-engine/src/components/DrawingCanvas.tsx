@@ -3387,6 +3387,7 @@ export function DrawingCanvas({
     roomRendererRef,
     // State values
     tool,
+    isSpacePressed,
     selectedIds,
     symbols,
     hvacElements,
