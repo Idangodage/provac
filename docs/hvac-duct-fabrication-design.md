@@ -1693,10 +1693,8 @@ oversized), heights step from the collar's, fitting coefficients are practice va
     the steps; plan and Iso.
 - **Regressions:** `air-p2` 23/23, `air-p3` 14/14, `duct-seg-click` 8/8, `duct-far-assign` 14/14, `duct-tags` 14/14,
   `pipe-seg-inspector` 8/8, `duct-cross-room` 18/18; `air-p1` 25/25 (its toolbox counts now include the
-  Ø300 pair). `duct-sizing` 23/26 with its applied-sizing steps moved to the unit panel: two of its three failures
-  happen the same way on the code before this work (f44ec66) — the same preview crosses the same wall, the same
-  runouts bend at 149 and 177 mm — and the third is those two runouts again once their necks grow to Ø300 (see
-  below).
+  Ø300 pair). `duct-sizing`, with its applied-sizing steps moved to the unit panel, was 23/26 here: its three
+  failures came from an older layout change, found and fixed afterwards (see below).
 
 ### Known limits
 
@@ -1711,12 +1709,30 @@ oversized), heights step from the collar's, fitting coefficients are practice va
 - A neck that grows with its airflow keeps its runout's route: a bend that was tight for Ø200 falls further under one
   diameter at Ø300 (`DU_FLEX_BEND`, shown on the run). Generate again routes for the new sizes.
 
-### Found while verifying, not changed
+### Found while verifying, fixed afterwards (18 October 2026)
 
-- **`duct-sizing` (25/25 on 1 October) now fails on its layout, on the code before this work too:** in the 30 m²
-  room its FDUM22 design's straight trunk ends in a wall (`DU_AUTO_WALL`), and after the live resize to 3 m/s two Ø200
-  runouts bend at 149 and 177 mm (`DU_FLEX_BEND`); at 1.2 Pa/m their necks grow to Ø300 and the same bends fail
-  again. Something merged between 1 and 17 October changed that layout; a bisect over those commits would find it.
+- **Auto duct chose a trunk into the wall in the `duct-sizing` room** (the driver was 25/25 on 1 October; it now
+  failed the same way on the code before this work). In the 30 m² room its FDUM22 design ran a straight trunk whose
+  end crossed the wall (`DU_AUTO_WALL`), and after the live resize to 3 m/s two Ø200 runouts bent at 149 and 177 mm
+  (`DU_FLEX_BEND`).
+  - **Bisect** (a separate worktree, the canvas check on port 3100, the 31 commits touching the engine or the web app
+    between 6d878c8 and f44ec66): the first bad commit is 101783b (4 October, the auto-route recovery work). Replaying
+    the canvas scene in a test at 1ddc3ec and 101783b showed what changed: every "Split trunk + branches" seed now
+    failed exact sizing ("its all-flex runout fits from none of this main's sections"), so a straight trunk won.
+  - **Cause:** 101783b added take-off stations at the edges of obstacles in a stub's way (`alternateStations` in
+    `placeTaps`). The stub check is a heuristic, and in a tight room it calls the take-off in front of each diffuser
+    blocked (its padded box touches the diffuser's own box and the wall), so the moved stations won on cost and then
+    could not be built. Disabling only the moved stations brought the split trunk back (39 Pa, no errors); restoring
+    only the old stub check did not.
+  - **Fix** (`ductAutoLayout.ts`, `ductAutoContext.ts`): the trunk candidates are built both ways — with the moved
+    stations, as 101783b intended, and with the take-offs at their terminals (`ServiceCtx.tapStations`) — duplicates
+    (the same run paths) dropped, and exact sizing and verification choose among all of them, as they already rank
+    every option. Test `ductAutoLayoutTapStations` (the room rebuilt): a clean design with no wall crossing, and a clean
+    split trunk among the options; it fails without the fix. Full suite 259 files / 2244 tests; `DUCT_BENCHMARK`
+    43/43. On canvas: `duct-sizing` 26/26 again (a split trunk; no errors in the preview, the applied runs or the
+    resized ones), and `unit-panel` 34/34, `unit-high-capacity` 19/19, `duct-far-assign` 14/14, `duct-tags` 14/14,
+    `duct-cross-room` 18/18, `air-p1` 25/25, `air-p2` 23/23, `air-p3` 14/14, `duct-seg-click` 8/8,
+    `pipe-seg-inspector` 8/8, `probe-space-pan` 3/3, each restoring the project.
 - **Panning with Space + drag from inside a room selected the room** (from on a wall it did not). Fixed afterwards: the
   canvas's selection listener checked the tool, which stays Select while Space is held, and finds rooms by geometry
   rather than through Fabric targets (made inert while panning); it now skips while Space is held. `probe-space-pan`

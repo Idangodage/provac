@@ -199,6 +199,8 @@ export interface ServiceCtx {
   maxHeightMm: number;
   construction: DuctDesignSettings['defaultConstruction'];
   ids: () => string;
+  /** How trunk take-offs are placed: also at the edges of obstacles in a stub's way (default), or only at their terminals. */
+  tapStations?: 'alternates' | 'at-terminals';
 }
 
 /** The candidate under construction: its own trunk and branches become obstacles for the branches routed after them. */

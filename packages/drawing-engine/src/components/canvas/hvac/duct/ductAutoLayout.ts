@@ -834,7 +834,7 @@ function buildTrunkRun(
         return [Math.min(...stations) - pad, Math.max(...stations) + pad];
       });
   };
-  const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked, alternateStations);
+  const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked, ctx.tapStations === 'at-terminals' ? undefined : alternateStations);
   if (!placed) return null;
   const sized = sizeTrunk(ctx, placed.vertices, placed.taps, heightMm, airflow, minFirstWidthMm);
   const points = sized.vertices.slice(1).map((point) => ({ ...toWorld(ctx.frame, point), z: origin && origin.kind !== 'port' && origin.kind !== 'free' ? origin.bottomZ : ctx.bottomZ }));
@@ -936,6 +936,11 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
 
 /** Shortest straight off the collar before a fitting when space is tight: connector + collar transition (mm, practice). */
 const SHORT_FAN_OUTLET_MM = 600;
+
+/** A candidate's layout and the paths of its runs (not their ids): two builds that draw the same ducts match. */
+function candidateGeometryKey(candidate: Candidate): string {
+  return `${candidate.layout}|${candidate.runs.map((run) => JSON.stringify(readDuctRunSpec(run)?.path ?? [])).join(';')}`;
+}
 
 /**
  * Trunk layouts with the full fan-outlet straight, and — where the terminals
@@ -1528,7 +1533,16 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
       const plenum = plenumCandidate(ctx);
       if (plenum) candidates.push(plenum);
     }
-    if (request.layout !== 'plenum') candidates.push(...trunkCandidates(ctx), ...facingTrunkCandidates(ctx));
+    if (request.layout !== 'plenum') {
+      // Take-offs moved to the edge of an obstacle in their stub's way add options; the take-offs at their
+      // terminals stay among them. The stub check is a heuristic: a station it calls blocked can still be built
+      // from, and every option is sized and verified before one is chosen.
+      const moved = [...trunkCandidates(ctx), ...facingTrunkCandidates(ctx)];
+      const atTerminalsCtx: ServiceCtx = { ...ctx, tapStations: 'at-terminals' };
+      const atTerminals = [...trunkCandidates(atTerminalsCtx), ...facingTrunkCandidates(atTerminalsCtx)];
+      const keys = new Set(moved.map(candidateGeometryKey));
+      candidates.push(...moved, ...atTerminals.filter((candidate) => !keys.has(candidateGeometryKey(candidate))));
+    }
     // The obstacle-aware router can find routes that the legacy rectangular
     // layouts cannot seed (including round mains in a shallow ceiling void).
     if (!candidates.length && request.layout === 'plenum') {
