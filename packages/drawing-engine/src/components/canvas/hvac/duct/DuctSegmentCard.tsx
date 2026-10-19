@@ -6,7 +6,8 @@
  * how it is built, its options (ductSegmentOptions) with their pressure and
  * mass as chips, and its Edit tab —
  *
- *  - a size, round or rectangular, for the leg or every leg of its size;
+ *  - a straight's dimensions: its length (the run re-solved, its ends kept),
+ *    and its size, round or rectangular, for the leg or every leg of its size;
  *  - an elbow's radius, a transition's taper, a take-off's or an accessory's
  *    position, an attenuator's length, an access door's size;
  *  - a runout's length, a terminal's neck and airflow.
@@ -41,6 +42,7 @@ import { commitDuctSegmentEdit } from './ductEditController';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
 import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
+import { MIN_STRAIGHT_MM } from './ductSegmentEdits';
 import { ductSegmentFigures, type DuctSegmentFigures } from './ductSegmentFigures';
 import {
   ductSegmentOptions,
@@ -246,7 +248,7 @@ function SizeEditor({ host, segment, spec, voidHeightMm }: { host: FieldHost; se
         host.onHover(null);
       }}>
       <div className="flex items-center gap-2">
-        <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500">Size</span>
+        <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500" title="Width × depth (or diameter), clear inside">Section</span>
         <span className="inline-flex rounded-lg bg-slate-100 p-0.5" role="radiogroup" aria-label="Shape">
           {(['rect', 'round'] as const).map((value) => (
             <button key={value} type="button" role="radio" aria-checked={shape === value}
@@ -265,7 +267,7 @@ function SizeEditor({ host, segment, spec, voidHeightMm }: { host: FieldHost; se
           <>
             <Stepper label="Width" value={width} onChange={setWidth} onEnter={apply} step={50} fineStep={10} min={50} max={4000} width="w-12" />
             <span className="text-[11px] text-slate-400">×</span>
-            <Stepper label="Height" value={height} onChange={setHeight} onEnter={apply} step={50} fineStep={10} min={50} max={2000} width="w-12" />
+            <Stepper label="Depth" value={height} onChange={setHeight} onEnter={apply} step={50} fineStep={10} min={50} max={2000} width="w-12" />
           </>
         )}
         <span className="text-[10.5px] text-slate-400">mm</span>
@@ -399,7 +401,24 @@ function EditPanel({ host, plan, segment, context, options }: {
   const chipRow = (prefix: string) => <ChipRow options={chips(prefix)} evaluations={evaluations} onHover={host.onHover} onApply={host.onApply} />;
   const kind = segment.kind;
   if (kind === 'straight' || kind === 'riser') {
-    blocks.push(<SizeEditor key={`size|${sectionLabel(spec.legs[segment.legIndex] ?? { widthMm: 0, heightMm: 0 })}`} host={host} segment={segment} spec={spec} voidHeightMm={context.voidHeightMm} />);
+    const geometry = ductLegs(spec)[segment.legIndex];
+    const section = spec.legs[segment.legIndex] ?? { widthMm: 0, heightMm: 0 };
+    const legIndex = segment.legIndex;
+    blocks.push(
+      <EditBlock key="dimensions" title="Dimensions">
+        {geometry && !geometry.sloped ? (
+          <ValueField key={`length|${Math.round(geometry.lengthMm)}`} host={host} label={kind === 'riser' ? 'Height' : 'Length'} unit="mm"
+            current={Math.round(geometry.lengthMm)} min={MIN_STRAIGHT_MM} max={60000} step={100} fineStep={10} testId="duct-segment-leg-length"
+            hint={kind === 'riser' ? 'its rise; what follows moves with it, the ends stay' : 'centreline, corner to corner; it grows at its far end, the ends stay'}
+            makeOption={(value) => ({
+              id: `leg-length:${legIndex}:${value}`, group: 'tune', glyph: isRoundLeg(section) ? 'round' : 'rect',
+              title: `${value.toLocaleString('en-GB')} mm`, detail: kind === 'riser' ? 'the riser at this height' : 'the straight at this length',
+              edit: { kind: 'leg-length', runId, legIndex, lengthMm: value },
+            })} />
+        ) : null}
+        <SizeEditor key={`size|${sectionLabel(section)}`} host={host} segment={segment} spec={spec} voidHeightMm={context.voidHeightMm} />
+      </EditBlock>,
+    );
   }
   if (kind === 'elbow') blocks.push(<RadiusEditor key="radius" host={host} plan={plan} segment={segment} />);
   if (kind === 'transition') {

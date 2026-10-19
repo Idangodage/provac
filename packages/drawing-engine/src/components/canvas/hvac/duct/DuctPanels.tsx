@@ -27,6 +27,7 @@ import { setDuctRiserRise } from './ductEdits';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
 import { describeJoint } from './ductGauge';
+import { ductLegs } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
 import { ductPenetrationSchedule, ductPenetrationScheduleToCsv } from './ductPenetrationSchedule';
 import { penetrationHasFireDamper } from './ductPenetrations';
@@ -446,6 +447,23 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
     const legs = spec.legs.map((leg, legIndex) => (legIndex === index ? { ...leg, ...update } : leg));
     commit({ ...spec, legs }, `Duct leg ${index + 1} size`);
   };
+  // A straight's length (centreline, corner to corner): the run re-solved with it, its ends kept, as on its card.
+  const legGeometry = ductLegs(spec);
+  const lengthOf = (index: number): number | null => {
+    const leg = legGeometry[index];
+    const runout = spec.end.kind === 'terminal' && spec.end.flex && index === spec.legs.length - 1;
+    return leg && !leg.vertical && !leg.sloped && !runout ? Math.round(leg.lengthMm) : null;
+  };
+  const setLegLength = (index: number, lengthMm: number) => {
+    const state = useSmartDrawingStore.getState();
+    const result = applyDuctSegmentEdit(state.hvacElements, state.ductSettings, { kind: 'leg-length', runId: element.id, legIndex: index, lengthMm });
+    if (result.refused) {
+      state.setProcessingStatus(result.refused, false);
+      return;
+    }
+    commitDuctSegmentEdit(result.updates, result.action);
+    state.setProcessingStatus([`${result.action}.`, ...result.notes].join(' '), false);
+  };
   const setNode = (node: number, update: Partial<DuctNodeOverride> | null) => {
     const nodeOverrides = { ...spec.nodeOverrides };
     const merged = update === null ? {} : { ...(nodeOverrides[String(node)] ?? {}), ...update };
@@ -509,7 +527,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
       </Row>
       {!spec.legacy ? (
         <div className="rounded border border-slate-100 px-2 py-1" data-testid="duct-leg-sizes">
-          <div className="text-xs text-slate-500">Clear section per leg (W × H mm; a change adds a transition)</div>
+          <div className="text-xs text-slate-500">Each straight: length (centreline, corner to corner) · clear section W × D mm (a change adds a transition)</div>
           {spec.legs.map((leg, index) => (
             <div key={index} data-segment-key={`leg:${index}`} className={`flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 py-0.5 text-xs${focusRow(`leg:${index}`)}`}>
               <span className="text-slate-500">
@@ -527,9 +545,17 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
                 ) : null}
               </span>
               <span className="ml-auto max-w-full">
+                {lengthOf(index) !== null ? (
+                  <>
+                    <span className="text-[10px] text-slate-400" title="Centreline length, corner to corner (mm)">L </span>
+                    <CommitNumber label={`Leg ${index + 1} length`} value={lengthOf(index)!} step={100} min={50} max={60000}
+                      onCommit={(lengthMm) => setLegLength(index, lengthMm)} />
+                    <span className="text-slate-300"> · </span>
+                  </>
+                ) : null}
                 <CommitNumber label={`Leg ${index + 1} width`} value={leg.widthMm} onCommit={(widthMm) => setLeg(index, { widthMm })} />
                 {' × '}
-                <CommitNumber label={`Leg ${index + 1} height`} value={leg.heightMm} onCommit={(heightMm) => setLeg(index, { heightMm })} />
+                <CommitNumber label={`Leg ${index + 1} depth`} value={leg.heightMm} onCommit={(heightMm) => setLeg(index, { heightMm })} />
               </span>
             </div>
           ))}

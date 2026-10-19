@@ -98,6 +98,7 @@ import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePr
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
 import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
+import { DuctLegDimension } from "./canvas/hvac/duct/DuctLegDimension";
 import { DuctOverlay, type DuctOverlayHandle } from "./canvas/hvac/duct/DuctOverlay";
 import { createDuctSegmentProvider } from "./canvas/hvac/duct/DuctSegmentCard";
 import { assignTerminalsToUnit, autoAssignTerminals, reassignToNearestUnits, unassignTerminals } from "./canvas/hvac/duct/airSystemController";
@@ -3615,6 +3616,8 @@ export function DrawingCanvas({
             onBeginMove={tool === "select" && !isSpacePressed ? beginHvacMove : undefined}
             hiddenIds={movingIds ?? undefined}
           />
+          <DuctLegDimension enabled={!projectionViewOnly && tool === "select"} hidden={Boolean(movingIds)}
+            width={hostWidth} height={hostHeight} viewportZoom={viewportZoom} panOffset={panOffset} hvacElements={hvacElements} />
           <HvacRotateGrip enabled={!projectionViewOnly && tool === "select" && !isSpacePressed} hidden={Boolean(movingIds)}
             width={hostWidth} height={hostHeight} viewportZoom={viewportZoom} panOffset={panOffset}
             hvacElements={hvacElements} selectedIds={selectedIds} onBeginRotate={beginHvacRotate} />
