@@ -3743,7 +3743,7 @@ export function DrawingCanvas({
         />
         <HvacMoveGizmo3D enabled={projectionViewOnly && tool === "select"} hidden={Boolean(movingIds)} controllerRef={hybridControllerRef}
           width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
-          viewMode={interactionViewMode} onBeginMove={beginHvacMove} />
+          viewMode={interactionViewMode} onBeginMove={beginHvacMove} onBeginRotate={beginHvacRotate} />
         <CondensateEditGizmo3D enabled={projectionViewOnly && tool === "select"} controllerRef={hybridControllerRef}
           width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />

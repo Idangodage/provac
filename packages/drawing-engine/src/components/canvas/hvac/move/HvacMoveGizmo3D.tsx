@@ -5,8 +5,11 @@
  * of the selected units, terminals and duct runs, X / Y / Z arrows and XY / XZ /
  * YZ plane squares move the selection along an axis or across a plane, and the
  * centre ring on the view's own surface. Up and down is offered only where the
- * selection can go (a ducted unit, a duct run). Every drag is the move session
- * the plan uses: the same model, readout, snapping and one undo step.
+ * selection can go (a ducted unit, a duct run). A rotation ring round the
+ * vertical axis turns the selected units and air terminals about the centre of
+ * their box (tilt and isometric; front and side look at it edge-on). Every drag
+ * is the move session the plan uses: the same model, readout, snapping and one
+ * undo step.
  *
  * Projected from the 3D anchor every frame the camera or the selection changes
  * (screen-sized, like the drain gizmo); the 3D layer leaves its pointer events
@@ -16,7 +19,14 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import type * as THREE from 'three';
 
 import type { HvacElement } from '../../../../types';
-import { beginDrag, createWorkplane, updateDrag, type TransformConstraint } from '../../../../vrf/interaction/interaction-coordinate-service';
+import {
+  beginDrag,
+  createWorkplane,
+  intersectRayWithWorkplane,
+  screenPointToRay,
+  updateDrag,
+  type TransformConstraint,
+} from '../../../../vrf/interaction/interaction-coordinate-service';
 import { resolveViewManipulationPolicy, type InteractionViewMode } from '../../../../vrf/interaction/view-manipulation-policy';
 import type { HybridViewportController } from '../../hybrid/hybridViewportController';
 import { modelPointToWorld, worldPointToModel } from '../../modelSpace';
@@ -25,7 +35,8 @@ import { isDuctElement, readDuctRunSpec } from '../duct/ductTypes';
 import { isRefrigerantPipeElementType } from '../refrigerantPipePairModel';
 
 import type { Vec3 } from './ductElasticMove';
-import type { HvacMoveBegin } from './hvacMoveSession';
+import { isTurnableElement, turnPivot } from './hvacMoveModel';
+import type { HvacMoveBegin, HvacRotateBegin } from './hvacMoveSession';
 
 type Axis = 'x' | 'y' | 'z';
 type Plane = 'xy' | 'xz' | 'yz';
@@ -33,9 +44,14 @@ type Plane = 'xy' | 'xz' | 'yz';
 interface Projection {
   origin: { x: number; y: number };
   tips: Record<Axis, { x: number; y: number }>;
+  /** The rotation ring: a level circle round the turn's pivot, projected (null: nothing to turn). */
+  ring: Array<{ x: number; y: number }> | null;
 }
 
 const AXIS_PX = 70;
+/** The rotation ring's radius on screen at the pivot (px) and its colour. */
+const RING_PX = 92;
+const RING_COLOUR = '#d97706';
 const AXIS_COLOURS: Record<Axis, string> = { x: '#dc4848', y: '#279568', z: '#357bdf' };
 const PLANE_COLOURS: Record<Plane, string> = { xy: AXIS_COLOURS.z, xz: AXIS_COLOURS.y, yz: AXIS_COLOURS.x };
 const AXIS_VECTORS: Record<Axis, Vec3> = { x: { x: 1, y: 0, z: 0 }, y: { x: 0, y: 1, z: 0 }, z: { x: 0, y: 0, z: 1 } };
@@ -80,20 +96,27 @@ export function HvacMoveGizmo3D(props: {
   selectedIds: string[];
   viewMode: InteractionViewMode;
   onBeginMove: (request: HvacMoveBegin) => boolean;
+  /** Turns the selected units and terminals (absent: no ring). */
+  onBeginRotate?: (request: HvacRotateBegin) => boolean;
 }) {
-  const { enabled, hidden, controllerRef, width, height, hvacElements, selectedIds, viewMode, onBeginMove } = props;
+  const { enabled, hidden, controllerRef, width, height, hvacElements, selectedIds, viewMode, onBeginMove, onBeginRotate } = props;
   const selected = useMemo(() => {
     if (!enabled) return [];
     const ids = new Set(selectedIds);
     return hvacElements.filter((element) => ids.has(element.id) && isMovable(element));
   }, [enabled, hvacElements, selectedIds]);
   const centre = useMemo(() => selectionCentre(selected), [selected]);
+  // The ring: what turns (units and terminals), about the centre of their box, on the view's level surface only.
+  const policy = resolveViewManipulationPolicy(viewMode);
+  const levelView = policy.defaultDragPlane !== 'xz' && policy.defaultDragPlane !== 'yz';
+  const turnable = useMemo(() => selected.filter(isTurnableElement), [selected]);
+  const pivot = useMemo(() => (onBeginRotate && levelView && turnable.length ? turnPivot(turnable) : null), [levelView, onBeginRotate, turnable]);
   // Up and down: a ducted unit or a duct run can (terminals sit in the ceiling, other units at their level).
   const canRise = selected.some((element) => element.type === 'ducted-ac' || isDuctElement(element));
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [projection, setProjection] = useState<Projection | null>(null);
-  const live = useRef({ centre, width, height });
-  live.current = { centre, width, height };
+  const live = useRef({ centre, width, height, pivot });
+  live.current = { centre, width, height, pivot };
 
   useEffect(() => {
     if (!centre) { setProjection(null); return undefined; }
@@ -102,10 +125,10 @@ export function HvacMoveGizmo3D(props: {
     const draw = () => {
       frame = requestAnimationFrame(draw);
       const camera = controllerRef.current?.camera;
-      const { centre: at, width: w, height: h } = live.current;
+      const { centre: at, width: w, height: h, pivot: about } = live.current;
       if (!camera || !at) return;
       camera.updateMatrixWorld();
-      const key = JSON.stringify([camera.matrixWorld.elements, camera.projectionMatrix.elements, at, w, h]);
+      const key = JSON.stringify([camera.matrixWorld.elements, camera.projectionMatrix.elements, at, w, h, about]);
       if (key === previous) return;
       previous = key;
       const project = (point: Vec3) => {
@@ -117,6 +140,14 @@ export function HvacMoveGizmo3D(props: {
       const probe = project({ ...at, x: at.x + 100 });
       const pxPer100 = Math.max(Math.hypot(probe.x - origin.x, probe.y - origin.y), 1e-3);
       const length = (AXIS_PX / pxPer100) * 100;
+      // The ring: a level circle round the pivot at the selection's mid-height, screen-sized like the arrows.
+      const radius = (RING_PX / pxPer100) * 100;
+      const ring = about
+        ? Array.from({ length: 73 }, (_, index) => {
+          const angle = (index / 72) * 2 * Math.PI;
+          return project({ x: about.x + radius * Math.cos(angle), y: about.y + radius * Math.sin(angle), z: at.z });
+        })
+        : null;
       setProjection({
         origin,
         tips: {
@@ -124,6 +155,7 @@ export function HvacMoveGizmo3D(props: {
           y: project({ ...at, y: at.y + length }),
           z: project({ ...at, z: at.z + length }),
         },
+        ring,
       });
     };
     draw();
@@ -163,7 +195,31 @@ export function HvacMoveGizmo3D(props: {
     }
   };
 
-  const policy = resolveViewManipulationPolicy(viewMode);
+  /** Start a turn of the units and terminals: the pointer's angle about the pivot on the level plane through it. */
+  const startRotate = (event: ReactPointerEvent) => {
+    if (event.button !== 0 || !svgRef.current || !pivot || !onBeginRotate) return;
+    const controller = controllerRef.current;
+    if (!controller) return;
+    const camera = controller.camera.clone();
+    camera.updateMatrixWorld();
+    const rect = svgRef.current.getBoundingClientRect();
+    // The point under the pointer on the level plane through the pivot (the angle about the pivot is absolute, not a
+    // drag's displacement as a move's is).
+    const workplane = createWorkplane('hvac-rotate', modelPointToWorld({ x: pivot.x, y: pivot.y }, centre.z), worldDirection(AXIS_VECTORS.z));
+    const resolve = (clientX: number, clientY: number) => {
+      const hit = intersectRayWithWorkplane(screenPointToRay({ clientX, clientY, pointerId: event.pointerId }, camera, rect), workplane);
+      if (!hit) return null;
+      const model = worldPointToModel(hit);
+      return { x: model.x, y: model.y, z: model.z };
+    };
+    if (!resolve(event.clientX, event.clientY)) return;
+    const begun = onBeginRotate({ ids: turnable.map((element) => element.id), pivot, clientX: event.clientX, clientY: event.clientY, resolve });
+    if (begun) {
+      event.stopPropagation();
+      event.preventDefault();
+    }
+  };
+
   const surface: Plane = policy.defaultDragPlane === 'xz' || policy.defaultDragPlane === 'yz' ? policy.defaultDragPlane : 'xy';
   const allowed = (axis: Axis) => axis !== 'z' || canRise;
   const o = projection.origin;
@@ -177,6 +233,15 @@ export function HvacMoveGizmo3D(props: {
   return (
     <div className="pointer-events-none absolute inset-0 z-[23]" data-testid="hvac-move-gizmo" data-pipe-edit-gizmo="move">
       <svg ref={svgRef} width={width} height={height} className="absolute left-0 top-0" style={{ pointerEvents: 'none', overflow: 'visible' }}>
+        {projection.ring && (
+          <g style={{ pointerEvents: 'auto', cursor: 'grab' }} data-hvac-rotate-ring="1" onPointerDown={startRotate}>
+            <title>Rotate {turnable.length === 1 ? (turnable[0]!.label || 'it') : `the ${turnable.length} units and terminals`} about the vertical (15° steps and the walls&apos; angles; Alt: free; type an angle)</title>
+            <polyline points={projection.ring.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ')}
+              fill="none" stroke="rgba(0,0,0,0.001)" strokeWidth={14} />
+            <polyline points={projection.ring.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ')}
+              fill="none" stroke={RING_COLOUR} strokeWidth={2.2} strokeLinejoin="round" />
+          </g>
+        )}
         {planes.filter((plane) => allowed(plane.a) && allowed(plane.b)).map((plane) => {
           const pa = projection.tips[plane.a];
           const pb = projection.tips[plane.b];
