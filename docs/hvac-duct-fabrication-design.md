@@ -1824,7 +1824,9 @@ notes worth showing, what stopped the move short, and the undo step's name ("Mov
 - On canvas, `move-p1` 24/24 (an FDUM22, two Ø200 diffusers, Auto duct applied; real key presses), restoring the
   project exactly:
   - the unit alone, 500 mm right (Shift + Right): the diffusers stay, both runouts still end on their spigots (0 mm off),
-    the collar run starts on the moved collar (0 mm off), no new duct error; one undo restores it;
+    the collar run starts on the moved collar (0 mm off), no new duct plan error; the stretched branch then clashes
+    with the trunk and with SAD-2's body (two `DU_CLASH`, allowed and reported: decision 3; this line said "no new duct
+    error" until 19 October, from a check that read a field the duct report does not carry); one undo restores it;
   - the whole system (unit, both runs, both diffusers), 500 mm down: every duct vertex moves by the same vector;
   - the unit up twice (Alt + Up, 50 mm each): the collar run rises 100 mm, its runout takes the height, both runouts
     still on their spigots; two undos;
@@ -1959,7 +1961,155 @@ notes worth showing, what stopped the move short, and the undo step's name ("Mov
     (`DU_LEG_TOO_SHORT`), not refused.
   - Undo clears the selection (as before): a second move after an undo needs the item picked again.
   - Alignment guides are drawn in the plan only; the 3D views snap to the grid step.
-  - Rotating and copying while moving are not part of this work; both fit the same session.
+  - Copying while moving is not part of this work; it fits the same session. Rotating is the next section.
+
+## Rotating units and air terminals: what is connected follows (19 October 2026)
+
+**The request:** a rotation feature for AC equipment and diffusers; when the rotation changes, the corresponding items,
+ducts and other accessories included, change with it. Approved plan: `C:\Users\idang\.claude\plans\hvac-rotate.md`.
+
+**Your decisions (19 October 2026):** "yes do", so every recommended option:
+1. A unit turned alone re-aims its duct runs from the turned collar to rejoin their route; where none fits, the run
+   swings rigidly about the collar (runouts kept on their diffusers) and is named.
+2. A square or round diffuser keeps its spigot facing its runout (its side is re-chosen); a slot or rectangular grille
+   turns its spigot with it and the runout follows.
+3. Several selected turn as one block about the selection's centre; "each in place" on request.
+4. Snapping: 15° steps and the walls' angles; Alt turns freely.
+5. `R` / `Shift + R` turn the selected units and terminals 90° clockwise / anticlockwise (the Room tool otherwise).
+6. Wall units stay square to their wall (a turn is refused with the reason); branch kits turn with their pipe run.
+7. A rotation ring on the 3D gizmo (Iso, 3D, tilted plan); Front and Side do not offer it.
+
+### What it did before
+
+Only the Properties "Rotation" field turned a placed item, writing the angle straight onto it: its ducts, pipes and
+drains stayed where they were (the run's start off the collar), a diffuser's spigot turned away from its runout, a wall
+unit could be turned off its wall, and `R` only turned an item being placed.
+
+### Phase 1: one turn in the move model
+
+`planHvacMove(scene, { ids, delta: 0, rotation: { angleDeg, pivot, partial } }, context)` (`hvac/move/hvacMoveModel.ts`)
+plans a turn exactly as it plans a move: every changed element, the outcomes, the notes, what stopped it, and the undo
+step's name ("Rotate DU-1 90° clockwise", "Rotate 2 diffusers 45° anticlockwise each").
+
+- **What turns.** Units and air terminals (and drain gullies); branch kits turn with their pipe run, not on their own;
+  duct runs, pipes and drains follow what they are attached to. One block turns about the centre of the selection's box
+  (each item's position and orientation), or each item about its own centre ("each in place").
+- **Rules.** A wall unit refuses the turn ("SRK35 hangs on its wall and stays square to it: move it to another wall
+  instead."). Every other unit and terminal keeps its placement rule (indoor in a room, outdoor outside): an exact turn
+  (a key, a button, a typed angle) is made whole or not at all; a drag stops at the last angle every rule allows.
+- **A square or round face** (square 4-way, round, egg-crate, perforated, louvred, with a square plenum box) keeps its
+  spigot facing its runout: its side is chosen anew, so a quarter turn leaves its duct exactly as it was. A face whose
+  box is not square (a linear slot) turns its spigot with it: a flexible runout re-curves to it; a rigid run's end is
+  re-aimed onto it (the run read from its end), or reaches it and says "meets LSD-1's turned spigot at an angle:
+  re-route its last straight."
+- **Moved together = turned rigidly.** A system whose unit and every terminal it serves turn in the block turns whole
+  (every vertex about the pivot, the spigots on the same sides).
+- **A run on a turned collar** (`ductNetworkMove.ts`, `duct/ductCollarReroute.ts`): it leaves the turned collar square
+  to it and rejoins its own route before its first take-off, so the take-offs, their branches, the accessories and
+  every diffuser stay exactly as they were. Two ways are found and the cheaper to make is taken (its rigid length plus
+  1500 mm of duct per elbow):
+  - a re-aim onto the route as it runs (straight on, one new elbow, two turns, a stub onto its flexible runout), each
+    candidate planned;
+  - a route round the unit onto the old line, by the obstacle-aware orthogonal router in the old route's own frame:
+    square-throat elbow room at each turn (what the planner makes where a radius elbow does not fit), round the
+    casing, the terminals, other equipment, other runs and the walls (a re-route stays in its room). A collar turned
+    off the room's axes (45°) leaves on a stub that turns onto one of them, so the ducts stay square to the room.
+  Every candidate's first straight holds the connector and the collar's transition (674 × 164 to 250 × 250 is 960 mm
+  at the 14° design taper; where a wall is close in front, as short as SMACNA Fig. 2-7 allows, about 470 mm), is
+  planned with the run's take-offs renumbered onto it, and is checked for clashes with what it keeps (its own legs and
+  branches included). Where neither fits, a stub off the collar with one elbow onto the route's heading, the route
+  stretching to meet it, validated the same way; where that does not fit either, the run turns rigidly about the
+  collar, its runouts still on their diffusers, and says "turned with its unit: re-route it, or re-design it with Auto
+  duct."
+- **Pipes and drains.** Refrigerant pipes re-attach to the turned ports (one unit after another); drains re-solve from
+  the turned outlets (the commit; a preview leaves them out).
+- **The keyboard and the Properties panel.** `R` / `Shift + R` turn the selected units and terminals 90° clockwise /
+  anticlockwise; with none selected, `R` is the Room tool, and during a placement it still turns the item being
+  placed. The Rotation field of a unit turns it to the angle typed (Enter or leaving the field; one undo step, not one
+  per keystroke). A "Rotate" section offers ⟲ 90°, 180°, ⟳ 90°, an exact "Turn by" and, for several, "Turn each in
+  place".
+
+### Phase 2: the rotation grip on the plan
+
+- **The grip.** A round knob with a turning arrow on a short dashed stem above the selected units and terminals (one
+  for the whole selection, above its box; below it near the top of the view). Dragging it turns them about the centre
+  of their box through the move session's rotation mode (`hvacMoveSession.beginRotate`): the same model, the preview
+  in every layer each frame (one plan per angle: moving within a snap step plans nothing new), one undo step.
+- **Snapping.** The angle the pointer sweeps about the pivot is snapped so the first item's orientation lands on a 15°
+  step, or on a wall's angle (or a quarter turn from it) within 4°, whichever is nearer; Alt turns freely (to a tenth
+  of a degree). Typing a number turns exactly that far ("-" for anticlockwise), Enter makes it, Esc cancels.
+- **The readout** names the turn and its angle ("Rotate DU-1 90° clockwise", "+90°"), with the pivot, a spoke to the
+  pointer, the swept wedge, and a faint outline where each item was. What the turn did without needing the designer
+  ("The run to SAD-1 leaves the turned collar and rejoins its route round DU-1 (3 new elbows).") is said plainly; what
+  it leaves for the designer stays amber, why it stopped short red.
+
+### Phase 3: the ring on the 3D gizmo
+
+The move gizmo of the tilted plan, Iso and 3D views carries a rotation ring: a level circle round the centre of the
+selected units' and terminals' box, at the selection's mid-height, screen-sized like the arrows. Dragging along it
+turns them through the same rotation mode; the angle is the point under the pointer on the level plane through the
+pivot (the drag service's displaced anchor is a move's delta, not an angle about a point). Front and Side look at the
+ring edge-on and do not offer it.
+
+### Verified
+
+- Unit tests: `ductCollarReroute` 4 (a quarter turn either way and a half turn re-routed round the casing onto the
+  old line before the take-off, a wall sending a half turn round the other side, a 45° collar left to the other ways),
+  `hvacRotate` 19 (the unit alone at 90°, −90°, 180° and 45°; a block turned rigidly; the placement rule all or nothing,
+  a drag stopping short; a square diffuser's spigot re-chosen, its duct unchanged; a slot's flexible runout re-curved;
+  a rigid run re-aimed onto a turned slot, and one that drops just before it reaching it at an angle; the loop Auto
+  duct lays out, re-routed at 90°, −90° and 180°, a half turn with a wall 1.46 m in front of the collar compressing the
+  transition, and 45° turning rigidly with its note; a wall unit refused; ducts alone refused; the labels),
+  `hvacMoveSession` +5 (the rotation mode: 15° steps, a wall's angle, Alt, a typed angle with "-", Esc, a block).
+  Full suite 266 files / 2320 tests.
+- On canvas (an FDUM22, two square Ø200 diffusers, Auto duct applied; real key presses, clicks and drags), each
+  restoring the project exactly:
+  - `rotate-p1` 37/37: `R` turns the unit 90° (the trunk re-routed round it, 3 new elbows), `Shift + R` −90°, `R`
+    twice and the 180° button a half turn (re-routed, no rigid swing, no new duct error), a diffuser turned with its
+    duct untouched (its spigot moved from the right side to the back), the Rotation field to 45° (no way back onto the
+    tangled loop: it turns rigidly and says so), the Rotate section's buttons, the whole system as one block (rigid,
+    nothing new clashing), and `R` with nothing selected turning nothing;
+  - `rotate-p2` 31/31: the grip, a quarter turn by dragging (the readout and the wedge while dragging), 80° swept
+    snapping to 75°, Alt to exactly 37°, a typed 45 with Enter, Esc, a diffuser, the block;
+  - `rotate-p3` 15/15: in Iso the ring on the unit's gizmo, a quarter of it each way (+90°, −90°), a diffuser, and no
+    ring in Front;
+  - `rotate-p4` 17/17: the unit piped and drained by Auto route turned with `R`: both pipes end on its turned ports as
+    before, its drain starts at its turned outlet, no new drain error; a linear slot turned: its spigot turned with it
+    and its flexible runout re-curved (the rigid part within 0.003 mm); two diffusers turned each in place.
+- Regressions, each restoring the project exactly: `move-p1` 24/24, `move-p2` 33/33, `move-p3` 18/18, `move-drains`
+  13/13, `move-pipes` 6/6, `duct-seg-p3` 29/29 (the take-off re-aims, now through the shared candidate search),
+  `duct-seg-p4` 16/16, `duct-seg-p5` 14/14, `duct-seg-click` 8/8, `air-p1` 25/25, `air-p3` 14/14, `cd-seg-pieces`
+  14/14, `pipe-seg-inspector` 8/8.
+
+### Found while verifying, fixed
+
+- **The collar's transition.** The trunk Auto duct makes is 250 × 250 off a 674 × 164 collar: the transition takes
+  960 mm of the first leg at the 14° design taper. The first re-route left 455 mm and every candidate failed its plan
+  (`DU_TRANSITION_ANGLE`); the first leg now holds the connector and the transition, compressed to the steepest SMACNA
+  Fig. 2-7 allows (about 470 mm) only where a wall is close in front.
+- **Auto duct's loops.** Its trunk can wrap round a diffuser and return 184 mm above the unit, overlapping its own
+  first leg in plan. Routes are now found round the terminals, other equipment, other runs and the walls, and every
+  candidate is checked against what it keeps (its own legs and branches included); the stub fallback is validated the
+  same way, and a template re-aim and a re-route are compared on what they cost to make (one re-aim had looped the
+  trunk round both diffusers, 4 m of duct more than needed).
+- **The drivers' duct-error check** (also in the move drivers) read `severity`, which the duct report's issues do not
+  carry (they carry `level`): it passed whatever happened. The rotate drivers use `level`, and so does `move-p1` now, listing clashes on their own: the unit alone moved 500 mm
+  right leaves the stretched branch clashing with the trunk and with SAD-2's body (two `DU_CLASH`, allowed and
+  reported by the move's decision 3). The move section's Phase 1 line is corrected.
+
+### Known limits
+
+- A unit whose trunk loops tightly round its diffusers has no clean way back onto the loop at 45°: the run turns
+  rigidly with the unit and says "re-route it, or re-design it with Auto duct".
+- A turn can bring the unit's casing onto a duct it keeps: a quarter turn makes the FDUM22 193 mm longer across its
+  old face, so the loop above reaches it by about 10 mm. The design checks report the clash (`DU_CLASH`); the turn is
+  not refused (as a move that makes a clash is not).
+- Refrigerant pipes re-attach to the turned ports rather than turning with a block, and branch kits stay where they
+  are; drains re-solve on release (the preview leaves them, as a move's does).
+- Wall units refuse a turn (your decision 6); the toolbox has no wall unit, so this is checked by the unit tests only.
+- While an item is being placed, `R` still turns the item being placed and `Shift + R` steps it 15° (the placement's
+  own keys), unlike `Shift + R` on a selection (90° anticlockwise).
+
 
 ## Known limits (auto duct, 30 September 2026)
 
