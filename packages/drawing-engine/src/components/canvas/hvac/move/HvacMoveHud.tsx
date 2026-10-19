@@ -24,6 +24,8 @@ export interface HvacMoveHudView {
   notes: readonly string[];
   /** Alignment guides (client pixels). */
   guides: ReadonlyArray<{ x1: number; y1: number; x2: number; y2: number }>;
+  /** Where the moved units and terminals were (client pixels): a faint outline each. */
+  ghosts?: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>;
 }
 
 export interface HvacMoveHudHandle {
@@ -87,7 +89,16 @@ export const HvacMoveHud = forwardRef<HvacMoveHudHandle>(function HvacMoveHud(_p
       const left = view.client.x + OFFSET_PX + width > window.innerWidth - 8 ? view.client.x - OFFSET_PX - width : view.client.x + OFFSET_PX;
       const top = view.client.y + OFFSET_PX + height > window.innerHeight - 8 ? view.client.y - OFFSET_PX - height : view.client.y + OFFSET_PX;
       box.style.transform = `translate(${Math.max(8, left)}px, ${Math.max(8, top)}px)`;
-      svg.replaceChildren(...view.guides.map((guide) => {
+      const ghosts = (view.ghosts ?? []).map((corners) => {
+        const outline = document.createElementNS(SVG_NS, 'polygon');
+        outline.setAttribute('points', corners.map((corner) => `${corner.x.toFixed(1)},${corner.y.toFixed(1)}`).join(' '));
+        outline.setAttribute('fill', 'rgba(100,116,139,0.06)');
+        outline.setAttribute('stroke', '#94a3b8');
+        outline.setAttribute('stroke-width', '1');
+        outline.setAttribute('stroke-dasharray', '3 3');
+        return outline;
+      });
+      svg.replaceChildren(...ghosts, ...view.guides.map((guide) => {
         const path = document.createElementNS(SVG_NS, 'line');
         path.setAttribute('x1', String(guide.x1));
         path.setAttribute('y1', String(guide.y1));

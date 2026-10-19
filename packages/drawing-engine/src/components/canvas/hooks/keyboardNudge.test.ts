@@ -12,6 +12,13 @@ describe('resolveKeyboardNudgeDelta', () => {
       .toEqual({ dx: 0, dy: 0, dz: 10 });
   });
 
+  it('maps Page Up / Page Down to Z in every view', () => {
+    for (const view of ['plan-2d', 'front-elevation-2d', 'side-elevation-2d', 'isometric'] as const) {
+      expect(resolveKeyboardNudgeDelta('PageUp', false, 50, view)).toEqual({ dx: 0, dy: 0, dz: 50 });
+      expect(resolveKeyboardNudgeDelta('PageDown', false, 50, view)).toEqual({ dx: 0, dy: 0, dz: -50 });
+    }
+  });
+
   it('maps front arrows to XZ and Alt+vertical to locked Y', () => {
     expect(resolveKeyboardNudgeDelta('ArrowLeft', false, 25, 'front-elevation-2d'))
       .toEqual({ dx: -25, dy: 0, dz: 0 });

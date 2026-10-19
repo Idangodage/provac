@@ -46,6 +46,8 @@ export interface MoveSnapInput {
   free: boolean;
   /** How near counts as aligned (mm: a few screen pixels at the current zoom). */
   toleranceMm: number;
+  /** Axes the drag does not move (a 3D view's surface or axis): they stay at 0, unsnapped. */
+  fixedAxes?: { x?: boolean; y?: boolean };
 }
 
 export interface MoveSnapResult {
@@ -96,8 +98,10 @@ function nearestGuide(moving: readonly MoveBox[], others: readonly MoveBox[], ax
 
 export function snapMoveDelta(input: MoveSnapInput): MoveSnapResult {
   let { x, y } = input.delta;
-  const locked = { x: false, y: false };
-  if (input.axisLock) {
+  const locked = { x: Boolean(input.fixedAxes?.x), y: Boolean(input.fixedAxes?.y) };
+  if (locked.x) x = 0;
+  if (locked.y) y = 0;
+  if (input.axisLock && !locked.x && !locked.y) {
     if (Math.abs(x) >= Math.abs(y)) { y = 0; locked.y = true; } else { x = 0; locked.x = true; }
   }
   const snappedBy: MoveSnapResult['snappedBy'] = { x: locked.x ? 'locked' : 'none', y: locked.y ? 'locked' : 'none' };

@@ -1904,6 +1904,47 @@ notes worth showing, what stopped the move short, and the undo step's name ("Mov
   diffuser now dragged through the session, one undo), `duct-seg-p3` 29/29, `duct-seg-click` 8/8, `air-p1` 25/25.
 - Full suite 264 files / 2289 tests.
 
+### Phase 3: the 3D views
+
+- **Picking.** Units, terminals and gullies are found under the pointer in the 3D views (the nearest of them and of
+  the duct runs wins; runs, pipes and kits keep their own picks). A click selects (Shift adds or takes out); a press
+  arms the same move session as the plan's, so a drag moves the selection, the whole of it when the item is part of
+  it. A press on a duct run arms it too (a click still selects the run and pins the segment under the pointer).
+- **Each view's surface.** The drag runs on the view's own construction plane through the point grabbed, so the item
+  stays under the cursor: level (XY) in the tilted plan, Iso and 3D; XZ in Front; YZ in Side (the view policy of
+  `vrf/interaction`). Only the axes a drag moves change: in Front the depth stays exactly as it was.
+- **The move gizmo** (`HvacMoveGizmo3D.tsx`), at the centre of the selected units, terminals and runs: X / Y / Z arrows
+  and XY / XZ / YZ plane squares move along an axis or across a plane, and its centre ring on the view's surface.
+  Up and down is offered only where the selection can go (a ducted unit, a duct run; terminals sit in the ceiling).
+  Screen-sized, projected every frame the camera or the selection changes; it waits while a drag is under way.
+- **One session.** The session takes the 3D view's pointer as a resolver (the interaction service's `beginDrag` /
+  `updateDrag` with the axis or plane), so the readout, snapping (the grid step on every axis the drag moves; no
+  guides, which the plan draws), Esc, a typed distance and the one undo step are those of the plan. Δz shows once a
+  move has height. The ceiling void stops a rise ("Stopped short: Supply duct would rise above the soffit
+  (2900 mm)").
+- **The preview in 3D** goes through the scene's own edit preview (`setMovePreview` on the imperative bridge): the
+  moved units, terminals and runs are drawn as they would be, their committed meshes hidden, held after the release
+  until the stored move re-renders — no React update per frame.
+- **The keyboard:** Page Up / Page Down move up and down in every view (the arrows as before: Alt + Up / Down, or Up /
+  Down in Front and Side).
+- **Also in the plan:** a faint dashed outline stays where each moved unit and terminal was while it is dragged.
+
+### Verified (Phase 3)
+
+- Unit tests: the session in a 3D view (its own surface, up and down snapped), an axis a drag does not move kept
+  exactly (an off-grid item with Shift; a Z arrow), Page Up / Down; 47 in `hvac/move`.
+- On canvas, `move-p3` 18/18 (the same scene; real pointer input), restoring the project exactly:
+  - Iso: a click on a diffuser selects it and its gizmo has no Z arrow; the unit dragged by its body moves level
+    ("Move DU-1"), its runouts still on their spigots; one undo;
+  - the gizmo's Z arrow lifts the unit exactly (0, 0, +180 mm, stopped at the soffit) and its collar run rises with
+    it, the runouts taking the height;
+  - Front: the unit drags across and up (+454, 0, +180): no depth;
+  - a duct run dragged in Iso offsets, its runouts on their spigots.
+- `move-p2` 33/33 (the outline where the unit was shows mid-drag), `move-p1` 24/24; 3D picking and cards unchanged:
+  `duct-seg-p4` 16/16, `duct-seg-p5` 14/14, `cd-seg-pieces` 14/14, `pipe-seg-inspector` 8/8, `air-p3` 14/14,
+  `duct-seg-click` 8/8.
+- Full suite 264 files / 2292 tests.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.

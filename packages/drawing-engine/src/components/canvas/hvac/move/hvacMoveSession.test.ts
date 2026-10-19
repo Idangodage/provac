@@ -52,7 +52,7 @@ const diffuser = (id: string, x: number, y: number): HvacElement => ({
 /** One screen pixel is one millimetre; the plan's origin at the client origin. */
 function setup(selection: string[] = []) {
   const target = new FakeWindow();
-  let scene: HvacElement[] = [diffuser('d1', 1000, 1000), diffuser('d2', 3000, 1000), diffuser('d3', 6000, 4000)];
+  let scene: HvacElement[] = [diffuser('d1', 1000, 1000), diffuser('d2', 3000, 1000), diffuser('d3', 6000, 4000), diffuser('d4', 1013, 8987)];
   let selected = [...selection];
   const log = {
     previews: [] as Array<HvacMovePlan | null>, huds: [] as Array<HvacMoveHudState | null>, commits: [] as HvacMovePlan[],
@@ -142,6 +142,34 @@ describe('HvacMoveSession', () => {
     target.fire('pointermove', { clientX: 5996, clientY: 1180, shiftKey: true });
     target.flush();
     expect(log.huds.at(-1)).toMatchObject({ applied: { x: 5000, y: 0 } });
+    target.fire('keydown', { key: 'Escape' });
+  });
+
+  it('a 3D view\'s drag maps the pointer through its own surface and moves up and down too (snapped)', () => {
+    const { target, session, log } = setup([]);
+    // A front view: across the screen is x, up the screen is z (y stays).
+    const resolve = (clientX: number, clientY: number) => ({ x: clientX, y: 1000, z: 3000 - clientY });
+    session.begin({ pressedId: 'd1', clientX: 1000, clientY: 500, resolve, axes: { x: true, y: false, z: true } });
+    target.fire('pointermove', { clientX: 1212, clientY: 420 });
+    target.flush();
+    // 212 → 200 across, 80 → 100 up; diffusers keep their level, so the plan asked for z but applied none to them.
+    expect(log.huds.at(-1)).toMatchObject({ requested: { x: 200, y: 0, z: 100 } });
+    target.fire('keydown', { key: 'Escape' });
+  });
+
+  it('keeps an axis the drag does not move exactly where it is (no grid snap on it)', () => {
+    const { target, session, log } = setup([]);
+    // Off the grid: with Shift along x, its y stays as it is (the grid would put its centre on 9000).
+    session.begin({ pressedId: 'd4', clientX: 1013, clientY: 8987 });
+    target.fire('pointermove', { clientX: 1225, clientY: 9000, shiftKey: true });
+    target.flush();
+    expect(log.huds.at(-1)).toMatchObject({ applied: { x: 237, y: 0 } });
+    target.fire('keydown', { key: 'Escape' });
+    // An arrow along z (a 3D view): x and y stay exactly.
+    session.begin({ pressedId: 'd4', clientX: 1013, clientY: 8987, resolve: (x, y) => ({ x: x + 0.4, y: 8987.3, z: 9000 - y }), axes: { z: true, x: false, y: false } });
+    target.fire('pointermove', { clientX: 1013, clientY: 8900 });
+    target.flush();
+    expect(log.huds.at(-1)).toMatchObject({ requested: { x: 0, y: 0, z: 100 } });
     target.fire('keydown', { key: 'Escape' });
   });
 

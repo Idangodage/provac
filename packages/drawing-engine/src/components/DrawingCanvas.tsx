@@ -118,9 +118,10 @@ import { getDuctSupportPlan, resolveSoffitZ } from "./canvas/hvac/duct/ductSuppo
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
+import { HvacMoveGizmo3D } from "./canvas/hvac/move/HvacMoveGizmo3D";
 import { formatMoveMm, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
 import { setHvacMoveHandler } from "./canvas/hvac/move/hvacMoveBus";
-import { hvacMoveChanges, hvacMoveCommand, planHvacMove, resolveHvacCeilingVoid } from "./canvas/hvac/move/hvacMoveModel";
+import { hvacMoveChanges, hvacMoveCommand, planHvacMove, resolveHvacCeilingVoid, type HvacMovePlan } from "./canvas/hvac/move/hvacMoveModel";
 import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost } from "./canvas/hvac/move/hvacMoveSession";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
@@ -2335,6 +2336,10 @@ export function DrawingCanvas({
   const moveHostRef = useRef<HvacMoveSessionHost | null>(null);
   /** Items being dragged (their design-check markers wait until the move is stored). */
   const [movingIds, setMovingIds] = useState<ReadonlySet<string> | null>(null);
+  /** The 3D scene shows the move being made (a 3D view). */
+  const movePreview3DRef = useRef(false);
+  /** The move as last previewed (its ghosts: where the moved units and terminals were). */
+  const lastMovePlanRef = useRef<HvacMovePlan | null>(null);
   moveHostRef.current = {
     scene: () => useSmartDrawingStore.getState().hvacElements,
     selection: () => useSmartDrawingStore.getState().selectedIds,
@@ -2358,9 +2363,15 @@ export function DrawingCanvas({
       };
     },
     preview: (plan) => {
+      lastMovePlanRef.current = plan;
       const updated = plan?.updated ?? null;
       hvacRendererRef.current?.previewMove(updated);
       ductOverlayRef.current?.previewMove(updated ? updated.filter((element) => isDuctElement(element) || isDuctTerminalElement(element)) : null);
+      // A 3D view draws the move in its scene too (the plan layers lie under it).
+      if (projectionViewOnly || movePreview3DRef.current) {
+        hybridPipeInteractionRef.current?.setMovePreview(updated);
+        movePreview3DRef.current = Boolean(updated);
+      }
     },
     hud: (state) => {
       const hud = moveHudRef.current;
@@ -2377,13 +2388,29 @@ export function DrawingCanvas({
         const screen = worldToScreenFromFabricViewport(point, viewport as unknown as FabricViewportMatrix);
         return { x: rect.left + screen.x, y: rect.top + screen.y };
       };
-      const { x, y } = state.applied;
+      // The plan keeps a faint outline where each moved unit and terminal was.
+      const before = new Map(useSmartDrawingStore.getState().hvacElements.map((element) => [element.id, element]));
+      const ghosts = projectionViewOnly ? [] : (lastMovePlanRef.current?.updated ?? []).flatMap((moved) => {
+        const original = before.get(moved.id);
+        if (!original || isDuctElement(original) || isRefrigerantPipeElementType(original.type) || isCondensatePipe(original)) return [];
+        if (Math.hypot(moved.position.x - original.position.x, moved.position.y - original.position.y) < 1) return [];
+        const centre = { x: original.position.x + original.width / 2, y: original.position.y + original.depth / 2 };
+        const angle = ((original.rotation ?? 0) * Math.PI) / 180;
+        return [[[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => {
+          const lx = (sx! * original.width) / 2;
+          const ly = (sy! * original.depth) / 2;
+          return toClient({ x: centre.x + lx * Math.cos(angle) - ly * Math.sin(angle), y: centre.y + lx * Math.sin(angle) + ly * Math.cos(angle) });
+        })];
+      });
+      const { x, y, z } = state.applied;
+      // Δz once the move has height (the 3D views, the gizmo's Z arrow).
+      const rises = Math.abs(z) > 0.5 || Math.abs(state.requested.z) > 0.5;
       hud.show({
         client: state.client,
         title: state.label,
         readout: state.typed !== null
           ? `${state.typed} mm`
-          : `Δx ${formatMoveMm(x)}  Δy ${formatMoveMm(y)}  ·  ${Math.round(Math.hypot(x, y)).toLocaleString("en-GB")} mm`,
+          : `Δx ${formatMoveMm(x)}  Δy ${formatMoveMm(y)}${rises ? `  Δz ${formatMoveMm(z)}` : ""}  ·  ${Math.round(Math.hypot(x, y, z)).toLocaleString("en-GB")} mm`,
         typing: state.typed !== null,
         limitedBy: state.limitedBy,
         notes: state.notes,
@@ -2392,6 +2419,7 @@ export function DrawingCanvas({
           const b = toClient(guide.axis === "x" ? { x: guide.at, y: guide.to } : { x: guide.to, y: guide.at });
           return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
         }),
+        ghosts,
       });
     },
     commit: (plan) => {
@@ -2399,12 +2427,16 @@ export function DrawingCanvas({
       if (!hvacMoveChanges(plan)) {
         hvacRendererRef.current?.previewMove(null);
         ductOverlayRef.current?.previewMove(null);
+        if (movePreview3DRef.current) hybridPipeInteractionRef.current?.setMovePreview(null);
+        movePreview3DRef.current = false;
         return;
       }
       commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
       // The bodies and runs stay where the preview drew them until the stored move re-renders them.
       hvacRendererRef.current?.previewMove(null, { committed: true });
       ductOverlayRef.current?.previewMove(null, { committed: true });
+      if (movePreview3DRef.current) hybridPipeInteractionRef.current?.setMovePreview(null, { committed: true });
+      movePreview3DRef.current = false;
     },
     dragState: (ids) => setMovingIds(ids ? new Set(ids) : null),
   };
@@ -3630,6 +3662,7 @@ export function DrawingCanvas({
           onSplitWall={handleSplitWallAtMidpoint}
           onMoveWallNode={wallGraphMoveNode}
           onMoveWallEdges={wallGraphMoveEdges}
+          onBeginHvacMove={tool === "select" ? beginHvacMove : undefined}
           onCommitPipeRouteEdit={handleCommitHybridPipeRouteEdit}
           showPipeEditHandles={false}
           pipeToolActive={tool === "refrigerant-pipe"}
@@ -3638,6 +3671,9 @@ export function DrawingCanvas({
           onPipePointerCancel={_cancelRefrigerantPipeDrawing}
           pipeInteractionRef={hybridPipeInteractionRef}
         />
+        <HvacMoveGizmo3D enabled={projectionViewOnly && tool === "select"} hidden={Boolean(movingIds)} controllerRef={hybridControllerRef}
+          width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
+          viewMode={interactionViewMode} onBeginMove={beginHvacMove} />
         <CondensateEditGizmo3D enabled={projectionViewOnly && tool === "select"} controllerRef={hybridControllerRef}
           width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />

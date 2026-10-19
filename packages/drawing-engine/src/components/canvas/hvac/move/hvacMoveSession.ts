@@ -76,6 +76,14 @@ export interface HvacMoveBegin {
   segment?: DuctSegmentRef | null;
   /** A click (no drag) also does this (e.g. pins the duct segment under the pointer). */
   onClick?: () => void;
+  /**
+   * A 3D view's pointer: the model point (mm, z up) under a client point on the
+   * drag's surface or axis (through the point grabbed). Absent: the plan's own
+   * mapping (z stays).
+   */
+  resolve?: (clientX: number, clientY: number) => Vec3 | null;
+  /** The axes the drag moves (a view's surface, a gizmo arrow): the others stay put. Default: x and y. */
+  axes?: Partial<Record<'x' | 'y' | 'z', boolean>>;
 }
 
 /** A host that always calls the latest one `get` returns (a React component's host is rebuilt each render). */
@@ -100,6 +108,16 @@ const DRAG_THRESHOLD_PX = 4;
 /** Guides pull within this many screen pixels. */
 const GUIDE_TOLERANCE_PX = 6;
 
+/** The unit vector of the axis a drag mostly runs along (Shift). */
+function dominantAxis(vector: Vec3): Vec3 {
+  const ax = Math.abs(vector.x);
+  const ay = Math.abs(vector.y);
+  const az = Math.abs(vector.z);
+  if (ax >= ay && ax >= az) return { x: Math.sign(vector.x) || 1, y: 0, z: 0 };
+  if (ay >= az) return { x: 0, y: Math.sign(vector.y) || 1, z: 0 };
+  return { x: 0, y: 0, z: Math.sign(vector.z) || 1 };
+}
+
 /** Items with a footprint the guides align (units, terminals, gullies; not runs, pipes or drains). */
 function hasFootprint(element: HvacElement): boolean {
   return !isDuctElement(element) && !isRefrigerantPipeElementType(element.type) && !isCondensatePipe(element);
@@ -110,7 +128,11 @@ interface Armed {
   segment: DuctSegmentRef | null;
   pressedId: string;
   startClient: Point2D;
-  startWorld: Point2D;
+  startWorld: Vec3;
+  /** The 3D views' pointer mapping (null: the plan's). */
+  resolve: ((clientX: number, clientY: number) => Vec3 | null) | null;
+  /** The axes the drag moves. */
+  axes: { x: boolean; y: boolean; z: boolean };
   anchor: Point2D;
   moving: MoveBox[];
   others: MoveBox[];
@@ -122,7 +144,7 @@ interface Armed {
   modifiers: { shift: boolean; alt: boolean };
   typed: string | null;
   plan: HvacMovePlan | null;
-  delta: Point2D;
+  delta: Vec3;
   frame: number | null;
 }
 
@@ -142,7 +164,8 @@ export class HvacMoveSession {
     const scene = this.host.scene();
     const byId = new Map(scene.map((element) => [element.id, element]));
     const pressed = byId.get(request.pressedId);
-    const startWorld = this.host.clientToWorld(request.clientX, request.clientY);
+    const resolve = request.resolve ?? null;
+    const startWorld = this.pointAt(resolve, request.clientX, request.clientY);
     if (!pressed || !startWorld) return false;
     const selection = this.host.selection().filter((id) => byId.has(id));
     const pressedSelected = selection.includes(pressed.id);
@@ -151,18 +174,20 @@ export class HvacMoveSession {
     const ids = segment ? [] : pressedSelected ? selection : [pressed.id];
     const movingSet = new Set(ids);
     const moving = ids.map((id) => byId.get(id)!).filter(hasFootprint).map(footprintBox);
-    // Guides align with the units, terminals and gullies that stay (not with kits: they sit on their pipe run).
-    const others = moving.length
+    // Guides align with the units, terminals and gullies that stay (not with kits: they sit on their pipe run); the
+    // plan draws them, so the 3D views go without.
+    const others = moving.length && !resolve
       ? scene.filter((element) => !movingSet.has(element.id) && hasFootprint(element) && element.type !== 'refrigerant-branch-kit').map(footprintBox)
       : [];
     const anchor = hasFootprint(pressed) && !segment
       ? { x: pressed.position.x + pressed.width / 2, y: pressed.position.y + pressed.depth / 2 }
       : { x: 0, y: 0 };
     this.armed = {
-      ids, segment, pressedId: pressed.id, startClient: { x: request.clientX, y: request.clientY }, startWorld, anchor, moving, others,
+      ids, segment, pressedId: pressed.id, startClient: { x: request.clientX, y: request.clientY }, startWorld, resolve, anchor, moving, others,
+      axes: { x: request.axes?.x ?? true, y: request.axes?.y ?? true, z: request.axes?.z ?? false },
       collapseOnClick: pressedSelected && selection.length > 1, onClick: request.onClick, dragging: false,
       lastClient: { x: request.clientX, y: request.clientY }, modifiers: { shift: false, alt: false }, typed: null, plan: null,
-      delta: { x: 0, y: 0 }, frame: null,
+      delta: { x: 0, y: 0, z: 0 }, frame: null,
     };
     this.target.addEventListener('pointermove', this.onPointerMove, true);
     this.target.addEventListener('pointerup', this.onPointerUp, true);
@@ -171,6 +196,12 @@ export class HvacMoveSession {
     this.target.addEventListener('keyup', this.onKeyUp, true);
     this.target.addEventListener('blur', this.onCancel);
     return true;
+  }
+
+  private pointAt(resolve: Armed['resolve'], clientX: number, clientY: number): Vec3 | null {
+    if (resolve) return resolve(clientX, clientY);
+    const point = this.host.clientToWorld(clientX, clientY);
+    return point ? { x: point.x, y: point.y, z: 0 } : null;
   }
 
   /** Drop the session (its preview and readout with it). */
@@ -283,23 +314,40 @@ export class HvacMoveSession {
   }
 
   /** The drag as it stands: snapped, or the typed distance along its direction. */
-  private currentDelta(armed: Armed): { delta: Point2D; guides: MoveGuide[] } {
-    const world = this.host.clientToWorld(armed.lastClient.x, armed.lastClient.y);
-    const raw = world ? { x: world.x - armed.startWorld.x, y: world.y - armed.startWorld.y } : armed.delta;
+  private currentDelta(armed: Armed): { delta: Vec3; guides: MoveGuide[] } {
+    const point = this.pointAt(armed.resolve, armed.lastClient.x, armed.lastClient.y);
+    const { axes } = armed;
+    // Only the axes the drag moves change: a front view's depth, an arrow's other two axes stay exactly put.
+    const raw: Vec3 = point
+      ? {
+        x: axes.x ? point.x - armed.startWorld.x : 0,
+        y: axes.y ? point.y - armed.startWorld.y : 0,
+        z: axes.z ? point.z - armed.startWorld.z : 0,
+      }
+      : armed.delta;
     const typed = armed.typed !== null ? Number.parseFloat(armed.typed) : Number.NaN;
     if (Number.isFinite(typed)) {
-      const length = Math.hypot(raw.x, raw.y);
-      const direction = length > 1e-6 ? { x: raw.x / length, y: raw.y / length } : { x: 1, y: 0 };
-      const locked = armed.modifiers.shift
-        ? (Math.abs(direction.x) >= Math.abs(direction.y) ? { x: Math.sign(direction.x) || 1, y: 0 } : { x: 0, y: Math.sign(direction.y) || 1 })
-        : direction;
-      return { delta: { x: locked.x * typed, y: locked.y * typed }, guides: [] };
+      const length = Math.hypot(raw.x, raw.y, raw.z);
+      let direction: Vec3 = length > 1e-6 ? { x: raw.x / length, y: raw.y / length, z: raw.z / length } : { x: 1, y: 0, z: 0 };
+      if (armed.modifiers.shift) direction = dominantAxis(direction);
+      return { delta: { x: direction.x * typed, y: direction.y * typed, z: direction.z * typed }, guides: [] };
     }
+    // Shift keeps to the axis the drag mostly runs along: the others stay put too (unsnapped).
+    const lock = armed.modifiers.shift ? dominantAxis(raw) : null;
+    const moves = {
+      x: axes.x && (!lock || lock.x !== 0),
+      y: axes.y && (!lock || lock.y !== 0),
+      z: axes.z && (!lock || lock.z !== 0),
+    };
+    const grid = this.host.gridMm();
     const snapped = snapMoveDelta({
-      delta: raw, anchor: armed.anchor, moving: armed.moving, others: armed.others, gridMm: this.host.gridMm(),
-      axisLock: armed.modifiers.shift, free: armed.modifiers.alt, toleranceMm: GUIDE_TOLERANCE_PX / Math.max(this.host.pxPerMm(), 1e-9),
+      delta: { x: moves.x ? raw.x : 0, y: moves.y ? raw.y : 0 }, anchor: armed.anchor, moving: armed.moving, others: armed.others, gridMm: grid,
+      axisLock: false, free: armed.modifiers.alt, toleranceMm: GUIDE_TOLERANCE_PX / Math.max(this.host.pxPerMm(), 1e-9),
+      fixedAxes: { x: !moves.x, y: !moves.y },
     });
-    return { delta: snapped.delta, guides: snapped.guides };
+    // Up and down snaps to the same step (the 3D views; the plan has no height to drag).
+    const z = !moves.z ? 0 : armed.modifiers.alt || !grid ? raw.z : Math.round(raw.z / grid) * grid;
+    return { delta: { x: snapped.delta.x, y: snapped.delta.y, z: z || 0 }, guides: snapped.guides };
   }
 
   private update(): void {
@@ -309,7 +357,7 @@ export class HvacMoveSession {
     armed.delta = delta;
     let plan: HvacMovePlan;
     try {
-      plan = planHvacMove(this.host.scene(), { ids: armed.ids, segment: armed.segment, delta: { x: delta.x, y: delta.y, z: 0 } }, this.host.context(true));
+      plan = planHvacMove(this.host.scene(), { ids: armed.ids, segment: armed.segment, delta }, this.host.context(true));
     } catch (error) {
       // A move the model cannot plan must not leave a drag hanging.
       this.cancel();
@@ -333,14 +381,14 @@ export class HvacMoveSession {
     this.detach();
     this.host.hud(null);
     this.host.dragState?.(null);
-    if (Math.hypot(delta.x, delta.y) < 0.01) {
+    if (Math.hypot(delta.x, delta.y, delta.z) < 0.01) {
       this.host.preview(null, []);
       return;
     }
     // The preview stays until the host replaces it with the stored move (no flicker back).
     let plan: HvacMovePlan;
     try {
-      plan = planHvacMove(this.host.scene(), { ids: armed.ids, segment: armed.segment, delta: { x: delta.x, y: delta.y, z: 0 } }, this.host.context(false));
+      plan = planHvacMove(this.host.scene(), { ids: armed.ids, segment: armed.segment, delta }, this.host.context(false));
     } catch (error) {
       this.host.preview(null, []);
       throw error;

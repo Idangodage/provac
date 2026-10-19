@@ -25,6 +25,8 @@ export function resolveKeyboardNudgeDelta(
   stepMm: number,
   viewMode: InteractionViewMode,
 ): KeyboardNudgeDelta | null {
+  // Page Up / Page Down: up and down in every view (what the selection may do there decides).
+  if (key === 'PageUp' || key === 'PageDown') return alongAxis('z', key === 'PageUp' ? stepMm : -stepMm);
   if (!key.startsWith('Arrow')) return null;
   const policy = resolveViewManipulationPolicy(viewMode);
 

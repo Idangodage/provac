@@ -41,13 +41,14 @@ import {
   type SnapCandidate,
   type SnapType,
 } from "../../../vrf/interaction/snap-manager";
-import type { InteractionViewMode } from "../../../vrf/interaction/view-manipulation-policy";
+import { resolveViewManipulationPolicy, type InteractionViewMode } from "../../../vrf/interaction/view-manipulation-policy";
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
 import { domainOf, focusId, useDuctSegmentUiStore, type DuctSegmentFocus } from "../hvac/duct/ductSegmentUiStore";
 import type { DuctDesignSettings } from "../hvac/duct/ductSettings";
 import { useDuctBuilding } from "../hvac/duct/useDuctBuilding";
+import type { HvacMoveBegin } from "../hvac/move/hvacMoveSession";
 import { constrainPipeDraftDelta, resolvePipeDraftAngleMode } from "../hvac/pipeDraftingPolicy";
 import { editablePipeNodes, pipeEditControlIndices } from "../hvac/pipeEditModel";
 import {
@@ -229,6 +230,12 @@ export interface HybridProjectionLayerProps {
   onMoveWallNode?: (nodeId: string, to: Point2D, weld: boolean) => void;
   /** Body-drag drop → translate the whole wall(s) by a delta. */
   onMoveWallEdges?: (edgeIds: string[], delta: Point2D) => void;
+  /**
+   * A press on a unit, terminal or duct run arms the move session with this
+   * view's pointer (its drag surface through the point grabbed); false: it did
+   * not arm (the press then selects as before).
+   */
+  onBeginHvacMove?: (request: HvacMoveBegin) => boolean;
   /** Hybrid vertex-drag drop -> commit one canonical, undoable pipe update. */
   onCommitPipeRouteEdit?: (elementId: string, routeNodes3d: PipeRouteNode3D[]) => void;
   /** Active CAD tool. Pipe LMB is resolved here while the 3D sheet is engaged. */
@@ -244,6 +251,12 @@ export interface HybridPipeInteractionHandle {
   setDraftAnchor: (point: PipePlacementPoint | null) => void;
   setDraftPipes: (elements: HvacElement[] | null) => void;
   setRouteActive: (active: boolean) => void;
+  /**
+   * A move shown in 3D: the elements it changes, drawn as they would be, their
+   * committed meshes hidden (null ends it). `committed`: the move was just
+   * stored, so it holds until the stored elements re-render.
+   */
+  setMovePreview: (elements: readonly HvacElement[] | null, options?: { committed?: boolean }) => void;
 }
 
 type SceneState = {
@@ -332,6 +345,9 @@ function withHybridPipeEditPreview(
   }
   return { ...routed, properties };
 }
+
+/** 3D bodies the equipment pick passes over: runs, pipes and kits have picks of their own. */
+const NOT_EQUIPMENT_3D: ReadonlySet<string> = new Set(["duct", "refrigerant-pipe", "refrigerant-pipe-pair", "refrigerant-branch-kit", "condensate-pipe"]);
 
 function pipeTransformConstraint(
   key: HybridPipeConstraintKey,
@@ -1118,6 +1134,7 @@ export function HybridProjectionLayer({
   onSplitWall,
   onMoveWallNode,
   onMoveWallEdges,
+  onBeginHvacMove,
   onCommitPipeRouteEdit,
   pipeToolActive = false,
   onPipePointerDown,
@@ -1146,6 +1163,8 @@ export function HybridProjectionLayer({
   const [glbLoadRevision, setGlbLoadRevision] = useState(0);
   const [rendererRevision, setRendererRevision] = useState(0);
   const draftPipesRef = useRef<HvacElement[] | null>(null);
+  /** A move in progress (or just stored, `held` until the stored elements re-render). */
+  const movePreviewRef = useRef<{ elements: readonly HvacElement[]; held: boolean } | null>(null);
   const editPipePreviewRef = useRef<HvacElement | null>(null);
   const externalPipeEditsRef = useRef(pipeEditPreviewElements);
   externalPipeEditsRef.current = pipeEditPreviewElements;
@@ -1171,7 +1190,9 @@ export function HybridProjectionLayer({
         draftPipesRef.current,
         editPipePreviewRef.current,
         hvacElementsRef.current,
-        externalPipeEditsRef.current,
+        movePreviewRef.current
+          ? [...(externalPipeEditsRef.current ?? []), ...movePreviewRef.current.elements]
+          : externalPipeEditsRef.current,
         buildPreviewRenderContext,
         ductSettingsRef.current,
       );
@@ -1193,6 +1214,12 @@ export function HybridProjectionLayer({
       setRouteActive: (active) => {
         routeActiveRef.current = active;
         if (!active) resetPipePlacementRef.current?.();
+      },
+      setMovePreview: (elements, options = {}) => {
+        if (elements) movePreviewRef.current = { elements, held: false };
+        else if (options.committed && movePreviewRef.current) movePreviewRef.current = { ...movePreviewRef.current, held: true };
+        else movePreviewRef.current = null;
+        schedulePreviewRebuild();
       },
     };
   }
@@ -1256,6 +1283,8 @@ export function HybridProjectionLayer({
   onMoveWallNodeRef.current = onMoveWallNode;
   const onMoveWallEdgesRef = useRef(onMoveWallEdges);
   onMoveWallEdgesRef.current = onMoveWallEdges;
+  const onBeginHvacMoveRef = useRef(onBeginHvacMove);
+  onBeginHvacMoveRef.current = onBeginHvacMove;
   const onCommitPipeRouteEditRef = useRef(onCommitPipeRouteEdit);
   onCommitPipeRouteEditRef.current = onCommitPipeRouteEdit;
   const pipeToolActiveRef = useRef(pipeToolActive);
@@ -1397,6 +1426,8 @@ export function HybridProjectionLayer({
       pipePressedModel: { x: number; y: number; z: number } | null;
       /** A press on a duct run: a click selects it, or (selected) pins the card of the segment under it. */
       ductPressed: DuctHit3D | null;
+      /** A Shift-press on a unit or terminal: a click adds it to the selection or takes it out. */
+      equipmentPressed: string | null;
       lastModel: { x: number; y: number } | null;
       ghost: THREE.LineSegments | null;
       ghostBody: THREE.Object3D | null;
@@ -1414,6 +1445,7 @@ export function HybridProjectionLayer({
       pipePressedId: null,
       pipePressedModel: null,
       ductPressed: null,
+      equipmentPressed: null,
       lastModel: null,
       ghost: null,
       ghostBody: null,
@@ -2062,6 +2094,55 @@ export function HybridProjectionLayer({
       return raycastPipe(raycaster, s.root);
     };
 
+    /** A unit, terminal or gully under the pointer (its nearest surface), as the move picks it. */
+    const raycastEquipment = (point: { x: number; y: number }): { elementId: string; model: { x: number; y: number; z: number }; distance: number } | null => {
+      const s = sceneStateRef.current;
+      if (!s) return null;
+      const { width: w, height: h } = viewportSize();
+      raycaster.setFromCamera(new THREE.Vector2((point.x / w) * 2 - 1, 1 - (point.y / h) * 2), controller.camera);
+      const bodies = s.root.children.filter((object) => {
+        const type = object.userData.hvacElementType as string | undefined;
+        return object.visible && Boolean(type) && !NOT_EQUIPMENT_3D.has(type!);
+      });
+      for (const hit of raycaster.intersectObjects(bodies, true)) {
+        let node: THREE.Object3D | null = hit.object;
+        while (node && node.parent !== s.root) node = node.parent;
+        const elementId = node?.userData.hvacElementId as string | undefined;
+        if (!elementId) continue;
+        const local = s.root.worldToLocal(hit.point.clone());
+        return { elementId, model: { x: local.x, y: local.y, z: local.z }, distance: hit.distance };
+      }
+      return null;
+    };
+    /**
+     * Arm a move of what was pressed: the drag runs on this view's own surface (plan / iso / 3D: level; front:
+     * XZ; side: YZ) through the point grabbed, so the item stays under the cursor.
+     */
+    const beginHvacMove3D = (e: PointerEvent, pressedId: string, model: { x: number; y: number; z: number }, onClick?: () => void): boolean => {
+      const begin = onBeginHvacMoveRef.current;
+      if (!begin) return false;
+      const policy = resolveViewManipulationPolicy(interactionViewModeRef.current);
+      const surface: HybridPipeConstraintKey = policy.defaultDragPlane === "xz" || policy.defaultDragPlane === "yz" ? policy.defaultDragPlane : "xy";
+      const rect = interactionElement.getBoundingClientRect();
+      const anchorWorld = modelToWorldPoint([model.x, model.y, model.z]);
+      const drag = beginDrag(
+        { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId },
+        { camera: controller.camera, viewport: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }, viewMode: interactionViewModeRef.current },
+        { anchorWorld, constraint: pipeTransformConstraint(surface, anchorWorld) },
+      );
+      if (!drag) return false;
+      return begin({
+        pressedId, clientX: e.clientX, clientY: e.clientY, onClick,
+        axes: { x: surface !== "yz", y: surface !== "xz", z: surface !== "xy" },
+        resolve: (clientX, clientY) => {
+          const solved = updateDrag(drag, { clientX, clientY, pointerId: e.pointerId });
+          if (!solved) return null;
+          const at = worldPointToModel(solved.worldPoint);
+          return { x: at.x, y: at.y, z: at.z };
+        },
+      });
+    };
+
     const raycastDuct = (point: { x: number; y: number }): DuctHit3D | null => {
       const s = sceneStateRef.current;
       if (!s) return null;
@@ -2482,6 +2563,7 @@ export function HybridProjectionLayer({
       pickState.pipePressedId = null;
       pickState.pipePressedModel = null;
       pickState.ductPressed = null;
+      pickState.equipmentPressed = null;
       const handle = s.handleLayer.hitTest(point.x, point.y, worldToHostScreen, modelToWorldPoint);
       if (handle) {
         pickState.downHandled = true;
@@ -2527,12 +2609,30 @@ export function HybridProjectionLayer({
         return;
       }
       const duct = raycastDuct(point);
-      if (duct) {
-        pickState.pointerId = e.pointerId;
+      const equipment = raycastEquipment(point);
+      // A unit or terminal in front of the run (or alone): a press arms its move; a click selects it (Shift toggles).
+      if (equipment && (!duct || equipment.distance <= duct.distance)) {
         pickState.downHandled = true;
-        pickState.ductPressed = duct;
         e.preventDefault();
         e.stopPropagation();
+        if (!e.shiftKey && beginHvacMove3D(e, equipment.elementId, equipment.model)) return;
+        pickState.pointerId = e.pointerId;
+        pickState.equipmentPressed = equipment.elementId;
+        interactionElement.setPointerCapture?.(e.pointerId);
+        return;
+      }
+      if (duct) {
+        pickState.downHandled = true;
+        e.preventDefault();
+        e.stopPropagation();
+        // A selected run: a drag moves the selection, a click pins the segment under it (as the plan does).
+        const pinSegment = () => {
+          const focus = ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, duct.runId, duct.model);
+          if (focus) useDuctSegmentUiStore.getState().pin(focus);
+        };
+        if (!e.shiftKey && beginHvacMove3D(e, duct.runId, duct.model, pinSegment)) return;
+        pickState.pointerId = e.pointerId;
+        pickState.ductPressed = duct;
         interactionElement.setPointerCapture?.(e.pointerId);
         return;
       }
@@ -2643,6 +2743,14 @@ export function HybridProjectionLayer({
           if (!selectedIdsRef.current.includes(pipeId)) selectWall(pipeId, false);
           useDuctSegmentUiStore.getState().pin(focus);
         } else selectWall(pipeId, e.shiftKey);
+        request();
+        return;
+      }
+      if (pickState.equipmentPressed) {
+        const pressedId = pickState.equipmentPressed;
+        pickState.equipmentPressed = null;
+        releaseCapture();
+        if (Math.hypot(e.clientX - pickState.downX, e.clientY - pickState.downY) <= 4) selectWall(pressedId, e.shiftKey);
         request();
         return;
       }
@@ -3167,6 +3275,7 @@ export function HybridProjectionLayer({
       ductSettings,
     };
     sceneState.hvacScene.update(sceneContext, glbLoadRevision);
+    if (movePreviewRef.current?.held) movePreviewRef.current = null;
     // Rebuilt runs are new meshes: their outlines follow.
     refreshOutlinesRef.current();
     refreshSceneContentBounds(sceneState, true);
