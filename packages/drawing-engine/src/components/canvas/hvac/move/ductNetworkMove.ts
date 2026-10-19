@@ -92,6 +92,12 @@ export interface DuctNetworkMoveInput {
    * own centre). `delta` is then zero.
    */
   turn?: { angleDeg: number; pivot: Point2D | null } | null;
+  /**
+   * One straight given a length (mm): its run re-solved with it fixed, every
+   * end kept, the change taken up downstream first (by straights running the
+   * same way and flexible runouts); its branches follow. Nothing moves.
+   */
+  legLength?: { runId: string; legIndex: number; lengthMm: number } | null;
 }
 
 export interface DuctRunMoveOutcome {
@@ -111,6 +117,8 @@ export interface DuctNetworkMoveResult {
   messages: string[];
   /** What a turn did that is worth saying but needs nothing from the designer (a run re-routed round its unit). */
   infos: string[];
+  /** Why the straight cannot take the length asked (nothing is changed then). */
+  legLengthRefused?: string | null;
 }
 
 /** Shifts below this count as no move (mm). */
@@ -338,6 +346,17 @@ const COLLINEAR_DEG = 2;
 
 function turnDeg(a: Point2D, b: Point2D): number {
   return (Math.acos(Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y))) * 180) / Math.PI;
+}
+
+/** What holds a run's start, in a sentence ("its collar", "its take-off"). */
+function startHeldBy(spec: DuctRunSpec): string {
+  switch (spec.start.kind) {
+    case 'unit-port': return 'its collar';
+    case 'tap': return 'its take-off';
+    case 'split-branch': return 'its split';
+    case 'spigot': return 'its plenum spigot';
+    default: return 'its start';
+  }
 }
 
 function anchoredStartLabel(spec: DuctRunSpec): string {
@@ -764,7 +783,9 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
     }
 
     // Nothing it is fixed to moved, nobody drags it, and its take-off is still on its straight.
-    const nothingAsked = !selected && segmentConstraints.length === 0
+    // A straight given a length: fixed in the solve, the vertices before it held so the change goes downstream first.
+    const sizing = input.legLength?.runId === id ? input.legLength : null;
+    const nothingAsked = !sizing && !selected && segmentConstraints.length === 0
       && [...constraints, ...endPin].every((constraint) => Math.abs(constraint.value) < MOVE_EPSILON_MM)
       && bounds.every((bound) => (bound.min ?? 0) <= MOVE_EPSILON_MM && (bound.max ?? 0) >= -MOVE_EPSILON_MM);
     if (nothingAsked) {
@@ -773,16 +794,28 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       continue;
     }
 
+    const held = sizing ? Array.from({ length: sizing.legIndex + 1 }, (_, vertex) => ({ vertex, shift: ZERO3, weight: 1e3 })) : [];
     const solve = (fixed: readonly ElasticConstraint[], pulls?: Parameters<typeof solveElasticRun>[0]['pulls']) => {
       const flex = isFlexTail(work);
       const legs = work.legs.map((_, index): ElasticLegOption => ({
         ...(legOptions.get(index) ?? {}),
         ...(flex && index === work.legs.length - 1 ? { flex: true } : {}),
       }));
-      return solveElasticRun({ path: work.path, legs, constraints: fixed, bounds, desire, ...(pulls ? { pulls } : {}) });
+      const allPulls = [...held, ...(pulls ?? [])];
+      return solveElasticRun({
+        path: work.path, legs, constraints: fixed, bounds, desire, ...(allPulls.length ? { pulls: allPulls } : {}),
+        ...(sizing ? { legLengths: [{ leg: sizing.legIndex, lengthMm: sizing.lengthMm }] } : {}),
+      });
     };
     let note: string | undefined = endNote;
     let result = solve([...constraints, ...endPin, ...segmentConstraints]);
+    if (!result.ok && sizing) {
+      // Nothing can give: the whole edit is refused (no end may come off what it is fixed to).
+      return {
+        runs: [], outcomes: new Map(), segmentRefused: null, messages: [], infos: [],
+        legLengthRefused: `${runName(id, spec)} is held at ${startHeldBy(spec)} and ${end.kind === 'terminal' ? `${terminalLabel ?? 'its terminal'}'s spigot` : 'its end'}, and no other straight can give way: move ${end.kind === 'terminal' ? terminalLabel ?? 'its terminal' : 'its end'}, or change a straight that runs the same way.`,
+      };
+    }
     if (!result.ok && segmentConstraints.length) {
       segmentRefused = 'That straight cannot move that way: the legs either side of it do not run that way.';
       work = base;

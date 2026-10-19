@@ -10,6 +10,8 @@
  * joints).
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { ZERO3 } from '../move/ductElasticMove';
+import { moveDuctNetwork } from '../move/ductNetworkMove';
 
 import { findAirPort, type DuctAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
@@ -85,7 +87,13 @@ export type DuctSegmentEdit =
   | { kind: 'inline-add'; runId: string; accessory: Omit<DuctInlineAccessory, 'id'> }
   | { kind: 'inline-remove'; runId: string; id: string }
   /** A sound attenuator's catalogue length. */
-  | { kind: 'inline-length'; runId: string; id: string; lengthMm: number };
+  | { kind: 'inline-length'; runId: string; id: string; lengthMm: number }
+  /**
+   * A straight (or a riser) of a given length: the run re-solved elastically with it fixed: its ends stay on
+   * what they are fixed to, the change taken up downstream first (straights running the same way, flexible
+   * runouts); its branches follow their parent's wall and keep their terminals.
+   */
+  | { kind: 'leg-length'; runId: string; legIndex: number; lengthMm: number };
 
 export interface DuctSegmentEditResult {
   /** Every element the edit changes, as it will be stored (empty when refused). */
@@ -1112,6 +1120,40 @@ function editRunoutLength(scene: readonly HvacElement[], settings: DuctDesignSet
   return { updates: settle(scene, changed, settings, notes), notes, action: `Flexible runout ${Math.round(reached ?? target)} mm` };
 }
 
+/** The shortest a straight may be typed (mm): the planner says when its fittings need more. */
+export const MIN_STRAIGHT_MM = 50;
+
+function editLegLength(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'leg-length' }>): DuctSegmentEditResult {
+  const element = scene.find((candidate) => candidate.id === edit.runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  if (!element || !spec) return refuse('The run is no longer in the drawing.');
+  if (spec.legacy) return refuse('An old straight duct stub has no straights to size: redraw it.');
+  if (spec.locked) return refuse('The run is locked.');
+  const legs = ductLegs(spec);
+  const leg = legs[edit.legIndex];
+  if (!leg) return refuse('That straight is no longer on the run.');
+  const flexTail = spec.end.kind === 'terminal' && spec.end.flex && spec.path.length >= 2;
+  if (flexTail && edit.legIndex === spec.legs.length - 1) return refuse('A flexible runout bends to its terminal: set the runout\'s length instead.');
+  if (leg.sloped) return refuse('A sloped leg cannot be given a length.');
+  const noun = leg.vertical ? 'Riser' : 'Straight';
+  if (!Number.isFinite(edit.lengthMm) || edit.lengthMm < MIN_STRAIGHT_MM) return refuse(`A ${noun.toLowerCase()} is at least ${MIN_STRAIGHT_MM} mm long.`);
+  const target = Math.round(edit.lengthMm * 10) / 10;
+  if (Math.abs(target - leg.lengthMm) < 0.5) return refuse(`${noun} ${edit.legIndex + 1} is ${Math.round(leg.lengthMm)} mm already.`);
+  const moved = moveDuctNetwork({
+    before: scene, after: scene, movedEquipmentIds: new Set(), runIds: new Set(), segment: null, delta: ZERO3, settings,
+    legLength: { runId: edit.runId, legIndex: edit.legIndex, lengthMm: target },
+  });
+  if (moved.legLengthRefused) {
+    // ("The run to SAD-2 is held …" reads on mid-sentence as "the run to SAD-2"; a run's own tag stays as it is.)
+    const why = moved.legLengthRefused.replace(/^(The|A) /, (word) => word.toLowerCase());
+    return refuse(`${noun} ${edit.legIndex + 1} cannot be ${Math.round(target)} mm: ${why}`);
+  }
+  return {
+    updates: moved.runs, notes: moved.messages,
+    action: `Duct ${noun.toLowerCase()} ${edit.legIndex + 1} ${Math.round(target)} mm`,
+  };
+}
+
 /** Apply an edit to the drawing: every element it changes, or why it cannot be made. */
 export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: DuctSegmentEdit): DuctSegmentEditResult {
   switch (edit.kind) {
@@ -1131,6 +1173,7 @@ export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: Du
     case 'inline-door': return editInlineValue(scene, settings, edit);
     case 'tap-station': return editTapStation(scene, settings, edit);
     case 'runout-length': return editRunoutLength(scene, settings, edit);
+    case 'leg-length': return editLegLength(scene, settings, edit);
     default: return refuse('Unknown edit.');
   }
 }

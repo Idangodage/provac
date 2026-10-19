@@ -95,6 +95,8 @@ export interface ElasticRunInput {
   desire?: Vec3 | ((vertex: number) => Vec3);
   /** Vertices pulled harder toward a shift than `desire` holds them (an end that lost its terminal reaching for it). */
   pulls?: ReadonlyArray<{ vertex: number; shift: Vec3; weight: number }>;
+  /** Rigid legs given a length (mm), met exactly (a straight sized on its card). */
+  legLengths?: ReadonlyArray<{ leg: number; lengthMm: number }>;
   /** The shortest a rigid leg may get (a leg already shorter may not get shorter still). */
   minLegMm?: number;
 }
@@ -261,6 +263,16 @@ export function solveElasticRun(input: ElasticRunInput): ElasticRunResult {
   const fixedRows: HardRow[] = (input.constraints ?? [])
     .filter((constraint) => constraint.vertex >= 0 && constraint.vertex < vertexCount)
     .map((constraint) => ({ row: along(constraint.vertex, constraint.axis), value: constraint.value }));
+  // A leg given a length: its length change is fixed (only a rigid leg has one).
+  const sized = new Set<number>();
+  for (const { leg: index, lengthMm } of input.legLengths ?? []) {
+    const leg = legs[index];
+    if (!leg || leg.kind !== 'rigid' || !Number.isFinite(lengthMm)) return { ok: false, reason: 'fixed' };
+    const row = new Array<number>(columns).fill(0);
+    row[leg.column] = 1;
+    fixedRows.push({ row, value: lengthMm - leg.length });
+    sized.add(index);
+  }
 
   /** Least squares with `rows` met exactly (augmented Lagrangian on one factorisation); null when they cannot be. */
   const solveWith = (rows: readonly HardRow[]): number[] | null => {
@@ -297,7 +309,7 @@ export function solveElasticRun(input: ElasticRunInput): ElasticRunResult {
   type Limit = { row: number[]; min: number; max: number; leg?: number };
   const limits: Limit[] = [];
   legs.forEach((leg, index) => {
-    if (leg.kind !== 'rigid') return;
+    if (leg.kind !== 'rigid' || sized.has(index)) return;
     const row = new Array<number>(columns).fill(0);
     row[leg.column] = 1;
     limits.push({ row, min: Math.min(minLegMm, leg.length) - leg.length, max: Number.POSITIVE_INFINITY, leg: index });
