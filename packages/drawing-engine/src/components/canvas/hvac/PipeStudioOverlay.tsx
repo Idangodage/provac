@@ -519,6 +519,12 @@ export interface PipeStudioOverlayHandle {
    */
   setSnapIndicator: (point: PipeSnapIndicator | null) => void;
   /**
+   * A move of the selection made elsewhere (the move session): the pipes, kits
+   * and units it changes, drawn as they would be (null ends it). `committed`:
+   * the move was just stored, so it holds until the stored elements arrive.
+   */
+  setMovePreview: (elements: readonly HvacElement[] | null, options?: { committed?: boolean }) => void;
+  /**
    * Same-frame viewport bond: the host calls this from Fabric's `after:render`
    * with the live viewportTransform `[z,0,0,z,tx,ty]`, and the overlay writes
    * it straight onto the root `<g>` — pipes pan/zoom in the SAME paint as the
@@ -645,6 +651,11 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   // pushed by the draw tool so the preview renders through the same tube helper
   // as a committed pipe — no width/gap change when the route commits on Enter.
   const [draftPipes, setDraftPipes] = useState<HvacElement[] | null>(null);
+  /** A move made by the move session (a unit dragged: its pipes re-attach live); `held` after the commit. */
+  const [sessionMove, setSessionMove] = useState<{ elements: readonly HvacElement[]; held: boolean } | null>(null);
+  const setMovePreview = useCallback((elements: readonly HvacElement[] | null, options: { committed?: boolean } = {}) => {
+    setSessionMove((current) => (elements ? { elements, held: false } : options.committed && current ? { ...current, held: true } : null));
+  }, []);
   // Snap-hover indicator (world mm) pushed by the draw tool — rendered with the
   // same endpoint-handle bullseye a committed pipe shows.
   const [snapIndicator, setSnapIndicator] = useState<PipeSnapIndicator | null>(null);
@@ -690,10 +701,10 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   });
   useImperativeHandle(
     ref,
-    () => ({ setDraftRoute, setDraftPipes, setSnapIndicator, syncViewTransform,
+    () => ({ setDraftRoute, setDraftPipes, setSnapIndicator, syncViewTransform, setMovePreview,
       beginPlaceKit: () => beginPlaceKitRef.current?.(),
       segmentClientRect: (runId: string, key: string) => segmentClientRectRef.current(runId, key) }),
-    [syncViewTransform],
+    [syncViewTransform, setMovePreview],
   );
   // Extension is unified with the draw tool: grabbing a pipe-end / bundle /
   // branch-kit-port grip seeds a full routing session in useRefrigerantPipeTool
@@ -756,12 +767,17 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   );
 
   const previewElements = useMemo(() => {
-    if (!movePreviewElements || movePreviewElements.length === 0) {
-      return hvacElements;
-    }
-    const overrides = new Map(movePreviewElements.map((element) => [element.id, element]));
+    const overrides = new Map([...(movePreviewElements ?? []), ...(sessionMove?.elements ?? [])].map((element) => [element.id, element]));
+    if (overrides.size === 0) return hvacElements;
     return hvacElements.map((element) => overrides.get(element.id) ?? element);
-  }, [hvacElements, movePreviewElements]);
+  }, [hvacElements, movePreviewElements, sessionMove]);
+  // A stored move arrived: its held preview goes.
+  const lastSceneRef = useRef(hvacElements);
+  useEffect(() => {
+    if (lastSceneRef.current === hvacElements) return;
+    lastSceneRef.current = hvacElements;
+    setSessionMove((current) => (current?.held ? null : current));
+  }, [hvacElements]);
   const previewElementsById = useMemo(() => new Map(previewElements.map(element => [element.id, element])), [previewElements]);
 
   useEffect(() => {

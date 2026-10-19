@@ -2367,6 +2367,8 @@ export function DrawingCanvas({
       const updated = plan?.updated ?? null;
       hvacRendererRef.current?.previewMove(updated);
       ductOverlayRef.current?.previewMove(updated ? updated.filter((element) => isDuctElement(element) || isDuctTerminalElement(element)) : null);
+      // Pipes and kits re-attach to what moves, live (the pipe overlay draws them).
+      pipeStudioOverlayRef.current?.setMovePreview(updated);
       // A 3D view draws the move in its scene too (the plan layers lie under it).
       if (projectionViewOnly || movePreview3DRef.current) {
         hybridPipeInteractionRef.current?.setMovePreview(updated);
@@ -2427,6 +2429,7 @@ export function DrawingCanvas({
       if (!hvacMoveChanges(plan)) {
         hvacRendererRef.current?.previewMove(null);
         ductOverlayRef.current?.previewMove(null);
+        pipeStudioOverlayRef.current?.setMovePreview(null);
         if (movePreview3DRef.current) hybridPipeInteractionRef.current?.setMovePreview(null);
         movePreview3DRef.current = false;
         return;
@@ -2435,6 +2438,7 @@ export function DrawingCanvas({
       // The bodies and runs stay where the preview drew them until the stored move re-renders them.
       hvacRendererRef.current?.previewMove(null, { committed: true });
       ductOverlayRef.current?.previewMove(null, { committed: true });
+      pipeStudioOverlayRef.current?.setMovePreview(null, { committed: true });
       if (movePreview3DRef.current) hybridPipeInteractionRef.current?.setMovePreview(null, { committed: true });
       movePreview3DRef.current = false;
     },

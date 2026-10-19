@@ -1945,6 +1945,22 @@ notes worth showing, what stopped the move short, and the undo step's name ("Mov
   `duct-seg-click` 8/8.
 - Full suite 264 files / 2292 tests.
 
+### Refrigerant pipes follow live, and the known limits (19 October 2026)
+
+- **Pipes and kits follow while dragging.** The pipe overlay takes the move as it is previewed (`setMovePreview` on
+  its handle; the moved pipes, kits and units substituted in its own list, so only it re-renders) and holds it after
+  the release until the stored move arrives. `move-pipes` (the FDUM22 and the outdoor unit piped by Auto route, gas +
+  liquid): the pipes are redrawn while the unit is dragged, end on its moved ports as they did before, one undo.
+- **Known limits:**
+  - Drains re-solve on release (the slow part); while dragging they stay where they were.
+  - A drain run nudged or dragged along its last leg overshoots its fixed joint and comes back (the route operation
+    the drain nudge used before this work, `translateRouteInterior`).
+  - A straight raised less than its two elbows need (264 mm on a 164 mm deep duct) is made and reported
+    (`DU_LEG_TOO_SHORT`), not refused.
+  - Undo clears the selection (as before): a second move after an undo needs the item picked again.
+  - Alignment guides are drawn in the plan only; the 3D views snap to the grid step.
+  - Rotating and copying while moving are not part of this work; both fit the same session.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
