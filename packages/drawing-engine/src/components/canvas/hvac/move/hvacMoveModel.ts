@@ -18,6 +18,11 @@
  *   units at their mounting level), units and ducts within the ceiling void.
  * - Duct problems the move makes (a clash, a short leg) are allowed: the plan
  *   checks report them.
+ * - A turn (a rotation about the vertical axis) is the same command: units
+ *   and terminals turn as one block about the selection's centre (or each
+ *   about its own); a wall unit stays square to its wall; a square or round
+ *   face keeps its spigot facing its runout; runs on a turned collar rejoin
+ *   their route (ductNetworkMove), pipes re-attach, drains re-solve.
  *
  * Pure: the placement rules, the drain context and the void come in through
  * the context, so the same model serves the preview and the commit.
@@ -28,6 +33,7 @@ import { createCondensateEditSession, followCondensateDrains, isUnitBranchSpec, 
 import { fixedPrefixLength, translateRouteInterior, type PlanRoute } from '../condensate/condensateRouteOps';
 import { getCondensateOwnership, isCondensatePipe } from '../condensate/condensateTypes';
 import type { DuctDesignSettings } from '../duct/ductSettings';
+import { isDuctTerminalElement, readDuctTerminalSpec, SQUARE_BOX_TERMINAL_KINDS, type DuctTerminalSpigotSide } from '../duct/ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctLeg, type DuctRunSpec } from '../duct/ductTypes';
 import { readPipeRouteNodes3d } from '../pipeRoute3d';
 import {
@@ -41,16 +47,28 @@ import {
   translateRefrigerantPipeElementProperties,
 } from '../refrigerantPipePairModel';
 
-import type { Vec3 } from './ductElasticMove';
-import { moveDuctNetwork, type DuctSegmentRef } from './ductNetworkMove';
+import { ZERO3, type Vec3 } from './ductElasticMove';
+import { moveDuctNetwork, terminalsTurnedWhole, turnPoint, type DuctSegmentRef } from './ductNetworkMove';
+
+/** A turn of the selection about the vertical axis. */
+export interface HvacRotation {
+  /** Degrees, clockwise on the plan (the sense of an element's rotation). */
+  angleDeg: number;
+  /** About the selection's centre as one block (the default), each item about its own centre, or about a point. */
+  pivot?: 'group' | 'each' | Point2D;
+  /** A drag: the turn stops at the last angle every rule allows (else it is made whole or not at all). */
+  partial?: boolean;
+}
 
 export interface HvacMoveRequest {
   /** What is moved: units, terminals, duct runs, refrigerant pipes, branch kits, drain runs. */
   ids: readonly string[];
   /** One duct straight moved on its own (as picked for its segment card). */
   segment?: DuctSegmentRef | null;
-  /** The move asked for (mm; plan x, y and z up). */
+  /** The move asked for (mm; plan x, y and z up); zero for a turn. */
   delta: Vec3;
+  /** A turn instead of a move: the units and terminals selected turn, what is attached to them follows. */
+  rotation?: HvacRotation | null;
 }
 
 /** What the placement rules say about a unit or terminal at a new centre (the canvas's computeHvacPlacement). */
@@ -109,8 +127,10 @@ export interface HvacMovePlan {
   outcomes: Map<string, HvacMoveOutcome>;
   /** Worth telling the designer (in the status bar). */
   messages: string[];
-  /** The undo step's name ("Move FDUM22 and 2 diffusers"). */
+  /** The undo step's name ("Move FDUM22 and 2 diffusers", "Rotate DU-1 90° clockwise"). */
   label: string;
+  /** A turn: the angle asked for and made (degrees, clockwise on the plan), about `pivot` (null: each item's own centre). */
+  rotation?: { requestedDeg: number; appliedDeg: number; pivot: Point2D | null };
 }
 
 /** Equipment that moves up and down; everything else keeps its level. */
@@ -120,6 +140,11 @@ const BISECTION_STEPS = 16;
 
 function isEquipment(element: HvacElement): boolean {
   return !isDuctElement(element) && !isCondensatePipe(element) && !isRefrigerantPipeElementType(element.type);
+}
+
+/** What a turn turns: units and air terminals (and drain outlets); branch kits turn with their pipe run, not on their own. */
+export function isTurnableElement(element: HvacElement): boolean {
+  return isEquipment(element) && element.type !== 'refrigerant-branch-kit';
 }
 
 function centreOf(element: Pick<HvacElement, 'position' | 'width' | 'depth'>): Point2D {
@@ -230,6 +255,20 @@ function moveName(element: HvacElement): string {
 /** "Move DU-1 and 2 diffusers", "Move a straight of SD-2". */
 export function hvacMoveLabel(selected: readonly HvacElement[], segment: { run: HvacElement | undefined } | null): string {
   if (segment) return `Move a straight of ${segment.run?.label || 'a duct run'}`;
+  const named = selectionName(selected);
+  return named ? `Move ${named}` : 'Move';
+}
+
+/** "Rotate DU-1 90° clockwise", "Rotate 3 diffusers 45° anticlockwise each". */
+export function hvacRotateLabel(turned: readonly HvacElement[], angleDeg: number, each: boolean): string {
+  const named = selectionName(turned);
+  const magnitude = Math.round(Math.abs(angleDeg) * 10) / 10;
+  const sense = Math.abs(magnitude - 180) < 0.05 ? '' : angleDeg > 0 ? ' clockwise' : ' anticlockwise';
+  return `Rotate${named ? ` ${named}` : ''} ${magnitude}°${sense}${each && turned.length > 1 ? ' each' : ''}`;
+}
+
+/** The selection in a few words: "DU-1 and 2 diffusers" ('' when empty). */
+function selectionName(selected: readonly HvacElement[]): string {
   const groups = new Map<string, HvacElement[]>();
   for (const element of selected) {
     const noun = NOUNS[element.type]?.[0] ?? 'item';
@@ -240,8 +279,8 @@ export function hvacMoveLabel(selected: readonly HvacElement[], segment: { run: 
     const plural = Object.values(NOUNS).find((pair) => pair?.[0] === noun)?.[1] ?? `${noun}s`;
     return `${elements.length} ${plural}`;
   });
-  if (parts.length === 0) return 'Move';
-  return `Move ${parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`}`;
+  if (parts.length === 0) return '';
+  return parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
 interface Built {
@@ -255,6 +294,7 @@ interface Built {
 }
 
 export function planHvacMove(scene: readonly HvacElement[], request: HvacMoveRequest, context: HvacMoveContext): HvacMovePlan {
+  if (request.rotation && Math.abs(request.rotation.angleDeg) > ANGLE_EPSILON_DEG) return planHvacRotation(scene, request, request.rotation, context);
   const byId = new Map(scene.map((element) => [element.id, element]));
   const selected = [...new Set(request.ids)].map((id) => byId.get(id)).filter((element): element is HvacElement => Boolean(element));
   const segment = request.segment && byId.has(request.segment.runId) ? request.segment : null;
@@ -515,6 +555,196 @@ export function planHvacMove(scene: readonly HvacElement[], request: HvacMoveReq
     outcomes: built.outcomes,
     messages: [...new Set(messages)],
     label: hvacMoveLabel(selected, segment ? { run: byId.get(segment.runId) } : null),
+  };
+}
+
+const ANGLE_EPSILON_DEG = 1e-6;
+const SIDE_NORMAL: Record<DuctTerminalSpigotSide, Point2D> = {
+  back: { x: 0, y: -1 }, front: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 },
+};
+
+/** Whether a unit hangs on a wall (it stays square to it). */
+function hangsOnWall(element: HvacElement): boolean {
+  return element.mountType === 'wall' || element.type === 'wall-mounted-ac';
+}
+
+/** A rotation in [0, 360), without the float dust of repeated turns. */
+function normalisedDeg(angleDeg: number): number {
+  const turned = ((angleDeg % 360) + 360) % 360;
+  const rounded = Math.round(turned * 1e6) / 1e6;
+  return rounded >= 360 ? 0 : rounded;
+}
+
+/** The centre of the plan box round the items' footprints (where a block turns about). */
+function blockCentre(elements: readonly HvacElement[]): Point2D {
+  let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+  for (const element of elements) {
+    const centre = centreOf(element);
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+      const corner = turnPoint({ x: centre.x + (sx * element.width) / 2, y: centre.y + (sy * element.depth) / 2 }, centre, element.rotation ?? 0);
+      minX = Math.min(minX, corner.x); minY = Math.min(minY, corner.y); maxX = Math.max(maxX, corner.x); maxY = Math.max(maxY, corner.y);
+    }
+  }
+  return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+}
+
+/**
+ * The spigot side of a square or round face turned `angleDeg` that points
+ * where its spigot did (the side nearest that way when the turn is not a
+ * quarter turn); null for a face whose box is not square (its spigot turns
+ * with it).
+ */
+function spigotSideKeptFacing(element: HvacElement, angleDeg: number): DuctTerminalSpigotSide | null {
+  const spec = readDuctTerminalSpec(element);
+  if (!spec || !SQUARE_BOX_TERMINAL_KINDS.has(spec.kind) || Math.abs(spec.plenumWidthMm - spec.plenumDepthMm) > 1) return null;
+  // The old side's normal in the turned element's frame: turned back by the angle.
+  const wanted = turnPoint(SIDE_NORMAL[spec.spigotSide], { x: 0, y: 0 }, -angleDeg);
+  let best = spec.spigotSide;
+  let bestDot = -Infinity;
+  for (const side of ['back', 'front', 'left', 'right'] as const) {
+    const facing = SIDE_NORMAL[side].x * wanted.x + SIDE_NORMAL[side].y * wanted.y;
+    if (facing > bestDot + 1e-9) { best = side; bestDot = facing; }
+  }
+  return best;
+}
+
+/**
+ * A turn of the selected units and terminals about the vertical axis, with
+ * everything attached following: one block about the selection's centre
+ * (moved together = turned rigidly: a system whose unit and terminals all turn
+ * turns whole), or each item about its own centre.
+ */
+function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveRequest, rotation: HvacRotation, context: HvacMoveContext): HvacMovePlan {
+  const byId = new Map(scene.map((element) => [element.id, element]));
+  const selected = [...new Set(request.ids)].map((id) => byId.get(id)).filter((element): element is HvacElement => Boolean(element));
+  // Units and terminals turn; branch kits turn with their pipe run, not on their own; runs, pipes and drains follow.
+  const turnable = selected.filter(isTurnableElement);
+  const each = rotation.pivot === 'each';
+  const pivot: Point2D | null = each ? null : typeof rotation.pivot === 'object' && rotation.pivot ? rotation.pivot : blockCentre(turnable);
+  const requestedDeg = rotation.angleDeg;
+  const unchanged = (limitedBy: HvacMovePlan['limitedBy'], messages: string[]): HvacMovePlan => ({
+    requested: ZERO3, applied: ZERO3, fraction: 0, limitedBy, updated: [], add: [], removeIds: [], outcomes: new Map(), messages,
+    label: hvacRotateLabel(turnable, requestedDeg, each), rotation: { requestedDeg, appliedDeg: 0, pivot },
+  });
+  if (turnable.length === 0) {
+    return unchanged(null, ['Only units and air terminals turn: select one (duct runs, pipes and drains follow what they are attached to).']);
+  }
+  const onWall = turnable.find(hangsOnWall);
+  if (onWall) {
+    const reason = `${moveName(onWall) || 'The unit'} hangs on its wall and stays square to it: move it to another wall instead.`;
+    return unchanged({ id: onWall.id, reason }, [`Cannot turn: ${reason}`]);
+  }
+  const turnedIds = new Set(turnable.map((element) => element.id));
+  // A terminal whose whole system turns with it keeps its spigot on the same side (its runout turns too).
+  const wholeTerminals = pivot ? terminalsTurnedWhole(scene, turnedIds) : new Set<string>();
+  // An item already breaking its rules where it is turns as it is (and does not hold the others back).
+  const free = new Set(turnable.filter((element) => context.place && !context.place(centreOf(element), element).valid).map((element) => element.id));
+
+  const turnElement = (element: HvacElement, angle: number): { element: HvacElement; valid: boolean; reason: string | null } => {
+    const centre = centreOf(element);
+    const nextCentre = pivot ? turnPoint(centre, pivot, angle) : centre;
+    let properties = element.properties;
+    if (isDuctTerminalElement(element) && !wholeTerminals.has(element.id)) {
+      const side = spigotSideKeptFacing(element, angle);
+      const raw = (element.properties.terminal ?? {}) as Record<string, unknown>;
+      if (side && side !== readDuctTerminalSpec(element)?.spigotSide) properties = { ...properties, terminal: { ...raw, spigotSide: side } };
+    }
+    let next: HvacElement = {
+      ...element,
+      position: { x: nextCentre.x - element.width / 2, y: nextCentre.y - element.depth / 2 },
+      rotation: normalisedDeg((element.rotation ?? 0) + angle),
+      properties,
+    };
+    if (context.place && !free.has(element.id)) {
+      const placement = context.place(nextCentre, next);
+      if (!placement.valid) return { element, valid: false, reason: placement.invalidReason ?? 'it cannot be placed there' };
+      next = { ...next, roomId: placement.roomId ?? undefined };
+    }
+    return { element: next, valid: true, reason: null };
+  };
+
+  // ---- How far the whole selection can turn: every unit and terminal keeps its placement rules. ----
+  const firstBreak = (angle: number) => {
+    for (const element of turnable) {
+      const turned = turnElement(element, angle);
+      if (!turned.valid) return { id: element.id, reason: `${element.label || 'An item'}: ${turned.reason}` };
+    }
+    return null;
+  };
+  let fraction = 1;
+  let limitedBy: HvacMovePlan['limitedBy'] = null;
+  const broken = firstBreak(requestedDeg);
+  if (broken) {
+    limitedBy = broken;
+    fraction = 0;
+    if (rotation.partial) {
+      let low = 0;
+      let high = 1;
+      for (let step = 0; step < BISECTION_STEPS; step += 1) {
+        const middle = (low + high) / 2;
+        const at = firstBreak(requestedDeg * middle);
+        if (at) { high = middle; limitedBy = at; } else low = middle;
+      }
+      fraction = low;
+    }
+  }
+  const appliedDeg = requestedDeg * fraction;
+  if (Math.abs(appliedDeg) <= ANGLE_EPSILON_DEG) return unchanged(limitedBy, limitedBy ? [`Cannot turn: ${limitedBy.reason}`] : []);
+
+  // ---- The turn and what follows it. ----
+  const updated = new Map<string, HvacElement>();
+  const outcomes = new Map<string, HvacMoveOutcome>();
+  const messages: string[] = limitedBy ? [`Stopped short: ${limitedBy.reason}`] : [];
+  const add: HvacElement[] = [];
+  const removeIds = new Set<string>();
+  const sceneNow = () => scene.map((element) => updated.get(element.id) ?? element);
+  for (const element of turnable) {
+    updated.set(element.id, turnElement(element, appliedDeg).element);
+    outcomes.set(element.id, { kind: 'moved' });
+  }
+  const afterEquipment = sceneNow();
+  // Pipes on the turned units' ports re-attach (one after another, so a pipe between two turned units meets both).
+  for (const element of turnable) {
+    const elements = sceneNow();
+    for (const follower of resolveRefrigerantPipeUnitPortReconnectionUpdates(elements, updated.get(element.id)!)) {
+      if (follower.id === element.id) continue;
+      updated.set(follower.id, { ...(updated.get(follower.id) ?? byId.get(follower.id)!), ...follower.updates } as HvacElement);
+      outcomes.set(follower.id, { kind: 'follows' });
+    }
+  }
+  // Duct runs: turned with their whole system, re-aimed off a turned collar, re-curved or re-aimed onto a turned spigot.
+  const ducts = moveDuctNetwork({
+    before: scene, after: afterEquipment, movedEquipmentIds: turnedIds, runIds: new Set(), segment: null, delta: ZERO3,
+    settings: context.ductSettings, turn: { angleDeg: appliedDeg, pivot },
+  });
+  for (const run of ducts.runs) {
+    updated.set(run.id, run);
+    outcomes.set(run.id, ducts.outcomes.get(run.id) ?? { kind: 'follows' });
+  }
+  messages.push(...ducts.messages);
+  // Drains follow the turned outlets (the commit; a preview leaves them).
+  if (context.condensate) {
+    const follow = followCondensateDrains(scene, afterEquipment, [...turnedIds], context.condensate);
+    add.push(...follow.add);
+    follow.removeIds.forEach((id) => removeIds.add(id));
+    follow.updates.forEach((element) => {
+      updated.set(element.id, element);
+      if (!outcomes.has(element.id)) outcomes.set(element.id, { kind: 'follows' });
+    });
+    messages.push(...follow.messages);
+  }
+  return {
+    requested: ZERO3,
+    applied: ZERO3,
+    fraction,
+    limitedBy,
+    updated: [...updated.values()].filter((element) => !removeIds.has(element.id)),
+    add,
+    removeIds: [...removeIds],
+    outcomes,
+    messages: [...new Set(messages)],
+    label: hvacRotateLabel(turnable, appliedDeg, each),
+    rotation: { requestedDeg, appliedDeg, pivot },
   };
 }
 

@@ -730,6 +730,34 @@ function transitionLength(transition: TransitionPlan): number {
   return 2 * transition.neckMm + transition.slopeMm;
 }
 
+/** How long the transition between two sections is (its necks and slope at the design taper, mm; 0 for none). */
+export function transitionLengthMm(from: DuctLeg, to: DuctLeg, settings: DuctDesignSettings, concentric = false): number {
+  return sameSection(from, to) ? 0 : transitionLength(planTransition(from, to, settings, concentric));
+}
+
+/**
+ * The shortest a level leg's transition between two sections may be (necks
+ * included, mm): its slopes at the steepest SMACNA Fig. 2-7 allows, the width
+ * concentric (by the included angle, diverging or converging with the air)
+ * and the height eccentric on the flat bottom. Where a leg is shorter than the
+ * design taper wants, the plan compresses the transition down to this.
+ * `flowAlongPath`: the air flows from `from` to `to` (a supply run).
+ */
+export function transitionMinLengthMm(from: DuctLeg, to: DuctLeg, settings: DuctDesignSettings, flowAlongPath = true): number {
+  if (sameSection(from, to)) return 0;
+  const tan = (deg: number) => Math.tan((Math.min(Math.max(deg, 1), 89) * Math.PI) / 180);
+  const halfIncluded = (fromMm: number, toMm: number) => ((toMm > fromMm) === flowAlongPath
+    ? settings.transitionMaxDivergingIncludedDeg : settings.transitionMaxConvergingIncludedDeg) / 2;
+  const riseW = Math.abs(to.widthMm - from.widthMm) / 2;
+  const riseH = Math.abs(to.heightMm - from.heightMm);
+  let slope = Math.ceil(Math.max(
+    riseW > 0.5 ? riseW / tan(halfIncluded(from.widthMm, to.widthMm)) : 0,
+    riseH > 0.5 ? riseH / tan(settings.transitionMaxEccentricDeg) : 0,
+  ) / 10) * 10;
+  if (isRoundLeg(from) && isRoundLeg(to)) slope = Math.max(slope, Math.ceil(roundReducerMinLengthMm(from.diameterMm!, to.diameterMm!) / 10) * 10);
+  return 2 * settings.elbowNeckMm + slope;
+}
+
 /**
  * Straight sections between `from` and `to` (leg-local distances), stock
  * length at a time; a short remainder is shared with the previous section, and

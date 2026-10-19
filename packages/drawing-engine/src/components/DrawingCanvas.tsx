@@ -120,8 +120,8 @@ import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/duc
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
 import { HvacMoveGizmo3D } from "./canvas/hvac/move/HvacMoveGizmo3D";
 import { formatMoveMm, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
-import { setHvacMoveHandler } from "./canvas/hvac/move/hvacMoveBus";
-import { hvacMoveChanges, hvacMoveCommand, planHvacMove, resolveHvacCeilingVoid, type HvacMovePlan } from "./canvas/hvac/move/hvacMoveModel";
+import { setHvacMoveHandler, setHvacRotateHandler } from "./canvas/hvac/move/hvacMoveBus";
+import { hvacMoveChanges, hvacMoveCommand, isTurnableElement, planHvacMove, resolveHvacCeilingVoid, type HvacMovePlan, type HvacRotation } from "./canvas/hvac/move/hvacMoveModel";
 import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost } from "./canvas/hvac/move/hvacMoveSession";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
@@ -2330,6 +2330,29 @@ export function DrawingCanvas({
     return () => setHvacMoveHandler(null);
   }, [nudgeSelectedEntities]);
 
+  // A turn of the selected units and terminals (R / Shift + R, the Properties panel's Rotate) is the same command:
+  // rules for the whole selection, ducts re-aimed or re-routed, pipes re-attached, drains re-solved, one undo.
+  const rotateSelectedEntities = useCallback(
+    (rotation: HvacRotation) => {
+      const state = useSmartDrawingStore.getState();
+      const plan = planHvacMove(hvacElements, { ids: selectedIds, delta: { x: 0, y: 0, z: 0 }, rotation }, {
+        ductSettings: state.ductSettings,
+        place: computeHvacPlacement,
+        condensate: condensateEditContext(),
+        ceilingVoid: resolveHvacCeilingVoid(hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)),
+      });
+      if (plan.messages.length) setProcessingStatus(plan.messages.join(" "), false);
+      if (!hvacMoveChanges(plan)) return false;
+      commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+      return true;
+    },
+    [computeHvacPlacement, commitHvacElementCommand, hvacElements, selectedIds, setProcessingStatus],
+  );
+  useEffect(() => {
+    setHvacRotateHandler(rotateSelectedEntities);
+    return () => setHvacRotateHandler(null);
+  }, [rotateSelectedEntities]);
+
   // A drag of the selection on the plan (units, terminals, runs, one straight): the move session runs the same
   // move model as the arrow keys, previews it in every layer each frame and stores it as one undo step.
   const moveHudRef = useRef<HvacMoveHudHandle | null>(null);
@@ -2821,6 +2844,18 @@ export function DrawingCanvas({
     setProcessingStatus,
   ]);
 
+  // R turns the selected units and terminals 90° clockwise, Shift + R anticlockwise (with none selected, R is the Room tool).
+  const handleRotateShortcut = useCallback(
+    (clockwise: boolean) => {
+      if (pendingPlacementDefinition || pendingPlacementEquipmentDefinition) return false;
+      const selected = new Set(selectedIds);
+      if (!hvacElements.some((element) => selected.has(element.id) && isTurnableElement(element))) return false;
+      rotateSelectedEntities({ angleDeg: clockwise ? 90 : -90, pivot: "group" });
+      return true;
+    },
+    [hvacElements, pendingPlacementDefinition, pendingPlacementEquipmentDefinition, rotateSelectedEntities, selectedIds],
+  );
+
   const handleEscapeShortcut = useCallback(() => {
     if (pendingPlacementDefinition || pendingPlacementEquipmentDefinition)
       return true;
@@ -2887,6 +2922,7 @@ export function DrawingCanvas({
     setIsSpacePressed,
     setTool,
     onEscape: handleEscapeShortcut,
+    onRotate: handleRotateShortcut,
     onCopy: copySelectedWalls,
     onPaste: pasteWalls,
   });

@@ -18,14 +18,40 @@
  * A run that cannot keep both ends attached keeps its start, lets its end go
  * as little as it can and says so (it is left for the designer to re-route,
  * shown amber); a unit turned by its placement turns its runs rigidly.
+ *
+ * A turn (the selection rotated about the vertical axis):
+ * - a system whose unit and terminals all turn as one block turns rigidly;
+ * - a run on a turned collar leaves it square and rejoins its own route: the
+ *   re-aims that make no detour first, then a route round the unit onto its old
+ *   line before its first take-off (the rest of the system unchanged), then a
+ *   stub off the collar that the route stretches to meet; where none fits it
+ *   turns rigidly about the collar, and says so;
+ * - a flexible runout re-curves to a turned spigot; a rigid one is re-aimed
+ *   onto it, or says it meets it at an angle.
  */
 import type { HvacElement, Point2D } from '../../../../types';
 import { findAirPort, type DuctAirPort } from '../duct/ductAirPorts';
+import { errorCodes, noNewErrors, reaimFromCollar, reaimRunEnd } from '../duct/ductBranchReaim';
+import {
+  collarReserveMm,
+  ductClash,
+  elbowRoomMm,
+  footprintOf,
+  planObstacles,
+  rerouteFromCollar,
+  routeCostMm,
+  runClashes,
+  runObstacles,
+  runOutline,
+  type PlanObstacle,
+} from '../duct/ductCollarReroute';
+import { getDuctRunPlan, planDuctRunSpec } from '../duct/ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, rigidTransformSpec, startAnchor, type DuctAnchor } from '../duct/ductFollow';
 import { ductLegs } from '../duct/ductGeometry';
+import { ductBranchesOf } from '../duct/ductNetwork';
 import type { DuctDesignSettings } from '../duct/ductSettings';
 import { findTerminalPort } from '../duct/ductTerminals';
-import { ductParentRunId, isDuctElement, readDuctRunSpec, type DuctLeg, type DuctRunSpec } from '../duct/ductTypes';
+import { ductParentRunId, isDuctElement, readDuctRunSpec, type DuctLeg, type DuctPoint3, type DuctRunSpec } from '../duct/ductTypes';
 
 import {
   AXES3,
@@ -60,6 +86,12 @@ export interface DuctNetworkMoveInput {
   segment?: DuctSegmentRef | null;
   delta: Vec3;
   settings: DuctDesignSettings;
+  /**
+   * The moved equipment turned about the vertical axis (degrees, clockwise on
+   * the plan); `pivot`: they turned as one block about it (null: each about its
+   * own centre). `delta` is then zero.
+   */
+  turn?: { angleDeg: number; pivot: Point2D | null } | null;
 }
 
 export interface DuctRunMoveOutcome {
@@ -120,6 +152,96 @@ function portAnchor(port: DuctAirPort): DuctAnchor {
 /** One direction (within 0.06°: stored paths are rounded; a unit turned by its placement turns by degrees). */
 function sameDirection(a: Point2D, b: Point2D): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) < 1e-3;
+}
+
+/** A plan point turned `angleDeg` (clockwise on the plan, as an element's rotation) about `pivot`. */
+export function turnPoint(point: Point2D, pivot: Point2D, angleDeg: number): Point2D {
+  const radians = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const x = point.x - pivot.x;
+  const y = point.y - pivot.y;
+  return { x: pivot.x + x * cos - y * sin, y: pivot.y + x * sin + y * cos };
+}
+
+/**
+ * Whether a re-aim's new corners (`prefix`, the collar's lip first), with the
+ * run's old legs it keeps from `keepFrom` on, clash with nothing: what stands
+ * at the duct's level (its branches included), its own kept legs, and the
+ * casing past the first leg (which leaves the casing's face).
+ */
+function clearOfClashes(spec: DuctRunSpec, runId: string, unitId: string, casing: readonly Point2D[], obstacles: readonly PlanObstacle[]) {
+  const first = spec.legs[0]!;
+  const half = (first.diameterMm ?? first.widthMm) / 2 + spec.insulationThicknessMm;
+  const zMin = spec.path[0]!.z;
+  const zMax = zMin + (first.diameterMm ?? first.heightMm) + 2 * spec.insulationThicknessMm;
+  const outline: PlanObstacle = { ownerId: unitId, shape: { kind: 'outline', corners: casing }, zMin, zMax };
+  return (prefix: readonly Point2D[], keepFrom: number): boolean => {
+    const kept = runObstacles(runId, spec, keepFrom);
+    for (let index = 0; index + 1 < prefix.length; index += 1) {
+      const against = index === 0 ? [...obstacles, ...kept] : [...obstacles, outline, ...kept];
+      if (ductClash(prefix[index]!, prefix[index + 1]!, half, zMin, zMax, against)) return false;
+    }
+    return true;
+  };
+}
+
+interface RunRef {
+  id: string;
+  spec: DuctRunSpec;
+}
+
+/** Each run's system root: the run on the unit's collar (or the free run) its branch tree hangs off. */
+function systemRoots(runs: readonly RunRef[]): (id: string) => string {
+  const byId = new Map(runs.map((run) => [run.id, run]));
+  return (id) => {
+    let current = id;
+    const seen = new Set<string>([id]);
+    for (;;) {
+      const parentId = ductParentRunId(byId.get(current)!.spec);
+      if (!parentId || !byId.has(parentId) || seen.has(parentId)) return current;
+      seen.add(parentId);
+      current = parentId;
+    }
+  };
+}
+
+/** What each system is fixed to (its collar's unit and every terminal it serves), by root. */
+function systemAnchors(runs: readonly RunRef[], rootOf: (id: string) => string): Map<string, { ids: string[]; terminals: string[] }> {
+  const anchors = new Map<string, { ids: string[]; terminals: string[] }>();
+  for (const run of runs) {
+    const root = rootOf(run.id);
+    const entry = anchors.get(root) ?? { ids: [], terminals: [] };
+    if (run.id === root && run.spec.start.kind === 'unit-port') entry.ids.push(run.spec.start.unitId);
+    if (run.spec.end.kind === 'terminal') {
+      entry.ids.push(run.spec.end.terminalId);
+      entry.terminals.push(run.spec.end.terminalId);
+    }
+    anchors.set(root, entry);
+  }
+  return anchors;
+}
+
+function readRuns(scene: readonly HvacElement[]): Array<RunRef & { element: HvacElement }> {
+  return scene.flatMap((element) => {
+    if (!isDuctElement(element)) return [];
+    const spec = readDuctRunSpec(element);
+    return spec ? [{ id: element.id, element, spec }] : [];
+  });
+}
+
+/**
+ * The air terminals whose whole duct system turns with a block: everything
+ * the system is fixed to (its unit's collar, every terminal it serves) turns.
+ * Their spigots turn with them (their runouts turn too).
+ */
+export function terminalsTurnedWhole(scene: readonly HvacElement[], turnedIds: ReadonlySet<string>): Set<string> {
+  const runs = readRuns(scene);
+  const out = new Set<string>();
+  for (const { ids, terminals } of systemAnchors(runs, systemRoots(runs)).values()) {
+    if (ids.length && ids.every((id) => turnedIds.has(id))) terminals.forEach((id) => out.add(id));
+  }
+  return out;
 }
 
 /** Runs ordered from the unit outwards: every parent before its branches. */
@@ -315,6 +437,20 @@ function planSegment(spec: DuctRunSpec, legIndex: number, delta: Vec3, terminalL
   return { spec: work, relocate, constraints, legOptions };
 }
 
+/** The run with a first straight from `lip` (a stub off a turned collar): later legs, nodes and accessories shift by one. */
+function prependStub(spec: DuctRunSpec, lip: DuctPoint3): DuctRunSpec {
+  const { inline, ...rest } = spec;
+  return {
+    ...rest,
+    path: [lip, ...spec.path],
+    legs: [spec.legs[0]!, ...spec.legs],
+    nodeOverrides: Object.fromEntries(Object.entries(spec.nodeOverrides).map(([node, override]) => [String(Number(node) + 1), override])),
+    ...(inline?.length ? { inline: inline.map((item) => ({ ...item, legIndex: item.legIndex + 1 })) } : {}),
+  };
+}
+
+const nextLeg: Relocate = (legIndex, stationMm) => ({ legIndex: legIndex + 1, stationMm });
+
 /** Accessories in a run's straights keep their place along their leg as the run would like them to. */
 function shiftInline(spec: DuctRunSpec, before: DuctRunSpec, shifts: readonly Vec3[], desire: Vec3): DuctRunSpec {
   if (!spec.inline?.length) return spec;
@@ -335,13 +471,9 @@ function shiftInline(spec: DuctRunSpec, before: DuctRunSpec, shifts: readonly Ve
 
 export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveResult {
   const { before, after, settings, movedEquipmentIds, runIds, delta } = input;
+  const turn = input.turn && Math.abs(input.turn.angleDeg) > 1e-9 ? input.turn : null;
   const byId = new Map(after.map((element) => [element.id, element]));
-  const runs: Array<{ id: string; element: HvacElement; spec: DuctRunSpec }> = [];
-  for (const element of after) {
-    if (!isDuctElement(element)) continue;
-    const spec = readDuctRunSpec(element);
-    if (spec) runs.push({ id: element.id, element, spec });
-  }
+  const runs = readRuns(after);
   const runById = new Map(runs.map((run) => [run.id, run]));
   const solved = new Map<string, SolvedRun>();
   const outcomes = new Map<string, DuctRunMoveOutcome>();
@@ -390,16 +522,7 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
 
   // A system nobody drags still moves rigidly when everything it is fixed to — its unit's collar and every
   // terminal it serves — moves by one vector (a unit and its diffusers moved, the ducts between them not picked).
-  const rootOf = (id: string): string => {
-    let current = id;
-    const seen = new Set<string>([id]);
-    for (;;) {
-      const parentId = ductParentRunId(runById.get(current)!.spec);
-      if (!parentId || !runById.has(parentId) || seen.has(parentId)) return current;
-      seen.add(parentId);
-      current = parentId;
-    }
-  };
+  const rootOf = systemRoots(runs);
   const anchorsByRoot = new Map<string, Array<Vec3 | null>>();
   for (const run of runs) {
     const root = rootOf(run.id);
@@ -414,6 +537,68 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
     if (!first || isZero(first) || anchors.some((anchor) => !anchor || lengthVec3(subVec3(anchor, first)) > 0.5)) continue;
     systemShift.set(root, first);
   }
+  // ... and turns rigidly when all of it turns as one block.
+  const turnedWhole = new Set<string>();
+  if (turn?.pivot) {
+    for (const [root, { ids }] of systemAnchors(runs, rootOf)) if (ids.length && ids.every((anchorId) => movedEquipmentIds.has(anchorId))) turnedWhole.add(root);
+  }
+  /** The drawing as it now stands: the moved equipment and the runs solved so far. */
+  const sceneNow = (): HvacElement[] => {
+    const changed = new Map(changedRuns.map((run) => [run.id, run]));
+    return after.map((element) => changed.get(element.id) ?? element);
+  };
+  /** Outlines of the runs re-routed off each turned unit so far (the next one keeps clear of them). */
+  const reroutedOff = new Map<string, Point2D[][]>();
+  /** What a turn did that is worth saying (not left for the designer). */
+  const infos: string[] = [];
+  const unitName = (id: string): string => {
+    const unit = byId.get(id);
+    const tag = unit?.properties.airSystemTag;
+    return typeof tag === 'string' && tag.trim() ? tag.trim() : unit?.label?.replace(/\s*\(3D\)$/i, '') || 'the unit';
+  };
+
+  /**
+   * A run on a turned collar: re-aimed (no detour) or re-routed round the unit
+   * onto its own route; else a stub off the collar for the route to stretch to;
+   * null when not even that fits (more than a quarter turn).
+   */
+  const turnCollar = (
+    id: string, element: HvacElement, spec: DuctRunSpec, start: Extract<DuctRunSpec['start'], { kind: 'unit-port' }>, from: DuctAirPort, to: DuctAirPort,
+  ): { kind: 'reaimed'; spec: DuctRunSpec; relocate: Relocate } | { kind: 'stub'; lip: DuctPoint3; shift: Vec3 } | null => {
+    const unit = byId.get(start.unitId);
+    if (!unit || spec.path.length < 2) return null;
+    const anchor: DuctAnchor = { point: { x: to.lip.x, y: to.lip.y }, direction: to.normal, z: spec.path[0]!.z + (to.lip.z - from.lip.z) };
+    const casing = footprintOf(unit);
+    const first = spec.legs[0]!;
+    const scene = sceneNow();
+    const reserve = collarReserveMm(spec, scene, settings);
+    const remember = (next: DuctRunSpec) => reroutedOff.set(start.unitId, [...(reroutedOff.get(start.unitId) ?? []), ...runOutline(next)]);
+    const clear = clearOfClashes(spec, id, start.unitId, casing, planObstacles(scene, new Set([id, start.unitId])));
+    // A re-aim onto the route as it runs (no detour), or a route round the unit onto its old line: the cheaper to make.
+    const exact = reaimFromCollar(scene, before, settings, element, spec, anchor, { collarMm: reserve, clear });
+    const routed = rerouteFromCollar({ scene, baseline: before, settings, run: element, spec, to: anchor, unit: casing, avoid: reroutedOff.get(start.unitId) ?? [] });
+    if (exact && (!routed || routeCostMm(exact.spec) <= routeCostMm(routed.spec))) {
+      infos.push(`${runName(id, spec)} leaves the turned collar and rejoins its route.`);
+      remember(exact.spec);
+      return { kind: 'reaimed', spec: exact.spec, relocate: (legIndex, stationMm) => ({ legIndex: exact.legOf(legIndex) ?? legIndex, stationMm }) };
+    }
+    if (routed) {
+      infos.push(`${runName(id, spec)} leaves the turned collar and rejoins its route round ${unitName(start.unitId)} (${routed.elbows} new elbow${routed.elbows === 1 ? '' : 's'}).`);
+      remember(routed.spec);
+      return { kind: 'reaimed', spec: routed.spec, relocate: routed.relocate };
+    }
+    // A stub square off the collar, one elbow onto the route's first heading: the route stretches to meet its end.
+    const lead = ductLegs(spec)[0]!;
+    if (lead.vertical || lead.sloped) return null;
+    const cos = to.normal.x * lead.direction.x + to.normal.y * lead.direction.y;
+    if (cos < -1e-6) return null;
+    const angle = (Math.acos(Math.min(1, cos)) * 180) / Math.PI;
+    const reach = reserve + elbowRoomMm(first, angle, settings) + 50;
+    const lip: DuctPoint3 = { x: anchor.point.x, y: anchor.point.y, z: anchor.z };
+    const origin = spec.path[0]!;
+    infos.push(`${runName(id, spec)} leaves the turned collar at a new elbow; its route shifts to meet it.`);
+    return { kind: 'stub', lip, shift: { x: lip.x + to.normal.x * reach - origin.x, y: lip.y + to.normal.y * reach - origin.y, z: anchor.z - origin.z } };
+  };
 
   /** Rigidly about its new anchor (a turned unit or parent), its flexible runout still ending on its terminal. */
   const rigid = (spec: DuctRunSpec, from: DuctAnchor, to: DuctAnchor): DuctRunSpec => {
@@ -429,6 +614,12 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
     const selected = runIds.has(id);
     const desire = selected ? delta : systemShift.get(rootOf(id)) ?? ZERO3;
     const kind: DuctRunMoveOutcome['kind'] = selected || segment?.runId === id ? 'moved' : 'follows';
+    if (turn?.pivot && turnedWhole.has(rootOf(id))) {
+      // Turned with its whole system, as one block.
+      const pivot = turn.pivot;
+      record(id, element, spec, { ...spec, path: spec.path.map((point) => ({ ...point, ...turnPoint(point, pivot, turn.angleDeg) })) }, stay, { kind });
+      continue;
+    }
     if (spec.legacy) {
       // The old straight stubs only translate when moved themselves.
       const next = selected && !isZero(delta)
@@ -446,7 +637,12 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
     /** How far its start moves with what it leaves from (an open start: with the drag). */
     let startShift: Vec3 = desire;
     let base = spec;
+    /** Where places on the run's legs are on `base` (a re-routed start drops or adds legs). */
+    let baseRelocate: Relocate = stay;
     let rigidAbout: { from: DuctAnchor; to: DuctAnchor } | null = null;
+    /** A stub made off a turned collar: its lip (put before the solved run) and the collar's turn (the fallback). */
+    let collarStub: { lip: DuctPoint3; from: DuctAnchor; to: DuctAnchor } | null = null;
+    let turnNote: string | undefined;
     const start = spec.start;
     if (start.kind === 'unit-port') {
       const shift = collarShift(start);
@@ -454,10 +650,23 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
         startShift = shift;
         constraints.push(...pinVertex(0, shift));
       } else {
-        // The unit turned: the run turns with it about its collar.
         const from = findAirPort(before, start.unitId, start.portId)!;
         const to = findAirPort(after, start.unitId, start.portId)!;
-        rigidAbout = { from: portAnchor(from), to: portAnchor(to) };
+        const turned = turn && !spec.legacy ? turnCollar(id, element, spec, start, from, to) : null;
+        if (turned?.kind === 'reaimed') {
+          base = turned.spec;
+          baseRelocate = turned.relocate;
+          startShift = ZERO3;
+          constraints.push(...pinVertex(0, ZERO3));
+        } else if (turned?.kind === 'stub') {
+          collarStub = { lip: turned.lip, from: portAnchor(from), to: portAnchor(to) };
+          startShift = turned.shift;
+          constraints.push(...pinVertex(0, turned.shift));
+        } else {
+          // The unit turned (by its placement, or with no way round it): the run turns with it about its collar.
+          rigidAbout = { from: portAnchor(from), to: portAnchor(to) };
+          if (turn) turnNote = 'turned with its unit: re-route it, or re-design it with Auto duct.';
+        }
       }
     } else if (start.kind === 'tap' || start.kind === 'split-branch' || start.kind === 'spigot') {
       const parent = solved.get(start.parentRunId);
@@ -495,7 +704,7 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
 
     // ---- A turned unit or parent: the run turns with it, rigidly. ----
     if (rigidAbout) {
-      record(id, element, spec, rigid(base, rigidAbout.from, rigidAbout.to), stay, { kind });
+      record(id, element, spec, rigid(base, rigidAbout.from, rigidAbout.to), stay, { kind, ...(turnNote ? { note: turnNote } : {}) });
       continue;
     }
     /** The take-off's new station: its start moved `startMoved`, its place on the wall moved `slide.base`. */
@@ -511,11 +720,31 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
     let endPin: ElasticConstraint[] = [];
     const end = spec.end;
     const terminalLabel = end.kind === 'terminal' ? labelOf(end.terminalId) : null;
-    if (end.kind === 'terminal') endPin = pinVertex(spec.path.length - 1, terminalShift(end.terminalId, end.portId));
+    let endShift = end.kind === 'terminal' ? terminalShift(end.terminalId, end.portId) : ZERO3;
+    let endNote: string | undefined;
+    if (turn && end.kind === 'terminal' && !end.flex && movedEquipmentIds.has(end.terminalId)) {
+      // A rigid end on a turned spigot: re-aimed onto it, or left meeting it at an angle.
+      const was = findTerminalPort(before, end.terminalId, end.portId);
+      const now = findTerminalPort(after, end.terminalId, end.portId);
+      if (was && now && !sameDirection(was.normal, now.normal)) {
+        const last = base.path.length - 1;
+        const reaimed = reaimRunEnd(sceneNow(), before, settings, element, base, {
+          point: { x: now.lip.x, y: now.lip.y }, direction: now.normal, z: base.path[last]!.z + (now.lip.z - was.lip.z),
+        });
+        if (reaimed) {
+          base = reaimed.spec;
+          endShift = ZERO3;
+          infos.push(`${runName(id, spec)} is re-aimed onto ${terminalLabel}'s turned spigot.`);
+        } else {
+          endNote = `meets ${terminalLabel}'s turned spigot at an angle: re-route its last straight.`;
+        }
+      }
+    }
+    if (end.kind === 'terminal') endPin = pinVertex(base.path.length - 1, endShift);
 
     // ---- A straight dragged on its own. ----
     let work = base;
-    let relocate = stay;
+    let relocate = baseRelocate;
     let segmentConstraints: ElasticConstraint[] = [];
     let legOptions = new Map<number, ElasticLegOption>();
     if (segment?.runId === id) {
@@ -528,7 +757,7 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
         segmentConstraints = planned.constraints;
         legOptions = planned.legOptions;
         // The end's vertex moved up the path by the risers made.
-        if (end.kind === 'terminal') endPin = pinVertex(work.path.length - 1, terminalShift(end.terminalId, end.portId));
+        if (end.kind === 'terminal') endPin = pinVertex(work.path.length - 1, endShift);
       }
     }
 
@@ -538,7 +767,7 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       && bounds.every((bound) => (bound.min ?? 0) <= MOVE_EPSILON_MM && (bound.max ?? 0) >= -MOVE_EPSILON_MM);
     if (nothingAsked) {
       // It stays where it is; a take-off whose straight moved under it keeps its place in the room.
-      record(id, element, spec, slid(base, ZERO3), stay, { kind });
+      record(id, element, spec, slid(base, ZERO3), baseRelocate, { kind, ...(endNote ? { note: endNote } : {}) });
       continue;
     }
 
@@ -550,15 +779,15 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       }));
       return solveElasticRun({ path: work.path, legs, constraints: fixed, bounds, desire, ...(pulls ? { pulls } : {}) });
     };
-    let note: string | undefined;
+    let note: string | undefined = endNote;
     let result = solve([...constraints, ...endPin, ...segmentConstraints]);
     if (!result.ok && segmentConstraints.length) {
       segmentRefused = 'That straight cannot move that way: the legs either side of it do not run that way.';
       work = base;
-      relocate = stay;
+      relocate = baseRelocate;
       segmentConstraints = [];
       legOptions = new Map();
-      if (end.kind === 'terminal') endPin = pinVertex(work.path.length - 1, terminalShift(end.terminalId, end.portId));
+      if (end.kind === 'terminal') endPin = pinVertex(work.path.length - 1, endShift);
       result = solve([...constraints, ...endPin]);
     }
     if (!result.ok && endPin.length) {
@@ -567,6 +796,11 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       result = solve([...constraints, ...segmentConstraints], [{ vertex: work.path.length - 1, shift: reach, weight: 1e3 }]);
       if (result.ok) note = `no longer reaches ${terminalLabel ?? 'its terminal'}: re-route its runout.`;
     }
+    if (!result.ok && collarStub) {
+      // The route cannot stretch to the stub: the run turns with its unit about its collar.
+      record(id, element, spec, rigid(base, collarStub.from, collarStub.to), stay, { kind, note: 'turned with its unit: re-route it, or re-design it with Auto duct.' });
+      continue;
+    }
     if (!result.ok) {
       // Nothing elastic fits (a corrupt run): it moves whole with its start.
       const path = work.path.map((point) => ({ ...point, x: point.x + startShift.x, y: point.y + startShift.y, z: point.z + startShift.z }));
@@ -574,14 +808,36 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       continue;
     }
 
-    // ---- The new run: its path, its take-off's place on the wall, its accessories. ----
-    const next = shiftInline(slid({ ...work, path: result.path }, result.shifts[0]!), work, result.shifts, desire);
+    // ---- The new run: its path, its take-off's place on the wall, its accessories (after a turned collar's stub). ----
+    let next = shiftInline(slid({ ...work, path: result.path }, result.shifts[0]!), work, result.shifts, desire);
+    if (collarStub) {
+      next = prependStub(next, collarStub.lip);
+      relocate = andThen(relocate, nextLeg);
+      // The route stretched to the stub must still make a run: no rule it did not break before, nothing it now runs
+      // into (the turned casing past its first leg, terminals, other runs, itself). Else it turns with its unit.
+      const unitId = (spec.start as Extract<DuctRunSpec['start'], { kind: 'unit-port' }>).unitId;
+      const scene = sceneNow();
+      const children = ductBranchesOf(id, scene);
+      const branches = new Set(children.map((branch) => branch.element.id));
+      // Its take-offs planned where they now sit on it (they follow it in their own turn, below).
+      const replaced = new Map<string, HvacElement>([[id, ductRunElementWithSpec(element, next)], ...children.flatMap((child) => (child.start.kind === 'tap'
+        ? [[child.element.id, ductRunElementWithSpec(child.element, { ...child.spec, start: { ...child.start, ...relocate(child.start.legIndex, child.start.stationMm) } })] as const]
+        : []))]);
+      const trial = scene.map((candidate) => replaced.get(candidate.id) ?? candidate);
+      const fits = noNewErrors(errorCodes(getDuctRunPlan(element, before, settings)), errorCodes(planDuctRunSpec(id, next, { settings, scene: trial })))
+        && !runClashes(next, planObstacles(scene, new Set([id, ...branches])), { firstLegClearOf: new Set([unitId]) });
+      if (!fits) {
+        infos.pop();
+        record(id, element, spec, rigid(base, collarStub.from, collarStub.to), stay, { kind, note: 'turned with its unit: re-route it, or re-design it with Auto duct.' });
+        continue;
+      }
+    }
     if (result.shortest.length && !note && kind === 'follows') {
-      const legs = [...result.shortest].sort((a, b) => a - b);
+      const legs = [...result.shortest].map((leg) => leg + (collarStub ? 1 : 0)).sort((a, b) => a - b);
       const which = legs.length === 1 && legs[0] === 0 ? 'its first straight is' : `${legs.length === 1 ? 'straight' : 'straights'} ${legs.map((leg) => leg + 1).join(', ')} ${legs.length === 1 ? 'is' : 'are'}`;
       note = `is pushed along: ${which} at its shortest.`;
     }
     record(id, element, spec, next, relocate, { kind, ...(note ? { note } : {}) });
   }
-  return { runs: changedRuns, outcomes, segmentRefused, messages };
+  return { runs: changedRuns, outcomes, segmentRefused, messages: [...messages, ...infos] };
 }

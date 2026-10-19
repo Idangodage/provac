@@ -19,6 +19,8 @@ export interface UseCanvasKeyboardOptions {
   setIsSpacePressed: (pressed: boolean) => void;
   setTool?: (tool: DrawingTool) => void;
   onEscape?: () => boolean;
+  /** R / Shift + R: turn the selection 90° (clockwise / anticlockwise); false when there is nothing to turn. */
+  onRotate?: (clockwise: boolean) => boolean;
   onCopy?: () => void;
   onPaste?: () => void;
 }
@@ -29,6 +31,7 @@ export function useCanvasKeyboard({
   setIsSpacePressed,
   setTool,
   onEscape,
+  onRotate,
   onCopy,
   onPaste,
 }: UseCanvasKeyboardOptions) {
@@ -121,6 +124,12 @@ export function useCanvasKeyboard({
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.repeat) return;
 
+      // R turns what is selected, when it can be turned (Shift: the other way); else it is the Room tool below.
+      if (key === "r" && onRotate?.(!event.shiftKey)) {
+        event.preventDefault();
+        return;
+      }
+
       if (key === "escape") {
         if (onEscape?.()) {
           event.preventDefault();
@@ -200,5 +209,5 @@ export function useCanvasKeyboard({
     return () => {
       window.removeEventListener("keydown", handleToolShortcut);
     };
-  }, [onEscape, setTool]);
+  }, [onEscape, onRotate, setTool]);
 }

@@ -4,7 +4,7 @@
 
 "use client";
 
-import { AlignHorizontalJustifyCenter, Box, BrickWall, ChevronDown, Droplets, Fan, Layers, LayoutGrid, Move, MousePointer2, Network, Route, Ruler, SlidersHorizontal, Thermometer, Wind, X, type LucideIcon } from "lucide-react";
+import { AlignHorizontalJustifyCenter, Box, BrickWall, ChevronDown, Droplets, Fan, Layers, LayoutGrid, Move, MousePointer2, Network, RotateCw, Route, Ruler, SlidersHorizontal, Thermometer, Wind, X, type LucideIcon } from "lucide-react";
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { shallow } from "zustand/shallow";
 
@@ -52,6 +52,8 @@ import { AirSystemsSection } from "./canvas/hvac/duct/AirSystemsSection";
 import { DuctAutoCard } from "./canvas/hvac/duct/DuctAutoCard";
 import { DuctRunInspector, DuctSystemsSection, DuctTerminalInspector, DuctToolSection } from "./canvas/hvac/duct/DuctPanels";
 import { HvacMoveSection } from "./canvas/hvac/move/HvacMoveSection";
+import { HvacRotateSection, HvacRotationField } from "./canvas/hvac/move/HvacRotateSection";
+import { isTurnableElement } from "./canvas/hvac/move/hvacMoveModel";
 import { editablePipeMaterials, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
 import { buildPipePropertyEdit, type PipePropertyEdit } from "./canvas/hvac/pipePropertyEdits";
 import {
@@ -1866,19 +1868,12 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         </span>
       </PropertyRow>
       <PropertyRow label="Rotation">
-        <input
-          type="number"
-          min={-360}
-          max={360}
-          step={5}
-          value={selectedEquipment.rotation.toFixed(1)}
-          onChange={(e) => {
-            const parsed = Number.parseFloat(e.target.value);
-            if (!Number.isFinite(parsed)) return;
-            updateHvacElement(selectedEquipment.id, { rotation: parsed });
-          }}
-          className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+        {/* Turned through the move model: its ducts, pipes and drains follow, its rules hold, one undo step. */}
+        <HvacRotationField
+          element={selectedEquipment}
+          className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-right text-sm tabular-nums focus:outline-none focus:ring-1 focus:ring-amber-400"
         />
+        <span className="text-xs text-slate-500">°</span>
       </PropertyRow>
       <PropertyRow label="Elevation">
         <input
@@ -4177,6 +4172,10 @@ export function PropertiesPanel({
     () => hvacElements.some((element) => selectedLookup.has(element.id)),
     [hvacElements, selectedLookup],
   );
+  const hasTurnableHvac = useMemo(
+    () => hvacElements.some((element) => selectedLookup.has(element.id) && isTurnableElement(element)),
+    [hvacElements, selectedLookup],
+  );
   const hasSelectedDimension = useMemo(
     () => dimensions.some((dimension) => selectedLookup.has(dimension.id)),
     [dimensions, selectedLookup],
@@ -4250,6 +4249,7 @@ export function PropertiesPanel({
             {hasSelectedObject && <CollapsibleSection title="Object properties" icon={Box}><ObjectSection propertyUnit={propertyUnit} /></CollapsibleSection>}
             {hasSelectedHvac && <CollapsibleSection title={`${hvacTitle} properties`} icon={SelectionIcon}><AirSystemCard /><DuctAutoCard /><AcEquipmentSection propertyUnit={propertyUnit} /></CollapsibleSection>}
             {hasSelectedHvac && <CollapsibleSection title="Move by" icon={Move} defaultOpen={false}><HvacMoveSection unit={propertyUnit} /></CollapsibleSection>}
+            {hasTurnableHvac && <CollapsibleSection title="Rotate" icon={RotateCw} defaultOpen={false}><HvacRotateSection /></CollapsibleSection>}
             {hasSelectedRoom && <CollapsibleSection title="Room properties" icon={LayoutGrid}><RoomSection propertyUnit={propertyUnit} /></CollapsibleSection>}
             {(hasSelectedDimension || activeTool === "dimension") && <CollapsibleSection title={hasSelectedDimension ? "Dimension properties" : "Dimension tool"} icon={Ruler}><DimensionSection /></CollapsibleSection>}
             {selectedWallCount > 1 && <CollapsibleSection title="Align selected walls" icon={AlignHorizontalJustifyCenter}><SelectionAlignSection /></CollapsibleSection>}
