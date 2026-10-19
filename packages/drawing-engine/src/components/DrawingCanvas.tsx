@@ -119,10 +119,11 @@ import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
 import { HvacMoveGizmo3D } from "./canvas/hvac/move/HvacMoveGizmo3D";
-import { formatMoveMm, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
+import { formatMoveMm, formatTurnDeg, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
+import { HvacRotateGrip } from "./canvas/hvac/move/HvacRotateGrip";
 import { setHvacMoveHandler, setHvacRotateHandler } from "./canvas/hvac/move/hvacMoveBus";
 import { hvacMoveChanges, hvacMoveCommand, isTurnableElement, planHvacMove, resolveHvacCeilingVoid, type HvacMovePlan, type HvacRotation } from "./canvas/hvac/move/hvacMoveModel";
-import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost } from "./canvas/hvac/move/hvacMoveSession";
+import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost, type HvacRotateBegin } from "./canvas/hvac/move/hvacMoveSession";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
@@ -2418,7 +2419,8 @@ export function DrawingCanvas({
       const ghosts = projectionViewOnly ? [] : (lastMovePlanRef.current?.updated ?? []).flatMap((moved) => {
         const original = before.get(moved.id);
         if (!original || isDuctElement(original) || isRefrigerantPipeElementType(original.type) || isCondensatePipe(original)) return [];
-        if (Math.hypot(moved.position.x - original.position.x, moved.position.y - original.position.y) < 1) return [];
+        if (Math.hypot(moved.position.x - original.position.x, moved.position.y - original.position.y) < 1
+          && Math.abs((moved.rotation ?? 0) - (original.rotation ?? 0)) < 0.01) return [];
         const centre = { x: original.position.x + original.width / 2, y: original.position.y + original.depth / 2 };
         const angle = ((original.rotation ?? 0) * Math.PI) / 180;
         return [[[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => {
@@ -2430,15 +2432,27 @@ export function DrawingCanvas({
       const { x, y, z } = state.applied;
       // Δz once the move has height (the 3D views, the gizmo's Z arrow).
       const rises = Math.abs(z) > 0.5 || Math.abs(state.requested.z) > 0.5;
+      // A turn: its angle, and on the plan its pivot and the angle swept (the plan's screen turns as the model does).
+      const turn = state.turn;
+      const pivotClient = turn && !projectionViewOnly ? toClient(turn.pivot) : null;
       hud.show({
         client: state.client,
         title: state.label,
-        readout: state.typed !== null
-          ? `${state.typed} mm`
-          : `Δx ${formatMoveMm(x)}  Δy ${formatMoveMm(y)}${rises ? `  Δz ${formatMoveMm(z)}` : ""}  ·  ${Math.round(Math.hypot(x, y, z)).toLocaleString("en-GB")} mm`,
+        readout: turn
+          ? (state.typed !== null ? `${state.typed.replace("-", "−")}°` : formatTurnDeg(turn.appliedDeg))
+          : state.typed !== null
+            ? `${state.typed} mm`
+            : `Δx ${formatMoveMm(x)}  Δy ${formatMoveMm(y)}${rises ? `  Δz ${formatMoveMm(z)}` : ""}  ·  ${Math.round(Math.hypot(x, y, z)).toLocaleString("en-GB")} mm`,
+        ...(turn && pivotClient ? {
+          turn: {
+            pivot: pivotClient, startDeg: turn.startDeg, sweepDeg: turn.appliedDeg,
+            radius: Math.min(160, Math.max(36, Math.hypot(state.client.x - pivotClient.x, state.client.y - pivotClient.y) * 0.55)),
+          },
+        } : {}),
         typing: state.typed !== null,
         limitedBy: state.limitedBy,
         notes: state.notes,
+        infos: state.infos ?? [],
         guides: state.guides.map((guide) => {
           const a = toClient(guide.axis === "x" ? { x: guide.at, y: guide.from } : { x: guide.from, y: guide.at });
           const b = toClient(guide.axis === "x" ? { x: guide.at, y: guide.to } : { x: guide.to, y: guide.at });
@@ -2466,6 +2480,15 @@ export function DrawingCanvas({
       movePreview3DRef.current = false;
     },
     dragState: (ids) => setMovingIds(ids ? new Set(ids) : null),
+    // A turn squares up with the walls (their directions on the plan) as with 15° steps.
+    snapAnglesDeg: () => {
+      const angles = new Set<number>();
+      for (const wall of useSmartDrawingStore.getState().walls) {
+        const angle = (Math.atan2(wall.endPoint.y - wall.startPoint.y, wall.endPoint.x - wall.startPoint.x) * 180) / Math.PI;
+        angles.add(Math.round((((angle % 90) + 90) % 90) * 10) / 10);
+      }
+      return [...angles];
+    },
   };
   const moveSession = useMemo(
     () => (typeof window === "undefined" ? null : new HvacMoveSession(latestHost(() => moveHostRef.current!))),
@@ -2474,6 +2497,10 @@ export function DrawingCanvas({
   useEffect(() => () => moveSession?.cancel(), [moveSession]);
   const beginHvacMove = useCallback(
     (request: HvacMoveBegin) => moveSession?.begin(request) ?? false,
+    [moveSession],
+  );
+  const beginHvacRotate = useCallback(
+    (request: HvacRotateBegin) => moveSession?.beginRotate(request) ?? false,
     [moveSession],
   );
 
@@ -3588,6 +3615,9 @@ export function DrawingCanvas({
             onBeginMove={tool === "select" && !isSpacePressed ? beginHvacMove : undefined}
             hiddenIds={movingIds ?? undefined}
           />
+          <HvacRotateGrip enabled={!projectionViewOnly && tool === "select" && !isSpacePressed} hidden={Boolean(movingIds)}
+            width={hostWidth} height={hostHeight} viewportZoom={viewportZoom} panOffset={panOffset}
+            hvacElements={hvacElements} selectedIds={selectedIds} onBeginRotate={beginHvacRotate} />
           <HvacMoveHud ref={moveHudRef} />
           <PipeClashOverlay
             enabled={!projectionViewOnly}

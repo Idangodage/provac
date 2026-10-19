@@ -107,8 +107,10 @@ export interface DuctNetworkMoveResult {
   outcomes: Map<string, DuctRunMoveOutcome>;
   /** Why the straight did not move (the rest of the move goes ahead). */
   segmentRefused: string | null;
-  /** Notes worth showing (a run that no longer reaches its terminal, …). */
+  /** Notes worth showing (a run that no longer reaches its terminal, …), and what a turn did (below). */
   messages: string[];
+  /** What a turn did that is worth saying but needs nothing from the designer (a run re-routed round its unit). */
+  infos: string[];
 }
 
 /** Shifts below this count as no move (mm). */
@@ -839,5 +841,5 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
     }
     record(id, element, spec, next, relocate, { kind, ...(note ? { note } : {}) });
   }
-  return { runs: changedRuns, outcomes, segmentRefused, messages: [...messages, ...infos] };
+  return { runs: changedRuns, outcomes, segmentRefused, messages: [...messages, ...infos], infos };
 }

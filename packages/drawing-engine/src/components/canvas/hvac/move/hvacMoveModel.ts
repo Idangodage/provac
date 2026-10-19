@@ -127,6 +127,8 @@ export interface HvacMovePlan {
   outcomes: Map<string, HvacMoveOutcome>;
   /** Worth telling the designer (in the status bar). */
   messages: string[];
+  /** Those of the messages that only say what was done (not what is left to do): the readout shows them plainly. */
+  infos?: string[];
   /** The undo step's name ("Move FDUM22 and 2 diffusers", "Rotate DU-1 90° clockwise"). */
   label: string;
   /** A turn: the angle asked for and made (degrees, clockwise on the plan), about `pivot` (null: each item's own centre). */
@@ -575,8 +577,8 @@ function normalisedDeg(angleDeg: number): number {
   return rounded >= 360 ? 0 : rounded;
 }
 
-/** The centre of the plan box round the items' footprints (where a block turns about). */
-function blockCentre(elements: readonly HvacElement[]): Point2D {
+/** The centre of the plan box round the items' footprints: where a block turns about (the grip and the ring use it too). */
+export function turnPivot(elements: readonly HvacElement[]): Point2D {
   let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
   for (const element of elements) {
     const centre = centreOf(element);
@@ -620,7 +622,7 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
   // Units and terminals turn; branch kits turn with their pipe run, not on their own; runs, pipes and drains follow.
   const turnable = selected.filter(isTurnableElement);
   const each = rotation.pivot === 'each';
-  const pivot: Point2D | null = each ? null : typeof rotation.pivot === 'object' && rotation.pivot ? rotation.pivot : blockCentre(turnable);
+  const pivot: Point2D | null = each ? null : typeof rotation.pivot === 'object' && rotation.pivot ? rotation.pivot : turnPivot(turnable);
   const requestedDeg = rotation.angleDeg;
   const unchanged = (limitedBy: HvacMovePlan['limitedBy'], messages: string[]): HvacMovePlan => ({
     requested: ZERO3, applied: ZERO3, fraction: 0, limitedBy, updated: [], add: [], removeIds: [], outcomes: new Map(), messages,
@@ -743,6 +745,7 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
     removeIds: [...removeIds],
     outcomes,
     messages: [...new Set(messages)],
+    infos: ducts.infos,
     label: hvacRotateLabel(turnable, appliedDeg, each),
     rotation: { requestedDeg, appliedDeg, pivot },
   };

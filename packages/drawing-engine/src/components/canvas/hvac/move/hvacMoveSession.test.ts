@@ -50,7 +50,7 @@ const diffuser = (id: string, x: number, y: number): HvacElement => ({
 });
 
 /** One screen pixel is one millimetre; the plan's origin at the client origin. */
-function setup(selection: string[] = []) {
+function setup(selection: string[] = [], options: { walls?: number[] } = {}) {
   const target = new FakeWindow();
   let scene: HvacElement[] = [diffuser('d1', 1000, 1000), diffuser('d2', 3000, 1000), diffuser('d3', 6000, 4000), diffuser('d4', 1013, 8987)];
   let selected = [...selection];
@@ -74,6 +74,7 @@ function setup(selection: string[] = []) {
       scene = scene.map((element) => updated.get(element.id) ?? element);
     },
     dragState: (ids) => { log.drags.push(ids); },
+    snapAnglesDeg: () => options.walls ?? [],
   };
   const session = new HvacMoveSession(host, target as unknown as Window);
   return { target, session, log, selected: () => selected, element: (id: string) => scene.find((element) => element.id === id)! };
@@ -183,5 +184,86 @@ describe('HvacMoveSession', () => {
     target.fire('keydown', { key: 'Enter', shiftKey: true });
     expect(log.commits).toHaveLength(1);
     expect(element('d1').position).toEqual({ x: 700 + 1250, y: 700 });
+  });
+});
+
+describe('HvacMoveSession: a turn (the rotation grip, the gizmo ring)', () => {
+  /** A client point `r` px from (1000, 1000) at `deg` (clockwise from +x, the screen's y down). */
+  const about = (deg: number, r = 300, centre = { x: 1000, y: 1000 }) => ({
+    clientX: centre.x + r * Math.cos((deg * Math.PI) / 180), clientY: centre.y + r * Math.sin((deg * Math.PI) / 180),
+  });
+
+  it('turns about the pivot by the angle swept, the orientation snapped to 15° steps; one commit with the drains', () => {
+    const { target, session, log, element } = setup(['d1']);
+    // The grip straight above the pivot (d1's centre).
+    expect(session.beginRotate({ ids: ['d1'], pivot: { x: 1000, y: 1000 }, ...about(-90) })).toBe(true);
+    // Swept 80° clockwise: 75° (the nearest 15° step).
+    target.fire('pointermove', about(-10));
+    target.flush();
+    expect(log.drags).toEqual([['d1']]);
+    expect(log.huds.at(-1)).toMatchObject({ turn: { requestedDeg: 75, appliedDeg: 75, pivot: { x: 1000, y: 1000 } }, label: 'Rotate D1 75° clockwise' });
+    expect(log.contexts.at(-1)).toBe(true);
+    target.fire('pointerup', about(-10));
+    expect(log.commits).toHaveLength(1);
+    expect(log.contexts.at(-1)).toBe(false);
+    expect(element('d1').rotation).toBe(75);
+    expect(element('d1').position).toEqual({ x: 700, y: 700 });
+    expect(log.huds.at(-1)).toBeNull();
+    expect(target.count('pointermove')).toBe(0);
+  });
+
+  it('squares up with a wall within 4°; Alt turns freely', () => {
+    const walls = setup(['d1'], { walls: [12] });
+    walls.session.beginRotate({ ids: ['d1'], pivot: { x: 1000, y: 1000 }, ...about(-90) });
+    walls.target.fire('pointermove', about(10));
+    walls.target.flush();
+    // 100° swept: the wall's 102° (12° + 90°) is nearer than the 105° step.
+    expect(walls.log.huds.at(-1)?.turn?.requestedDeg).toBeCloseTo(102, 9);
+
+    const free = setup(['d1']);
+    free.session.beginRotate({ ids: ['d1'], pivot: { x: 1000, y: 1000 }, ...about(-90) });
+    free.target.fire('pointermove', { ...about(-27), altKey: true });
+    free.target.flush();
+    expect(free.log.huds.at(-1)?.turn?.requestedDeg).toBeCloseTo(63, 9);
+  });
+
+  it('a typed angle turns exactly that far ("-": anticlockwise); Enter commits it', () => {
+    const { target, session, log, element } = setup(['d1']);
+    session.beginRotate({ ids: ['d1'], pivot: { x: 1000, y: 1000 }, ...about(-90) });
+    target.fire('pointermove', about(-60));
+    target.flush();
+    for (const key of ['4', '5']) target.fire('keydown', { key });
+    expect(log.huds.at(-1)).toMatchObject({ typed: '45', turn: { requestedDeg: 45 } });
+    target.fire('keydown', { key: '-' });
+    expect(log.huds.at(-1)).toMatchObject({ typed: '-45', turn: { requestedDeg: -45 }, label: 'Rotate D1 45° anticlockwise' });
+    target.fire('keydown', { key: 'Enter' });
+    expect(log.commits).toHaveLength(1);
+    expect(element('d1').rotation).toBe(315);
+  });
+
+  it('Esc cancels: nothing is stored and the preview goes', () => {
+    const { target, session, log, element } = setup(['d1']);
+    session.beginRotate({ ids: ['d1'], pivot: { x: 1000, y: 1000 }, ...about(-90) });
+    target.fire('pointermove', about(0));
+    target.flush();
+    target.fire('keydown', { key: 'Escape' });
+    expect(log.commits).toEqual([]);
+    expect(log.previews.at(-1)).toBeNull();
+    expect(element('d1').rotation).toBe(0);
+    expect(target.count('keydown')).toBe(0);
+  });
+
+  it('turns a block about its centre: each item swings round it and turns', () => {
+    const { target, session, element } = setup(['d1', 'd2']);
+    const pivot = { x: 2000, y: 1000 };
+    session.beginRotate({ ids: ['d1', 'd2'], pivot, ...about(-90, 400, pivot) });
+    target.fire('pointermove', about(0, 400, pivot));
+    target.fire('pointerup', about(0, 400, pivot));
+    // A quarter turn clockwise: d1 (1000 mm left of the pivot) is now 1000 mm above it.
+    expect(element('d1').rotation).toBe(90);
+    expect(element('d1').position.x).toBeCloseTo(2000 - 300, 6);
+    expect(element('d1').position.y).toBeCloseTo(0 - 300, 6);
+    expect(element('d2').position.x).toBeCloseTo(2000 - 300, 6);
+    expect(element('d2').position.y).toBeCloseTo(2000 - 300, 6);
   });
 });
