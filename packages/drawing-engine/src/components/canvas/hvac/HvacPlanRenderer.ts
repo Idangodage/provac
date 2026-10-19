@@ -383,6 +383,38 @@ export class HvacPlanRenderer {
     this.invalidatePipeSegmentTargets();
   }
 
+  /** Bodies drawn where a move would put them. */
+  private movePreviewIds = new Set<string>();
+
+  /**
+   * Show a move: each element's body where the move puts it (null ends the
+   * preview). `committed`: the move was just stored, so the bodies stay where
+   * they are until the stored elements re-render them (no flicker back).
+   */
+  previewMove(elements: readonly HvacElement[] | null, options: { committed?: boolean } = {}): void {
+    const next = new Map<string, HvacElement>();
+    for (const element of elements ?? []) if (this.groups.has(element.id)) next.set(element.id, element);
+    if (!options.committed) {
+      this.movePreviewIds.forEach((id) => {
+        if (!next.has(id)) this.placeGroupAt(id, this.hvacData.get(id));
+      });
+    }
+    next.forEach((element, id) => this.placeGroupAt(id, element));
+    this.movePreviewIds = new Set(next.keys());
+    if (elements?.length) this.setSceneElementOverrides([...elements]);
+    else this.clearSceneElementOverrides();
+    this.canvas.requestRenderAll();
+  }
+
+  private placeGroupAt(id: string, element: HvacElement | undefined): void {
+    const group = this.groups.get(id);
+    if (!group || !element) return;
+    const center = toCanvas(elementCenter(element));
+    group.set({ left: center.x, top: center.y, angle: element.rotation ?? 0 });
+    group.setCoords();
+    group.set("dirty", true);
+  }
+
   private annotate(
     target: fabric.FabricObject,
     hvacElementId: string,
@@ -4153,6 +4185,11 @@ export class HvacPlanRenderer {
       hasControls: false,
       hasBorders: false,
       lockRotation: true,
+      // The move session owns every drag (the whole selection, the move model's rules and followers): Fabric
+      // never translates an HVAC body on its own.
+      lockMovementX: true,
+      lockMovementY: true,
+      hoverCursor: "move",
       objectCaching: false,
     }) as HvacGroup;
 

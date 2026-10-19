@@ -350,6 +350,13 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
   let segmentRefused: string | null = null;
   const segment = input.segment && runById.has(input.segment.runId) ? input.segment : null;
   const labelOf = (id: string) => byId.get(id)?.label || id;
+  /** A run as the designer knows it: its own label, or (a generic "Supply duct") the terminal it serves. */
+  const runName = (id: string, spec: DuctRunSpec): string => {
+    const label = byId.get(id)?.label?.trim() ?? '';
+    if (label && !/^(supply|return) duct$/i.test(label)) return label;
+    if (spec.end.kind === 'terminal') return `The run to ${labelOf(spec.end.terminalId)}`;
+    return spec.start.kind === 'unit-port' ? `The ${spec.service} trunk` : `A ${spec.service} branch`;
+  };
 
   const terminalShift = (terminalId: string, portId: string): Vec3 => {
     if (!movedEquipmentIds.has(terminalId)) return ZERO3;
@@ -364,7 +371,13 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
     if (!changed) return;
     changedRuns.push(ductRunElementWithSpec(element, next));
     outcomes.set(id, outcome);
-    if (outcome.note) messages.push(`${labelOf(id)} ${outcome.note}`);
+    if (outcome.note) {
+      const name = runName(id, spec);
+      const terminal = spec.end.kind === 'terminal' ? labelOf(spec.end.terminalId) : null;
+      // "The run to SAD-2 can no longer reach it", not "… no longer reaches SAD-2".
+      const note = terminal && name === `The run to ${terminal}` ? outcome.note.replace(`no longer reaches ${terminal}`, 'can no longer reach it') : outcome.note;
+      messages.push(`${name} ${note}`);
+    }
   };
 
   const collarShift = (start: Extract<DuctRunSpec['start'], { kind: 'unit-port' }>): Vec3 | null => {
@@ -564,8 +577,9 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
     // ---- The new run: its path, its take-off's place on the wall, its accessories. ----
     const next = shiftInline(slid({ ...work, path: result.path }, result.shifts[0]!), work, result.shifts, desire);
     if (result.shortest.length && !note && kind === 'follows') {
-      const legs = result.shortest.map((leg) => leg + 1).join(', ');
-      note = `was pushed along: leg ${legs} is at its shortest.`;
+      const legs = [...result.shortest].sort((a, b) => a - b);
+      const which = legs.length === 1 && legs[0] === 0 ? 'its first straight is' : `${legs.length === 1 ? 'straight' : 'straights'} ${legs.map((leg) => leg + 1).join(', ')} ${legs.length === 1 ? 'is' : 'are'}`;
+      note = `is pushed along: ${which} at its shortest.`;
     }
     record(id, element, spec, next, relocate, { kind, ...(note ? { note } : {}) });
   }

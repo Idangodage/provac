@@ -73,7 +73,7 @@ import {
   cycleBoardUnit,
   type BoardUnit,
 } from "./canvas/board";
-import { worldToScreenFromFabricViewport } from "./canvas/coordinateTransform";
+import { clientPointToWorldFromFabricViewport, worldToScreenFromFabricViewport, type FabricViewportMatrix } from "./canvas/coordinateTransform";
 import { useCondensateLiveValidation } from "./canvas/hooks/useCondensateLiveValidation";
 import { useDuctLiveValidation } from "./canvas/hooks/useDuctLiveValidation";
 import { useVrfLiveValidation } from "./canvas/hooks/useVrfLiveValidation";
@@ -109,7 +109,7 @@ import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from "./canvas/hvac
 import { buildDuctBom, buildDuctFabricationSchedule } from "./canvas/hvac/duct/ductBom";
 import { splitOrigin, tapOrigin } from "./canvas/hvac/duct/ductBranchTargets";
 import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
-import { commitDuctRunEdit, commitDuctRunMove } from "./canvas/hvac/duct/ductEditController";
+import { commitDuctRunEdit } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
@@ -118,7 +118,10 @@ import { getDuctSupportPlan, resolveSoffitZ } from "./canvas/hvac/duct/ductSuppo
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
+import { formatMoveMm, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
+import { setHvacMoveHandler } from "./canvas/hvac/move/hvacMoveBus";
 import { hvacMoveChanges, hvacMoveCommand, planHvacMove, resolveHvacCeilingVoid } from "./canvas/hvac/move/hvacMoveModel";
+import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost } from "./canvas/hvac/move/hvacMoveSession";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
@@ -2320,6 +2323,101 @@ export function DrawingCanvas({
     ],
   );
 
+  // "Move by" in the Properties panel runs the same move as the arrow keys.
+  useEffect(() => {
+    setHvacMoveHandler((delta) => nudgeSelectedEntities(delta.x, delta.y, delta.z));
+    return () => setHvacMoveHandler(null);
+  }, [nudgeSelectedEntities]);
+
+  // A drag of the selection on the plan (units, terminals, runs, one straight): the move session runs the same
+  // move model as the arrow keys, previews it in every layer each frame and stores it as one undo step.
+  const moveHudRef = useRef<HvacMoveHudHandle | null>(null);
+  const moveHostRef = useRef<HvacMoveSessionHost | null>(null);
+  /** Items being dragged (their design-check markers wait until the move is stored). */
+  const [movingIds, setMovingIds] = useState<ReadonlySet<string> | null>(null);
+  moveHostRef.current = {
+    scene: () => useSmartDrawingStore.getState().hvacElements,
+    selection: () => useSmartDrawingStore.getState().selectedIds,
+    select: (ids) => setSelectedIds(ids),
+    clientToWorld: (clientX, clientY) => {
+      const canvas = fabricRef.current;
+      const viewport = canvas?.viewportTransform;
+      if (!canvas || !viewport) return null;
+      return clientPointToWorldFromFabricViewport(clientX, clientY, canvas.getElement().getBoundingClientRect(), viewport as unknown as FabricViewportMatrix);
+    },
+    pxPerMm: () => MM_TO_PX * (fabricRef.current?.getZoom() ?? viewportZoom),
+    gridMm: () => (resolvedSnapToGrid ? snapStepMm : null),
+    context: (preview) => {
+      const state = useSmartDrawingStore.getState();
+      return {
+        ductSettings: state.ductSettings,
+        place: computeHvacPlacement,
+        // The drain re-solve is the slow part: the preview leaves it out, the commit does it.
+        ...(preview ? {} : { condensate: condensateEditContext() }),
+        ceilingVoid: resolveHvacCeilingVoid(state.hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)),
+      };
+    },
+    preview: (plan) => {
+      const updated = plan?.updated ?? null;
+      hvacRendererRef.current?.previewMove(updated);
+      ductOverlayRef.current?.previewMove(updated ? updated.filter((element) => isDuctElement(element) || isDuctTerminalElement(element)) : null);
+    },
+    hud: (state) => {
+      const hud = moveHudRef.current;
+      if (!hud) return;
+      if (!state) {
+        hud.hide();
+        return;
+      }
+      const canvas = fabricRef.current;
+      const viewport = canvas?.viewportTransform;
+      const rect = canvas?.getElement().getBoundingClientRect();
+      const toClient = (point: Point2D): Point2D => {
+        if (!viewport || !rect) return point;
+        const screen = worldToScreenFromFabricViewport(point, viewport as unknown as FabricViewportMatrix);
+        return { x: rect.left + screen.x, y: rect.top + screen.y };
+      };
+      const { x, y } = state.applied;
+      hud.show({
+        client: state.client,
+        title: state.label,
+        readout: state.typed !== null
+          ? `${state.typed} mm`
+          : `Δx ${formatMoveMm(x)}  Δy ${formatMoveMm(y)}  ·  ${Math.round(Math.hypot(x, y)).toLocaleString("en-GB")} mm`,
+        typing: state.typed !== null,
+        limitedBy: state.limitedBy,
+        notes: state.notes,
+        guides: state.guides.map((guide) => {
+          const a = toClient(guide.axis === "x" ? { x: guide.at, y: guide.from } : { x: guide.from, y: guide.at });
+          const b = toClient(guide.axis === "x" ? { x: guide.at, y: guide.to } : { x: guide.to, y: guide.at });
+          return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+        }),
+      });
+    },
+    commit: (plan) => {
+      if (plan.messages.length) setProcessingStatus(plan.messages.join(" "), false);
+      if (!hvacMoveChanges(plan)) {
+        hvacRendererRef.current?.previewMove(null);
+        ductOverlayRef.current?.previewMove(null);
+        return;
+      }
+      commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+      // The bodies and runs stay where the preview drew them until the stored move re-renders them.
+      hvacRendererRef.current?.previewMove(null, { committed: true });
+      ductOverlayRef.current?.previewMove(null, { committed: true });
+    },
+    dragState: (ids) => setMovingIds(ids ? new Set(ids) : null),
+  };
+  const moveSession = useMemo(
+    () => (typeof window === "undefined" ? null : new HvacMoveSession(latestHost(() => moveHostRef.current!))),
+    [],
+  );
+  useEffect(() => () => moveSession?.cancel(), [moveSession]);
+  const beginHvacMove = useCallback(
+    (request: HvacMoveBegin) => moveSession?.begin(request) ?? false,
+    [moveSession],
+  );
+
   const handleApplyVrfValidationFix = useCallback(
     (issue: VrfValidationIssue) => {
       if (issue.fix?.kind === "regenerate-condensate") {
@@ -3157,6 +3255,7 @@ export function DrawingCanvas({
     // State values
     tool,
     isSpacePressed,
+    beginHvacMove,
     selectedIds,
     symbols,
     hvacElements,
@@ -3354,7 +3453,7 @@ export function DrawingCanvas({
             rooms={rooms}
             showPorts={tool === "duct" && !projectionViewOnly}
             moveEnabled={tool === "select" && !projectionViewOnly && !isSpacePressed}
-            onMoveCommit={commitDuctRunMove}
+            onBeginMove={beginHvacMove}
             onEditCommit={commitDuctRunEdit}
           />
           {/* Air-system pick mode: its chip above every canvas overlay. */}
@@ -3414,7 +3513,10 @@ export function DrawingCanvas({
             report={designCheckReport}
             onSelectElement={selectFromDesignCheck}
             onApplyFix={handleApplyVrfValidationFix}
+            onBeginMove={tool === "select" && !isSpacePressed ? beginHvacMove : undefined}
+            hiddenIds={movingIds ?? undefined}
           />
+          <HvacMoveHud ref={moveHudRef} />
           <PipeClashOverlay
             enabled={!projectionViewOnly}
             width={hostWidth}

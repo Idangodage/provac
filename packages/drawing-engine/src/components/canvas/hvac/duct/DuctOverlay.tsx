@@ -25,6 +25,7 @@ import {
 } from '../../coordinateTransform';
 import { MM_TO_PX } from '../../scale';
 import { useCondensatePreviewStore } from '../condensate/condensatePreviewStore';
+import type { HvacMoveBegin } from '../move/hvacMoveSession';
 
 import { AirSystemLayer } from './AirSystemLayer';
 import { listAirPorts } from './ductAirPorts';
@@ -33,7 +34,6 @@ import type { AutoDuctWall } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, type DuctEditResult } from './ductEdits';
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
-import { moveDuctRuns } from './ductFollow';
 import { ductLegs } from './ductGeometry';
 import {
   airPortMarkup,
@@ -82,6 +82,12 @@ export interface DuctOverlayHandle {
   setBranchTarget: (target: DuctOverlayBranchTarget | null) => void;
   /** Where a segment of a run is on screen (client pixels): the piece `anchorMark`, else the whole segment. */
   segmentClientRect: (runId: string, key: string, anchorMark: string | null) => ScreenRect | null;
+  /**
+   * Show a move: the runs and air terminals it changes, drawn as they would be,
+   * their committed drawings hidden meanwhile (null ends it). `committed`: the
+   * move was just stored, so the drawing holds until the stored runs re-render.
+   */
+  previewMove: (elements: readonly HvacElement[] | null, options?: { committed?: boolean }) => void;
 }
 
 /** Tag widths on screen (px), measured once per text in the font the plan draws tags in. */
@@ -127,8 +133,8 @@ export interface DuctOverlayProps {
   showPorts: boolean;
   /** Selected runs can be dragged (select tool). */
   moveEnabled?: boolean;
-  /** Commit a drag of the selected runs by a plan delta (mm). */
-  onMoveCommit?: (ids: string[], delta: Point2D) => void;
+  /** A press on a selected run starts a move of the selection (or of the pinned straight); false: it did not. */
+  onBeginMove?: (request: HvacMoveBegin) => boolean;
   /** Commit an in-place edit of one run (a leg, its end or a riser dragged). */
   onEditCommit?: (elementId: string, result: DuctEditResult, action: string) => void;
 }
@@ -145,7 +151,7 @@ interface DuctEditHandle {
 const HANDLE_ACTIONS: Record<DuctEditHandle['kind'], string> = { leg: 'Move duct leg', end: 'Move duct end', riser: 'Move duct riser' };
 
 export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(function DuctOverlay(props, ref) {
-  const { enabled, width, height, viewportZoom, panOffset, hvacElements, selectedIds, settings, showPorts, moveEnabled, onMoveCommit, onEditCommit } = props;
+  const { enabled, width, height, viewportZoom, panOffset, hvacElements, selectedIds, settings, showPorts, moveEnabled, onBeginMove, onEditCommit } = props;
   const gRef = useRef<SVGGElement | null>(null);
   const draftRef = useRef<SVGGElement | null>(null);
   const portsRef = useRef<SVGGElement | null>(null);
@@ -154,7 +160,11 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const runsRef = useRef<SVGGElement | null>(null);
   /** Committed runs the draft re-draws (a branch's parent, or runs being moved), hidden meanwhile. */
   const hiddenRunsRef = useRef<ReadonlySet<string>>(new Set());
-  const moveRef = useRef<{ ids: string[]; start: Point2D; startClient: Point2D; moved: boolean; delta: Point2D; piece: { runId: string; mark: string } | null } | null>(null);
+  /** The air terminals' layer, and the terminals a move preview re-draws (hidden meanwhile). */
+  const terminalsRef = useRef<SVGGElement | null>(null);
+  const hiddenTerminalsRef = useRef<ReadonlySet<string>>(new Set());
+  /** A move just stored: its preview stays drawn until the stored runs re-render. */
+  const heldMoveRef = useRef<readonly HvacElement[] | null>(null);
   /** The segment focus outlines (painted imperatively from the segment store). */
   const segmentRef = useRef<SVGGElement | null>(null);
   /** A segment option shown before it is applied: the runs it changes, drawn as they would be (dashed). */
@@ -303,46 +313,6 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     return { x: point.x, y: point.y };
   }, []);
 
-  const renderMovePreview = useCallback((ids: string[], delta: Point2D) => {
-    const target = draftRef.current;
-    if (!target) return;
-    const { hvacElements: stored, settings: current } = sceneRef.current;
-    const result = moveDuctRuns(stored, ids, delta, current);
-    const replaced = new Map(result.moved.map((element) => [element.id, element]));
-    const scene = stored.map((element) => replaced.get(element.id) ?? element);
-    const moved = result.moved.flatMap((element) => {
-      const plan = getDuctRunPlan(element, scene, current);
-      return plan ? [{ presentation: buildDuctPlanPresentation(plan), selected: ids.includes(element.id) }] : [];
-    });
-    const hidden = new Set(result.moved.map((element) => element.id));
-    target.innerHTML = moved.map(({ presentation, selected }) => ductRunMarkup(presentation, { ...markupStyle(kRef.current, current), sectionTags: false, selected })).join('')
-      + transientTags(moved, hidden);
-    hiddenRunsRef.current = hidden;
-    applyHiddenRun();
-  }, [applyHiddenRun, transientTags]);
-
-  const endMove = useCallback((commit: boolean) => {
-    const move = moveRef.current;
-    moveRef.current = null;
-    if (draftRef.current) draftRef.current.innerHTML = '';
-    hiddenRunsRef.current = new Set();
-    applyHiddenRun();
-    if (commit && move?.moved) onMoveCommit?.(move.ids, move.delta);
-  }, [applyHiddenRun, onMoveCommit]);
-
-  const onHitPointerDown = useCallback((event: ReactPointerEvent<SVGPathElement>) => {
-    if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return;
-    const start = toWorld(event.clientX, event.clientY);
-    if (!start) return;
-    event.stopPropagation();
-    event.preventDefault();
-    const { hvacElements: stored } = sceneRef.current;
-    const ids = selectedIds.filter((id) => stored.some((element) => element.id === id && isDuctElement(element)));
-    moveRef.current = { ids, start, startClient: { x: event.clientX, y: event.clientY }, moved: false, delta: { x: 0, y: 0 }, piece: pieceAt(start) };
-    (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [selectedIds, toWorld, pieceAt]);
-
-  // ---- Segments of the selected runs: hover shows a segment's card, a click pins it. ----
   const focusOfPiece = useCallback((runId: string, mark: string): DuctSegmentFocus | null => {
     const { hvacElements: stored, settings: current } = sceneRef.current;
     const element = stored.find((candidate) => candidate.id === runId);
@@ -351,43 +321,91 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     return segment ? { runId, key: segment.key, anchorMark: mark, view: '2d' } : null;
   }, []);
 
+  const applyHiddenTerminals = useCallback(() => {
+    terminalsRef.current?.querySelectorAll<SVGGElement>('[data-duct-terminal]').forEach((node) => {
+      const hide = hiddenTerminalsRef.current.has(node.getAttribute('data-duct-terminal') ?? '');
+      if ((node.style.display === 'none') !== hide) node.style.display = hide ? 'none' : '';
+    });
+  }, []);
+
+  const clearMovePreview = useCallback(() => {
+    heldMoveRef.current = null;
+    if (draftRef.current) draftRef.current.innerHTML = '';
+    hiddenRunsRef.current = new Set();
+    hiddenTerminalsRef.current = new Set();
+    applyHiddenRun();
+    applyHiddenTerminals();
+  }, [applyHiddenRun, applyHiddenTerminals]);
+
+  const previewMove = useCallback((elements: readonly HvacElement[] | null, options: { committed?: boolean } = {}) => {
+    const target = draftRef.current;
+    if (!target) return;
+    if (!elements) {
+      // Just stored: hold the drawing until the stored runs re-render (else the old ones flash back for a frame).
+      if (options.committed && target.innerHTML) heldMoveRef.current = sceneRef.current.hvacElements;
+      else clearMovePreview();
+      return;
+    }
+    heldMoveRef.current = null;
+    const { hvacElements: stored, settings: current } = sceneRef.current;
+    const replaced = new Map(elements.map((element) => [element.id, element]));
+    const scene = stored.map((element) => replaced.get(element.id) ?? element);
+    const selected = new Set(selectedIdsRef.current);
+    const moved = elements.filter(isDuctElement).flatMap((element) => {
+      const plan = getDuctRunPlan(element, scene, current);
+      return plan ? [{ presentation: buildDuctPlanPresentation(plan), selected: selected.has(element.id) }] : [];
+    });
+    const terminals = elements.flatMap((element) => {
+      const spec = isDuctTerminalElement(element) ? readDuctTerminalSpec(element) : null;
+      return spec ? [{ element, spec }] : [];
+    });
+    const style = markupStyle(kRef.current, current);
+    const hidden = new Set(moved.map(({ presentation }) => presentation.id));
+    target.innerHTML = terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, kRef.current, style.showTags)).join('')
+      + moved.map(({ presentation, selected: isSelected }) => ductRunMarkup(presentation, { ...style, sectionTags: false, selected: isSelected })).join('')
+      + transientTags(moved, hidden);
+    hiddenRunsRef.current = hidden;
+    hiddenTerminalsRef.current = new Set(terminals.map(({ element }) => element.id));
+    applyHiddenRun();
+    applyHiddenTerminals();
+  }, [applyHiddenRun, applyHiddenTerminals, clearMovePreview, transientTags]);
+
+  /** A press on a selected run: the move session takes it (a drag moves the selection, or the pinned straight; a click pins the piece). */
+  const onHitPointerDown = useCallback((event: ReactPointerEvent<SVGPathElement>) => {
+    if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || !onBeginMove) return;
+    const start = toWorld(event.clientX, event.clientY);
+    if (!start) return;
+    const hitRun = event.currentTarget.getAttribute('data-duct-hit');
+    const piece = pieceAt(start) ?? (hitRun ? { runId: hitRun, mark: event.currentTarget.getAttribute('data-duct-mark') ?? '' } : null);
+    if (!piece) return;
+    const focus = focusOfPiece(piece.runId, piece.mark);
+    // The pinned straight under the press moves on its own; elsewhere the selection moves.
+    const pinned = useDuctSegmentUiStore.getState().pinned;
+    const straight = focus && pinned && domainOf(pinned) === 'duct' && pinned.runId === focus.runId && pinned.key === focus.key
+      ? /^leg:(\d+)$/.exec(focus.key) : null;
+    const begun = onBeginMove({
+      pressedId: piece.runId, clientX: event.clientX, clientY: event.clientY,
+      segment: straight ? { runId: piece.runId, legIndex: Number(straight[1]) } : null,
+      onClick: () => { if (focus) useDuctSegmentUiStore.getState().pin(focus); },
+    });
+    if (!begun) return;
+    event.stopPropagation();
+    event.preventDefault();
+    useDuctSegmentUiStore.getState().setHovered(null);
+  }, [onBeginMove, toWorld, pieceAt, focusOfPiece]);
+
+  // ---- Segments of the selected runs: hover shows a segment's card, a click pins it. ----
+
   const onHitPointerOver = useCallback((event: ReactPointerEvent<SVGPathElement>) => {
-    if (moveRef.current || event.buttons !== 0) return;
+    if (event.buttons !== 0) return;
     const at = toWorld(event.clientX, event.clientY);
     const piece = at ? pieceAt(at) : null;
     useDuctSegmentUiStore.getState().setHovered(piece ? focusOfPiece(piece.runId, piece.mark) : null);
   }, [focusOfPiece, toWorld, pieceAt]);
 
   const onHitPointerOut = useCallback(() => {
-    if (!moveRef.current) useDuctSegmentUiStore.getState().setHovered(null);
+    useDuctSegmentUiStore.getState().setHovered(null);
   }, []);
-
-  const onHitPointerMove = useCallback((event: ReactPointerEvent<SVGPathElement>) => {
-    const move = moveRef.current;
-    if (!move) {
-      onHitPointerOver(event);
-      return;
-    }
-    const at = toWorld(event.clientX, event.clientY);
-    if (!at) return;
-    if (!move.moved && Math.hypot(event.clientX - move.startClient.x, event.clientY - move.startClient.y) < 4) return;
-    // A drag, not a click: the segment's card stays closed.
-    if (!move.moved) useDuctSegmentUiStore.getState().setHovered(null);
-    move.moved = true;
-    // Snap the drag to 10 mm so moved runs keep round coordinates.
-    move.delta = { x: Math.round((at.x - move.start.x) / 10) * 10, y: Math.round((at.y - move.start.y) / 10) * 10 };
-    renderMovePreview(move.ids, move.delta);
-  }, [renderMovePreview, toWorld, onHitPointerOver]);
-
-  /** Release on a run: the end of a drag, or (without moving) a click that pins the segment's card. */
-  const onHitPointerUp = useCallback(() => {
-    const move = moveRef.current;
-    endMove(true);
-    if (move && !move.moved && move.piece) {
-      const focus = focusOfPiece(move.piece.runId, move.piece.mark);
-      if (focus) useDuctSegmentUiStore.getState().pin(focus);
-    }
-  }, [endMove, focusOfPiece]);
 
   // ---- Edit handles on the one selected run: legs sideways, the end along, risers along. ----
   const renderEditPreview = useCallback((elements: HvacElement[], selectedId: string) => {
@@ -411,11 +429,20 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     if (event.button !== 0) return;
     const start = toWorld(event.clientX, event.clientY);
     if (!start) return;
+    // A leg's or riser's handle moves that straight through the move session: its neighbours stretch, branches
+    // follow elastically (their runouts stay on their terminals), with the readout and one undo step.
+    if (handle.kind !== 'end' && onBeginMove?.({
+      pressedId: elementId, clientX: event.clientX, clientY: event.clientY, segment: { runId: elementId, legIndex: handle.legIndex },
+    })) {
+      event.stopPropagation();
+      event.preventDefault();
+      return;
+    }
     event.stopPropagation();
     event.preventDefault();
     editRef.current = { handle, elementId, start, result: null };
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [toWorld]);
+  }, [toWorld, onBeginMove]);
 
   const onHandlePointerMove = useCallback((event: ReactPointerEvent<SVGElement>) => {
     const edit = editRef.current;
@@ -532,13 +559,16 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   }, [planOf, paintOptionPreview]);
   useEffect(() => useDuctSegmentUiStore.subscribe(paintSegments), [paintSegments]);
 
-  useImperativeHandle(ref, () => ({ syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect }),
-    [syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect]);
+  useImperativeHandle(ref, () => ({ syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect, previewMove }),
+    [syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect, previewMove]);
 
   useLayoutEffect(() => {
+    // A stored move re-rendered: its preview goes (the runs it drew are the stored ones now).
+    if (heldMoveRef.current && heldMoveRef.current !== hvacElements) clearMovePreview();
     if (liveViewportRef.current) syncViewTransform(liveViewportRef.current);
     paintPorts();
     applyHiddenRun();
+    applyHiddenTerminals();
     paintSegments();
   });
 
@@ -663,6 +693,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       <svg width={width} height={height} style={{ display: 'block', pointerEvents: 'none' }}>
         <g ref={gRef} transform={matrix}>
           <g
+            ref={terminalsRef}
             data-testid="duct-terminals"
             dangerouslySetInnerHTML={{ __html: terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, k, style.showTags)).join('') }}
           />
@@ -701,10 +732,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
                   data-duct-mark={hit.mark}
                   onPointerDown={onHitPointerDown}
                   onPointerOver={onHitPointerOver}
-                  onPointerMove={onHitPointerMove}
+                  onPointerMove={onHitPointerOver}
                   onPointerOut={onHitPointerOut}
-                  onPointerUp={onHitPointerUp}
-                  onPointerCancel={() => endMove(false)}
                 />
               ))}
             </g>

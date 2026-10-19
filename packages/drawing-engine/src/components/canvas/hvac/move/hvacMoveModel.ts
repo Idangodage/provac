@@ -220,7 +220,14 @@ const NOUNS: Partial<Record<HvacElement['type'], [string, string]>> = {
   'condensate-gully': ['gully', 'gullies'],
 };
 
-/** "Move FDUM22 and 2 diffusers", "Move a straight of SD-2". */
+/** How an item is named in a move: a unit by its air-system tag ("DU-1"), else its label (without a library "(3D)"). */
+function moveName(element: HvacElement): string {
+  const tag = element.properties.airSystemTag;
+  if (typeof tag === 'string' && tag.trim()) return tag.trim();
+  return element.label?.trim().replace(/\s*\(3D\)$/i, '') ?? '';
+}
+
+/** "Move DU-1 and 2 diffusers", "Move a straight of SD-2". */
 export function hvacMoveLabel(selected: readonly HvacElement[], segment: { run: HvacElement | undefined } | null): string {
   if (segment) return `Move a straight of ${segment.run?.label || 'a duct run'}`;
   const groups = new Map<string, HvacElement[]>();
@@ -229,7 +236,7 @@ export function hvacMoveLabel(selected: readonly HvacElement[], segment: { run: 
     groups.set(noun, [...(groups.get(noun) ?? []), element]);
   }
   const parts = [...groups].map(([noun, elements]) => {
-    if (elements.length === 1) return elements[0]!.label?.trim() || `1 ${noun}`;
+    if (elements.length === 1) return moveName(elements[0]!) || `1 ${noun}`;
     const plural = Object.values(NOUNS).find((pair) => pair?.[0] === noun)?.[1] ?? `${noun}s`;
     return `${elements.length} ${plural}`;
   });

@@ -4,7 +4,7 @@
 
 "use client";
 
-import { AlignHorizontalJustifyCenter, Box, BrickWall, ChevronDown, Droplets, Fan, Layers, LayoutGrid, MousePointer2, Network, Route, Ruler, SlidersHorizontal, Thermometer, Wind, X, type LucideIcon } from "lucide-react";
+import { AlignHorizontalJustifyCenter, Box, BrickWall, ChevronDown, Droplets, Fan, Layers, LayoutGrid, Move, MousePointer2, Network, Route, Ruler, SlidersHorizontal, Thermometer, Wind, X, type LucideIcon } from "lucide-react";
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { shallow } from "zustand/shallow";
 
@@ -51,6 +51,7 @@ import { AirSystemCard } from "./canvas/hvac/duct/AirSystemCard";
 import { AirSystemsSection } from "./canvas/hvac/duct/AirSystemsSection";
 import { DuctAutoCard } from "./canvas/hvac/duct/DuctAutoCard";
 import { DuctRunInspector, DuctSystemsSection, DuctTerminalInspector, DuctToolSection } from "./canvas/hvac/duct/DuctPanels";
+import { HvacMoveSection } from "./canvas/hvac/move/HvacMoveSection";
 import { editablePipeMaterials, editablePipeNodes } from "./canvas/hvac/pipeEditModel";
 import { buildPipePropertyEdit, type PipePropertyEdit } from "./canvas/hvac/pipePropertyEdits";
 import {
@@ -4248,6 +4249,7 @@ export function PropertiesPanel({
             {hasSelectedWall && <CollapsibleSection title="Wall properties" icon={BrickWall}><WallSection propertyUnit={propertyUnit} /></CollapsibleSection>}
             {hasSelectedObject && <CollapsibleSection title="Object properties" icon={Box}><ObjectSection propertyUnit={propertyUnit} /></CollapsibleSection>}
             {hasSelectedHvac && <CollapsibleSection title={`${hvacTitle} properties`} icon={SelectionIcon}><AirSystemCard /><DuctAutoCard /><AcEquipmentSection propertyUnit={propertyUnit} /></CollapsibleSection>}
+            {hasSelectedHvac && <CollapsibleSection title="Move by" icon={Move} defaultOpen={false}><HvacMoveSection unit={propertyUnit} /></CollapsibleSection>}
             {hasSelectedRoom && <CollapsibleSection title="Room properties" icon={LayoutGrid}><RoomSection propertyUnit={propertyUnit} /></CollapsibleSection>}
             {(hasSelectedDimension || activeTool === "dimension") && <CollapsibleSection title={hasSelectedDimension ? "Dimension properties" : "Dimension tool"} icon={Ruler}><DimensionSection /></CollapsibleSection>}
             {selectedWallCount > 1 && <CollapsibleSection title="Align selected walls" icon={AlignHorizontalJustifyCenter}><SelectionAlignSection /></CollapsibleSection>}

@@ -10,6 +10,7 @@ import type {
 } from '../../../vrf/rules/validation-engine';
 import { MM_TO_PX } from '../scale';
 
+import type { HvacMoveBegin } from './move/hvacMoveSession';
 import { readPipeRouteNodes3d } from './pipeRoute3d';
 import { resolveVrfValidationIssueElement } from './vrfValidationFixes';
 
@@ -30,6 +31,10 @@ export interface VrfValidationOverlayProps {
    */
   onSelectElement?: (elementId: string, additive?: boolean) => void;
   onApplyFix?: (issue: VrfValidationIssue) => void;
+  /** A plain press on a marker arms a move of its element (a drag starting on a marker still moves it). */
+  onBeginMove?: (request: HvacMoveBegin) => boolean;
+  /** Elements being dragged: their markers wait until the move is stored. */
+  hiddenIds?: ReadonlySet<string>;
 }
 
 const LEVEL_PRIORITY: Record<ValidationLevel, number> = {
@@ -89,11 +94,24 @@ function readRoutePoints(element: HvacElement): Point2D[] {
   });
 }
 
+/**
+ * Where an element's marker sits: on a run, its middle; on a unit or terminal,
+ * its footprint's top-right corner, clear of the body a press drags.
+ */
 function elementAnchor(element: HvacElement): Point2D {
-  return midpoint(readRoutePoints(element)) ?? {
-    x: element.position.x + element.width / 2,
-    y: element.position.y + element.depth / 2,
-  };
+  const route = midpoint(readRoutePoints(element));
+  if (route) return route;
+  const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 };
+  const angle = ((element.rotation ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => {
+    const x = (sx! * element.width) / 2;
+    const y = (sy! * element.depth) / 2;
+    return { x: centre.x + x * cos - y * sin, y: centre.y + x * sin + y * cos };
+  });
+  // Top-right on screen (y runs down): the largest x − y.
+  return corners.reduce((best, corner) => (corner.x - corner.y > best.x - best.y ? corner : best));
 }
 
 /**
@@ -123,6 +141,8 @@ export function VrfValidationOverlay({
   report,
   onSelectElement,
   onApplyFix,
+  onBeginMove,
+  hiddenIds,
 }: VrfValidationOverlayProps): JSX.Element | null {
   const [expanded, setExpanded] = useState(false);
   const collapsedButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -168,6 +188,7 @@ export function VrfValidationOverlay({
       aria-label={`${visibleIssues.length} VRF validation issue${visibleIssues.length === 1 ? '' : 's'}`}
     >
       {showMarkers && markers.map(({ element, issues, anchor }) => {
+        if (hiddenIds?.has(element.id)) return null;
         const level = issues[0]!.level;
         const style = LEVEL_STYLE[level];
         const left = -panOffset.x * viewportZoom + anchor.x * MM_TO_PX * viewportZoom;
@@ -187,6 +208,11 @@ export function VrfValidationOverlay({
             className="pointer-events-auto absolute flex h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white shadow"
             style={{ left, top, background: style.fill, boxShadow: `0 0 0 5px ${style.ring}` }}
             title={title}
+            onPointerDown={(event) => {
+              // A drag that starts on the marker moves its element (the click still opens its issues).
+              if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || !onBeginMove) return;
+              if (onBeginMove({ pressedId: element.id, clientX: event.clientX, clientY: event.clientY })) event.stopPropagation();
+            }}
             onClick={(event) => {
               event.stopPropagation();
               onSelectElement?.(element.id, event.shiftKey || event.ctrlKey || event.metaKey);

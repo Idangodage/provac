@@ -11,7 +11,6 @@
 
 import type * as fabric from "fabric";
 import {
-  useCallback,
   useEffect,
   useRef,
   type Dispatch,
@@ -49,15 +48,8 @@ import {
   hideActiveSelectionChrome,
 } from "../../DrawingCanvas.types";
 import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
-import { followDrainsWithoutHistory } from "../hvac/condensate/condensateEditController";
-import { followDuctsWithoutHistory } from "../hvac/duct/ductEditController";
 import { useDuctSegmentUiStore } from "../hvac/duct/ductSegmentUiStore";
-import { isRefrigerantBranchKitElement } from "../hvac/refrigerantBranchKitModel";
-import {
-  isRefrigerantPipeElementType,
-  resolveRefrigerantPipeBranchKitReconnectionUpdates,
-  resolveRefrigerantPipeUnitPortReconnectionUpdates,
-} from "../hvac/refrigerantPipePairModel";
+import type { HvacMoveBegin } from "../hvac/move/hvacMoveSession";
 import type { ObjectRenderer } from "../object/ObjectRenderer";
 import { MM_TO_PX } from "../scale";
 import { snapPointToGrid } from "../snapping";
@@ -68,113 +60,6 @@ import { resolveKeyboardNudgeDelta } from "./keyboardNudge";
 import type { UseExtendToolResult } from "./useExtendTool";
 import type { UseOffsetToolResult } from "./useOffsetTool";
 import type { UseTrimToolResult } from "./useTrimTool";
-
-type NamedFabricObject = fabric.Object & {
-  name?: string;
-};
-
-function normalizeCanvasPoint(value: unknown): Point2D | null {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("x" in value) ||
-    !("y" in value)
-  ) {
-    return null;
-  }
-  const candidate = value as { x?: unknown; y?: unknown };
-  if (
-    typeof candidate.x !== "number" ||
-    !Number.isFinite(candidate.x) ||
-    typeof candidate.y !== "number" ||
-    !Number.isFinite(candidate.y)
-  ) {
-    return null;
-  }
-  return { x: candidate.x, y: candidate.y };
-}
-
-function getFabricGroupObjectCenterMm(
-  group: fabric.Object,
-  objectName: string,
-): Point2D | null {
-  if (typeof (group as fabric.Group).getObjects !== "function") {
-    return null;
-  }
-  const object = (group as fabric.Group)
-    .getObjects()
-    .find((candidate) => (candidate as NamedFabricObject).name === objectName);
-  if (!object || typeof object.getRelativeCenterPoint !== "function") {
-    return null;
-  }
-
-  const centerInParentPlane = object.getRelativeCenterPoint();
-  const centerPx = object.group
-    ? (() => {
-        const matrix = object.group.calcTransformMatrix();
-        return {
-          x:
-            matrix[0] * centerInParentPlane.x +
-            matrix[2] * centerInParentPlane.y +
-            matrix[4],
-          y:
-            matrix[1] * centerInParentPlane.x +
-            matrix[3] * centerInParentPlane.y +
-            matrix[5],
-        };
-      })()
-    : centerInParentPlane;
-
-  if (!Number.isFinite(centerPx.x) || !Number.isFinite(centerPx.y)) {
-    return null;
-  }
-
-  return {
-    x: centerPx.x / MM_TO_PX,
-    y: centerPx.y / MM_TO_PX,
-  };
-}
-
-function setInlineBranchKitTargetTransform(
-  target: fabric.Object,
-  centerMm: Point2D,
-  rotationDeg: number,
-  anchorPointMm: Point2D | null,
-): void {
-  target.set({
-    left: centerMm.x * MM_TO_PX,
-    top: centerMm.y * MM_TO_PX,
-    angle: rotationDeg,
-  });
-  if (!anchorPointMm) {
-    target.setCoords();
-    return;
-  }
-
-  const renderedAnchor = getFabricGroupObjectCenterMm(
-    target,
-    "hvac-branch-center-snap",
-  );
-  if (renderedAnchor) {
-    const renderedAnchorPx = {
-      x: renderedAnchor.x * MM_TO_PX,
-      y: renderedAnchor.y * MM_TO_PX,
-    };
-    const targetAnchorPx = {
-      x: anchorPointMm.x * MM_TO_PX,
-      y: anchorPointMm.y * MM_TO_PX,
-    };
-    target.set({
-      left:
-        ((target.left as number | undefined) ?? centerMm.x * MM_TO_PX) +
-        (targetAnchorPx.x - renderedAnchorPx.x),
-      top:
-        ((target.top as number | undefined) ?? centerMm.y * MM_TO_PX) +
-        (targetAnchorPx.y - renderedAnchorPx.y),
-    });
-  }
-  target.setCoords();
-}
 
 // =============================================================================
 // Options
@@ -203,6 +88,11 @@ export interface UseCanvasEventBindingOptions {
   tool: string;
   /** Space is held: the canvas pans (the tool stays as it is), so a press selects nothing. */
   isSpacePressed?: boolean;
+  /**
+   * A press on an HVAC item arms the move session (a drag moves the selection,
+   * the whole of it when the item is part of it); false: it did not arm.
+   */
+  beginHvacMove?: (request: HvacMoveBegin) => boolean;
   selectedIds: string[];
   symbols: SymbolInstance2D[];
   hvacElements: HvacElement[];
@@ -472,37 +362,6 @@ export function useCanvasEventBinding(
   const latestOptionsRef = useRef(options);
   latestOptionsRef.current = options;
   const { fabricRef, outerRef, wheelRafId } = options;
-
-  const syncConnectedRefrigerantPipes = useCallback(
-    (
-      elements: HvacElement[],
-      movedElement: HvacElement,
-      updateHvacElement: UseCanvasEventBindingOptions["updateHvacElement"],
-    ) => {
-      // A moved element can be a unit (cassette / outdoor unit) OR a copper
-      // branch kit; each resolver no-ops for the other type, so run both and
-      // apply the union — pipes bound to whichever moved element follow it.
-      const connectedPipeUpdates = [
-        ...resolveRefrigerantPipeUnitPortReconnectionUpdates(
-          elements,
-          movedElement,
-        ),
-        ...resolveRefrigerantPipeBranchKitReconnectionUpdates(
-          elements,
-          movedElement,
-        ),
-      ];
-      connectedPipeUpdates.forEach((pipeUpdate) => {
-        if (pipeUpdate.id === movedElement.id) {
-          return;
-        }
-        updateHvacElement(pipeUpdate.id, pipeUpdate.updates, {
-          skipHistory: true,
-        });
-      });
-    },
-    [],
-  );
 
   useEffect(() => {
     const canvas = fabricRef.current;
@@ -938,6 +797,7 @@ export function useCanvasEventBinding(
         pendingPlacementEquipmentDefinition,
         tool,
         isSpacePressed,
+        beginHvacMove,
         suppressFabricSelectionSyncRef,
         openingPointerInteractionRef,
         setOpeningInteractionActive,
@@ -1261,11 +1121,20 @@ export function useCanvasEventBinding(
         if (addToSelection) {
           toggleSelectedId(hvacId);
         } else {
-          setSelectedIds([hvacId]);
-          // A duct: the click also picks the segment under it, its card opening beside it.
+          // A duct: a click also picks the segment under it, its card opening beside it.
           const segment = wallPoint ? hvacRendererRef.current?.ductSegmentAtWorldPoint(hvacId, wallPoint) ?? null : null;
-          if (segment) {
-            useDuctSegmentUiStore.getState().pin({ runId: hvacId, key: segment.key, anchorMark: segment.mark, view: "2d" });
+          const pinSegment = () => {
+            if (segment) useDuctSegmentUiStore.getState().pin({ runId: hvacId, key: segment.key, anchorMark: segment.mark, view: "2d" });
+          };
+          // The press arms a move: a drag moves the selection (all of it when the item is part of it), a click
+          // selects the item alone (and pins its segment).
+          const pointer = event.e as MouseEvent | undefined;
+          const armed = Boolean(pointer && pointer.button === 0 && beginHvacMove?.({
+            pressedId: hvacId, clientX: pointer.clientX, clientY: pointer.clientY, onClick: pinSegment,
+          }));
+          if (!armed) {
+            setSelectedIds([hvacId]);
+            pinSegment();
           }
         }
         setHoveredElement(hvacId);
@@ -1525,17 +1394,13 @@ export function useCanvasEventBinding(
       const {
         tool,
         resolveObjectIdFromTarget,
-        resolveHvacIdFromTarget,
         isDraggingObjectRef,
         symbols,
-        hvacElements,
         objectDefinitionsById,
         resolvedSnapToGrid,
         effectiveSnapGridSize,
         resolveOpeningWidthMm,
         computePlacement,
-        computeHvacPlacement,
-        hvacRendererRef,
         handleSelectObjectMoving,
       } = latestOptionsRef.current;
       if (!event.target || tool !== "select") return;
@@ -1617,106 +1482,8 @@ export function useCanvasEventBinding(
         return;
       }
 
-      const hvacId = resolveHvacIdFromTarget(event.target);
-      if (hvacId) {
-        const target = event.target as fabric.Object;
-
-        if (!isDraggingObjectRef.current) {
-          isDraggingObjectRef.current = true;
-          if (canvas) canvas.skipTargetFind = true;
-        }
-
-        const existing = hvacElements.find((entry) => entry.id === hvacId);
-        if (!existing) {
-          hvacRendererRef.current?.clearSceneElementOverrides();
-          return;
-        }
-
-        if (isRefrigerantPipeElementType(existing.type)) {
-          const existingCenterMm = {
-            x: existing.position.x + existing.width / 2,
-            y: existing.position.y + existing.depth / 2,
-          };
-          hvacRendererRef.current?.clearSceneElementOverrides();
-          target.set({
-            left: existingCenterMm.x * MM_TO_PX,
-            top: existingCenterMm.y * MM_TO_PX,
-            angle: existing.rotation,
-          });
-          fabricRef.current?.requestRenderAll();
-          return;
-        }
-
-        const movedCenter = target.getCenterPoint();
-        const movedCenterMm = {
-          x: movedCenter.x / MM_TO_PX,
-          y: movedCenter.y / MM_TO_PX,
-        };
-        const placement = computeHvacPlacement(movedCenterMm, existing);
-        if (placement.valid) {
-          const nextPosition = placement.point;
-          const nextRotation = placement.rotationDeg;
-          const nextRoomId = placement.roomId ?? undefined;
-          const nextWallId = placement.wallId ?? undefined;
-          const nextProperties = placement.placementProperties
-            ? {
-                ...existing.properties,
-                ...placement.placementProperties,
-              }
-            : existing.properties;
-          const changed =
-            Math.abs(existing.position.x - nextPosition.x) > 0.01 ||
-            Math.abs(existing.position.y - nextPosition.y) > 0.01 ||
-            Math.abs(existing.rotation - nextRotation) > 0.01 ||
-            Math.abs(existing.width - placement.widthMm) > 0.01 ||
-            Math.abs(existing.depth - placement.depthMm) > 0.01 ||
-            Math.abs(existing.height - placement.heightMm) > 0.01 ||
-            existing.roomId !== nextRoomId ||
-            existing.wallId !== nextWallId ||
-            nextProperties !== existing.properties;
-
-          if (changed) {
-            const movedElement: HvacElement = {
-              ...existing,
-              position: nextPosition,
-              rotation: nextRotation,
-              width: placement.widthMm,
-              depth: placement.depthMm,
-              height: placement.heightMm,
-              roomId: nextRoomId,
-              wallId: nextWallId,
-              properties: nextProperties,
-            };
-            hvacRendererRef.current?.setSceneElementOverrides([movedElement]);
-          } else {
-            hvacRendererRef.current?.clearSceneElementOverrides();
-          }
-
-          const inlineAnchorPoint = isRefrigerantBranchKitElement(existing)
-            ? normalizeCanvasPoint(
-                placement.placementProperties?.branchKitSnapPoint ??
-                  existing.properties.branchKitSnapPoint,
-              )
-            : null;
-          if (inlineAnchorPoint) {
-            setInlineBranchKitTargetTransform(
-              target,
-              placement.center,
-              placement.rotationDeg,
-              inlineAnchorPoint,
-            );
-          } else {
-            target.set({
-              left: placement.center.x * MM_TO_PX,
-              top: placement.center.y * MM_TO_PX,
-              angle: placement.rotationDeg,
-            });
-          }
-        } else {
-          hvacRendererRef.current?.clearSceneElementOverrides();
-        }
-        return;
-      }
+      // HVAC bodies are never moved by Fabric (their movement is locked): the move session owns every drag of
+      // units and terminals, with the whole selection, the placement rules and what follows them.
 
       handleSelectObjectMoving(event.target);
     };
@@ -1727,23 +1494,18 @@ export function useCanvasEventBinding(
       const {
         isDraggingObjectRef,
         resolveObjectIdFromTarget,
-        resolveHvacIdFromTarget,
         hvacRendererRef,
         symbols,
-        hvacElements,
         objectDefinitionsById,
         resolveOpeningWidthMm,
         resolveOpeningHeightMm,
         resolveOpeningSillHeightMm,
         computePlacement,
-        computeHvacPlacement,
         fabricRef,
         setProcessingStatus,
-        saveToHistory,
         buildHostedOpeningSymbolProperties,
         syncOpeningForSymbol,
         updateSymbol,
-        updateHvacElement,
         hasFurnitureCollision,
         finalizeHandleDrag,
       } = latestOptionsRef.current;
@@ -1896,152 +1658,8 @@ export function useCanvasEventBinding(
         return;
       }
 
-      const hvacId = resolveHvacIdFromTarget(event.target);
-      if (hvacId) {
-        const target = event.target as fabric.Object;
-        const center = target.getCenterPoint();
-        const centerMm = {
-          x: center.x / MM_TO_PX,
-          y: center.y / MM_TO_PX,
-        };
-        const existing = hvacElements.find((entry) => entry.id === hvacId);
-        if (!existing) {
-          return;
-        }
-
-        if (isRefrigerantPipeElementType(existing.type)) {
-          const existingCenterMm = {
-            x: existing.position.x + existing.width / 2,
-            y: existing.position.y + existing.depth / 2,
-          };
-          target.set({
-            left: existingCenterMm.x * MM_TO_PX,
-            top: existingCenterMm.y * MM_TO_PX,
-            angle: existing.rotation,
-          });
-          fabricRef.current?.requestRenderAll();
-          return;
-        }
-
-        const placement = computeHvacPlacement(centerMm, existing);
-        if (!placement.valid) {
-          syncConnectedRefrigerantPipes(
-            hvacElements,
-            existing,
-            updateHvacElement,
-          );
-          const existingCenterMm = {
-            x: existing.position.x + existing.width / 2,
-            y: existing.position.y + existing.depth / 2,
-          };
-          const existingInlineAnchorPoint = isRefrigerantBranchKitElement(existing)
-            ? normalizeCanvasPoint(existing.properties.branchKitSnapPoint)
-            : null;
-          if (existingInlineAnchorPoint) {
-            setInlineBranchKitTargetTransform(
-              target,
-              existingCenterMm,
-              existing.rotation,
-              existingInlineAnchorPoint,
-            );
-          } else {
-            target.set({
-              left: existingCenterMm.x * MM_TO_PX,
-              top: existingCenterMm.y * MM_TO_PX,
-              angle: existing.rotation,
-            });
-          }
-          fabricRef.current?.requestRenderAll();
-          setProcessingStatus(
-            placement.invalidReason ??
-              "Move blocked: AC equipment cannot be placed there.",
-            false,
-          );
-          return;
-        }
-
-        const nextPosition = placement.point;
-        const nextRotation = placement.rotationDeg;
-        const nextRoomId = placement.roomId ?? undefined;
-        const nextWallId = placement.wallId ?? undefined;
-        const nextProperties = placement.placementProperties
-          ? {
-              ...existing.properties,
-              ...placement.placementProperties,
-            }
-          : existing.properties;
-        const changed =
-          Math.abs(existing.position.x - nextPosition.x) > 0.01 ||
-          Math.abs(existing.position.y - nextPosition.y) > 0.01 ||
-          Math.abs(existing.rotation - nextRotation) > 0.01 ||
-          Math.abs(existing.width - placement.widthMm) > 0.01 ||
-          Math.abs(existing.depth - placement.depthMm) > 0.01 ||
-          Math.abs(existing.height - placement.heightMm) > 0.01 ||
-          existing.roomId !== nextRoomId ||
-          existing.wallId !== nextWallId ||
-          nextProperties !== existing.properties;
-
-        if (changed) {
-          const movedElement: HvacElement = {
-            ...existing,
-            position: nextPosition,
-            rotation: nextRotation,
-            width: placement.widthMm,
-            depth: placement.depthMm,
-            height: placement.heightMm,
-            roomId: nextRoomId ?? undefined,
-            wallId: nextWallId ?? undefined,
-            properties: nextProperties,
-          };
-          updateHvacElement(
-            hvacId,
-            {
-              position: nextPosition,
-              rotation: nextRotation,
-              width: placement.widthMm,
-              depth: placement.depthMm,
-              height: placement.heightMm,
-              roomId: nextRoomId,
-              wallId: nextWallId,
-              properties: nextProperties,
-            },
-            { skipHistory: true },
-          );
-          syncConnectedRefrigerantPipes(
-            hvacElements,
-            movedElement,
-            updateHvacElement,
-          );
-          // Drains follow a moved indoor unit or gully, ducts a moved unit (same undo step).
-          const afterMove = hvacElements.map((element) => (element.id === hvacId ? movedElement : element));
-          followDrainsWithoutHistory(hvacElements, afterMove, [hvacId]);
-          followDuctsWithoutHistory(hvacElements, afterMove, [hvacId]);
-          saveToHistory("Update AC equipment");
-        }
-
-        const nextInlineAnchorPoint = isRefrigerantBranchKitElement(existing)
-          ? normalizeCanvasPoint(
-              placement.placementProperties?.branchKitSnapPoint ??
-                nextProperties.branchKitSnapPoint,
-            )
-          : null;
-        if (nextInlineAnchorPoint) {
-          setInlineBranchKitTargetTransform(
-            target,
-            placement.center,
-            nextRotation,
-            nextInlineAnchorPoint,
-          );
-        } else {
-          target.set({
-            left: placement.center.x * MM_TO_PX,
-            top: placement.center.y * MM_TO_PX,
-            angle: nextRotation,
-          });
-        }
-        fabricRef.current?.requestRenderAll();
-        return;
-      }
+      // HVAC bodies are never moved by Fabric (their movement is locked): the move session owns every drag of
+      // units and terminals, with the whole selection, the placement rules and what follows them.
       finalizeHandleDrag();
     };
 

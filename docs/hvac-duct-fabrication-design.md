@@ -1849,6 +1849,61 @@ notes worth showing, what stopped the move short, and the undo step's name ("Mov
 - **A rise shorter than two elbows** (a straight lifted 200 mm on a 164 mm deep duct needs 264 mm) is made and
   reported (`DU_LEG_TOO_SHORT`), not refused.
 
+### Phase 2: dragging on the plan
+
+- **One gesture, whatever it starts on** (`hvac/move/hvacMoveSession.ts`). A press on a unit's or terminal's body, on a
+  duct run's outline, on a straight's edit handle or on a design-check badge arms a move. After 4 px it is a drag, so
+  a click stays a click: a click on an item of a selection selects it alone (on a duct it also pins the piece under
+  the pointer, as before); a press on an unselected item selects it and a drag then moves it alone; pressed on an
+  item of a multi-selection, the whole selection moves. Each pointer move (at most one per animation frame) snaps the
+  drag and asks the move model for the preview; the release commits the full plan as one undo step; Esc cancels;
+  typing a number moves exactly that far along the drag (Enter; Backspace edits; Shift keeps it on an axis).
+- **Snapping** (`moveSnapping.ts`). Alignment guides first: on each axis, a moving item's centre or edge within 6
+  screen pixels of another unit's, terminal's or gully's centre or edge snaps onto it (the centre line wins when
+  several line up at once, as two diffusers of one size do), shown as a dashed magenta line. Otherwise the grabbed
+  item's centre lands on the board's snap step (the same step as the arrow keys). Shift keeps to the dominant axis;
+  Alt moves freely.
+- **The preview.** Unit and terminal bodies (Fabric) are placed where the move puts them
+  (`HvacPlanRenderer.previewMove`); duct runs and air terminals are redrawn in the duct overlay's draft layer, their
+  stored drawings hidden meanwhile (`DuctOverlay.previewMove`), and a run the move gives a problem shows the planner's
+  own dashed red. After the release both keep the preview until the stored move re-renders them, so nothing flashes
+  back. The drain re-solve is the slow part: the preview leaves it out and the release does it; pipes and drains
+  re-attach on release. No React state changes per frame.
+- **The readout** (`HvacMoveHud.tsx`), beside the cursor: what moves ("Move DU-1 and 2 diffusers"), Δx, Δy and the
+  distance, a distance being typed, why the selection stops short (red) and what the move leaves for the designer
+  (amber), e.g. "The run to SAD-2 is pushed along: its first straight is at its shortest."
+- **Fabric no longer drags HVAC bodies.** Their movement is locked; the single-item drag (`object:moving` /
+  `object:modified` for HVAC), which moved a unit's whole duct tree rigidly, is gone with its helpers.
+- **Design-check badges.** A unit's or terminal's badge sits on its footprint's top-right corner (a run's on its
+  middle, as before), so the body under it can be grabbed; a drag that starts on a badge moves its element; the badges
+  of the items being dragged wait until the move is stored.
+- **Ducts.** A press on a selected run's outline moves the selection (a run without its unit offsets); the straight
+  whose card is pinned moves on its own; a leg's or riser's edit handle moves that straight through the same session
+  (they used to re-anchor branches rigidly, which pulled flexible runouts off their terminals); the end handle keeps
+  its own edit (it slides the run's end along its last leg).
+- **Move by** in Properties: Δx, Δy and Δz in the project's unit and "Move selection", which runs the arrow keys'
+  move (`hvacMoveBus.ts`): the same rules, followers and undo.
+- **Names.** Units by their air-system tag (DU-1), library names without their "(3D)", and a run whose label is the
+  generic "Supply duct" by what it serves ("The run to SAD-2").
+
+### Verified (Phase 2)
+
+- Unit tests: `moveSnapping` 6 and `hvacMoveSession` 5 (a fake window: click against drag, a selection kept, the
+  preview then one commit with the drains, Esc, guides before the grid, Shift, a typed distance); 45 in `hvac/move`.
+- On canvas, `move-p2` 32/32 (an FDUM22, two Ø200 diffusers, Auto duct applied; real pointer drags), restoring the
+  project exactly:
+  - the unit dragged by its body (its badge no longer in the way): the readout at the cursor ("Δx +675 Δy +9 ·
+    675 mm"), an alignment guide placed it, the diffusers stayed, both runouts still on their spigots; one undo;
+  - two diffusers selected, dragged by one: both moved by one vector, the selection stayed, their runouts followed;
+  - a duct run dragged by its outline: it offsets, its start stays on the collar, the runouts stay on their spigots;
+  - a straight clicked (its card pins, `leg:2`), then dragged: only it moves ("Move a straight of Supply duct");
+    its leg handle does the same through the session, and the branch's runout stays on its spigot;
+  - Esc mid-drag: nothing changes, the readout goes; a typed 1000 with Shift + Enter moves exactly 1000 mm;
+  - "Move by" Δx −400, Δy 250: exactly that; a drag starting on the unit's badge moves the unit.
+- Again with every driver run together: `move-p2` 32/32, `move-p1` 24/24, `move-drains` 13/13, `duct-p4` (its
+  diffuser now dragged through the session, one undo), `duct-seg-p3` 29/29, `duct-seg-click` 8/8, `air-p1` 25/25.
+- Full suite 264 files / 2289 tests.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.

@@ -201,7 +201,8 @@ describe('moveDuctNetwork: a rigid runout straight into its terminal', () => {
     expect(after.start).toMatchObject({ kind: 'tap', stationMm: 4000 });
     expect(after.path[1]!.y - readDuctRunSpec(rigidBranch)!.path[1]!.y).toBeCloseTo(-2000, 3);
     expect(result.outcomes.get('rigid')?.note).toMatch(/no longer reaches G1/);
-    expect(result.messages.join(' ')).toMatch(/re-route its runout/);
+    // Named by what it serves (its label is the generic one), said once.
+    expect(result.messages).toEqual(['The run to G1 can no longer reach it: re-route its runout.']);
   });
 });
 
