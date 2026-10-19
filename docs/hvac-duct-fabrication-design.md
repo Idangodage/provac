@@ -1738,6 +1738,117 @@ oversized), heights step from the collar's, fitting coefficients are practice va
   rather than through Fabric targets (made inert while panning); it now skips while Space is held. `probe-space-pan`
   3/3 (no selection from a room or a wall; a plain click still selects the room).
 
+## Moving units, terminals and ducts: one or many, in every view (19 October 2026)
+
+**The request:** diffusers, AC units and duct segments can be selected one by one, and the selection moves together
+or on its own, in the plan, isometric, 3D or any other view. Approved plan:
+`C:\Users\idang\.claude\plans\hvac-move-anywhere.md`.
+
+**Your decisions (19 October 2026):** "do your recommendations very professional and very modern way", so every
+recommended option:
+1. A unit moved alone: its ducts stretch, its diffusers stay where they are.
+2. A group move where one item would break a rule: the whole selection stops at the last position where every item
+   is valid.
+3. A move that gives ducts new problems (a clash, a wall crossing, a short leg): allowed, shown amber, kept in the
+   design checks.
+4. Up and down: ducted units and duct straights, within the ceiling void; diffusers and grilles stay in the ceiling.
+5. A straight moved on its own: sideways (and up and down in 3D), its neighbours stretching.
+6. Snapping: grid, smart alignment guides and a Shift axis lock.
+7. Design-check badges: at the element's corner, letting a drag pass through.
+
+### What it did before (probed on the canvas)
+
+| | Plan (2D) | Iso / 3D / Front / Side |
+|---|---|---|
+| Diffuser / grille | Drag works; its runout follows | Cannot be selected or moved |
+| AC unit | Cannot be dragged: the design-check badge (24 px, `pointer-events-auto`, z-12) sits on its centre and swallows the press | Cannot be selected or moved |
+| Several selected | Only the pressed item moves; the selection collapses to it | — |
+| Duct run | Drag refused for any run on a unit collar (every generated trunk) | Click selects; no move |
+| Duct segment | Handles move a leg sideways, the end, a riser; one run only, never the first leg | No move |
+| Keyboard | Whole selection, one undo; but a unit's ducts moved rigidly with it, so diffusers that stayed were left behind | — |
+
+### Phase 1: one move model
+
+Every input (the arrow keys now; drags, the gizmo and typed moves in the next phases) calls one pure function,
+`planHvacMove(scene, { ids, segment, delta }, context)` in `hvac/move/hvacMoveModel.ts`. It returns every changed
+element as it will be stored, the drain pieces added and removed, each element's outcome (moved, or follows), the
+notes worth showing, what stopped the move short, and the undo step's name ("Move FDUM22 and 2 diffusers").
+
+- **How far the whole selection can go.** Each unit and terminal keeps its placement rules (the canvas's own
+  `computeHvacPlacement`: indoor units in a room, outdoor units outside, wall units on a wall, branch kits on their
+  pipe run). The first point along the move where any of them would break is found by bisection, and everything
+  stops there ("Stopped short: FDUM22: Equipment must be placed inside a valid room."). An item that already breaks
+  its rules where it is moves as it is and holds nothing back, so it can be moved back in.
+- **Up and down.** Ducted units, duct straights, refrigerant pipes and branch kits move; diffusers, grilles and
+  cassettes sit in the ceiling, wall units at their mounting height, outdoor units at their own level (the status
+  says which and why). A ducted unit's underside stays above the ceiling and its top below the soffit, and so does
+  every duct run that rises with it. The ceiling is where the air terminals sit (else the rooms' ceiling heights, the
+  cassettes' faces, 2400 mm); the soffit is the duct settings' (else the routing ceiling limit).
+- **Ducts stretch** (`ductNetworkMove.ts`, `ductElasticMove.ts`). Each run is solved from the unit outwards, a
+  branch on its parent's new wall. A run's start moves exactly as what it leaves from: the collar, a split outlet or
+  a plenum spigot at its parent's end, or a take-off, which moves square to its parent's wall and in level with it
+  but may slide along the wall within its straight. Its end moves exactly as the terminal it serves, so an unmoved
+  diffuser keeps its runout. Every rigid leg keeps its direction and only changes length (never below 50 mm or its
+  own length); a flexible runout bends to wherever its ends go. Every other vertex moves as little as it can, or,
+  for a run being moved, as close to the drag as it can. One small least-squares problem per run: unknowns are the
+  start's shift and each leg's length change (a flexible leg's free shift); fixed points are met exactly by an
+  augmented Lagrangian on one factorisation; leg minimums and slide limits by an active set.
+  - Move a unit across its main and the main shifts with the collar while the branch's first straight shortens;
+    move it along the main and the main shortens while each take-off keeps its place in the room (its station
+    changes). Move it toward its trunk and the collar's straight stops at 50 mm, then pushes the trunk.
+  - A run moved without its unit offsets: its straight to the collar stretches. Moved along the trunk's own line
+    it cannot slide (the collar's straight is square to it), so its far end extends.
+  - A diffuser moved along its trunk drags a rigid runout's take-off with it; one moved past the trunk's end leaves
+    the run as near as it can get, with "SD-2 no longer reaches SAD-3: re-route its runout."
+  - Moved together = moved rigidly: a run whose collar and terminals all move by one vector translates exactly,
+    whether it was picked or not (a unit and its diffusers moved, the ducts between them not picked).
+  - A turned unit (a wall unit snapping to a new wall) turns its runs rigidly about the collar, as before.
+- **One straight on its own.** A level straight moves sideways (the along-component of the drag is dropped), the
+  legs either side stretching and shortening; a riser moves along its heading. Up or down it rises on risers made in
+  it: a riser at a plan corner would bend the hard way (`DU_HARD_WAY_ELBOW`), so where a neighbour turns, a stub
+  long enough for the corner's elbow and the riser's (W/2 + neck + H/2 + neck + 50 mm) stays at the old level and
+  the riser stands at its end; a neighbour running on in line takes the riser at the joint; a riser neighbour simply
+  stretches. Later node overrides, accessories and take-offs are re-keyed to their new legs. Refused, with the
+  reason, for the first straight off a collar, the last one into a terminal, a flexible runout and a straight too
+  short for its elbows.
+- **What follows.** Refrigerant pipes on moved units and kits re-attach one item after another (a pipe between two
+  moved items meets both); selected pipes translate or rise as before. Drains follow moved units and gullies, and
+  selected drain runs re-solve per network, all of a network's picked runs in one solve. The preview will leave the
+  drain re-solve out (it is the slow part) and the commit will include it.
+- **The keyboard.** Arrows move by the grid step (Shift ×10, Ctrl ×0.1); Alt + Up / Down, or Up / Down in Front
+  and Side, move up and down. One undo step per press.
+
+### Verified (Phase 1)
+
+- Unit tests: `ductElasticMove` 11, `ductNetworkMove` 13, `hvacMoveModel` 10. Full suite 262 files / 2278 tests (2244 before, plus these 34).
+- On canvas, `move-p1` 24/24 (an FDUM22, two Ø200 diffusers, Auto duct applied; real key presses), restoring the
+  project exactly:
+  - the unit alone, 500 mm right (Shift + Right): the diffusers stay, both runouts still end on their spigots (0 mm off),
+    the collar run starts on the moved collar (0 mm off), no new duct error; one undo restores it;
+  - the whole system (unit, both runs, both diffusers), 500 mm down: every duct vertex moves by the same vector;
+  - the unit up twice (Alt + Up, 50 mm each): the collar run rises 100 mm, its runout takes the height, both runouts
+    still on their spigots; two undos;
+  - a diffuser up: nothing moves, the status says "SAD-1 sits in the ceiling";
+  - the branch run across its trunk: it offsets (its first straight 250 → 750 mm), its take-off stays; along its
+    trunk: its take-off slides (station 1359 → 859 mm); its runout stays on SAD-1 both times.
+- `move-checks`: the unit 500 mm right in that tight looped layout adds two support-spacing warnings (the leg after
+  the collar is shorter) and two clashes (its trunk now crosses the branch and SAD-2): reported, as decided (3).
+- `move-drains` 13/13 (the FDUM22 and a floor gully, drains by Auto route): the unit 500 mm right, its drain starts at
+  its new drain port; a drain run nudged, its network re-solves with its start still on the unit; the gully 500 mm
+  left, the drains follow; no new drain error; one undo each; restored exactly.
+- Regressions: `duct-p4` 21 (a diffuser nudge drags its runout end, one undo), `duct-seg-p3` 29/29, `air-p1` 25/25,
+  `duct-seg-click` 8/8. `duct-complete` and `micro` no longer run: both fail while setting up (an old draw step; a
+  toolbox label that is now a tile), before any nudge.
+
+### Known limits (Phase 1)
+
+- **A drain run nudged along its last leg** (as before this work: the same route operation) moves the bend, not the
+  leg: the run overshoots its fixed joint and comes back (in `move-drains` B, down to y 5251 and back to 5133). To
+  be done with the drain drag in Phase 2.
+- **Undo clears the selection** (as before): a second nudge after an undo needs the item picked again.
+- **A rise shorter than two elbows** (a straight lifted 200 mm on a 164 mm deep duct needs 264 mm) is made and
+  reported (`DU_LEG_TOO_SHORT`), not refused.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.

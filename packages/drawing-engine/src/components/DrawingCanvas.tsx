@@ -90,13 +90,11 @@ import { applyAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteCont
 import { CondensateEditGizmo3D } from "./canvas/hvac/condensate/CondensateEditGizmo3D";
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
 import { createCondensateSegmentProvider } from "./canvas/hvac/condensate/CondensateSegmentCard";
-import { condensateEditContext, condensateNetworkIdOf, followDrainsForMove } from "./canvas/hvac/condensate/condensateEditController";
-import { createCondensateEditSession, isUnitBranchSpec } from "./canvas/hvac/condensate/condensateEditing";
+import { condensateEditContext } from "./canvas/hvac/condensate/condensateEditController";
 import { generateCondensateNetwork } from "./canvas/hvac/condensate/condensateGenerator";
 import { condensatePieceMidpoint, condensateRunOf } from "./canvas/hvac/condensate/condensatePieces";
 import { getIndoorUnitDrainPorts } from "./canvas/hvac/condensate/condensatePorts";
 import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePreviewStore";
-import { fixedPrefixLength, translateRouteInterior } from "./canvas/hvac/condensate/condensateRouteOps";
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
 import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
@@ -111,22 +109,21 @@ import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from "./canvas/hvac
 import { buildDuctBom, buildDuctFabricationSchedule } from "./canvas/hvac/duct/ductBom";
 import { splitOrigin, tapOrigin } from "./canvas/hvac/duct/ductBranchTargets";
 import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
-import { commitDuctRunEdit, commitDuctRunMove, followDuctsForMove } from "./canvas/hvac/duct/ductEditController";
+import { commitDuctRunEdit, commitDuctRunMove } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
-import { moveDuctRuns, toElementUpdate } from "./canvas/hvac/duct/ductFollow";
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
-import { getDuctSupportPlan } from "./canvas/hvac/duct/ductSupports";
+import { getDuctSupportPlan, resolveSoffitZ } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
+import { hvacMoveChanges, hvacMoveCommand, planHvacMove, resolveHvacCeilingVoid } from "./canvas/hvac/move/hvacMoveModel";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
 import type { PipeDrawingPlane } from "./canvas/hvac/pipePointerProjection";
 import {
-  readPipeRouteNodes3d,
   type PipeRouteNode3D,
   type PipePlacementPoint,
 } from "./canvas/hvac/pipeRoute3d";
@@ -136,15 +133,9 @@ import { createRefrigerantSegmentProvider } from "./canvas/hvac/refrigerant/Refr
 import { refrigerantKitOf } from "./canvas/hvac/refrigerant/refrigerantKits";
 import { pieceMidpoint, refrigerantLineOf } from "./canvas/hvac/refrigerant/refrigerantPieces";
 import {
-  buildRefrigerantPipePairVisual,
   buildRefrigerantPipeVisual,
   getRefrigerantPipeBundleSnapTargets,
   isRefrigerantPipeElementType,
-  resolveRefrigerantPipeBranchKitReconnectionUpdates,
-  resolveRefrigerantPipePairSpec,
-  resolveRefrigerantPipeSpec,
-  resolveRefrigerantPipeUnitPortReconnectionUpdates,
-  translateRefrigerantPipeElementProperties,
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeLineMode,
 } from "./canvas/hvac/refrigerantPipePairModel";
@@ -163,7 +154,6 @@ import {
   type HybridViewStyle,
 } from "./canvas/hybrid/HybridProjectionLayer";
 import { segmentClientRect3D } from "./canvas/hybrid/hybridDuctSegments";
-import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
 import { pipeSegmentClientRect3D } from "./canvas/hybrid/hybridPipeSegments";
 import type {
   DerivedBoardView,
@@ -2301,245 +2291,24 @@ export function DrawingCanvas({
     [setTool, beginRefrigerantRouteFromBundle],
   );
 
+  // Arrow keys (Alt + Up / Down, or Up / Down in Front and Side: up and down) move the selection through the one
+  // move model every input shares: rules hold for the whole selection, what is attached follows, one undo.
   const nudgeSelectedEntities = useCallback(
     (dxMm: number, dyMm: number, dzMm = 0) => {
       const movedObjects = dzMm === 0
         ? nudgeSelectedObjects(dxMm, dyMm)
         : false;
-      const selectedSet = new Set(selectedIds);
-      const selectedEquipment = hvacElements.filter((element) =>
-        selectedSet.has(element.id),
-      );
-      const updatesById = new Map<string, Partial<HvacElement>>();
-
-      for (const element of selectedEquipment) {
-        // Drain runs are nudged below: their legs move, the ends stay attached.
-        if (isCondensatePipe(element)) continue;
-        // Duct runs move their path (and branches) below, not an envelope.
-        if (isDuctElement(element)) continue;
-        if (isRefrigerantPipeElementType(element.type)) {
-          if (dzMm !== 0) {
-            const context = [...hvacElements];
-            const authoredNodes = readPipeRouteNodes3d(element);
-            let routePoints: Point2D[];
-            let fallbackZ: number;
-            let startProtection: { connected: boolean; unitPort: boolean };
-            let endProtection: { connected: boolean; unitPort: boolean };
-            if (element.type === "refrigerant-pipe-pair") {
-              const spec = resolveRefrigerantPipePairSpec(element.properties, context);
-              const visual = buildRefrigerantPipePairVisual(element, context);
-              routePoints = spec.routePoints;
-              fallbackZ = element.elevation
-                + (visual.gasLocalZMm + visual.liquidLocalZMm) / 2;
-              startProtection = {
-                connected: Boolean(spec.startBundleConnection),
-                unitPort: spec.startBundleConnection?.connectionKind === "unit-port",
-              };
-              endProtection = {
-                connected: Boolean(spec.endBundleConnection),
-                unitPort: spec.endBundleConnection?.connectionKind === "unit-port",
-              };
-            } else {
-              const spec = resolveRefrigerantPipeSpec(element.properties, context);
-              const visual = buildRefrigerantPipeVisual(element, context);
-              routePoints = spec.routePoints;
-              fallbackZ = element.elevation + visual.localZMm;
-              startProtection = {
-                connected: Boolean(spec.startConnection),
-                unitPort: spec.startConnection?.connectionKind === "unit-port",
-              };
-              endProtection = {
-                connected: Boolean(spec.endConnection),
-                unitPort: spec.endConnection?.connectionKind === "unit-port",
-              };
-            }
-            const routeNodes3d = authoredNodes.length >= 2
-              ? authoredNodes
-              : routePoints.map((point) => ({ ...point, z: fallbackZ }));
-            const protectedIndexes = getProtectedPipeNodeIndexes(
-              routeNodes3d.length,
-              startProtection,
-              endProtection,
-            );
-            const nextNodes = routeNodes3d.map((node, index) => (
-              protectedIndexes.has(index) ? node : { ...node, z: node.z + dzMm }
-            ));
-            const changed = nextNodes.some((node, index) => (
-              Math.abs(node.z - routeNodes3d[index]!.z) > 1e-6
-            ));
-            if (!changed) continue;
-            updatesById.set(element.id, {
-              ...(protectedIndexes.size === 0
-                ? { elevation: element.elevation + dzMm }
-                : {}),
-              properties: {
-                ...element.properties,
-                routeNodes3d: nextNodes,
-                networkLevelLocked: true,
-                networkLevelPlan: undefined,
-              },
-            });
-            continue;
-          }
-          const properties = translateRefrigerantPipeElementProperties(
-            element.type,
-            element.properties,
-            { x: dxMm, y: dyMm },
-          );
-          const nextElement = { ...element, properties };
-          const visual = element.type === "refrigerant-pipe-pair"
-            ? buildRefrigerantPipePairVisual(nextElement, hvacElements)
-            : buildRefrigerantPipeVisual(nextElement);
-          updatesById.set(element.id, {
-            position: { x: visual.bounds.minX, y: visual.bounds.minY },
-            width: visual.bounds.width,
-            depth: visual.bounds.height,
-            properties,
-          });
-          continue;
-        }
-        if (dzMm !== 0) {
-          const movedElement = {
-            ...element,
-            elevation: element.elevation + dzMm,
-            ...(element.type === "refrigerant-branch-kit"
-              ? { properties: { ...element.properties, networkLevelLocked: true } }
-              : {}),
-          };
-          updatesById.set(element.id, movedElement);
-          const connectedPipeUpdates = [
-            ...resolveRefrigerantPipeUnitPortReconnectionUpdates(
-              hvacElements,
-              movedElement,
-            ),
-            ...resolveRefrigerantPipeBranchKitReconnectionUpdates(
-              hvacElements,
-              movedElement,
-            ),
-          ];
-          connectedPipeUpdates.forEach((pipeUpdate) => {
-            if (pipeUpdate.id !== element.id) {
-              updatesById.set(pipeUpdate.id, pipeUpdate.updates);
-            }
-          });
-          continue;
-        }
-        const candidateCenter = {
-          x: element.position.x + element.width / 2 + dxMm,
-          y: element.position.y + element.depth / 2 + dyMm,
-        };
-        const placement = computeHvacPlacement(candidateCenter, element);
-        if (!placement.valid) {
-          setProcessingStatus(
-            placement.invalidReason ??
-              "Movement blocked: AC equipment cannot be placed there.",
-            false,
-          );
-          continue;
-        }
-
-        const movedElement = {
-          ...element,
-          position: placement.point,
-          rotation: placement.rotationDeg,
-          width: placement.widthMm,
-          depth: placement.depthMm,
-          height: placement.heightMm,
-          roomId: placement.roomId ?? undefined,
-          wallId: placement.wallId ?? undefined,
-          properties: {
-            ...element.properties,
-            ...(placement.placementProperties ?? {}),
-          },
-        };
-        updatesById.set(element.id, movedElement);
-        const connectedPipeUpdates = [
-          ...resolveRefrigerantPipeUnitPortReconnectionUpdates(
-            hvacElements,
-            movedElement,
-          ),
-          ...resolveRefrigerantPipeBranchKitReconnectionUpdates(
-            hvacElements,
-            movedElement,
-          ),
-        ];
-        connectedPipeUpdates.forEach((pipeUpdate) => {
-          if (pipeUpdate.id === element.id) {
-            return;
-          }
-          updatesById.set(pipeUpdate.id, pipeUpdate.updates);
-        });
-      }
-
-      const drainAdd: HvacElement[] = [];
-      const drainRemove = new Set<string>();
-      const mergeDrainChanges = (changes: { add: HvacElement[]; updates: HvacElement[]; removeIds: string[] }) => {
-        drainAdd.push(...changes.add);
-        changes.removeIds.forEach((id) => drainRemove.add(id));
-        changes.updates.forEach((element) => updatesById.set(element.id, element));
-      };
-      // A nudged drain run: its legs move by the nudge, its outlet and joint stay,
-      // and the whole network re-solves (fall, risers, offsets, wyes).
-      const nudgedDrains = selectedEquipment.filter(isCondensatePipe);
-      if (nudgedDrains.length) {
-        if (dzMm !== 0) {
-          setProcessingStatus("Drain levels follow from the fall — move the riser or change the fall instead.", false);
-        } else {
-          const done = new Set<string>();
-          for (const pipe of nudgedDrains) {
-            const networkId = condensateNetworkIdOf(pipe);
-            if (!networkId || done.has(networkId)) continue;
-            done.add(networkId);
-            const session = createCondensateEditSession([...hvacElements], networkId, condensateEditContext());
-            const route = session?.model.routes.get(pipe.id);
-            const spec = session?.model.specs.get(pipe.id);
-            if (!session || !route || !spec) continue;
-            const next = translateRouteInterior(route, { x: dxMm, y: dyMm }, fixedPrefixLength(isUnitBranchSpec(spec)));
-            const result = session.solve({ routes: new Map([[pipe.id, next]]) });
-            if (result.ok) mergeDrainChanges(result);
-            else setProcessingStatus(result.message, false);
-          }
-        }
-      }
-      // Drains follow nudged indoor units and gullies (one undo with the nudge).
-      const movedEquipmentIds = [...updatesById.keys()].filter((id) => {
-        const element = hvacElements.find((candidate) => candidate.id === id);
-        return Boolean(element) && !isCondensatePipe(element!) && !isRefrigerantPipeElementType(element!.type);
+      const state = useSmartDrawingStore.getState();
+      const plan = planHvacMove(hvacElements, { ids: selectedIds, delta: { x: dxMm, y: dyMm, z: dzMm } }, {
+        ductSettings: state.ductSettings,
+        place: computeHvacPlacement,
+        condensate: condensateEditContext(),
+        ceilingVoid: resolveHvacCeilingVoid(hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)),
       });
-      if (movedEquipmentIds.length) {
-        const after = hvacElements.map((element) => {
-          const updates = updatesById.get(element.id);
-          return updates && movedEquipmentIds.includes(element.id) ? { ...element, ...updates } as HvacElement : element;
-        });
-        mergeDrainChanges(followDrainsForMove(hvacElements, after, movedEquipmentIds));
-        // Duct runs on the moved units' collars move with them, and their branches follow.
-        followDuctsForMove(hvacElements, after, movedEquipmentIds).forEach((run) => updatesById.set(run.id, toElementUpdate(run).updates));
-      }
-      // Selected duct runs: a free run translates, a take-off slides along its parent;
-      // runs whose unit moves with them were carried above.
-      const nudgedDucts = selectedEquipment.filter((element) => {
-        if (!isDuctElement(element)) return false;
-        const start = readDuctRunSpec(element)?.start;
-        return !(start?.kind === "unit-port" && selectedSet.has(start.unitId));
-      });
-      if (nudgedDucts.length) {
-        if (dzMm !== 0) {
-          setProcessingStatus("Duct levels are set on the run (bottom of duct), not nudged.", false);
-        } else {
-          const moved = moveDuctRuns(hvacElements, nudgedDucts.map((element) => element.id), { x: dxMm, y: dyMm }, useSmartDrawingStore.getState().ductSettings);
-          moved.moved.forEach((run) => updatesById.set(run.id, toElementUpdate(run).updates));
-          if (moved.refused) setProcessingStatus(moved.refused, false);
-        }
-      }
-
-      if (updatesById.size > 0 || drainAdd.length || drainRemove.size) {
-        commitHvacElementCommand("Nudge HVAC elements", {
-          add: drainAdd,
-          removeIds: [...drainRemove],
-          updates: [...updatesById].filter(([id]) => !drainRemove.has(id)).map(([id, updates]) => ({ id, updates })),
-        });
-      }
-      return movedObjects || updatesById.size > 0 || drainAdd.length > 0;
+      if (plan.messages.length) setProcessingStatus(plan.messages.join(" "), false);
+      if (!hvacMoveChanges(plan)) return movedObjects;
+      commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+      return true;
     },
     [
       computeHvacPlacement,
