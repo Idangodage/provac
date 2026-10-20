@@ -149,6 +149,8 @@ interface DuctEditHandle {
 }
 
 const HANDLE_ACTIONS: Record<DuctEditHandle['kind'], string> = { leg: 'Move duct leg', end: 'Move duct end', riser: 'Move duct riser' };
+/** How far round a pinned straight's resize grips its card keeps clear (px). */
+const GRIP_CLEARANCE_PX = 18;
 
 export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(function DuctOverlay(props, ref) {
   const { enabled, width, height, viewportZoom, panOffset, hvacElements, selectedIds, settings, showPorts, moveEnabled, onBeginMove, onEditCommit } = props;
@@ -171,6 +173,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const optionPreviewRef = useRef<SVGGElement | null>(null);
   const previewHiddenRef = useRef<ReadonlySet<string>>(new Set());
   const editRef = useRef<{ handle: DuctEditHandle; elementId: string; start: Point2D; result: DuctEditResult | null } | null>(null);
+  /** The pinned segment: its straight's own resize grips take the place of the move and end handles there. */
+  const pinnedFocus = useDuctSegmentUiStore((state) => state.pinned);
   const liveViewportRef = useRef<FabricViewportMatrix | null>(null);
   const hoveredPortRef = useRef<string | null>(null);
 
@@ -493,6 +497,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const points = polygons.flat();
     if (points.length === 0) return null;
     const client = points.map((point) => new DOMPoint(point.x, point.y).matrixTransform(matrix));
+    // A straight's resize grips sit on its corner vertices and on its sides: the card keeps clear of them too.
+    const leg = /^leg:(\d+)$/.exec(key);
+    if (leg || key === 'end:flex') {
+      const index = leg ? Number(leg[1]) : plan.spec.path.length - 2;
+      const around = [plan.spec.path[index], plan.spec.path[index + 1]].filter((vertex): vertex is NonNullable<typeof vertex> => Boolean(vertex));
+      for (const vertex of around) {
+        const at = new DOMPoint(vertex.x, vertex.y).matrixTransform(matrix);
+        client.push(new DOMPoint(at.x - GRIP_CLEARANCE_PX, at.y - GRIP_CLEARANCE_PX), new DOMPoint(at.x + GRIP_CLEARANCE_PX, at.y + GRIP_CLEARANCE_PX));
+      }
+      const xs = client.map((point) => point.x);
+      const ys = client.map((point) => point.y);
+      client.push(new DOMPoint(Math.min(...xs) - GRIP_CLEARANCE_PX, Math.min(...ys) - GRIP_CLEARANCE_PX), new DOMPoint(Math.max(...xs) + GRIP_CLEARANCE_PX, Math.max(...ys) + GRIP_CLEARANCE_PX));
+    }
     // The leader line ends on the piece itself (a point inside its outline).
     const inside = polygons.map((polygon) => polygonHotspot(polygon)).find((point): point is Point2D => point !== null);
     const pin = inside ? new DOMPoint(inside.x, inside.y).matrixTransform(matrix) : null;
@@ -669,18 +686,21 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const legs = ductLegs(plan.spec);
     const anchored = plan.spec.start.kind !== 'open';
     const handles: DuctEditHandle[] = [];
+    const pinnedKey = pinnedFocus && pinnedFocus.view === '2d' && domainOf(pinnedFocus) === 'duct' && pinnedFocus.runId === plan.elementId ? pinnedFocus.key : null;
     legs.forEach((leg, index) => {
       if (leg.vertical) {
         if (!legs[index - 1]?.vertical) handles.push({ kind: 'riser', legIndex: index, point: { x: leg.start.x, y: leg.start.y }, axis: leg.direction });
         return;
       }
-      if (leg.sloped || leg.lengthMm < 200 || (index === 0 && anchored)) return;
+      if (leg.sloped || leg.lengthMm < 200 || (index === 0 && anchored) || pinnedKey === `leg:${index}`) return;
       handles.push({ kind: 'leg', legIndex: index, point: { x: (leg.start.x + leg.end.x) / 2, y: (leg.start.y + leg.end.y) / 2 }, axis: { x: -leg.direction.y, y: leg.direction.x } });
     });
     const last = legs[legs.length - 1];
-    if (last && !last.vertical && plan.spec.end.kind !== 'split') handles.push({ kind: 'end', legIndex: legs.length - 1, point: { x: last.end.x, y: last.end.y }, axis: last.direction });
+    if (last && !last.vertical && plan.spec.end.kind !== 'split' && pinnedKey !== `leg:${legs.length - 1}`) {
+      handles.push({ kind: 'end', legIndex: legs.length - 1, point: { x: last.end.x, y: last.end.y }, axis: last.direction });
+    }
     return { elementId: plan.elementId, handles };
-  }, [moveEnabled, onEditCommit, runs, selectedIds.length, selectedSet]);
+  }, [moveEnabled, onEditCommit, pinnedFocus, runs, selectedIds.length, selectedSet]);
 
   if (!enabled) return null;
   const style = markupStyle(k, settings);

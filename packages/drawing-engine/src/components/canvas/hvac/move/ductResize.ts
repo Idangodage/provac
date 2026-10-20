@@ -47,6 +47,8 @@ export interface DuctResizeGrip {
   side?: 1 | -1;
   /** Where it sits (model mm, z up). */
   point: Vec3;
+  /** A width grip: the centreline point its face is measured from (a narrow duct's grips can sit further out). */
+  base?: Vec3;
   /** The way that makes the value larger (unit). */
   axis: Vec3;
   /** Value change per mm the grip travels along `axis` (2 for a width: both faces move). */
@@ -130,16 +132,18 @@ function moves(scene: readonly HvacElement[], settings: DuctDesignSettings, grip
 /**
  * The grips of a run's segment ("leg:2", "end:flex"): those that can move at
  * least one way (an end held at a collar, a take-off's wall or a spigot has
- * none). A locked or old run has none.
+ * none). A locked or old run has none. `probe` false: every grip the segment
+ * has, without trying which can move (where a grip being dragged now sits).
  */
-export function ductResizeGrips(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, key: string): DuctResizeGrip[] {
+export function ductResizeGrips(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, key: string, options: { probe?: boolean } = {}): DuctResizeGrip[] {
   const element = scene.find((candidate) => candidate.id === runId);
   const spec = element && isDuctElement(element) ? readDuctRunSpec(element) : null;
   if (!element || !spec || spec.legacy || spec.locked) return [];
   const legs = ductLegs(spec);
   const insulation = spec.insulationThicknessMm;
   const grips: DuctResizeGrip[] = [];
-  const both = (grip: DuctResizeGrip, step: number) => moves(scene, settings, grip, grip.value + step) || moves(scene, settings, grip, grip.value - step);
+  const both = (grip: DuctResizeGrip, step: number) => options.probe === false
+    || moves(scene, settings, grip, grip.value + step) || moves(scene, settings, grip, grip.value - step);
 
   if (key === 'end:flex') {
     const n = spec.path.length;
@@ -188,7 +192,7 @@ export function ductResizeGrips(scene: readonly HvacElement[], settings: DuctDes
   for (const side of [1, -1] as const) {
     const reach = width / 2 + insulation;
     grips.push({
-      kind: 'width', runId, legIndex: index, key, side, rate: 2, value: width, round,
+      kind: 'width', runId, legIndex: index, key, side, rate: 2, value: width, round, base: { x: middle.x, y: middle.y, z: centreZ },
       point: { x: middle.x + left.x * side * reach, y: middle.y + left.y * side * reach, z: centreZ },
       axis: { x: left.x * side, y: left.y * side, z: 0 },
     });

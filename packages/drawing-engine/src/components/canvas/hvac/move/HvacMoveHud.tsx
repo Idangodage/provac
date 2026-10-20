@@ -21,6 +21,8 @@ export interface HvacMoveHudView {
   readout: string;
   /** The readout is a typed distance (Enter moves it). */
   typing: boolean;
+  /** What Enter does with a typed number, when not a move's or a turn's ("Enter sets it · Esc cancels"). */
+  typingHint?: string;
   limitedBy: string | null;
   notes: readonly string[];
   /** What the move or turn did, needing nothing from the designer (shown plainly). */
@@ -91,7 +93,7 @@ export const HvacMoveHud = forwardRef<HvacMoveHudHandle>(function HvacMoveHud(_p
       };
       line(view.title, 'text-[10px] font-medium uppercase tracking-wide text-slate-400');
       line(view.readout, `font-mono text-[12px] font-semibold tabular-nums ${view.typing ? 'text-sky-300' : 'text-white'}`);
-      if (view.typing) line(view.turn || view.readout.endsWith('°') ? 'Enter turns it · − anticlockwise · Esc cancels' : 'Enter moves it · Esc cancels', 'text-[10px] text-slate-400');
+      if (view.typing) line(view.typingHint ?? (view.turn || view.readout.endsWith('°') ? 'Enter turns it · − anticlockwise · Esc cancels' : 'Enter moves it · Esc cancels'), 'text-[10px] text-slate-400');
       if (view.limitedBy) line(view.limitedBy, 'max-w-[280px] text-[11px] leading-4 text-rose-300');
       view.notes.slice(0, 2).forEach((note) => line(note, 'max-w-[280px] text-[11px] leading-4 text-amber-300'));
       (view.infos ?? []).slice(0, Math.max(0, 2 - view.notes.length)).forEach((info) => line(info, 'max-w-[280px] text-[11px] leading-4 text-slate-300'));

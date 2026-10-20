@@ -119,13 +119,16 @@ import { getDuctSupportPlan, resolveSoffitZ } from "./canvas/hvac/duct/ductSuppo
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
+import { DuctResizeGrips } from "./canvas/hvac/move/DuctResizeGrips";
 import { HvacMoveGizmo3D } from "./canvas/hvac/move/HvacMoveGizmo3D";
 import { formatMoveMm, formatTurnDeg, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
 import { HvacRotateGrip } from "./canvas/hvac/move/HvacRotateGrip";
 import { TurnRedesignBadge } from "./canvas/hvac/move/TurnRedesignBadge";
+import { DuctResizeSolver, type DuctResizeGrip } from "./canvas/hvac/move/ductResize";
+import { useDuctResizePreviewStore } from "./canvas/hvac/move/ductResizePreviewStore";
 import { setHvacMoveHandler, setHvacRotateHandler } from "./canvas/hvac/move/hvacMoveBus";
 import { hvacMoveChanges, hvacMoveCommand, isTurnableElement, planHvacMove, resolveHvacCeilingVoid, type HvacMovePlan, type HvacRotation } from "./canvas/hvac/move/hvacMoveModel";
-import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost, type HvacRotateBegin } from "./canvas/hvac/move/hvacMoveSession";
+import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost, type HvacResizeBegin, type HvacRotateBegin } from "./canvas/hvac/move/hvacMoveSession";
 import { cancelTurnRedesign, redesignAfterTurn, turnedBy, turnRedesignNote } from "./canvas/hvac/move/turnRedesignController";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
@@ -2409,6 +2412,7 @@ export function DrawingCanvas({
         }
       }
       const updated = plan?.updated ?? null;
+      useDuctResizePreviewStore.getState().setPreview(plan?.resize ? { grip: plan.resize.grip, made: plan.resize.made, elements: plan.updated } : null);
       hvacRendererRef.current?.previewMove(updated);
       ductOverlayRef.current?.previewMove(updated ? updated.filter((element) => isDuctElement(element) || isDuctTerminalElement(element)) : null);
       // Pipes and kits re-attach to what moves, live (the pipe overlay draws them).
@@ -2424,6 +2428,33 @@ export function DrawingCanvas({
       if (!hud) return;
       if (!state) {
         hud.hide();
+        return;
+      }
+      const resize = state.resize;
+      if (resize) {
+        const kind = resize.grip.kind;
+        const what = kind === "width" ? (resize.grip.round ? "diameter" : "width") : kind === "depth" ? (resize.grip.round ? "diameter" : "depth") : "length";
+        const mm = (value: number) => Math.round(value).toLocaleString("en-GB");
+        const figures = resize.figures;
+        const index = figures && figures.indexPa.from !== null && figures.indexPa.to !== null
+          ? ` · fan ${Math.round(figures.indexPa.from)} → ${Math.round(figures.indexPa.to)} Pa` : "";
+        const sectional = kind === "width" || kind === "depth";
+        hud.show({
+          client: state.client,
+          title: `${resize.subject} · ${what}`,
+          readout: state.typed !== null ? `${state.typed} mm`
+            : resize.sections ? `${resize.sections.from} → ${resize.sections.to}` : `${mm(resize.from)} → ${mm(resize.made)} mm`,
+          typing: state.typed !== null,
+          typingHint: "Enter sets it · Esc cancels",
+          limitedBy: state.limitedBy,
+          notes: state.notes,
+          infos: [
+            ...(figures ? [`${figures.velocityMs.toFixed(1)} m/s · ${figures.frictionPaPerM.toFixed(2)} Pa/m${index}`] : []),
+            ...(sectional && resize.sections ? [resize.scope === "size" ? `Every ${resize.sections.from} straight of the run` : `Shift: every ${resize.sections.from} straight of the run`] : []),
+            ...(state.infos ?? []),
+          ],
+          guides: [],
+        });
         return;
       }
       const canvas = fabricRef.current;
@@ -2482,7 +2513,9 @@ export function DrawingCanvas({
       });
     },
     commit: (plan) => {
-      if (plan.messages.length) setProcessingStatus(plan.messages.join(" "), false);
+      useDuctResizePreviewStore.getState().setPreview(null);
+      if (plan.resize) setProcessingStatus([`${plan.label}.`, ...(plan.limitedBy ? [`${plan.limitedBy.reason}.`] : []), ...plan.messages.map((message) => `${message}.`), ...(plan.infos ?? [])].join(" "), false);
+      else if (plan.messages.length) setProcessingStatus(plan.messages.join(" "), false);
       if (!hvacMoveChanges(plan)) {
         hvacRendererRef.current?.previewMove(null);
         ductOverlayRef.current?.previewMove(null);
@@ -2525,6 +2558,18 @@ export function DrawingCanvas({
     (request: HvacRotateBegin) => moveSession?.beginRotate(request) ?? false,
     [moveSession],
   );
+  // A straight's resize grip dragged (the session's resize mode), or stepped from the keyboard (one undo step each).
+  const beginDuctResize = useCallback(
+    (request: HvacResizeBegin) => moveSession?.beginResize(request) ?? false,
+    [moveSession],
+  );
+  const stepDuctResize = useCallback((grip: DuctResizeGrip, value: number) => {
+    const state = useSmartDrawingStore.getState();
+    const voidMm = resolveHvacCeilingVoid(state.hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)).soffitMm;
+    const plan = new DuctResizeSolver(state.hvacElements, state.ductSettings, grip, { soffitMm: voidMm }).plan(value);
+    setProcessingStatus([`${plan.label}.`, ...(plan.limitedBy ? [`${plan.limitedBy.reason}.`] : []), ...plan.messages.map((message) => `${message}.`)].join(" "), false);
+    if (hvacMoveChanges(plan)) commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+  }, [commitHvacElementCommand, setProcessingStatus]);
 
   const handleApplyVrfValidationFix = useCallback(
     (issue: VrfValidationIssue) => {
@@ -3640,6 +3685,9 @@ export function DrawingCanvas({
           />
           <DuctLegDimension enabled={!projectionViewOnly && tool === "select"} hidden={Boolean(movingIds)}
             width={hostWidth} height={hostHeight} viewportZoom={viewportZoom} panOffset={panOffset} hvacElements={hvacElements} />
+          <DuctResizeGrips enabled={!projectionViewOnly && tool === "select" && !isSpacePressed}
+            width={hostWidth} height={hostHeight} viewportZoom={viewportZoom} panOffset={panOffset} hvacElements={hvacElements}
+            settings={ductSettings} onBeginResize={beginDuctResize} onStep={stepDuctResize} />
           <HvacRotateGrip enabled={!projectionViewOnly && tool === "select" && !isSpacePressed} hidden={Boolean(movingIds)}
             width={hostWidth} height={hostHeight} viewportZoom={viewportZoom} panOffset={panOffset}
             hvacElements={hvacElements} selectedIds={selectedIds} onBeginRotate={beginHvacRotate} />
@@ -3774,7 +3822,7 @@ export function DrawingCanvas({
           width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />
         <SegmentCardLayer enabled={tool === "select"} hvacElements={hvacElements} providers={segmentProviders}
-          selectedIds={selectedIds} resolveAnchor={resolveSegmentAnchor} />
+          selectedIds={selectedIds} resolveAnchor={resolveSegmentAnchor} dragging={Boolean(movingIds)} />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
           showInteriorNodeHandles={projectionViewOnly} cardView={projectionViewOnly ? "3d" : "2d"}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}

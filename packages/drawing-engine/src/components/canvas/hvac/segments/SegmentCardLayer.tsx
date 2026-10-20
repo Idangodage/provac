@@ -325,9 +325,11 @@ export interface SegmentCardLayerProps {
   providers: readonly AnySegmentProvider[];
   /** Client rectangle of a focused piece's anchor (and a point on it), or null when it is off screen or gone. */
   resolveAnchor: (focus: SegmentFocus) => ScreenRect | null;
+  /** A drag is in progress (a move, a resize): the cards step aside, kept as they are, until it ends. */
+  dragging?: boolean;
 }
 
-export function SegmentCardLayer({ enabled, hvacElements, selectedIds, providers, resolveAnchor }: SegmentCardLayerProps) {
+export function SegmentCardLayer({ enabled, hvacElements, selectedIds, providers, resolveAnchor, dragging = false }: SegmentCardLayerProps) {
   const byDomain = useMemo(() => new Map<SegmentDomain, AnySegmentProvider>(providers.map((provider) => [provider.domain, provider])), [providers]);
   const storedHovered = useSegmentUiStore((state) => state.hovered);
   const storedPinned = useSegmentUiStore((state) => state.pinned);
@@ -451,7 +453,9 @@ export function SegmentCardLayer({ enabled, hvacElements, selectedIds, providers
   const peekProvider = peek ? byDomain.get(domainOf(peek)) : undefined;
   const showPeek = peek && peekProvider && !(pinned && focusId(pinned) === focusId(peek));
   return (
-    <div ref={containerRef} className="pointer-events-none absolute inset-0 z-[28]" data-testid="segment-cards">
+    <div ref={containerRef} className="pointer-events-none absolute inset-0 z-[28]" data-testid="segment-cards"
+      // (Opacity, not visibility: a placed card sets its own visibility.)
+      style={{ opacity: dragging ? 0 : 1, transition: 'opacity 120ms ease-out' }}>
       {pinned && pinnedProvider ? (
         <SegmentCard key={`pin|${focusId(pinned)}`} provider={pinnedProvider} variant="pinned" focus={pinned} scene={hvacElements}
           resolveAnchor={resolveAnchor} containerRef={containerRef} onApply={apply} />
