@@ -120,11 +120,12 @@ import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
 import { DuctResizeGrips } from "./canvas/hvac/move/DuctResizeGrips";
+import { DuctResizeGrips3D } from "./canvas/hvac/move/DuctResizeGrips3D";
 import { HvacMoveGizmo3D } from "./canvas/hvac/move/HvacMoveGizmo3D";
 import { formatMoveMm, formatTurnDeg, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
 import { HvacRotateGrip } from "./canvas/hvac/move/HvacRotateGrip";
 import { TurnRedesignBadge } from "./canvas/hvac/move/TurnRedesignBadge";
-import { DuctResizeSolver, type DuctResizeGrip } from "./canvas/hvac/move/ductResize";
+import { DuctResizeSolver, ductResizeGrips, type DuctResizeGrip } from "./canvas/hvac/move/ductResize";
 import { useDuctResizePreviewStore } from "./canvas/hvac/move/ductResizePreviewStore";
 import { setHvacMoveHandler, setHvacRotateHandler } from "./canvas/hvac/move/hvacMoveBus";
 import { hvacMoveChanges, hvacMoveCommand, isTurnableElement, planHvacMove, resolveHvacCeilingVoid, type HvacMovePlan, type HvacRotation } from "./canvas/hvac/move/hvacMoveModel";
@@ -788,9 +789,23 @@ export function DrawingCanvas({
     const host = hostRef.current;
     if (!camera || !host) return null;
     const state = useSmartDrawingStore.getState();
-    return domain === "duct"
-      ? segmentClientRect3D(state.hvacElements, state.ductSettings, focus, camera, host.getBoundingClientRect())
-      : pipeSegmentClientRect3D(state.hvacElements, focus, camera, host.getBoundingClientRect());
+    const hostRect = host.getBoundingClientRect();
+    if (domain !== "duct") return pipeSegmentClientRect3D(state.hvacElements, focus, camera, hostRect);
+    const rect = segmentClientRect3D(state.hvacElements, state.ductSettings, focus, camera, hostRect);
+    // A straight's resize grips (its ends, sides and top): its card keeps clear of them too.
+    if (rect && (/^leg:\d+$/.test(focus.key) || focus.key === "end:flex")) {
+      for (const grip of ductResizeGrips(state.hvacElements, state.ductSettings, focus.runId, focus.key, { probe: false })) {
+        const clip = modelPointToWorld({ x: grip.point.x, y: grip.point.y }, grip.point.z).project(camera);
+        if (!Number.isFinite(clip.x) || !Number.isFinite(clip.y) || clip.z < -1 || clip.z > 1) continue;
+        const x = hostRect.left + ((clip.x + 1) / 2) * hostRect.width;
+        const y = hostRect.top + ((1 - clip.y) / 2) * hostRect.height;
+        rect.left = Math.min(rect.left, x - 18);
+        rect.right = Math.max(rect.right, x + 18);
+        rect.top = Math.min(rect.top, y - 18);
+        rect.bottom = Math.max(rect.bottom, y + 18);
+      }
+    }
+    return rect;
   }, [projectionViewOnly]);
   // The services whose runs' pieces have cards: ducts, refrigerant lines (read with the active rule profile and the
   // live design checks) and condensate drains (with the project's drainage settings and checks).
@@ -3818,6 +3833,9 @@ export function DrawingCanvas({
         <HvacMoveGizmo3D enabled={projectionViewOnly && tool === "select"} hidden={Boolean(movingIds)} controllerRef={hybridControllerRef}
           width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
           viewMode={interactionViewMode} onBeginMove={beginHvacMove} onBeginRotate={beginHvacRotate} />
+        <DuctResizeGrips3D enabled={projectionViewOnly && tool === "select"} controllerRef={hybridControllerRef}
+          width={hostWidth} height={hostHeight} hvacElements={hvacElements} settings={ductSettings}
+          viewMode={interactionViewMode} onBeginResize={beginDuctResize} onStep={stepDuctResize} />
         <CondensateEditGizmo3D enabled={projectionViewOnly && tool === "select"} controllerRef={hybridControllerRef}
           width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />

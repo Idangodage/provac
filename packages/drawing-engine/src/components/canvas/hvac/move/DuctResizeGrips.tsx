@@ -34,7 +34,7 @@ const DIMENSION_OFFSET_PX = 30;
 const formatMm = (value: number) => Math.round(value).toLocaleString('en-GB');
 
 /** The resize cursor for a drag along `axis` (plan, y down like the screen). */
-function cursorFor(axis: { x: number; y: number }): string {
+export function cursorFor(axis: { x: number; y: number }): string {
   const angle = (((Math.atan2(axis.y, axis.x) * 180) / Math.PI) % 180 + 180) % 180;
   if (angle < 22.5 || angle >= 157.5) return 'ew-resize';
   if (angle < 67.5) return 'nwse-resize';
@@ -42,7 +42,7 @@ function cursorFor(axis: { x: number; y: number }): string {
   return 'nesw-resize';
 }
 
-function gripName(grip: DuctResizeGrip, subject: string): string {
+export function gripName(grip: DuctResizeGrip, subject: string): string {
   if (grip.kind === 'runout') return `Length of ${subject}`;
   if (grip.kind === 'width') return `${grip.round ? 'Diameter' : 'Width'} of ${subject}`;
   if (grip.kind === 'depth') return `${grip.round ? 'Diameter' : 'Depth'} of ${subject}`;
@@ -50,7 +50,7 @@ function gripName(grip: DuctResizeGrip, subject: string): string {
 }
 
 /** The value one arrow-key step makes (Shift: five steps; Alt: 1 mm; a round section: the next stocked size). */
-function steppedValue(grip: DuctResizeGrip, direction: 1 | -1, event: { shiftKey: boolean; altKey: boolean }, settings: DuctDesignSettings): number {
+export function steppedValue(grip: DuctResizeGrip, direction: 1 | -1, event: { shiftKey: boolean; altKey: boolean }, settings: DuctDesignSettings): number {
   if (event.altKey) return snapResizeValue(grip, grip.value + direction, settings, true);
   const sectional = grip.kind === 'width' || grip.kind === 'depth';
   if (sectional && grip.round) {
