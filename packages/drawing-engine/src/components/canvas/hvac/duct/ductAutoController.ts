@@ -9,6 +9,7 @@ import type { HvacElement, Room } from '../../../../types';
 
 import { airSystemMembers, airSystemTags, analyseAirSystems, isAirSystemUnit, readAirSystemAssignment, roomIdOf, withSystemAssignments } from './ductAirSystems';
 import {
+  autoDuctTerminalUpdates,
   resizeAutoDuctDesign,
   terminalSpigotUpdates,
   terminalWithAirflow,
@@ -327,15 +328,7 @@ export function applyAutoDuctPreview(): string {
   cancelPreviewResize();
   const ids = result.runs.map((run) => run.id);
   const turned = result.terminalUpdates ?? [];
-  // A terminal both turned and given an airflow: the turned one carries the airflow.
-  const airflow = new Map((result.terminalAirflowUpdates ?? []).map((element) => [element.id, element]));
-  const terminals = [
-    ...turned.map((element) => {
-      const set = airflow.get(element.id);
-      return set ? { ...element, properties: { ...element.properties, terminal: { ...(element.properties.terminal as object), designAirflowM3h: (set.properties.terminal as { designAirflowM3h?: number | null }).designAirflowM3h ?? null } } } : element;
-    }),
-    ...[...airflow.values()].filter((element) => !turned.some((entry) => entry.id === element.id)),
-  ];
+  const terminals = autoDuctTerminalUpdates(result);
   // The terminals it serves that no system held join the unit's air system, in the same command.
   const assigned = withSystemAssignments(terminals, result.runs, state.hvacElements, result.unitId);
   const joined = assigned.filter((element) => readAirSystemAssignment(element) === result.unitId

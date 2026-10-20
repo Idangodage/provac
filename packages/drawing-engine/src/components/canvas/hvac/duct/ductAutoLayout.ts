@@ -1311,6 +1311,23 @@ export function withAutoDuctDesigns(result: AutoDuctResult, replaced: ReadonlyMa
   return selectAutoDuctDesign(next, result.selected);
 }
 
+/**
+ * The terminals a design changes: the spigots it turns and the airflows it
+ * sets (a terminal both turned and given an airflow: the turned one carries
+ * the airflow).
+ */
+export function autoDuctTerminalUpdates(result: Pick<AutoDuctResult, 'terminalUpdates' | 'terminalAirflowUpdates'>): HvacElement[] {
+  const turned = result.terminalUpdates ?? [];
+  const airflow = new Map((result.terminalAirflowUpdates ?? []).map((element) => [element.id, element]));
+  return [
+    ...turned.map((element) => {
+      const set = airflow.get(element.id);
+      return set ? { ...element, properties: { ...element.properties, terminal: { ...(element.properties.terminal as object), designAirflowM3h: (set.properties.terminal as { designAirflowM3h?: number | null }).designAirflowM3h ?? null } } } : element;
+    }),
+    ...[...airflow.values()].filter((element) => !turned.some((entry) => entry.id === element.id)),
+  ];
+}
+
 /** The store updates that turn terminals' spigots as a design has them (their terminal properties only). */
 export function terminalSpigotUpdates(elements: readonly HvacElement[]): Array<{ id: string; updates: Partial<HvacElement> }> {
   return elements.map((element) => ({ id: element.id, updates: { properties: element.properties } }));

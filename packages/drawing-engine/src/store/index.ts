@@ -2171,6 +2171,13 @@ export interface DrawingState {
 
   // Actions - History
   saveToHistory: (action: string) => void;
+  /**
+   * The latest history step takes the drawing as it is now (and `action` as
+   * its name): a command finished later (a turn whose ducts the optimiser
+   * re-designs after it) stays one undo step. Refused (false) when the step
+   * is not the latest (an undo since) or is the initial state.
+   */
+  amendLastHistoryEntry: (action?: string) => boolean;
   undo: () => void;
   redo: () => void;
   clearHistory: () => void;
@@ -5009,6 +5016,19 @@ export const useDrawingStore = create<DrawingState>()(
           canRedo: nextHistoryIndex < newHistory.length - 1,
         };
       }),
+
+      amendLastHistoryEntry: (action) => {
+        let amended = false;
+        set((state) => {
+          const current = state.history[state.historyIndex];
+          if (!current || state.historyIndex <= 0 || state.historyIndex !== state.history.length - 1) return state;
+          // (The step's own snapshot is the latest made: what did not change since is shared, not copied again.)
+          const entry = createHistoryEntry(action ?? current.action, createHistorySnapshot(state, current.snapshot));
+          amended = true;
+          return { history: [...state.history.slice(0, state.historyIndex), entry] };
+        });
+        return amended;
+      },
 
       undo: () => {
         let didChange = false;

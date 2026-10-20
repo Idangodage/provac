@@ -122,9 +122,11 @@ import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
 import { HvacMoveGizmo3D } from "./canvas/hvac/move/HvacMoveGizmo3D";
 import { formatMoveMm, formatTurnDeg, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
 import { HvacRotateGrip } from "./canvas/hvac/move/HvacRotateGrip";
+import { TurnRedesignBadge } from "./canvas/hvac/move/TurnRedesignBadge";
 import { setHvacMoveHandler, setHvacRotateHandler } from "./canvas/hvac/move/hvacMoveBus";
 import { hvacMoveChanges, hvacMoveCommand, isTurnableElement, planHvacMove, resolveHvacCeilingVoid, type HvacMovePlan, type HvacRotation } from "./canvas/hvac/move/hvacMoveModel";
 import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost, type HvacRotateBegin } from "./canvas/hvac/move/hvacMoveSession";
+import { cancelTurnRedesign, redesignAfterTurn, turnedBy, turnRedesignNote } from "./canvas/hvac/move/turnRedesignController";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
@@ -2332,6 +2334,13 @@ export function DrawingCanvas({
     return () => setHvacMoveHandler(null);
   }, [nudgeSelectedEntities]);
 
+  // A turn just stored: the turned units' ducts are re-designed by the optimiser for their new collars and joined to
+  // the turn's own undo step (the turn shows its quick re-route meanwhile).
+  const redesignTurnedDucts = useCallback((plan: HvacMovePlan, before: readonly HvacElement[]) => {
+    if (!plan.rotation) return;
+    void redesignAfterTurn({ before, ...turnedBy(plan, before), label: plan.label });
+  }, []);
+
   // A turn of the selected units and terminals (R / Shift + R, the Properties panel's Rotate) is the same command:
   // rules for the whole selection, ducts re-aimed or re-routed, pipes re-attached, drains re-solved, one undo.
   const rotateSelectedEntities = useCallback(
@@ -2346,9 +2355,10 @@ export function DrawingCanvas({
       if (plan.messages.length) setProcessingStatus(plan.messages.join(" "), false);
       if (!hvacMoveChanges(plan)) return false;
       commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+      redesignTurnedDucts(plan, hvacElements);
       return true;
     },
-    [computeHvacPlacement, commitHvacElementCommand, hvacElements, selectedIds, setProcessingStatus],
+    [computeHvacPlacement, commitHvacElementCommand, hvacElements, redesignTurnedDucts, selectedIds, setProcessingStatus],
   );
   useEffect(() => {
     setHvacRotateHandler(rotateSelectedEntities);
@@ -2365,6 +2375,8 @@ export function DrawingCanvas({
   const movePreview3DRef = useRef(false);
   /** The move as last previewed (its ghosts: where the moved units and terminals were). */
   const lastMovePlanRef = useRef<HvacMovePlan | null>(null);
+  /** A turn's readout line: what its units' ducts do on release (for the items turned, in the drawing turned). */
+  const redesignNoteRef = useRef<{ key: string; scene: readonly HvacElement[] | null; note: string | null }>({ key: "", scene: null, note: null });
   moveHostRef.current = {
     scene: () => useSmartDrawingStore.getState().hvacElements,
     selection: () => useSmartDrawingStore.getState().selectedIds,
@@ -2389,6 +2401,13 @@ export function DrawingCanvas({
     },
     preview: (plan) => {
       lastMovePlanRef.current = plan;
+      if (plan?.rotation) {
+        const { hvacElements: scene, ductSettings } = useSmartDrawingStore.getState();
+        const key = `${[...plan.outcomes].filter(([, outcome]) => outcome.kind === "moved").map(([id]) => id).join("|")}|${plan.rotation.pivot ? "pivot" : "each"}`;
+        if (redesignNoteRef.current.key !== key || redesignNoteRef.current.scene !== scene) {
+          redesignNoteRef.current = { key, scene, note: turnRedesignNote(plan, scene, ductSettings) };
+        }
+      }
       const updated = plan?.updated ?? null;
       hvacRendererRef.current?.previewMove(updated);
       ductOverlayRef.current?.previewMove(updated ? updated.filter((element) => isDuctElement(element) || isDuctTerminalElement(element)) : null);
@@ -2453,7 +2472,7 @@ export function DrawingCanvas({
         typing: state.typed !== null,
         limitedBy: state.limitedBy,
         notes: state.notes,
-        infos: state.infos ?? [],
+        infos: [...(state.infos ?? []), ...(turn && redesignNoteRef.current.note ? [redesignNoteRef.current.note] : [])],
         guides: state.guides.map((guide) => {
           const a = toClient(guide.axis === "x" ? { x: guide.at, y: guide.from } : { x: guide.from, y: guide.at });
           const b = toClient(guide.axis === "x" ? { x: guide.at, y: guide.to } : { x: guide.to, y: guide.at });
@@ -2472,7 +2491,9 @@ export function DrawingCanvas({
         movePreview3DRef.current = false;
         return;
       }
+      const before = useSmartDrawingStore.getState().hvacElements;
       commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+      redesignTurnedDucts(plan, before);
       // The bodies and runs stay where the preview drew them until the stored move re-renders them.
       hvacRendererRef.current?.previewMove(null, { committed: true });
       ductOverlayRef.current?.previewMove(null, { committed: true });
@@ -2885,6 +2906,7 @@ export function DrawingCanvas({
   );
 
   const handleEscapeShortcut = useCallback(() => {
+    if (cancelTurnRedesign()) return true;
     if (pendingPlacementDefinition || pendingPlacementEquipmentDefinition)
       return true;
     if ((tool === "wall" || tool === "partition-wall") && isWallDrawing)
@@ -3744,6 +3766,7 @@ export function DrawingCanvas({
           onPipePointerCancel={_cancelRefrigerantPipeDrawing}
           pipeInteractionRef={hybridPipeInteractionRef}
         />
+        <TurnRedesignBadge />
         <HvacMoveGizmo3D enabled={projectionViewOnly && tool === "select"} hidden={Boolean(movingIds)} controllerRef={hybridControllerRef}
           width={hostWidth} height={hostHeight} hvacElements={hvacElements} selectedIds={selectedIds}
           viewMode={interactionViewMode} onBeginMove={beginHvacMove} onBeginRotate={beginHvacRotate} />

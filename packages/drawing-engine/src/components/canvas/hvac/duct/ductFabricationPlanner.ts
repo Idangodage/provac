@@ -1812,6 +1812,11 @@ function planDependencies(element: HvacElement, spec: DuctRunSpec | null, scene:
     const unitId = spec.start.unitId;
     dependencies.push(scene.find((candidate) => candidate.id === unitId));
   }
+  // What it ends on: a terminal's spigot (its side, its neck) or a unit's collar shapes the runout and the end.
+  if (spec.end.kind === 'terminal' || spec.end.kind === 'unit-port') {
+    const endId = spec.end.kind === 'terminal' ? spec.end.terminalId : spec.end.unitId;
+    dependencies.push(scene.find((candidate) => candidate.id === endId));
+  }
   const parent = ductParentOf(spec, scene);
   if (parent) dependencies.push(parent);
   for (const branch of ductBranchesOf(element.id, scene)) dependencies.push(branch.element);
