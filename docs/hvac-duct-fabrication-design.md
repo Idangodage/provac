@@ -2111,6 +2111,145 @@ ring edge-on and do not offer it.
   own keys), unlike `Shift + R` on a selection (90° anticlockwise).
 
 
+## Each straight to size, and a turned unit's ducts re-designed (19–20 October 2026)
+
+**The request:** change the size of each duct segment one by one (its length, width and depth); and when an indoor
+unit is rotated, its ducts should take the optimum, efficient, technical and most economical path, with no need to
+follow the path they had. Approved plan: `C:\Users\idang\.claude\plans\duct-dimensions-and-turn-redesign.md`.
+
+**Your decisions (19 October 2026):** "yes do as i told you", so every recommended option:
+1. Every run on a turned unit's collars is re-designed (drawn by Auto duct or by hand), except where a run is locked.
+2. While a turn is dragged, the quick re-route is shown as the draft; the re-design comes on release.
+3. Accessories the designer set are set again on the new design where a straight takes them, else listed.
+4. The new design keeps the system's own sizing basis and fan speed, and the trunk's shape.
+5. A length change is taken up elastically, every end kept.
+6. The plan shows a temporary dimension on the straight being edited.
+
+This changes the rotation's decision 1: a turned unit's re-aimed or re-routed runs are now the draft, kept only where
+they are the better design.
+
+### Phase 1: a straight of an exact length (93e5751)
+
+A new segment edit, `leg-length`, sizes one straight (or a riser) of a run. The run is re-solved elastically with that
+leg's length fixed (a hard row on its length unknown in `ductElasticMove`), so every end stays on what it is fixed to
+(the collar, a take-off's wall, a terminal's spigot) and the change is taken up downstream first, by straights running
+the same way and by flexible runouts; the vertices before the straight are held, so it grows at its far end. Take-offs
+on it keep their place in the room; branches off a straight that moves follow its wall and keep their terminals, as in
+a move. Refused, with the reason and what would do instead, where nothing can give ("Straight 2 cannot be 2000 mm: the
+run to D3 is held at its collar and D3's spigot, and no other straight can give way: move D3, or change a straight
+that runs the same way."), and for a flexible runout (its own length edit), under 50 mm, or a locked run.
+
+### Phase 2: length, width and depth, one straight at a time (af1f606)
+
+- **The card.** A straight's card (plan or 3D) opens on one Dimensions block: Length (centreline, corner to corner; a
+  riser's Height), then its section, rectangular or round, width × depth (or diameter), for this straight or every
+  straight of its size. A typed length is previewed on the drawing with what it changes (velocity, pressure, mass) and
+  made with Enter or Apply: one undo step.
+- **The plan's dimension.** The pinned straight shows its length as a temporary dimension, on the side away from the
+  rest of its run and clear of the segment's tag. Click the figure, type, Enter (Esc leaves it); a length it cannot take
+  says why, in place.
+- **Properties** lists each straight's length beside its section (L … W × D); the section's second size is called
+  depth, as the trade does.
+
+### Phase 3: a turned unit's ducts re-designed
+
+After a turn is stored (`R` / `Shift + R`, the Properties panel, the plan's grip, the 3D ring), the Auto duct optimiser
+designs each turned ducted unit's ducts afresh for its new collars, in its worker (about 2 s for three diffusers), and
+the better of its design and the turn's own re-route is kept (`duct/ductTurnRedesign.ts`,
+`move/turnRedesignController.ts`).
+
+- **Which systems.** Every run on a turned unit's collars and its whole branch tree. Left as the turn made them: a
+  system with a locked run (the status says so), a system whose unit and every terminal turned together (it turned
+  whole, its layout holds), and a system that serves no terminal yet. A run left ending open with nothing taken off it
+  serves nothing: a new design leaves it out and says so.
+- **The request** keeps what was chosen for the system: the terminals it serves and their airflows, its services, its
+  constant-friction basis where it was sized so (else the life-cycle optimum), its fan speed and an airflow typed in,
+  and its trunk's shape. Where the trunk's shape gives no clean design at the turned collar, the optimiser also chooses
+  the shapes freely, and the better of its two designs is taken (and said: "the optimiser chose the shapes (no clean
+  round layout fits the turned collar)").
+- **The better of two.** The design is applied only where it is better than the turn's own re-route. Both are
+  appraised as the canvas checks them (each plan's and support's rules and the clashes, `validateDuctRuns`) and priced
+  alike (first cost by `priceDuctPlans` with the hangers, the index path's pressure measured by `sizeDuctSystem` in
+  `measure` mode, and the fan's energy over the system's life at the optimiser's own price per pascal). Fewer errors
+  win; as many, the lower life-cycle cost; a tie goes to the design. The optimiser's own error count is not trusted for
+  this: it can miss what the planner finds.
+- **What the status says.** Taken: "DU-1's ducts re-designed for the turn by the optimiser: 12.5 m of duct (was 6.5 m),
+  2 elbows (was 4), 22 Pa for the fan, first cost USD 695; the turn's re-route would break 2 fittings in walls, 3
+  runouts bent too tight, a flexible runout through a wall, 6 clashes, an accessory on a fitting." Kept: "DU-1's ducts
+  keep the turn's re-route: the optimiser's best design breaks 3 runouts bent too tight, 2 straights too short for
+  their fittings, …; the turn's re-route breaks fewer (3 runouts bent too tight, 2 clashes)", or, both clean, "… the turn's
+  re-route costs USD … less over its life than the optimiser's best design".
+- **Accessories** are set again on the design by where they were along the air's path: one on the run off the collar
+  (an attenuator, a door to the coil: all the air passes it) on the new run off the collar at the same distance from
+  the collar; one on a branch to a terminal (a balancing damper) on the new run to that terminal, the same distance
+  before its end; one on a run between, on the nearest run at the same distance from the collar. Where the new run off
+  the collar has no clear straight for it (a plenum or a split close to the collar), it goes on the nearest clear
+  straight and the status says where ("The run off the collar has no clear straight for the access door: it is set on
+  the duct to SAD-1 instead."); where no straight takes it, it is listed to add again.
+- **One undo.** The design is committed as Auto duct's Apply commits one (the old runs out, the new ones with their
+  sizing records, the spigots it turns, its terminals in the unit's air system) and joined to the turn's own undo step
+  (`amendLastHistoryEntry`: "Rotate DU-1 90° clockwise, ducts re-designed"). One undo takes back the turn and its
+  design; redo makes both.
+- **While it works** a badge at the top of the drawing says "Optimising DU-1's ducts for the turn…" with "Keep the
+  re-route" (Esc does the same). A newer turn supersedes it; a change meanwhile to anything the design replaces or
+  serves, or a newer undo step, leaves the turn as it was stored ("The drawing changed while the ducts were being
+  re-designed: …"); Auto duct's card generating meanwhile takes the worker, and the turn keeps its re-route.
+- **While a turn is dragged** the readout adds "On release the optimiser looks for a better design of DU-1's ducts for
+  the new collar." (or says a locked run keeps them).
+
+### Verified
+
+- Unit tests: `ductTurnRedesign` 17 (the systems a turn hands over, with their requests; turned whole, no ducts, a
+  terminal alone; a locked run; a drawn main and branch; the design at 90°, 180°, −90° and 45°, every terminal served
+  from the turned collar, the choice never the worse of the two; in open space the design taken at 45° (the re-route
+  clashes) and the re-route kept at 90° (clean, and cheaper over its life); a drawn system re-designed; a door on
+  the collar run set again on the new one; a damper on a branch set again before its terminal; the attempts; the
+  appraisal, the wording and the choice; a run's plan following the terminal it ends on), `turnRedesignController` 5
+  (one undo step for the turn and the design, with the status; the re-route kept and the turn left one step; a change
+  meanwhile; Esc; the readout). Full suite 270 files / 2349 tests.
+- On canvas (`redesign-p3`, an FDUM22 in a 6.5 × 4.7 m walled room, three square Ø200 diffusers, Auto duct applied,
+  an access door on the collar run from its card; real keys, clicks and drags), restoring the project exactly:
+  `R` 90° and the Iso ring 90° take the design (5 errors against the re-route's 6), the 180° button takes it (none
+  against 13), the grip to 45° keeps the re-route (5 against the design's 9); each with the badge while the optimiser
+  works, the runs attached, the status saying which and why, never more errors than the re-route, and one undo for the
+  turn and its design; Esc keeps the re-route at once.
+- Regressions, each restoring the project exactly: `rotate-p1` 41/41 (now waiting for the optimiser after each turn and
+  checking it never leaves more errors than the re-route: with two diffusers `R` took the design, the re-route would
+  clash; a second `R` took a clean one USD 408 cheaper over its life, 0 elbows where the re-route had 5; the 180°
+  button kept the clean re-route over a design with a tight runout and a clash), `rotate-p2` 32/32, `rotate-p3` 16/16,
+  `rotate-p4` 17/17, `dims-p2` 23/23, `move-p1` 24/24, `air-p1` 25/25 (Auto duct's Apply, now sharing the terminal
+  updates), `duct-seg-p5` 14/14 (accessories from the card).
+
+### Found while verifying, fixed
+
+- **The optimiser's design could be worse than the re-route.** The first canvas run applied every design: in the
+  walled room at 90° the design had runouts bent to 2 mm radius, a straight too short and clashes where the re-route
+  had two clashes; at 45° a flexible runout through a wall. The optimiser returns the best of what it found even when
+  everything it found breaks rules, so the re-design now takes it only where it is the better of the two (above).
+- **A run's cached plan ignored the terminal it ends on.** `getDuctRunPlan` memoised plans on the run, its unit, its
+  parent and its branches, not on the terminal or unit its end is on: a terminal's spigot turned with the run object
+  unchanged returned the plan made against the old spigot (a runout "bent at 50 mm radius" that a fresh plan does not
+  have). The end's terminal (or unit) is now one of the plan's dependencies.
+- **Auto duct's Apply and the re-design share the terminal updates** (`autoDuctTerminalUpdates`: the spigots a
+  design turns, carrying the airflows it sets).
+
+### Known limits
+
+- **Off the room's axes.** The optimiser designs in the turned collar's own frame: at 45° the room's walls and the
+  terminals become diagonal boxes in that frame, so it rarely finds a clean design in a walled room ("Equipment stands
+  810 mm in front of the collar…"), and its ducts run at 45° to the room. The turn's re-route, which leaves on a stub
+  squared to the room, is usually kept there.
+- **Tight rooms.** Where the turned collar faces a nearby diffuser or wall, the optimiser often finds nothing clean
+  either; the turn keeps whichever of the two breaks fewer rules, and says what each breaks.
+- **The trunk's shape** is read from the trunk: Auto duct's Rect / Round / Optimal choice is not recorded with a
+  system, so a system Auto duct made round under Optimal is re-designed round first (then freely, where that is not
+  clean).
+- The appraisal runs on the main thread after the worker returns (about 0.1–0.5 s per design for a few systems).
+- A system with a locked run keeps the turn's re-route whole (a locked run is not re-designed, and its branches hang
+  from it).
+- A hand-drawn system is checked by the unit tests only: the duct tool cannot be driven to end a run on a diffuser by
+  script.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
