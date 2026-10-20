@@ -17,7 +17,7 @@
  * the leg it became).
  */
 import { ArrowDownToLine, Coins, Flag, Gauge, Star, TriangleAlert } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { HvacElement } from '../../../../types';
 import {
@@ -237,13 +237,25 @@ function SizeEditor({ host, segment, spec, voidHeightMm }: { host: FieldHost; se
   const apply = () => {
     if (option && evaluation && !evaluation.refused) host.onApply(option);
   };
+  // While the pointer is on it, the drawing follows the size as it changes (typed, stepped or scrubbed).
+  const [inside, setInside] = useState(false);
+  const hostRef = useRef(host);
+  hostRef.current = host;
+  const shown = option && !evaluation?.refused ? option : null;
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  useEffect(() => {
+    if (inside) hostRef.current.onPreview(shownRef.current);
+  }, [inside, shown?.id]);
   return (
     <div className="rounded-lg px-1 py-1" data-testid="duct-segment-size"
       onPointerEnter={() => {
+        setInside(true);
         if (option && !evaluation?.refused) host.onPreview(option);
         if (option) host.onHover({ option, evaluation: evaluation ?? undefined });
       }}
       onPointerLeave={() => {
+        setInside(false);
         host.onPreview(null);
         host.onHover(null);
       }}>
@@ -260,14 +272,13 @@ function SizeEditor({ host, segment, spec, voidHeightMm }: { host: FieldHost; se
       <div className="mt-1.5 flex items-center gap-1.5 pl-[76px]">
         {shape === 'round' ? (
           <>
-            <span className="text-[11px] text-slate-500">Ø</span>
-            <Stepper label="Diameter" value={diameter} onChange={setDiameter} onEnter={apply} step={50} fineStep={10} min={75} max={2000} />
+            <Stepper label="Diameter" value={diameter} onChange={setDiameter} onEnter={apply} step={50} fineStep={10} min={75} max={2000} scrubLabel="Ø" onScrubEnd={apply} />
           </>
         ) : (
           <>
-            <Stepper label="Width" value={width} onChange={setWidth} onEnter={apply} step={50} fineStep={10} min={50} max={4000} width="w-12" />
+            <Stepper label="Width" value={width} onChange={setWidth} onEnter={apply} step={50} fineStep={10} min={50} max={4000} width="w-12" scrubLabel="W" onScrubEnd={apply} />
             <span className="text-[11px] text-slate-400">×</span>
-            <Stepper label="Depth" value={height} onChange={setHeight} onEnter={apply} step={50} fineStep={10} min={50} max={2000} width="w-12" />
+            <Stepper label="Depth" value={height} onChange={setHeight} onEnter={apply} step={50} fineStep={10} min={50} max={2000} width="w-12" scrubLabel="D" onScrubEnd={apply} />
           </>
         )}
         <span className="text-[10.5px] text-slate-400">mm</span>
@@ -408,7 +419,7 @@ function EditPanel({ host, plan, segment, context, options }: {
       <EditBlock key="dimensions" title="Dimensions">
         {geometry && !geometry.sloped ? (
           <ValueField key={`length|${Math.round(geometry.lengthMm)}`} host={host} label={kind === 'riser' ? 'Height' : 'Length'} unit="mm"
-            current={Math.round(geometry.lengthMm)} min={MIN_STRAIGHT_MM} max={60000} step={100} fineStep={10} testId="duct-segment-leg-length"
+            current={Math.round(geometry.lengthMm)} min={MIN_STRAIGHT_MM} max={60000} step={100} fineStep={10} testId="duct-segment-leg-length" scrub
             hint={kind === 'riser' ? 'its rise; what follows moves with it, the ends stay' : 'centreline, corner to corner; it grows at its far end, the ends stay'}
             makeOption={(value) => ({
               id: `leg-length:${legIndex}:${value}`, group: 'tune', glyph: isRoundLeg(section) ? 'round' : 'rect',

@@ -497,18 +497,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const points = polygons.flat();
     if (points.length === 0) return null;
     const client = points.map((point) => new DOMPoint(point.x, point.y).matrixTransform(matrix));
-    // A straight's resize grips sit on its corner vertices and on its sides: the card keeps clear of them too.
+    // A straight's resize grips sit on its corner vertices and on its sides: its card (not its chip) keeps clear of them.
+    let avoid: ScreenRect['avoid'];
     const leg = /^leg:(\d+)$/.exec(key);
     if (leg || key === 'end:flex') {
       const index = leg ? Number(leg[1]) : plan.spec.path.length - 2;
-      const around = [plan.spec.path[index], plan.spec.path[index + 1]].filter((vertex): vertex is NonNullable<typeof vertex> => Boolean(vertex));
-      for (const vertex of around) {
-        const at = new DOMPoint(vertex.x, vertex.y).matrixTransform(matrix);
-        client.push(new DOMPoint(at.x - GRIP_CLEARANCE_PX, at.y - GRIP_CLEARANCE_PX), new DOMPoint(at.x + GRIP_CLEARANCE_PX, at.y + GRIP_CLEARANCE_PX));
-      }
-      const xs = client.map((point) => point.x);
-      const ys = client.map((point) => point.y);
-      client.push(new DOMPoint(Math.min(...xs) - GRIP_CLEARANCE_PX, Math.min(...ys) - GRIP_CLEARANCE_PX), new DOMPoint(Math.max(...xs) + GRIP_CLEARANCE_PX, Math.max(...ys) + GRIP_CLEARANCE_PX));
+      const around = [plan.spec.path[index], plan.spec.path[index + 1]].filter((vertex): vertex is NonNullable<typeof vertex> => Boolean(vertex))
+        .map((vertex) => new DOMPoint(vertex.x, vertex.y).matrixTransform(matrix));
+      const xs = [...client, ...around].map((point) => point.x);
+      const ys = [...client, ...around].map((point) => point.y);
+      avoid = {
+        left: Math.min(...xs) - GRIP_CLEARANCE_PX, top: Math.min(...ys) - GRIP_CLEARANCE_PX,
+        right: Math.max(...xs) + GRIP_CLEARANCE_PX, bottom: Math.max(...ys) + GRIP_CLEARANCE_PX,
+      };
     }
     // The leader line ends on the piece itself (a point inside its outline).
     const inside = polygons.map((polygon) => polygonHotspot(polygon)).find((point): point is Point2D => point !== null);
@@ -517,6 +518,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       left: Math.min(...client.map((point) => point.x)), right: Math.max(...client.map((point) => point.x)),
       top: Math.min(...client.map((point) => point.y)), bottom: Math.max(...client.map((point) => point.y)),
       ...(pin ? { pinX: pin.x, pinY: pin.y } : {}),
+      ...(avoid ? { avoid } : {}),
     };
   }, [planOf]);
 

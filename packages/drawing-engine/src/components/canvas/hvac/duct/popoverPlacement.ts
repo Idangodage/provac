@@ -16,6 +16,8 @@ export interface ScreenRect {
   pinY?: number;
   /** The sides a card tries first: across a pipe's run, so it never lies along the pipe it describes. */
   sides?: readonly PopoverSide[];
+  /** A wider region the card (not its chip) keeps clear of: a straight's resize grips round its piece. */
+  avoid?: { left: number; top: number; right: number; bottom: number };
 }
 
 export type PopoverSide = 'right' | 'left' | 'bottom' | 'top';

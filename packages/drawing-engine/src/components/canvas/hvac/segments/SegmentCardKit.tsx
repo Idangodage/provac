@@ -15,6 +15,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -116,12 +117,17 @@ export function useAnchoredCard(cardRef: RefObject<HTMLDivElement | null>, conta
         return;
       }
       const local = { left: rect.left - host.left, top: rect.top - host.top, right: rect.right - host.left, bottom: rect.bottom - host.top };
-      const anchorKey = [local.left, local.top, local.right, local.bottom, host.width, host.height].map((value) => Math.round(value)).join(',');
+      // The card keeps clear of the piece and of what is round it (a straight's grips); the chip names the piece itself.
+      const zone = rect.avoid ? {
+        left: Math.min(local.left, rect.avoid.left - host.left), top: Math.min(local.top, rect.avoid.top - host.top),
+        right: Math.max(local.right, rect.avoid.right - host.left), bottom: Math.max(local.bottom, rect.avoid.bottom - host.top),
+      } : local;
+      const anchorKey = [zone.left, zone.top, zone.right, zone.bottom, host.width, host.height].map((value) => Math.round(value)).join(',');
       // A card placed clear of its piece that has since grown over it (its rows and chips arrive after it opens) is
       // placed again — but never from under the pointer (a hovered row's foot grows it too); one that had no room but
       // to cover its piece from the start stays.
       const covers = (at: { x: number; y: number; overlaps: boolean }) => !at.overlaps && !card.matches(':hover')
-        && at.x < local.right && at.x + card.offsetWidth > local.left && at.y < local.bottom && at.y + card.offsetHeight > local.top;
+        && at.x < zone.right && at.x + card.offsetWidth > zone.left && at.y < zone.bottom && at.y + card.offsetHeight > zone.top;
       // The pointer, in the drawing, unless it moved onto the card: a placement keeps `reach` clear of it.
       if (lastPointer.target instanceof Node && lastPointer.target.isConnected) pointerOnCard = card.contains(lastPointer.target);
       const pointerAt = Number.isFinite(lastPointer.x) && !pointerOnCard ? { x: lastPointer.x - host.left, y: lastPointer.y - host.top } : null;
@@ -139,7 +145,7 @@ export function useAnchoredCard(cardRef: RefObject<HTMLDivElement | null>, conta
         const size = { width: card.offsetWidth, height: card.offsetHeight };
         const view = { width: host.width, height: host.height };
         const sides = rect.sides ? { sides: rect.sides } : undefined;
-        let placed = placePopover(local, size, view, sides);
+        let placed = placePopover(zone, size, view, sides);
         if (near && overPointer(placed, POINTER_CLEARANCE_PX)) {
           // No side clears both the piece and the pointer: beside the pointer, over the piece.
           const zone = { left: near.x - POINTER_CLEARANCE_PX, top: near.y - POINTER_CLEARANCE_PX, right: near.x + POINTER_CLEARANCE_PX, bottom: near.y + POINTER_CLEARANCE_PX };
@@ -328,8 +334,80 @@ export function onListKey(event: ReactKeyboardEvent<HTMLElement>) {
   event.stopPropagation();
 }
 
-/** A number typed or nudged (± buttons, ↑ ↓; Shift for a fine step), Enter to apply. */
-export function Stepper({ label, value, onChange, onEnter, step, fineStep, min, max, width = 'w-14', signed = false }: {
+/** Screen pixels the pointer travels per step while a value is scrubbed. */
+const SCRUB_PX_PER_STEP = 6;
+
+/**
+ * A number scrubbed by dragging sideways on its label, as in Figma or
+ * Blender: a step per 6 px (Shift: five steps; Alt: one unit per pixel),
+ * snapped to the step and kept within its limits. `onEnd` runs once a scrub
+ * that changed it ends, after the last value has rendered.
+ */
+export function useScrub({ value, onChange, step, min, max, decimals = 0, onEnd }: {
+  value: string;
+  onChange: (value: string) => void;
+  step: number;
+  min: number;
+  max: number;
+  decimals?: number;
+  onEnd?: () => void;
+}) {
+  const drag = useRef<{ x: number; start: number; moved: boolean } | null>(null);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [ended, setEnded] = useState(0);
+  const onEndRef = useRef(onEnd);
+  onEndRef.current = onEnd;
+  useEffect(() => {
+    if (ended > 0) onEndRef.current?.();
+  }, [ended]);
+  const handlers = {
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      if (event.button !== 0) return;
+      const start = Number.parseFloat(value);
+      if (!Number.isFinite(start)) return;
+      drag.current = { x: event.clientX, start, moved: false };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+      const current = drag.current;
+      if (!current) return;
+      const dx = event.clientX - current.x;
+      if (!current.moved && Math.abs(dx) < 3) return;
+      if (!current.moved) {
+        current.moved = true;
+        setScrubbing(true);
+      }
+      const unit = 10 ** -decimals;
+      const next = event.altKey
+        ? clamp(Math.round((current.start + dx * unit) / unit) * unit, min, max)
+        : clamp(Math.round((current.start + Math.round(dx / SCRUB_PX_PER_STEP) * step * (event.shiftKey ? 5 : 1)) / step) * step, min, max);
+      onChange(decimals ? next.toFixed(decimals) : String(Math.round(next)));
+    },
+    onPointerUp: (event: ReactPointerEvent<HTMLElement>) => {
+      const current = drag.current;
+      drag.current = null;
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      if (current?.moved) {
+        setScrubbing(false);
+        setEnded((count) => count + 1);
+      }
+    },
+    onPointerCancel: () => {
+      drag.current = null;
+      setScrubbing(false);
+    },
+  };
+  return { scrubbing, handlers };
+}
+
+/**
+ * A number typed or nudged (± buttons, ↑ ↓; Shift for a fine step), Enter to
+ * apply; with `scrubLabel`, a label inside it scrubs the number sideways and
+ * `onScrubEnd` runs when a scrub ends.
+ */
+export function Stepper({ label, value, onChange, onEnter, step, fineStep, min, max, width = 'w-14', signed = false, scrubLabel, onScrubEnd }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
@@ -341,8 +419,12 @@ export function Stepper({ label, value, onChange, onEnter, step, fineStep, min, 
   width?: string;
   /** Accept a minus sign (an offset, a level change). */
   signed?: boolean;
+  /** A short label inside the field ("W", "D", "Ø") that scrubs the number when dragged sideways. */
+  scrubLabel?: string;
+  onScrubEnd?: () => void;
 }) {
   const decimals = step < 1 ? 2 : 0;
+  const scrub = useScrub({ value, onChange, step, min, max, decimals, ...(onScrubEnd ? { onEnd: onScrubEnd } : {}) });
   const bump = (delta: number) => {
     const current = Number.parseFloat(value);
     if (!Number.isFinite(current)) return;
@@ -351,6 +433,12 @@ export function Stepper({ label, value, onChange, onEnter, step, fineStep, min, 
   };
   return (
     <span className="inline-flex items-center rounded-lg border border-slate-200 bg-white shadow-sm focus-within:border-violet-400 focus-within:ring-2 focus-within:ring-violet-100">
+      {scrubLabel ? (
+        <span className={`cursor-ew-resize select-none pl-1.5 text-[10.5px] font-semibold ${scrub.scrubbing ? 'text-violet-700' : 'text-slate-400 hover:text-violet-700'}`}
+          title={`Drag sideways to change the ${label.toLowerCase()} (Shift: 5 steps; Alt: 1 mm)`} data-scrub={label} {...scrub.handlers}>
+          {scrubLabel}
+        </span>
+      ) : null}
       <button type="button" className="px-1 py-0.5 text-slate-400 hover:text-violet-700" aria-label={`${label} smaller`} onClick={() => bump(-step)}><Minus size={11} /></button>
       <input
         type="text"
@@ -399,7 +487,7 @@ export function ResultRow<E extends SegmentEvaluationLike>({ evaluation, result,
  * changes (its result on one line, refused with the reason when it cannot be
  * built), shown on the drawing while the pointer is on it, applied with Enter.
  */
-export function ValueField<O extends SegmentOptionLike, E extends SegmentEvaluationLike>({ host, label, unit, current, min, max, step, fineStep, decimals = 0, hint, makeOption, testId, extra, signed }: {
+export function ValueField<O extends SegmentOptionLike, E extends SegmentEvaluationLike>({ host, label, unit, current, min, max, step, fineStep, decimals = 0, hint, makeOption, testId, extra, signed, scrub = false }: {
   host: SegmentFieldHost<O, E>;
   label: string;
   unit: string;
@@ -414,6 +502,8 @@ export function ValueField<O extends SegmentOptionLike, E extends SegmentEvaluat
   testId: string;
   extra?: ReactNode;
   signed?: boolean;
+  /** Its label scrubs the value when dragged sideways (release applies it). */
+  scrub?: boolean;
 }) {
   const format = useCallback((value: number) => (decimals ? value.toFixed(decimals) : String(Math.round(value))), [decimals]);
   const [text, setText] = useState(() => format(current));
@@ -427,18 +517,38 @@ export function ValueField<O extends SegmentOptionLike, E extends SegmentEvaluat
   const apply = () => {
     if (option && evaluation && !evaluation.refused) host.onApply(option);
   };
+  const [inside, setInside] = useState(false);
   const enter = () => {
+    setInside(true);
     if (option && !evaluation?.refused) host.onPreview(option);
     if (option) host.onHover({ option, evaluation: evaluation ?? undefined });
   };
   const leave = () => {
+    setInside(false);
     host.onPreview(null);
     host.onHover(null);
   };
+  // While the pointer is on it, the drawing follows the value as it changes (typed, stepped or scrubbed).
+  const hostRef = useRef(host);
+  hostRef.current = host;
+  const shown = option && !evaluation?.refused ? option : null;
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  useEffect(() => {
+    if (inside) hostRef.current.onPreview(shownRef.current);
+  }, [inside, shown?.id]);
+  const scrubbing = useScrub({ value: text, onChange: setText, step: fineStep ?? step, min, max, decimals, onEnd: apply });
   return (
     <div className="rounded-lg px-1 py-1" data-testid={testId} onPointerEnter={enter} onPointerLeave={leave} onFocus={enter} onBlur={leave}>
       <div className="flex items-center gap-2">
-        <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500">{label}</span>
+        {scrub ? (
+          <span className={`w-[68px] shrink-0 cursor-ew-resize select-none text-[11px] font-medium ${scrubbing.scrubbing ? 'text-violet-700' : 'text-slate-500 hover:text-violet-700'}`}
+            title={`Drag sideways to change the ${label.toLowerCase()} (Shift: 5 steps; Alt: 1 ${unit}); release applies it`} data-scrub={label} {...scrubbing.handlers}>
+            {label} <span aria-hidden="true" className="text-[9px] text-slate-300">⇔</span>
+          </span>
+        ) : (
+          <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500">{label}</span>
+        )}
         <Stepper label={label} value={text} onChange={setText} onEnter={apply} step={step} {...(fineStep ? { fineStep } : {})} min={min} max={max} signed={signed} />
         <span className="text-[10.5px] text-slate-400">{unit}</span>
         {extra}

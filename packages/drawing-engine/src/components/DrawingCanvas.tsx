@@ -792,18 +792,20 @@ export function DrawingCanvas({
     const hostRect = host.getBoundingClientRect();
     if (domain !== "duct") return pipeSegmentClientRect3D(state.hvacElements, focus, camera, hostRect);
     const rect = segmentClientRect3D(state.hvacElements, state.ductSettings, focus, camera, hostRect);
-    // A straight's resize grips (its ends, sides and top): its card keeps clear of them too.
+    // A straight's resize grips (its ends, sides and top): its card (not its chip) keeps clear of them.
     if (rect && (/^leg:\d+$/.test(focus.key) || focus.key === "end:flex")) {
+      const avoid = { left: rect.left - 18, top: rect.top - 18, right: rect.right + 18, bottom: rect.bottom + 18 };
       for (const grip of ductResizeGrips(state.hvacElements, state.ductSettings, focus.runId, focus.key, { probe: false })) {
         const clip = modelPointToWorld({ x: grip.point.x, y: grip.point.y }, grip.point.z).project(camera);
         if (!Number.isFinite(clip.x) || !Number.isFinite(clip.y) || clip.z < -1 || clip.z > 1) continue;
         const x = hostRect.left + ((clip.x + 1) / 2) * hostRect.width;
         const y = hostRect.top + ((1 - clip.y) / 2) * hostRect.height;
-        rect.left = Math.min(rect.left, x - 18);
-        rect.right = Math.max(rect.right, x + 18);
-        rect.top = Math.min(rect.top, y - 18);
-        rect.bottom = Math.max(rect.bottom, y + 18);
+        avoid.left = Math.min(avoid.left, x - 18);
+        avoid.right = Math.max(avoid.right, x + 18);
+        avoid.top = Math.min(avoid.top, y - 18);
+        avoid.bottom = Math.max(avoid.bottom, y + 18);
       }
+      return { ...rect, avoid };
     }
     return rect;
   }, [projectionViewOnly]);
