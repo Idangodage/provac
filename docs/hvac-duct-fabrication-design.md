@@ -2250,6 +2250,131 @@ the better of its design and the turn's own re-route is kept (`duct/ductTurnRede
 - A hand-drawn system is checked by the unit tests only: the duct tool cannot be driven to end a run on a diffuser by
   script.
 
+## Sizing a straight by dragging (20 October 2026)
+
+**The request:** adjust each segment's size graphically, by dragging, instead of typing the amount. Approved plan:
+`C:\Users\idang\.claude\plans\duct-segment-drag-resize.md`.
+
+**Your decisions (20 October 2026):** "yes", so every recommended option:
+1. The grips show on the straight whose card is pinned (one click), so one straight at a time carries them.
+2. Both ends drag: the far end grows the straight downstream, the near end upstream (the run before it gives way).
+3. Width grows on both faces about the centreline; depth grows upward, the bottom (its level) kept.
+4. Sections snap to 50 mm (a round duct to the stocked diameters), lengths to 10 mm; Alt drags by 1 mm; a typed number
+   is exact.
+5. Hard rules stop the drag at the last size they allow and say why; advisories (velocity, aspect) show amber.
+6. Depth on the plan is scrubbed on the card (the depth grip is in the 3D views).
+7. Shift while dragging a side or the top gives the new section to every straight of the run of the same size.
+
+### Phase 1: the resize model (65e8e17)
+
+`move/ductResize.ts`. `ductResizeGrips(scene, settings, runId, key)` gives a straight's grips: its two ends (its length),
+its two sides (its width; each moves the value twice its own travel, both faces moving), its top (its depth), a
+riser's two ends (its height) and a flexible runout's start (its length). An end grip is offered only where a trial
+edit either way is made: the collar, a take-off's wall and a terminal's spigot hold their ends, and a straight's near
+end moves only where a straight before it runs the same way to take the change up.
+
+A value is snapped (`snapResizeValue`) or typed, and made by the card's own edits (`leg-length`, `leg-section`,
+`runout-length`). `leg-length` gains `grow: 'start'`, which holds the straight's far end exactly so the change goes
+upstream or is refused.
+
+`DuctResizeSolver` keeps what it has planned (a drag stepping on costs one edit a step). A value the rules do not
+allow stops at the nearest one they do, found by halving on the grip's grid. The rules:
+- the edit is refused;
+- a planner or support error the run did not have before;
+- a clash it would make (`findDuctClashes`, against the clashes the drawing already had);
+- the duct's top through the soffit.
+
+The readout quotes the rule just past the stop ("Straight 2 stops at 1,290 mm: the runout bends at 197 mm radius,
+under one diameter (200 mm, SMACNA S3.24)"). Its plan is a move plan with a `resize` outcome, so the move session's
+resize mode (`beginResize`) previews it in every layer, reads it out, takes a typed number and Esc, and stores it as
+one undo step.
+
+### Phase 2: the plan's grips (16c9ece)
+
+`DuctResizeGrips` draws the pinned straight's grips over the plan's layers (z 14), screen-sized:
+- a capsule with a double arrow at each end that can move;
+- a pill on each side, at least 14 px off the centreline on a narrow duct.
+
+**Pointer:**
+- The cursor follows the straight's angle.
+- A press starts the resize mode. While dragging:
+  - the grip rides on the duct as it will be;
+  - a dimension shows the length (beside it) or the width (across it) it is taking;
+  - the readout at the cursor says "Straight 2 · length 1,492 → 1,790 mm", the segment's velocity and friction, the
+    fan's index pressure from and to, and "Shift: every 250×250 straight of the run".
+
+**Keyboard:** each grip is a slider. Focused, ↑ / ↓ step it (Shift: five steps; Alt: 1 mm; a round duct: the next
+stocked size), one undo each.
+
+**Around it:**
+- The run's own move and end handles step aside on that straight.
+- Its card keeps clear of the grips (the card's anchor is inflated round the straight's vertices).
+- Every card fades while a drag runs; the cards set their own visibility, so the layer fades by opacity.
+
+### Phase 3: the 3D views' grips (edca6ca)
+
+`DuctResizeGrips3D` projects the same grips, the top's included, from the model each frame the camera moves. A grip
+drags along its own axis: the camera's ray is held to it by the move gizmo's axis constraint (`beginDrag` /
+`updateDrag`). A grip seen end-on (under 4 px per 100 mm on screen) is not offered: in Front or Side, a straight
+running away from the camera has no side grips. The dimension is drawn on the duct, and the card keeps clear of the
+projected grips.
+
+### Phase 4: the card's fields scrub
+
+On a straight's card:
+- **The Length label scrubs** (10 mm a step, 6 px a step; Shift five steps; Alt 1 mm a pixel).
+- **The section's fields carry W, D and Ø labels** that scrub at 50 mm a step.
+
+While the pointer is on a field, the drawing follows its value as it changes (typed, stepped or scrubbed). Releasing a
+scrub applies the value once it has rendered (one undo step); ↑ / ↓ still step a field. This is how a depth is
+dragged on the plan, where a duct's depth cannot be seen.
+
+### Verified
+
+- **Unit tests:** `ductResize` 14:
+  - the grips of a collar straight and of a middle straight of a Z, and the runout's;
+  - snapping;
+  - both ends (the near end with the straight before it giving way);
+  - width, and Shift for every straight of the size;
+  - one straight made deeper stopped by its transitions, and every straight of the size stopped by the soffit;
+  - the 50 mm minimum;
+  - the session's drag, typed value, Esc and a click.
+- **Full suite:** 271 files / 2,363 tests.
+- **On canvas** (an FDUM22, two square Ø200 diffusers, Auto duct applied), each restoring the project exactly:
+  - `resize-p2` 26/26 on the plan: the grips; the far end +300 mm with its readout, dimension and the card aside; a
+    side +50 mm (100 mm wider); Shift narrowing every 250×250 straight; a typed 1,948 mm; Esc; a drag stopped at
+    1,290 mm by the runout's bend radius; the arrow key.
+  - `resize-p3` 18/18 in 3D:
+    - Iso: the top up 100 mm with its bottom kept, the far end +300 mm, a side +50 mm, Esc;
+    - Side: the side grips seen end-on not offered, the top up 50 mm.
+  - `resize-p4` 10/10 on the card: the Length label scrubbed +100 mm onto the grid with the drawing previewing it,
+    W scrubbed two steps, and W with Shift.
+- **Regressions,** each restoring the project exactly: `dims-p2` 23/23, `duct-seg-p4` 16/16, `duct-seg-p5` 14/14,
+  `move-p1` 24/24, `rotate-p2` 32/32.
+
+### Found while verifying, fixed
+
+- **A pinned straight's card covered its far-end grip.** The card is placed to clear its piece, and the grip sits on the
+  corner vertex beyond it. An anchor can now carry an `avoid` region (the straight's vertices and grips with 18 px
+  round them) that the card keeps clear of. Its tag still names the piece itself: widening the whole anchor had pushed
+  the tag onto the plan's length figure (`dims-p2`'s check caught it).
+- **A width grip at a low zoom.** A 250 mm duct is about 9 px wide at 100 %, so a 50 mm drag is under the 4 px that
+  makes a press a drag. Side grips sit at least 14 px off the centreline; the drivers size a straight zoomed in, as a
+  designer would.
+- **Cards over the preview.** The pinned card stayed over the duct being dragged. Cards fade while a drag runs (by
+  opacity: a placed card sets its own visibility).
+- **What Enter does.** A typed resize said "Enter moves it"; it says "Enter sets it".
+
+### Known limits
+
+- **Front and Side picking.** A straight behind the unit or a diffuser in Front or Side cannot be clicked there to pin
+  it. Pin it in Iso, or from the plan.
+- **No near-end grip on most Auto layouts.** The straight before rarely runs the same way, so the near end cannot
+  move.
+- **Missing figures.** The readout's air figures appear where the card's own figures do; some straights of a
+  generated trunk have none (the system model has no losses for them).
+- **The card's own Apply** (typed or scrubbed) keeps its existing checks; the drag's hard-rule stop applies to the grips.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
