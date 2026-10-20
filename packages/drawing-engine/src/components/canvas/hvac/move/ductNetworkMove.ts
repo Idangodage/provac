@@ -96,8 +96,10 @@ export interface DuctNetworkMoveInput {
    * One straight given a length (mm): its run re-solved with it fixed, every
    * end kept, the change taken up downstream first (by straights running the
    * same way and flexible runouts); its branches follow. Nothing moves.
+   * `grow` 'start': the straight grows at its start, the run after it held
+   * (the change taken up upstream).
    */
-  legLength?: { runId: string; legIndex: number; lengthMm: number } | null;
+  legLength?: { runId: string; legIndex: number; lengthMm: number; grow?: 'end' | 'start' } | null;
 }
 
 export interface DuctRunMoveOutcome {
@@ -794,7 +796,11 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       continue;
     }
 
-    const held = sizing ? Array.from({ length: sizing.legIndex + 1 }, (_, vertex) => ({ vertex, shift: ZERO3, weight: 1e3 })) : [];
+    // (Growing at its start: the vertices after it held instead, so the change goes upstream.)
+    const held = !sizing ? []
+      : sizing.grow === 'start'
+        ? Array.from({ length: Math.max(0, work.path.length - sizing.legIndex - 1) }, (_, k) => ({ vertex: sizing.legIndex + 1 + k, shift: ZERO3, weight: 1e3 }))
+        : Array.from({ length: sizing.legIndex + 1 }, (_, vertex) => ({ vertex, shift: ZERO3, weight: 1e3 }));
     const solve = (fixed: readonly ElasticConstraint[], pulls?: Parameters<typeof solveElasticRun>[0]['pulls']) => {
       const flex = isFlexTail(work);
       const legs = work.legs.map((_, index): ElasticLegOption => ({
@@ -808,7 +814,9 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       });
     };
     let note: string | undefined = endNote;
-    let result = solve([...constraints, ...endPin, ...segmentConstraints]);
+    // Growing at its start: its far end is held exactly (the change has to go upstream, or it is refused).
+    const growPin = sizing?.grow === 'start' ? pinVertex(sizing.legIndex + 1, ZERO3) : [];
+    let result = solve([...constraints, ...endPin, ...segmentConstraints, ...growPin]);
     if (!result.ok && sizing) {
       // Nothing can give: the whole edit is refused (no end may come off what it is fixed to).
       return {

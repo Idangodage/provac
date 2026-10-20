@@ -91,9 +91,10 @@ export type DuctSegmentEdit =
   /**
    * A straight (or a riser) of a given length: the run re-solved elastically with it fixed: its ends stay on
    * what they are fixed to, the change taken up downstream first (straights running the same way, flexible
-   * runouts); its branches follow their parent's wall and keep their terminals.
+   * runouts); its branches follow their parent's wall and keep their terminals. `grow` 'start': the straight
+   * grows at its start instead (the run after it held, the change taken up upstream).
    */
-  | { kind: 'leg-length'; runId: string; legIndex: number; lengthMm: number };
+  | { kind: 'leg-length'; runId: string; legIndex: number; lengthMm: number; grow?: 'end' | 'start' };
 
 export interface DuctSegmentEditResult {
   /** Every element the edit changes, as it will be stored (empty when refused). */
@@ -1141,7 +1142,7 @@ function editLegLength(scene: readonly HvacElement[], settings: DuctDesignSettin
   if (Math.abs(target - leg.lengthMm) < 0.5) return refuse(`${noun} ${edit.legIndex + 1} is ${Math.round(leg.lengthMm)} mm already.`);
   const moved = moveDuctNetwork({
     before: scene, after: scene, movedEquipmentIds: new Set(), runIds: new Set(), segment: null, delta: ZERO3, settings,
-    legLength: { runId: edit.runId, legIndex: edit.legIndex, lengthMm: target },
+    legLength: { runId: edit.runId, legIndex: edit.legIndex, lengthMm: target, grow: edit.grow ?? 'end' },
   });
   if (moved.legLengthRefused) {
     // ("The run to SAD-2 is held …" reads on mid-sentence as "the run to SAD-2"; a run's own tag stays as it is.)

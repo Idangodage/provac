@@ -49,6 +49,7 @@ import {
 
 import { ZERO3, type Vec3 } from './ductElasticMove';
 import { moveDuctNetwork, terminalsTurnedWhole, turnPoint, type DuctSegmentRef } from './ductNetworkMove';
+import type { DuctResizeOutcome } from './ductResize';
 
 /** A turn of the selection about the vertical axis. */
 export interface HvacRotation {
@@ -133,6 +134,8 @@ export interface HvacMovePlan {
   label: string;
   /** A turn: the angle asked for and made (degrees, clockwise on the plan), about `pivot` (null: each item's own centre). */
   rotation?: { requestedDeg: number; appliedDeg: number; pivot: Point2D | null };
+  /** A straight sized by dragging one of its grips: the value before, asked and made. */
+  resize?: DuctResizeOutcome;
 }
 
 /** Equipment that moves up and down; everything else keeps its level. */

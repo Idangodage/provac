@@ -16,6 +16,11 @@
  *   rotation mode: the angle the pointer sweeps about the pivot, snapped so the
  *   first item squares up with 15° steps or with a wall (Alt turns freely);
  *   typing a number (and "-" for anticlockwise) turns exactly that far.
+ * - A straight sized by one of its grips is the same session in its resize
+ *   mode: the pointer's travel along the grip becomes the value (a length, a
+ *   width, a depth), snapped (Alt: 1 mm; Shift: every straight of the run's
+ *   size takes a new section), or typed exactly; a value the rules do not
+ *   allow stops at the nearest they do, and the readout says why.
  *
  * The host gives the scene, the selection, the coordinate mapping, the model's
  * context, and paints the preview and the readout; the session holds no React
@@ -28,7 +33,8 @@ import { isRefrigerantPipeElementType } from '../refrigerantPipePairModel';
 
 import { ZERO3, type Vec3 } from './ductElasticMove';
 import type { DuctSegmentRef } from './ductNetworkMove';
-import { planHvacMove, type HvacMoveContext, type HvacMovePlan } from './hvacMoveModel';
+import { DuctResizeSolver, snapResizeValue, type DuctResizeGrip, type DuctResizeOutcome } from './ductResize';
+import { hvacMoveChanges, planHvacMove, type HvacMoveContext, type HvacMovePlan } from './hvacMoveModel';
 import { footprintBox, snapMoveDelta, type MoveBox, type MoveGuide } from './moveSnapping';
 
 export interface HvacMoveSessionHost {
@@ -75,6 +81,8 @@ export interface HvacMoveHudState {
   label: string;
   /** A turn: the angle made and asked for (degrees, clockwise on the plan), about `pivot`, from the pointer's start angle. */
   turn?: { appliedDeg: number; requestedDeg: number; pivot: Point2D; startDeg: number };
+  /** A straight being sized: the value before, asked and made. */
+  resize?: DuctResizeOutcome;
 }
 
 export interface HvacMoveBegin {
@@ -105,6 +113,15 @@ export interface HvacRotateBegin {
   clientX: number;
   clientY: number;
   /** A 3D view's pointer: the model point under a client point on the level plane through the pivot. Absent: the plan's. */
+  resolve?: (clientX: number, clientY: number) => Vec3 | null;
+}
+
+/** A straight sized by dragging one of its grips (its length, width or depth; a runout's length). */
+export interface HvacResizeBegin {
+  grip: DuctResizeGrip;
+  clientX: number;
+  clientY: number;
+  /** A 3D view's pointer: the model point (mm, z up) on the grip's line under a client point. Absent: the plan's. */
   resolve?: (clientX: number, clientY: number) => Vec3 | null;
 }
 
@@ -182,6 +199,8 @@ interface Armed {
   frame: number | null;
   /** A turn: its pivot, the pointer's angle at the press, the first item's orientation then, the angle last planned. */
   rotate: { pivot: Point2D; startDeg: number; baseDeg: number; walls: readonly number[]; planned: number | null; turn: number } | null;
+  /** A straight being sized: its grip, the solver (it keeps what it has planned), and the value last planned. */
+  resize: { grip: DuctResizeGrip; solver: DuctResizeSolver; settings: HvacMoveContext['ductSettings']; planned: string | null } | null;
 }
 
 export class HvacMoveSession {
@@ -223,7 +242,7 @@ export class HvacMoveSession {
       axes: { x: request.axes?.x ?? true, y: request.axes?.y ?? true, z: request.axes?.z ?? false },
       collapseOnClick: pressedSelected && selection.length > 1, onClick: request.onClick, dragging: false,
       lastClient: { x: request.clientX, y: request.clientY }, modifiers: { shift: false, alt: false }, typed: null, plan: null,
-      delta: { x: 0, y: 0, z: 0 }, frame: null, rotate: null,
+      delta: { x: 0, y: 0, z: 0 }, frame: null, rotate: null, resize: null,
     };
     this.listen();
     return true;
@@ -246,6 +265,29 @@ export class HvacMoveSession {
       rotate: {
         pivot: request.pivot, startDeg: degrees(Math.atan2(startWorld.y - request.pivot.y, startWorld.x - request.pivot.x)),
         baseDeg: byId.get(ids[0]!)!.rotation ?? 0, walls: this.host.snapAnglesDeg?.() ?? [], planned: null, turn: 0,
+      },
+      resize: null,
+    };
+    this.listen();
+    return true;
+  }
+
+  /** Arm a resize on a press of a straight's grip; false when its run is gone or the press is off the view. */
+  beginResize(request: HvacResizeBegin): boolean {
+    this.cancel();
+    const scene = this.host.scene();
+    const resolve = request.resolve ?? null;
+    const startWorld = this.pointAt(resolve, request.clientX, request.clientY);
+    if (!startWorld || !scene.some((element) => element.id === request.grip.runId)) return false;
+    const context = this.host.context(true);
+    this.armed = {
+      ids: [request.grip.runId], segment: null, pressedId: request.grip.runId, startClient: { x: request.clientX, y: request.clientY }, startWorld,
+      resolve, axes: { x: true, y: true, z: Boolean(resolve) }, anchor: { x: 0, y: 0 }, moving: [], others: [], collapseOnClick: false,
+      dragging: false, lastClient: { x: request.clientX, y: request.clientY }, modifiers: { shift: false, alt: false }, typed: null, plan: null,
+      delta: { x: 0, y: 0, z: 0 }, frame: null, rotate: null,
+      resize: {
+        grip: request.grip, settings: context.ductSettings, planned: null,
+        solver: new DuctResizeSolver(scene, context.ductSettings, request.grip, { soffitMm: context.ceilingVoid?.soffitMm ?? null }),
       },
     };
     this.listen();
@@ -470,11 +512,55 @@ export class HvacMoveSession {
     });
   }
 
+  /**
+   * The value a resize asks as it stands: the number typed (exact), or the
+   * pointer's travel along the grip, snapped (Alt: 1 mm). Shift gives a new
+   * section to every straight of the run's size.
+   */
+  private currentResize(armed: Armed): { value: number; scope: 'leg' | 'size'; fine: boolean } {
+    const resize = armed.resize!;
+    const { grip } = resize;
+    const scope = (grip.kind === 'width' || grip.kind === 'depth') && armed.modifiers.shift ? 'size' : 'leg';
+    const typed = armed.typed !== null ? Number.parseFloat(armed.typed) : Number.NaN;
+    if (Number.isFinite(typed)) return { value: typed, scope, fine: true };
+    const point = this.pointAt(armed.resolve, armed.lastClient.x, armed.lastClient.y);
+    if (!point) return { value: grip.value, scope, fine: armed.modifiers.alt };
+    const travel = (point.x - armed.startWorld.x) * grip.axis.x + (point.y - armed.startWorld.y) * grip.axis.y
+      + (armed.resolve ? (point.z - armed.startWorld.z) * grip.axis.z : 0);
+    return { value: snapResizeValue(grip, grip.value + travel * grip.rate, resize.settings, armed.modifiers.alt), scope, fine: armed.modifiers.alt };
+  }
+
+  private updateResize(armed: Armed): void {
+    const resize = armed.resize!;
+    const { value, scope, fine } = this.currentResize(armed);
+    // A plan per value: the pointer moving within one snap step re-plans nothing.
+    const key = `${scope}|${value}|${fine}`;
+    if (resize.planned !== key || !armed.plan) {
+      try {
+        armed.plan = resize.solver.plan(value, scope, fine);
+      } catch (error) {
+        this.cancel();
+        throw error;
+      }
+      resize.planned = key;
+      this.host.preview(armed.plan, armed.ids);
+    }
+    const plan = armed.plan;
+    this.host.hud({
+      client: armed.lastClient, applied: ZERO3, requested: ZERO3, typed: armed.typed, limitedBy: plan.limitedBy?.reason ?? null,
+      notes: plan.messages, infos: plan.infos ?? [], guides: [], label: plan.label, ...(plan.resize ? { resize: plan.resize } : {}),
+    });
+  }
+
   private update(): void {
     const armed = this.armed;
     if (!armed?.dragging) return;
     if (armed.rotate) {
       this.updateTurn(armed);
+      return;
+    }
+    if (armed.resize) {
+      this.updateResize(armed);
       return;
     }
     const { delta, guides } = this.currentDelta(armed);
@@ -502,6 +588,25 @@ export class HvacMoveSession {
   private finish(): void {
     const armed = this.armed;
     if (!armed) return;
+    if (armed.resize) {
+      const { value, scope, fine } = this.currentResize(armed);
+      this.detach();
+      this.host.hud(null);
+      this.host.dragState?.(null);
+      let plan: HvacMovePlan;
+      try {
+        plan = armed.resize.solver.plan(value, scope, fine);
+      } catch (error) {
+        this.host.preview(null, []);
+        throw error;
+      }
+      if (!hvacMoveChanges(plan)) {
+        this.host.preview(null, []);
+        return;
+      }
+      this.host.commit(plan);
+      return;
+    }
     if (armed.rotate) {
       const turn = this.currentTurn(armed);
       this.detach();
