@@ -8,10 +8,11 @@
 import type { Point2D } from '../../../../../types';
 import { portEntryDirection } from '../ductAirPorts';
 import { branchStubMm, dirToWorld, flexClear, flexFit, flexOk, runoutStaysOut, toWorld, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
-import { shoeLeadInMm } from '../ductBranches';
+import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLeg, dividedFlowLegWidthMm, shoeLeadInMm } from '../ductBranches';
 import { damperCost, energyPricePerPa, fittingCost, flexCost, sectionCostPerMetre, type SectionCostContext } from '../ductEconomics';
 import { flexCurve, type DuctFlexGeometry } from '../ductFlex';
 import {
+  dividedFlowOutletLossPa,
   elbowCoefficient,
   FITTING_LOSS_COEFFICIENTS,
   flexBendLossPa,
@@ -260,15 +261,41 @@ export class SizingModel {
 
   /**
    * How far past a run's end the outlet of a split runs on its own line (mm,
-   * along the main), as ductBranches builds the fitting: a Y's outlet elbow
-   * (neck and radius), a bullhead's box to the outlet's centre, a wye's 3A/2
-   * leg and the diagonal to the elbow that squares it (both at 45°).
+   * along the main), as ductBranches builds the fitting: a divided-flow Y's
+   * leg elbow (its neck and radius, on the leg's `share` of the main), a
+   * bullhead's box to the outlet's centre, a wye's 3A/2 leg and the diagonal
+   * to the elbow that squares it (both at 45°).
    */
-  splitLeadMm(style: DuctSplitStyle, main: DuctLeg, outlet: DuctLeg): number {
+  splitLeadMm(style: DuctSplitStyle, main: DuctLeg, outlet: DuctLeg, share: number): number {
     const neck = this.settings.elbowNeckMm;
     if (style === 'wye') return (wyeLegLengthMm(main.diameterMm ?? main.widthMm) + this.diagonalLegMm(outlet, 51, false)) * Math.SQRT1_2;
     if (style === 'bullhead') return neck + outlet.widthMm / 2;
-    return neck + Math.max(0.5, this.settings.elbowCentrelineRatio) * outlet.widthMm;
+    return dividedFlowLeg(main, outlet, share, 1, 90, this.settings).alongMm;
+  }
+
+  /** Whether a divided-flow Y can give a leg `share` of `main`: the leg at least DIVIDED_FLOW_MIN_LEG_MM wide. */
+  dividedFlowShareOk(main: DuctLeg, share: number): boolean {
+    return dividedFlowLegWidthMm(main.widthMm, share, 1) >= DIVIDED_FLOW_MIN_LEG_MM - 0.5;
+  }
+
+  /**
+   * One leg of a divided-flow Y carrying `outletAirflowM3h` of the main's
+   * (its share of the main's width): its elbow, its transition to the outlet
+   * and half the splitter, and its loss — as the planner builds it.
+   */
+  private dividedFlowOutlet(main: DuctLeg, mainAirflowM3h: number, outlet: DuctLeg, outletAirflowM3h: number): CostLoss {
+    const share = mainAirflowM3h > 0 ? outletAirflowM3h / mainAirflowM3h : 0.5;
+    const shaped = dividedFlowLeg(main, outlet, share, 1, 90, this.settings);
+    const larger = shaped.leg.widthMm * shaped.leg.heightMm >= outlet.widthMm * outlet.heightMm ? shaped.leg : outlet;
+    const transitionCost = shaped.transitionMm > 0 ? fittingCost(larger, shaped.transitionMm, this.costContext) : 0;
+    const splitter = fittingCost({ widthMm: main.heightMm / 4, heightMm: main.heightMm / 4 }, this.settings.elbowNeckMm, this.costContext) / 2;
+    return {
+      cost: this.elbow(shaped.leg, 90, outletAirflowM3h).cost + transitionCost + splitter,
+      loss: dividedFlowOutletLossPa({
+        inlet: main, leg: shaped.leg, outlet, radiusRatio: shaped.radiusMm / Math.max(1, shaped.leg.widthMm), angleDeg: 90,
+        transitionSlopeMm: shaped.transitionMm > 0 ? shaped.transitionMm - 2 * this.settings.elbowNeckMm : null,
+      }, mainAirflowM3h, outletAirflowM3h),
+    };
   }
 
   /**
@@ -329,33 +356,34 @@ export class SizingModel {
 
   /** A split at the end of `main` into two outlets: its cost and each outlet's loss. */
   split(style: DuctSplitStyle, main: DuctLeg, mainAirflowM3h: number, outlets: [{ leg: DuctLeg; airflowM3h: number }, { leg: DuctLeg; airflowM3h: number }]): { cost: number; losses: [number, number] } {
+    if (style === 'y') {
+      // A divided-flow Y: each leg at its share of the main.
+      const [a, b] = outlets.map((outlet) => this.dividedFlowOutlet(main, mainAirflowM3h, outlet.leg, outlet.airflowM3h)) as [CostLoss, CostLoss];
+      return { cost: a.cost + b.cost + this.settings.econHangerEach, losses: [a.loss, b.loss] };
+    }
     const vMain = velocityMs(main, mainAirflowM3h);
     const losses = outlets.map((outlet) => splitOutletLossPa(style, velocityMs(outlet.leg, outlet.airflowM3h), vMain)) as [number, number];
     let cost: number;
     if (style === 'wye') {
       const leg = wyeLegLengthMm(main.diameterMm ?? main.widthMm);
       cost = outlets.reduce((total, outlet) => total + fittingCost(main, leg + 51, this.costContext) * ((outlet.leg.widthMm + main.widthMm) / (2 * main.widthMm)), 0);
-    } else if (style === 'bullhead') {
+    } else {
       const depth = this.settings.elbowNeckMm + Math.max(...outlets.map((outlet) => outlet.leg.widthMm));
       cost = fittingCost(main, depth + main.widthMm, this.costContext);
-    } else {
-      cost = outlets.reduce((total, outlet) => total + this.elbow(outlet.leg, 90, outlet.airflowM3h).cost, 0);
     }
     return { cost: cost + this.settings.econHangerEach, losses };
   }
 
   /** One outlet of a split: its share of the fitting and its loss. */
   splitOutlet(style: DuctSplitStyle, main: DuctLeg, mainAirflowM3h: number, outlet: DuctLeg, outletAirflowM3h: number): CostLoss {
+    if (style === 'y') return this.dividedFlowOutlet(main, mainAirflowM3h, outlet, outletAirflowM3h);
     const loss = splitOutletLossPa(style, velocityMs(outlet, outletAirflowM3h), velocityMs(main, mainAirflowM3h));
     if (style === 'wye') {
       const leg = wyeLegLengthMm(main.diameterMm ?? main.widthMm);
       return { cost: fittingCost(main, leg + 51, this.costContext) * ((outlet.widthMm + main.widthMm) / (2 * main.widthMm)), loss };
     }
-    if (style === 'bullhead') {
-      // The box over the main, as deep as its outlets are wide (half each), with its vanes.
-      return { cost: fittingCost(main, (this.settings.elbowNeckMm + outlet.widthMm + main.widthMm) / 2, this.costContext), loss };
-    }
-    return { cost: this.elbow(outlet, 90, outletAirflowM3h).cost, loss };
+    // A bullhead: the box over the main, as deep as its outlets are wide (half each), with its vanes.
+    return { cost: fittingCost(main, (this.settings.elbowNeckMm + outlet.widthMm + main.widthMm) / 2, this.costContext), loss };
   }
 
   /** The part of a split's cost that is not per outlet (its hanger). */

@@ -19,6 +19,7 @@ import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
 
 import { findAirPort, portEntryDirection, type DuctAirPort } from './ductAirPorts';
 import {
+  DIVIDED_FLOW_MIN_LEG_MM,
   splitFitting,
   splitOutlet,
   tapAttachment,
@@ -35,6 +36,7 @@ import {
   seamAllowanceMm,
   seamsPerSection,
   resolveVaneType,
+  transitionSlopeMm,
   vaneCountOnDiagonal,
   vaneSectionsFor,
   type DuctDamperLayout,
@@ -355,6 +357,7 @@ const PRACTICE = {
   neckStretch: 'A leg remainder shorter than the minimum make-up piece is taken up in the elbow neck',
   insulation: 'NBR thickness by service, flange bands, tape and waste',
   split: 'Split neck and tee depth (types per Fig. 2-5)',
+  dividedFlow: 'Divided-flow Y (Fig. 2-5): the splitter at the airflow ratio, each leg on a radius elbow (R/W at least 1 on its own width) and a transition to its outlet inside the fitting (flat bottom, at the design taper)',
   roundTap: 'Round-main tap stub and lateral collar lengths (Fig. 3-4 leaves them undimensioned)',
   wye: 'Wye leg 3A/2 read as the centreline length to the outlet',
   penetration: 'Wall penetrations: a plain straight through the wall, joints 50 mm clear of its faces, the sleeve clearance',
@@ -721,11 +724,7 @@ interface TransitionPlan {
 
 /** Level legs keep a flat bottom (the height changes on top); a riser's transition is concentric both ways. */
 function planTransition(from: DuctLeg, to: DuctLeg, settings: DuctDesignSettings, concentric = false, taperDeg = settings.transitionTaperDeg): TransitionPlan {
-  const rise = Math.max(Math.abs(to.widthMm - from.widthMm) / 2, Math.abs(to.heightMm - from.heightMm) / (concentric ? 2 : 1));
-  let slope = Math.ceil(rise / Math.tan((taperDeg * Math.PI) / 180) / 10) * 10;
-  // A round reducer's cone is at least A - B and 102 mm long (SMACNA Fig. 3-5, L2).
-  if (isRoundLeg(from) && isRoundLeg(to)) slope = Math.max(slope, Math.ceil(roundReducerMinLengthMm(from.diameterMm!, to.diameterMm!) / 10) * 10);
-  return { from, to, neckMm: settings.elbowNeckMm, slopeMm: slope };
+  return { from, to, neckMm: settings.elbowNeckMm, slopeMm: transitionSlopeMm(from, to, taperDeg, concentric) };
 }
 
 function transitionLength(transition: TransitionPlan): number {
@@ -1501,9 +1500,18 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
           message: geometry.cappedSides.length === 2 ? 'The split has no branches yet; both outlets are capped.' : 'One outlet of the split has no branch and is capped.' });
       }
       const sharedWidth = geometry.branches.reduce((total, branch) => total + branch.section.widthMm, 0);
-      if (geometry.style === 'y' && sharedWidth > lastSection.widthMm + 0.5) {
+      if (geometry.style === 'y' && geometry.share === null && sharedWidth > lastSection.widthMm + 0.5) {
         issues.push({ code: 'DU_SPLIT_SIZE', severity: 'error', point: geometry.origin,
           message: `The Y branches (${sharedWidth} mm together) are wider than the run (${lastSection.widthMm} mm).` });
+      }
+      if (geometry.share !== null) {
+        practice.add(PRACTICE.dividedFlow);
+        for (const branch of geometry.branches) {
+          if (branch.leg.widthMm >= DIVIDED_FLOW_MIN_LEG_MM - 0.5) continue;
+          const share = Math.round((branch.side === 1 ? geometry.share : 1 - geometry.share) * 100);
+          issues.push({ code: 'DU_SPLIT_SIZE', severity: 'error', point: branch.outlet.point,
+            message: `A leg of the Y would be ${Math.round(branch.leg.widthMm)} mm wide (its ${share} % of the air), under ${DIVIDED_FLOW_MIN_LEG_MM} mm: split here with a bullhead tee (turning vanes, SMACNA Fig. 2-5), or widen the run.` });
+        }
       }
       for (const branch of geometry.branches) {
         if (branch.section.heightMm > lastSection.heightMm + 0.5) {
@@ -1525,6 +1533,14 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         }, 0) + geometry.cappedSides.length * (Math.PI * o.w * o.w) / 4) / 1e6;
       } else if (geometry.style === 'bullhead') {
         area = (2 * (o.w + o.h) * geometry.depthMm + o.w * o.h) / 1e6;
+      } else if (geometry.share !== null) {
+        // Each leg's elbow on its own section, its transition to its outlet, and the splitter between them.
+        area = geometry.branches.reduce((total, branch) => total
+          + (branch.elbow ? elbowAreaM2({ ...branch.elbow, style: 'radius', vaneCount: 0 }, branch.leg, sheetOf(heavy), 0) : 0)
+          + (branch.transition ? transitionAreaM2(branch.transition.from, branch.transition.to, sheetOf(heavy), settings.elbowNeckMm,
+            branch.transition.slopeMm, flangeRollEnds(heavy), seamsOf(heavy, true)) : 0), 0)
+          + (settings.elbowNeckMm * lastSection.heightMm) / 1e6
+          + (geometry.cappedSides.length > 0 ? (o.w * o.h) / 2e6 : 0);
       } else {
         area = geometry.branches.reduce((total, branch) => total + (branch.elbow
           ? elbowAreaM2({ ...branch.elbow, style: 'radius', vaneCount: 0 }, branch.section, sheetOf(heavy), 0) : 0), 0)

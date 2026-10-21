@@ -183,7 +183,16 @@ function describe(plan: DuctFabricationPlan, kind: DuctSegmentKind, pieces: Duct
     case 'split': {
       const style = first.split?.style ?? (plan.spec.end.kind === 'split' ? plan.spec.end.style : 'y');
       const angle = first.split?.angleDeg ?? splitAngleOf(plan.spec.end);
-      const outlets = first.split?.branches.map((branch) => sectionLabel(branch.section)).join(' + ');
+      const split = first.split;
+      if (split && split.share !== null && split.branches.length) {
+        // "divided 60 / 40 % · legs 240×250 + 160×250 · to 250×250 + 200×250"
+        const percent = (side: number) => Math.round((side === 1 ? split.share! : 1 - split.share!) * 100);
+        const sides = [...split.branches].sort((a, b) => b.side - a.side);
+        const legs = sides.map((branch) => sectionLabel(branch.leg)).join(' + ');
+        const to = sides.some((branch) => branch.transition) ? ` · to ${sides.map((branch) => sectionLabel(branch.section)).join(' + ')}` : '';
+        return { title: splitTitle(style, angle), size, detail: `divided ${sides.map((branch) => percent(branch.side)).join(' / ')} % · legs ${legs}${to}` };
+      }
+      const outlets = split?.branches.map((branch) => sectionLabel(branch.section)).join(' + ');
       return { title: splitTitle(style, angle), size, detail: outlets ? `to ${outlets}` : 'outlets open' };
     }
     case 'plenum': {

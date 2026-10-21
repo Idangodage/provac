@@ -40,7 +40,7 @@ import { spigotOrigin, splitOrigin, tapOrigin } from '../ductBranchTargets';
 import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from '../ductDraft';
 import { ductRunElementWithSpec } from '../ductFollow';
 import { polylinePenetrationZones } from '../ductPenetrations';
-import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctTapStyle } from '../ductTypes';
+import { isRoundLeg, readDuctRunSpec, roundLeg, splitEnd, type DuctLeg, type DuctTapStyle } from '../ductTypes';
 
 import { pointAlong, turnedTerminals, withReplaced, type RunDesign } from './designTree';
 import type { RunSizing, SizedDesign } from './sizingDp';
@@ -301,9 +301,10 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
     if (end.kind === 'split' && polyline.length >= 2) {
       const style = sizing.splitStyle ?? 'y';
       const main = sections[sections.length - 1]!;
+      const total = end.children.reduce((sum, child) => sum + child.airflowM3h, 0);
       const lead = Math.max(0, ...end.children.map((child) => {
         const outlet = sized.sizing.get(child.key)?.sections[0];
-        return outlet ? model.splitLeadMm(style, main, outlet) : 0;
+        return outlet ? model.splitLeadMm(style, main, outlet, total > 0 ? child.airflowM3h / total : 0.5) : 0;
       }));
       const n = polyline.length;
       const a = polyline[n - 2]!;
@@ -550,7 +551,11 @@ export function realiseDesign(ctx: ServiceCtx, model: SizingModel, sized: SizedD
       element = buildDuctRunDraft({ origin, ...input }, ctx.ids(), scene).element;
     }
     if (end.kind === 'split') {
-      element = ductRunElementWithSpec(element, { ...readDuctRunSpec(element)!, end: { kind: 'split', style: sizing.splitStyle ?? 'y' } });
+      // A divided-flow Y's splitter at the outlets' airflow ratio (the +1 side's share).
+      const style = sizing.splitStyle ?? 'y';
+      const plus = end.children.find((child) => child.start.kind === 'split' && child.start.side === 1)?.airflowM3h ?? 0;
+      const minus = end.children.find((child) => child.start.kind === 'split' && child.start.side === -1)?.airflowM3h ?? 0;
+      element = ductRunElementWithSpec(element, { ...readDuctRunSpec(element)!, end: splitEnd(style, 90, plus + minus > 0 ? plus / (plus + minus) : null) });
     }
     // Square vaned elbows where the take-offs needed the room, told to the planner by node.
     const squares = bends.filter((bend) => bend.square);

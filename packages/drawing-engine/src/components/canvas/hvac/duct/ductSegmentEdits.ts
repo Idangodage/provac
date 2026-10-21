@@ -15,7 +15,7 @@ import { moveDuctNetwork } from '../move/ductNetworkMove';
 
 import { findAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
-import { tapAttachment } from './ductBranches';
+import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLegWidthMm, tapAttachment } from './ductBranches';
 import { accessDoorFor, getDuctRunPlan, inlineAccessoryLengthMm, planDuctRunSpec } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
@@ -24,6 +24,7 @@ import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork'
 import { maxRoundBranchMm } from './ductRoundFittings';
 import { withFlexRunout, withRigidRunout } from './ductRunouts';
 import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
+import { splitAirflowShare } from './ductSegmentFigures';
 import { sectionLabel, splitTitle, TAKEOFF_TITLES } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { equivalentDiameterMm } from './ductSizing';
@@ -70,6 +71,8 @@ export type DuctSegmentEdit =
   | { kind: 'start'; runId: string; vcd?: boolean; connector?: boolean }
   /** A split's style; a Y's leaving angle (90° unless given). Outlets that leave at a new angle turn, keeping their ends. */
   | { kind: 'split'; runId: string; style: DuctSplitStyle; angleDeg?: DuctSplitAngle }
+  /** A divided-flow Y's splitter at `share` (the +1 side's share of the air); its outlets' runs follow, keeping their ends. */
+  | { kind: 'split-share'; runId: string; share: number }
   /** A fire damper at a wall crossing (null = as the project's policy says). */
   | { kind: 'fire-damper'; runId: string; key: string; fireDamper: boolean | null; byPolicy: boolean }
   | { kind: 'end'; runId: string; end: 'end-cap' | 'open' }
@@ -487,7 +490,6 @@ function convertSections(
     for (const outlet of outlets) {
       const section = outletSection(outlet.spec.legs[0]!, main, round, outlets.length, settings);
       if (!section) return refuse(`${labelOf(outlet.element, outlet.spec, scene)}: no ${round ? 'round' : 'rectangular'} outlet of its friction fits the run.`);
-      if (!round && style === 'y' && section.widthMm > main.widthMm / Math.max(1, outlets.length) + 0.5 && !edit.splitStyle) style = 'bullhead';
       const tail = flexTail(outlet.spec) ? outlet.spec.legs.length - 1 : outlet.spec.legs.length;
       const branchLegs = outlet.spec.legs.map((leg, index) => (index === 0 || (edit.wholeBranches && index < tail && isRoundLeg(leg) !== round) ? section : leg));
       if (sectionLabel(section) !== sectionLabel(outlet.spec.legs[0]!)) {
@@ -495,7 +497,11 @@ function convertSections(
       }
       outletChanges.push({ element: outlet.element, spec: { ...outlet.spec, legs: branchLegs } });
     }
-    end = splitEnd(style, style === 'y' ? angle : 90);
+    // A divided-flow Y: its splitter at the outlets' airflow ratio; a bullhead where a leg of it would be too narrow.
+    const share = style === 'y' ? splitShareFor(scene, settings, element.id, outletChanges.map((outlet) => outlet.spec)) : null;
+    if (style === 'y' && share !== null && !edit.splitStyle
+      && Math.min(dividedFlowLegWidthMm(main.widthMm, share, 1), dividedFlowLegWidthMm(main.widthMm, share, -1)) < DIVIDED_FLOW_MIN_LEG_MM) style = 'bullhead';
+    end = splitEnd(style, style === 'y' ? angle : 90, style === 'y' ? share : null);
     notes.push(`The split becomes a ${splitNoun(style, style === 'y' ? angle : 90)}`);
   }
   const changed = new Map<string, HvacElement>([[element.id, ductRunElementWithSpec(element, { ...spec, legs, end })]]);
@@ -582,12 +588,55 @@ function editSplit(scene: readonly HvacElement[], settings: DuctDesignSettings, 
   const round = isRoundLeg(spec.legs[spec.legs.length - 1]);
   if ((edit.style === 'wye') !== round) return refuse(round ? 'A round run splits by a wye.' : 'A wye splits a round run.');
   const angle: DuctSplitAngle = edit.style === 'y' ? edit.angleDeg ?? 90 : 90;
-  const changed = new Map<string, HvacElement>([[element.id, ductRunElementWithSpec(element, { ...spec, end: splitEnd(edit.style, angle) })]]);
+  // A Y divides the flow: it keeps its splitter, or takes the outlets' airflow ratio.
+  const outletSpecs = ductBranchesOf(element.id, scene).filter((branch) => branch.start.kind === 'split-branch').map((branch) => branch.spec);
+  const share = edit.style !== 'y' ? null
+    : spec.end.style === 'y' && spec.end.share !== undefined ? spec.end.share : splitShareFor(scene, settings, element.id, outletSpecs);
+  const changed = new Map<string, HvacElement>([[element.id, ductRunElementWithSpec(element, { ...spec, end: splitEnd(edit.style, angle, share) })]]);
   const notes: string[] = [];
   // Outlets that now leave at another angle (a Y junction's 45° and a Y split's 90°) turn with it, keeping their ends.
   const turned = reaimTurningBranches(scene, settings, element.id, changed, notes);
   if (turned) return refuse(`${turned}.`);
   return { updates: settle(scene, changed, settings, notes), notes, action: `Duct split: ${splitTitle(edit.style, angle)}` };
+}
+
+/**
+ * A Y's splitter for a run's outlets: their airflow ratio on the system, else
+ * their first sections' areas (the +1 side's share; even without either).
+ */
+function splitShareFor(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, outlets: readonly DuctRunSpec[]): number {
+  const airflow = splitAirflowShare(scene, settings, runId);
+  if (airflow !== null) return airflow;
+  const area = (side: 1 | -1) => outlets.reduce((sum, outlet) => (outlet.start.kind === 'split-branch' && outlet.start.side === side
+    ? sum + outlet.legs[0]!.widthMm * outlet.legs[0]!.heightMm : sum), 0);
+  const total = area(1) + area(-1);
+  return area(1) > 0 && area(-1) > 0 ? area(1) / total : 0.5;
+}
+
+/** A Y's splitter for a run's split outlets as drawn: their airflow ratio, else their first sections' areas. */
+export function outletSplitShare(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string): number {
+  const outlets = ductBranchesOf(runId, scene).filter((branch) => branch.start.kind === 'split-branch').map((branch) => branch.spec);
+  return splitShareFor(scene, settings, runId, outlets);
+}
+
+/** A divided-flow Y's splitter moved: each leg its share of the run, its outlet's run following (its end kept). */
+function editSplitShare(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'split-share' }>): DuctSegmentEditResult {
+  const element = scene.find((candidate) => candidate.id === edit.runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  if (!element || !spec) return refuse('The run is no longer in the drawing.');
+  if (spec.end.kind !== 'split' || spec.end.style !== 'y') return refuse('The run does not end in a Y.');
+  if (spec.locked) return refuse('The run is locked.');
+  const end = splitEnd('y', splitAngleOf(spec.end), edit.share);
+  if (spec.end.share !== undefined && Math.abs(spec.end.share - end.share!) < 0.0005) return refuse('The splitter is there already.');
+  const last = spec.legs[spec.legs.length - 1]!;
+  const legs = ([1, -1] as const).map((side) => dividedFlowLegWidthMm(last.widthMm, end.share!, side));
+  if (Math.min(...legs) < DIVIDED_FLOW_MIN_LEG_MM) {
+    return refuse(`A leg of the Y would be ${Math.min(...legs)} mm wide, under ${DIVIDED_FLOW_MIN_LEG_MM} mm: split here with a bullhead tee, or widen the run.`);
+  }
+  const percent = (value: number) => Math.round(value * 100);
+  const notes = [`the splitter at ${percent(end.share!)} / ${percent(1 - end.share!)} %: legs ${legs[0]} and ${legs[1]} mm, each tapering to its outlet; the outlets' runs follow`];
+  const changed = new Map([[element.id, ductRunElementWithSpec(element, { ...spec, end })]]);
+  return { updates: settle(scene, changed, settings, notes), notes, action: 'Y splitter at the airflow ratio' };
 }
 
 function editFireDamper(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'fire-damper' }>): DuctSegmentEditResult {
@@ -1322,6 +1371,7 @@ export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: Du
     case 'tap': return editTap(scene, settings, edit);
     case 'start': return editStart(scene, settings, edit);
     case 'split': return editSplit(scene, settings, edit);
+    case 'split-share': return editSplitShare(scene, settings, edit);
     case 'fire-damper': return editFireDamper(scene, settings, edit);
     case 'end': return editEnd(scene, settings, edit);
     case 'runout': return editRunout(scene, settings, edit);

@@ -87,6 +87,7 @@ import {
   isDuctElement,
   readDuctRunSpec,
   roundLeg,
+  splitEnd,
   type DuctLeg,
   type DuctService,
   type DuctSide,
@@ -815,6 +816,7 @@ function buildTrunkRun(
   end: 'end-cap' | DuctSplitStyle,
   build: Build,
   minFirstWidthMm = 0,
+  splitShare: number | null = null,
 ): ({ run: HvacElement; branches: HvacElement[]; terminalRuns: Map<string, string>; sections: Array<{ widthMm: number; heightMm: number; airflowM3h: number }>; hits: number; notes: AutoDuctIssue[] } & Pick<Candidate, 'terminals' | 'terminalUpdates'>) | null {
   const airflow = plan.terminals.reduce((total, terminal) => total + terminal.airflowM3h, 0);
   const bottomZ = origin && origin.kind !== 'port' && origin.kind !== 'free' ? origin.bottomZ : ctx.bottomZ;
@@ -852,7 +854,7 @@ function buildTrunkRun(
     ...(origin ? { origin } : { port: ctx.port }), points, legSizes: sized.legSizes, construction: ctx.construction,
     end: 'end-cap',
   }, ctx.ids());
-  if (end !== 'end-cap') run = ductRunElementWithSpec(run, { ...readDuctRunSpec(run)!, end: { kind: 'split', style: end } });
+  if (end !== 'end-cap') run = ductRunElementWithSpec(run, { ...readDuctRunSpec(run)!, end: splitEnd(end, 90, splitShare) });
   const withRun = [...scene, run];
   addRunObstacles(ctx, build, run);
   const branches: HvacElement[] = [];
@@ -906,15 +908,19 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
     const sideWidth = (group: TerminalCtx[]) => sizeRectangular(group.reduce((total, terminal) => total + terminal.airflowM3h, 0), height,
       sizingLimits(settings, ctx.service, 'trunk'), { minWidthMm: height, maxHeightMm: height }).widthMm;
     const mainWidth = sideWidth(left) + sideWidth(right);
+    const flowOf = (group: TerminalCtx[]) => group.reduce((total, terminal) => total + terminal.airflowM3h, 0);
+    // A Y's splitter divides the main in its sides' airflow ratio.
+    const share = flowOf(left) + flowOf(right) > 0 ? flowOf(left) / (flowOf(left) + flowOf(right)) : 0.5;
     for (const style of ['y', 'bullhead'] as const) {
+      const splitShare = style === 'y' ? share : null;
       // The outlets sit ahead of the main's end: pull the main back so the outlet trunks run on the row.
-      const trial = buildTrunkRun(ctx, { vertices: [{ x: 0, y: 0 }, { x: row, y: 0 }], startClearMm: exit, terminals }, height, null, ctx.baseScene, style, newBuild(), mainWidth);
+      const trial = buildTrunkRun(ctx, { vertices: [{ x: 0, y: 0 }, { x: row, y: 0 }], startClearMm: exit, terminals }, height, null, ctx.baseScene, style, newBuild(), mainWidth, splitShare);
       const trialOrigin = trial ? splitOrigin(trial.run, settings, { side: 1, style, vcd: false }, { widthMm: sideWidth(left), heightMm: height }) : null;
       const mainRow = trialOrigin && trialOrigin.kind === 'split' ? roundUp(row - (toLocal(ctx.frame, trialOrigin.point).x - row)) : row;
       // The split is the first fitting: it needs only the fan outlet straight before it.
       if (mainRow < exit) continue;
       const build = newBuild();
-      const main = buildTrunkRun(ctx, { vertices: [{ x: 0, y: 0 }, { x: mainRow, y: 0 }], startClearMm: exit, terminals }, height, null, ctx.baseScene, style, build, mainWidth);
+      const main = buildTrunkRun(ctx, { vertices: [{ x: 0, y: 0 }, { x: mainRow, y: 0 }], startClearMm: exit, terminals }, height, null, ctx.baseScene, style, build, mainWidth, splitShare);
       if (!main) continue;
       const runs: HvacElement[] = [main.run];
       const terminalRuns = new Map<string, string>();

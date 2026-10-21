@@ -25,6 +25,7 @@ import { listNetworkPipeLanes } from '../networkPipeClearance';
 
 import { findAirPort } from './ductAirPorts';
 import { branchStubMm, type AutoDuctIssue } from './ductAutoContext';
+import { DIVIDED_FLOW_MIN_LEG_MM } from './ductBranches';
 import { getActiveDuctBuilding } from './ductBuilding';
 import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorKeepingEnd, startAnchor } from './ductFollow';
@@ -53,6 +54,9 @@ import {
   isRoundMainTapStyle,
   readDuctRunSpec,
   roundLeg,
+  SPLIT_SHARE_LIMITS,
+  splitAngleOf,
+  splitEnd,
   type DuctLeg,
   type DuctPoint3,
   type DuctRunSpec,
@@ -389,6 +393,8 @@ function specsClose(a: DuctRunSpec, b: DuctRunSpec): boolean {
   if (a.path.some((point, index) => length3(point, b.path[index]!) > 0.01)) return false;
   if (a.legs.some((leg, index) => !sameLeg(leg, b.legs[index]!))) return false;
   if (JSON.stringify(a.nodeOverrides) !== JSON.stringify(b.nodeOverrides) || JSON.stringify(a.sizing ?? null) !== JSON.stringify(b.sizing ?? null)) return false;
+  // (A divided-flow Y's splitter re-set at its outlets' airflow ratio changes the end alone.)
+  if (JSON.stringify(a.end) !== JSON.stringify(b.end)) return false;
   if (a.start.kind === 'tap' && b.start.kind === 'tap') {
     return a.start.legIndex === b.start.legIndex && Math.abs(a.start.stationMm - b.start.stationMm) < 0.01 && a.start.style === b.start.style;
   }
@@ -635,9 +641,16 @@ export function sizeDuctSystem(
       const outlets = endChildren.filter((child) => child.spec.start.kind === 'split-branch').map(firstSection);
       if (outlets.length) {
         if (style === 'wye') raise(last, { diameter: Math.max(...outlets.map((outlet) => outlet.diameterMm ?? outlet.widthMm)) }, 'split', 'the wye\'s outlets');
-        else {
-          const width = style === 'y' ? outlets.reduce((sum, outlet) => sum + outlet.widthMm, 0) : Math.max(...outlets.map((outlet) => outlet.widthMm));
-          raise(last, { height: Math.max(...outlets.map((outlet) => outlet.heightMm)), width }, 'split', style === 'y' ? 'the Y\'s outlets side by side' : 'the bullhead\'s outlets');
+        else if (style === 'y') {
+          // A divided-flow Y: each leg its share of the main, at least DIVIDED_FLOW_MIN_LEG_MM wide (its transition takes it
+          // to its outlet); the outlets no taller than the main (a flat bottom).
+          const flows = endChildren.filter((child) => child.spec.start.kind === 'split-branch').map((child) => child.airflow);
+          const total = flows.reduce((sum, flow) => sum + flow, 0);
+          const least = total > 0 ? Math.max(SPLIT_SHARE_LIMITS.min, Math.min(...flows) / total) : 0.5;
+          raise(last, { height: Math.max(...outlets.map((outlet) => outlet.heightMm)), width: ceilStep(DIVIDED_FLOW_MIN_LEG_MM / least) }, 'split',
+            `the Y's narrower leg (at least ${DIVIDED_FLOW_MIN_LEG_MM} mm for its ${Math.round(least * 100)} % of the air)`);
+        } else {
+          raise(last, { height: Math.max(...outlets.map((outlet) => outlet.heightMm)), width: Math.max(...outlets.map((outlet) => outlet.widthMm)) }, 'split', 'the bullhead\'s outlets');
         }
       }
     }
@@ -897,7 +910,14 @@ export function sizeDuctSystem(
     });
     const path = node.flexTail ? [...rigid, spec.path[spec.path.length - 1]!] : rigid;
     const allLegs = node.flexTail ? [...legs, spec.legs[spec.legs.length - 1]!] : legs;
-    const next: DuctRunSpec = { ...spec, path, legs: allLegs, nodeOverrides: overrides };
+    // A divided-flow Y's splitter at its outlets' airflow ratio (its branches re-anchor on it, below).
+    let end = spec.end;
+    if (end.kind === 'split' && end.style === 'y') {
+      const flowOn = (side: 1 | -1) => node.children.find((child) => child.spec.start.kind === 'split-branch' && child.spec.start.side === side)?.airflow ?? 0;
+      const total = flowOn(1) + flowOn(-1);
+      if (total > 0) end = splitEnd('y', splitAngleOf(end), flowOn(1) / total);
+    }
+    const next: DuctRunSpec = { ...spec, path, legs: allLegs, nodeOverrides: overrides, end };
     if (!node.parent && !input.measure) next.sizing = basis;
     newSpecs.set(node.id, next);
     for (const child of node.children) rebuild(child, next);

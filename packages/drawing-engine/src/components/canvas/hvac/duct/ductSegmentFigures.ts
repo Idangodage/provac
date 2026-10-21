@@ -158,6 +158,22 @@ function buildSystemModel(scene: readonly HvacElement[], settings: DuctDesignSet
   return { rootRunId: root.id, service: rootSpec.service, unit, basis, systemAirflowM3h, plans, tree, losses, pressure, indexReach };
 }
 
+/**
+ * The airflow ratio at a run's split: the +1 outlet's share of the air the
+ * split divides (null off a system, or where an outlet carries none).
+ */
+export function splitAirflowShare(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string): number | null {
+  const node = systemModelOf(scene, settings, runId)?.tree?.runs.get(runId);
+  if (!node) return null;
+  const flowOn = (side: 1 | -1) => node.children.find((child) => {
+    const start = child.plan.spec.start;
+    return start.kind === 'split-branch' && start.side === side;
+  })?.airflowM3h ?? 0;
+  const plus = flowOn(1);
+  const minus = flowOn(-1);
+  return plus > 0 && minus > 0 ? plus / (plus + minus) : null;
+}
+
 /** The flow model of the system a run belongs to (cached per drawing, settings and building), or null off any system. */
 function systemModelOf(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string): SystemFlowModel | null {
   const root = ductSystemRootOfRun(scene, runId);

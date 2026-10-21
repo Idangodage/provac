@@ -422,6 +422,8 @@ function endFrontiers(state: RunState, solver: Solver): void {
         // Each outlet on its own (its section fits the split, its loss and share of the fitting), shifted by that.
         const side = (child: RunState, which: 0 | 1) => child.options[0]!.flatMap((y, index) => {
           if (!splitOutletOk(style, leg, y)) return [];
+          // A divided-flow Y gives each outlet its share of the main: a leg too narrow is a bullhead's job.
+          if (style === 'y' && !model.dividedFlowShareOk(leg, flow > 0 ? child.run.airflowM3h / flow : 0.5)) return [];
           if (style === 'wye' && room[which]! < model.diagonalRoomMm(leg.diameterMm!, y, true)) return [];
           const part = model.splitOutlet(style, leg, flow, y, child.run.airflowM3h);
           const shifted = filled(grid, INF);
@@ -429,27 +431,17 @@ function endFrontiers(state: RunState, solver: Solver): void {
           return [{ index, leg: y, shifted }];
         });
         const as = side(plus, 0);
-        const bs = side(minus, 1).sort((m, n) => m.leg.widthMm - n.leg.widthMm);
+        const bs = side(minus, 1);
         if (!as.length || !bs.length) continue;
-        // Envelope over the second outlet, narrowest first: the best of those up to each width.
-        const envelope: Float64Array[] = [];
-        const envelopeArg: Int32Array[] = [];
-        bs.forEach((entry, j) => {
-          const value = j ? Float64Array.from(envelope[j - 1]!) : filled(grid, INF);
-          const which = j ? Int32Array.from(envelopeArg[j - 1]!) : new Int32Array(grid.size).fill(-1);
-          for (let i = 0; i < grid.size; i += 1) if (entry.shifted[i]! < value[i]!) { value[i] = entry.shifted[i]!; which[i] = entry.index; }
-          envelope.push(value);
-          envelopeArg.push(which);
-        });
+        // Each outlet takes its own leg — a divided-flow Y's share of the main (its transition takes it to the outlet's
+        // size), a bullhead's or a wye's within the main — so the best second outlet at each step goes with any first.
+        const best = filled(grid, INF);
+        const which = new Int32Array(grid.size).fill(-1);
+        for (const entry of bs) {
+          for (let i = 0; i < grid.size; i += 1) if (entry.shifted[i]! < best[i]!) { best[i] = entry.shifted[i]!; which[i] = entry.index; }
+        }
         const base = model.splitBaseCost(style, leg, flow);
         for (const a of as) {
-          // A Y shares the main's width between its outlets; a bullhead or a wye takes each within the main.
-          const limit = style === 'y' ? leg.widthMm - a.leg.widthMm + 0.5 : Number.POSITIVE_INFINITY;
-          let j = -1;
-          while (j + 1 < bs.length && bs[j + 1]!.leg.widthMm <= limit) j += 1;
-          if (j < 0) continue;
-          const best = envelope[j]!;
-          const which = envelopeArg[j]!;
           for (let i = 0; i < grid.size; i += 1) {
             const value = a.shifted[i]! + best[i]! + base;
             if (value < frontier[i]!) { frontier[i] = value; arg[i] = styleIndex * 1_000_000 + a.index * 1000 + which[i]!; }

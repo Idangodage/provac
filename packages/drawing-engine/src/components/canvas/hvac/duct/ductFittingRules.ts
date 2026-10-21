@@ -3,7 +3,21 @@
  * pages cited per value). These were image-only in the text version; each is
  * transcribed in docs/hvac-duct-smacna-research.md ("Figures").
  */
+import { roundReducerMinLengthMm } from './ductRoundFittings';
 import type { DuctRuleProvenance } from './ductSources';
+import type { DuctLeg } from './ductTypes';
+
+/**
+ * A transition's slope at `taperDeg` a side (mm, up to 10): the width centred,
+ * the height on top of a flat bottom (concentric both ways on a riser); a round
+ * reducer's cone at least A − B and 102 mm (SMACNA Fig. 3-5, L2).
+ */
+export function transitionSlopeMm(from: DuctLeg, to: DuctLeg, taperDeg: number, concentric = false): number {
+  const rise = Math.max(Math.abs(to.widthMm - from.widthMm) / 2, Math.abs(to.heightMm - from.heightMm) / (concentric ? 2 : 1));
+  let slope = Math.ceil(rise / Math.tan((taperDeg * Math.PI) / 180) / 10) * 10;
+  if (from.diameterMm !== undefined && to.diameterMm !== undefined) slope = Math.max(slope, Math.ceil(roundReducerMinLengthMm(from.diameterMm, to.diameterMm) / 10) * 10);
+  return slope;
+}
 
 const smacna = (reference: string, note?: string): DuctRuleProvenance => ({ sourceId: 'smacna-1995', reference, verified: true, ...(note ? { note } : {}) });
 

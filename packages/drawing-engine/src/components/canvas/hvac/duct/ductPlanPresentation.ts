@@ -423,8 +423,25 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
           for (const branch of split.branches) {
             if (!branch.elbow) continue;
             const elbow: DuctElbow = { ...branch.elbow, style: 'radius', vaneCount: 0 };
-            piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: elbowOutline(elbow, branch.section.widthMm / 2 + sheet) });
+            piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: elbowOutline(elbow, branch.leg.widthMm / 2 + sheet) });
             centreline.push(elbow.startPoint, ...sampleArc(elbow, elbow.centrelineRadiusMm, ARC_SEGMENTS), elbow.endPoint);
+            if (branch.transition) {
+              // A divided-flow leg's transition to its outlet, inside the fitting.
+              const across = normalOf(branch.outlet.direction);
+              const from = branch.leg.widthMm / 2 + sheet;
+              const to = branch.section.widthMm / 2 + sheet;
+              const { start, end } = branch.transition;
+              piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: [
+                add(start, scale(across, from)), add(end, scale(across, to)), sub(end, scale(across, to)), sub(start, scale(across, from)),
+              ] });
+              centreline.push(start, end);
+            }
+          }
+          if (split.splitter) {
+            // The splitter between the legs: a sheet on edge.
+            const half = scale(split.normal, sheet / 2 + 0.5);
+            const { from, to } = split.splitter;
+            piecePolygons.push({ mark: piece.mark, kind: piece.kind, polygon: [add(from, half), add(to, half), sub(to, half), sub(from, half)] });
           }
           for (const side of split.cappedSides) {
             // A capped half of the Y: a blank plate across that half of the run.

@@ -112,7 +112,8 @@ describe('a rectangular Y junction (outlets at 45°)', () => {
     expect(evaluation.refused).toBeUndefined();
     expect(evaluation.newIssues.filter((issue) => issue.severity === 'error')).toEqual([]);
     const after = withUpdates(before, evaluation.updates);
-    expect(specOf(after, 'main').end).toEqual({ kind: 'split', style: 'y', angleDeg: 45 });
+    // It divides the flow: the Y split drawn before the splitter takes its outlets' share (by their sizes here).
+    expect(specOf(after, 'main').end).toMatchObject({ kind: 'split', style: 'y', angleDeg: 45, share: 0.5 });
     for (const id of ['l', 'r']) {
       const now = specOf(after, id);
       const was = specOf(before, id);
@@ -123,11 +124,12 @@ describe('a rectangular Y junction (outlets at 45°)', () => {
     const plan = planOf(after, 'main');
     expect(ductSegmentOf(plan, 'end:split')!.title).toBe('Y junction 45°');
     const bom = buildDuctBom([plan], [getDuctSupportPlan(plan, after, settings)]);
-    expect(bom.some((line) => /Y junction, 45° legs/.test(line.description))).toBe(true);
+    expect(bom.some((line) => /^Y junction 45°, divided 50 \/ 50 %: legs \d+×\d+ \+ \d+×\d+ on radius elbows/.test(line.description))).toBe(true);
     // And back: the Y split again.
     const back = evaluateDuctSegmentOption(after, settings, 'main', 'end:split', ductSegmentOptions(after, settings, 'main', 'end:split').find((candidate) => candidate.id === 'split:y')!);
     expect(back.refused).toBeUndefined();
-    expect(specOf(withUpdates(after, back.updates), 'main').end).toEqual({ kind: 'split', style: 'y' });
+    // Its splitter kept.
+    expect(specOf(withUpdates(after, back.updates), 'main').end).toEqual({ kind: 'split', style: 'y', share: 0.5 });
   });
 
   it('loses less than a Y split, as a 45° elbow does a 90°: 0.6 of it (practice)', () => {

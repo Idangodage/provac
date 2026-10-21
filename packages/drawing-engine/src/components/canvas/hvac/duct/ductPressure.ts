@@ -121,6 +121,46 @@ export function transitionCoefficient(includedDeg: number, expanding: boolean): 
   return Math.min(1, 0.1 + 0.6 * Math.pow(Math.max(0, includedDeg) / 60, 1.5));
 }
 
+/** One leg of a divided-flow Y, as its loss reads it: the inlet, the leg's section and elbow, its transition to the outlet. */
+export interface DividedFlowLegLoss {
+  inlet: DuctLeg;
+  leg: DuctLeg;
+  outlet: DuctLeg;
+  /** The leg's elbow: R/W on its own width, and its angle. */
+  radiusRatio: number;
+  angleDeg: number;
+  /** Its transition's slope (mm), or null where the leg is its outlet's size. */
+  transitionSlopeMm: number | null;
+}
+
+/**
+ * A divided-flow Y's outlet loss (Pa), worked out from its own flow and area
+ * ratios as its parts: where the splitter does not give the leg the inlet's
+ * velocity (the air divides off the designed share) a sudden change — slower,
+ * an expansion (Borda–Carnot, (1 − v_leg/v_in)² on the inlet's velocity
+ * pressure), faster, a contraction (0.5·(1 − v_in/v_leg) on the leg's) — nil
+ * at the designed share; the leg's radius elbow on its own velocity (by R/W
+ * and angle); and its transition on the outlet's velocity.
+ */
+export function dividedFlowOutletLossPa(leg: DividedFlowLegLoss, inletAirflowM3h: number, outletAirflowM3h: number): number {
+  if (outletAirflowM3h <= 0) return 0;
+  const vIn = velocityMs(leg.inlet, inletAirflowM3h);
+  const vLeg = velocityMs(leg.leg, outletAirflowM3h);
+  const mismatch = vIn <= 1e-9 || vLeg <= 1e-9 ? 0
+    : vLeg < vIn ? (1 - vLeg / vIn) ** 2 * velocityPressurePa(vIn)
+      : 0.5 * (1 - vIn / vLeg) * velocityPressurePa(vLeg);
+  const elbow = elbowCoefficient('radius', leg.radiusRatio, leg.angleDeg) * velocityPressurePa(vLeg);
+  let transition = 0;
+  if (leg.transitionSlopeMm !== null) {
+    // Its included angle from the larger change across it: the width either side, the height on top of its flat bottom.
+    const rise = Math.max(Math.abs(leg.outlet.widthMm - leg.leg.widthMm) / 2, Math.abs(leg.outlet.heightMm - leg.leg.heightMm));
+    const includedDeg = (2 * Math.atan2(rise, Math.max(1, leg.transitionSlopeMm)) * 180) / Math.PI;
+    const expanding = leg.outlet.widthMm * leg.outlet.heightMm > leg.leg.widthMm * leg.leg.heightMm + 0.5;
+    transition = transitionCoefficient(includedDeg, expanding) * velocityPressurePa(velocityMs(leg.outlet, outletAirflowM3h));
+  }
+  return mismatch + elbow + transition;
+}
+
 /** Split outlet loss on the outlet velocity (practice); a Y junction's 45° outlets lose less than a Y split's. */
 export function splitOutletLossPa(style: DuctSplitStyle, outletVelocityMs: number, mainVelocityMs: number, angleDeg: DuctSplitAngle = 90): number {
   if (style === 'wye') return takeoffBranchLossPa('wye', outletVelocityMs, mainVelocityMs);
@@ -373,6 +413,15 @@ function splitLossPa(tree: DuctFlowTree, run: DuctFlowRun, piece: DuctPiece, chi
   const last = run.plan.spec.legs[run.plan.spec.legs.length - 1];
   const combinedFlow = tree.flowAt(run, piece.stationStartMm - 1e-3);
   if (!first || child.airflowM3h <= 0) return 0;
+  // A divided-flow Y: its leg's own parts at the airflows it carries.
+  const start = child.plan.spec.start;
+  const branch = piece.split?.share !== null && start.kind === 'split-branch' ? piece.split?.branches.find((candidate) => candidate.side === start.side) : undefined;
+  if (branch?.elbow && last) {
+    return dividedFlowOutletLossPa({
+      inlet: last, leg: branch.leg, outlet: branch.section, radiusRatio: branch.elbow.centrelineRadiusMm / Math.max(1, branch.leg.widthMm),
+      angleDeg: angle, transitionSlopeMm: branch.transition?.slopeMm ?? null,
+    }, combinedFlow, child.airflowM3h);
+  }
   return splitOutletLossPa(style, velocityMs(sectionOf(first), child.airflowM3h), last ? velocityMs(last, combinedFlow) : 0, angle);
 }
 

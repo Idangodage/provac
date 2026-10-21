@@ -59,7 +59,9 @@ describe('a round main made rectangular with a wye at its end', () => {
       expect(result.refused).toBeUndefined();
       const after = withUpdates(before, result.updates);
       const main = specOf(after, 'main');
-      expect(main.end).toEqual({ kind: 'split', style: 'y', angleDeg: 45 });
+      // A divided-flow Y junction: its splitter at its outlets' share (by their sizes here: no terminals' airflow).
+      expect(main.end).toMatchObject({ kind: 'split', style: 'y', angleDeg: 45 });
+      expect(main.end.kind === 'split' ? main.end.share : null).toBeCloseTo(0.5, 3);
       expect(main.legs).toEqual([RECT]);
       expect(result.notes.join(' ')).toMatch(/split becomes a Y junction/);
       const heading = (spec: ReturnType<typeof specOf>) => {

@@ -369,11 +369,15 @@ describe('fittings bind a section', () => {
       }).properties! };
     };
     const scene = [unit, a, b, trunk, outlet('left', 1, a), outlet('right', -1, b)];
-    const { report } = sizeDuctSystem(scene, 'trunk', { basis: basisAt(0.8, 900), verify: false }, settings);
+    const { runs, report } = sizeDuctSystem(scene, 'trunk', { basis: basisAt(0.8, 900), verify: false }, settings);
     const outlets = report.sections.filter((section) => section.runId !== 'trunk');
     const main = report.sections.filter((section) => section.runId === 'trunk').at(-1)!;
     expect(outlets).toHaveLength(2);
-    expect(main.section.widthMm).toBeGreaterThanOrEqual(outlets.reduce((sum, section) => sum + section.section.widthMm, 0));
+    // A divided-flow Y: its splitter at the outlets' airflow ratio, each leg its share of the main and at least 100 mm
+    // wide (each tapers to its outlet inside the fitting); the outlets no taller than the main.
+    const end = readDuctRunSpec(runs.find((run) => run.id === 'trunk')!)!.end;
+    expect(end).toMatchObject({ kind: 'split', style: 'y', share: 0.5 });
+    expect(main.section.widthMm * 0.5).toBeGreaterThanOrEqual(100);
     expect(main.section.heightMm).toBeGreaterThanOrEqual(Math.max(...outlets.map((section) => section.section.heightMm)));
   });
 });

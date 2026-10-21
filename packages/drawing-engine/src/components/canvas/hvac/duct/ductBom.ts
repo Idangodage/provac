@@ -122,6 +122,14 @@ function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
     const split = piece.split!;
     if (split.style === 'wye') return `Wye fitting, 45° legs 3A/2${split.cappedSides.length ? ', one leg capped' : ''} (SMACNA Fig. 3-5)`;
     if (split.style === 'bullhead') return `Bullhead tee, ${split.branches.reduce((total, branch) => total + branch.vaneCount, 0)} turning vanes`;
+    if (split.share !== null) {
+      // "Y junction 45°, divided 60 / 40 %: legs 240×250 + 160×250 on radius elbows, to 250×250 + 200×250 (SMACNA Fig. 2-5)"
+      const sides = [...split.branches].sort((a, b) => b.side - a.side);
+      const percent = (side: number) => Math.round((side === 1 ? split.share! : 1 - split.share!) * 100);
+      const label = (leg: { widthMm: number; heightMm: number }) => `${Math.round(leg.widthMm)}×${Math.round(leg.heightMm)}`;
+      const to = sides.some((branch) => branch.transition) ? `, to ${sides.map((branch) => label(branch.section)).join(' + ')}` : '';
+      return `${split.angleDeg === 45 ? 'Y junction 45°' : 'Y split 90°'}, divided ${sides.map((branch) => percent(branch.side)).join(' / ')} %: legs ${sides.map((branch) => label(branch.leg)).join(' + ')} on radius elbows${to}${split.cappedSides.length ? ', one leg capped' : ''} (SMACNA Fig. 2-5)`;
+    }
     return split.angleDeg === 45
       ? `Y junction, 45° legs (${split.branches.length} radius elbow${split.branches.length === 1 ? '' : 's'}; SMACNA Fig. 2-5)`
       : `Divided-flow Y split (${split.branches.length} radius elbow${split.branches.length === 1 ? '' : 's'})`;

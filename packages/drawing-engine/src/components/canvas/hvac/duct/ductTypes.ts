@@ -131,8 +131,14 @@ export type DuctEnd =
   | DuctTapStart
   | DuctSplitBranchStart
   | DuctSpigotStart
-  /** `angleDeg`: a Y's outlets leave at 45° (a Y junction); absent, at 90°. */
-  | { kind: 'split'; style: DuctSplitStyle; angleDeg?: 45 }
+  /**
+   * `angleDeg`: a Y's outlets leave at 45° (a Y junction); absent, at 90°.
+   * `share`: a divided-flow Y's splitter — the +1 side's share of the air as
+   * designed, which is its share of the inlet's width (so each leg starts at
+   * the inlet's velocity); absent (a Y drawn before the splitter), each
+   * outlet at its own width against its side wall.
+   */
+  | { kind: 'split'; style: DuctSplitStyle; angleDeg?: 45; share?: number }
   | DuctPlenumEnd
   | DuctTerminalEnd
   | { kind: 'end-cap' }
@@ -380,7 +386,8 @@ function readEnd(value: unknown): DuctEnd {
   }
   if (candidate.kind === 'split') {
     const style: DuctSplitStyle = candidate.style === 'bullhead' || candidate.style === 'wye' ? candidate.style : 'y';
-    return splitEnd(style, style === 'y' && candidate.angleDeg === 45 ? 45 : 90);
+    const share = typeof candidate.share === 'number' && Number.isFinite(candidate.share) ? candidate.share : undefined;
+    return splitEnd(style, style === 'y' && candidate.angleDeg === 45 ? 45 : 90, share);
   }
   if (candidate.kind === 'plenum') {
     return {
@@ -629,9 +636,18 @@ export function buildDuctRunElement(spec: DuctRunSpec, options: { id?: string; l
   };
 }
 
-/** A split end of `style`; a Y leaving at `angle` (only a Y junction's 45° is stored). */
-export function splitEnd(style: DuctSplitStyle, angle: DuctSplitAngle = 90): Extract<DuctEnd, { kind: 'split' }> {
-  return style === 'y' && angle === 45 ? { kind: 'split', style, angleDeg: 45 } : { kind: 'split', style };
+/** A divided-flow Y's splitter keeps each leg at least this share of the inlet (the rest is a bullhead's job). */
+export const SPLIT_SHARE_LIMITS = { min: 0.05, max: 0.95 } as const;
+
+/**
+ * A split end of `style`; a Y leaving at `angle` (only a Y junction's 45° is
+ * stored) with its splitter at `share` (a Y's only: the +1 side's share of the
+ * air, kept within SPLIT_SHARE_LIMITS).
+ */
+export function splitEnd(style: DuctSplitStyle, angle: DuctSplitAngle = 90, share?: number | null): Extract<DuctEnd, { kind: 'split' }> {
+  const end: Extract<DuctEnd, { kind: 'split' }> = style === 'y' && angle === 45 ? { kind: 'split', style, angleDeg: 45 } : { kind: 'split', style };
+  if (style !== 'y' || share === undefined || share === null || !Number.isFinite(share)) return end;
+  return { ...end, share: Math.round(Math.min(SPLIT_SHARE_LIMITS.max, Math.max(SPLIT_SHARE_LIMITS.min, share)) * 1000) / 1000 };
 }
 
 /** The angle a run's split outlets leave at (90° for an end that is no split). */

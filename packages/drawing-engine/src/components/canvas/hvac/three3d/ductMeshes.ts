@@ -24,7 +24,7 @@ import { wyeLegLengthMm } from '../duct/ductRoundFittings';
 import { resolveDuctSettings, type DuctDesignSettings } from '../duct/ductSettings';
 import { squareToRoundTriangles, type SquareToRoundInput } from '../duct/ductSquareToRound';
 import { DUCT_BAND_RADIAL_OFFSET_MM, getDuctSupportPlan, type DuctSupportPlan } from '../duct/ductSupports';
-import type { DuctPoint3 } from '../duct/ductTypes';
+import type { DuctLeg, DuctPoint3 } from '../duct/ductTypes';
 
 export const DUCT_3D_COLORS = {
   galvanised: '#b9c3cc',
@@ -1134,10 +1134,30 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
         orientedBox(new THREE.Vector3(far.x, far.y, centreZ), split.direction, 2, 2 * parentHalfWidth, 2 * parentHalfHeight));
     } else {
       for (const branch of split.branches) {
-        if (!branch.elbow) return;
+        if (!branch.elbow) continue;
         const elbow = branch.elbow;
         const path = [elbow.startPoint, ...sampleArc(elbow, elbow.centrelineRadiusMm, 12), elbow.endPoint];
-        push('duct-metal', metal, sweepRectangularTube(path, split.bottomZ + branch.section.heightMm / 2, branch.section.widthMm / 2 + t, branch.section.heightMm / 2 + t));
+        push('duct-metal', metal, sweepRectangularTube(path, split.bottomZ + branch.leg.heightMm / 2, branch.leg.widthMm / 2 + t, branch.leg.heightMm / 2 + t));
+        if (branch.transition) {
+          // A divided-flow leg's transition to its outlet: flat on the bottom, its necks either end.
+          const { start, end, from, to, lengthMm } = branch.transition;
+          const direction = branch.outlet.direction;
+          const normal = { x: -direction.y, y: direction.x };
+          const neck = Math.min(split.neckMm, lengthMm / 2);
+          const at = (distance: number) => ({ x: start.x + direction.x * distance, y: start.y + direction.y * distance });
+          const ring = (point: Point2D, section: DuctLeg): DuctSweepRing => ({
+            point, normal, halfWidth: section.widthMm / 2 + t, halfHeight: section.heightMm / 2 + t, centreZ: split.bottomZ + section.heightMm / 2,
+          });
+          push('duct-metal', metal, sweepRectangularRings([ring(start, from), ring(at(neck), from), ring(at(lengthMm - neck), to), ring(end, to)]));
+        }
+      }
+      if (split.splitter) {
+        // The splitter between the legs.
+        const { from, to } = split.splitter;
+        const length = Math.hypot(to.x - from.x, to.y - from.y);
+        if (length > 1) {
+          push('duct-metal', metal, orientedBox(new THREE.Vector3((from.x + to.x) / 2, (from.y + to.y) / 2, centreZ), split.direction, length, 2, split.parentSection.heightMm));
+        }
       }
       for (const side of split.cappedSides) {
         const n = split.normal;

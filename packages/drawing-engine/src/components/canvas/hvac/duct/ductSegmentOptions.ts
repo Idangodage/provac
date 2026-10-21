@@ -27,8 +27,8 @@ import { ductLegs } from './ductGeometry';
 import { ductParentOf } from './ductNetwork';
 import { penetrationHasFireDamper } from './ductPenetrations';
 import { aspectOf, outerHeightMm, rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
-import { applyDuctSegmentEdit, INLINE_TITLES, rigidLegIndices, type DuctSegmentEdit } from './ductSegmentEdits';
-import { ductSegmentFigures, type DuctFigureStatus, type DuctSegmentFigures } from './ductSegmentFigures';
+import { applyDuctSegmentEdit, INLINE_TITLES, outletSplitShare, rigidLegIndices, type DuctSegmentEdit } from './ductSegmentEdits';
+import { ductSegmentFigures, splitAirflowShare, type DuctFigureStatus, type DuctSegmentFigures } from './ductSegmentFigures';
 import { ductSegmentOf, sectionLabel, TAKEOFF_TITLES, type DuctSegment } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { equivalentDiameterMm, sizeRectangular, sizeRound, velocityMs } from './ductSizing';
@@ -347,7 +347,7 @@ function takeoffOptions(scene: readonly HvacElement[], runId: string, context: D
   return options;
 }
 
-function accessoryOptions(runId: string, context: DuctSegmentOptionContext, settings: DuctDesignSettings): DuctSegmentOption[] {
+function accessoryOptions(scene: readonly HvacElement[], runId: string, context: DuctSegmentOptionContext, settings: DuctDesignSettings): DuctSegmentOption[] {
   const spec = context.spec;
   const kind = context.segment.kind;
   const start = spec.start;
@@ -396,6 +396,24 @@ function accessoryOptions(runId: string, context: DuctSegmentOptionContext, sett
               : 'divides the flow on radius elbows, each half turning 90° (SMACNA Fig. 2-5)',
           edit: { kind: 'split', runId, style, angleDeg: angle }, ...(style === now && angle === angleNow ? { current: true } : {}),
         });
+      }
+      // A Y's splitter at the outlets' airflow ratio (a Y drawn before the splitter: by its outlets' sizes where the
+      // airflow is not known), or moved there where the air has been re-shared since.
+      if (now === 'y') {
+        const airflow = splitAirflowShare(scene, settings, runId);
+        const set = spec.end.share;
+        const ratio = airflow ?? (set === undefined ? outletSplitShare(scene, settings, runId) : null);
+        if (ratio !== null && (set === undefined || Math.abs(set - ratio) > 0.01)) {
+          const percent = (value: number) => Math.round(value * 100);
+          options.push({
+            id: 'split:share', group: 'swap', glyph: 'split-y',
+            title: airflow !== null ? `Splitter at the airflow ratio (${percent(ratio)} / ${percent(1 - ratio)} %)` : `Divided-flow splitter (${percent(ratio)} / ${percent(1 - ratio)} %)`,
+            detail: set === undefined
+              ? `each leg its share of the run${airflow !== null ? '' : ' (by the sizes of its outlets)'}, so the air leaves at the run's velocity; each turns on its own radius elbow and tapers to its outlet (SMACNA Fig. 2-5)`
+              : `the splitter moves from ${percent(set)} / ${percent(1 - set)} % to the air its outlets carry now`,
+            edit: { kind: 'split-share', runId, share: ratio },
+          });
+        }
       }
       // The same split in spiral duct: the last leg its equal-friction round size, a wye, the outlets round and turned 45°.
       const round = section ? roundEquivalents(section, settings.autoRoundSizesMm).atOrAbove : null;
@@ -565,7 +583,7 @@ export function ductSegmentOptions(scene: readonly HvacElement[], settings: Duct
     options = takeoffOptions(scene, runId, context, settings);
   }
   options.push(...runoutOptions(scene, runId, context));
-  options.push(...accessoryOptions(runId, context, settings));
+  options.push(...accessoryOptions(scene, runId, context, settings));
   if (spec.locked) return options.map((option) => (option.current ? option : { ...option, disabledReason: 'The run is locked: unlock it to change it.' }));
   return options;
 }
