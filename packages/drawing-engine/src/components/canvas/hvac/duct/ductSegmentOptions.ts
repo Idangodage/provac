@@ -524,6 +524,18 @@ function runoutOptions(scene: readonly HvacElement[], runId: string, context: Du
         edit: { kind: 'terminal', terminalId: terminal.id, neckMm: neck },
       });
     }
+    // Its collar: on a side of its box or on its top (the one it has marked current).
+    const entry = terminalSpec.spigotEntry ?? 'side';
+    for (const collar of ['side', 'top'] as const) {
+      options.push({
+        id: `collar:${collar}`, group: 'terminal', glyph: 'terminal', title: collar === 'top' ? 'Top' : 'Side',
+        detail: collar === 'top'
+          ? `${terminal.label || 'the terminal'}'s collar on its box's top: the runout comes down into it (it needs room above the box)`
+          : `${terminal.label || 'the terminal'}'s collar on a side of its box: the runout comes in level (a shallow void)`,
+        ...(collar === entry ? { current: true } : {}),
+        edit: { kind: 'terminal', terminalId: terminal.id, spigotEntry: collar },
+      });
+    }
     for (const face of TERMINAL_FACES_BY_SERVICE[terminalSpec.service]) {
       if (face === terminalSpec.kind) continue;
       options.push({

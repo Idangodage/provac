@@ -84,6 +84,7 @@ export function readDuctTerminalSpec(element: Pick<HvacElement, 'type' | 'proper
     plenumHeightMm: read('plenumHeightMm', 100),
     spigotLengthMm: read('spigotLengthMm', 51),
     spigotSide: SIDES.includes(raw?.spigotSide as DuctTerminalSpigotSide) ? (raw!.spigotSide as DuctTerminalSpigotSide) : base.spigotSide,
+    ...(raw?.spigotEntry === 'top' ? { spigotEntry: 'top' as const } : {}),
     service,
     designAirflowM3h: finite(raw?.designAirflowM3h) && (raw!.designAirflowM3h as number) > 0 ? raw!.designAirflowM3h as number : null,
     ...(filter ? { filter } : {}),
@@ -160,9 +161,19 @@ const SIDE_NORMAL: Record<DuctTerminalSpigotSide, Point2D> = {
   back: { x: 0, y: -1 }, front: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 },
 };
 
-/** The spigot in the terminal's local frame: on the plenum side, half way up the box. */
+/**
+ * The spigot in the terminal's local frame: on the plenum side, half way up
+ * the box; or on its top, at its centre (its lip the collar's top; its normal
+ * the side a runout comes from).
+ */
 export function localTerminalSpigot(spec: DuctTerminalSpec): LocalAirPortSpec {
   const normal = SIDE_NORMAL[spec.spigotSide];
+  if (spec.spigotEntry === 'top') {
+    return {
+      id: 'spigot', kind: spec.service, lip: { x: 0, y: 0, z: spec.faceHeightMm + spec.plenumHeightMm + spec.spigotLengthMm }, normal,
+      widthMm: spec.neckDiameterMm, heightMm: spec.neckDiameterMm, collarDepthMm: spec.spigotLengthMm, vertical: true,
+    };
+  }
   const half = Math.abs(normal.x) > 0 ? spec.plenumWidthMm / 2 : spec.plenumDepthMm / 2;
   const reach = half + spec.spigotLengthMm;
   return {

@@ -49,6 +49,7 @@ import { getDuctRunPlan, planDuctRunSpec } from '../duct/ductFabricationPlanner'
 import { branchAnchor, ductRunElementWithSpec, rigidTransformSpec, startAnchor, type DuctAnchor } from '../duct/ductFollow';
 import { ductLegs } from '../duct/ductGeometry';
 import { ductBranchesOf } from '../duct/ductNetwork';
+import { remadeRigidRunout } from '../duct/ductRunouts';
 import type { DuctDesignSettings } from '../duct/ductSettings';
 import { findTerminalPort } from '../duct/ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec, type DuctLeg, type DuctPoint3, type DuctRunSpec } from '../duct/ductTypes';
@@ -551,8 +552,9 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
   const record = (id: string, element: HvacElement, spec: DuctRunSpec, next: DuctRunSpec, relocate: Relocate, outcome: DuctRunMoveOutcome) => {
     const changed = next !== spec && JSON.stringify(next) !== JSON.stringify(spec);
     solved.set(id, { spec: next, relocate, changed });
-    if (!changed) return;
-    changedRuns.push(ductRunElementWithSpec(element, next));
+    if (changed) changedRuns.push(ductRunElementWithSpec(element, next));
+    // A run left as it was can still have something to say ("… can no longer reach it: re-route its runout").
+    if (!changed && !outcome.note) return;
     outcomes.set(id, outcome);
     if (outcome.note) {
       const name = runName(id, spec);
@@ -777,7 +779,7 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       // A rigid end on a turned spigot: re-aimed onto it, or left meeting it at an angle.
       const was = findTerminalPort(before, end.terminalId, end.portId);
       const now = findTerminalPort(after, end.terminalId, end.portId);
-      if (was && now && !sameDirection(was.normal, now.normal)) {
+      if (was && now && !was.vertical && !sameDirection(was.normal, now.normal)) {
         const last = base.path.length - 1;
         const reaimed = reaimRunEnd(sceneNow(), before, settings, element, base, {
           point: { x: now.lip.x, y: now.lip.y }, direction: now.normal, z: base.path[last]!.z + (now.lip.z - was.lip.z),
@@ -861,11 +863,16 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
       if (end.kind === 'terminal') endPin = pinVertex(work.path.length - 1, endShift);
       result = solve([...constraints, ...endPin]);
     }
+    /** Its legs could not stretch to its terminal: they reach as near it as they can. */
+    let shortOfEnd = false;
     if (!result.ok && endPin.length) {
       // Its legs cannot reach the terminal from where its start now is: keep the start, the end reaching as near it as it can.
       const reach = { x: endPin[0]!.value, y: endPin[1]!.value, z: endPin[2]!.value };
       result = solve([...constraints, ...segmentConstraints], [{ vertex: work.path.length - 1, shift: reach, weight: 1e3 }]);
-      if (result.ok) note = `no longer reaches ${terminalLabel ?? 'its terminal'}: re-route its runout.`;
+      if (result.ok) {
+        shortOfEnd = true;
+        note = `no longer reaches ${terminalLabel ?? 'its terminal'}: re-route its runout.`;
+      }
     }
     if (!result.ok && collarStub) {
       // The route cannot stretch to the stub: the run turns with its unit about its collar.
@@ -901,6 +908,17 @@ export function moveDuctNetwork(input: DuctNetworkMoveInput): DuctNetworkMoveRes
         infos.pop();
         record(id, element, spec, rigid(base, collarStub.from, collarStub.to), stay, { kind, note: 'turned with its unit: re-route it, or re-design it with Auto duct.' });
         continue;
+      }
+    }
+    if (shortOfEnd && !collarStub && end.kind === 'terminal' && !end.flex) {
+      // A rigid runout its legs cannot stretch to (a top collar moved across its drop, a spigot off its straight's
+      // line): re-made from where they reach onto the spigot — straight on, a turn or a jog onto it — where that
+      // breaks no rule the run kept before the move.
+      const remade = remadeRigidRunout(sceneNow(), settings, id, next);
+      if (remade && noNewErrors(errorCodes(getDuctRunPlan(element, before, settings)), errorCodes(planDuctRunSpec(id, remade, { settings, scene: sceneNow() })))) {
+        next = remade;
+        note = undefined;
+        infos.push(`${runName(id, spec)} has its rigid runout re-made onto ${terminalLabel ?? 'its terminal'}'s spigot.`);
       }
     }
     if (result.shortest.length && !note && kind === 'follows') {

@@ -15,8 +15,9 @@
  * its split outlets.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
 
-import { findAirPort, type DuctAirPort } from './ductAirPorts';
+import { findAirPort, portEntryDirection, type DuctAirPort } from './ductAirPorts';
 import {
   splitFitting,
   splitOutlet,
@@ -39,7 +40,7 @@ import {
   type DuctDamperLayout,
   type DuctVaneSpec,
 } from './ductFittingRules';
-import { FLEX_RULES, flexCurve } from './ductFlex';
+import { FLEX_RULES, FLEX_STRAIGHT_LEAD_MM, flexCurve } from './ductFlex';
 import { resolveSectionConstruction, runSectionSheetMm, type SectionConstruction } from './ductGauge';
 import {
   TURN_EPSILON_DEG,
@@ -121,6 +122,7 @@ export type DuctIssueCode =
   | 'DU_FLEX_BEND'
   | 'DU_FLEX_SIZE'
   | 'DU_FLEX_DROP'
+  | 'DU_TOP_COLLAR_VOID'
   | 'DU_TERMINAL_SIZE'
   | 'DU_TERMINAL_ALIGN'
   | 'DU_OPEN_END'
@@ -1546,7 +1548,21 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       const startCentre = { x: rigidEnd.x, y: rigidEnd.y, z: lastLeg.vertical ? lastLeg.endCentreZ : rigidEnd.z + lastSection.heightMm / 2 };
       const startDirection = lastLeg.vertical ? { x: 0, y: 0, z: lastLeg.vertical } : { x: lastLeg.direction.x, y: lastLeg.direction.y, z: 0 };
       const endCentre = port ? port.lip : { x: stored.x, y: stored.y, z: stored.z + diameter / 2 };
-      const endDirection = port ? { x: -port.normal.x, y: -port.normal.y, z: 0 } : startDirection;
+      const endDirection = port ? portEntryDirection(port) : startDirection;
+      if (port?.vertical) {
+        // A top collar: the runout comes down into it, straight for its lead and bending at a diameter at least, so the
+        // void must hold it above the collar (its jacket too).
+        const soffit = settings.soffitMm ?? getActivePipeRoutingSettings().ceilingLimitMm;
+        const jacket = settings.flexType === 'nm-il' ? settings.flexJacketMm : 0;
+        const needed = port.lip.z + FLEX_STRAIGHT_LEAD_MM + FLEX_RULES.minBendDiameters * diameter + diameter / 2 + jacket;
+        if (needed > soffit + 0.5) {
+          issues.push({ code: 'DU_TOP_COLLAR_VOID', severity: 'error', point: stored,
+            message: `A top collar needs ${Math.round(needed - port.lip.z + port.collarDepthMm)} mm above its box for a Ø${Math.round(diameter)} runout to come down into it (up to ${Math.round(needed).toLocaleString('en-GB')} mm); the soffit is at ${Math.round(soffit).toLocaleString('en-GB')} mm. Use a side collar, or a lower box.` });
+        } else if (startCentre.z < port.lip.z + FLEX_STRAIGHT_LEAD_MM + diameter - 0.5) {
+          issues.push({ code: 'DU_TOP_COLLAR_VOID', severity: 'error', point: stored,
+            message: `The duct feeding a top collar runs at ${Math.round(startCentre.z).toLocaleString('en-GB')} mm, too low for its runout to come down into the collar (it needs ${Math.round(port.lip.z + FLEX_STRAIGHT_LEAD_MM + diameter).toLocaleString('en-GB')} mm or more). Run the duct higher, or use a side collar.` });
+        }
+      }
       const curve = flexCurve(startCentre, startDirection, endCentre, endDirection);
       practice.add(PRACTICE.flex);
       if (curve.lengthMm > settings.flexMaxLengthMm + 0.5) {
@@ -1584,10 +1600,15 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         issues.push({ code: 'DU_TERMINAL_SIZE', severity: 'error', point: stored,
           message: `The run (${isRoundLeg(lastSection) ? `Ø${Math.round(lastSection.diameterMm!)}` : `${lastSection.widthMm}×${lastSection.heightMm}`}) does not fit the terminal's Ø${Math.round(port.diameterMm)} spigot.` });
       }
-      // Rigid duct slips over the spigot: it must arrive level, square to it and on its axis.
-      const square = !lastLeg.vertical && lastLeg.direction.x * -port.normal.x + lastLeg.direction.y * -port.normal.y > Math.cos(Math.PI / 90);
-      const across = Math.abs((stored.x - port.lip.x) * port.normal.y - (stored.y - port.lip.y) * port.normal.x);
-      if (!square || across > 5 || Math.abs(stored.z + lastSection.heightMm / 2 - port.lip.z) > 5) {
+      // Rigid duct slips over the spigot: it must arrive level, square to it and on its axis (onto a top collar: down,
+      // on its axis).
+      const square = port.vertical
+        ? lastLeg.vertical === -1
+        : !lastLeg.vertical && lastLeg.direction.x * -port.normal.x + lastLeg.direction.y * -port.normal.y > Math.cos(Math.PI / 90);
+      const across = port.vertical
+        ? Math.hypot(stored.x - port.lip.x, stored.y - port.lip.y)
+        : Math.abs((stored.x - port.lip.x) * port.normal.y - (stored.y - port.lip.y) * port.normal.x);
+      if (!square || across > 5 || (!port.vertical && Math.abs(stored.z + lastSection.heightMm / 2 - port.lip.z) > 5)) {
         issues.push({ code: 'DU_TERMINAL_ALIGN', severity: 'error', point: stored,
           message: 'Rigid duct must meet the terminal\'s spigot level, square to it and on its axis; route the last leg straight into the spigot or use a flexible runout.' });
       }

@@ -16,6 +16,7 @@ export function sameAutoDuctInputs(left: AutoDuctRequest, right: AutoDuctRequest
     request.rebuildExisting,
     sizingInput(request.sizing?.supply), sizingInput(request.sizing?.return),
     Object.entries(request.terminalAirflows ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+    request.collarEntry ?? 'as-set',
   ];
   return JSON.stringify(input(left)) === JSON.stringify(input(right));
 }

@@ -7,7 +7,7 @@
 import type { HvacElement, Point2D } from '../../../../types';
 import type { OrthogonalRouteObstacle } from '../obstacleAwareOrthogonalRoute';
 
-import type { DuctAirPort } from './ductAirPorts';
+import { portEntryDirection, type DuctAirPort } from './ductAirPorts';
 import type { DuctRoomOutline, DuctWall } from './ductBuilding';
 import { flexCurve } from './ductFlex';
 import type { WallCrossingRule } from './ductPenetrations';
@@ -130,7 +130,9 @@ export function terminalWithSide(frame: Frame, terminal: TerminalCtx, side: Duct
   if (!port || !spec) return null;
   return {
     ...terminal, element, spec, port, lip: toLocal(frame, port.lip), normal: cardinal(dirToLocal(frame, port.normal)),
-    variants: undefined, turnedTo: side,
+    // A top collar stays where it is: the side is only the way its runout comes in, so nothing on the terminal is
+    // turned (none written back, none reported).
+    variants: undefined, turnedTo: terminal.port.vertical ? undefined : side,
   };
 }
 
@@ -149,8 +151,10 @@ const SPIGOT_FRONT_MM = 400;
  */
 export function spigotVariants(frame: Frame, terminal: TerminalCtx, enabled: boolean, obstacles: ServiceCtx['obstacles'] = []): TerminalCtx[] {
   const placed = { ...terminal, variants: undefined, turnedTo: undefined };
-  if (!enabled || !TURNABLE.has(terminal.spec.kind)) return [placed];
-  const centre = { x: terminal.lip.x - terminal.normal.x * 300, y: terminal.lip.y - terminal.normal.y * 300 };
+  // A top collar takes its runout from any side, whatever the face (the side is only the way the runout comes).
+  const top = Boolean(terminal.port.vertical);
+  if (!enabled || (!top && !TURNABLE.has(terminal.spec.kind))) return [placed];
+  const centre = top ? terminal.lip : { x: terminal.lip.x - terminal.normal.x * 300, y: terminal.lip.y - terminal.normal.y * 300 };
   const onAxis = Math.abs(centre.y) < 150;
   const towardAxis = onAxis ? null : { x: 0, y: -Math.sign(centre.y) };
   const score = (normal: Point2D) => (towardAxis
@@ -250,7 +254,7 @@ export function flexFit(ctx: ServiceCtx, stubEnd: Point2D, out: Point2D, stubBot
   const direction = dirToWorld(ctx.frame, out);
   const curve = flexCurve(
     { ...start, z: stubBottomZ + terminal.neck / 2 }, { ...direction, z: 0 },
-    terminal.port.lip, { x: -terminal.port.normal.x, y: -terminal.port.normal.y, z: 0 },
+    terminal.port.lip, portEntryDirection(terminal.port),
   );
   return { radiusMm: curve.minBendRadiusMm, lengthMm: curve.lengthMm };
 }
@@ -279,7 +283,7 @@ function runoutCurve(ctx: ServiceCtx, stubEnd: Point2D, out: Point2D, stubBottom
   const direction = dirToWorld(ctx.frame, out);
   return flexCurve(
     { ...start, z: stubBottomZ + terminal.neck / 2 }, { ...direction, z: 0 },
-    terminal.port.lip, { x: -terminal.port.normal.x, y: -terminal.port.normal.y, z: 0 },
+    terminal.port.lip, portEntryDirection(terminal.port),
   );
 }
 

@@ -242,6 +242,8 @@ export function DuctAutoCard() {
   const [airflowBadInput, setAirflowBadInput] = useState(false);
   const [layout, setLayout] = useState<AutoDuctLayoutChoice>('auto');
   const [shape, setShape] = useState<AutoDuctShape>('optimal');
+  /** The terminals' collars for this design: as each is set, or all on their sides, or all on top. */
+  const [collarEntry, setCollarEntry] = useState<'as-set' | 'side' | 'top'>('as-set');
   const [rebuild, setRebuild] = useState(false);
   const { ductSettings, setDuctSettings } = useSmartDrawingStore((state) => ({ ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings }), shallow);
   const [sizingTab, setSizingTab] = useState<DuctService>('supply');
@@ -325,6 +327,7 @@ export function DuctAutoCard() {
     airflowM3h: airflowOverride, layout, services, rebuildExisting: rebuild, shape,
     sizing: method === 'constant-friction' ? allBases() : null,
     ...(airflowEntries ? { terminalAirflows: airflowEntries } : {}),
+    ...(collarEntry !== 'as-set' ? { collarEntry } : {}),
   };
   const inputsChanged = Boolean(current && (!request || !sameAutoDuctInputs(request, intendedRequest)));
   const stale = result?.unitId === unit.id && !current;
@@ -386,6 +389,17 @@ export function DuctAutoCard() {
           </button>
         ))}
       </div>
+      <Line label="Diffuser collars">
+        <div className="grid grid-cols-3 gap-0.5 rounded-md border border-slate-200 bg-white p-0.5" role="radiogroup" aria-label="Auto duct diffuser collars">
+          {([['as-set', 'As set', 'Each terminal\'s collar as it is set'], ['side', 'Side', 'Every collar on a side of its box: the runouts come in level (a shallow void)'],
+            ['top', 'Top', 'Every collar on its box\'s top: the runouts come down into them (room above the boxes needed)']] as const).map(([key, label, hint]) => (
+            <button key={key} type="button" role="radio" aria-checked={collarEntry === key} title={hint} onClick={() => setCollarEntry(key)}
+              className={`rounded px-1 py-0.5 text-[11px] ${collarEntry === key ? 'bg-sky-700 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </Line>
       <Line label="Fan speed" icon={<Fan size={12} />}>
         {air.airflowM3h ? (
           <select value={fanSpeed} onChange={(event) => setFanSpeed(event.target.value as FanSpeed)} className={select} aria-label="Auto duct fan speed">

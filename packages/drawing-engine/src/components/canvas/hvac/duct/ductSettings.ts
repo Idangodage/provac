@@ -154,6 +154,8 @@ export interface DuctDesignSettings {
   autoTimeBudgetMs: number;
   /** Optimiser: it may turn the spigot of a terminal on a square or round plenum box (not a linear slot) to the side the duct reaches best. */
   autoChooseSpigotSide: boolean;
+  /** Where a new air terminal's collar goes on its plenum box: a side (a shallow void), or its top (the runout drops into it). */
+  defaultCollarEntry: 'side' | 'top';
   /** Optimiser: the round-main take-offs it may use, and whether a round main may end in a wye. */
   autoRoundMainStyles: DuctRoundMainTapStyle[];
   autoAllowWye: boolean;
@@ -281,6 +283,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoExactTerminals: 8,
   autoTimeBudgetMs: 20000,
   autoChooseSpigotSide: true,
+  defaultCollarEntry: 'side',
   autoRoundMainStyles: ['round-conical', 'round-tee', 'round-lateral'],
   autoAllowWye: true,
   autoSizingMethod: 'life-cycle',
@@ -398,6 +401,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
   autoTimeBudgetMs: practice('The optimiser stops learning (routing again after a failed check) past this time and keeps the best verified design; the result says so.'),
   autoChooseSpigotSide: practice('A symmetric face throws the same pattern whichever side its plenum box is fed from; the optimiser picks the side the duct reaches best. Linear slots keep theirs.'),
+  defaultCollarEntry: practice('A side collar suits a shallow void; a top collar takes its runout from above (the flexible duct bending at a diameter or more, SMACNA S3.24) and needs room over the box.'),
   autoRoundMainStyles: { sourceId: 'smacna-1995', reference: 'Fig. 3-4 (p.3.11), Fig. 3-5 (p.3.12)', verified: true, note: 'Which of the SMACNA round-main fittings the optimiser may choose; it picks per branch by cost and loss.' },
   autoAllowWye: { sourceId: 'smacna-1995', reference: 'Fig. 3-5 (p.3.12)', verified: true, note: 'A round main may end in a wye.' },
   autoSizingMethod: practice('Constant friction is the equal-friction method (ASHRAE Fundamentals ch. 21); the life-cycle optimum trades first cost against fan energy.'),
@@ -572,6 +576,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 10)),
     autoTimeBudgetMs: Math.round(clampNumber(raw.autoTimeBudgetMs, d.autoTimeBudgetMs, 1000, 60000)),
     autoChooseSpigotSide: bool(raw.autoChooseSpigotSide, d.autoChooseSpigotSide),
+    defaultCollarEntry: oneOf(raw.defaultCollarEntry, ['side', 'top'] as const, d.defaultCollarEntry),
     autoRoundMainStyles: Array.isArray(raw.autoRoundMainStyles)
       ? [...new Set((raw.autoRoundMainStyles as unknown[]).filter((style): style is DuctRoundMainTapStyle => (ROUND_MAIN_TAP_STYLES as readonly unknown[]).includes(style)))]
       : [...d.autoRoundMainStyles],

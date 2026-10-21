@@ -13,20 +13,21 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { ZERO3 } from '../move/ductElasticMove';
 import { moveDuctNetwork } from '../move/ductNetworkMove';
 
-import { findAirPort, type DuctAirPort } from './ductAirPorts';
+import { findAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
 import { tapAttachment } from './ductBranches';
 import { accessDoorFor, getDuctRunPlan, inlineAccessoryLengthMm, planDuctRunSpec } from './ductFabricationPlanner';
-import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds, startAnchor } from './ductFollow';
+import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
-import { cross, dot, ductLegs } from './ductGeometry';
+import { dot, ductLegs } from './ductGeometry';
 import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
 import { maxRoundBranchMm } from './ductRoundFittings';
+import { withFlexRunout, withRigidRunout } from './ductRunouts';
 import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
 import { sectionLabel, splitTitle, TAKEOFF_TITLES } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { equivalentDiameterMm } from './ductSizing';
-import { TERMINAL_TAG_PATTERN, terminalLabel, terminalTypeTag, typicalTerminalSpec, type DuctTerminalKind } from './ductTerminalCatalog';
+import { TERMINAL_TAG_PATTERN, terminalLabel, terminalTypeTag, typicalTerminalSpec, type DuctTerminalKind, type DuctTerminalSpigotEntry, type DuctTerminalSpigotSide } from './ductTerminalCatalog';
 import { findTerminalPort, nextTerminalTag, readDuctTerminalSpec, SQUARE_BOX_TERMINAL_KINDS, terminalEnvelope, terminalSpigotPort } from './ductTerminals';
 import {
   DUCT_ATTENUATOR_LENGTHS_MM,
@@ -74,8 +75,11 @@ export type DuctSegmentEdit =
   | { kind: 'end'; runId: string; end: 'end-cap' | 'open' }
   /** The runout to the terminal the run ends on: flexible, or rigid (spiral duct, dropping onto the spigot's axis). */
   | { kind: 'runout'; runId: string; flex: boolean }
-  /** The terminal a run ends on: another face of its service, another neck (its runout follows), its design airflow. */
-  | { kind: 'terminal'; terminalId: string; face?: DuctTerminalKind; neckMm?: number; airflowM3h?: number | null }
+  /**
+   * The terminal a run ends on: another face of its service, another neck (its runout follows), its design airflow,
+   * its collar on its box's side or on top (its runout follows: a flexible one re-curves, a rigid one is re-made).
+   */
+  | { kind: 'terminal'; terminalId: string; face?: DuctTerminalKind; neckMm?: number; airflowM3h?: number | null; spigotEntry?: DuctTerminalSpigotEntry }
   /** A take-off moved along its main leg (mm from the leg's start); its branch keeps its end. */
   | { kind: 'tap-station'; runId: string; stationMm: number }
   /** A flexible runout of a given length: the rigid duct before it runs on or stops short. */
@@ -617,172 +621,6 @@ const add2 = (a: Point2D, b: Point2D, k = 1): Point2D => ({ x: a.x + b.x * k, y:
 const sub2 = (a: Point2D, b: Point2D): Point2D => ({ x: a.x - b.x, y: a.y - b.y });
 const at = (point: Point2D, z: number): DuctPoint3 => ({ x: point.x, y: point.y, z });
 
-/** s·a + t·b = c, or null when a ∥ b. */
-function solve2(a: Point2D, b: Point2D, c: Point2D): { s: number; t: number } | null {
-  const det = a.x * b.y - a.y * b.x;
-  if (Math.abs(det) < 1e-9) return null;
-  return { s: (c.x * b.y - c.y * b.x) / det, t: (a.x * c.y - a.y * c.x) / det };
-}
-
-type TerminalEnd = Extract<DuctRunSpec['end'], { kind: 'terminal' }>;
-
-/** Straights tried before the spigot for a rigid runout's drop (on its axis, at the run's level), shortest first (mm). */
-const RIGID_APPROACH_MM = [150, 300, 500, 800, 1200];
-/**
- * Straights tried between a jog onto the spigot's axis and what follows it,
- * longest first: jogging early leaves a straight on the axis that a flexible
- * runout can later take over (FLEX_RUNOUT_MM and its 300 mm behind it) (mm).
- */
-const JOG_RUN_MM = [1100, 800, 500, 300];
-/** Where a flexible runout leaves rigid duct that runs straight into the spigot: this far before it (the auto layout's first target; mm). */
-const FLEX_RUNOUT_MM = 800;
-
-/** The plan direction a run leaves its start in: its fitting's (a take-off's, a collar's), else its first leg's. */
-function leavingDirection(scene: readonly HvacElement[], settings: DuctDesignSettings, spec: DuctRunSpec): Point2D | null {
-  if (spec.start.kind === 'unit-port') return findAirPort(scene, spec.start.unitId, spec.start.portId)?.normal ?? null;
-  const parent = ductParentOf(spec, scene);
-  const parentSpec = parent ? readDuctRunSpec(parent) : null;
-  return (parentSpec ? branchAnchor(parentSpec, spec, settings)?.direction : null) ?? startAnchor(spec)?.direction ?? null;
-}
-
-/**
- * The run with a flexible runout: the rigid route kept to the top of its drop
- * onto the spigot (or to its last vertex), the flexible duct leaving about
- * FLEX_RUNOUT_MM before the spigot where a level leg heads straight at it —
- * long enough to bend gently onto the spigot, short as SMACNA S3.23 asks —
- * leaving room behind it for the fitting the leg starts at. With a scene, the
- * first of those that plans without a rule the run did not already break
- * (else the first).
- */
-function withFlexRunout(
-  spec: DuctRunSpec, end: TerminalEnd, neck: number, settings: DuctDesignSettings, check?: { scene: readonly HvacElement[]; runId: string },
-): DuctRunSpec {
-  const path = spec.path;
-  const lip = path[path.length - 1]!;
-  let keep = path.length - 2;
-  const vertical = (index: number) => Math.hypot(path[index]!.x - path[index - 1]!.x, path[index]!.y - path[index - 1]!.y) < 1 && Math.abs(path[index]!.z - path[index - 1]!.z) > 1;
-  const dropped = keep >= 1 && vertical(keep);
-  if (dropped) keep -= 1;
-  const room = (index: number) => (index === 0 ? settings.tapCollarMm + settings.vcdLengthMm + 150 : 300);
-  /** Where on leg `index` (level, heading at the lip) the runout leaves; null to leave from the leg's end. */
-  const leave = (index: number, upTo: (length: number) => number): DuctPoint3 | null => {
-    const from = path[index]!;
-    const to = path[index + 1]!;
-    const length = Math.hypot(to.x - from.x, to.y - from.y);
-    if (length < 1 || Math.abs(to.z - from.z) > 1) return null;
-    const d = unitOf(sub2(to, from));
-    if (Math.abs(cross(sub2(lip, from), d)) > 1 || dot(sub2(lip, from), d) <= 0) return null;
-    const station = Math.min(Math.max(dot(sub2(lip, from), d) - FLEX_RUNOUT_MM, room(index)), upTo(length));
-    return station > 1 && station < length - 1 ? at(add2(from, d, station), from.z) : null;
-  };
-  const runout = roundLeg(neck);
-  const overridesUpTo = (last: number) => Object.fromEntries(Object.entries(spec.nodeOverrides).filter(([node]) => Number(node) <= last));
-  const cutAt = (index: number, point: DuctPoint3): DuctRunSpec => keepInlineOnLegs({
-    ...spec, path: [...path.slice(0, index + 1), point, lip], legs: [...spec.legs.slice(0, index + 1), runout], nodeOverrides: overridesUpTo(index), end: { ...end, flex: true },
-  }, (leg) => (leg <= index ? leg : null));
-  const fromVertex = (index: number): DuctRunSpec => keepInlineOnLegs({
-    ...spec, path: [...path.slice(0, index + 1), lip], legs: [...spec.legs.slice(0, index), runout], nodeOverrides: overridesUpTo(index - 1), end: { ...end, flex: true },
-  }, (leg) => (leg < index ? leg : null));
-  const candidates: DuctRunSpec[] = [];
-  // The last leg itself, level into the spigot (300 mm of flexible duct at the least) …
-  const into = !dropped ? leave(keep, (length) => length - 300) : null;
-  if (into) candidates.push(cutAt(keep, into));
-  // … the leg before the drop, heading along the spigot's axis …
-  const before = keep >= 1 ? leave(keep - 1, (length) => length) : null;
-  if (before) candidates.push(cutAt(keep - 1, before));
-  // … else from the end of the rigid route, or the vertex before it on the same level.
-  candidates.push(fromVertex(keep));
-  if (keep >= 1 && Math.abs(path[keep - 1]!.z - path[keep]!.z) <= 1) candidates.push(fromVertex(keep - 1));
-  if (!check || candidates.length === 1) return candidates[0]!;
-  const baseline = errorCodes(planDuctRunSpec(check.runId, spec, { settings, scene: check.scene }));
-  return candidates.find((candidate) => noNewErrors(baseline, errorCodes(planDuctRunSpec(check.runId, candidate, { settings, scene: check.scene })))) ?? candidates[0]!;
-}
-
-/**
- * The run with a rigid runout onto the spigot, arriving as the planner asks of
- * a rigid end: level, square to the spigot and on its axis, at its height.
- * Routes are tried with the fewest new fittings first — straight on (the
- * run's last leg already on the spigot's axis), one turn onto the axis, a jog
- * onto it (the last leg parallel to it) — each with the shortest straights
- * that plan without a rule the run did not already break. A spigot above or
- * below the run is reached by a drop on its axis: two elbows, or an offset
- * where the drop is short (the planner's choice). Why not, when none fits.
- */
-function withRigidRunout(
-  scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, spec: DuctRunSpec, end: TerminalEnd, port: DuctAirPort, neck: number,
-): DuctRunSpec | string {
-  const runout = roundLeg(neck);
-  const lip: DuctPoint3 = { x: port.lip.x, y: port.lip.y, z: port.lip.z - neck / 2 };
-  const rigid = spec.path.slice(0, -1);
-  const last = rigid[rigid.length - 1]!;
-  const before = rigid.length >= 2 ? rigid[rigid.length - 2]! : null;
-  if (before && Math.abs(last.z - before.z) > 1) return 'the run reaches its runout down a riser; draw the rigid runout by hand';
-  const into = unitOf({ x: -port.normal.x, y: -port.normal.y });
-  const e = before ? unitOf(sub2(last, before)) : leavingDirection(scene, settings, spec);
-  if (!e) return 'the run has no direction to leave in';
-  const base = before ? rigid.slice(0, -1) : rigid;
-  const from = base[base.length - 1]!;
-  const baseLegs = spec.legs.slice(0, base.length - 1);
-  const lastSection = before ? spec.legs[rigid.length - 2]! : runout;
-  const reduce = !sameSectionSize(lastSection, runout);
-  const level = last.z;
-  const drop = Math.abs(level - lip.z) > 1;
-  const nodeOverrides = Object.fromEntries(Object.entries(spec.nodeOverrides).filter(([node]) => Number(node) < base.length));
-  const baseline = errorCodes(planDuctRunSpec(runId, spec, { settings, scene }));
-  const accept = (points: DuctPoint3[], legs: DuctLeg[]): DuctRunSpec | null => {
-    // Every rigid leg keeps its start and heading (the last one runs on, or to a new corner): their accessories stay.
-    const candidate: DuctRunSpec = keepInlineOnLegs({ ...spec, path: [...base, ...points], legs: [...baseLegs, ...legs], nodeOverrides, end: { ...end, flex: false } },
-      (leg) => (before && leg <= base.length - 1 ? leg : null));
-    return noNewErrors(baseline, errorCodes(planDuctRunSpec(runId, candidate, { settings, scene }))) ? candidate : null;
-  };
-  // From a point on the spigot's axis at the run's level: down (or up) to its height, then in; level: straight in.
-  const approaches = drop ? RIGID_APPROACH_MM : [0];
-  const tail = (approach: number) => {
-    const a = add2(lip, port.normal, approach);
-    return drop ? { a, points: [at(a, level), at(a, lip.z), lip], legs: [runout, runout, runout] } : { a, points: [lip], legs: [runout] };
-  };
-  const onAxis = (point: Point2D) => Math.abs(cross(sub2(point, lip), into)) < 1;
-  const parallel = dot(e, into) > 0.9999;
-  // 1. Straight on: the last leg already on the spigot's axis, heading into it (a reducer where it was larger).
-  if (parallel && onAxis(last)) {
-    for (const approach of approaches) {
-      const { a, points, legs } = tail(approach);
-      if (dot(sub2(a, reduce ? last : from), into) < 1) continue;
-      const found = reduce ? accept([at(last, level), ...points], [lastSection, ...legs]) : accept(points, legs);
-      if (found) return found;
-    }
-  }
-  // 2. One turn: off the last leg's line onto the spigot's axis.
-  const hit = !parallel ? solve2(e, into, sub2(lip, from)) : null;
-  if (hit && hit.s > 1 && hit.t > 1) {
-    const corner = at(add2(from, e, hit.s), level);
-    for (const approach of approaches) {
-      if (hit.t - approach < 1) break;
-      const { points, legs } = tail(approach);
-      const found = accept([corner, ...points], [lastSection, ...legs]);
-      if (found) return found;
-    }
-  }
-  // 3. A jog onto the axis: the last leg parallel to it, beside it.
-  if (parallel && !onAxis(last)) {
-    const r = sub2(lip, from);
-    const along = dot(r, into);
-    const beside = { x: r.x - into.x * along, y: r.y - into.y * along };
-    for (const approach of approaches) {
-      for (const straight of JOG_RUN_MM) {
-        const { a, points, legs } = tail(approach);
-        const j2 = add2(a, port.normal, straight);
-        const j1 = sub2(j2, beside);
-        if (dot(sub2(j1, from), e) < 1) continue;
-        const found = accept([at(j1, level), at(j2, level), ...points], [lastSection, runout, ...legs]);
-        if (found) return found;
-      }
-    }
-  }
-  return dot(e, into) < -1e-6 || (hit !== null && hit.t <= 1) ? 'its spigot faces away from the run (turn the terminal\'s spigot, or keep the runout flexible)'
-    : 'no rigid route fits between the run and the spigot (keep the runout flexible, or move the terminal)';
-}
-
 /**
  * A runout made rigid or flexible. Rigid: spiral duct at the spigot's
  * diameter, arriving level, square to the spigot and on its axis
@@ -820,7 +658,9 @@ function editRunout(scene: readonly HvacElement[], settings: DuctDesignSettings,
  * its centre, its tag following its type, and the runs on its spigot
  * following it — the runout (its legs at the old neck, back from the spigot)
  * takes the new neck, a flexible one re-curves, a rigid one is re-made onto
- * the new spigot.
+ * the new spigot. A collar moved off the top of a square box goes on the side
+ * its runout reaches without a rule it did not break before (its own side
+ * first, then those facing the duct), where the optimiser may turn spigots.
  */
 function editTerminal(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'terminal' }>): DuctSegmentEditResult {
   const element = scene.find((candidate) => candidate.id === edit.terminalId);
@@ -829,7 +669,9 @@ function editTerminal(scene: readonly HvacElement[], settings: DuctDesignSetting
   const kind = edit.face ?? spec.kind;
   const neck = edit.neckMm ?? spec.neckDiameterMm;
   const airflow = edit.airflowM3h !== undefined ? (edit.airflowM3h !== null && edit.airflowM3h > 0 ? Math.round(edit.airflowM3h) : null) : spec.designAirflowM3h ?? null;
-  if (kind === spec.kind && neck === spec.neckDiameterMm) {
+  const entry = edit.spigotEntry ?? spec.spigotEntry ?? 'side';
+  const entryChanged = entry !== (spec.spigotEntry ?? 'side');
+  if (kind === spec.kind && neck === spec.neckDiameterMm && !entryChanged) {
     // Its design airflow alone: the system's figures and sizing read it; nothing moves.
     if (airflow === (spec.designAirflowM3h ?? null)) return refuse('It is that already.');
     const updated: HvacElement = { ...element, properties: { ...element.properties, terminal: { ...spec, designAirflowM3h: airflow } } };
@@ -843,42 +685,99 @@ function editTerminal(scene: readonly HvacElement[], settings: DuctDesignSetting
     ...(spec.slots !== undefined ? { slots: spec.slots } : {}),
     ...(spec.kind === 'linear-slot' && kind === 'linear-slot' ? { lengthMm: spec.faceWidthMm } : {}),
   });
-  const reshaped = { ...shaped, spigotSide: spec.spigotSide, designAirflowM3h: airflow };
   const oldTag = terminalTypeTag(spec);
-  const retag = TERMINAL_TAG_PATTERN.exec(element.label.trim())?.[1] === oldTag && terminalTypeTag(reshaped) !== oldTag;
-  const envelope = terminalEnvelope(reshaped);
   const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 };
-  const moved: HvacElement = {
-    ...element,
-    position: { x: centre.x - envelope.widthMm / 2, y: centre.y - envelope.depthMm / 2 },
-    width: envelope.widthMm, depth: envelope.depthMm, height: envelope.heightMm,
-    label: retag ? nextTerminalTag(scene, reshaped) : element.label,
-    properties: { ...element.properties, terminal: reshaped },
-  };
-  const after = scene.map((candidate) => (candidate.id === element.id ? moved : candidate));
-  const port = findTerminalPort(after, element.id);
-  const changed = new Map<string, HvacElement>([[moved.id, moved]]);
-  const notes: string[] = [];
   const oldNeck = roundLeg(spec.neckDiameterMm);
-  for (const run of scene) {
+  const runsOn = scene.filter((run) => {
     const runSpec = readDuctRunSpec(run);
-    if (!port || !runSpec || runSpec.end.kind !== 'terminal' || runSpec.end.terminalId !== element.id) continue;
-    const legs = [...runSpec.legs];
-    if (neck !== spec.neckDiameterMm) {
-      for (let index = legs.length - 1; index >= 0 && sameSectionSize(legs[index]!, oldNeck); index -= 1) legs[index] = roundLeg(neck);
+    return runSpec?.end.kind === 'terminal' && runSpec.end.terminalId === element.id;
+  });
+  /** The terminal reshaped with its spigot on `spigotSide`, and the runs on it following its spigot. */
+  const build = (spigotSide: DuctTerminalSpigotSide) => {
+    const reshaped = { ...shaped, spigotSide, designAirflowM3h: airflow, ...(entry === 'top' ? { spigotEntry: 'top' as const } : {}) };
+    const retag = TERMINAL_TAG_PATTERN.exec(element.label.trim())?.[1] === oldTag && terminalTypeTag(reshaped) !== oldTag;
+    const envelope = terminalEnvelope(reshaped);
+    const moved: HvacElement = {
+      ...element,
+      position: { x: centre.x - envelope.widthMm / 2, y: centre.y - envelope.depthMm / 2 },
+      width: envelope.widthMm, depth: envelope.depthMm, height: envelope.heightMm,
+      label: retag ? nextTerminalTag(scene, reshaped) : element.label,
+      properties: { ...element.properties, terminal: reshaped },
+    };
+    const after = scene.map((candidate) => (candidate.id === element.id ? moved : candidate));
+    const port = findTerminalPort(after, element.id);
+    const changed = new Map<string, HvacElement>([[moved.id, moved]]);
+    const runoutNotes: string[] = [];
+    for (const run of runsOn) {
+      const runSpec = readDuctRunSpec(run)!;
+      if (!port || runSpec.end.kind !== 'terminal') continue;
+      const legs = [...runSpec.legs];
+      if (neck !== spec.neckDiameterMm) {
+        for (let index = legs.length - 1; index >= 0 && sameSectionSize(legs[index]!, oldNeck); index -= 1) legs[index] = roundLeg(neck);
+      }
+      let next: DuctRunSpec = { ...runSpec, legs, path: [...runSpec.path.slice(0, -1), { x: port.lip.x, y: port.lip.y, z: port.lip.z - neck / 2 }] };
+      if (!runSpec.end.flex) {
+        const rigid = withRigidRunout(after, settings, run.id, withFlexRunout(next, runSpec.end, neck, settings), runSpec.end, port, neck);
+        if (typeof rigid === 'string') runoutNotes.push(`its rigid runout no longer meets the spigot: ${rigid}`);
+        else next = rigid;
+      }
+      changed.set(run.id, ductRunElementWithSpec(run, next));
     }
-    let next: DuctRunSpec = { ...runSpec, legs, path: [...runSpec.path.slice(0, -1), { x: port.lip.x, y: port.lip.y, z: port.lip.z - neck / 2 }] };
-    if (!runSpec.end.flex) {
-      const rigid = withRigidRunout(after, settings, run.id, withFlexRunout(next, runSpec.end, neck, settings), runSpec.end, port, neck);
-      if (typeof rigid === 'string') notes.push(`its rigid runout no longer meets the spigot: ${rigid}`);
-      else next = rigid;
+    return { reshaped, retag, envelope, moved, port, changed, runoutNotes };
+  };
+  let built = build(spec.spigotSide);
+  let sideChosen = false;
+  // The rules each run on it broke before (it may go on breaking those).
+  const baselines = new Map(runsOn.map((run) => [run.id, getDuctRunPlan(run, scene, settings)]));
+  /** The first rule a run on it breaks with `candidate` that it did not break before, or null. */
+  const newlyBroken = (candidate: ReturnType<typeof build>) => {
+    const trial = scene.map((other) => candidate.changed.get(other.id) ?? other);
+    for (const run of runsOn) {
+      const next = readDuctRunSpec(candidate.changed.get(run.id) ?? run);
+      if (!next) continue;
+      const before = errorCodes(baselines.get(run.id) ?? null);
+      const issues = planDuctRunSpec(run.id, next, { settings, scene: trial }).issues.filter((issue) => issue.severity === 'error');
+      const counts = new Map<string, number>();
+      for (const issue of issues) {
+        counts.set(issue.code, (counts.get(issue.code) ?? 0) + 1);
+        if (counts.get(issue.code)! > (before.get(issue.code) ?? 0)) return issue;
+      }
     }
-    changed.set(run.id, ductRunElementWithSpec(run, next));
+    return null;
+  };
+  const clean = (candidate: ReturnType<typeof build>) => newlyBroken(candidate) === null;
+  if (entryChanged && entry === 'side' && settings.autoChooseSpigotSide && SQUARE_BOX_TERMINAL_KINDS.has(kind)
+    && Math.abs(built.reshaped.plenumWidthMm - built.reshaped.plenumDepthMm) <= 1 && runsOn.length > 0) {
+    // Off the top: the side its runout reaches without a rule it did not break before — its own first, then those facing the duct.
+    if (!clean(built)) {
+      const feed = readDuctRunSpec(runsOn[0]!)!;
+      const from = feed.path[Math.max(0, feed.path.length - 2)]!;
+      const others = (['back', 'front', 'left', 'right'] as const).filter((side) => side !== spec.spigotSide).map((side) => {
+        const candidate = build(side);
+        const facing = candidate.port ? dot(candidate.port.normal, unitOf(sub2(from, candidate.port.lip))) : -Infinity;
+        return { candidate, facing };
+      }).sort((a, b) => b.facing - a.facing);
+      const found = others.find(({ candidate }) => clean(candidate));
+      if (found) {
+        built = found.candidate;
+        sideChosen = true;
+      }
+    }
   }
+  const { reshaped, retag, envelope, moved, changed } = built;
+  const notes = [...built.runoutNotes];
   if (kind !== spec.kind) notes.unshift(`a ${terminalLabel(reshaped).toLowerCase()} (${envelope.widthMm} × ${envelope.depthMm}), on its centre; its runout follows the spigot`);
   if (neck !== spec.neckDiameterMm) notes.unshift(`its runout becomes Ø${neck}`);
+  if (entryChanged) {
+    notes.unshift(entry === 'top' ? 'its collar on the box\'s top: its runout comes down into it'
+      : `its collar on the box's ${reshaped.spigotSide} side${sideChosen ? ', the side its runout reaches best' : ''}: its runout comes in square to it`);
+  }
   if (retag) notes.push(`it is tagged ${moved.label}`);
-  return { updates: settle(scene, changed, settings, notes), notes, action: `Terminal ${element.label}: ${kind !== spec.kind ? terminalLabel(reshaped).toLowerCase() : `neck Ø${neck}`}` };
+  // What the change breaks that the run did not break before: said with it (the planner marks it too).
+  const broken = runsOn.length ? newlyBroken(built) : null;
+  if (broken) notes.push(`its runout now breaks a rule: ${broken.message}`);
+  const what = kind !== spec.kind ? terminalLabel(reshaped).toLowerCase() : neck !== spec.neckDiameterMm ? `neck Ø${neck}` : entry === 'top' ? 'collar on top' : 'collar on its side';
+  return { updates: settle(scene, changed, settings, notes), notes, action: `Terminal ${element.label}: ${what}` };
 }
 
 /**
@@ -891,21 +790,6 @@ export function terminalNeckChange(scene: readonly HvacElement[], settings: Duct
 }
 
 export const INLINE_TITLES: Record<DuctInlineKind, string> = { damper: 'Volume damper', 'access-door': 'Access door', attenuator: 'Sound attenuator' };
-
-/**
- * A run's accessories on the legs it keeps after its path changed: `legOf`
- * maps an old leg to its new index, null where the leg went (and its
- * accessories with it).
- */
-export function keepInlineOnLegs(spec: DuctRunSpec, legOf: (legIndex: number) => number | null): DuctRunSpec {
-  if (!spec.inline?.length) return spec;
-  const { inline, ...rest } = spec;
-  const kept = inline.flatMap((item) => {
-    const legIndex = legOf(item.legIndex);
-    return legIndex === null ? [] : [{ ...item, legIndex }];
-  });
-  return kept.length ? { ...rest, inline: kept } : rest;
-}
 
 /** Where along its leg (mm from the leg's start) each of a run's legs starts along the run. */
 function legStarts(spec: DuctRunSpec): number[] {

@@ -356,10 +356,16 @@ export function airTerminalMarkup(
   // The spigot, above the ceiling: dashed from the plenum box to its lip.
   const spigot = localTerminalSpigot(spec);
   const r = spec.neckDiameterMm / 2;
-  const from = Math.abs(spigot.normal.x) > 0.5 ? spec.plenumWidthMm / 2 : spec.plenumDepthMm / 2;
-  const to = from + spec.spigotLengthMm;
-  const side = (distance: number, across: number) => at(spigot.normal.x * distance - spigot.normal.y * across, spigot.normal.y * distance + spigot.normal.x * across);
-  parts.push(`<path d="${pathData([side(from, r), side(to, r), side(to, -r), side(from, -r)], true)}" fill="none" stroke="${color.stroke}" stroke-width="0.9" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>`);
+  if (spigot.vertical) {
+    // A top collar: dashed above the box's centre, its axis marked.
+    parts.push(`<circle cx="${f(centre.x)}" cy="${f(centre.y)}" r="${f(r)}" fill="none" stroke="${color.stroke}" stroke-width="0.9" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" data-terminal-collar="top"/>`);
+    parts.push(line(at(-r * 0.35, 0), at(r * 0.35, 0), 0.7), line(at(0, -r * 0.35), at(0, r * 0.35), 0.7));
+  } else {
+    const from = Math.abs(spigot.normal.x) > 0.5 ? spec.plenumWidthMm / 2 : spec.plenumDepthMm / 2;
+    const to = from + spec.spigotLengthMm;
+    const side = (distance: number, across: number) => at(spigot.normal.x * distance - spigot.normal.y * across, spigot.normal.y * distance + spigot.normal.x * across);
+    parts.push(`<path d="${pathData([side(from, r), side(to, r), side(to, -r), side(from, -r)], true)}" fill="none" stroke="${color.stroke}" stroke-width="0.9" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" data-terminal-collar="side"/>`);
+  }
   if (showTags) {
     const tag = airTerminalTag(element, spec, k);
     parts.push(textMarkup(tag.point, tag.text, px(TAG_FONT_PX), color.stroke));

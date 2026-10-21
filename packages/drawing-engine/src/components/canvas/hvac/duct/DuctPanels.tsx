@@ -297,8 +297,24 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
       ...(spec.kind === 'linear-slot' ? { lengthMm: spec.faceWidthMm } : {}),
     }),
     spigotSide: spec.spigotSide,
+    ...(spec.spigotEntry === 'top' ? { spigotEntry: 'top' as const } : {}),
     designAirflowM3h: spec.designAirflowM3h ?? null,
   });
+  // The collar on the box's side or on its top: its runout follows (a flexible one re-curves, a rigid one is re-made).
+  const entry = spec.spigotEntry ?? 'side';
+  const setCollar = (next: 'side' | 'top') => {
+    if (next === entry) return;
+    const state = useSmartDrawingStore.getState();
+    const result = applyDuctSegmentEdit(state.hvacElements, state.ductSettings, { kind: 'terminal', terminalId: element.id, spigotEntry: next });
+    if (result.refused) {
+      state.setProcessingStatus(result.refused, false);
+      return;
+    }
+    commitDuctSegmentEdit(result.updates, result.action);
+    // "Terminal SAD-1: collar on its side. Its collar on the box's back side: …; its runout now breaks a rule: …"
+    const said = result.notes.join('; ');
+    state.setProcessingStatus(said ? `${result.action}. ${said.charAt(0).toUpperCase()}${said.slice(1)}${/[.!?]$/.test(said) ? '' : '.'}` : `${result.action}.`, false);
+  };
   const faces = TERMINAL_FACES[spec.service].includes(spec.kind) ? TERMINAL_FACES[spec.service] : [spec.kind, ...TERMINAL_FACES[spec.service]];
   const filterDrop = spec.filter && spec.designAirflowM3h ? terminalFilterDropPa(spec, spec.designAirflowM3h, ductSettings) : null;
   const serviceHint = connected
@@ -352,11 +368,25 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
           {[...new Set([...DUCT_TERMINAL_NECKS_MM, spec.neckDiameterMm])].sort((a, b) => a - b).map((neck) => <option key={neck} value={neck}>Ø{neck}</option>)}
         </select>
       </Row>
-      <Row label="Spigot side">
-        <select value={spec.spigotSide} aria-label="Terminal spigot side" className={select}
-          onChange={(event) => commitDuctTerminalEdit(element, { spec: { ...spec, spigotSide: event.target.value as DuctTerminalSpigotSide } }, 'Terminal spigot side')}>
-          {(['back', 'front', 'left', 'right'] as const).map((side) => <option key={side} value={side}>{side}</option>)}
-        </select>
+      <Row label="Collar">
+        <div className="flex items-center gap-1">
+          <div role="radiogroup" aria-label="Terminal collar" className="inline-flex rounded border border-slate-200 bg-white p-0.5">
+            {(['side', 'top'] as const).map((option) => (
+              <button key={option} type="button" role="radio" aria-checked={entry === option}
+                title={option === 'top' ? 'On the box\'s top: the runout comes down into it (it needs room above the box)' : 'On a side of the box: the runout comes in level (a shallow void)'}
+                className={`rounded px-1.5 py-[1px] text-[11px] ${entry === option ? 'bg-sky-700 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                onClick={() => setCollar(option)}>
+                {option === 'top' ? 'Top' : 'Side'}
+              </button>
+            ))}
+          </div>
+          {entry === 'side' ? (
+            <select value={spec.spigotSide} aria-label="Terminal spigot side" className={select}
+              onChange={(event) => commitDuctTerminalEdit(element, { spec: { ...spec, spigotSide: event.target.value as DuctTerminalSpigotSide } }, 'Terminal spigot side')}>
+              {(['back', 'front', 'left', 'right'] as const).map((side) => <option key={side} value={side}>{side}</option>)}
+            </select>
+          ) : null}
+        </div>
       </Row>
       <Row label="Face / plenum box">
         <span className="text-xs">{Math.round(spec.faceWidthMm)} × {Math.round(spec.faceDepthMm)} · box {Math.round(spec.plenumWidthMm)} × {Math.round(spec.plenumDepthMm)} × {Math.round(spec.plenumHeightMm)} mm</span>
@@ -980,6 +1010,14 @@ export function DuctSystemsSection() {
       <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Optimiser</div>
       <SettingNumber settingKey="autoExactTerminals" label="Exact tree search up to" step={1} min={1} max={10} unit="terminals" />
       <SettingNumber settingKey="autoTimeBudgetMs" label="Time per unit" step={1000} min={1000} max={60000} unit="ms" />
+      <Row label="New terminals' collar">
+        <select value={ductSettings.defaultCollarEntry} aria-label="New terminals' collar" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+          onChange={(event) => setDuctSettings({ defaultCollarEntry: event.target.value as 'side' | 'top' })}>
+          <option value="side">On a side</option>
+          <option value="top">On top</option>
+        </select>
+        <SourceBadge settingKey="defaultCollarEntry" />
+      </Row>
       <Row label="Turn terminal spigots">
         <label className="flex items-center gap-1 text-xs">
           <input type="checkbox" checked={ductSettings.autoChooseSpigotSide} aria-label="Let the optimiser choose the spigot side"

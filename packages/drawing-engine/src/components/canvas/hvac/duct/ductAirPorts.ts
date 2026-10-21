@@ -29,6 +29,8 @@ export interface LocalAirPortSpec {
   heightMm: number;
   /** Collar projection from the casing face (mm). */
   collarDepthMm: number;
+  /** A collar on top: the air enters it downward (`normal` is then only the side a duct comes from). */
+  vertical?: boolean;
 }
 
 export interface DuctAirPort {
@@ -47,6 +49,13 @@ export interface DuctAirPort {
   provenance: DuctRuleProvenance;
   /** A round spigot (an air terminal's): its diameter; width and height equal it. */
   diameterMm?: number;
+  /** A collar on top: the air enters it downward, its lip its top (`normal` is then only the side a duct comes from). */
+  vertical?: boolean;
+}
+
+/** The way air goes into a port at its lip: square into a side collar, straight down into a top one. */
+export function portEntryDirection(port: Pick<DuctAirPort, 'normal' | 'vertical'>): DuctPoint3 {
+  return port.vertical ? { x: 0, y: 0, z: -1 } : { x: -port.normal.x, y: -port.normal.y, z: 0 };
 }
 
 /**
@@ -197,6 +206,7 @@ export function toWorldAirPort(
     edgeB: toWorld({ x: local.lip.x + tangent.x * half, y: local.lip.y + tangent.y * half }),
     source,
     provenance: provenance ?? (source === 'measured' ? MEASURED_PROVENANCE : source === 'element' ? ELEMENT_PROVENANCE : PROCEDURAL_PROVENANCE),
+    ...(local.vertical ? { vertical: true } : {}),
   };
 }
 

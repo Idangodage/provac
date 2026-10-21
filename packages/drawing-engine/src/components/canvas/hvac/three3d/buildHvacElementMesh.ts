@@ -1873,17 +1873,29 @@ function addAirTerminalMeshes(group: THREE.Group, element: HvacElement): void {
   // BoxGeometry here used to leave a plate blocking the air connection.
   const spigot = localTerminalSpigot(spec);
   const radius = spec.neckDiameterMm / 2;
-  const roof = createLocalBoxMesh(spec.plenumWidthMm, spec.plenumDepthMm, 1, colors.plenum,
-    new THREE.Vector3(0, 0, fh + spec.plenumHeightMm - 0.5));
-  roof.name = 'terminal-plenum-roof';
-  group.add(roof);
   const plenumMaterial = markMaterialOwned(getSharedBoxMaterial(colors.plenum, 1, false).clone());
   plenumMaterial.side = THREE.DoubleSide;
+  if (spigot.vertical) {
+    // A top collar: the roof is a sheet open under it.
+    const geometry = rectangularDuctPanel(spec.plenumWidthMm, spec.plenumDepthMm, [{
+      centre: { x: 0, y: 0 }, widthMm: spec.neckDiameterMm, heightMm: spec.neckDiameterMm, round: true,
+    }]);
+    geometry.translate(0, 0, fh + spec.plenumHeightMm);
+    const roof = new THREE.Mesh(geometry, plenumMaterial);
+    roof.name = 'terminal-plenum-roof';
+    roof.renderOrder = 18;
+    group.add(roof);
+  } else {
+    const roof = createLocalBoxMesh(spec.plenumWidthMm, spec.plenumDepthMm, 1, colors.plenum,
+      new THREE.Vector3(0, 0, fh + spec.plenumHeightMm - 0.5));
+    roof.name = 'terminal-plenum-roof';
+    group.add(roof);
+  }
   for (const normal of [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]) {
     const onX = normal.x !== 0;
     const sideWidth = onX ? spec.plenumDepthMm : spec.plenumWidthMm;
     const sideOffset = (onX ? spec.plenumWidthMm : spec.plenumDepthMm) / 2;
-    const isSpigotWall = normal.x === spigot.normal.x && normal.y === spigot.normal.y;
+    const isSpigotWall = !spigot.vertical && normal.x === spigot.normal.x && normal.y === spigot.normal.y;
     const geometry = rectangularDuctPanel(sideWidth, spec.plenumHeightMm, isSpigotWall ? [{
       centre: { x: 0, y: spigot.lip.z - fh - spec.plenumHeightMm / 2 },
       widthMm: spec.neckDiameterMm, heightMm: spec.neckDiameterMm, round: true,
@@ -1896,6 +1908,15 @@ function addAirTerminalMeshes(group: THREE.Group, element: HvacElement): void {
     wall.name = isSpigotWall ? 'terminal-plenum-spigot-wall' : 'terminal-plenum-wall';
     wall.renderOrder = 18;
     group.add(wall);
+  }
+  if (spigot.vertical) {
+    // Top collar (≥ 51 mm, SMACNA S3.30) standing on the roof, with its open annular bead; a cylinder runs along +Y,
+    // so it is stood up a quarter turn about X.
+    const upright = new THREE.Euler(Math.PI / 2, 0, 0);
+    const top = fh + spec.plenumHeightMm;
+    group.add(createLocalCylinderMesh(radius, radius, spec.spigotLengthMm, colors.spigot, new THREE.Vector3(0, 0, top + spec.spigotLengthMm / 2), { rotation: upright, openEnded: true }));
+    group.add(createLocalCylinderMesh(radius + 4, radius + 4, 8, colors.spigot, new THREE.Vector3(0, 0, top + 25), { rotation: upright, openEnded: true }));
+    return;
   }
   // Side spigot (a collar ≥ 51 mm, SMACNA S3.30) with its open annular bead.
   const alongX = Math.abs(spigot.normal.x) > 0.5;

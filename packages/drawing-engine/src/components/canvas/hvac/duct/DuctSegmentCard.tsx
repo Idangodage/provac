@@ -546,6 +546,10 @@ function EditPanel({ host, plan, segment, context, options }: {
             <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500">Neck</span>
             {chipRow('neck:')}
           </div>
+          <div className="flex items-center gap-2 px-1" title="Where the runout meets the terminal's plenum box">
+            <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500">Collar</span>
+            {chipRow('collar:')}
+          </div>
           <ValueField host={host} label="Airflow" unit="m³/h" current={Math.round(designed ?? share)} min={10} max={10000} step={10} fineStep={5} testId="duct-segment-airflow"
             hint={designed ? 'its design airflow' : 'an equal share of the system airflow'}
             extra={designed ? (

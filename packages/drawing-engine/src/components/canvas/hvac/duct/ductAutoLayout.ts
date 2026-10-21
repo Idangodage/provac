@@ -82,7 +82,7 @@ import {
 } from './ductSizing';
 import { getDuctSupportPlan, resolveSoffitZ } from './ductSupports';
 import { linkSizingBasis, sizeDuctSystem, type DuctSystemSizingReport } from './ductSystemSizing';
-import { filterPanelsServed, isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec, terminalPressureDropPa } from './ductTerminals';
+import { filterPanelsServed, isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec, terminalPressureDropPa, type DuctTerminalSpigotEntry } from './ductTerminals';
 import {
   isDuctElement,
   readDuctRunSpec,
@@ -141,6 +141,16 @@ export interface AutoDuctRequest {
   sizing?: AutoDuctSizingBases | null;
   /** Airflow per terminal set in the card (m³/h; null = an equal share), written to the terminals with the runs. */
   terminalAirflows?: Readonly<Record<string, number | null>>;
+  /** The terminals' collars: each as it is set (absent), or all on their sides, or all on top (written with the runs). */
+  collarEntry?: 'as-set' | DuctTerminalSpigotEntry;
+}
+
+/** A terminal's collar as the card sets it (null: as it is). */
+export function terminalWithCollar(element: HvacElement, entry: DuctTerminalSpigotEntry | null): HvacElement {
+  const spec = readDuctTerminalSpec(element);
+  if (!spec || !entry || (spec.spigotEntry ?? 'side') === entry) return element;
+  const { spigotEntry: _was, ...raw } = (element.properties.terminal ?? {}) as Record<string, unknown>;
+  return { ...element, properties: { ...element.properties, terminal: entry === 'top' ? { ...raw, spigotEntry: 'top' } : raw } };
 }
 
 /** Constant-friction bases by service. */
@@ -1392,8 +1402,12 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
   }
   result.sizing = Object.keys(bases).length ? bases : null;
   const airflows = request.terminalAirflows;
+  const collars = request.collarEntry && request.collarEntry !== 'as-set' ? request.collarEntry : null;
+  // The terminals as the card sets them (their airflow, their collar): written with the runs, and designed for.
+  const asSet = (element: HvacElement) => terminalWithCollar(terminalWithAirflow(element, airflows), collars);
   result.terminalAirflowUpdates = scene.filter((element) => request.terminalIds.includes(element.id) && isDuctTerminalElement(element))
-    .map((element) => terminalWithAirflow(element, airflows)).filter((element) => !scene.includes(element));
+    .map(asSet).filter((element) => !scene.includes(element));
+  if (collars) scene = scene.map((element) => (request.terminalIds.includes(element.id) && isDuctTerminalElement(element) ? terminalWithCollar(element, collars) : element));
   const ports = listAirPorts(scene).filter((port) => port.unitId === unit.id);
   const terminalPorts = listTerminalPorts(scene);
   const requested = scene.filter((element) => request.terminalIds.includes(element.id) && isDuctTerminalElement(element));

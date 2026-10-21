@@ -12,6 +12,8 @@ import type { DuctService } from './ductTypes';
 
 export type DuctTerminalKind = 'square-4way' | 'round' | 'linear-slot' | 'return-egg-crate' | 'perforated' | 'louvred';
 export type DuctTerminalSpigotSide = 'back' | 'front' | 'left' | 'right';
+/** Where a plenum box's collar is: on a side (`spigotSide`) or on its top (the runout drops into it). */
+export type DuctTerminalSpigotEntry = 'side' | 'top';
 /** Filter media in a terminal's face (EN 779 classes; the ISO 16890 / MERV equivalents are approximate). */
 export type DuctTerminalFilterClass = 'G4' | 'M5';
 
@@ -32,6 +34,11 @@ export interface DuctTerminalSpec {
   plenumDepthMm: number;
   plenumHeightMm: number;
   spigotSide: DuctTerminalSpigotSide;
+  /**
+   * The collar on the box's top (the runout drops into it from above; `spigotSide` is then only the side a
+   * runout comes from); absent: on its side.
+   */
+  spigotEntry?: DuctTerminalSpigotEntry;
   spigotLengthMm: number;
   /** Linear slot diffusers. */
   slots?: number;

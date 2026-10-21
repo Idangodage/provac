@@ -113,7 +113,9 @@ export function commitDuctTerminalRetype(element: HvacElement, change: { service
     ...(spec.slots !== undefined ? { slots: spec.slots } : {}),
     ...(spec.kind === 'linear-slot' && kind === 'linear-slot' ? { lengthMm: spec.faceWidthMm } : {}),
   });
-  const reshaped: DuctTerminalSpec = { ...next, spigotSide: spec.spigotSide, designAirflowM3h: spec.designAirflowM3h ?? null };
+  const reshaped: DuctTerminalSpec = {
+    ...next, spigotSide: spec.spigotSide, ...(spec.spigotEntry === 'top' ? { spigotEntry: 'top' as const } : {}), designAirflowM3h: spec.designAirflowM3h ?? null,
+  };
   const oldTag = terminalTypeTag(spec);
   const retag = TERMINAL_TAG_PATTERN.exec(element.label.trim())?.[1] === oldTag && terminalTypeTag(reshaped) !== oldTag;
   const type = service === 'return' ? 'return-grille' : 'diffuser';

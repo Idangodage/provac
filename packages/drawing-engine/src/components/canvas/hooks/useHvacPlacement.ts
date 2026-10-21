@@ -7,7 +7,7 @@
 import { useCallback, useMemo } from 'react';
 
 import type { AcEquipmentDefinition } from '../../../data';
-import type { HvacElementCommand } from '../../../store';
+import { useSmartDrawingStore, type HvacElementCommand } from '../../../store';
 import type { HvacElement, Point2D, Room } from '../../../types';
 import { generateId } from '../../../utils/geometry';
 import { GeometryEngine } from '../../../utils/geometry-engine';
@@ -630,6 +630,10 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
                 ...(targetUnit ? { airSystem: { unitId: targetUnit.id } } : {}),
                 // A ducted unit heads an air system: it takes the next free tag ("DU-3").
                 ...(isAirSystemUnit(pendingPlacementEquipmentDefinition) ? { airSystemTag: nextAirSystemTag(hvacElements) } : {}),
+                // A new air terminal takes the project's collar (on a side, or on top).
+                ...(isAirTerminal && useSmartDrawingStore.getState().ductSettings.defaultCollarEntry === 'top' ? {
+                    terminal: { ...((pendingPlacementEquipmentDefinition.defaultProperties?.terminal as Record<string, unknown> | undefined) ?? {}), spigotEntry: 'top' },
+                } : {}),
             },
         };
         if (targetUnit && commitHvacElementCommand) {

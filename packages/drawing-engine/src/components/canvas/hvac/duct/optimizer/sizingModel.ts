@@ -6,6 +6,7 @@
  * and the planned result agree to within the geometry the realiser settles.
  */
 import type { Point2D } from '../../../../../types';
+import { portEntryDirection } from '../ductAirPorts';
 import { branchStubMm, dirToWorld, flexClear, flexFit, flexOk, runoutStaysOut, toWorld, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { shoeLeadInMm } from '../ductBranches';
 import { damperCost, energyPricePerPa, fittingCost, flexCost, sectionCostPerMetre, type SectionCostContext } from '../ductEconomics';
@@ -377,7 +378,7 @@ export class SizingModel {
     const direction = dirToWorld(this.ctx.frame, out);
     const curve = flexCurve(
       { ...worldStart, z: bottomZ + terminal.neck / 2 }, { ...direction, z: 0 },
-      terminal.port.lip, { x: -terminal.port.normal.x, y: -terminal.port.normal.y, z: 0 },
+      terminal.port.lip, portEntryDirection(terminal.port),
     );
     return { ...curve, radiusMm: curve.minBendRadiusMm };
   }
