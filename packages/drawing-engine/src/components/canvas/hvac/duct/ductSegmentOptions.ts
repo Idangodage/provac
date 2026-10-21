@@ -569,6 +569,8 @@ export interface DuctIssueChange {
 export interface DuctOptionEvaluation {
   optionId: string;
   refused?: string;
+  /** The piece the edit moved, by its key now (a transition numbered anew): the card follows it. */
+  refocus?: { runId: string; key: string };
   updates: HvacElement[];
   /** The undo step's name when applied. */
   action: string;
@@ -690,6 +692,7 @@ export function evaluateDuctSegmentOption(
     const flow = after?.flow ?? null;
     evaluation = {
       ...empty,
+      ...(result.refocus ? { refocus: result.refocus } : {}),
       updates: result.updates,
       action: result.action,
       notes,

@@ -28,7 +28,7 @@ import { domainOf, useDuctSegmentUiStore } from '../duct/ductSegmentUiStore';
 import type { DuctDesignSettings } from '../duct/ductSettings';
 import { readDuctRunSpec } from '../duct/ductTypes';
 
-import { cursorFor, gripName, steppedValue } from './DuctResizeGrips';
+import { cursorFor, draggedGrip, gripName, gripSubject, SlideGripFace, steppedValue } from './DuctResizeGrips';
 import type { Vec3 } from './ductElasticMove';
 import { ductResizeGrips, type DuctResizeGrip } from './ductResize';
 import { useDuctResizePreviewStore, type DuctResizePreview } from './ductResizePreviewStore';
@@ -58,6 +58,8 @@ function dimensionOf(scene: readonly HvacElement[], preview: DuctResizePreview, 
   const width = section.diameterMm ?? section.widthMm;
   const label = formatMm(preview.made);
   const kind = preview.grip.kind;
+  // A slid piece: from where its place is measured to where it is.
+  if (kind === 'slide' && dragged.slide) return { a: dragged.slide.origin, b: dragged.point, label };
   if (kind === 'length-end' || kind === 'length-start') {
     if (geometry.vertical) return { a: { ...geometry.start, z: geometry.startCentreZ }, b: { ...geometry.end, z: geometry.endCentreZ }, label };
     const top = geometry.start.z + depth + spec.insulationThicknessMm;
@@ -102,14 +104,7 @@ export function DuctResizeGrips3D(props: {
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const grips = useMemo(() => (focus ? ductResizeGrips(hvacElements, settings, focus.runId, focus.key) : []), [focus, hvacElements, settings]);
-  const subject = useMemo(() => {
-    if (!focus) return '';
-    if (focus.key === 'end:flex') return 'the runout';
-    const element = hvacElements.find((candidate) => candidate.id === focus.runId);
-    const spec = element ? readDuctRunSpec(element) : null;
-    const index = Number(/^leg:(\d+)$/.exec(focus.key)?.[1] ?? -1);
-    return `${spec && ductLegs(spec)[index]?.vertical ? 'riser' : 'straight'} ${index + 1}`;
-  }, [focus, hvacElements]);
+  const subject = useMemo(() => (focus ? gripSubject(focus.key, hvacElements, focus.runId) : ''), [focus, hvacElements]);
 
   // While a grip is dragged: it, on the duct as it will be, and the dimension it is taking.
   const dragging = preview && focus && preview.grip.runId === focus.runId ? preview : null;
@@ -118,12 +113,7 @@ export function DuctResizeGrips3D(props: {
     const replaced = new Map(dragging.elements.map((element) => [element.id, element]));
     return hvacElements.map((element) => replaced.get(element.id) ?? element);
   }, [dragging, hvacElements]);
-  const dragged = useMemo(() => {
-    if (!dragging || !dragScene || !focus) return null;
-    const { grip } = dragging;
-    return ductResizeGrips(dragScene, settings, grip.runId, focus.key, { probe: false })
-      .find((candidate) => candidate.kind === grip.kind && candidate.side === grip.side) ?? null;
-  }, [dragging, dragScene, focus, settings]);
+  const dragged = useMemo(() => (dragging && dragScene && focus ? draggedGrip(dragScene, settings, dragging, focus.key) : null), [dragging, dragScene, focus, settings]);
   const shown = useMemo(() => (dragged ? [dragged] : grips), [dragged, grips]);
   const dimension = useMemo(() => (dragging && dragScene && dragged ? dimensionOf(dragScene, dragging, dragged) : null), [dragging, dragScene, dragged]);
 
@@ -231,6 +221,7 @@ export function DuctResizeGrips3D(props: {
         {projected.items.map(({ grip, at, angle: turn, cursor }) => {
           const name = gripName(grip, subject);
           const sectional = grip.kind === 'width' || grip.kind === 'depth';
+          const slide = grip.kind === 'slide';
           return (
             <g
               key={`${grip.kind}${grip.side ?? ''}`}
@@ -246,9 +237,11 @@ export function DuctResizeGrips3D(props: {
               onPointerDown={(event) => press(event, grip)}
               onKeyDown={(event) => key(event, grip)}
             >
-              <title>{`${name}: drag (Alt: 1 mm${sectional ? '; Shift: every straight of its size' : ''}; type a number for an exact value), or the arrow keys`}</title>
-              <circle r={13} fill="transparent" />
-              {sectional ? (
+              <title>{slide
+                ? `${name}: drag along the duct (it stops where a fitting, a take-off or a wall is in the way; Alt: 1 mm; type a number for an exact place), or the arrow keys`
+                : `${name}: drag (Alt: 1 mm${sectional ? '; Shift: every straight of its size' : ''}; type a number for an exact value), or the arrow keys`}</title>
+              <circle r={slide ? 16 : 13} fill="transparent" />
+              {slide ? <SlideGripFace /> : sectional ? (
                 <>
                   <rect x={-4.5} y={-9} width={9} height={18} rx={4.5} fill="#ffffff" stroke={COLOUR} strokeWidth={1.5}
                     className="transition-colors group-hover:fill-sky-100 group-focus-visible:fill-sky-200" />

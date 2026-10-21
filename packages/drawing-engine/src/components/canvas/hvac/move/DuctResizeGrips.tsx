@@ -3,7 +3,9 @@
 /**
  * The resize grips of the straight whose card is pinned on the plan: its two
  * ends (its length), its two sides (its width) and a flexible runout's start
- * (its length), those that can move. A press starts the move session's resize
+ * (its length), those that can move; and the slide grip of a small piece whose
+ * card is pinned (a take-off, an accessory, a transition), which moves it
+ * along its duct. A press starts the move session's resize
  * mode (the readout at the cursor, the duct drawn as it will be, a typed
  * number, Esc, one undo). While it drags, the grip rides on the duct as it will
  * be, with the length or width it is taking dimensioned beside it.
@@ -26,6 +28,8 @@ import { useDuctResizePreviewStore } from './ductResizePreviewStore';
 import type { HvacResizeBegin } from './hvacMoveSession';
 
 const COLOUR = '#0369a1';
+/** A slide grip (a piece moved along its duct, not sized). */
+const SLIDE_COLOUR = '#0f766e';
 /** A side grip sits at least this far off the centreline on screen (a duct only a few pixels wide). */
 const MIN_SIDE_PX = 14;
 /** How far beyond the duct's side a length dimension runs while dragging (px). */
@@ -43,6 +47,7 @@ export function cursorFor(axis: { x: number; y: number }): string {
 }
 
 export function gripName(grip: DuctResizeGrip, subject: string): string {
+  if (grip.kind === 'slide') return `Place of ${subject} along its duct`;
   if (grip.kind === 'runout') return `Length of ${subject}`;
   if (grip.kind === 'width') return `${grip.round ? 'Diameter' : 'Width'} of ${subject}`;
   if (grip.kind === 'depth') return `${grip.round ? 'Diameter' : 'Depth'} of ${subject}`;
@@ -62,6 +67,37 @@ export function steppedValue(grip: DuctResizeGrip, direction: 1 | -1, event: { s
   const snapped = snapResizeValue(grip, grip.value + direction * step, settings);
   // (A value off the grid steps onto it; one already on it moves a whole step.)
   return Math.abs(snapped - grip.value) < 0.5 ? snapResizeValue(grip, grip.value + 2 * direction * step, settings) : snapped;
+}
+
+/** What a pinned piece is called on its grips ("straight 2", "the take-off"). */
+export function gripSubject(key: string, hvacElements: readonly HvacElement[], runId: string): string {
+  if (key === 'end:flex') return 'the runout';
+  if (key === 'start:takeoff') return 'the take-off';
+  if (key.startsWith('inline:')) return 'the accessory';
+  if (key.startsWith('transition:')) return 'the transition';
+  const element = hvacElements.find((candidate) => candidate.id === runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  const index = Number(/^leg:(\d+)$/.exec(key)?.[1] ?? -1);
+  return `${spec && ductLegs(spec)[index]?.vertical ? 'riser' : 'straight'} ${index + 1}`;
+}
+
+/** The grip a drag is moving, where it is in the drawing as it will be (a slid transition by its key there). */
+export function draggedGrip(scene: readonly HvacElement[], settings: DuctDesignSettings, preview: { grip: DuctResizeGrip; key?: string }, key: string): DuctResizeGrip | null {
+  const { grip } = preview;
+  return ductResizeGrips(scene, settings, grip.runId, preview.key ?? key, { probe: false })
+    .find((candidate) => candidate.kind === grip.kind && candidate.side === grip.side) ?? null;
+}
+
+/** A slide grip's face: a capsule along its duct with an arrow each way and a dot (the piece). */
+export function SlideGripFace() {
+  return (
+    <>
+      <rect x={-14} y={-7} width={28} height={14} rx={7} fill="#ffffff" stroke={SLIDE_COLOUR} strokeWidth={1.6}
+        className="transition-colors group-hover:fill-teal-50 group-focus-visible:fill-teal-100" />
+      <path d="M-10,0 L-6,-3.5 L-6,3.5 Z M10,0 L6,-3.5 L6,3.5 Z" fill={SLIDE_COLOUR} />
+      <circle r={2.2} fill={SLIDE_COLOUR} />
+    </>
+  );
 }
 
 export function DuctResizeGrips(props: {
@@ -86,14 +122,7 @@ export function DuctResizeGrips(props: {
     () => (focus ? ductResizeGrips(hvacElements, settings, focus.runId, focus.key).filter((grip) => grip.kind !== 'depth') : []),
     [focus, hvacElements, settings],
   );
-  const subject = useMemo(() => {
-    if (!focus) return '';
-    if (focus.key === 'end:flex') return 'the runout';
-    const element = hvacElements.find((candidate) => candidate.id === focus.runId);
-    const spec = element ? readDuctRunSpec(element) : null;
-    const index = Number(/^leg:(\d+)$/.exec(focus.key)?.[1] ?? -1);
-    return `${spec && ductLegs(spec)[index]?.vertical ? 'riser' : 'straight'} ${index + 1}`;
-  }, [focus, hvacElements]);
+  const subject = useMemo(() => (focus ? gripSubject(focus.key, hvacElements, focus.runId) : ''), [focus, hvacElements]);
 
   // While a grip is dragged: it, where it is on the duct as it will be.
   const dragging = preview && focus && preview.grip.runId === focus.runId ? preview : null;
@@ -102,12 +131,7 @@ export function DuctResizeGrips(props: {
     const replaced = new Map(dragging.elements.map((element) => [element.id, element]));
     return hvacElements.map((element) => replaced.get(element.id) ?? element);
   }, [dragging, hvacElements]);
-  const dragged = useMemo(() => {
-    if (!dragging || !dragScene || !focus) return null;
-    const { grip } = dragging;
-    return ductResizeGrips(dragScene, settings, grip.runId, focus.key, { probe: false })
-      .find((candidate) => candidate.kind === grip.kind && candidate.side === grip.side) ?? null;
-  }, [dragging, dragScene, focus, settings]);
+  const dragged = useMemo(() => (dragging && dragScene && focus ? draggedGrip(dragScene, settings, dragging, focus.key) : null), [dragging, dragScene, focus, settings]);
 
   if (!focus || (!grips.length && !dragged)) return null;
   const k = MM_TO_PX * viewportZoom;
@@ -164,6 +188,31 @@ export function DuctResizeGrips(props: {
           </g>
         </g>
       );
+    } else if (dragged.slide && dragging.grip.kind === 'slide') {
+      // A slid piece: how far it is from where its place is measured (the main's leg start, its own leg's, its straight's).
+      const a = toScreen(dragged.slide.origin);
+      const b = toScreen(dragged.point);
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      if (length > 1) {
+        const n = { x: -(b.y - a.y) / length, y: (b.x - a.x) / length };
+        const off = 20;
+        const a2 = { x: a.x + n.x * off, y: a.y + n.y * off };
+        const b2 = { x: b.x + n.x * off, y: b.y + n.y * off };
+        let angle = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+        if (angle > 90) angle -= 180;
+        if (angle <= -90) angle += 180;
+        const mid = { x: (a2.x + b2.x) / 2, y: (a2.y + b2.y) / 2 };
+        dimension = (
+          <g data-testid="duct-resize-dimension">
+            <path d={`M${a.x},${a.y} L${a2.x + n.x * 5},${a2.y + n.y * 5} M${b.x},${b.y} L${b2.x + n.x * 5},${b2.y + n.y * 5}`} stroke={SLIDE_COLOUR} strokeWidth={0.9} fill="none" />
+            <path d={`M${a2.x},${a2.y} L${b2.x},${b2.y}`} stroke={SLIDE_COLOUR} strokeWidth={1.2} fill="none" />
+            <g transform={`translate(${mid.x} ${mid.y}) rotate(${angle})`}>
+              <rect x={-26} y={-9} width={52} height={18} rx={4} fill={SLIDE_COLOUR} />
+              <text x={0} y={4} textAnchor="middle" fontSize={11.5} fontWeight={600} fill="#ffffff" style={{ fontFamily: 'ui-monospace, monospace' }}>{formatMm(dragging.made)}</text>
+            </g>
+          </g>
+        );
+      }
     } else if (spec && geometry && section && !geometry.vertical && dragging.grip.kind === 'width') {
       const halfMm = (section.diameterMm ?? section.widthMm) / 2;
       const left = { x: -geometry.direction.y, y: geometry.direction.x };
@@ -201,6 +250,7 @@ export function DuctResizeGrips(props: {
           const angle = (Math.atan2(grip.axis.y, grip.axis.x) * 180) / Math.PI;
           const name = gripName(grip, subject);
           const sectional = grip.kind === 'width' || grip.kind === 'depth';
+          const slide = grip.kind === 'slide';
           return (
             <g
               key={`${grip.kind}${grip.side ?? ''}`}
@@ -216,9 +266,11 @@ export function DuctResizeGrips(props: {
               onPointerDown={(event) => press(event, grip)}
               onKeyDown={(event) => key(event, grip)}
             >
-              <title>{`${name}: drag (Alt: 1 mm${sectional ? '; Shift: every straight of its size' : ''}; type a number for an exact value), or the arrow keys`}</title>
-              <circle r={13} fill="transparent" />
-              {sectional ? (
+              <title>{slide
+                ? `${name}: drag along the duct (it stops where a fitting, a take-off or a wall is in the way; Alt: 1 mm; type a number for an exact place), or the arrow keys`
+                : `${name}: drag (Alt: 1 mm${sectional ? '; Shift: every straight of its size' : ''}; type a number for an exact value), or the arrow keys`}</title>
+              <circle r={slide ? 16 : 13} fill="transparent" />
+              {slide ? <SlideGripFace /> : sectional ? (
                 <>
                   <rect x={-4.5} y={-9} width={9} height={18} rx={4.5} fill="#ffffff" stroke={COLOUR} strokeWidth={1.5}
                     className="transition-colors group-hover:fill-sky-100 group-focus-visible:fill-sky-200" />
@@ -231,7 +283,7 @@ export function DuctResizeGrips(props: {
                   <path d="M-6,0 L6,0 M-6,0 L-3.5,-2.5 M-6,0 L-3.5,2.5 M6,0 L3.5,-2.5 M6,0 L3.5,2.5" stroke={COLOUR} strokeWidth={1.4} fill="none" strokeLinecap="round" />
                 </>
               )}
-              <circle r={14} fill="none" stroke={COLOUR} strokeWidth={2} className="opacity-0 group-focus-visible:opacity-60" />
+              <circle r={slide ? 17 : 14} fill="none" stroke={slide ? SLIDE_COLOUR : COLOUR} strokeWidth={2} className="opacity-0 group-focus-visible:opacity-60" />
             </g>
           );
         })}

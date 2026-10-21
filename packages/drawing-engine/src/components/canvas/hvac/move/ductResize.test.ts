@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import type { HvacElement, Point2D } from '../../../../types';
 import { resolveUnitAirPorts } from '../duct/ductAirPorts';
-import { buildDuctRunDraftElement } from '../duct/ductDraft';
+import { tapOrigin } from '../duct/ductBranchTargets';
+import { buildDuctRunDraftElement, type DuctDraftOrigin } from '../duct/ductDraft';
+import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
 import { ductLegs } from '../duct/ductGeometry';
 import { resolveDuctSettings } from '../duct/ductSettings';
 import { terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from '../duct/ductTerminals';
@@ -280,5 +282,99 @@ describe('the move session\'s resize mode', () => {
     target.fire('pointerup', { clientX: end.point.x + 1, clientY: end.point.y });
     expect(log.commits).toHaveLength(0);
     expect(log.previews).toHaveLength(0);
+  });
+});
+
+describe('slide grips: a small piece moved along its duct', () => {
+  // Up 4000 from the collar, reduced at 1500 (400×250 → 300×250), then right 2000; a volume damper on the first
+  // straight (clear of the collar's transition); a round branch off the second, 900 mm past the reducer.
+  const small = { widthMm: 300, heightMm: 250 };
+  const drawn = buildDuctRunDraftElement({ port, points: [S(1500), S(4000), S(4000, 2000)], legSizes: [trunk, small, small] }, 'main');
+  const main: HvacElement = { ...drawn, properties: { ...drawn.properties, ductRun: { ...readDuctRunSpec(drawn)!, inline: [{ id: 'i1', kind: 'damper', legIndex: 0, stationMm: 1100 }] } } };
+  const tap = tapOrigin(main, settings, { legIndex: 1, stationMm: 900, side: 1, style: 'spin-in', vcd: true }, roundLeg(200)) as Extract<DuctDraftOrigin, { kind: 'tap' }>;
+  const branch = buildDuctRunDraftElement({
+    origin: tap, points: [{ x: tap.point.x + tap.direction.x * 1500, y: tap.point.y + tap.direction.y * 1500 }], legSizes: [roundLeg(200)],
+  }, 'branch');
+  const pieces = [unit, main, branch];
+  const slideOf = (runId: string, key: string) => ductResizeGrips(pieces, settings, runId, key)[0]!;
+
+  it('the drawing starts clean', () => {
+    for (const id of ['main', 'branch']) {
+      const plan = getDuctRunPlan(pieces.find((element) => element.id === id)!, pieces, settings)!;
+      expect(plan.issues.filter((issue) => issue.severity === 'error').map((issue) => issue.code)).toEqual([]);
+    }
+  });
+
+  it('a take-off, an accessory and a transition each offer a slide grip along their duct, drawn to the middle of its clear straight', () => {
+    const takeoff = slideOf('branch', 'start:takeoff');
+    expect(takeoff).toMatchObject({ kind: 'slide', value: 900, slide: { piece: 'takeoff' } });
+    expect(takeoff.axis.x).toBeCloseTo(0, 9);
+    expect(takeoff.axis.y).toBeCloseTo(-1, 9);
+    const damper = slideOf('main', 'inline:i1');
+    expect(damper).toMatchObject({ kind: 'slide', value: 1100, slide: { piece: 'inline', id: 'i1' } });
+    // The first straight's clear part runs from the collar's transition to the reducer: its middle.
+    const middle = damper.slide!.stops[0]!;
+    expect(middle).toBeGreaterThan(900);
+    expect(middle).toBeLessThan(1500);
+    const reducer = slideOf('main', 'transition:1');
+    expect(reducer).toMatchObject({ kind: 'slide', slide: { piece: 'transition', node: 1 } });
+    expect(reducer.value).toBeCloseTo(1500, 0);
+  });
+
+  it('a transition slid toward the take-off stops short of it, and says why', () => {
+    const plan = new DuctResizeSolver(pieces, settings, slideOf('main', 'transition:1')).plan(2600);
+    expect(plan.resize.made).toBeGreaterThan(1500);
+    expect(plan.resize.made).toBeLessThan(2400);
+    expect(plan.limitedBy?.reason).toMatch(/^The transition stops at [\d,]+ mm: .*take-off/);
+  });
+
+  it('an accessory slid onto the transition stops short of it, and says why', () => {
+    const plan = new DuctResizeSolver(pieces, settings, slideOf('main', 'inline:i1')).plan(1450);
+    expect(plan.resize.subject).toBe('The volume damper');
+    expect(plan.resize.made).toBeLessThan(1450);
+    expect(plan.resize.made).toBeGreaterThan(1200);
+    expect(plan.limitedBy?.reason).toMatch(/^The volume damper stops at [\d,]+ mm: .*overlaps/);
+  });
+
+  it('a transition does not jump the take-off to a clear place beyond it (it moves continuously)', () => {
+    // 2,600 mm is clear (past the take-off), but the way there is not: it stops before the take-off.
+    const plan = new DuctResizeSolver(pieces, settings, slideOf('main', 'transition:1')).plan(2700);
+    expect(plan.resize.made).toBeLessThan(2400);
+  });
+
+  it('a take-off slid onto the transition stops short of it (the main\'s own rules count), and says why', () => {
+    // Back toward the reducer (its window would meet the transition at 1,500–1,810 mm from the collar).
+    const plan = new DuctResizeSolver(pieces, settings, slideOf('branch', 'start:takeoff')).plan(0);
+    expect(plan.resize.made).toBeGreaterThan(200);
+    expect(plan.limitedBy?.reason).toMatch(/^The take-off stops at [\d,]+ mm: .*take-off overlaps/);
+  });
+
+  it('a take-off slides along its main: its branch keeps its end', () => {
+    const plan = new DuctResizeSolver(pieces, settings, slideOf('branch', 'start:takeoff')).plan(600);
+    expect(plan.resize).toMatchObject({ subject: 'The take-off', made: 600 });
+    expect(plan.label).toBe('Take-off moved 300 mm back along the main');
+  });
+
+  it('a drag is drawn to the middle of its straight (within 4 px, held to 6 px)', () => {
+    const target = new FakeWindow();
+    const huds: Array<HvacMoveHudState | null> = [];
+    const host: HvacMoveSessionHost = {
+      scene: () => pieces, selection: () => ['main'], select: () => undefined,
+      clientToWorld: (x: number, y: number): Point2D => ({ x, y }), pxPerMm: () => 1, gridMm: () => 50,
+      context: () => ({ ductSettings: settings }), preview: () => undefined, hud: (state) => { huds.push(state); }, commit: () => undefined,
+    };
+    const session = new HvacMoveSession(host, target as unknown as Window);
+    const damper = slideOf('main', 'inline:i1');
+    expect(session.beginResize({ grip: damper, clientX: damper.point.x, clientY: damper.point.y })).toBe(true);
+    // Up the straight is −y: 2 mm short of the middle of its clear straight, it is held there.
+    const middle = damper.slide!.stops[0]!;
+    target.fire('pointermove', { clientX: damper.point.x, clientY: damper.point.y + (damper.value - middle - 2) });
+    target.flush();
+    expect(huds.at(-1)?.resize).toMatchObject({ asked: middle });
+    // 30 mm off it: free again (on the 10 mm grid).
+    target.fire('pointermove', { clientX: damper.point.x, clientY: damper.point.y + (damper.value - middle - 30) });
+    target.flush();
+    expect(huds.at(-1)?.resize).toMatchObject({ asked: Math.round((middle + 30) / 10) * 10 });
+    target.fire('keydown', { key: 'Escape' });
   });
 });

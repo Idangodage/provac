@@ -13,6 +13,8 @@ export interface DuctResizePreview {
   grip: DuctResizeGrip;
   made: number;
   elements: readonly HvacElement[];
+  /** A slid transition numbered anew in `elements`: its key there. */
+  key?: string;
 }
 
 export const useDuctResizePreviewStore = create<{

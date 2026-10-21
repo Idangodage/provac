@@ -16,7 +16,7 @@ import { moveDuctNetwork } from '../move/ductNetworkMove';
 import { findAirPort, type DuctAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
 import { tapAttachment } from './ductBranches';
-import { accessDoorFor, inlineAccessoryLengthMm, planDuctRunSpec } from './ductFabricationPlanner';
+import { accessDoorFor, getDuctRunPlan, inlineAccessoryLengthMm, planDuctRunSpec } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds, startAnchor } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
 import { cross, dot, ductLegs } from './ductGeometry';
@@ -27,7 +27,7 @@ import { sectionLabel, splitTitle, TAKEOFF_TITLES } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { equivalentDiameterMm } from './ductSizing';
 import { TERMINAL_TAG_PATTERN, terminalLabel, terminalTypeTag, typicalTerminalSpec, type DuctTerminalKind } from './ductTerminalCatalog';
-import { findTerminalPort, nextTerminalTag, readDuctTerminalSpec, terminalEnvelope } from './ductTerminals';
+import { findTerminalPort, nextTerminalTag, readDuctTerminalSpec, SQUARE_BOX_TERMINAL_KINDS, terminalEnvelope, terminalSpigotPort } from './ductTerminals';
 import {
   DUCT_ATTENUATOR_LENGTHS_MM,
   isRoundLeg,
@@ -80,14 +80,24 @@ export type DuctSegmentEdit =
   | { kind: 'tap-station'; runId: string; stationMm: number }
   /** A flexible runout of a given length: the rigid duct before it runs on or stops short. */
   | { kind: 'runout-length'; runId: string; flexMm: number }
-  /** An accessory moved along its leg (its centre, mm from the leg's start), or an access door of another size. */
-  | { kind: 'inline-move'; runId: string; id: string; stationMm: number }
+  /**
+   * An accessory moved along its leg (its centre, mm from the leg's start), or an access door of another size.
+   * `exact`: exactly there (a drag: the planner says when it overlaps a fitting); else at the clear spot nearest.
+   */
+  | { kind: 'inline-move'; runId: string; id: string; stationMm: number; exact?: boolean }
   | { kind: 'inline-door'; runId: string; id: string; doorMm: number }
   /** An accessory set into a leg's straight, at the clear spot nearest `stationMm` (along the leg). */
   | { kind: 'inline-add'; runId: string; accessory: Omit<DuctInlineAccessory, 'id'> }
   | { kind: 'inline-remove'; runId: string; id: string }
   /** A sound attenuator's catalogue length. */
   | { kind: 'inline-length'; runId: string; id: string; lengthMm: number }
+  /**
+   * A transition (a change of section on a level straight) moved along its straight: `node` is the vertex it starts
+   * at now (leg `node` starts with it); `alongMm` where it is asked to start, measured from where the section before
+   * it begins on the straight (an elbow, the collar, or the change of section before it: see transitionStretch). It
+   * stays on its straight; take-offs and accessories on it keep their places (the planner says when it meets one).
+   */
+  | { kind: 'transition-move'; runId: string; node: number; alongMm: number }
   /**
    * A straight (or a riser) of a given length: the run re-solved elastically with it fixed: its ends stay on
    * what they are fixed to, the change taken up downstream first (straights running the same way, flexible
@@ -97,6 +107,8 @@ export type DuctSegmentEdit =
   | { kind: 'leg-length'; runId: string; legIndex: number; lengthMm: number; grow?: 'end' | 'start' };
 
 export interface DuctSegmentEditResult {
+  /** The piece the edit moved, by its key now (a transition whose vertex is numbered anew): the card follows it. */
+  refocus?: { runId: string; key: string };
   /** Every element the edit changes, as it will be stored (empty when refused). */
   updates: HvacElement[];
   /** What else changes, in the designer's words ("The take-off to SAD-2 becomes a conical tee"). */
@@ -1018,9 +1030,10 @@ function editInlineValue(scene: readonly HvacElement[], settings: DuctDesignSett
   if (edit.kind === 'inline-move') {
     const asked = Math.round(Math.max(0, Math.min(legLength, edit.stationMm)));
     if (Math.abs(asked - item.stationMm) < 0.5) return refuse('It is there already.');
-    // The clear spot nearest the one asked (a fitting, a take-off or a wall may be in the way): an accessory on a clash is not laid.
+    // The clear spot nearest the one asked (a fitting, a take-off or a wall may be in the way): an accessory on a clash is
+    // not laid. Dragged, it goes exactly where asked (the planner then says what it would overlap).
     const others: DuctRunSpec = { ...spec, inline: (spec.inline ?? []).filter((candidate) => candidate.id !== edit.id) };
-    const placed = placeInlineAccessory(scene, settings, element.id, others, { ...item, stationMm: asked });
+    const placed = edit.exact ? { ...item, stationMm: asked } : placeInlineAccessory(scene, settings, element.id, others, { ...item, stationMm: asked });
     if (!placed) return refuse(`No clear straight on this leg takes the ${INLINE_TITLES[item.kind].toLowerCase()} there (fittings, take-offs or walls are in the way).`);
     if (Math.abs(placed.stationMm - item.stationMm) < 0.5) return refuse('It cannot go further that way: it sits as close to the fittings and take-offs as it can.');
     if (Math.abs(placed.stationMm - asked) > 1) notes.push(`placed ${Math.round(Math.abs(placed.stationMm - asked))} mm ${placed.stationMm > asked ? 'on' : 'back'} from there, clear of the fittings and take-offs`);
@@ -1039,6 +1052,96 @@ function editInlineValue(scene: readonly HvacElement[], settings: DuctDesignSett
   return { updates: settle(scene, changed, settings, notes), notes, action };
 }
 
+/**
+ * A runout branch laid again for its take-off's new place, where sliding its
+ * stub would bend its flexible runout too tight: a stub off the take-off (its
+ * collar and damper, then room for an elbow), an elbow turning along the main
+ * toward the terminal, a straight, and the flexible runout into the spigot
+ * (the rigid duct carrying the air most of the way). The shortest the planner
+ * finds no new error in, its runout within the project's maximum; null when
+ * none (or when the branch has accessories or branches of its own).
+ */
+function reformRunout(scene: readonly HvacElement[], settings: DuctDesignSettings, element: HvacElement, spec: DuctRunSpec, baseline: Map<string, number>): DuctRunSpec | null {
+  const start = spec.start;
+  if (start.kind !== 'tap' || spec.end.kind !== 'terminal' || !spec.end.flex || spec.inline?.length) return null;
+  if (ductBranchesOf(element.id, scene).length) return null;
+  const parent = ductParentOf(spec, scene);
+  const parentSpec = parent ? readDuctRunSpec(parent) : null;
+  const main = parentSpec ? ductLegs(parentSpec)[start.legIndex] : undefined;
+  const anchor = parentSpec ? branchAnchor(parentSpec, spec, settings) : null;
+  if (!parentSpec || !main || !anchor || main.vertical) return null;
+  const lip = spec.path[spec.path.length - 1]!;
+  const rigid = spec.legs[0]!;
+  const flex = spec.legs[spec.legs.length - 1]!;
+  const out = anchor.direction;
+  const offset = sub2(lip, anchor.point);
+  const along = dot(offset, main.direction);
+  const toward = along >= 0 ? main.direction : { x: -main.direction.x, y: -main.direction.y };
+  const reach = Math.abs(along);
+  const width = rigid.diameterMm ?? rigid.widthMm;
+  // A 90° elbow takes R (1.5 W) of each leg, plus its neck.
+  const elbow = 1.5 * width + settings.elbowNeckMm;
+  const collar = settings.tapCollarMm + (start.vcd ? settings.vcdLengthMm : 0);
+  const level = (point: Point2D): DuctPoint3 => ({ x: point.x, y: point.y, z: anchor.z });
+  const candidates: Array<{ spec: DuctRunSpec; length: number }> = [];
+  for (const stub of [collar + elbow + 50, collar + elbow + 200]) {
+    const corner = add2(anchor.point, out, stub);
+    // The straight along the main ends this far short of the terminal (the runout takes the rest).
+    for (const short of [400, 300, 500, 600, 200, 800, 1000]) {
+      const run = reach - short;
+      if (run < elbow + 100) continue;
+      const end = add2(corner, toward, run);
+      candidates.push({
+        spec: { ...spec, path: [level(anchor.point), level(corner), level(end), lip], legs: [rigid, rigid, flex], nodeOverrides: {} },
+        length: stub + run + Math.hypot(lip.x - end.x, lip.y - end.y),
+      });
+    }
+  }
+  candidates.sort((a, b) => a.length - b.length);
+  for (const candidate of candidates) {
+    const plan = planDuctRunSpec(element.id, candidate.spec, { settings, scene });
+    if (!noNewErrors(baseline, errorCodes(plan))) continue;
+    const runout = plan.pieces.find((piece) => piece.kind === 'flex');
+    if (runout && runout.lengthMm > settings.flexMaxLengthMm + 0.5) continue;
+    return candidate.spec;
+  }
+  return null;
+}
+
+/**
+ * A runout's terminal turned to meet it: where the slid branch's flexible
+ * runout bends too tight into the spigot, a square or round box's spigot turns
+ * to another side (the side facing the runout first), as Auto duct chooses a
+ * spigot's side, the runout ending on it. The branch and the turned terminal,
+ * or null when no side gives a runout the planner finds no new error in (or
+ * the project keeps spigots where they are).
+ */
+function turnSpigotToRunout(
+  scene: readonly HvacElement[], settings: DuctDesignSettings, element: HvacElement, spec: DuctRunSpec, baseline: Map<string, number>,
+): { spec: DuctRunSpec; terminal: HvacElement; side: string } | null {
+  const end = spec.end;
+  if (!settings.autoChooseSpigotSide || end.kind !== 'terminal' || !end.flex || spec.path.length < 3) return null;
+  const terminal = scene.find((candidate) => candidate.id === end.terminalId);
+  const terminalSpec = terminal ? readDuctTerminalSpec(terminal) : null;
+  if (!terminal || !terminalSpec || !SQUARE_BOX_TERMINAL_KINDS.has(terminalSpec.kind) || Math.abs(terminalSpec.plenumWidthMm - terminalSpec.plenumDepthMm) > 1) return null;
+  const rigidEnd = spec.path[spec.path.length - 2]!;
+  const flex = spec.legs[spec.legs.length - 1]!;
+  const raw = (terminal.properties.terminal ?? {}) as Record<string, unknown>;
+  const sides = (['back', 'front', 'left', 'right'] as const).filter((side) => side !== terminalSpec.spigotSide).flatMap((side) => {
+    const turned: HvacElement = { ...terminal, properties: { ...terminal.properties, terminal: { ...raw, spigotSide: side } } };
+    const port = terminalSpigotPort(turned);
+    if (!port) return [];
+    const toward = unitOf(sub2(rigidEnd, port.lip));
+    return [{ side, turned, port, facing: dot(port.normal, toward) }];
+  }).sort((a, b) => b.facing - a.facing);
+  for (const { side, turned, port } of sides) {
+    const candidate: DuctRunSpec = { ...spec, path: [...spec.path.slice(0, -1), { x: port.lip.x, y: port.lip.y, z: port.lip.z - (flex.diameterMm ?? flex.heightMm) / 2 }] };
+    const trial = scene.map((other) => (other.id === turned.id ? turned : other.id === element.id ? ductRunElementWithSpec(element, candidate) : other));
+    if (noNewErrors(baseline, errorCodes(planDuctRunSpec(element.id, candidate, { settings, scene: trial })))) return { spec: candidate, terminal: turned, side };
+  }
+  return null;
+}
+
 /** A take-off moved along its main leg: the branch's first leg slides with it, its end staying on its terminal. */
 function editTapStation(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'tap-station' }>): DuctSegmentEditResult {
   const element = scene.find((candidate) => candidate.id === edit.runId);
@@ -1053,9 +1156,32 @@ function editTapStation(scene: readonly HvacElement[], settings: DuctDesignSetti
   const stationMm = Math.round(Math.max(0, Math.min(leg.lengthMm, edit.stationMm)));
   const moved = stationMm - spec.start.stationMm;
   if (Math.abs(moved) < 0.5) return refuse('It is there already.');
-  const changed = new Map([[element.id, ductRunElementWithSpec(element, { ...spec, start: { ...spec.start, stationMm } })]]);
-  const notes = ['the branch slides with it, still ending where it did'];
-  return { updates: settle(scene, changed, settings, notes), notes, action: `Take-off moved ${Math.round(Math.abs(moved))} mm ${moved > 0 ? 'on' : 'back'} along the main` };
+  const restated: DuctRunSpec = { ...spec, start: { ...spec.start, stationMm } };
+  const changed = new Map([[element.id, ductRunElementWithSpec(element, restated)]]);
+  let notes = ['the branch slides with it, still ending where it did'];
+  let updates = settle(scene, changed, settings, notes);
+  // Where its slid stub would bend its runout too tight, the runout branch is laid again: a new elbow turns it toward
+  // its terminal and the flexible runout re-curves into the spigot.
+  const slid = updates.find((candidate) => candidate.id === element.id);
+  const baseline = errorCodes(getDuctRunPlan(element, scene, settings));
+  if (slid) {
+    const replaced = new Map(updates.map((candidate) => [candidate.id, candidate]));
+    const next = scene.map((candidate) => replaced.get(candidate.id) ?? candidate);
+    const slidSpec = readDuctRunSpec(slid);
+    if (slidSpec && !noNewErrors(baseline, errorCodes(getDuctRunPlan(slid, next, settings)))) {
+      // First its terminal's spigot turned to meet the runout (as Auto duct would choose it); else the branch laid again.
+      const turned = turnSpigotToRunout(next, settings, slid, slidSpec, baseline);
+      const reformed = turned ? null : reformRunout(scene, settings, element, restated, baseline);
+      if (turned) {
+        notes = [`${turned.terminal.label || 'its terminal'}'s spigot turns to its ${turned.side} side to meet the runout`];
+        updates = settle(scene, new Map([[element.id, ductRunElementWithSpec(element, turned.spec)], [turned.terminal.id, turned.terminal]]), settings, notes);
+      } else if (reformed) {
+        notes = ['its runout branch is laid again: a new elbow turns it toward its terminal, the flexible runout re-curving into the spigot'];
+        updates = settle(scene, new Map([[element.id, ductRunElementWithSpec(element, reformed)]]), settings, notes);
+      }
+    }
+  }
+  return { updates, notes, action: `Take-off moved ${Math.round(Math.abs(moved))} mm ${moved > 0 ? 'on' : 'back'} along the main` };
 }
 
 /**
@@ -1124,6 +1250,155 @@ function editRunoutLength(scene: readonly HvacElement[], settings: DuctDesignSet
 /** The shortest a straight may be typed (mm): the planner says when its fittings need more. */
 export const MIN_STRAIGHT_MM = 50;
 
+/** The section a run starts from at a unit's collar (what its first transition starts from), else null. */
+function collarSection(scene: readonly HvacElement[], spec: DuctRunSpec): DuctLeg | null {
+  if (spec.start.kind !== 'unit-port') return null;
+  const port = findAirPort(scene, spec.start.unitId, spec.start.portId);
+  return port ? { widthMm: port.widthMm, heightMm: port.heightMm } : null;
+}
+
+/**
+ * Where a transition can slide: it starts at vertex `node`, between the stretch
+ * of the section before it (from vertex `lo`) and the stretch of the section
+ * after it (to vertex `hi`), on one level straight (an elbow, a riser, a
+ * change of section, the run's end and a flexible runout bound it). `atMm`:
+ * how far from `lo` it starts now; `spanMm`: from `lo` to `hi`;
+ * `boundedBelow`: it may not reach `lo` (a change of section is there, or the
+ * take-off its run starts from).
+ */
+export interface DuctTransitionStretch {
+  node: number;
+  lo: number;
+  hi: number;
+  atMm: number;
+  spanMm: number;
+  boundedBelow: boolean;
+  before: DuctLeg;
+  after: DuctLeg;
+}
+
+export function transitionStretch(scene: readonly HvacElement[], spec: DuctRunSpec, node: number): DuctTransitionStretch | null {
+  if (spec.legacy) return null;
+  const legs = ductLegs(spec);
+  const flexTail = spec.end.kind === 'terminal' && spec.end.flex && spec.path.length >= 2;
+  const rigid = flexTail ? legs.length - 1 : legs.length;
+  const leg = legs[node];
+  if (!leg || node >= rigid || leg.vertical || leg.sloped) return null;
+  const after = spec.legs[node]!;
+  const before = node > 0 ? spec.legs[node - 1]! : collarSection(scene, spec);
+  if (!before || sameSectionSize(before, after)) return null;
+  // A leg on the same level straight: level, running the same way, at the same level.
+  const level = (index: number) => {
+    const other = legs[index];
+    return Boolean(other) && index < rigid && !other!.vertical && !other!.sloped
+      && dot(other!.direction, leg.direction) > 1 - 1e-6 && Math.abs(other!.start.z - leg.start.z) < 0.5;
+  };
+  let lo = node;
+  while (lo > 0 && level(lo - 1) && sameSectionSize(spec.legs[lo - 1]!, before)) lo -= 1;
+  let hi = node + 1;
+  while (hi < rigid && level(hi) && sameSectionSize(spec.legs[hi]!, after)) hi += 1;
+  let boundedBelow: boolean;
+  if (lo > 0) {
+    // Round an elbow: it may come up to the elbow when the duct round it is already the section before it.
+    boundedBelow = level(lo - 1) || !sameSectionSize(spec.legs[lo - 1]!, before);
+  } else {
+    // At the run's start: up to the collar only off a unit's collar of the section before it (else that collar's own
+    // transition, or the take-off sized on the first straight, is there).
+    const collar = collarSection(scene, spec);
+    boundedBelow = !(node === 0 || (collar && sameSectionSize(collar, before)));
+  }
+  const lengthOf = (from: number, to: number) => legs.slice(from, to).reduce((total, entry) => total + entry.lengthMm, 0);
+  return { node, lo, hi, atMm: lengthOf(lo, node), spanMm: lengthOf(lo, hi), boundedBelow, before, after };
+}
+
+/** The scene with `changed` in place and every branch re-anchored keeping its end; take-offs stay where they are. */
+function settleInPlace(scene: readonly HvacElement[], changed: Map<string, HvacElement>, settings: DuctDesignSettings): HvacElement[] {
+  const withChanges = scene.map((element) => changed.get(element.id) ?? element);
+  const followers = reanchorBranchesKeepingEnds(withChanges, changed, settings);
+  const merged = new Map(changed);
+  for (const follower of followers) merged.set(follower.id, follower);
+  return [...merged.values()];
+}
+
+/**
+ * A transition moved along its straight: the straight is laid again from `lo`
+ * to `hi` with its one change of section at the new place (a vertex added
+ * where it leaves an elbow or the collar, or dropped where it comes back to
+ * one). Take-offs and accessories on the straight keep their places (their
+ * leg and station restated), the vertices' fitting choices follow them, and
+ * the transition's own taper goes with it.
+ */
+function editTransitionMove(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'transition-move' }>): DuctSegmentEditResult {
+  const element = scene.find((candidate) => candidate.id === edit.runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  if (!element || !spec) return refuse('The run is no longer in the drawing.');
+  if (spec.locked) return refuse('The run is locked: unlock it to move its transitions.');
+  const stretch = transitionStretch(scene, spec, edit.node);
+  if (!stretch) return refuse('Only a transition on a level straight slides along it.');
+  const { lo, hi, node, before, after } = stretch;
+  const asked = Math.round(edit.alongMm);
+  if (!Number.isFinite(asked) || Math.abs(asked - stretch.atMm) < 0.5) return refuse('It is there already.');
+  if (asked < (stretch.boundedBelow ? MIN_STRAIGHT_MM : 0)) {
+    return refuse(stretch.boundedBelow ? 'It would run into the fitting before it on the straight.' : 'It cannot pass the elbow before it.');
+  }
+  if (asked > stretch.spanMm - MIN_STRAIGHT_MM) return refuse('It would run into the fitting after it on the straight (an elbow, a transition or the run\'s end).');
+  const legs = ductLegs(spec);
+  const from = spec.path[lo]!;
+  const to = spec.path[hi]!;
+  const direction = legs[node]!.direction;
+  const inserted = asked > 0.5;
+  const boundary: DuctPoint3 = {
+    x: from.x + direction.x * asked, y: from.y + direction.y * asked,
+    z: from.z + ((to.z - from.z) * asked) / Math.max(1, stretch.spanMm),
+  };
+  const path = [...spec.path.slice(0, lo + 1), ...(inserted ? [boundary] : []), ...spec.path.slice(hi)];
+  const sections = [...spec.legs.slice(0, lo), ...(inserted ? [before, after] : [after]), ...spec.legs.slice(hi)];
+  // Vertices after the straight move up or down by the change in its vertex count; the new change of section's.
+  const shift = (inserted ? 3 : 2) - (hi - lo + 1);
+  const boundaryVertex = inserted ? lo + 1 : lo;
+  /** A place on the run (its leg, how far along it) restated on the straight as laid again. */
+  const relocate = (legIndex: number, stationMm: number): { legIndex: number; stationMm: number } => {
+    if (legIndex < lo) return { legIndex, stationMm };
+    if (legIndex >= hi) return { legIndex: legIndex + shift, stationMm };
+    const along = legs.slice(lo, legIndex).reduce((total, leg) => total + leg.lengthMm, 0) + stationMm;
+    if (inserted && along >= asked) return { legIndex: lo + 1, stationMm: Math.round((along - asked) * 10) / 10 };
+    return { legIndex: lo, stationMm: Math.round(along * 10) / 10 };
+  };
+  const nodeOverrides: Record<string, DuctNodeOverride> = {};
+  for (const [key, override] of Object.entries(spec.nodeOverrides)) {
+    const index = Number(key);
+    if (index === node) continue;
+    if (index <= lo) nodeOverrides[String(index)] = override;
+    else if (index >= hi) nodeOverrides[String(index + shift)] = override;
+    // (A vertex inside the straight carries no fitting of its own.)
+  }
+  const own = spec.nodeOverrides[String(node)];
+  if (own) {
+    // The transition's taper goes with it; an elbow's choices stay at the elbow.
+    const { taperDeg, ...rest } = own;
+    if (node === lo && Object.keys(rest).length) nodeOverrides[String(lo)] = { ...(nodeOverrides[String(lo)] ?? {}), ...rest };
+    if (taperDeg !== undefined) nodeOverrides[String(boundaryVertex)] = { ...(nodeOverrides[String(boundaryVertex)] ?? {}), taperDeg };
+  }
+  const inline = spec.inline?.map((item) => ({ ...item, ...relocate(item.legIndex, item.stationMm) }));
+  const changed = new Map<string, HvacElement>([[element.id, ductRunElementWithSpec(element, {
+    ...spec, path, legs: sections, nodeOverrides, ...(inline ? { inline } : {}),
+  })]]);
+  for (const branch of ductBranchesOf(element.id, scene)) {
+    const start = branch.spec.start;
+    if (start.kind !== 'tap') continue;
+    const at = relocate(start.legIndex, start.stationMm);
+    if (at.legIndex === start.legIndex && Math.abs(at.stationMm - start.stationMm) < 0.05) continue;
+    changed.set(branch.element.id, ductRunElementWithSpec(branch.element, { ...branch.spec, start: { ...start, ...at } }));
+  }
+  const moved = asked - stretch.atMm;
+  return {
+    updates: settleInPlace(scene, changed, settings),
+    notes: ['the take-offs and accessories on the straight keep their places'],
+    action: `Transition moved ${Math.round(Math.abs(moved))} mm ${moved > 0 ? 'on' : 'back'} along the straight`,
+    refocus: { runId: element.id, key: `transition:${boundaryVertex}` },
+  };
+}
+
 function editLegLength(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'leg-length' }>): DuctSegmentEditResult {
   const element = scene.find((candidate) => candidate.id === edit.runId);
   const spec = element ? readDuctRunSpec(element) : null;
@@ -1173,6 +1448,7 @@ export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: Du
     case 'inline-move':
     case 'inline-door': return editInlineValue(scene, settings, edit);
     case 'tap-station': return editTapStation(scene, settings, edit);
+    case 'transition-move': return editTransitionMove(scene, settings, edit);
     case 'runout-length': return editRunoutLength(scene, settings, edit);
     case 'leg-length': return editLegLength(scene, settings, edit);
     default: return refuse('Unknown edit.');

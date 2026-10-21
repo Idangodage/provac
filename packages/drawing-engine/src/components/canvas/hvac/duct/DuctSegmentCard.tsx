@@ -34,7 +34,7 @@ import {
   formatSigned as signed,
 } from '../segments/SegmentCardKit';
 import type { SegmentBadge, SegmentCardModel, SegmentFieldHost, SegmentProvider } from '../segments/segmentProvider';
-import type { SegmentFocus } from '../segments/segmentUiStore';
+import { useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
 
 import { DuctSegmentGlyph } from './DuctSegmentGlyph';
 import { getActiveDuctBuilding } from './ductBuilding';
@@ -42,7 +42,7 @@ import { commitDuctSegmentEdit } from './ductEditController';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
 import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
-import { MIN_STRAIGHT_MM } from './ductSegmentEdits';
+import { MIN_STRAIGHT_MM, transitionStretch } from './ductSegmentEdits';
 import { ductSegmentFigures, type DuctSegmentFigures } from './ductSegmentFigures';
 import {
   ductSegmentOptions,
@@ -448,6 +448,20 @@ function EditPanel({ host, plan, segment, context, options }: {
           })} />
       </EditBlock>,
     );
+    // Its place along its straight (its slide grip drags it too), and its length (what its taper makes it).
+    const stretch = transitionStretch(scene, spec, node);
+    const piece = plan.pieces.find((candidate) => candidate.kind === 'transition' && candidate.legIndex === node);
+    if (stretch) {
+      blocks.push(
+        <ValueField key="place" host={host} label="Position" unit="mm" current={Math.round(stretch.atMm)} min={stretch.boundedBelow ? MIN_STRAIGHT_MM : 0}
+          max={Math.max(0, Math.round(stretch.spanMm - MIN_STRAIGHT_MM))} step={50} fineStep={10} testId="duct-segment-transition-place" scrub
+          hint={`where it starts along its straight (0–${Math.round(stretch.spanMm)} mm)${piece ? ` · ${Math.round(piece.lengthMm)} mm long` : ''}`}
+          makeOption={(value) => ({
+            id: `transition-move:${node}:${value}`, group: 'tune', glyph: 'taper', title: `${value} mm along the straight`, detail: 'the transition moved; the take-offs and accessories stay',
+            edit: { kind: 'transition-move', runId, node, alongMm: value },
+          })} />,
+      );
+    }
   }
   if (kind === 'takeoff' && spec.start.kind === 'tap') {
     const start = spec.start;
@@ -457,7 +471,7 @@ function EditPanel({ host, plan, segment, context, options }: {
     if (leg) {
       blocks.push(
         <ValueField key="station" host={host} label="Position" unit="mm" current={start.stationMm} min={0} max={Math.round(leg.lengthMm)} step={50} fineStep={10}
-          testId="duct-segment-station" hint={`along leg ${start.legIndex + 1} of the main (0–${Math.round(leg.lengthMm)} mm)`}
+          testId="duct-segment-station" hint={`along leg ${start.legIndex + 1} of the main (0–${Math.round(leg.lengthMm)} mm)`} scrub
           makeOption={(value) => ({
             id: `tap-station:${value}`, group: 'tune', glyph: 'tap-tee', title: `${value} mm along the main`, detail: 'the take-off moved; its branch keeps its end',
             edit: { kind: 'tap-station', runId, stationMm: value },
@@ -472,7 +486,7 @@ function EditPanel({ host, plan, segment, context, options }: {
     if (item && leg) {
       blocks.push(
         <ValueField key="position" host={host} label="Position" unit="mm" current={item.stationMm} min={0} max={Math.round(leg.lengthMm)} step={50} fineStep={10}
-          testId="duct-segment-position" hint={`its centre along leg ${item.legIndex + 1} (0–${Math.round(leg.lengthMm)} mm)`}
+          testId="duct-segment-position" hint={`its centre along leg ${item.legIndex + 1} (0–${Math.round(leg.lengthMm)} mm)`} scrub
           makeOption={(value) => ({
             id: `inline-move:${id}:${value}`, group: 'tune', glyph: item.kind === 'damper' ? 'damper' : item.kind, title: `${value} mm along the leg`, detail: 'moved along its leg',
             edit: { kind: 'inline-move', runId, id, stationMm: value },
@@ -645,7 +659,15 @@ export function createDuctSegmentProvider(settings: DuctDesignSettings): DuctSeg
     result: resultLine,
     // A peek's quick swaps after the recommended one: by life-cycle cost.
     quickScore: (evaluation) => evaluation.deltaLifeCycleCost ?? 0,
-    commit: (evaluation, option) => commitDuctSegmentEdit(evaluation.updates, evaluation.action || option.title),
+    commit: (evaluation, option) => {
+      commitDuctSegmentEdit(evaluation.updates, evaluation.action || option.title);
+      // A transition moved off (or back onto) an elbow is numbered anew: the card follows it.
+      const refocus = evaluation.refocus;
+      const pinned = useSegmentUiStore.getState().pinned;
+      if (refocus && pinned && pinned.runId === refocus.runId && pinned.key !== refocus.key) {
+        useSegmentUiStore.getState().pin({ ...pinned, key: refocus.key, anchorMark: null });
+      }
+    },
     rekey: (scene, focus, token) => {
       const element = scene.find((candidate) => candidate.id === focus.runId);
       const plan = element ? getDuctRunPlan(element, scene, settings) : null;

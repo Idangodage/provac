@@ -357,6 +357,15 @@ function _stabilizeHybridAnchor(
 // 3D geometry cache when a drawing has no optional object/equipment catalog.
 const EMPTY_OBJECT_DEFINITIONS: ArchitecturalObjectDefinition[] = [];
 const NO_FADED_RUN_IDS: readonly string[] = [];
+
+/** A transition slid off (or back onto) an elbow is numbered anew: its pinned card follows it. */
+function followRefocus(plan: HvacMovePlan): void {
+  const refocus = plan.resize?.refocus;
+  const pinnedNow = useSegmentUiStore.getState().pinned;
+  if (refocus && pinnedNow && pinnedNow.runId === refocus.runId && pinnedNow.key !== refocus.key) {
+    useSegmentUiStore.getState().pin({ ...pinnedNow, key: refocus.key, anchorMark: null });
+  }
+}
 const EMPTY_EQUIPMENT_DEFINITIONS: NonNullable<DrawingCanvasProps["equipmentDefinitions"]> = [];
 
 export function DrawingCanvas({
@@ -2433,7 +2442,9 @@ export function DrawingCanvas({
         }
       }
       const updated = plan?.updated ?? null;
-      useDuctResizePreviewStore.getState().setPreview(plan?.resize ? { grip: plan.resize.grip, made: plan.resize.made, elements: plan.updated } : null);
+      useDuctResizePreviewStore.getState().setPreview(plan?.resize
+        ? { grip: plan.resize.grip, made: plan.resize.made, elements: plan.updated, ...(plan.resize.refocus ? { key: plan.resize.refocus.key } : {}) }
+        : null);
       hvacRendererRef.current?.previewMove(updated);
       // A turned unit's ducts wait for the release, faint (they are designed then).
       const faded = plan?.pendingRunIds ? { faded: plan.pendingRunIds } : {};
@@ -2456,7 +2467,9 @@ export function DrawingCanvas({
       const resize = state.resize;
       if (resize) {
         const kind = resize.grip.kind;
-        const what = kind === "width" ? (resize.grip.round ? "diameter" : "width") : kind === "depth" ? (resize.grip.round ? "diameter" : "depth") : "length";
+        const slide = resize.grip.slide;
+        const what = slide ? (slide.piece === "takeoff" ? "along the main" : "along its straight")
+          : kind === "width" ? (resize.grip.round ? "diameter" : "width") : kind === "depth" ? (resize.grip.round ? "diameter" : "depth") : "length";
         const mm = (value: number) => Math.round(value).toLocaleString("en-GB");
         const figures = resize.figures;
         const index = figures && figures.indexPa.from !== null && figures.indexPa.to !== null
@@ -2552,6 +2565,7 @@ export function DrawingCanvas({
       }
       const before = useSmartDrawingStore.getState().hvacElements;
       commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+      followRefocus(plan);
       redesignTurnedDucts(plan, before);
       // The bodies and runs stay where the preview drew them until the stored move re-renders them.
       hvacRendererRef.current?.previewMove(null, { committed: true });
@@ -2594,7 +2608,9 @@ export function DrawingCanvas({
     const voidMm = resolveHvacCeilingVoid(state.hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)).soffitMm;
     const plan = new DuctResizeSolver(state.hvacElements, state.ductSettings, grip, { soffitMm: voidMm }).plan(value);
     setProcessingStatus([`${plan.label}.`, ...(plan.limitedBy ? [`${plan.limitedBy.reason}.`] : []), ...plan.messages.map((message) => `${message}.`)].join(" "), false);
-    if (hvacMoveChanges(plan)) commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+    if (!hvacMoveChanges(plan)) return;
+    commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
+    followRefocus(plan);
   }, [commitHvacElementCommand, setProcessingStatus]);
 
   const handleApplyVrfValidationFix = useCallback(

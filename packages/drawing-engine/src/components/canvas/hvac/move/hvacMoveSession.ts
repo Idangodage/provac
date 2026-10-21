@@ -24,7 +24,9 @@
  *   mode: the pointer's travel along the grip becomes the value (a length, a
  *   width, a depth), snapped (Alt: 1 mm; Shift: every straight of the run's
  *   size takes a new section), or typed exactly; a value the rules do not
- *   allow stops at the nearest they do, and the readout says why.
+ *   allow stops at the nearest they do, and the readout says why. A piece slid
+ *   along its duct (a take-off, an accessory, a transition) is the same mode,
+ *   drawn magnetically to the middle of its straight.
  *
  * The host gives the scene, the selection, the coordinate mapping, the model's
  * context, and paints the preview and the readout; the session holds no React
@@ -42,6 +44,7 @@ import { DuctResizeSolver, snapResizeValue, type DuctResizeGrip, type DuctResize
 import { hvacMoveChanges, planHvacMove, type HvacMoveContext, type HvacMovePlan } from './hvacMoveModel';
 import {
   footprintBox,
+  SNAP_CATCH_PX,
   SNAP_RELEASE_PX,
   snapMagneticValue,
   snapMoveDelta,
@@ -243,7 +246,11 @@ interface Armed {
     stop: HvacTurnStop | null; sides: Readonly<Record<string, DuctTerminalSpigotSide>> | null;
   } | null;
   /** A straight being sized: its grip, the solver (it keeps what it has planned), and the value last planned. */
-  resize: { grip: DuctResizeGrip; solver: DuctResizeSolver; settings: HvacMoveContext['ductSettings']; planned: string | null } | null;
+  resize: {
+    grip: DuctResizeGrip; solver: DuctResizeSolver; settings: HvacMoveContext['ductSettings']; planned: string | null;
+    /** A slide's magnetic stop holding it (its place), or null. */
+    stopHeld: number | null;
+  } | null;
 }
 
 export class HvacMoveSession {
@@ -329,7 +336,7 @@ export class HvacMoveSession {
       dragging: false, lastClient: { x: request.clientX, y: request.clientY }, modifiers: { shift: false, alt: false }, typed: null, plan: null,
       delta: { x: 0, y: 0, z: 0 }, frame: null, snapHeld: null, zHeld: null, magnets: false, rotate: null,
       resize: {
-        grip: request.grip, settings: context.ductSettings, planned: null,
+        grip: request.grip, settings: context.ductSettings, planned: null, stopHeld: null,
         solver: new DuctResizeSolver(scene, context.ductSettings, request.grip, { soffitMm: context.ceilingVoid?.soffitMm ?? null }),
       },
     };
@@ -659,7 +666,16 @@ export class HvacMoveSession {
     if (!point) return { value: grip.value, scope, fine: armed.modifiers.alt };
     const travel = (point.x - armed.startWorld.x) * grip.axis.x + (point.y - armed.startWorld.y) * grip.axis.y
       + (armed.resolve ? (point.z - armed.startWorld.z) * grip.axis.z : 0);
-    return { value: snapResizeValue(grip, grip.value + travel * grip.rate, resize.settings, armed.modifiers.alt), scope, fine: armed.modifiers.alt };
+    const raw = grip.value + travel * grip.rate;
+    // A slide is drawn to its stops (the middle of its straight), magnetically, as a move to its guides.
+    const stops = grip.slide?.stops ?? [];
+    if (stops.length && armed.magnets && !armed.modifiers.alt) {
+      const pxPerMm = this.pxPerMmAt(armed);
+      if (resize.stopHeld !== null && Math.abs(raw - resize.stopHeld) * pxPerMm <= SNAP_RELEASE_PX) return { value: resize.stopHeld, scope, fine: false };
+      resize.stopHeld = stops.find((stop) => Math.abs(raw - stop) * pxPerMm <= SNAP_CATCH_PX) ?? null;
+      if (resize.stopHeld !== null) return { value: resize.stopHeld, scope, fine: false };
+    }
+    return { value: snapResizeValue(grip, raw, resize.settings, armed.modifiers.alt), scope, fine: armed.modifiers.alt };
   }
 
   private updateResize(armed: Armed): void {
