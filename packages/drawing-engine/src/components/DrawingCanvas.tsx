@@ -130,7 +130,7 @@ import { useDuctResizePreviewStore } from "./canvas/hvac/move/ductResizePreviewS
 import { setHvacMoveHandler, setHvacRotateHandler } from "./canvas/hvac/move/hvacMoveBus";
 import { hvacMoveChanges, hvacMoveCommand, isTurnableElement, planHvacMove, resolveHvacCeilingVoid, type HvacMovePlan, type HvacRotation } from "./canvas/hvac/move/hvacMoveModel";
 import { HvacMoveSession, latestHost, type HvacMoveBegin, type HvacMoveSessionHost, type HvacResizeBegin, type HvacRotateBegin } from "./canvas/hvac/move/hvacMoveSession";
-import { cancelTurnRedesign, redesignAfterTurn, turnedBy, turnRedesignNote } from "./canvas/hvac/move/turnRedesignController";
+import { cancelTurnRedesign, redesignAfterTurn, turnedBy, turnRedesignNote, useTurnRedesignStore } from "./canvas/hvac/move/turnRedesignController";
 import { resolvePipeEditFrame } from "./canvas/hvac/pipeEditGeometry";
 import { buildPipeModelEdit, editablePipeNodes, isEditablePipe, pipeDesignSkeleton } from "./canvas/hvac/pipeEditModel";
 import { analysePipeEnvironment, describePipeEnvironment } from "./canvas/hvac/pipeEnvironment";
@@ -356,6 +356,7 @@ function _stabilizeHybridAnchor(
 // Stable defaults keep view-only React updates from invalidating the complete
 // 3D geometry cache when a drawing has no optional object/equipment catalog.
 const EMPTY_OBJECT_DEFINITIONS: ArchitecturalObjectDefinition[] = [];
+const NO_FADED_RUN_IDS: readonly string[] = [];
 const EMPTY_EQUIPMENT_DEFINITIONS: NonNullable<DrawingCanvasProps["equipmentDefinitions"]> = [];
 
 export function DrawingCanvas({
@@ -2388,6 +2389,8 @@ export function DrawingCanvas({
   // A drag of the selection on the plan (units, terminals, runs, one straight): the move session runs the same
   // move model as the arrow keys, previews it in every layer each frame and stores it as one undo step.
   const moveHudRef = useRef<HvacMoveHudHandle | null>(null);
+  /** A turned unit's ducts while the optimiser designs them: drawn faint until the design lands. */
+  const turnRedesignRunIds = useTurnRedesignStore((state) => state.busy?.runIds) ?? NO_FADED_RUN_IDS;
   const moveHostRef = useRef<HvacMoveSessionHost | null>(null);
   /** Items being dragged (their design-check markers wait until the move is stored). */
   const [movingIds, setMovingIds] = useState<ReadonlySet<string> | null>(null);
@@ -2414,8 +2417,9 @@ export function DrawingCanvas({
       return {
         ductSettings: state.ductSettings,
         place: computeHvacPlacement,
-        // The drain re-solve is the slow part: the preview leaves it out, the commit does it.
-        ...(preview ? {} : { condensate: condensateEditContext() }),
+        // The drain re-solve is the slow part: the preview leaves it out, the commit does it. A turned unit's ducts wait
+        // for the release too (they are designed then), so its turn is not a duct re-route each frame.
+        ...(preview ? { deferTurnedDucts: true } : { condensate: condensateEditContext() }),
         ceilingVoid: resolveHvacCeilingVoid(state.hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)),
       };
     },
@@ -2431,12 +2435,14 @@ export function DrawingCanvas({
       const updated = plan?.updated ?? null;
       useDuctResizePreviewStore.getState().setPreview(plan?.resize ? { grip: plan.resize.grip, made: plan.resize.made, elements: plan.updated } : null);
       hvacRendererRef.current?.previewMove(updated);
-      ductOverlayRef.current?.previewMove(updated ? updated.filter((element) => isDuctElement(element) || isDuctTerminalElement(element)) : null);
+      // A turned unit's ducts wait for the release, faint (they are designed then).
+      const faded = plan?.pendingRunIds ? { faded: plan.pendingRunIds } : {};
+      ductOverlayRef.current?.previewMove(updated ? updated.filter((element) => isDuctElement(element) || isDuctTerminalElement(element)) : null, faded);
       // Pipes and kits re-attach to what moves, live (the pipe overlay draws them).
       pipeStudioOverlayRef.current?.setMovePreview(updated);
       // A 3D view draws the move in its scene too (the plan layers lie under it).
       if (projectionViewOnly || movePreview3DRef.current) {
-        hybridPipeInteractionRef.current?.setMovePreview(updated);
+        hybridPipeInteractionRef.current?.setMovePreview(updated, faded);
         movePreview3DRef.current = Boolean(updated);
       }
     },
@@ -3642,6 +3648,7 @@ export function DrawingCanvas({
             moveEnabled={tool === "select" && !projectionViewOnly && !isSpacePressed}
             onBeginMove={beginHvacMove}
             onEditCommit={commitDuctRunEdit}
+            fadedRunIds={turnRedesignRunIds}
           />
           {/* Air-system pick mode: its chip above every canvas overlay. */}
           <div className="pointer-events-none absolute left-0 top-0 z-[30]" style={{ width: hostWidth, height: hostHeight }}>
@@ -3814,6 +3821,7 @@ export function DrawingCanvas({
           objectDefinitions={objectDefinitions}
           hvacElements={hvacElements}
           pipeEditPreviewElements={hybridEditPreviewElements}
+          fadedRunIds={turnRedesignRunIds}
           activePipeWorkplane={activePipeWorkplane}
           onWebglUnavailable={handleHybridWebglUnavailable}
           onWebglAvailable={handleHybridWebglAvailable}

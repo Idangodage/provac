@@ -37,8 +37,8 @@ function previewHarness(committed: HvacElement[] = [], buildRenderContext: (elem
   });
   const group = new THREE.Group();
   const context = vi.fn(buildRenderContext);
-  const update = (drafts: HvacElement[] | null) => updateHybridPipePreviewScene(group,
-    { committedScene, committed, drafts, edits: null, buildRenderContext: context }, build);
+  const update = (drafts: HvacElement[] | null, frozen?: ReadonlySet<string>) => updateHybridPipePreviewScene(group,
+    { committedScene, committed, drafts, edits: null, buildRenderContext: context, ...(frozen ? { frozen } : {}) }, build);
   const clear = () => { clearHybridPipePreviewScene(group); material.dispose(); };
   return { group, update, clear, build, context, disposals, committedScene };
 }
@@ -156,6 +156,20 @@ describe('isolated hybrid pipe previews', () => {
     expect(harness.build.mock.calls.map(call => call[0].id)).toEqual(['terminal', 'run']);
     harness.clear();
     expect(harness.group.children).toHaveLength(0);
+  });
+
+  it('leaves a frozen committed run as it is (a turned unit\'s ducts wait for the release), and draws it again once thawed', () => {
+    const terminal: HvacElement = { ...pipe('terminal'), type: 'diffuser' };
+    const duct: HvacElement = { ...pipe('run'), type: 'duct',
+      properties: { ductRun: { end: { kind: 'terminal', terminalId: terminal.id } } } };
+    const harness = previewHarness([duct, terminal]);
+    expect([...harness.update([{ ...terminal, elevation: 2600 }], new Set(['run'])).hiddenIds]).toEqual(['terminal']);
+    expect(harness.build.mock.calls.map(call => call[0].id)).toEqual(['terminal']);
+    harness.build.mockClear();
+    // The same drag without the freeze re-draws the connected run (the cache does not keep the frozen answer).
+    expect([...harness.update([{ ...terminal, elevation: 2600 }]).hiddenIds].sort()).toEqual(['run', 'terminal']);
+    expect(harness.build.mock.calls.map(call => call[0].id)).toContain('run');
+    harness.clear();
   });
 
   it('invalidates previews for changed routing settings and loaded model revisions', () => {

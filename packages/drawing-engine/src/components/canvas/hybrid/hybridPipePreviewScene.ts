@@ -56,6 +56,11 @@ interface PreviewInput {
   edits: readonly HvacElement[] | null;
   ductSettings?: DuctDesignSettings;
   buildRenderContext: (elements: HvacElement[]) => HvacBuildSceneContext;
+  /**
+   * Committed elements left exactly as they are, never re-drawn against the
+   * edits (a turned unit's ducts, which wait for the turn's release).
+   */
+  frozen?: ReadonlySet<string>;
 }
 interface PreviewSnapshot extends PreviewInput {
   modelRevision: number;
@@ -67,6 +72,12 @@ interface PreviewCache {
   hiddenIds: Set<string>;
 }
 const previewScenes = new WeakMap<THREE.Group, PreviewCache>();
+
+function sameIds(a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): boolean {
+  if ((a?.size ?? 0) !== (b?.size ?? 0)) return false;
+  for (const id of a ?? []) if (!b?.has(id)) return false;
+  return true;
+}
 
 function sameElements(a: readonly HvacElement[] | null, b: readonly HvacElement[] | null): boolean {
   return a === b || ((a?.length ?? 0) === (b?.length ?? 0)
@@ -113,7 +124,8 @@ export function updateHybridPipePreviewScene(
     && previous.ductSettings === input.ductSettings
     && previous.routingSettings === routingSettings && previous.modelRevision === modelRevision
     && sameElements(previous.committed, input.committed)
-    && sameElements(previous.drafts, input.drafts) && sameElements(previous.edits, input.edits)) {
+    && sameElements(previous.drafts, input.drafts) && sameElements(previous.edits, input.edits)
+    && sameIds(previous.frozen, input.frozen)) {
     return { hiddenIds: cache.hiddenIds, changed: false };
   }
   const { previews, allElements, hiddenIds } = composeHybridPipePreviewScene(input.committed, input.drafts, input.edits);
@@ -124,7 +136,7 @@ export function updateHybridPipePreviewScene(
     const context = { ...input.buildRenderContext(allElements), ductSettings: input.ductSettings };
     const previewIds = new Set(previews.map(element => element.id));
     for (const element of input.committedScene.changedElements(context)) {
-      if (previewIds.has(element.id) || (element.type !== 'refrigerant-pipe'
+      if (previewIds.has(element.id) || input.frozen?.has(element.id) || (element.type !== 'refrigerant-pipe'
         && element.type !== 'refrigerant-pipe-pair' && element.type !== 'refrigerant-branch-kit'
         && element.type !== 'duct')) continue;
       previews.push(element);
@@ -140,7 +152,7 @@ export function updateHybridPipePreviewScene(
   }
   cache.hiddenIds = hiddenIds;
   cache.previous = { ...input, committed: [...input.committed], drafts: input.drafts && [...input.drafts],
-    edits: input.edits && [...input.edits], routingSettings, modelRevision };
+    edits: input.edits && [...input.edits], ...(input.frozen ? { frozen: new Set(input.frozen) } : {}), routingSettings, modelRevision };
   return { hiddenIds, changed };
 }
 

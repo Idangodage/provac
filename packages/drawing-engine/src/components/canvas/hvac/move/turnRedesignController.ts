@@ -30,6 +30,8 @@ export interface TurnRedesignBusy {
   unitIds: string[];
   /** "DU-1's ducts". */
   subject: string;
+  /** The runs being re-designed (drawn faded until the design lands). */
+  runIds: string[];
 }
 
 export const useTurnRedesignStore = create<{ busy: TurnRedesignBusy | null }>(() => ({ busy: null }));
@@ -58,7 +60,7 @@ export function turnRedesignNote(plan: HvacMovePlan, before: readonly HvacElemen
   if (!turnedIds.length) return null;
   const { targets, skipped } = turnRedesignTargets(before, before, new Set(turnedIds), turnedWhole, settings);
   const lines = [
-    ...(targets.length ? [`On release the optimiser looks for a better design of ${targets.map((target) => target.unitName).join(' and ')}'s ducts for the new collar.`] : []),
+    ...(targets.length ? [`On release, ${targets.map((target) => target.unitName).join(' and ')}'s ducts are designed for the new collar.`] : []),
     ...skipped.map((entry) => `${entry.reason}.`),
   ];
   return lines.length ? lines.join(' ') : null;
@@ -105,7 +107,7 @@ export async function redesignAfterTurn(options: {
   // (The optimiser's worker is shared with Auto duct's card: a preview being generated there is stopped cleanly.)
   cancelAutoDuctPreview();
   const subject = `${targets.map((target) => target.unitName).join(' and ')}'s ducts`;
-  useTurnRedesignStore.setState({ busy: { unitIds: targets.map((target) => target.unitId), subject } });
+  useTurnRedesignStore.setState({ busy: { unitIds: targets.map((target) => target.unitId), subject, runIds: targets.flatMap((target) => target.runIds) } });
   const walls = ductWallInputs(state.walls);
   const rooms = state.rooms.map((room) => ({ id: room.id, vertices: room.vertices }));
   let scene: HvacElement[] = [...after];

@@ -243,6 +243,34 @@ function readRuns(scene: readonly HvacElement[]): Array<RunRef & { element: Hvac
 }
 
 /**
+ * A drag's preview of a turn: the ducts that wait for the release. Every run
+ * of a system whose unit turns without the whole system (its ducts are
+ * re-routed and re-designed on release, not swung about while dragging); a
+ * system turned whole turns rigidly, live. `unitIds`: the units all of whose
+ * ducts wait (the preview leaves their collars where the ducts are).
+ */
+export function ductsAwaitingTurn(scene: readonly HvacElement[], turnedIds: ReadonlySet<string>): { unitIds: Set<string>; runIds: Set<string> } {
+  const runs = readRuns(scene);
+  const rootOf = systemRoots(runs);
+  const byId = new Map(runs.map((run) => [run.id, run]));
+  const waiting = new Set<string>();
+  const unitIds = new Set<string>();
+  const wholeUnits = new Set<string>();
+  for (const [root, { ids }] of systemAnchors(runs, rootOf)) {
+    const start = byId.get(root)?.spec.start;
+    if (start?.kind !== 'unit-port' || !turnedIds.has(start.unitId)) continue;
+    if (ids.every((id) => turnedIds.has(id))) {
+      wholeUnits.add(start.unitId);
+      continue;
+    }
+    waiting.add(root);
+    unitIds.add(start.unitId);
+  }
+  wholeUnits.forEach((id) => unitIds.delete(id));
+  return { unitIds, runIds: new Set(runs.filter((run) => waiting.has(rootOf(run.id))).map((run) => run.id)) };
+}
+
+/**
  * The air terminals whose whole duct system turns with a block: everything
  * the system is fixed to (its unit's collar, every terminal it serves) turns.
  * Their spigots turn with them (their runouts turn too).

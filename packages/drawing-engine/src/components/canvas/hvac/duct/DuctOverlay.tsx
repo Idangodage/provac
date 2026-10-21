@@ -86,8 +86,10 @@ export interface DuctOverlayHandle {
    * Show a move: the runs and air terminals it changes, drawn as they would be,
    * their committed drawings hidden meanwhile (null ends it). `committed`: the
    * move was just stored, so the drawing holds until the stored runs re-render.
+   * `faded`: committed runs left as they are, drawn faint (a turned unit's
+   * ducts wait for the release).
    */
-  previewMove: (elements: readonly HvacElement[] | null, options?: { committed?: boolean }) => void;
+  previewMove: (elements: readonly HvacElement[] | null, options?: { committed?: boolean; faded?: readonly string[] }) => void;
 }
 
 /** Tag widths on screen (px), measured once per text in the font the plan draws tags in. */
@@ -137,6 +139,8 @@ export interface DuctOverlayProps {
   onBeginMove?: (request: HvacMoveBegin) => boolean;
   /** Commit an in-place edit of one run (a leg, its end or a riser dragged). */
   onEditCommit?: (elementId: string, result: DuctEditResult, action: string) => void;
+  /** Runs drawn faded: a turned unit's ducts while they are designed. */
+  fadedRunIds?: readonly string[];
 }
 
 /** A drag handle on the selected run: a leg (sideways), its end (along) or a riser (along its heading). */
@@ -151,9 +155,11 @@ interface DuctEditHandle {
 const HANDLE_ACTIONS: Record<DuctEditHandle['kind'], string> = { leg: 'Move duct leg', end: 'Move duct end', riser: 'Move duct riser' };
 /** How far round a pinned straight's resize grips its card keeps clear (px). */
 const GRIP_CLEARANCE_PX = 18;
+/** A run that waits for a turn's release, or is being designed, is drawn this faint. */
+const FADED_RUN_OPACITY = 0.28;
 
 export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(function DuctOverlay(props, ref) {
-  const { enabled, width, height, viewportZoom, panOffset, hvacElements, selectedIds, settings, showPorts, moveEnabled, onBeginMove, onEditCommit } = props;
+  const { enabled, width, height, viewportZoom, panOffset, hvacElements, selectedIds, settings, showPorts, moveEnabled, onBeginMove, onEditCommit, fadedRunIds } = props;
   const gRef = useRef<SVGGElement | null>(null);
   const draftRef = useRef<SVGGElement | null>(null);
   const portsRef = useRef<SVGGElement | null>(null);
@@ -162,6 +168,10 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const runsRef = useRef<SVGGElement | null>(null);
   /** Committed runs the draft re-draws (a branch's parent, or runs being moved), hidden meanwhile. */
   const hiddenRunsRef = useRef<ReadonlySet<string>>(new Set());
+  /** Committed runs drawn faded: a turned unit's ducts, waiting for the release (a move preview), then being designed (the prop). */
+  const fadedPreviewRef = useRef<ReadonlySet<string>>(new Set());
+  const fadedPropRef = useRef<readonly string[]>([]);
+  fadedPropRef.current = fadedRunIds ?? [];
   /** The air terminals' layer, and the terminals a move preview re-draws (hidden meanwhile). */
   const terminalsRef = useRef<SVGGElement | null>(null);
   const hiddenTerminalsRef = useRef<ReadonlySet<string>>(new Set());
@@ -244,6 +254,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       const id = node.getAttribute('data-duct-run') ?? node.getAttribute('data-duct-supports') ?? node.getAttribute('data-duct-tags') ?? '';
       const hide = hiddenRunsRef.current.has(id) || previewHiddenRef.current.has(id);
       if ((node.style.display === 'none') !== hide) node.style.display = hide ? 'none' : '';
+    });
+  }, []);
+
+  const applyFadedRuns = useCallback(() => {
+    const root = runsRef.current;
+    if (!root) return;
+    const faded = new Set([...fadedPreviewRef.current, ...fadedPropRef.current]);
+    root.querySelectorAll<SVGGElement>('[data-duct-run], [data-duct-supports], [data-duct-tags]').forEach((node) => {
+      const id = node.getAttribute('data-duct-run') ?? node.getAttribute('data-duct-supports') ?? node.getAttribute('data-duct-tags') ?? '';
+      const opacity = faded.has(id) ? String(FADED_RUN_OPACITY) : '';
+      if (node.style.opacity === opacity) return;
+      node.style.transition = 'opacity 160ms ease-out';
+      node.style.opacity = opacity;
     });
   }, []);
 
@@ -337,16 +360,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     if (draftRef.current) draftRef.current.innerHTML = '';
     hiddenRunsRef.current = new Set();
     hiddenTerminalsRef.current = new Set();
+    fadedPreviewRef.current = new Set();
     applyHiddenRun();
     applyHiddenTerminals();
-  }, [applyHiddenRun, applyHiddenTerminals]);
+    applyFadedRuns();
+  }, [applyHiddenRun, applyHiddenTerminals, applyFadedRuns]);
 
-  const previewMove = useCallback((elements: readonly HvacElement[] | null, options: { committed?: boolean } = {}) => {
+  const previewMove = useCallback((elements: readonly HvacElement[] | null, options: { committed?: boolean; faded?: readonly string[] } = {}) => {
     const target = draftRef.current;
     if (!target) return;
     if (!elements) {
-      // Just stored: hold the drawing until the stored runs re-render (else the old ones flash back for a frame).
-      if (options.committed && target.innerHTML) heldMoveRef.current = sceneRef.current.hvacElements;
+      // Just stored: hold the drawing (and the faded runs) until the stored runs re-render (else the old ones flash back
+      // for a frame).
+      if (options.committed && (target.innerHTML || fadedPreviewRef.current.size)) heldMoveRef.current = sceneRef.current.hvacElements;
       else clearMovePreview();
       return;
     }
@@ -370,9 +396,11 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       + transientTags(moved, hidden);
     hiddenRunsRef.current = hidden;
     hiddenTerminalsRef.current = new Set(terminals.map(({ element }) => element.id));
+    fadedPreviewRef.current = new Set(options.faded ?? []);
     applyHiddenRun();
     applyHiddenTerminals();
-  }, [applyHiddenRun, applyHiddenTerminals, clearMovePreview, transientTags]);
+    applyFadedRuns();
+  }, [applyHiddenRun, applyHiddenTerminals, applyFadedRuns, clearMovePreview, transientTags]);
 
   /** A press on a selected run: the move session takes it (a drag moves the selection, or the pinned straight; a click pins the piece). */
   const onHitPointerDown = useCallback((event: ReactPointerEvent<SVGPathElement>) => {
@@ -588,6 +616,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     paintPorts();
     applyHiddenRun();
     applyHiddenTerminals();
+    applyFadedRuns();
     paintSegments();
   });
 

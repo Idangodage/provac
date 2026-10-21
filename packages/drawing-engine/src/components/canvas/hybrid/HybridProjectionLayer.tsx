@@ -212,6 +212,8 @@ export interface HybridProjectionLayerProps {
   hvacElements: HvacElement[];
   /** Transient replacements. Keep hvacElements committed so pointer moves never rebuild the main scene. */
   pipeEditPreviewElements?: HvacElement[] | null;
+  /** Runs drawn faint: a turned unit's ducts while they are designed. */
+  fadedRunIds?: readonly string[];
   /** Disable legacy mesh grips when the shared pipe gizmo owns editing. */
   showPipeEditHandles?: boolean;
   onWebglUnavailable?: () => void;
@@ -254,9 +256,10 @@ export interface HybridPipeInteractionHandle {
   /**
    * A move shown in 3D: the elements it changes, drawn as they would be, their
    * committed meshes hidden (null ends it). `committed`: the move was just
-   * stored, so it holds until the stored elements re-render.
+   * stored, so it holds until the stored elements re-render. `faded`: runs
+   * left as they are, drawn faint (a turned unit's ducts wait for the release).
    */
-  setMovePreview: (elements: readonly HvacElement[] | null, options?: { committed?: boolean }) => void;
+  setMovePreview: (elements: readonly HvacElement[] | null, options?: { committed?: boolean; faded?: readonly string[] }) => void;
 }
 
 type SceneState = {
@@ -1063,6 +1066,44 @@ function applyViewStyle(sceneState: SceneState, style: HybridViewStyle): void {
   });
 }
 
+/** A run that waits for a turn's release, or is being designed, is drawn this faint. */
+const FADED_RUN_OPACITY = 0.25;
+const NO_FADED_RUNS: readonly string[] = [];
+
+/**
+ * Draw the committed meshes of `faded` faint (and the others as they were):
+ * a faded mesh takes clones of its materials, made transparent, and gets its
+ * own back when it is shown again (materials are shared between meshes).
+ */
+function applyFadedHvac(root: THREE.Object3D, faded: ReadonlySet<string>): void {
+  root.children.forEach((child) => {
+    const elementId = child.userData.hvacElementId as string | undefined;
+    if (!elementId) return;
+    const fade = faded.has(elementId);
+    if (Boolean(child.userData.faded) === fade) return;
+    child.userData.faded = fade;
+    child.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (!mesh.material) return;
+      if (fade) {
+        mesh.userData.unfadedMaterial = mesh.material;
+        const faint = (material: THREE.Material) => {
+          const clone = material.clone();
+          clone.transparent = true;
+          clone.opacity = material.opacity * FADED_RUN_OPACITY;
+          clone.depthWrite = false;
+          return clone;
+        };
+        mesh.material = Array.isArray(mesh.material) ? mesh.material.map(faint) : faint(mesh.material);
+      } else if (mesh.userData.unfadedMaterial) {
+        (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).forEach((material) => material.dispose());
+        mesh.material = mesh.userData.unfadedMaterial as THREE.Material | THREE.Material[];
+        delete mesh.userData.unfadedMaterial;
+      }
+    });
+  });
+}
+
 function rebuildPipePreviewLayer(
   sceneState: SceneState,
   draftPipes: readonly HvacElement[] | null,
@@ -1071,6 +1112,7 @@ function rebuildPipePreviewLayer(
   externalEdits: readonly HvacElement[] | null,
   buildRenderContext: ReturnType<typeof createPipeRenderStateCache>,
   ductSettings?: DuctDesignSettings,
+  frozen?: ReadonlySet<string>,
 ): boolean {
   const { hiddenIds, changed } = updateHybridPipePreviewScene(sceneState.pipePreviewLayer, {
     committedScene: sceneState.hvacScene,
@@ -1079,6 +1121,7 @@ function rebuildPipePreviewLayer(
     edits: [...(externalEdits ?? []), ...(editPipe ? [editPipe] : [])],
     buildRenderContext,
     ductSettings,
+    ...(frozen?.size ? { frozen } : {}),
   }, (element, context) => {
     const mesh = buildHvacElementMesh(element, context);
     if (mesh) tuneHvacMesh(mesh);
@@ -1123,6 +1166,7 @@ export function HybridProjectionLayer({
   objectDefinitions,
   hvacElements,
   pipeEditPreviewElements = null,
+  fadedRunIds = NO_FADED_RUNS,
   showPipeEditHandles = true,
   onWebglUnavailable,
   onWebglAvailable,
@@ -1164,7 +1208,10 @@ export function HybridProjectionLayer({
   const [rendererRevision, setRendererRevision] = useState(0);
   const draftPipesRef = useRef<HvacElement[] | null>(null);
   /** A move in progress (or just stored, `held` until the stored elements re-render). */
-  const movePreviewRef = useRef<{ elements: readonly HvacElement[]; held: boolean } | null>(null);
+  const movePreviewRef = useRef<{ elements: readonly HvacElement[]; held: boolean; faded: readonly string[] } | null>(null);
+  /** Runs drawn faint while a turned unit's ducts are designed. */
+  const fadedRunIdsRef = useRef(fadedRunIds);
+  fadedRunIdsRef.current = fadedRunIds;
   const editPipePreviewRef = useRef<HvacElement | null>(null);
   const externalPipeEditsRef = useRef(pipeEditPreviewElements);
   externalPipeEditsRef.current = pipeEditPreviewElements;
@@ -1195,14 +1242,18 @@ export function HybridProjectionLayer({
           : externalPipeEditsRef.current,
         buildPreviewRenderContext,
         ductSettingsRef.current,
+        // A turned unit's ducts wait for the release: left as they are (faint), not re-drawn against the turned unit.
+        movePreviewRef.current?.faded.length ? new Set(movePreviewRef.current.faded) : undefined,
       );
+      // A turned unit's ducts, waiting for the release (the move) and then being designed: faint.
+      applyFadedHvac(sceneState.root, new Set([...(movePreviewRef.current?.faded ?? []), ...fadedRunIdsRef.current]));
       controllerRef.current?.setContentBounds(sceneState.contentBounds);
       // Outlines are drawn from visible meshes: an element hidden under a preview, or shown again after it, is outlined afresh.
       if (shownOrHidden) refreshOutlinesRef.current();
       requestFrameRef.current?.();
     });
   }, [buildPreviewRenderContext]);
-  useEffect(() => { schedulePreviewRebuild(); }, [pipeEditPreviewElements, schedulePreviewRebuild]);
+  useEffect(() => { schedulePreviewRebuild(); }, [pipeEditPreviewElements, fadedRunIds, schedulePreviewRebuild]);
   const interactionHandleRef = useRef<HybridPipeInteractionHandle | null>(null);
   if (!interactionHandleRef.current) {
     interactionHandleRef.current = {
@@ -1216,7 +1267,7 @@ export function HybridProjectionLayer({
         if (!active) resetPipePlacementRef.current?.();
       },
       setMovePreview: (elements, options = {}) => {
-        if (elements) movePreviewRef.current = { elements, held: false };
+        if (elements) movePreviewRef.current = { elements, held: false, faded: options.faded ?? [] };
         else if (options.committed && movePreviewRef.current) movePreviewRef.current = { ...movePreviewRef.current, held: true };
         else movePreviewRef.current = null;
         schedulePreviewRebuild();

@@ -127,6 +127,37 @@ describe('planHvacMove: a unit turned alone (its runs rejoin their route, its di
   });
 });
 
+describe("planHvacMove: a drag's preview of a turn (ducts designed on release)", () => {
+  const preview = { ...context, deferTurnedDucts: true };
+
+  it('a unit turned alone leaves its ducts as they are, every run of its system listed as waiting', () => {
+    const plan = turn(['fdum'], 90, {}, scene, preview);
+    expect(plan.updated.map((element) => element.id)).toEqual(['fdum']);
+    expect([...plan.pendingRunIds!].sort()).toEqual(['branch', 'main']);
+    expect(byId(plan.updated, 'fdum')!.rotation).toBe(90);
+    // The commit (no preview) re-routes them as before.
+    const stored = turn(['fdum'], 90);
+    expect(stored.updated.map((element) => element.id)).toContain('main');
+    expect(stored.pendingRunIds).toBeUndefined();
+  });
+
+  it('they wait from the first frame (0°) too', () => {
+    expect([...turn(['fdum'], 0, {}, scene, preview).pendingRunIds!].sort()).toEqual(['branch', 'main']);
+  });
+
+  it('a whole system turned as a block still turns rigidly, live: nothing waits', () => {
+    const plan = turn(['fdum', 'd1'], 90, {}, scene, preview);
+    expect(plan.pendingRunIds).toBeUndefined();
+    expect(plan.updated.map((element) => element.id).sort()).toEqual(['branch', 'd1', 'fdum', 'main']);
+  });
+
+  it('a diffuser turned alone keeps its runout following live', () => {
+    const plan = turn(['d1'], 30, {}, scene, preview);
+    expect(plan.pendingRunIds).toBeUndefined();
+    expect(plan.updated.map((element) => element.id).sort()).toEqual(['branch', 'd1']);
+  });
+});
+
 describe('planHvacMove: a turn of several (one block)', () => {
   it('the unit and its diffuser turned together: the whole system turns rigidly about the block centre', () => {
     const plan = turn(['fdum', 'd1'], 90);

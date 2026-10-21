@@ -48,7 +48,7 @@ import {
 } from '../refrigerantPipePairModel';
 
 import { ZERO3, type Vec3 } from './ductElasticMove';
-import { moveDuctNetwork, terminalsTurnedWhole, turnPoint, type DuctSegmentRef } from './ductNetworkMove';
+import { ductsAwaitingTurn, moveDuctNetwork, terminalsTurnedWhole, turnPoint, type DuctSegmentRef } from './ductNetworkMove';
 import type { DuctResizeOutcome } from './ductResize';
 
 /** A turn of the selection about the vertical axis. */
@@ -105,6 +105,12 @@ export interface HvacMoveContext {
   condensate?: CondensateEditContext;
   /** Absent: no level limits. */
   ceilingVoid?: HvacCeilingVoid | null;
+  /**
+   * A drag's preview of a turn: the ducts of a unit turned without its whole
+   * system wait for the release (they are designed then): they are left as
+   * they are and listed in the plan's `pendingRunIds` (drawn faded).
+   */
+  deferTurnedDucts?: boolean;
 }
 
 export interface HvacMoveOutcome {
@@ -141,6 +147,8 @@ export interface HvacMovePlan {
   rotation?: { requestedDeg: number; appliedDeg: number; pivot: Point2D | null; spigotSides?: Readonly<Record<string, DuctTerminalSpigotSide>> };
   /** A straight sized by dragging one of its grips: the value before, asked and made. */
   resize?: DuctResizeOutcome;
+  /** A turn's preview: the runs whose design waits for the release (left as they are, drawn faded). */
+  pendingRunIds?: string[];
 }
 
 /** Equipment that moves up and down; everything else keeps its level. */
@@ -654,6 +662,9 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
   const turnedIds = new Set(turnable.map((element) => element.id));
   // A terminal whose whole system turns with it keeps its spigot on the same side (its runout turns too).
   const wholeTerminals = pivot ? terminalsTurnedWhole(scene, turnedIds) : new Set<string>();
+  // A drag's preview: a unit turned without its whole system leaves its ducts to the release (designed then).
+  const awaiting = context.deferTurnedDucts ? ductsAwaitingTurn(scene, turnedIds) : null;
+  const pending = awaiting?.runIds.size ? { pendingRunIds: [...awaiting.runIds] } : {};
   // An item already breaking its rules where it is turns as it is (and does not hold the others back).
   const free = new Set(turnable.filter((element) => context.place && !context.place(centreOf(element), element).valid).map((element) => element.id));
 
@@ -706,7 +717,7 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
     }
   }
   const appliedDeg = requestedDeg * fraction;
-  if (Math.abs(appliedDeg) <= ANGLE_EPSILON_DEG) return unchanged(limitedBy, limitedBy ? [`Cannot turn: ${limitedBy.reason}`] : []);
+  if (Math.abs(appliedDeg) <= ANGLE_EPSILON_DEG) return { ...unchanged(limitedBy, limitedBy ? [`Cannot turn: ${limitedBy.reason}`] : []), ...pending };
 
   // ---- The turn and what follows it. ----
   const updated = new Map<string, HvacElement>();
@@ -738,10 +749,12 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
   }
   // Duct runs: turned with their whole system, re-aimed off a turned collar, re-curved or re-aimed onto a turned spigot.
   const ducts = moveDuctNetwork({
-    before: scene, after: afterEquipment, movedEquipmentIds: turnedIds, runIds: new Set(), segment: null, delta: ZERO3,
+    before: scene, after: afterEquipment, runIds: new Set(), segment: null, delta: ZERO3,
+    movedEquipmentIds: awaiting?.unitIds.size ? new Set([...turnedIds].filter((id) => !awaiting.unitIds.has(id))) : turnedIds,
     settings: context.ductSettings, turn: { angleDeg: appliedDeg, pivot },
   });
   for (const run of ducts.runs) {
+    if (awaiting?.runIds.has(run.id)) continue;
     updated.set(run.id, run);
     outcomes.set(run.id, ducts.outcomes.get(run.id) ?? { kind: 'follows' });
   }
@@ -770,6 +783,7 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
     infos: ducts.infos,
     label: hvacRotateLabel(turnable, appliedDeg, each),
     rotation: { requestedDeg, appliedDeg, pivot, ...(Object.keys(spigotSides).length ? { spigotSides } : {}) },
+    ...pending,
   };
 }
 

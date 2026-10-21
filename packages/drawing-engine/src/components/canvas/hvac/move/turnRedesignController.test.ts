@@ -77,7 +77,9 @@ describe('redesignAfterTurn: a turned unit\'s ducts re-designed by the optimiser
     expect(store().history.length).toBe(steps + 1);
     const turnedOnly = JSON.stringify(store().hvacElements);
     // While the optimiser works: the badge's state.
-    expect(useTurnRedesignStore.getState().busy).toEqual({ unitIds: ['fdum'], subject: 'DU-1\'s ducts' });
+    expect(useTurnRedesignStore.getState().busy).toMatchObject({ unitIds: ['fdum'], subject: 'DU-1\'s ducts' });
+    // The runs it re-designs (drawn faint meanwhile): the collar runs and their branches.
+    expect(useTurnRedesignStore.getState().busy!.runIds.length).toBeGreaterThan(0);
     await redesign;
     expect(useTurnRedesignStore.getState().busy).toBeNull();
     // The design joined the turn's step: no step of its own.
@@ -137,10 +139,10 @@ describe('redesignAfterTurn: a turned unit\'s ducts re-designed by the optimiser
     expect(cancelTurnRedesign()).toBe(false);
   }, 60_000);
 
-  it('the readout while turning says the optimiser looks for a better design on release', () => {
+  it('the readout while turning says the ducts are designed on release', () => {
     const scene = store().hvacElements;
     const plan = planHvacMove(scene, { ids: ['fdum'], delta: { x: 0, y: 0, z: 0 }, rotation: { angleDeg: 30 } }, { ductSettings: settings });
-    expect(turnRedesignNote(plan, scene, settings)).toBe('On release the optimiser looks for a better design of DU-1\'s ducts for the new collar.');
+    expect(turnRedesignNote(plan, scene, settings)).toBe('On release, DU-1\'s ducts are designed for the new collar.');
     const whole = planHvacMove(scene, { ids: ['fdum', 'sd1', 'sd2', 'sd3'], delta: { x: 0, y: 0, z: 0 }, rotation: { angleDeg: 30 } }, { ductSettings: settings });
     expect(turnRedesignNote(whole, scene, settings)).toBeNull();
   });
