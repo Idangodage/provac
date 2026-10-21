@@ -182,6 +182,18 @@ describe('planHvacMove: an air terminal turned', () => {
     expect(lipAfter.y).toBeCloseTo(lipBefore.y, 6);
   });
 
+  it('a square face keeps its spigot\'s side until 10° past the diagonal; a drag\'s new side holds back to 35°', () => {
+    const sideAt = (angle: number, held?: 'back' | 'front' | 'left' | 'right') => {
+      const plan = turn(['d1'], angle, held ? { spigotSides: { d1: held } } : {});
+      return { side: readDuctTerminalSpec(byId(plan.updated, 'd1')!)!.spigotSide, told: plan.rotation?.spigotSides?.d1 };
+    };
+    expect(sideAt(50)).toEqual({ side: 'back', told: 'back' });
+    expect(sideAt(56)).toEqual({ side: 'left', told: 'left' });
+    // Coming back with the drag's side: it holds until the turn is under 35°.
+    expect(sideAt(40, 'left')).toEqual({ side: 'left', told: 'left' });
+    expect(sideAt(34, 'left')).toEqual({ side: 'back', told: 'back' });
+  });
+
   it('a linear slot turns its spigot with it: its flexible runout re-curves to the turned spigot', () => {
     const slot = terminalAt('l1', 'linear-slot', runoutTo(d1), 'LSD-1');
     const slotBranch = buildDuctRunDraftElement({

@@ -7,15 +7,19 @@
  *   a click on a selected item selects it alone; a press on an unselected item
  *   selects it, and a drag then moves it alone.
  * - Pressed on an item of a multi-selection, the whole selection moves.
- * - Each pointer move (one per animation frame) snaps the drag (guides, grid;
- *   Shift keeps to an axis, Alt moves freely) and asks the move model for the
+ * - Each pointer move (one per animation frame) places the drag under the
+ *   pointer, with magnetic guides and grid: they catch within a few pixels and
+ *   hold until the pointer is further off, so nothing jumps or lags (Shift
+ *   keeps to an axis, Alt moves freely); then it asks the move model for the
  *   preview, without the drain re-solve (the slow part).
  * - Release commits the full plan (drains included) as one undo step; Esc
  *   cancels; typing a number moves exactly that far along the drag (Enter).
  * - A turn (the rotation grip, the 3D gizmo's ring) is the same session in its
- *   rotation mode: the angle the pointer sweeps about the pivot, snapped so the
- *   first item squares up with 15° steps or with a wall (Alt turns freely);
- *   typing a number (and "-" for anticlockwise) turns exactly that far.
+ *   rotation mode: the angle the pointer sweeps about the pivot, followed to
+ *   0.5°, with magnetic stops where the first item's orientation is a multiple
+ *   of 45° or square to a wall (they catch within a few pixels at the pointer);
+ *   Shift turns in 15° steps, Alt freely; typing a number (and "-" for
+ *   anticlockwise) turns exactly that far.
  * - A straight sized by one of its grips is the same session in its resize
  *   mode: the pointer's travel along the grip becomes the value (a length, a
  *   width, a depth), snapped (Alt: 1 mm; Shift: every straight of the run's
@@ -28,6 +32,7 @@
  */
 import type { HvacElement, Point2D } from '../../../../types';
 import { isCondensatePipe } from '../condensate/condensateTypes';
+import type { DuctTerminalSpigotSide } from '../duct/ductTerminals';
 import { isDuctElement } from '../duct/ductTypes';
 import { isRefrigerantPipeElementType } from '../refrigerantPipePairModel';
 
@@ -35,7 +40,15 @@ import { ZERO3, type Vec3 } from './ductElasticMove';
 import type { DuctSegmentRef } from './ductNetworkMove';
 import { DuctResizeSolver, snapResizeValue, type DuctResizeGrip, type DuctResizeOutcome } from './ductResize';
 import { hvacMoveChanges, planHvacMove, type HvacMoveContext, type HvacMovePlan } from './hvacMoveModel';
-import { footprintBox, snapMoveDelta, type MoveBox, type MoveGuide } from './moveSnapping';
+import {
+  footprintBox,
+  SNAP_RELEASE_PX,
+  snapMagneticValue,
+  snapMoveDelta,
+  type MoveBox,
+  type MoveGuide,
+  type MoveSnapHold,
+} from './moveSnapping';
 
 export interface HvacMoveSessionHost {
   scene(): readonly HvacElement[];
@@ -79,8 +92,11 @@ export interface HvacMoveHudState {
   guides: MoveGuide[];
   /** "Move FDUM22 and 2 diffusers". */
   label: string;
-  /** A turn: the angle made and asked for (degrees, clockwise on the plan), about `pivot`, from the pointer's start angle. */
-  turn?: { appliedDeg: number; requestedDeg: number; pivot: Point2D; startDeg: number };
+  /**
+   * A turn: the angle made and asked for (degrees, clockwise on the plan), about `pivot`, from the pointer's start
+   * angle; the stop holding it (null: it follows the pointer), and the stops round it (as angles swept from the start).
+   */
+  turn?: { appliedDeg: number; requestedDeg: number; pivot: Point2D; startDeg: number; stop?: HvacTurnStop | null; stopsDeg?: readonly number[] };
   /** A straight being sized: the value before, asked and made. */
   resize?: DuctResizeOutcome;
 }
@@ -102,6 +118,12 @@ export interface HvacMoveBegin {
   resolve?: (clientX: number, clientY: number) => Vec3 | null;
   /** The axes the drag moves (a view's surface, a gizmo arrow): the others stay put. Default: x and y. */
   axes?: Partial<Record<'x' | 'y' | 'z', boolean>>;
+}
+
+/** What holds a turn: a 45° stop or a wall's square (the first item's orientation there, degrees), or Shift's 15° steps. */
+export interface HvacTurnStop {
+  kind: 'step' | 'wall' | 'shift';
+  orientationDeg: number;
 }
 
 /** A turn of the selected units and terminals about a pivot (the rotation grip, the 3D gizmo's ring). */
@@ -145,11 +167,15 @@ export function latestHost(get: () => HvacMoveSessionHost): HvacMoveSessionHost 
 
 /** Pixels the pointer travels before a press becomes a drag. */
 const DRAG_THRESHOLD_PX = 4;
-/** Guides pull within this many screen pixels. */
-const GUIDE_TOLERANCE_PX = 6;
-/** A turn snaps in these steps (degrees), and to a wall's angle within this many degrees. */
-const TURN_STEP_DEG = 15;
-const WALL_SNAP_DEG = 4;
+/** A turn's magnetic stops (the first item's orientation on multiples of this), Shift's steps, and how finely it follows the pointer (degrees). */
+const TURN_STOP_DEG = 45;
+const TURN_SHIFT_STEP_DEG = 15;
+const TURN_FINE_DEG = 0.5;
+/** A turn's stop catches within this many screen pixels at the pointer, and lets go past this many (stops are few: firmer than a move's guides). */
+const TURN_STOP_CATCH_PX = 5;
+const TURN_STOP_RELEASE_PX = 9;
+/** Nearer the pivot than this (screen pixels), the pointer's angle is too unsteady to follow: the turn holds. */
+const PIVOT_DEAD_PX = 12;
 
 const degrees = (radians: number) => (radians * 180) / Math.PI;
 
@@ -157,6 +183,12 @@ const degrees = (radians: number) => (radians * 180) / Math.PI;
 function halfTurn(angleDeg: number): number {
   const wrapped = ((((angleDeg + 180) % 360) + 360) % 360) - 180;
   return wrapped === -180 ? 180 : wrapped;
+}
+
+/** An orientation in [0, 360). */
+function wholeTurn(angleDeg: number): number {
+  const turned = ((angleDeg % 360) + 360) % 360;
+  return turned >= 360 - 1e-9 ? 0 : turned;
 }
 
 /** The unit vector of the axis a drag mostly runs along (Shift). */
@@ -197,8 +229,19 @@ interface Armed {
   plan: HvacMovePlan | null;
   delta: Vec3;
   frame: number | null;
-  /** A turn: its pivot, the pointer's angle at the press, the first item's orientation then, the angle last planned. */
-  rotate: { pivot: Point2D; startDeg: number; baseDeg: number; walls: readonly number[]; planned: number | null; turn: number } | null;
+  /** What the guides and grid hold (a magnet lets go only past its release distance), and the height's grid line. */
+  snapHeld: MoveSnapHold | null;
+  zHeld: number | null;
+  /** The magnets (guides, grid, a turn's stops) are on once the pointer has gone past their release distance: a drag starts free, even from a stop. */
+  magnets: boolean;
+  /**
+   * A turn: its pivot, the pointer's angle at the press, the first item's orientation then, the angle last planned
+   * and turned, the stop holding it, and the spigot sides last shown (a side changes only past its margin).
+   */
+  rotate: {
+    pivot: Point2D; startDeg: number; baseDeg: number; walls: readonly number[]; planned: number | null; turn: number;
+    stop: HvacTurnStop | null; sides: Readonly<Record<string, DuctTerminalSpigotSide>> | null;
+  } | null;
   /** A straight being sized: its grip, the solver (it keeps what it has planned), and the value last planned. */
   resize: { grip: DuctResizeGrip; solver: DuctResizeSolver; settings: HvacMoveContext['ductSettings']; planned: string | null } | null;
 }
@@ -242,7 +285,7 @@ export class HvacMoveSession {
       axes: { x: request.axes?.x ?? true, y: request.axes?.y ?? true, z: request.axes?.z ?? false },
       collapseOnClick: pressedSelected && selection.length > 1, onClick: request.onClick, dragging: false,
       lastClient: { x: request.clientX, y: request.clientY }, modifiers: { shift: false, alt: false }, typed: null, plan: null,
-      delta: { x: 0, y: 0, z: 0 }, frame: null, rotate: null, resize: null,
+      delta: { x: 0, y: 0, z: 0 }, frame: null, snapHeld: null, zHeld: null, magnets: false, rotate: null, resize: null,
     };
     this.listen();
     return true;
@@ -261,10 +304,10 @@ export class HvacMoveSession {
       ids, segment: null, pressedId: ids[0]!, startClient: { x: request.clientX, y: request.clientY }, startWorld, resolve,
       axes: { x: true, y: true, z: false }, anchor: request.pivot, moving: [], others: [], collapseOnClick: false, dragging: false,
       lastClient: { x: request.clientX, y: request.clientY }, modifiers: { shift: false, alt: false }, typed: null, plan: null,
-      delta: { x: 0, y: 0, z: 0 }, frame: null,
+      delta: { x: 0, y: 0, z: 0 }, frame: null, snapHeld: null, zHeld: null, magnets: false,
       rotate: {
         pivot: request.pivot, startDeg: degrees(Math.atan2(startWorld.y - request.pivot.y, startWorld.x - request.pivot.x)),
-        baseDeg: byId.get(ids[0]!)!.rotation ?? 0, walls: this.host.snapAnglesDeg?.() ?? [], planned: null, turn: 0,
+        baseDeg: byId.get(ids[0]!)!.rotation ?? 0, walls: this.host.snapAnglesDeg?.() ?? [], planned: null, turn: 0, stop: null, sides: null,
       },
       resize: null,
     };
@@ -284,7 +327,7 @@ export class HvacMoveSession {
       ids: [request.grip.runId], segment: null, pressedId: request.grip.runId, startClient: { x: request.clientX, y: request.clientY }, startWorld,
       resolve, axes: { x: true, y: true, z: Boolean(resolve) }, anchor: { x: 0, y: 0 }, moving: [], others: [], collapseOnClick: false,
       dragging: false, lastClient: { x: request.clientX, y: request.clientY }, modifiers: { shift: false, alt: false }, typed: null, plan: null,
-      delta: { x: 0, y: 0, z: 0 }, frame: null, rotate: null,
+      delta: { x: 0, y: 0, z: 0 }, frame: null, snapHeld: null, zHeld: null, magnets: false, rotate: null,
       resize: {
         grip: request.grip, settings: context.ductSettings, planned: null,
         solver: new DuctResizeSolver(scene, context.ductSettings, request.grip, { soffitMm: context.ceilingVoid?.soffitMm ?? null }),
@@ -307,6 +350,21 @@ export class HvacMoveSession {
     if (resolve) return resolve(clientX, clientY);
     const point = this.host.clientToWorld(clientX, clientY);
     return point ? { x: point.x, y: point.y, z: 0 } : null;
+  }
+
+  /**
+   * Screen pixels per millimetre where the pointer is: the plan's zoom, or in a
+   * 3D view what ten pixels of pointer travel cover on the drag's surface there.
+   */
+  private pxPerMmAt(armed: Armed): number {
+    const zoom = Math.max(this.host.pxPerMm(), 1e-9);
+    if (!armed.resolve) return zoom;
+    const { x, y } = armed.lastClient;
+    const at = armed.resolve(x, y);
+    if (!at) return zoom;
+    const reach = Math.max(...[armed.resolve(x + 10, y), armed.resolve(x, y + 10)]
+      .map((point) => (point ? Math.hypot(point.x - at.x, point.y - at.y, point.z - at.z) : 0)));
+    return reach > 1e-6 ? 10 / reach : zoom;
   }
 
   /** Drop the session (its preview and readout with it). */
@@ -343,6 +401,9 @@ export class HvacMoveSession {
     if (!armed) return;
     armed.lastClient = { x: event.clientX, y: event.clientY };
     armed.modifiers = { shift: event.shiftKey, alt: event.altKey };
+    if (!armed.magnets && Math.hypot(event.clientX - armed.startClient.x, event.clientY - armed.startClient.y) > (armed.rotate ? TURN_STOP_RELEASE_PX : SNAP_RELEASE_PX)) {
+      armed.magnets = true;
+    }
     if (!armed.dragging) {
       if (Math.hypot(event.clientX - armed.startClient.x, event.clientY - armed.startClient.y) < DRAG_THRESHOLD_PX) return;
       armed.dragging = true;
@@ -449,41 +510,108 @@ export class HvacMoveSession {
       z: axes.z && (!lock || lock.z !== 0),
     };
     const grid = this.host.gridMm();
+    const pxPerMm = this.pxPerMmAt(armed);
     const snapped = snapMoveDelta({
-      delta: { x: moves.x ? raw.x : 0, y: moves.y ? raw.y : 0 }, anchor: armed.anchor, moving: armed.moving, others: armed.others, gridMm: grid,
-      axisLock: false, free: armed.modifiers.alt, toleranceMm: GUIDE_TOLERANCE_PX / Math.max(this.host.pxPerMm(), 1e-9),
-      fixedAxes: { x: !moves.x, y: !moves.y },
+      delta: { x: moves.x ? raw.x : 0, y: moves.y ? raw.y : 0 }, anchor: armed.anchor, moving: armed.moving,
+      others: armed.magnets ? armed.others : [], gridMm: armed.magnets ? grid : null,
+      axisLock: false, free: armed.modifiers.alt, pxPerMm, held: armed.snapHeld, fixedAxes: { x: !moves.x, y: !moves.y },
     });
-    // Up and down snaps to the same step (the 3D views; the plan has no height to drag).
-    const z = !moves.z ? 0 : armed.modifiers.alt || !grid ? raw.z : Math.round(raw.z / grid) * grid;
+    armed.snapHeld = snapped.held;
+    // Up and down: the same magnets on the height (the 3D views; the plan has no height to drag).
+    let z = 0;
+    if (moves.z) {
+      const level = snapMagneticValue(raw.z, { gridMm: armed.magnets ? grid : null, pxPerMm, held: armed.zHeld, free: armed.modifiers.alt });
+      armed.zHeld = level.held;
+      z = level.value;
+    } else {
+      armed.zHeld = null;
+    }
     return { delta: { x: snapped.delta.x, y: snapped.delta.y, z: z || 0 }, guides: snapped.guides };
   }
 
   /**
    * The turn as it stands (degrees, clockwise on the plan): the angle typed, or
-   * the angle the pointer swept about the pivot, snapped so the first item's
-   * orientation lands on a 15° step or a wall's angle (Alt: as swept).
+   * the angle the pointer swept about the pivot. The first item's orientation
+   * follows the pointer to 0.5°; a magnetic stop holds it where it comes within
+   * a few pixels (at the pointer) of a multiple of 45° or of a wall's square,
+   * until the pointer is further off. Shift turns in 15° steps, Alt freely.
    */
   private currentTurn(armed: Armed): number {
     const rotate = armed.rotate!;
     const typed = armed.typed !== null ? Number.parseFloat(armed.typed) : Number.NaN;
-    if (Number.isFinite(typed)) return typed;
-    const point = this.pointAt(armed.resolve, armed.lastClient.x, armed.lastClient.y);
-    if (!point || Math.hypot(point.x - rotate.pivot.x, point.y - rotate.pivot.y) < 1) return rotate.turn;
-    const swept = halfTurn(degrees(Math.atan2(point.y - rotate.pivot.y, point.x - rotate.pivot.x)) - rotate.startDeg);
-    if (armed.modifiers.alt) return Math.round(swept * 10) / 10;
-    const target = rotate.baseDeg + swept;
-    let best = Math.round(target / TURN_STEP_DEG) * TURN_STEP_DEG;
-    for (const wall of rotate.walls) {
-      const square = wall + 90 * Math.round((target - wall) / 90);
-      if (Math.abs(square - target) <= WALL_SNAP_DEG && Math.abs(square - target) < Math.abs(best - target)) best = square;
+    if (Number.isFinite(typed)) {
+      rotate.stop = null;
+      return typed;
     }
-    return halfTurn(best - rotate.baseDeg);
+    const point = this.pointAt(armed.resolve, armed.lastClient.x, armed.lastClient.y);
+    if (!point) return rotate.turn;
+    const radiusPx = Math.hypot(point.x - rotate.pivot.x, point.y - rotate.pivot.y) * this.pxPerMmAt(armed);
+    if (radiusPx < PIVOT_DEAD_PX) return rotate.turn;
+    const swept = halfTurn(degrees(Math.atan2(point.y - rotate.pivot.y, point.x - rotate.pivot.x)) - rotate.startDeg);
+    const target = rotate.baseDeg + swept;
+    if (armed.modifiers.alt) {
+      rotate.stop = null;
+      return Math.round(swept * 10) / 10;
+    }
+    if (armed.modifiers.shift) {
+      const step = Math.round(target / TURN_SHIFT_STEP_DEG) * TURN_SHIFT_STEP_DEG;
+      rotate.stop = { kind: 'shift', orientationDeg: wholeTurn(step) };
+      return halfTurn(step - rotate.baseDeg);
+    }
+    // A turn starts free (even from a stop); then the stop held last frame, while the pointer is within its release distance.
+    const fine = halfTurn(Math.round(target / TURN_FINE_DEG) * TURN_FINE_DEG - rotate.baseDeg);
+    if (!armed.magnets) {
+      rotate.stop = null;
+      return fine;
+    }
+    const held = rotate.stop && rotate.stop.kind !== 'shift' ? rotate.stop : null;
+    if (held && Math.abs(halfTurn(target - held.orientationDeg)) <= degrees(TURN_STOP_RELEASE_PX / radiusPx)) {
+      return halfTurn(held.orientationDeg - rotate.baseDeg);
+    }
+    rotate.stop = null;
+    // A stop within its catch distance; a wall's square wins a tie with a 45° stop (the same orientation).
+    const catchDeg = degrees(TURN_STOP_CATCH_PX / radiusPx);
+    let best: HvacTurnStop | null = null;
+    let bestGap = Number.POSITIVE_INFINITY;
+    for (const stop of this.turnStops(rotate, target)) {
+      const gap = Math.abs(halfTurn(target - stop.orientationDeg));
+      if (gap > catchDeg + 1e-9) continue;
+      if (gap < bestGap - 1e-9 || (Math.abs(gap - bestGap) <= 1e-9 && stop.kind === 'wall')) {
+        best = stop;
+        bestGap = gap;
+      }
+    }
+    if (best) {
+      rotate.stop = best;
+      return halfTurn(best.orientationDeg - rotate.baseDeg);
+    }
+    return fine;
+  }
+
+  /** The stops nearest an orientation: the 45° multiple and each wall's square. */
+  private turnStops(rotate: NonNullable<Armed['rotate']>, target: number): HvacTurnStop[] {
+    return [
+      { kind: 'step', orientationDeg: wholeTurn(Math.round(target / TURN_STOP_DEG) * TURN_STOP_DEG) },
+      ...rotate.walls.map((wall): HvacTurnStop => ({ kind: 'wall', orientationDeg: wholeTurn(wall + 90 * Math.round((target - wall) / 90)) })),
+    ];
+  }
+
+  /** Every stop round the turn, as angles swept from the start (the readout's protractor marks them). */
+  private turnStopSweeps(armed: Armed): number[] {
+    const rotate = armed.rotate!;
+    if (armed.typed !== null || armed.modifiers.alt) return [];
+    const step = armed.modifiers.shift ? TURN_SHIFT_STEP_DEG : TURN_STOP_DEG;
+    const orientations = Array.from({ length: Math.round(360 / step) }, (_, index) => index * step);
+    if (!armed.modifiers.shift) rotate.walls.forEach((wall) => orientations.push(...[0, 90, 180, 270].map((quarter) => wall + quarter)));
+    const sweeps = orientations.map((orientation) => Math.round(halfTurn(orientation - rotate.baseDeg) * 100) / 100);
+    return [...new Set(sweeps)].sort((a, b) => a - b);
   }
 
   private planTurn(armed: Armed, turn: number, preview: boolean): HvacMovePlan {
+    const rotate = armed.rotate!;
     return planHvacMove(this.host.scene(), {
-      ids: armed.ids, delta: ZERO3, rotation: { angleDeg: turn, pivot: armed.rotate!.pivot, partial: true },
+      ids: armed.ids, delta: ZERO3,
+      rotation: { angleDeg: turn, pivot: rotate.pivot, partial: true, ...(rotate.sides ? { spigotSides: rotate.sides } : {}) },
     }, this.host.context(preview));
   }
 
@@ -500,6 +628,7 @@ export class HvacMoveSession {
         throw error;
       }
       rotate.planned = turn;
+      rotate.sides = armed.plan.rotation?.spigotSides ?? null;
       this.host.preview(armed.plan, armed.ids);
     }
     const plan = armed.plan;
@@ -508,7 +637,10 @@ export class HvacMoveSession {
     this.host.hud({
       client: armed.lastClient, applied: ZERO3, requested: ZERO3, typed: armed.typed, limitedBy, infos,
       notes: plan.messages.filter((message) => (!limitedBy || !message.includes(limitedBy)) && !infos.includes(message)), guides: [], label: plan.label,
-      turn: { appliedDeg: plan.rotation?.appliedDeg ?? 0, requestedDeg: turn, pivot: rotate.pivot, startDeg: rotate.startDeg },
+      turn: {
+        appliedDeg: plan.rotation?.appliedDeg ?? 0, requestedDeg: turn, pivot: rotate.pivot, startDeg: rotate.startDeg,
+        stop: rotate.stop, stopsDeg: this.turnStopSweeps(armed),
+      },
     });
   }
 

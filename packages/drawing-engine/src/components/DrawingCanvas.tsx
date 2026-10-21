@@ -122,7 +122,7 @@ import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
 import { DuctResizeGrips } from "./canvas/hvac/move/DuctResizeGrips";
 import { DuctResizeGrips3D } from "./canvas/hvac/move/DuctResizeGrips3D";
 import { HvacMoveGizmo3D } from "./canvas/hvac/move/HvacMoveGizmo3D";
-import { formatMoveMm, formatTurnDeg, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
+import { formatMoveMm, formatTurnDeg, formatTurnStop, HvacMoveHud, type HvacMoveHudHandle } from "./canvas/hvac/move/HvacMoveHud";
 import { HvacRotateGrip } from "./canvas/hvac/move/HvacRotateGrip";
 import { TurnRedesignBadge } from "./canvas/hvac/move/TurnRedesignBadge";
 import { DuctResizeSolver, ductResizeGrips, type DuctResizeGrip } from "./canvas/hvac/move/ductResize";
@@ -2507,7 +2507,7 @@ export function DrawingCanvas({
         client: state.client,
         title: state.label,
         readout: turn
-          ? (state.typed !== null ? `${state.typed.replace("-", "−")}°` : formatTurnDeg(turn.appliedDeg))
+          ? (state.typed !== null ? `${state.typed.replace("-", "−")}°` : `${formatTurnDeg(turn.appliedDeg)}${formatTurnStop(turn.stop)}`)
           : state.typed !== null
             ? `${state.typed} mm`
             : `Δx ${formatMoveMm(x)}  Δy ${formatMoveMm(y)}${rises ? `  Δz ${formatMoveMm(z)}` : ""}  ·  ${Math.round(Math.hypot(x, y, z)).toLocaleString("en-GB")} mm`,
@@ -2515,6 +2515,9 @@ export function DrawingCanvas({
           turn: {
             pivot: pivotClient, startDeg: turn.startDeg, sweepDeg: turn.appliedDeg,
             radius: Math.min(160, Math.max(36, Math.hypot(state.client.x - pivotClient.x, state.client.y - pivotClient.y) * 0.55)),
+            // The stops on the protractor, and the one holding the turn (it sits at the angle swept).
+            ticks: (turn.stopsDeg ?? []).map((sweep) => turn.startDeg + sweep),
+            held: Boolean(turn.stop) && state.typed === null,
           },
         } : {}),
         typing: state.typed !== null,

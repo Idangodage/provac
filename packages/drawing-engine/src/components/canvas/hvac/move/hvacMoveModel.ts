@@ -59,6 +59,8 @@ export interface HvacRotation {
   pivot?: 'group' | 'each' | Point2D;
   /** A drag: the turn stops at the last angle every rule allows (else it is made whole or not at all). */
   partial?: boolean;
+  /** A drag: the spigot sides its last frame showed (a square face's spigot then changes side only past its margin). */
+  spigotSides?: Readonly<Record<string, DuctTerminalSpigotSide>>;
 }
 
 export interface HvacMoveRequest {
@@ -132,8 +134,11 @@ export interface HvacMovePlan {
   infos?: string[];
   /** The undo step's name ("Move FDUM22 and 2 diffusers", "Rotate DU-1 90° clockwise"). */
   label: string;
-  /** A turn: the angle asked for and made (degrees, clockwise on the plan), about `pivot` (null: each item's own centre). */
-  rotation?: { requestedDeg: number; appliedDeg: number; pivot: Point2D | null };
+  /**
+   * A turn: the angle asked for and made (degrees, clockwise on the plan), about `pivot` (null: each item's own
+   * centre), and the side each square face's spigot took.
+   */
+  rotation?: { requestedDeg: number; appliedDeg: number; pivot: Point2D | null; spigotSides?: Readonly<Record<string, DuctTerminalSpigotSide>> };
   /** A straight sized by dragging one of its grips: the value before, asked and made. */
   resize?: DuctResizeOutcome;
 }
@@ -299,7 +304,8 @@ interface Built {
 }
 
 export function planHvacMove(scene: readonly HvacElement[], request: HvacMoveRequest, context: HvacMoveContext): HvacMovePlan {
-  if (request.rotation && Math.abs(request.rotation.angleDeg) > ANGLE_EPSILON_DEG) return planHvacRotation(scene, request, request.rotation, context);
+  // A turn, even of 0° (a drag's first frames are named and checked as the turn they start).
+  if (request.rotation) return planHvacRotation(scene, request, request.rotation, context);
   const byId = new Map(scene.map((element) => [element.id, element]));
   const selected = [...new Set(request.ids)].map((id) => byId.get(id)).filter((element): element is HvacElement => Boolean(element));
   const segment = request.segment && byId.has(request.segment.runId) ? request.segment : null;
@@ -593,22 +599,28 @@ export function turnPivot(elements: readonly HvacElement[]): Point2D {
   return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
 }
 
+/** A square face's spigot keeps its side until a turn is this far past the diagonal (no swinging back and forth at 45°). */
+const SPIGOT_SIDE_MARGIN_DEG = 10;
+
 /**
  * The spigot side of a square or round face turned `angleDeg` that points
- * where its spigot did (the side nearest that way when the turn is not a
- * quarter turn); null for a face whose box is not square (its spigot turns
- * with it).
+ * where its spigot did: the side it has (`held`: the side a drag showed last)
+ * while that one is within 45° + 10° of that way, else the side nearest it;
+ * null for a face whose box is not square (its spigot turns with it).
  */
-function spigotSideKeptFacing(element: HvacElement, angleDeg: number): DuctTerminalSpigotSide | null {
+function spigotSideKeptFacing(element: HvacElement, angleDeg: number, held?: DuctTerminalSpigotSide): DuctTerminalSpigotSide | null {
   const spec = readDuctTerminalSpec(element);
   if (!spec || !SQUARE_BOX_TERMINAL_KINDS.has(spec.kind) || Math.abs(spec.plenumWidthMm - spec.plenumDepthMm) > 1) return null;
   // The old side's normal in the turned element's frame: turned back by the angle.
   const wanted = turnPoint(SIDE_NORMAL[spec.spigotSide], { x: 0, y: 0 }, -angleDeg);
+  const facing = (side: DuctTerminalSpigotSide) => SIDE_NORMAL[side].x * wanted.x + SIDE_NORMAL[side].y * wanted.y;
+  const kept = held ?? spec.spigotSide;
+  if (facing(kept) >= Math.cos(((45 + SPIGOT_SIDE_MARGIN_DEG) * Math.PI) / 180) - 1e-9) return kept;
   let best = spec.spigotSide;
   let bestDot = -Infinity;
   for (const side of ['back', 'front', 'left', 'right'] as const) {
-    const facing = SIDE_NORMAL[side].x * wanted.x + SIDE_NORMAL[side].y * wanted.y;
-    if (facing > bestDot + 1e-9) { best = side; bestDot = facing; }
+    const dot = facing(side);
+    if (dot > bestDot + 1e-9) { best = side; bestDot = dot; }
   }
   return best;
 }
@@ -650,7 +662,7 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
     const nextCentre = pivot ? turnPoint(centre, pivot, angle) : centre;
     let properties = element.properties;
     if (isDuctTerminalElement(element) && !wholeTerminals.has(element.id)) {
-      const side = spigotSideKeptFacing(element, angle);
+      const side = spigotSideKeptFacing(element, angle, rotation.spigotSides?.[element.id]);
       const raw = (element.properties.terminal ?? {}) as Record<string, unknown>;
       if (side && side !== readDuctTerminalSpec(element)?.spigotSide) properties = { ...properties, terminal: { ...raw, spigotSide: side } };
     }
@@ -707,6 +719,13 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
     updated.set(element.id, turnElement(element, appliedDeg).element);
     outcomes.set(element.id, { kind: 'moved' });
   }
+  // The side each square face's spigot took (a drag passes them back, so a side changes only past its margin).
+  const spigotSides: Record<string, DuctTerminalSpigotSide> = {};
+  for (const element of turnable) {
+    if (!isDuctTerminalElement(element) || wholeTerminals.has(element.id)) continue;
+    const side = spigotSideKeptFacing(element, appliedDeg, rotation.spigotSides?.[element.id]);
+    if (side) spigotSides[element.id] = side;
+  }
   const afterEquipment = sceneNow();
   // Pipes on the turned units' ports re-attach (one after another, so a pipe between two turned units meets both).
   for (const element of turnable) {
@@ -750,7 +769,7 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
     messages: [...new Set(messages)],
     infos: ducts.infos,
     label: hvacRotateLabel(turnable, appliedDeg, each),
-    rotation: { requestedDeg, appliedDeg, pivot },
+    rotation: { requestedDeg, appliedDeg, pivot, ...(Object.keys(spigotSides).length ? { spigotSides } : {}) },
   };
 }
 

@@ -4,7 +4,8 @@
  * The readout of a drag, at the cursor: what moves, how far (Δx, Δy and the
  * distance; a turn's angle), a distance or angle being typed, why the
  * selection stops short (red) and what the move leaves for the designer
- * (amber); plus the alignment guides, and a turn's pivot and swept angle.
+ * (amber); plus the alignment guides, and a turn's pivot, swept angle and
+ * stops (ticks on its protractor, the one holding it marked).
  * Painted imperatively once per frame (a drag never re-renders React), in
  * nodes of its own on the page body, so the 2D stack's transform cannot shift
  * them.
@@ -12,6 +13,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 
 import type { Point2D } from '../../../../types';
+
+import type { HvacTurnStop } from './hvacMoveSession';
 
 export interface HvacMoveHudView {
   /** Where the pointer is (client pixels). */
@@ -31,8 +34,11 @@ export interface HvacMoveHudView {
   guides: ReadonlyArray<{ x1: number; y1: number; x2: number; y2: number }>;
   /** Where the moved units and terminals were (client pixels): a faint outline each. */
   ghosts?: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>;
-  /** A turn on the plan: its pivot, the pointer's start angle and the angle swept (client pixels, degrees clockwise). */
-  turn?: { pivot: { x: number; y: number }; startDeg: number; sweepDeg: number; radius: number };
+  /**
+   * A turn on the plan: its pivot, the pointer's start angle and the angle swept (client pixels, degrees clockwise),
+   * its stops (screen angles), and whether a stop holds it (at the swept angle).
+   */
+  turn?: { pivot: { x: number; y: number }; startDeg: number; sweepDeg: number; radius: number; ticks?: readonly number[]; held?: boolean };
 }
 
 export interface HvacMoveHudHandle {
@@ -48,6 +54,14 @@ export function formatTurnDeg(value: number): string {
   const rounded = Math.round(value * 10) / 10;
   if (rounded === 0) return '0°';
   return `${rounded < 0 ? '−' : '+'}${Math.abs(rounded).toLocaleString('en-GB')}°`;
+}
+
+/** What holds a turn, for the readout: "  ·  at 45°", "  ·  square to the wall", "  ·  at 30° (15° steps)"; '' when free. */
+export function formatTurnStop(stop: HvacTurnStop | null | undefined): string {
+  if (!stop) return '';
+  const at = `${(Math.round(stop.orientationDeg * 10) / 10).toLocaleString('en-GB')}°`;
+  if (stop.kind === 'wall') return '  ·  square to the wall';
+  return stop.kind === 'shift' ? `  ·  at ${at} (15° steps)` : `  ·  at ${at}`;
 }
 
 /** A signed length in millimetres, with a true minus sign. */
@@ -116,7 +130,23 @@ export const HvacMoveHud = forwardRef<HvacMoveHudHandle>(function HvacMoveHud(_p
       const turn: SVGElement[] = [];
       if (view.turn) {
         const { pivot, startDeg, sweepDeg, radius } = view.turn;
-        const at = (deg: number) => ({ x: pivot.x + radius * Math.cos((deg * Math.PI) / 180), y: pivot.y + radius * Math.sin((deg * Math.PI) / 180) });
+        const at = (deg: number, r = radius) => ({ x: pivot.x + r * Math.cos((deg * Math.PI) / 180), y: pivot.y + r * Math.sin((deg * Math.PI) / 180) });
+        // The stops: a short tick across the protractor at each; the one holding the turn longer and darker.
+        for (const tick of view.turn.ticks ?? []) {
+          const held = Boolean(view.turn.held) && Math.abs((((tick - startDeg - sweepDeg) % 360) + 540) % 360 - 180) < 0.05;
+          const inner = at(tick, radius - (held ? 7 : 4));
+          const outer = at(tick, radius + (held ? 7 : 4));
+          const mark = document.createElementNS(SVG_NS, 'line');
+          mark.setAttribute('x1', inner.x.toFixed(1));
+          mark.setAttribute('y1', inner.y.toFixed(1));
+          mark.setAttribute('x2', outer.x.toFixed(1));
+          mark.setAttribute('y2', outer.y.toFixed(1));
+          mark.setAttribute('stroke', held ? '#0f766e' : '#0d9488');
+          mark.setAttribute('stroke-opacity', held ? '1' : '0.55');
+          mark.setAttribute('stroke-width', held ? '2.5' : '1.25');
+          mark.setAttribute('stroke-linecap', 'round');
+          turn.push(mark);
+        }
         const from = at(startDeg);
         const to = at(startDeg + sweepDeg);
         if (Math.abs(sweepDeg) > 0.05) {
