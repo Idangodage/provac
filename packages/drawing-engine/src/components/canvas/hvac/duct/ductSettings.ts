@@ -148,6 +148,8 @@ export interface DuctDesignSettings {
   autoRoundSizesMm: number[];
   /** Auto layout: a trunk reduces only when its width drops by at least this much (mm). */
   autoReducerStepMm: number;
+  /** Rectangular ducts are sized in steps of this much on each side (mm): the fabricator's sizes. */
+  rectStepMm: 25 | 50 | 100;
   /** Optimiser: exact tree search up to this many terminals per service (above it, a heuristic). */
   autoExactTerminals: number;
   /** Optimiser: time for one unit's design, after which the best verified design so far is kept (ms). */
@@ -280,13 +282,14 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   fireDamperSleeveExtensionMm: 100,
   autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500, 560, 630, 710, 800, 900, 1000],
   autoReducerStepMm: 100,
+  rectStepMm: 50,
   autoExactTerminals: 8,
   autoTimeBudgetMs: 20000,
   autoChooseSpigotSide: true,
   defaultCollarEntry: 'side',
   autoRoundMainStyles: ['round-conical', 'round-tee', 'round-lateral'],
   autoAllowWye: true,
-  autoSizingMethod: 'life-cycle',
+  autoSizingMethod: 'constant-friction',
   autoNecksFollowAirflow: true,
   econCurrency: 'USD',
   econSheetPerKg: 1.6,
@@ -398,13 +401,14 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   fireDamperSleeveExtensionMm: practice('Fire damper sleeve beyond each wall face for its breakaway connection; UL 555 installation instructions commonly allow up to 152 mm (6 in).'),
   autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex); Ø560–Ø1000 follow the EN 1506 series for the mains of large units.' },
   autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
+  rectStepMm: practice('Rectangular duct is fabricated to round sizes: 50 mm steps are usual (25 for a fine fit, 100 for a short list of sizes).'),
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
   autoTimeBudgetMs: practice('The optimiser stops learning (routing again after a failed check) past this time and keeps the best verified design; the result says so.'),
   autoChooseSpigotSide: practice('A symmetric face throws the same pattern whichever side its plenum box is fed from; the optimiser picks the side the duct reaches best. Linear slots keep theirs.'),
   defaultCollarEntry: practice('A side collar suits a shallow void; a top collar takes its runout from above (the flexible duct bending at a diameter or more, SMACNA S3.24) and needs room over the box.'),
   autoRoundMainStyles: { sourceId: 'smacna-1995', reference: 'Fig. 3-4 (p.3.11), Fig. 3-5 (p.3.12)', verified: true, note: 'Which of the SMACNA round-main fittings the optimiser may choose; it picks per branch by cost and loss.' },
   autoAllowWye: { sourceId: 'smacna-1995', reference: 'Fig. 3-5 (p.3.12)', verified: true, note: 'A round main may end in a wye.' },
-  autoSizingMethod: practice('Constant friction is the equal-friction method (ASHRAE Fundamentals ch. 21); the life-cycle optimum trades first cost against fan energy.'),
+  autoSizingMethod: practice('Constant friction (equal friction, ASHRAE Fundamentals ch. 21) is the usual design method and the default; the life-cycle optimum trades first cost against fan energy.'),
   autoNecksFollowAirflow: practice('A neck over its velocity cap is noisy; the next catalogue neck (and its flexible runout) keeps it within. Necks never shrink on their own: a smaller one is the designer\'s choice.'),
   econCurrency: { sourceId: 'project-configuration', verified: false, note: 'Currency of the rates below.' },
   econSheetPerKg: practice('Placeholder: galvanised coil price per kg; enter the supplier\'s.'),
@@ -573,6 +577,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     fireDamperSleeveExtensionMm: clampNumber(raw.fireDamperSleeveExtensionMm, d.fireDamperSleeveExtensionMm, 50, 152),
     autoRoundSizesMm: resolveRoundStock(raw.autoRoundSizesMm, d.autoRoundSizesMm),
     autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),
+    rectStepMm: raw.rectStepMm === 25 || raw.rectStepMm === 50 || raw.rectStepMm === 100 ? raw.rectStepMm : d.rectStepMm,
     autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 10)),
     autoTimeBudgetMs: Math.round(clampNumber(raw.autoTimeBudgetMs, d.autoTimeBudgetMs, 1000, 60000)),
     autoChooseSpigotSide: bool(raw.autoChooseSpigotSide, d.autoChooseSpigotSide),

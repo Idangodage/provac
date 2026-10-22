@@ -159,6 +159,37 @@ const BEND_CLEAR_MM = 500;
 const MIN_REDUCER_ROOM_MM = 250;
 /** A run ending on a terminal keeps this much before its end for the fitting down to the neck (the realiser's rule). */
 export const END_TRANSITION_MIN_LEG_MM = 700;
+/** How far the realiser may move a rigid branch's take-off off the collar transition: its runout takes that up (mm). */
+const RIGID_TAP_SHIFT_MM = 100;
+
+/**
+ * The last leg a run ending on a terminal needs for the fitting down to its
+ * neck at section `leg`, as the realiser lays it: what holds the leg's start
+ * (the last bend's setback, neck and margin on that section, else the
+ * take-off's collar and damper), then the fitting and its lead before the
+ * runout. (At the neck's own size, no fitting: nothing more.) Rectangular
+ * throughout, exactly the realiser's: a shoe's own collar, a split outlet's
+ * collar without a damper, and no floor; the other shapes keep the practice
+ * floor their designs were tuned to.
+ */
+export function endLegNeedMm(run: Pick<RunDesign, 'vertices' | 'start'>, leg: DuctLeg, neckMm: number, model: SizingModel): number {
+  const neck = { widthMm: neckMm, heightMm: neckMm, diameterMm: neckMm };
+  if (sameLeg(leg, neck)) return 0;
+  const [a, b, c] = [run.vertices.at(-3), run.vertices.at(-2), run.vertices.at(-1)];
+  const rectangular = model.shape === 'rectangular';
+  let start = rectangular && run.start.kind === 'split' ? model.collarLengthMm('spin-in', leg) + 100
+    : rectangular && run.start.kind === 'tap' ? model.collarLengthMm(isRoundLeg(leg) ? 'spin-in' : 'shoe-45', leg) + model.settings.vcdLengthMm + 100
+      : model.settings.tapCollarMm + model.settings.vcdLengthMm + 100;
+  if (a && b && c) {
+    const u = { x: b.x - a.x, y: b.y - a.y };
+    const v = { x: c.x - b.x, y: c.y - b.y };
+    const cos = (u.x * v.x + u.y * v.y) / ((Math.hypot(u.x, u.y) || 1) * (Math.hypot(v.x, v.y) || 1));
+    const angle = Math.acos(Math.max(-1, Math.min(1, cos)));
+    if (angle >= 0.02) start = model.elbowRadiusMm(leg) * Math.tan(angle / 2) + model.settings.elbowNeckMm + 25;
+  }
+  const need = start + model.endStraightMm(leg, neckMm);
+  return rectangular ? need : Math.max(END_TRANSITION_MIN_LEG_MM, need);
+}
 
 function planSegments(run: RunDesign, children: RunState[], model: SizingModel): { segments: RunSegment[]; boundaries: number[] } {
   const length = runLengthMm(run);
@@ -253,14 +284,15 @@ function segmentOptions(run: RunDesign, segment: RunSegment, index: number, chil
     const smallest = Math.min(...(live.length ? live : child.options[0]!).map((leg) => leg.diameterMm ?? leg.heightMm));
     const cap = model.settings.autoMaxVelocityTrunkMs;
     const extra: DuctLeg[] = [];
-    if (model.shape !== 'rect') {
+    if (model.shape === 'round' || model.shape === 'optimal') {
       const d = model.settings.autoRoundSizesMm.find((size) => maxRoundBranchMm(size) >= smallest - 0.5 && size <= model.maxHeightMm);
       if (d) extra.push({ widthMm: d, heightMm: d, diameterMm: d });
     }
     if (model.shape !== 'round') {
-      const h = Math.ceil((smallest + 50) / 50) * 50;
+      const step = model.rectStepMm;
+      const h = Math.ceil((smallest + 50) / step) * step;
       if (h <= model.maxHeightMm) {
-        for (let w = h; w <= 4 * h; w += 50) {
+        for (let w = h; w <= 4 * h; w += step) {
           const leg = { widthMm: w, heightMm: h };
           if (segment.flowIn / 3600 / areaOf(leg) <= cap * 1.001) { extra.push(leg); break; }
         }
@@ -271,25 +303,9 @@ function segmentOptions(run: RunDesign, segment: RunSegment, index: number, chil
   // Off the collar, sections as wide as the collar (a short transition) at the heights offered: slow for
   // the flow, but where the collar's straight is short they may be the only ones whose transition fits.
   if (run.start.kind === 'unit' && index === 0 && model.shape !== 'round') {
-    const width = Math.max(100, Math.round(model.ctx.port.widthMm / 50) * 50);
+    const width = Math.max(100, Math.round(model.ctx.port.widthMm / model.rectStepMm) * model.rectStepMm);
     const heights = new Set(options.filter((leg) => !isRoundLeg(leg)).map((leg) => leg.heightMm));
     for (const h of heights) if (h <= model.maxHeightMm && width <= 4 * h) options.push({ widthMm: width, heightMm: h });
-  }
-  // A rectangular Y shares the main's width between its two outlets (Fig. 2-5): the stretch before it may be
-  // as wide as a pair of outlets side by side — slower than the economy band, but the fitting needs it.
-  if (run.end.kind === 'split' && model.shape !== 'round' && segment.to >= runLengthMm(run) - 1) {
-    const outlets = children.slice(run.taps.length);
-    if (outlets.length === 2) {
-      const [a, b] = outlets.map((child) => child.options[0]!.filter((leg) => !isRoundLeg(leg))) as [DuctLeg[], DuctLeg[]];
-      const pairs: DuctLeg[] = [];
-      for (const x of a) {
-        for (const y of b) {
-          const leg = { widthMm: x.widthMm + y.widthMm, heightMm: Math.max(x.heightMm, y.heightMm) };
-          if (leg.heightMm <= model.maxHeightMm && leg.widthMm <= 4 * leg.heightMm) pairs.push(leg);
-        }
-      }
-      options = [...options, ...dedupe(pairs).sort((m, n) => areaOf(m) - areaOf(n)).slice(0, 24)];
-    }
   }
   // Only sections that fit the corridor the router ran the run through (its outer half and the clearance).
   return dedupe(options).filter((leg) => fitsCorridor(leg, corridor, model));
@@ -403,7 +419,8 @@ function endFrontiers(state: RunState, solver: Solver): void {
         ? Math.hypot(run.vertices.at(-1)!.x - run.vertices.at(-2)!.x, run.vertices.at(-1)!.y - run.vertices.at(-2)!.y) : 0;
       let transition = { cost: 0, loss: 0 };
       if (!sameLeg(leg, neck)) {
-        if (lastLeg < END_TRANSITION_MIN_LEG_MM) return;
+        // Room for the fitting down to the neck at the end of the last leg, as the realiser lays it.
+        if (lastLeg < endLegNeedMm(run, leg, terminal.neck, model) - 1e-6) return;
         transition = model.transition(leg, neck, flow);
       }
       const runout = model.flex(terminal.neck, flow, fit!.lengthMm, fit!.bendLossPa);
@@ -687,7 +704,10 @@ function explainInfeasible(state: RunState, model: SizingModel): SizingFailure {
   if (!endAlive) {
     if (run.end.kind === 'terminal') {
       const last = run.vertices.length > 1 ? Math.hypot(run.vertices.at(-1)!.x - run.vertices.at(-2)!.x, run.vertices.at(-1)!.y - run.vertices.at(-2)!.y) : 0;
-      return { runKey: run.key, reason: 'end-terminal', detail: `last leg ${Math.round(last)} mm; the fitting down to the Ø${run.end.terminal.neck} neck needs ${END_TRANSITION_MIN_LEG_MM} mm` };
+      const neckMm = run.end.terminal.neck;
+      const needs = state.options[lastIndex]!.map((leg) => endLegNeedMm(run, leg, neckMm, model));
+      const need = needs.length ? Math.min(...needs) : END_TRANSITION_MIN_LEG_MM;
+      return { runKey: run.key, reason: 'end-terminal', detail: `last leg ${Math.round(last)} mm; the fitting down to the Ø${neckMm} neck needs ${Math.round(need)} mm` };
     }
     if (run.end.kind === 'split') {
       const outlets = state.children.slice(run.taps.length);
@@ -746,6 +766,17 @@ export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGr
   const legEnd = Math.min(firstBend, runEnd);
   const windowsIn = (from: number, to: number) => root.run.taps.reduce((total, tap, index) => total + (tap.station > from && tap.station < to ? 2 * windowHalfMm(root.children[index]!, model) : 0), 0);
   const windows = windowsIn(-1, legEnd);
+  // Rectangular throughout, a rigid branch lines up with its terminal from where the design takes it off: its
+  // take-off stays there, past the connector and the collar transition (where the realiser starts take-offs).
+  const rigidTaps = model.shape === 'rectangular'
+    ? root.run.taps.flatMap((tap, index) => {
+      const child = root.children[index]!;
+      if (tap.child.allFlex) return [];
+      const half = Math.max(...child.options[0]!.map((leg) => model.tapWindowHalfMm(isRoundLeg(leg) ? 'spin-in' : 'shoe-45', leg, leg)));
+      return [{ station: tap.station, half }];
+    })
+    : [];
+  const tapsClearOf = (hardStart: number) => rigidTaps.every((tap) => tap.station - tap.half >= hardStart - RIGID_TAP_SHIFT_MM - 1e-6);
   // Turn first (the collar straight too short for its transition): a square vaned elbow at the collar's own
   // section, and the transition on the next leg, which holds it with that leg's take-off windows.
   const flow = root.segments[0]!.flowIn;
@@ -761,13 +792,14 @@ export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGr
   root.options[0]!.forEach((leg, x) => {
     const transition = model.transition(collar, leg, flow);
     const bendSetback = Number.isFinite(firstBend) ? model.elbowSetbackMm(leg) + neck : 0;
-    if (connectorMm + transition.lengthMm + windows <= legEnd - bendSetback + 1e-6) {
+    if (connectorMm + transition.lengthMm + windows <= legEnd - bendSetback + 1e-6 && tapsClearOf(connectorMm + transition.lengthMm + 50)) {
       minShiftedInto(cost, arg, root.G[0]![x]!, transition.cost + design.penalty, steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0), grid), x);
       return;
     }
     if (!collarElbow) return;
     const nextSetback = Number.isFinite(bends[1]?.station ?? Number.POSITIVE_INFINITY) ? model.elbowSetbackMm(leg) + neck : 0;
     if (collarTurnMm + transition.lengthMm + windowsNext > secondEnd - firstBend - nextSetback + 1e-6) return;
+    if (!tapsClearOf(firstBend + collarTurnMm + transition.lengthMm + 50)) return;
     // The collar's elbow replaces the one the sizing priced on this section, and the stretch up to it is the collar's.
     const trunkElbow = model.elbow(leg, 90, flow);
     const stretch = (firstBend + collarTurnMm) / 1000;

@@ -48,7 +48,7 @@ import { formatCost, type DuctCostBreakdown } from './ductEconomics';
 import { parseDuctNumber } from './ductNumericValue';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
 import { useDuctSizingDraft, useDuctSizingDraftStore, type DuctSizingDraft } from './ductSizingDraft';
-import { basisAirflowM3h, defaultSizingBasis, linkSizingBasis } from './ductSystemSizing';
+import { basisAirflowM3h, defaultSizingBasis, linkSizingBasis, sizingOutcomeLine } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
 
@@ -70,7 +70,8 @@ const SOURCE_LABEL: Record<NonNullable<AutoDuctResult['airflowSource']>, string>
 };
 
 export const AUTO_DUCT_SHAPE_OPTIONS: Array<{ key: AutoDuctShape; label: string; icon: ReactNode; hint: string }> = [
-  { key: 'rect', label: 'Rect', icon: <Square size={12} />, hint: 'Rectangular trunks; round branches off spin-in or conical collars (SMACNA Fig. 2-6)' },
+  { key: 'rectangular', label: 'Rectangular', icon: <Square size={12} />, hint: 'Rectangular throughout: branches off 45° shoe take-offs (SMACNA Fig. 2-6) or Y splits; at each terminal a square-to-round to its neck, then its flexible runout' },
+  { key: 'rect', label: 'Rect + round', icon: <Square size={12} />, hint: 'Rectangular trunks; round branches off spin-in or conical collars (SMACNA Fig. 2-6)' },
   { key: 'round', label: 'Round', icon: <Circle size={12} />, hint: 'Spiral round trunks after a square-to-round at the collar; conical taps, 90° taps, 45° laterals, wyes (Fig. 3-4 / 3-5)' },
   { key: 'optimal', label: 'Optimal', icon: <Sparkles size={12} />, hint: 'The optimiser chooses the shape of each stretch, with standard transitions where it changes' },
 ];
@@ -156,12 +157,19 @@ function Designs({ result }: { result: AutoDuctResult }) {
   );
 }
 
+/** Designed in another shape than the one asked for: why, where the result begins. */
+function ShapeNote({ result }: { result: AutoDuctResult }) {
+  const note = result.issues.find((issue) => issue.code === 'DU_AUTO_SHAPE');
+  return note ? <p className="rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-4 text-amber-800" role="note" data-testid="duct-auto-shape-note">{note.message}</p> : null;
+}
+
 function Summary({ result }: { result: AutoDuctResult }) {
   const issues = [...result.issues, ...result.services.flatMap((service) => service.issues)];
   const errors = issues.filter((issue) => issue.severity === 'error');
   const warnings = issues.filter((issue) => issue.severity === 'warning');
   const turned = issues.filter((issue) => issue.code === 'DU_AUTO_SPIGOT');
-  const notes = issues.filter((issue) => issue.severity === 'info' && issue.code !== 'DU_AUTO_SPIGOT');
+  // (Designed in another shape than asked: said where the result begins, not among the notes.)
+  const notes = issues.filter((issue) => issue.severity === 'info' && issue.code !== 'DU_AUTO_SPIGOT' && issue.code !== 'DU_AUTO_SHAPE');
   const esp = result.requiredEspPa;
   return (
     <div className="mt-1 space-y-1 border-t border-sky-100 pt-1" data-testid="duct-auto-summary">
@@ -173,6 +181,9 @@ function Summary({ result }: { result: AutoDuctResult }) {
           <div className="text-[11px] font-semibold text-slate-700">
             {service.service === 'supply' ? 'Supply' : 'Return'}: {service.label || (service.layout ? AUTO_DUCT_LAYOUT_LABELS[service.layout] : 'no layout')}
           </div>
+          {service.sizingReport ? (
+            <div className="text-[11px] text-slate-700" data-testid="duct-auto-sizing-line">{sizingOutcomeLine(service.sizingReport)}</div>
+          ) : null}
           {service.trunkSections.length ? (
             <div className="text-[11px] text-slate-600">
               {service.layout === 'plenum' ? 'Plenum ' : 'Trunk '}
@@ -381,7 +392,7 @@ export function DuctAutoCard() {
           Left out (another unit&apos;s): {selection.otherSystems.map(({ terminal, unitId }) => `${terminal.label} (${airSystemTags(hvacElements).get(unitId) ?? 'another unit'})`).join(', ')}.
         </p>
       ) : null}
-      <div className="grid grid-cols-3 gap-0.5 rounded-md border border-slate-200 bg-white p-0.5" role="radiogroup" aria-label="Auto duct shape">
+      <div className="grid grid-cols-2 gap-0.5 rounded-md border border-slate-200 bg-white p-0.5" role="radiogroup" aria-label="Auto duct shape">
         {AUTO_DUCT_SHAPE_OPTIONS.map((option) => (
           <button key={option.key} type="button" role="radio" aria-checked={shape === option.key} title={option.hint} onClick={() => setShape(option.key)}
             className={`flex items-center justify-center gap-1 rounded px-1 py-0.5 text-[11px] ${shape === option.key ? 'bg-sky-700 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
@@ -483,6 +494,7 @@ export function DuctAutoCard() {
       {stale ? <p className="text-[10px] text-amber-700" role="status">The drawing or duct settings changed since the preview. Regenerate ducts.</p> : null}
       {message && !current ? <p className="text-[10px] text-slate-600" role="status">{message}</p> : null}
       {occupied && !current && !busy && !rebuild ? <AppliedSizingSummary unit={unit} /> : null}
+      {current ? <ShapeNote result={current} /> : null}
       {current ? <Designs result={current} /> : null}
       {current ? <Summary result={current} /> : null}
     </div>

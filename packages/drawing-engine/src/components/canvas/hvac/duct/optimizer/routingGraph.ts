@@ -192,6 +192,11 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
   const xs = limitLines(mergeLines(xsRaw.filter((x) => x >= 0 && x <= span.maxX), keepX, mustX), keepX, [0, ...leafXs], mustX);
   const ys = limitLines(mergeLines(ysRaw.filter((y) => y >= span.minY && y <= span.maxY), keepY, mustY), keepY, [0, ...leafYs], mustY);
 
+  // The unit's own casing (behind its collar's lip) is an obstacle like any other: no route runs along its face
+  // or through it. (Added once the grid's lines are drawn: it adds none.)
+  const casing = ctx.obstacles.find((box) => box.id === ctx.unitId && box.zMax > ctx.bottomZ && box.zMin < ctx.bottomZ + Math.min(model.maxHeightMm, 350));
+  if (casing && casing.maxX < 50) boxes.push({ minX: casing.minX, maxX: Math.min(casing.maxX, -1), minY: casing.minY, maxY: casing.maxY, id: casing.id });
+
   const nodeAt = new Int32Array(xs.length * ys.length).fill(-1);
   const nodeXs: number[] = [];
   const nodeYs: number[] = [];

@@ -58,7 +58,7 @@ import { spigotOrigin, splitOrigin, tapOrigin } from './ductBranchTargets';
 import { legNormal } from './ductBranches';
 import { ductWallsFromInputs, withActiveDuctBuilding, type DuctRoomOutline, type DuctWall, type DuctWallInput } from './ductBuilding';
 import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from './ductDraft';
-import { EMPTY_COST, energyPricePerPa, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
+import { EMPTY_COST, energyPricePerPa, formatCost, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
 import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductRunElementWithSpec } from './ductFollow';
 import { ductBranchesOf } from './ductNetwork';
@@ -85,6 +85,7 @@ import { linkSizingBasis, sizeDuctSystem, type DuctSystemSizingReport } from './
 import { filterPanelsServed, isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec, terminalPressureDropPa, type DuctTerminalSpigotEntry } from './ductTerminals';
 import {
   isDuctElement,
+  isRoundLeg,
   readDuctRunSpec,
   roundLeg,
   splitEnd,
@@ -96,12 +97,12 @@ import {
   type DuctSystemSizing,
 } from './ductTypes';
 import { boxesOverlap, ductBoxesOf, findDuctClashes, terminalBoxOf } from './ductVolumes';
-import { designFromRuns, withReplaced, type ServiceDesign } from './optimizer/designTree';
+import { allRuns, designFromRuns, withReplaced, type ServiceDesign } from './optimizer/designTree';
 import { optimiseService, verifyRuns, type ServiceOption, type TreeFailure } from './optimizer/ductOptimizer';
 import { explainBlockedCollar, explainNoCleanDesign } from './optimizer/failureMessages';
 import { cutsFromErrors, cutsFromFailures } from './optimizer/routerCuts';
 import { buildRoutingGraph } from './optimizer/routingGraph';
-import { SizingModel, type ShapeMode } from './optimizer/sizingModel';
+import { legLabel, MAX_RECT_HEIGHT_MM, SizingModel, type ShapeMode } from './optimizer/sizingModel';
 import { emptyCuts, GROUPED_MAX_TERMINALS, groupTerminals, layerMemoWorthKeeping, newLayerMemo, routeTrees, type LayerMemo } from './optimizer/steinerArborescence';
 
 export type { AutoDuctIssue, AutoDuctIssueCode } from './ductAutoContext';
@@ -117,9 +118,9 @@ export const AUTO_DUCT_LAYOUT_LABELS: Record<AutoDuctLayoutKind, string> = {
   tree: 'Optimised tree + branches',
 };
 
-/** Trunk shape: rectangular, round, or the optimiser's choice per stretch (branches are round either way). */
+/** The system's shape: rectangular throughout, a rectangular main with round branches, round, or the optimiser's choice per stretch. */
 export type AutoDuctShape = ShapeMode;
-export const AUTO_DUCT_SHAPE_LABELS: Record<AutoDuctShape, string> = { rect: 'Rectangular', round: 'Round', optimal: 'Optimal' };
+export const AUTO_DUCT_SHAPE_LABELS: Record<AutoDuctShape, string> = { rectangular: 'Rectangular', rect: 'Rect + round', round: 'Round', optimal: 'Optimal' };
 
 export interface AutoDuctRequest {
   unitId: string;
@@ -132,7 +133,7 @@ export interface AutoDuctRequest {
   services: { supply: boolean; return: boolean };
   /** Replace the duct already on a collar (the run and its branches). */
   rebuildExisting: boolean;
-  /** Trunk shape (default: the optimiser chooses). */
+  /** The system's shape (default: the optimiser chooses). */
   shape?: AutoDuctShape;
   /** The drawing's walls: the ducts stay clear of them (a duct through a wall needs a sleeve and a reason). */
   walls?: ReadonlyArray<AutoDuctWall>;
@@ -300,6 +301,8 @@ export interface AutoDuctResult {
   sizing: AutoDuctSizingBases | null;
   /** Terminals whose design airflow the card set, as they will be (applied with the runs, one undo). */
   terminalAirflowUpdates: HvacElement[];
+  /** The shape the system was asked in (kept on its sizing record, so re-designs keep it). */
+  shape: AutoDuctShape;
 }
 
 interface Candidate {
@@ -717,7 +720,7 @@ function sizeTrunk(
 ): { vertices: Point2D[]; legSizes: DuctLeg[]; taps: TapPlan[]; sections: Array<{ widthMm: number; heightMm: number; airflowM3h: number }> } {
   const { settings } = ctx;
   const limits = sizingLimits(settings, ctx.service, 'trunk');
-  const widthFor = (airflow: number) => sizeRectangular(Math.max(airflow, 1), heightMm, limits, { minWidthMm: heightMm, maxAspect: 4, maxHeightMm: heightMm }).widthMm;
+  const widthFor = (airflow: number) => sizeRectangular(Math.max(airflow, 1), heightMm, limits, { stepMm: settings.rectStepMm, minWidthMm: heightMm, maxAspect: 4, maxHeightMm: heightMm }).widthMm;
   const legs = vertices.slice(1).map((end, index) => {
     const start = vertices[index]!;
     return { start, end, length: Math.hypot(end.x - start.x, end.y - start.y) };
@@ -795,9 +798,9 @@ function trunkObstacleHits(ctx: ServiceCtx, vertices: readonly Point2D[], widthM
 function trunkHeight(ctx: ServiceCtx, terminals: readonly TerminalCtx[]): number {
   const biggest = Math.max(...terminals.map((terminal) => terminal.branch));
   // A spin-in fits the side wall: the trunk is at least the branch + 50 mm high.
-  const minimum = roundUp(Math.max(ctx.port.heightMm, biggest + 50));
+  const minimum = roundUp(Math.max(ctx.port.heightMm, biggest + 50), ctx.settings.rectStepMm);
   const limits = sizingLimits(ctx.settings, ctx.service, 'trunk');
-  const sized = sizeRectangular(ctx.airflowM3h, minimum, limits, { minWidthMm: minimum, maxAspect: 4, maxHeightMm: Math.max(minimum, ctx.maxHeightMm) });
+  const sized = sizeRectangular(ctx.airflowM3h, minimum, limits, { stepMm: ctx.settings.rectStepMm, minWidthMm: minimum, maxAspect: 4, maxHeightMm: Math.max(minimum, ctx.maxHeightMm) });
   return sized.heightMm;
 }
 
@@ -846,7 +849,7 @@ function buildTrunkRun(
         return [Math.min(...stations) - pad, Math.max(...stations) + pad];
       });
   };
-  const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked, ctx.tapStations === 'at-terminals' ? undefined : alternateStations);
+  const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { stepMm: ctx.settings.rectStepMm, minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked, ctx.tapStations === 'at-terminals' ? undefined : alternateStations);
   if (!placed) return null;
   const sized = sizeTrunk(ctx, placed.vertices, placed.taps, heightMm, airflow, minFirstWidthMm);
   const points = sized.vertices.slice(1).map((point) => ({ ...toWorld(ctx.frame, point), z: origin && origin.kind !== 'port' && origin.kind !== 'free' ? origin.bottomZ : ctx.bottomZ }));
@@ -872,7 +875,7 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
   const { terminals, settings } = ctx;
   const height = trunkHeight(ctx, terminals);
   if (height > ctx.maxHeightMm) return [];
-  const width = sizeRectangular(ctx.airflowM3h, height, sizingLimits(settings, ctx.service, 'trunk'), { minWidthMm: height, maxHeightMm: height }).widthMm;
+  const width = sizeRectangular(ctx.airflowM3h, height, sizingLimits(settings, ctx.service, 'trunk'), { stepMm: settings.rectStepMm, minWidthMm: height, maxHeightMm: height }).widthMm;
   const turnSetback = settings.elbowCentrelineRatio * width + settings.elbowNeckMm;
   const out: Candidate[] = [];
   const far = 1e5;
@@ -906,7 +909,7 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
     if (!left.length || !right.length) continue;
     // A split divides the flow: its main is at least as wide as both outlets together.
     const sideWidth = (group: TerminalCtx[]) => sizeRectangular(group.reduce((total, terminal) => total + terminal.airflowM3h, 0), height,
-      sizingLimits(settings, ctx.service, 'trunk'), { minWidthMm: height, maxHeightMm: height }).widthMm;
+      sizingLimits(settings, ctx.service, 'trunk'), { stepMm: settings.rectStepMm, minWidthMm: height, maxHeightMm: height }).widthMm;
     const mainWidth = sideWidth(left) + sideWidth(right);
     const flowOf = (group: TerminalCtx[]) => group.reduce((total, terminal) => total + terminal.airflowM3h, 0);
     // A Y's splitter divides the main in its sides' airflow ratio.
@@ -1179,23 +1182,67 @@ function trunkSectionsOf(report: DuctSystemSizingReport): AutoDuctServiceResult[
   return out;
 }
 
+/** At most this many trunk heights priced for one option (the step grid up to the void, nearest its own first). */
+const TRUNK_HEIGHTS_PRICED = 8;
+/** The cheapest options (by their own first cost) whose trunk height is priced. */
+const TRUNK_HEIGHT_OPTIONS = 3;
+
 /**
  * A verified option sized again by constant friction at `basis` (the route
  * kept), verified again exactly as the optimiser's own: plans, clashes, walls,
- * pressure, price.
+ * pressure, price. With `trunkHeights`, the trunk is also sized at each of
+ * those heights (one height through it, the width reducing) and the cheapest
+ * kept: fewer errors first, then the lower first cost, a tie to fewer pieces.
+ * A height whose sizes come out as those of one already priced (the take-offs
+ * raising a low trunk to the same sections) is not verified again.
  */
-function constantFrictionOption(ctx: ServiceCtx, option: ServiceOption, basis: DuctSystemSizing, terminalAirflows: AutoDuctRequest['terminalAirflows']): ServiceOption {
+function constantFrictionOption(
+  ctx: ServiceCtx, option: ServiceOption, basis: DuctSystemSizing, terminalAirflows: AutoDuctRequest['terminalAirflows'], trunkHeights = false,
+): ServiceOption {
   const root = option.runs.find((run) => readDuctRunSpec(run)?.start.kind === 'unit-port');
   if (!root) return option;
   const scene = [...withReplaced(ctx.baseScene, option.terminalUpdates), ...option.runs];
-  const sized = sizeDuctSystem(scene, root.id, { basis, ...(terminalAirflows ? { terminalAirflows } : {}), verify: false }, ctx.settings);
-  const byId = new Map(sized.runs.map((run) => [run.id, run]));
-  const runs = option.runs.map((run) => byId.get(run.id) ?? run);
-  // The design's own notes stay; the sizing's go with them (the planner's are found again).
-  const notes = [...option.issues.filter((issue) => !issue.runId), ...sized.report.issues.filter((issue) => issue.code.startsWith('DU_SIZE_'))];
-  const verified = verifyRuns(ctx, runs, notes, option.terminalUpdates);
-  const cost = priceDuctPlans(verified.plans, ctx.settings, verified.hangers, verified.straps, verified.filterPanels);
-  cost.total += option.design?.penalty ?? 0;
+  const size = (trunkHeightMm?: number) => sizeDuctSystem(scene, root.id, {
+    basis, ...(terminalAirflows ? { terminalAirflows } : {}), verify: false, ...(trunkHeightMm !== undefined ? { trunkHeightMm } : {}),
+  }, ctx.settings);
+  const sizesOf = (sized: ReturnType<typeof size>) => sized.report.sections.map((section) => `${section.runId}:${section.fromMm}:${legLabel(section.section)}`).join('|');
+  const verify = (sized: ReturnType<typeof size>) => {
+    const byId = new Map(sized.runs.map((run) => [run.id, run]));
+    const runs = option.runs.map((run) => byId.get(run.id) ?? run);
+    // The design's own notes stay; the sizing's go with them (the planner's are found again).
+    const notes = [...option.issues.filter((issue) => !issue.runId), ...sized.report.issues.filter((issue) => issue.code.startsWith('DU_SIZE_'))];
+    const verified = verifyRuns(ctx, runs, notes, option.terminalUpdates);
+    const cost = priceDuctPlans(verified.plans, ctx.settings, verified.hangers, verified.straps, verified.filterPanels);
+    cost.total += option.design?.penalty ?? 0;
+    return { sized, runs, verified, cost, pieces: verified.plans.reduce((sum, plan) => sum + plan.pieces.length, 0) };
+  };
+  let chosen = verify(size());
+  if (trunkHeights) {
+    // The economical trunk height: the standard heights that fit the void, each priced (sheet, fabrication,
+    // insulation, reducers and fittings); the cheapest is kept.
+    const rect = chosen.sized.report.sections.filter((section) => section.runId === root.id && section.part === 'trunk' && !isRoundLeg(section.section));
+    if (rect.length) {
+      const step = ctx.settings.rectStepMm;
+      const own = rect[0]!.section.heightMm;
+      const tallest = Math.min(MAX_RECT_HEIGHT_MM, ctx.maxHeightMm);
+      const heights: number[] = [];
+      for (let h = Math.ceil(100 / step) * step; h <= tallest + 1e-6; h += step) if (Math.abs(h - own) > 0.5) heights.push(h);
+      heights.sort((a, b) => Math.abs(a - own) - Math.abs(b - own) || a - b);
+      const priced = new Set([sizesOf(chosen.sized)]);
+      for (const height of heights) {
+        if (priced.size > TRUNK_HEIGHTS_PRICED) break;
+        const sized = size(height);
+        const sizes = sizesOf(sized);
+        if (priced.has(sizes)) continue;
+        priced.add(sizes);
+        const trial = verify(sized);
+        const better = trial.verified.errors !== chosen.verified.errors ? trial.verified.errors < chosen.verified.errors
+          : Math.abs(trial.cost.total - chosen.cost.total) > 1e-6 ? trial.cost.total < chosen.cost.total : trial.pieces < chosen.pieces;
+        if (better) chosen = trial;
+      }
+    }
+  }
+  const { sized, runs, verified, cost } = chosen;
   const report: DuctSystemSizingReport = {
     ...sized.report,
     pressure: verified.pressure,
@@ -1315,6 +1362,56 @@ export function resizeAutoDuctDesign(
   };
 }
 
+/** Whether a result's shown design is clean: runs, and no error. */
+function cleanAutoDuct(result: AutoDuctResult): boolean {
+  return result.runs.length > 0 && (result.designs[result.selected]?.errors ?? 1) === 0;
+}
+
+/**
+ * A system rectangular throughout costs at most this many times the same
+ * system with a rectangular main and round branches (its rectangular branches
+ * and square-to-rounds cost more: 1.1–1.2 times where its branches run
+ * straight to the terminals). Past it, they wind round to reach the spigots
+ * straight (twice the duct or more), and it is not the design.
+ */
+export const RECTANGULAR_COST_LIMIT = 1.5;
+
+/**
+ * The design for a request rectangular throughout, given that design and the
+ * same request with a rectangular main and round branches: rectangular where
+ * it is clean and within RECTANGULAR_COST_LIMIT of the other; else the other
+ * (where that is clean), saying why. Neither clean: the rectangular attempt,
+ * with its issues.
+ */
+export function chooseRectangularDesign(rectangular: AutoDuctResult, alternative: AutoDuctResult): AutoDuctResult {
+  if (!cleanAutoDuct(alternative)) return rectangular;
+  // (Kept with the result's own issues too: they stay when another of its designs is shown.)
+  const instead = (message: string): AutoDuctResult => {
+    const note: AutoDuctIssue = { code: 'DU_AUTO_SHAPE', severity: 'info', message };
+    return { ...alternative, issues: [note, ...alternative.issues], baseIssues: [note, ...alternative.baseIssues] };
+  };
+  if (!cleanAutoDuct(rectangular)) {
+    return instead('No clean layout rectangular throughout fits these terminals (each rectangular branch needs a straight for its square-to-round before its runout): designed with a rectangular main and round branches instead.');
+  }
+  const own = rectangular.designs[rectangular.selected]!.firstCost;
+  const other = alternative.designs[alternative.selected]!.firstCost;
+  if (own <= RECTANGULAR_COST_LIMIT * other + 1e-6) return rectangular;
+  const ratio = own / Math.max(other, 1e-6);
+  return instead(`Rectangular throughout would cost ${formatCost(own, rectangular.currency)} here, ${ratio.toFixed(1)} times a rectangular main with round branches (${formatCost(other, alternative.currency)}): its branches would wind round to reach the terminals' spigots straight. Designed with a rectangular main and round branches instead.`);
+}
+
+/**
+ * Auto duct in the shape asked. Rectangular throughout is designed alongside
+ * a rectangular main with round branches, and kept where it fits cleanly at a
+ * sensible cost (chooseRectangularDesign); else the other, and the result says
+ * why.
+ */
+export function generateAutoDuctInShape(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings): AutoDuctResult {
+  const result = generateAutoDuct(scene, request, settings);
+  if (request.shape !== 'rectangular') return result;
+  return chooseRectangularDesign(result, generateAutoDuct(scene, { ...request, shape: 'rect' }, settings));
+}
+
 /** The result with some designs replaced (by index), its picks found again and the shown one kept. */
 export function withAutoDuctDesigns(result: AutoDuctResult, replaced: ReadonlyMap<number, AutoDuctDesign>, sizing: AutoDuctSizingBases, terminalAirflowUpdates: HvacElement[]): AutoDuctResult {
   const designs = result.designs.map((design, index) => replaced.get(index) ?? design);
@@ -1380,7 +1477,7 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
     unitId: request.unitId, unitLabel: unit?.label || unit?.modelLabel || 'Unit', fanSpeed: request.fanSpeed,
     airflowM3h: null, airflowSource: null, maxEspPa: null, requiredEspPa: null, services: [], runs: [], removeIds: [], terminalUpdates: [], issues: [],
     designs: [], picks: null, selected: 0, pricePerPa: 0, currency: settings.econCurrency, certificate: null, baseIssues: [], staticServices: [],
-    sizing: null, terminalAirflowUpdates: [],
+    sizing: null, terminalAirflowUpdates: [], shape,
   };
   if (!unit) {
     result.issues.push({ code: 'DU_AUTO_NO_PORT', severity: 'error', message: 'The unit is not in the drawing.' });
@@ -1598,13 +1695,15 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
     }
     // The tree router's own trees, at two prices of fan pressure (the sizing then prices it exactly).
     // Optimal routes with each shape's catalogue too, so it never does worse than either alone.
-    const routers: Array<{ shape: 'rect' | 'round'; model: SizingModel; graph: ReturnType<typeof buildRoutingGraph>; turnOutletMm: number }> = [];
+    const routers: Array<{ shape: 'rect' | 'round' | 'rectangular'; model: SizingModel; graph: ReturnType<typeof buildRoutingGraph>; turnOutletMm: number }> = [];
     // Past the exact limit the terminals are routed in groups (exact within each, not over every tree).
     const groups = terminals.length > settings.autoExactTerminals ? groupTerminals(terminals, ROUTER_GROUP_SIZE) : undefined;
     if (groups) { grouped = true; exact = false; }
     if (request.layout !== 'plenum' && terminals.length <= GROUPED_MAX_TERMINALS) {
       const routerStarted = Date.now();
-      for (const routeShape of shape === 'optimal' ? (['rect', 'round'] as const) : [shape === 'rect' ? 'rect' as const : 'round' as const]) {
+      // Rectangular throughout: the rectangular-main router's trees first (their layouts take branches well), then
+      // its own; every tree sized rectangular.
+      for (const routeShape of shape === 'optimal' ? (['rect', 'round'] as const) : shape === 'rectangular' ? (['rect', 'rectangular'] as const) : [shape]) {
         const model = new SizingModel(ctx, routeShape, airflow);
         // The straight off the collar must hold the connector, the collar transition and a take-off window.
         const collar: DuctLeg = { widthMm: port.widthMm, heightMm: port.heightMm };
@@ -1627,7 +1726,7 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
     const memos = new Map<string, LayerMemo>();
     // One routing round: every router at the given prices of fan pressure (× the life-cycle price), with
     // what earlier rounds forbade.
-    const routeRound = (factors: readonly number[], only: ReadonlySet<'rect' | 'round'>, deadline: number): ServiceDesign[] => {
+    const routeRound = (factors: readonly number[], only: ReadonlySet<'rect' | 'round' | 'rectangular'>, deadline: number): ServiceDesign[] => {
       const routerStarted = Date.now();
       const out: ServiceDesign[] = [];
       for (const router of routers) {
@@ -1659,9 +1758,12 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
         // Each pure-shape pass must keep the pool that its standalone mode
         // searches. The verifier intentionally stops after a few clean trees;
         // trees from the other router must not crowd those options out.
-        const pool = shape === 'optimal' && sizeShape !== 'optimal'
+        const shaped = shape === 'optimal' && sizeShape !== 'optimal'
           ? designs.filter((design) => design.source === 'seed' || design.router === sizeShape)
           : designs;
+        // Rectangular throughout: every terminal on its rectangular branch, so no tree with an all-flex stub (a round
+        // collar off the main) is sized in that shape.
+        const pool = sizeShape === 'rectangular' ? shaped.filter((design) => !allRuns(design.root).some((run) => run.allFlex)) : shaped;
         const optimised = optimiseService(ctx, pool, sizeShape, airflow, result.maxEspPa ?? 150);
         trees += optimised.frontiers;
         realised += optimised.realised;
@@ -1690,12 +1792,14 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
       if (!initial.length && Date.now() > deadline) timeLimited = true;
       firstTrees.push(...initial);
       searchedTrees.push(...initial);
-      let round = sizeTrees([...seeds, ...initial], [router.shape]);
+      // (Every tree of a system rectangular throughout is sized rectangular, whichever router laid it.)
+      const sizeShape: ShapeMode = shape === 'rectangular' ? 'rectangular' : router.shape;
+      let round = sizeTrees([...seeds, ...initial], [sizeShape]);
       for (let pass = 1; pass <= FEASIBILITY_ROUNDS; pass += 1) {
-        const own = (option: ServiceOption) => option.source === 'steiner' && option.design?.router === router.shape && option.shape === router.shape;
+        const own = (option: ServiceOption) => option.source === 'steiner' && option.design?.router === router.shape && option.shape === sizeShape;
         const bestClean = Math.min(...options.filter((option) => own(option) && option.errors === 0).map((option) => routerCost(option.design)));
         const failedOptions = round.options.filter((option) => own(option) && option.errors > 0);
-        const failedTrees = (round.failuresByShape.get(router.shape) ?? []).filter((failure) => failure.design.router === router.shape);
+        const failedTrees = (round.failuresByShape.get(sizeShape) ?? []).filter((failure) => failure.design.router === router.shape);
         const bestFailed = Math.min(...failedTrees.map((failure) => routerCost(failure.design)), ...failedOptions.map((option) => routerCost(option.design)));
         if (!(bestFailed < bestClean - 1e-6)) break;
         if (Date.now() > deadline) { timeLimited = true; break; }
@@ -1707,20 +1811,20 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
         const routed = routeRound([1], only, deadline);
         if (!routed.length) { if (Date.now() > deadline) timeLimited = true; break; }
         searchedTrees.push(...routed);
-        round = sizeTrees(routed, [router.shape]);
+        round = sizeTrees(routed, [sizeShape]);
       }
       if (Date.now() < deadline && Date.now() - sessionStarted < settings.autoTimeBudgetMs / 4) {
         const varied = routeRound([0.5, 2], only, deadline);
         searchedTrees.push(...varied);
-        if (varied.length) sizeTrees(varied, [router.shape]);
+        if (varied.length) sizeTrees(varied, [sizeShape]);
       }
     }
     if (routers.length && !firstTrees.length) exact = false;
     if (!routers.length) sizeTrees(seeds, allShapes);
     else if (shape === 'optimal') sizeTrees([...seeds, ...searchedTrees], ['optimal']);
-    if (shape !== 'round' && candidates.length) {
-      // The reference: the v1 layout as it sizes it (equal friction, rectangular). A verified option like
-      // any other, so the optimiser's choice is never worse than it.
+    if (shape !== 'round' && shape !== 'rectangular' && candidates.length) {
+      // The reference: the v1 layout as it sizes it (equal friction, a rectangular main with round branches). A
+      // verified option like any other, so the optimiser's choice is never worse than it.
       const best = candidates.map((candidate) => score(ctx, candidate)).sort((a, b) => a.errors - b.errors || a.cost - b.cost)[0]!;
       const verified = verifyRuns(ctx, best.candidate.runs, best.candidate.notes, best.candidate.terminalUpdates);
       options = [...options, {
@@ -1731,15 +1835,21 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
         modelCost: 0, modelPressurePa: verified.pressure.indexPa, exact: false, terminalUpdates: best.candidate.terminalUpdates ?? [],
       }];
     }
-    // Constant friction: every verified route sized again at the designer's basis, and verified again.
+    // Constant friction: every verified route sized again at the designer's basis, and verified again; the cheapest
+    // few also at each trunk height that fits the void (the economical one kept).
     const basis = bases[service];
-    if (basis) options = options.map((option) => constantFrictionOption(ctx, option, basis, airflows));
+    if (basis) {
+      const cheapest = new Set([...options].sort((a, b) => a.errors - b.errors || a.cost.total - b.cost.total).slice(0, TRUNK_HEIGHT_OPTIONS));
+      options = options.map((option) => constantFrictionOption(ctx, option, basis, airflows, cheapest.has(option)));
+    }
     // Nothing clean: why, from what failed most often across the trees tried.
     if (options.length && Math.min(...options.map((option) => option.errors)) > 0) {
       // No tree at all: first, whether something in front of the collar is why.
       const blocked = routers.length && !firstTrees.length ? explainBlockedCollar(ctx, routers[0]!.model) : null;
       serviceResult.issues.push(...(blocked ? [blocked] : []), ...explainNoCleanDesign(ctx, failures, options).slice(0, blocked ? 1 : 2));
     }
+    // (Tests see the options, and why trees failed, before the shortlist: none at all included.)
+    optionsInspector?.(ctx, options, failures);
     if (!options.length) {
       serviceResult.issues.push({
         code: 'DU_AUTO_NO_LAYOUT', severity: 'error', service,
@@ -1750,7 +1860,6 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
       result.staticServices.push(serviceResult);
       continue;
     }
-    optionsInspector?.(ctx, options, failures);
     work.push({ ctx, base: serviceResult, options, terminals });
     const bestOption = shortlist(options, result.pricePerPa, 1)[0];
     if (bestOption) context.push(...bestOption.runs);

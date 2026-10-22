@@ -12,7 +12,7 @@
  *
  * The panel is about 240 px wide: two-line rows, not tables.
  */
-import { AlertTriangle, CheckCircle2, Info, MousePointerClick, Network, Shuffle, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Info, Loader2, MousePointerClick, Network, Shuffle, Sparkles, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { shallow } from 'zustand/shallow';
 
@@ -27,7 +27,11 @@ import {
 import { useAirSystemUiStore } from './airSystemUiStore';
 import { AIR_BALANCE_TOLERANCE } from './ductAirSystemChecks';
 import { analyseAirSystems, isAirSystemUnit, type AirSystem, type AirSystemService } from './ductAirSystems';
+import { AUTO_DUCT_SHAPE_LABELS, type AutoDuctShape } from './ductAutoLayout';
+import { unitDuctShape } from './ductSystemRedesign';
 import { isDuctTerminalElement, TERMINAL_FACE_LABELS } from './ductTerminals';
+import { DUCT_SYSTEM_SHAPES } from './ductTypes';
+import { cancelSystemRedesign, redesignSystemAs, useSystemRedesignStore } from './systemRedesignController';
 
 const SERVICE_TONE = {
   supply: { dot: 'bg-blue-700', text: 'text-blue-800', label: 'Supply' },
@@ -205,9 +209,51 @@ function UnitSystemCard({ unit, selectedIds }: { unit: HvacElement; selectedIds:
           <Sparkles size={12} />Auto-assign room
         </button>
       </div>
+      <DuctShapeRow unit={unit} tag={system.tag} />
       {hints(system).map((hint) => (
         <p key={hint} className="flex gap-1 text-[10px] leading-4 text-slate-600"><Info size={11} className="mt-0.5 shrink-0 text-slate-400" />{hint}</p>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The unit's ducts' shape, and "Re-design as": the optimiser designs them again in another shape (as the system was
+ * set: its terminals, airflows, sizing basis, fan speed), one undo step; the status says what changed.
+ */
+function DuctShapeRow({ unit, tag }: { unit: HvacElement; tag: string }) {
+  const hvacElements = useSmartDrawingStore((state) => state.hvacElements);
+  const busy = useSystemRedesignStore((state) => state.busy);
+  const shape = useMemo(() => unitDuctShape(hvacElements, unit.id), [hvacElements, unit.id]);
+  if (!shape) return null;
+  const mine = busy?.unitId === unit.id ? busy : null;
+  const others = DUCT_SYSTEM_SHAPES.filter((option): option is AutoDuctShape => option !== shape);
+  return (
+    <div className="space-y-1 rounded-md border border-slate-200 bg-white/80 p-1.5" data-testid="air-system-redesign">
+      <div className="flex items-center justify-between gap-1 text-[11px]">
+        <span className="text-slate-600">Ducts</span>
+        <span className="font-medium text-slate-800" data-testid="air-system-duct-shape">{AUTO_DUCT_SHAPE_LABELS[shape]}</span>
+      </div>
+      {mine ? (
+        <div className="flex items-center gap-1 text-[11px] text-sky-800" role="status">
+          <Loader2 size={12} className="animate-spin" />
+          <span className="min-w-0 flex-1 leading-4">Re-designing {tag}&apos;s ducts as {AUTO_DUCT_SHAPE_LABELS[mine.shape].toLowerCase()}…</span>
+          <button type="button" onClick={() => cancelSystemRedesign()} className="rounded px-1 text-[10px] text-slate-600 underline hover:text-slate-900">Cancel</button>
+        </div>
+      ) : (
+        <div className="space-y-0.5" role="group" aria-label={`Re-design ${tag}'s ducts as`}>
+          <div className="text-[10px] text-slate-500">Re-design as</div>
+          <div className="grid grid-cols-3 gap-1">
+          {others.map((option) => (
+            <button key={option} type="button" disabled={Boolean(busy)} onClick={() => { void redesignSystemAs(unit.id, option); }}
+              title={`The optimiser designs ${tag}'s ducts again ${option === 'rect' ? 'with a rectangular main and round branches' : option === 'optimal' ? 'choosing each stretch\'s shape' : `${AUTO_DUCT_SHAPE_LABELS[option].toLowerCase()} throughout`}, as the system is set; one undo step`}
+              className="rounded-md border border-slate-200 bg-white px-1 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-40">
+              {AUTO_DUCT_SHAPE_LABELS[option]}
+            </button>
+          ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

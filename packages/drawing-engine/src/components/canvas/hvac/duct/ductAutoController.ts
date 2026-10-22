@@ -341,7 +341,7 @@ export function applyAutoDuctPreview(): string {
   const runs = stampDesignedAt(withInitialSizingRecords({
     fanSpeed: result.fanSpeed, airflowM3h: result.airflowM3h, airflowSource: result.airflowSource,
     runs: result.runs, removeIds: result.removeIds, terminalUpdates: result.terminalUpdates, terminalAirflowUpdates: result.terminalAirflowUpdates,
-    services: result.services,
+    services: result.services, shape: result.shape,
   }, state.hvacElements, state.ductSettings, 'auto-duct'), new Date().toISOString());
   state.commitHvacElementCommand('Auto duct', { add: runs, removeIds: result.removeIds, updates: [...terminalSpigotUpdates(assigned), ...tagUpdates], selectedIds: ids });
   const message = `Auto duct: ${result.runs.length} run${result.runs.length === 1 ? '' : 's'} added${result.removeIds.length ? `, ${result.removeIds.length} replaced` : ''}`

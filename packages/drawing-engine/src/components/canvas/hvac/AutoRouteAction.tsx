@@ -251,8 +251,8 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
               <fieldset className="space-y-2" disabled={!ductsTicked}>
                 <legend className="font-medium text-slate-700">Ducts</legend>
                 <div className="space-y-1 text-slate-600">
-                  <span>Trunk shape</span>
-                  <div className="grid grid-cols-3 gap-0.5 rounded-md border border-slate-200 bg-white p-0.5" role="radiogroup" aria-label="Auto route duct shape">
+                  <span>Shape</span>
+                  <div className="grid grid-cols-2 gap-0.5 rounded-md border border-slate-200 bg-white p-0.5" role="radiogroup" aria-label="Auto route duct shape">
                     {AUTO_DUCT_SHAPE_OPTIONS.map((option) => (
                       <button key={option.key} type="button" role="radio" aria-checked={ductShape === option.key} title={option.hint} onClick={() => setDuctShape(option.key)}
                         className={`flex items-center justify-center gap-1 rounded px-1 py-1 text-[11px] ${ductShape === option.key ? 'bg-sky-700 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>

@@ -25,14 +25,15 @@ import { maxRoundBranchMm, roundMainTapGeometry, roundReducerMinLengthMm, wyeLeg
 import { SMACNA_TABLE_3_1 } from '../ductRoundRules';
 import type { DuctDesignSettings } from '../ductSettings';
 import { frictionPaPerM, sizingLimits, velocityMs, velocityPressurePa } from '../ductSizing';
-import { isRoundLeg, isRoundMainTapStyle, roundLeg, type DuctConstruction, type DuctLeg, type DuctSplitStyle, type DuctTapStyle } from '../ductTypes';
+import { isRoundLeg, isRoundMainTapStyle, roundLeg, type DuctConstruction, type DuctLeg, type DuctSplitStyle, type DuctSystemShape, type DuctTapStyle } from '../ductTypes';
 
-export type ShapeMode = 'rect' | 'round' | 'optimal';
+/** The system's shape the catalogues follow: rectangular throughout, a rectangular main with round branches, round, or mixed. */
+export type ShapeMode = DuctSystemShape;
 
 /** Slowest trunk air the catalogue offers (m/s): at about 2 USD a pascal, bigger ducts do not pay back (practice). */
 const MIN_TRUNK_VELOCITY_MS = 1.8;
 /** Largest rectangular section height tried (mm). */
-const MAX_RECT_HEIGHT_MM = 600;
+export const MAX_RECT_HEIGHT_MM = 600;
 
 export interface CostLoss {
   cost: number;
@@ -68,12 +69,17 @@ export class SizingModel {
 
   // ---- Catalogues ----
 
+  /** The fabricator's rectangular step (mm). */
+  get rectStepMm(): number {
+    return this.settings.rectStepMm;
+  }
+
   /**
    * Trunk sections for an airflow: round stock sizes and rectangular sizes on
-   * a 50 mm grid (width ≥ height, aspect ≤ 4), within the velocity cap and
-   * above a floor, and within the void. The shape mode filters them.
+   * the fabricator's step (width ≥ height, aspect ≤ 4), within the velocity
+   * cap and above a floor, and within the void. The shape mode filters them.
    */
-  trunkOptions(airflowM3h: number, allowRect = this.shape !== 'round', allowRound = this.shape !== 'rect'): DuctLeg[] {
+  trunkOptions(airflowM3h: number, allowRect = this.shape !== 'round', allowRound = this.shape === 'round' || this.shape === 'optimal'): DuctLeg[] {
     const cap = sizingLimits(this.settings, this.ctx.service, 'trunk').maxVelocityMs;
     const out: DuctLeg[] = [];
     const fits = (leg: DuctLeg) => leg.heightMm <= this.maxHeightMm;
@@ -87,8 +93,9 @@ export class SizingModel {
     }
     if (allowRect) {
       const rect: DuctLeg[] = [];
-      for (let h = 100; h <= Math.min(MAX_RECT_HEIGHT_MM, this.maxHeightMm); h += 50) {
-        for (let w = h; w <= 4 * h; w += 50) rect.push({ widthMm: w, heightMm: h });
+      const step = this.rectStepMm;
+      for (let h = Math.ceil(100 / step) * step; h <= Math.min(MAX_RECT_HEIGHT_MM, this.maxHeightMm); h += step) {
+        for (let w = h; w <= 4 * h; w += step) rect.push({ widthMm: w, heightMm: h });
       }
       const within = rect.filter(inWindow);
       const smallest = rect.filter((leg) => velocityMs(leg, airflowM3h) <= cap * 1.001)
@@ -98,9 +105,26 @@ export class SizingModel {
     return out;
   }
 
-  /** Round branch sizes to one terminal: its neck and the stock sizes above it within the branch cap (at most three steps). */
+  /**
+   * Branch sizes to one terminal: round, its neck and the stock sizes above it
+   * within the branch cap (at most three steps); rectangular throughout, the
+   * smallest rectangles within the cap on the fabricator's step, flat (width ≥
+   * height, aspect ≤ 4) — a square-to-round takes each to the neck.
+   */
   branchOptions(airflowM3h: number, neckMm: number): DuctLeg[] {
     const cap = sizingLimits(this.settings, this.ctx.service, 'branch').maxVelocityMs;
+    if (this.shape === 'rectangular') {
+      const step = this.rectStepMm;
+      const rect: DuctLeg[] = [];
+      for (let h = Math.ceil(100 / step) * step; h <= Math.min(MAX_RECT_HEIGHT_MM, this.maxHeightMm); h += step) {
+        for (let w = h; w <= 4 * h; w += step) {
+          const leg = { widthMm: w, heightMm: h };
+          if (velocityMs(leg, airflowM3h) <= cap * 1.001) { rect.push(leg); break; }
+        }
+      }
+      // The four smallest that keep under the cap (by area; the flatter first at a tie).
+      return rect.sort((a, b) => a.widthMm * a.heightMm - b.widthMm * b.heightMm || a.heightMm - b.heightMm).slice(0, 4);
+    }
     const sizes = [...new Set([neckMm, ...this.settings.autoRoundSizesMm.filter((d) => d > neckMm)])].sort((a, b) => a - b);
     const out: DuctLeg[] = [];
     for (const d of sizes) {
@@ -251,8 +275,8 @@ export class SizingModel {
     const collar: DuctLeg = { widthMm: this.ctx.port.widthMm, heightMm: this.ctx.port.heightMm };
     const neck = this.settings.elbowNeckMm;
     const wide: DuctLeg[] = this.shape === 'round' ? [] : [150, 200, 250, 300, 350]
-      .filter((h) => h <= this.maxHeightMm)
-      .map((h) => ({ widthMm: Math.max(100, Math.round(collar.widthMm / 50) * 50), heightMm: h }));
+      .filter((h) => h <= this.maxHeightMm && h % this.rectStepMm === 0)
+      .map((h) => ({ widthMm: Math.max(100, Math.round(collar.widthMm / this.rectStepMm) * this.rectStepMm), heightMm: h }));
     const sections = [...this.trunkOptions(airflowM3h), ...wide];
     const takes = sections.filter((leg) => (isRoundLeg(leg) ? maxRoundBranchMm(leg.diameterMm!) >= branchNeckMm - 0.5 : leg.heightMm >= branchNeckMm + 50 - 0.5));
     const reach = (leg: DuctLeg) => this.transitionLengthMm(collar, leg).lengthMm + this.elbowSetbackMm(leg) + neck + 25;

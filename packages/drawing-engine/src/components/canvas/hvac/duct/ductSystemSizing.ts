@@ -277,6 +277,13 @@ export interface DuctSystemSizingInput {
    * supply and return, so the ESP check adds it. Absent = none or unknown.
    */
   otherServicePa?: number | null;
+  /**
+   * The height of the trunk's rectangular stretches (those carrying two or
+   * more terminals), their widths sized at it: one height through the trunk,
+   * the width reducing (the economical height Auto duct prices). Absent: each
+   * stretch at its height as drawn.
+   */
+  trunkHeightMm?: number;
   /** Check the fan's ESP here (default true); a caller that checks a whole design (both services) passes false. */
   espCheck?: boolean;
 }
@@ -325,9 +332,6 @@ interface RunNode {
   /** Take-off styles changed to fit (child id → style). */
   styles: Map<string, DuctTapStyle>;
 }
-
-const STEP_MM = 50;
-const ceilStep = (value: number) => Math.ceil(value / STEP_MM - 1e-9) * STEP_MM;
 
 function length3(a: DuctPoint3, b: DuctPoint3): number {
   return Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
@@ -514,6 +518,9 @@ export function sizeDuctSystem(
   const mainAirflow = terminalsAirflow > 0 ? terminalsAirflow : systemAirflow;
   const basis = linkSizingBasis(input.basis, mainAirflow);
   const stock = [...settings.autoRoundSizesMm].sort((a, b) => a - b);
+  // Rectangles on the fabricator's step.
+  const STEP_MM = settings.rectStepMm;
+  const ceilStep = (value: number) => Math.ceil(value / STEP_MM - 1e-9) * STEP_MM;
 
   // ---- Sizes, bottom-up: children first (a take-off or a split needs its branches' sections) ----
   const firstSection = (node: RunNode): DuctLeg => (node.fixed ? node.spec.legs[0]! : node.segments[0]?.section ?? node.spec.legs[0]!);
@@ -592,8 +599,10 @@ export function sizeDuctSystem(
         }
         return;
       }
-      const height = sample.heightMm;
-      const minWidth = Math.min(height, sample.widthMm);
+      // The trunk at the height asked (one height through it), else each stretch at its height as drawn.
+      const asked = input.trunkHeightMm !== undefined && segment.part === 'trunk' ? input.trunkHeightMm : null;
+      const height = asked ?? sample.heightMm;
+      const minWidth = asked !== null ? Math.min(height, STEP_MM * Math.ceil(100 / STEP_MM)) : Math.min(height, sample.widthMm);
       const sized = rectAt(segment.airflow, height, minWidth, limits, maxHeight);
       segment.section = { widthMm: sized.widthMm, heightMm: sized.heightMm };
       if (sized.capped) segment.setBy = 'capped';
@@ -812,6 +821,34 @@ export function sizeDuctSystem(
       const endClear = end.kind === 'terminal' ? 450
         : end.kind === 'split' ? settings.elbowNeckMm + Math.max(biggest.widthMm, 250) + 50
           : end.kind === 'plenum' ? end.lengthMm + 100 : 100;
+      // Off the collar: its transition to the first section must fit before the run's first fixed fitting (an
+      // elbow, a wall, its end; take-offs are placed past it). Where it does not, the first section steps back
+      // towards the collar's at its own height — the first width whose transition fits, else the collar's own where
+      // that is as tall (so what is taken off it still fits) — and the report says so; else it stays as sized.
+      if (!node.parent && !node.head && start.kind === 'unit-port' && sections.length && !isRoundLeg(sections[0]!)) {
+        const port = findAirPort(scene, start.unitId, start.portId);
+        const collar: DuctLeg | null = port ? { widthMm: port.widthMm, heightMm: port.heightMm } : null;
+        const connector = settings.flexibleConnectorAtUnit ? settings.connectorFabricMm + 2 * settings.connectorMetalMm : 0;
+        const firstFitting = Math.min(total - endClear, ...forbidden.map(([a]) => a));
+        const room = firstFitting - connector - 50;
+        const fits = (leg: DuctLeg) => !collar || sameLeg(collar, leg) || model.transitionLengthMm(collar, leg).lengthMm <= room + 1e-6;
+        if (collar && !fits(sections[0]!)) {
+          const from = sections[0]!;
+          const toward = Math.sign(collar.widthMm - from.widthMm);
+          let chosen: DuctLeg | null = collar.heightMm >= from.heightMm - 0.5 ? collar : null;
+          for (let width = from.widthMm + toward * STEP_MM; toward !== 0 && (width - collar.widthMm) * toward < 0; width += toward * STEP_MM) {
+            const leg = { widthMm: width, heightMm: from.heightMm };
+            if (fits(leg)) { chosen = leg; break; }
+          }
+          if (chosen) {
+            sections[0] = chosen;
+            segments[0]!.section = chosen;
+            segments[0]!.setBy = 'carried';
+            segments[0]!.note = `the collar's transition has no room before the first fitting: ${legLabel(chosen)}`;
+            startClear = connector + (sameLeg(collar, chosen) ? 0 : model.transitionLengthMm(collar, chosen).lengthMm) + 50;
+          }
+        }
+      }
 
       // ---- Reducers: after a take-off where the flow drops, in a straight gap before the next ----
       const changes: Array<{ at: number; section: DuctLeg; length: number }> = [];
@@ -1055,6 +1092,32 @@ export function sizeDuctSystem(
   report.errors = issues.filter((issue) => issue.severity === 'error').length;
   report.warnings = issues.filter((issue) => issue.severity === 'warning').length;
   return { runs, terminals: changedTerminals, report };
+}
+
+/**
+ * A sized system in a line, as the cards show it — its basis and what came of
+ * it: "Constant friction 0.80 Pa/m · 600 m³/h · trunk 400×250 → 300×250 · 2
+ * reducers · max 4.2 m/s" (the trunk from the collar to its last section — the
+ * stretches carrying two terminals or more, not the run on to the last one —
+ * the reducers along it, the fastest air anywhere in the system).
+ */
+export function sizingOutcomeLine(report: Pick<DuctSystemSizingReport, 'rootRunId' | 'basis' | 'airflowM3h' | 'terminalsAirflowM3h' | 'sections'>): string {
+  const own = report.sections.filter((section) => section.runId === report.rootRunId);
+  const trunk = own.some((section) => section.part === 'trunk') ? own.filter((section) => section.part === 'trunk') : own;
+  const steps: DuctLeg[] = [];
+  for (const section of trunk) {
+    if (!steps.length || !sameLeg(steps[steps.length - 1]!, section.section)) steps.push(section.section);
+  }
+  const airflow = report.airflowM3h ?? (report.terminalsAirflowM3h > 0 ? report.terminalsAirflowM3h : null);
+  const fastest = Math.max(0, ...report.sections.map((section) => section.velocityMs));
+  const reducers = Math.max(0, steps.length - 1);
+  return [
+    `Constant friction ${report.basis.frictionPaPerM.toFixed(2)} Pa/m`,
+    ...(airflow ? [`${Math.round(airflow)} m³/h`] : []),
+    ...(steps.length ? [`trunk ${steps.length > 1 ? `${legLabel(steps[0]!)} → ${legLabel(steps[steps.length - 1]!)}` : legLabel(steps[0]!)}`] : []),
+    `${reducers} reducer${reducers === 1 ? '' : 's'}`,
+    `max ${fastest.toFixed(1)} m/s`,
+  ].join(' · ');
 }
 
 /** The run off a unit's collar for a service, if any. */

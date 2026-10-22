@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { generateAutoDuct, type AutoDuctRequest, type AutoDuctResult } from '../ductAutoLayout';
+import { generateAutoDuctInShape, type AutoDuctRequest, type AutoDuctResult } from '../ductAutoLayout';
 import { DEFAULT_DUCT_SETTINGS } from '../ductSettings';
 
 import { cancelAutoDuctWorker, runAutoDuctInWorker, type AutoDuctWorkerResponse } from './ductOptimizerClient';
 
-vi.mock('../ductAutoLayout', () => ({ generateAutoDuct: vi.fn() }));
+vi.mock('../ductAutoLayout', () => ({ generateAutoDuctInShape: vi.fn() }));
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -28,7 +28,7 @@ describe('duct worker cancellation and recovery', () => {
     vi.clearAllMocks();
     FakeWorker.instances = [];
     vi.stubGlobal('Worker', FakeWorker);
-    vi.mocked(generateAutoDuct).mockReturnValue(result);
+    vi.mocked(generateAutoDuctInShape).mockReturnValue(result);
   });
   afterEach(() => { cancelAutoDuctWorker(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -39,7 +39,7 @@ describe('duct worker cancellation and recovery', () => {
     cancelAutoDuctWorker();
     vi.runAllTimers();
     await rejected;
-    expect(generateAutoDuct).not.toHaveBeenCalled();
+    expect(generateAutoDuctInShape).not.toHaveBeenCalled();
   });
 
   it('ignores a terminated worker error instead of starting obsolete fallback work', async () => {
@@ -51,7 +51,7 @@ describe('duct worker cancellation and recovery', () => {
     const current = FakeWorker.instances[1]!;
     oldError();
     vi.runAllTimers();
-    expect(generateAutoDuct).not.toHaveBeenCalled();
+    expect(generateAutoDuctInShape).not.toHaveBeenCalled();
     const sent = current.postMessage.mock.calls[0]![0] as { id: number };
     current.onmessage!({ data: { type: 'result', id: sent.id, result } });
     await rejected;
@@ -64,10 +64,10 @@ describe('duct worker cancellation and recovery', () => {
     const current = FakeWorker.instances[0]!;
     current.onerror!();
     expect(current.terminate).toHaveBeenCalledOnce();
-    expect(generateAutoDuct).not.toHaveBeenCalled();
+    expect(generateAutoDuctInShape).not.toHaveBeenCalled();
     vi.runAllTimers();
     await expect(work).resolves.toBe(result);
-    expect(generateAutoDuct).toHaveBeenCalledOnce();
+    expect(generateAutoDuctInShape).toHaveBeenCalledOnce();
   });
 
   it('reports unreadable worker responses and releases the worker', async () => {

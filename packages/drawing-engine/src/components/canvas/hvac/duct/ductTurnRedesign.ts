@@ -49,7 +49,7 @@ import type { DuctDesignSettings } from './ductSettings';
 import { stampDesignedAt, withInitialSizingRecords } from './ductSizingRecord';
 import { getDuctSupportPlan } from './ductSupports';
 import { defaultSizingBasis, sizeDuctSystem } from './ductSystemSizing';
-import { ductParentRunId, isDuctElement, isRoundLeg, readDuctRunSpec, type DuctInlineAccessory, type DuctRunSpec, type DuctService } from './ductTypes';
+import { ductParentRunId, isDuctElement, isRoundLeg, readDuctRunSpec, type DuctInlineAccessory, type DuctRunSpec, type DuctService, type DuctSystemShape } from './ductTypes';
 import { validateDuctRuns } from './ductValidation';
 
 /** An accessory the designer set, to be set again on the new design. */
@@ -163,6 +163,9 @@ function startFromCollar(spec: DuctRunSpec, specs: ReadonlyMap<string, DuctRunSp
   return startFromCollar(parent, specs, depth + 1) + offset;
 }
 
+/** A shape as the attempt's note names it ("no clean round layout"). */
+const SHAPE_NOUNS: Record<DuctSystemShape, string> = { rectangular: 'rectangular-throughout', rect: 'rectangular', round: 'round', optimal: 'mixed' };
+
 /**
  * The requests to try for a target, in order: its trunk's shape, then (where
  * that gives no clean layout at the turned collar) the optimiser's own choice
@@ -173,7 +176,7 @@ export function turnRedesignAttempts(target: TurnRedesignTarget): Array<{ reques
   if (shape === 'optimal') return [{ request: target.request, note: null }];
   return [
     { request: target.request, note: null },
-    { request: { ...target.request, shape: 'optimal' }, note: `the optimiser chose the shapes (no clean ${shape === 'round' ? 'round' : 'rectangular'} layout fits the turned collar)` },
+    { request: { ...target.request, shape: 'optimal' }, note: `the optimiser chose the shapes (no clean ${SHAPE_NOUNS[shape]} layout fits the turned collar)` },
   ];
 }
 
@@ -245,7 +248,8 @@ export function turnRedesignTargets(
         layout: 'auto',
         services: { supply: services.has('supply'), return: services.has('return') },
         rebuildExisting: true,
-        shape: isRoundLeg(trunk.spec.legs[0]) ? 'round' : 'rect',
+        // The shape it was designed in (else its trunk's: a system designed before the shape was kept).
+        shape: record?.shape ?? (isRoundLeg(trunk.spec.legs[0]) ? 'round' : 'rect'),
         sizing: Object.keys(sizing).length ? sizing : null,
       },
       runIds,
@@ -278,7 +282,7 @@ export function turnRedesignCommand(
   let runs = stampDesignedAt(withInitialSizingRecords({
     fanSpeed: result.fanSpeed, airflowM3h: result.airflowM3h, airflowSource: result.airflowSource,
     runs: result.runs, removeIds: result.removeIds, terminalUpdates: result.terminalUpdates, terminalAirflowUpdates: result.terminalAirflowUpdates,
-    services: result.services,
+    services: result.services, shape: result.shape,
   }, scene, settings, 'auto-duct'), designedAt);
   const removeIds = [...new Set([...result.removeIds, ...target.runIds])];
 

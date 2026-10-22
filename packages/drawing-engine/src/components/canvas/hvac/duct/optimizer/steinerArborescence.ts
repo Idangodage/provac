@@ -90,10 +90,13 @@ function outerHalfMm(leg: DuctLeg, model: SizingModel): number {
  */
 function leafStraightMm(model: SizingModel, best: DuctLeg, neckMm: number): number {
   const neck = roundLeg(neckMm);
-  return Math.min(
-    model.elbowSetbackMm(neck) + model.settings.elbowNeckMm,
-    model.bendReachMm(best) + model.endStraightMm(best, neckMm),
-  );
+  const atItsEnd = model.bendReachMm(best) + model.endStraightMm(best, neckMm);
+  // Rectangular throughout: the branch stays rectangular to its square-to-round at the end of its last straight,
+  // after a radius elbow (as the realiser lays the last bend before a runout, and the sizing checks it).
+  if (model.shape === 'rectangular' && !isRoundLeg(best)) {
+    return model.elbowRadiusMm(best) + model.settings.elbowNeckMm + 25 + model.endStraightMm(best, neckMm);
+  }
+  return Math.min(model.elbowSetbackMm(neck) + model.settings.elbowNeckMm, atItsEnd);
 }
 
 /**
@@ -106,8 +109,12 @@ function leafStraightMm(model: SizingModel, best: DuctLeg, neckMm: number): numb
 function layerClearMm(model: SizingModel, best: DuctLeg, neckMm: number | null, branchNeckMm: number): { clearMm: number; reachMm: number } {
   const reach = model.bendReachMm(best);
   if (neckMm !== null) return { clearMm: Math.max(2 * reach, leafStraightMm(model, best, neckMm)), reachMm: reach };
-  const branch = roundLeg(branchNeckMm);
-  const styles: DuctTapStyle[] = isRoundLeg(best) ? [...model.settings.autoRoundMainStyles] : ['spin-in', 'conical'];
+  // Rectangular throughout, a branch leaves on a 45° shoe (its lead-in widens the window), about as wide as its neck.
+  const rectangular = model.shape === 'rectangular' && !isRoundLeg(best);
+  const branch = rectangular
+    ? { widthMm: Math.ceil(branchNeckMm / model.rectStepMm) * model.rectStepMm, heightMm: Math.min(best.heightMm, branchNeckMm) }
+    : roundLeg(branchNeckMm);
+  const styles: DuctTapStyle[] = rectangular ? ['shoe-45'] : isRoundLeg(best) ? [...model.settings.autoRoundMainStyles] : ['spin-in', 'conical'];
   const window = Math.max(0, ...styles.map((style) => model.tapWindowHalfMm(style, branch, best)));
   return { clearMm: Math.max(2 * reach, reach + window, 2 * window), reachMm: Math.max(reach, window) };
 }
@@ -473,10 +480,10 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     const flow = flows[S]!;
     const candidates = [...model.trunkOptions(flow)];
     const round = model.settings.autoRoundSizesMm.find((size) => maxRoundBranchMm(size) >= neckMm - 0.5 && size <= model.maxHeightMm);
-    if (round && model.shape !== 'rect') candidates.push({ widthMm: round, heightMm: round, diameterMm: round });
-    const h = Math.ceil((neckMm + 50) / 50) * 50;
+    if (round && (model.shape === 'round' || model.shape === 'optimal')) candidates.push({ widthMm: round, heightMm: round, diameterMm: round });
+    const h = Math.ceil((neckMm + 50) / model.rectStepMm) * model.rectStepMm;
     if (model.shape !== 'round' && h <= model.maxHeightMm) {
-      for (let w = h; w <= 4 * h; w += 50) {
+      for (let w = h; w <= 4 * h; w += model.rectStepMm) {
         if (flow / 3600 / ((w / 1000) * (h / 1000)) <= model.settings.autoMaxVelocityTrunkMs * 1.001) { candidates.push({ widthMm: w, heightMm: h }); break; }
       }
     }
@@ -536,9 +543,11 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
   /**
    * Straight on out of (v, h) right after a fitting at v for at least `minMm`
    * on layer S: its cost (walls crossed included), where it stops and the
-   * level it arrives with; null when it is blocked, or meets a wall too soon.
+   * level it arrives with (less `discountMm` of the straight walked, which
+   * the fitting itself takes up: a take-off's collar and damper); null when
+   * it is blocked, or meets a wall too soon.
    */
-  const straightOn = (S: number, start: number, minMm: number, layer: LayerPrice): { cost: number; node: number; level: number; crossed: boolean } | null => {
+  const straightOn = (S: number, start: number, minMm: number, layer: LayerPrice, discountMm = 0): { cost: number; node: number; level: number; crossed: boolean } | null => {
     const top = topOf(layer);
     const wallSteps = wallStepsOf(layer);
     const h = start & 3;
@@ -567,7 +576,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       node = u;
     }
     if (!Number.isFinite(cost) || length <= 0) return null;
-    return { cost, node, level: arrive(top, base, since), crossed };
+    return { cost, node, level: arrive(top, base, crossed ? since : Math.max(0, since - discountMm)), crossed };
   };
   /**
    * Straight on out of (v, h) for at least `minMm` after a fitting at v, then
@@ -575,8 +584,8 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
    * and the state it lands in (for the walk). Exact on the grid; cached.
    */
   const straightCache = new Map<string, { value: Float64Array; land: Int32Array }>();
-  const straightFirst = (S: number, minMm: number): { value: Float64Array; land: Int32Array } => {
-    const key = `${S}:${Math.ceil(minMm / 25)}`;
+  const straightFirst = (S: number, minMm: number, discountMm = 0): { value: Float64Array; land: Int32Array } => {
+    const key = `${S}:${Math.ceil(minMm / 25)}:${Math.ceil(discountMm / 25)}`;
     const cached = straightCache.get(key);
     if (cached) return cached;
     const layer = layers[S]!;
@@ -584,7 +593,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     const value = new Float64Array(directed).fill(INF);
     const land = new Int32Array(directed).fill(-1);
     for (let s = 0; s < directed; s += 1) {
-      const walked = straightOn(S, s, minMm, layer);
+      const walked = straightOn(S, s, minMm, layer, discountMm);
       if (!walked) continue;
       const s3 = (walked.node * 4 + (s & 3)) * LEVELS + walked.level;
       const rest = d[s3]!;
@@ -593,6 +602,20 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     const entry = { value, land };
     straightCache.set(key, entry);
     return entry;
+  };
+  /**
+   * A take-off's branch B off main S runs straight for the main's half, its collar and damper and the
+   * realiser's lead before its first fitting. Rectangular throughout, the shoe's own collar (longer than a
+   * round one), and that reach is the take-off's, as an elbow's would be: the branch's square-to-round and
+   * lead then fit past it where the realiser lays them, with no elbow between.
+   */
+  const teeFirst = (S: number, B: number) => {
+    const best = layers[B]!.best;
+    if (model.shape === 'rectangular' && best && !isRoundLeg(best)) {
+      const reach = layers[S]!.halfMm + model.collarLengthMm('shoe-45', best) + model.settings.vcdLengthMm + BRANCH_LEAD_MM;
+      return straightFirst(B, reach, Math.max(0, reach - model.bendReachMm(best)));
+    }
+    return straightFirst(B, layers[S]!.halfMm + collarMm + BRANCH_LEAD_MM);
   };
   /** Straight each outlet of a wye on `main` needs before its first fitting. */
   const wyeRoom = (main: DuctLeg, outlet: DuctLeg | null) => (outlet && isRoundLeg(main) ? model.diagonalRoomMm(main.diameterMm!, outlet, true) : 0);
@@ -661,8 +684,9 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
         }
       }
       // Or the run takes its last terminal off its side on an all-flex stub and ends in a cap just past it
-      // (a trunk with take-offs and an end cap): a fitting, so where the straight arriving is clear.
-      const endMain = tapMainFor(S, terminal.neck);
+      // (a trunk with take-offs and an end cap): a fitting, so where the straight arriving is clear. (Not in a
+      // system rectangular throughout: each terminal there has its rectangular branch off a shoe.)
+      const endMain = model.shape === 'rectangular' ? null : tapMainFor(S, terminal.neck);
       if (endMain) {
         const neckLeg = roundLeg(terminal.neck);
         const fit = model.tee(fittingStyle(endMain, neckLeg), neckLeg, flows[S]!, endMain, flows[S]!);
@@ -712,14 +736,14 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
         const splitA = Number.isFinite(split) && wye ? straightFirst(A, wyeRoom(main!, layers[A]!.best)).value : gA;
         const splitB = Number.isFinite(split) && wye ? straightFirst(B, wyeRoom(main!, layers[B]!.best)).value : gB;
         // A single terminal may hang off the main on an all-flex stub, laid off this main's wall.
-        const tapMain = popcount(B) === 1 ? tapMainFor(S, terminals[Math.log2(B)]!.neck) : null;
+        const tapMain = popcount(B) === 1 && model.shape !== 'rectangular' ? tapMainFor(S, terminals[Math.log2(B)]!.neck) : null;
         const stubs = Number.isFinite(tee) && tapMain
           ? stubsFor(B, stubReachMm(tapMain, terminals[Math.log2(B)]!.neck), (tapMain.diameterMm ?? tapMain.widthMm) / 2) : null;
         const bannedTees = options.cuts?.tees.get(B);
         const bannedStubs = options.cuts?.stubs.get(B);
         // A take-off's branch runs straight off the main for the main's half, its collar and damper and the
         // realiser's lead before its first fitting.
-        const bB = Number.isFinite(tee) ? straightFirst(B, layer.halfMm + collarMm + BRANCH_LEAD_MM).value : GB[B]!;
+        const bB = Number.isFinite(tee) ? teeFirst(S, B).value : GB[B]!;
         // The hot loop (every pair of subsets × every directed state): plain arrays, nothing allocated.
         const teeOk = Number.isFinite(tee);
         const splitOk = Number.isFinite(split);
@@ -1061,7 +1085,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
             child.end = { kind: 'terminal', terminal: terminalVariants(terminals[Math.log2(B)]!)[variant]! };
             enter(child, B, v);
           } else {
-            walkStraight(child, B, v, out, straightFirst(B, layers[S]!.halfMm + collarMm + BRANCH_LEAD_MM).land[v * 4 + out]!);
+            walkStraight(child, B, v, out, teeFirst(S, B).land[v * 4 + out]!);
           }
           S = A;
           if (popcount(A) === 1 && tailValue[A]![v * 4 + h]! <= GS[A]![v * 4 + h]!) {

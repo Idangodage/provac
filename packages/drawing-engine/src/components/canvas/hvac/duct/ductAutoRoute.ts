@@ -30,7 +30,7 @@ import { assignmentOptions, assignmentProblemFromScene, solveAirSystemAssignment
 import { listAirPorts } from './ductAirPorts';
 import { airSystemTags, analyseAirSystems, readAirSystemAssignment, servingUnits, withSystemAssignments } from './ductAirSystems';
 import type { AutoDuctIssue } from './ductAutoContext';
-import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuct, removalTree, type AutoDuctShape } from './ductAutoLayout';
+import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuctInShape, removalTree, type AutoDuctShape } from './ductAutoLayout';
 import type { DuctWallInput } from './ductBuilding';
 import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
@@ -279,7 +279,7 @@ export function planAutoRouteDucts(
       const kinds = new Set(group.map((terminal) => terminalPorts.get(terminal.id)!.kind));
       // The project's sizing method: constant friction at its friction rates and velocity limits, or the life-cycle optimum.
       const constantFriction = options.settings.autoSizingMethod === 'constant-friction';
-      const auto = generateAutoDuct(working, {
+      const auto = generateAutoDuctInShape(working, {
         unitId: unit.id, terminalIds: group.map((terminal) => terminal.id), fanSpeed: options.fanSpeed, layout: 'auto',
         services: { supply: kinds.has('supply'), return: kinds.has('return') }, rebuildExisting: options.rebuildExisting, shape: options.shape,
         ...(options.walls ? { walls: options.walls } : {}),
@@ -335,7 +335,7 @@ export function planAutoRouteDucts(
         // Each system keeps how it was first sized (dated when the preview is applied).
         const runs = withInitialSizingRecords({
           fanSpeed: auto.fanSpeed, airflowM3h: auto.airflowM3h, airflowSource: auto.airflowSource,
-          runs: auto.runs, removeIds: auto.removeIds, terminalUpdates: auto.terminalUpdates, services: auto.services,
+          runs: auto.runs, removeIds: auto.removeIds, terminalUpdates: auto.terminalUpdates, services: auto.services, shape: auto.shape,
         }, working, options.settings, 'auto-route');
         pass.elementsToAdd.push(...runs);
         pass.removeElementIds.push(...auto.removeIds);

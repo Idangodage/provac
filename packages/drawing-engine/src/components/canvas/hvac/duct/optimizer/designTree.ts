@@ -117,7 +117,7 @@ export interface ServiceDesign {
   /** The tree router's own optimum of its model (for the certificate), when it made this design. */
   modelCost?: number;
   /** Which tree router made it (its catalogue's shape). */
-  router?: 'rect' | 'round';
+  router?: 'rect' | 'round' | 'rectangular';
   exact?: boolean;
 }
 

@@ -155,11 +155,12 @@ function sectionOptions(runId: string, legs: number[], current: DuctLeg, context
       : (() => {
         // The tallest height up to the current one at which the narrowest size within the limits lies flat (a ceiling duct).
         const top = Math.min(current.heightMm, context.voidHeightMm);
-        for (let height = Math.floor(top / 50) * 50; height >= 100; height -= 50) {
-          const rect = sizeRectangular(flow.airflowM3h.max, height, limits, { stepMm: 50, maxAspect, maxHeightMm: height });
+        const step = settings.rectStepMm;
+        for (let height = Math.floor(top / step) * step; height >= 100; height -= step) {
+          const rect = sizeRectangular(flow.airflowM3h.max, height, limits, { stepMm: step, maxAspect, maxHeightMm: height });
           if (!rect.capped && rect.widthMm >= rect.heightMm) return { widthMm: rect.widthMm, heightMm: rect.heightMm };
         }
-        const rect = sizeRectangular(flow.airflowM3h.max, top, limits, { stepMm: 50, maxAspect, maxHeightMm: context.voidHeightMm });
+        const rect = sizeRectangular(flow.airflowM3h.max, top, limits, { stepMm: settings.rectStepMm, maxAspect, maxHeightMm: context.voidHeightMm });
         return { widthMm: Math.max(rect.widthMm, rect.heightMm), heightMm: Math.min(rect.widthMm, rect.heightMm) };
       })();
     if (!sameSectionSize(recommended, current)) {

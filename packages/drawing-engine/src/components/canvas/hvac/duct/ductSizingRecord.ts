@@ -13,7 +13,7 @@ import type { DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
 import { defaultSizingBasis, sizeDuctSystem } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
-import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSizingRecord } from './ductTypes';
+import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSizingRecord, type DuctSystemShape } from './ductTypes';
 import { withReplaced } from './optimizer/designTree';
 
 /** What a design brings to its record: how it was asked for, and its runs per service. */
@@ -27,6 +27,8 @@ export interface DesignForRecord {
   terminalUpdates?: readonly HvacElement[];
   terminalAirflowUpdates?: readonly HvacElement[];
   services: ReadonlyArray<{ service: DuctService; label: string; runs: readonly HvacElement[] }>;
+  /** The shape it was designed in (kept for re-designs). */
+  shape?: DuctSystemShape;
 }
 
 const round = (value: number, digits: number) => Math.round(value * 10 ** digits) / 10 ** digits;
@@ -80,6 +82,7 @@ export function withInitialSizingRecords(
         : { trunk: settings.autoMaxVelocityTrunkMs, branch: settings.autoMaxVelocityBranchMs, runout: settings.autoMaxVelocityRunoutMs },
       basis: spec.sizing ?? null,
       terminals: report.terminals.map((terminal) => ({ terminalId: terminal.terminalId, airflowM3h: round(terminal.airflowM3h, 1), fixed: terminal.fixed })),
+      ...(design.shape ? { shape: design.shape } : {}),
     };
     stamped.set(root.id, ductRunElementWithSpec(root, { ...spec, initialSizing: record }));
   }

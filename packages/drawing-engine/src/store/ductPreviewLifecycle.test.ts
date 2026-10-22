@@ -23,7 +23,7 @@ const result: AutoDuctResult = {
   unitId: 'unit', unitLabel: 'Unit', fanSpeed: 'hi', airflowM3h: 1000, airflowSource: 'entered',
   maxEspPa: null, requiredEspPa: null, services: [], runs: [], removeIds: [], terminalUpdates: [],
   issues: [], designs: [], picks: null, selected: 0, pricePerPa: 1, currency: 'EUR', certificate: null,
-  baseIssues: [], staticServices: [], sizing: null, terminalAirflowUpdates: [],
+  baseIssues: [], staticServices: [], sizing: null, terminalAirflowUpdates: [], shape: 'optimal',
 };
 const drawing = () => useDrawingStore.getState();
 const preview = () => useDuctAutoPreviewStore.getState();

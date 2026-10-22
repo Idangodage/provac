@@ -22,6 +22,8 @@ import type { DuctDesignSettings } from './ductSettings';
 import {
   DUCT_SECTION_SET_BY_LABELS,
   ductSystemRootOf,
+  sizeDuctSystem,
+  sizingOutcomeLine,
   type DuctSystemSizingReport,
 } from './ductSystemSizing';
 import { readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
@@ -238,22 +240,27 @@ export function openUnitPanel(): void {
  */
 export function AppliedSizingSummary({ unit }: { unit: HvacElement }) {
   const hvacElements = useSmartDrawingStore((state) => state.hvacElements);
+  const ductSettings = useSmartDrawingStore((state) => state.ductSettings);
   const roots = useMemo(() => (['supply', 'return'] as const).flatMap((service) => {
     const root = ductSystemRootOf(hvacElements, unit.id, service);
-    return root ? [{ service, spec: readDuctRunSpec(root)! }] : [];
-  }), [hvacElements, unit.id]);
+    if (!root) return [];
+    const spec = readDuctRunSpec(root)!;
+    // Its basis and what came of it, measured on the ducts as they are.
+    const line = spec.sizing ? sizingOutcomeLine(sizeDuctSystem(hvacElements, root.id, { basis: spec.sizing, measure: true, verify: false }, ductSettings).report) : null;
+    return [{ service, spec, line }];
+  }), [hvacElements, ductSettings, unit.id]);
   if (!roots.length) return null;
   return (
     <div className="space-y-1 rounded-md border border-sky-100 bg-white/70 p-1.5" data-testid="duct-sizing-applied-summary">
       <p className="text-[11px] font-semibold text-slate-700">Ducts on this unit</p>
       <ul className="space-y-0.5 text-[10px] text-slate-600">
-        {roots.map(({ service, spec }) => (
+        {roots.map(({ service, spec, line }) => (
           <li key={service} className="flex min-w-0 items-center gap-1">
             <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${service === 'supply' ? 'bg-blue-600' : 'bg-teal-600'}`} aria-hidden="true" />
             <span className="font-medium text-slate-700">{SERVICE_LABEL[service]}</span>
             <span className="truncate">
-              {spec.sizing ? `constant friction ${fixed(spec.sizing.frictionPaPerM, 2)} Pa/m · ${fixed(spec.sizing.mainVelocityMs, 1)} m/s`
-                : spec.initialSizing ? 'life-cycle optimum' : 'no sizing basis'}
+              {line ?? (spec.sizing ? `constant friction ${fixed(spec.sizing.frictionPaPerM, 2)} Pa/m · ${fixed(spec.sizing.mainVelocityMs, 1)} m/s`
+                : spec.initialSizing ? 'life-cycle optimum' : 'no sizing basis')}
             </span>
           </li>
         ))}

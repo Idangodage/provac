@@ -5,7 +5,7 @@
  * thread instead.
  */
 import type { HvacElement } from '../../../../../types';
-import { generateAutoDuct, type AutoDuctRequest, type AutoDuctResult } from '../ductAutoLayout';
+import { generateAutoDuctInShape, type AutoDuctRequest, type AutoDuctResult } from '../ductAutoLayout';
 import type { DuctDesignSettings } from '../ductSettings';
 
 export interface AutoDuctWorkerRequest {
@@ -46,7 +46,7 @@ export function runAutoDuctInWorker(scene: readonly HvacElement[], request: Auto
         fallbackTimer = null;
         if (pending?.id !== id) return;
         try {
-          const result = generateAutoDuct(scene, request, settings);
+          const result = generateAutoDuctInShape(scene, request, settings);
           pending = null;
           resolve(result);
         } catch (error) {

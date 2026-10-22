@@ -177,6 +177,15 @@ export interface DuctSystemSizing {
 const FAN_SPEED_KEYS: readonly FanSpeed[] = ['p-hi', 'hi', 'me', 'lo'];
 
 /**
+ * A duct system's shape: rectangular throughout (shoe take-offs and Y splits;
+ * a square-to-round before each terminal's runout), a rectangular main with
+ * round branches, round throughout (spiral after the collar's square-to-round),
+ * or the optimiser's choice per stretch.
+ */
+export type DuctSystemShape = 'rectangular' | 'rect' | 'round' | 'optimal';
+export const DUCT_SYSTEM_SHAPES: readonly DuctSystemShape[] = ['rectangular', 'rect', 'round', 'optimal'];
+
+/**
  * How a duct system was first sized, kept on the run off the unit's collar
  * when its design is applied (Auto duct or Auto route) and never changed by
  * later resizes: the method, the fan speed and airflow it was designed for,
@@ -204,6 +213,8 @@ export interface DuctSizingRecord {
   terminals: Array<{ terminalId: string; airflowM3h: number; fixed: boolean }>;
   /** When it was applied (ISO 8601); absent until then. */
   designedAt?: string;
+  /** The shape it was designed in: re-designs keep it (absent on systems designed before it was kept). */
+  shape?: DuctSystemShape;
 }
 
 /** A run's choice at one wall penetration: a fire damper there or not (absent = the project policy). */
@@ -473,6 +484,7 @@ export function readDuctSizingRecord(value: unknown): DuctSizingRecord | undefin
     basis: readDuctSystemSizing(record.basis) ?? null,
     terminals,
     ...(typeof record.designedAt === 'string' && !Number.isNaN(Date.parse(record.designedAt)) ? { designedAt: record.designedAt } : {}),
+    ...(DUCT_SYSTEM_SHAPES.includes(record.shape as DuctSystemShape) ? { shape: record.shape as DuctSystemShape } : {}),
   };
 }
 
