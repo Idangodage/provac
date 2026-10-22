@@ -2375,6 +2375,330 @@ dragged on the plan, where a duct's depth cannot be seen.
   generated trunk have none (the system model has no losses for them).
 - **The card's own Apply** (typed or scrubbed) keeps its existing checks; the drag's hard-rule stop applies to the grips.
 
+## Six duct fixes: smooth turns, design after a turn, sliding pieces, top collars, technical Ys, the system's shape (21–22 October 2026)
+
+**The request:**
+- Turning and moving diffusers by dragging felt slippery and not smooth.
+- The whole duct system should be rectangular or round, as chosen, and designed by constant friction onto common
+  fabrication sizes (technical and economical).
+- A diffuser's collar should go on its top or on its side, as the designer chooses.
+- Y branches should follow the sizes going in and coming out.
+- A duct's small pieces (take-off collars, square-to-rounds, reducers and the like) should move and be edited on their
+  own.
+- When an indoor unit is rotated, its ducts should not swing about while it turns: turn first, then design the ducts
+  again.
+
+Approved plan: `C:\Users\idang\.claude\plans\duct-six-issues.md`.
+
+**Your decisions (21 October 2026):** "yes", so every recommended option:
+1. Turning: free, with magnetic stops at 45° steps and the walls' angles; Shift for 15° steps; Alt with no stops.
+2. Moving: guides and grid both magnetic (they catch within about 5 px); tidy rounding you cannot see; Alt with no
+   snapping.
+3. While a unit turns, its ducts and duct accessories wait, faded; refrigerant pipes still follow their ports live.
+4. What slides: take-off collars, reducers and square-to-rounds, volume dampers, access doors and attenuators. Fire
+   dampers stay in their walls, and a take-off's own damper stays at its collar.
+5. A piece is picked up by clicking it (its card pins), then dragging its slide handle, as with a straight's grips.
+6. The collar entry is chosen per terminal (Properties and its card), on the Auto duct card ("Diffuser collars"), and as
+   a project default for new terminals.
+7. A top collar that does not fit the void is reported as an error with the numbers and the fix; Auto keeps your
+   choice.
+8. A rectangular Y's splitter sits at the airflow ratio, the legs then transitioning to their outgoing sizes inside the
+   fitting.
+9. Shapes: Rectangular · Round · Rect main + round branches · Optimiser's choice.
+10. A rectangular branch meets its diffuser with a square-to-round to the neck, its balancing damper, then a flexible
+    runout (≤ 1.5 m).
+11. Constant friction is the default, at the project's friction rates and velocity limits, onto the fabrication steps;
+    the life-cycle optimum stays as an option.
+12. The trunk takes the cheapest standard height that fits the void, kept through the trunk.
+
+### Phase 1: smooth turning and moving (ff3e9c1)
+
+What is dragged stays under the pointer; a snap catches only near its line and never turns the drag into steps.
+
+**Moves:**
+- Guides and the grid catch within 4 px and hold to 6 px (the grid within an eighth of its step on screen, held to a
+  fifth).
+- Between them, the grabbed centre lands on a tidy millimetre under a pixel: 10, 5 or 1 mm by zoom.
+- Guides align a centre with a centre and an edge with the same edge, not an edge with the far one.
+- Alt: whole millimetres, no snapping.
+
+**Turns:**
+- The orientation follows the pointer to 0.5°, with magnetic stops at multiples of 45° and at the walls' squares (5 px
+  catch, 9 px hold at the pointer).
+- Shift turns in 15° steps, Alt freely; near the pivot the turn holds.
+- A drag starts free, even from a stop or a grid line: the magnets come on past their release distance.
+- A square face's spigot keeps its side until a turn is 10° past the diagonal. The drag passes the sides it showed back
+  to the model, so a new side holds back to 35°: the spigot no longer swings at 45°.
+- The readout names the turn from its first degree and says which stop holds ("at 45°", "square to the wall"); the
+  protractor marks the stops.
+- 3D drags and the gizmo ring measure the catch distances in pixels on their own surface.
+
+### Phase 2: turn the unit, then design its ducts (c455a3c)
+
+While a unit's turn is dragged, its ducts and their accessories stay where they are, drawn faint, and nothing re-routed
+is drawn. The ducts no longer swing about, and a large unit's turn no longer costs a duct re-route every frame.
+
+On release the turn is stored and the optimiser designs the unit's ducts for the new collar (against the plain
+re-route, as before). The runs stay faint under "Designing DU-1's ducts for the new collar…" until the design lands,
+then are drawn solid. It is one undo step for all of it.
+
+- **Which runs wait:** `ductsAwaitingTurn` (`ductNetworkMove`) lists the runs of every system whose unit turns without
+  the whole system. A system turned whole still turns rigidly, live; a diffuser turned alone keeps its runout
+  following.
+- **The 3D views** draw the same runs faint (transparent copies of their materials) and freeze them: they are not
+  re-drawn against the turned unit.
+- **The readout while turning:** "On release, DU-1's ducts are designed for the new collar."
+
+### Phase 3: slide the small pieces along a duct (6879fa2)
+
+Pin one of these with one click, and a slide grip sits on it, on the plan and in the 3D views:
+- a take-off collar;
+- a reducer or square-to-round;
+- a volume damper, an access door or an attenuator.
+
+Dragged, it moves along its duct:
+- 10 mm steps, Alt 1 mm, with a magnetic stop at the middle of its clear straight;
+- a typed number is exact, and the arrow keys step it when it is focused;
+- the readout says where it is ("The take-off to SAD-1 · along the main: 1,500 → 1,200 mm"), with a dimension from
+  where its place is measured;
+- one undo step each.
+
+**It moves continuously.** It stops at the first place the rules refuse on its way (a fitting, a take-off, a wall, its
+branch's runout) and the readout says why. It never jumps an obstacle to a clear place beyond.
+
+**A transition** (`transition-move`) slides along its level straight. A vertex is added where it leaves an elbow or the
+collar, and dropped where it comes back. Take-offs, accessories and node choices keep their places, its taper goes
+with it, and its card follows its new key.
+
+**A take-off's branch follows.** Where its slid stub would bend the runout too tight, the terminal's spigot turns to meet
+it (as Auto duct chooses a side), or the runout is laid again with a new elbow toward its terminal. The solver also
+checks the main the branch is taken off, where its take-off windows are planned.
+
+**Accessories:** one dragged goes exactly where asked (the planner says what it would overlap); the card's typed place
+still finds the nearest clear spot. The cards gain a transition's place (and length) field, and take-off and
+accessory places scrub.
+
+### Phase 4: a diffuser's collar on top or on its side (1b9e33c)
+
+A terminal's plenum box takes its collar on a side or on its top (`spigotEntry`). A top collar's port is vertical:
+- **A flexible runout** comes straight down into it for its lead, bending at a diameter or more.
+- **A rigid runout** runs on to above the collar, turns down on an elbow and drops onto it. It is reduced on the level
+  first, or takes a 45° offset for a short step across.
+- **Where the void is too shallow,** the planner says so with the numbers (`DU_TOP_COLLAR_VOID`: the soffit, or the
+  duct feeding it, is too low).
+
+**Where it is set:**
+- the terminal's Properties: a Side / Top toggle;
+- a project default for new terminals (Systems → Ducts);
+- Auto duct's "Diffuser collars: As set / Side / Top", written with the runs;
+- the runout's card: a Collar Side / Top toggle in the terminal's block.
+
+A collar moved off the top of a square box goes on the side its runout reaches cleanly (its own side first), and the
+status names any rule the change now breaks. The plan draws a dashed circle on the box; 3D puts the collar on its roof.
+
+**Moves:** a rigid runout its legs cannot stretch to is re-made onto the moved spigot (straight on, with a turn or with
+an offset). A run left as it was still says why it cannot follow. The runout builders move to `ductRunouts.ts`.
+
+### Phase 5: a Y divided in its airflow ratio (f63d035)
+
+A rectangular Y now divides the flow as SMACNA Fig. 2-5 draws it:
+- **The splitter** gives each leg its share of the main's width at the airflow ratio (the split end's `share`), so the
+  air leaves both legs at the main's velocity. It sits off-centre when the flows differ.
+- **Each leg** turns on its own radius elbow (R/W at least 1 on its own width).
+- **A transition inside the fitting** takes each leg to its outlet's size (flat bottom, at the design taper).
+- **A leg under 100 mm** is an error that names the bullhead tee with turning vanes.
+
+**Losses** come from the fitting's own flow and area ratios, part by part: a sudden change where the air divides off the
+designed share (nil at it), the leg's elbow on its own velocity, and its transition. The optimiser prices the same
+fitting and lead, and no longer needs a Y's main as wide as its two outlets side by side.
+
+**Who writes the share:** Auto duct, at the outlets' airflow ratio, and sizing a system by constant friction; the
+outlets' runs follow their flanges. The split's card offers "Splitter at the airflow ratio" (on a Y drawn before it,
+by its outlets' sizes when no airflow is known). Switching Y split / Y junction keeps the splitter.
+
+**Drawing:** the plan and 3D draw each leg, its transition and the splitter. The card and the BOM say it in full:
+"divided 56 / 44 % · legs 222×250 + 178×250 · to 250×200 + 200×200". A Y drawn before the splitter (no share) keeps
+its geometry.
+
+### Phase 6: the system's shape, sized by constant friction onto fabrication sizes (740b9cd)
+
+**Four shapes** on the Auto duct card: Rectangular, Rect + round, Round, Optimal.
+
+**Rectangular** is new: trunk and branches rectangular. Branches leave on 45° shoe take-offs or Y splits, each with its
+balancing damper at the take-off. At each terminal a square-to-round takes the branch to the neck, then its flexible
+runout.
+
+*Not as decision 10 reads.* It put the damper between the square-to-round and the runout. It sits at the take-off
+instead, as every Auto duct branch's damper does: practice keeps a balancing damper as far from its diffuser as it
+can, so the noise of a part-closed damper is not at the outlet. Moving it means one more fitting in the straight
+before the runout, which tight layouts do not have.
+- The router, the sizing and the realiser lay a rectangular branch by the same rules. A take-off's reach on its branch
+  is the main's half, the shoe's own collar, its damper and a lead; its last leg holds the square-to-round and its
+  lead after that reach, or after the last bend's setback, neck and margin (`endLegNeedMm`, exactly the realiser's,
+  with no floor).
+- A rigid branch's take-off stays where the design put it: past the unit's connector and collar transition, within
+  100 mm (its runout takes up that much).
+- No round stubs, spin-ins or plenum branches are offered in this shape.
+
+**Kept only where it is the design.** Auto duct designs Rectangular alongside Rect + round:
+- Rectangular is kept where it is clean and costs at most 1.5 times Rect + round (`RECTANGULAR_COST_LIMIT`). Where its
+  branches run straight to the terminals it costs 1.1–1.2 times; where they wind round to reach the spigots straight,
+  2 to 2.5 times, with twice the duct or more.
+- Otherwise Rect + round is designed, and the card says why on its own line:
+  - "No clean layout rectangular throughout fits these terminals (each rectangular branch needs a straight for its
+    square-to-round before its runout): designed with a rectangular main and round branches instead."
+  - "Rectangular throughout would cost USD 1,140 here, 1.9 times a rectangular main with round branches (USD 600): its
+    branches would wind round to reach the terminals' spigots straight. Designed with a rectangular main and round
+    branches instead."
+
+In the project's 6.45 × 4.65 m room, the FDUM22 with two diffusers 2.3 m out, either side, is rectangular throughout
+(USD 400, 5.3 m: a 350 × 150 trunk, one shoe take-off, one elbow). Four diffusers in a row there, or a 2 × 2 grid,
+fall back: the 674 × 164 collar needs about 1 m of transition before the first take-off, and the room's depth leaves no
+straight for four square-to-rounds.
+
+**No route through the unit.** The routing graph had left the unit's own casing out of its obstacles, and trees ran
+along its face and through it. The casing is now an obstacle like any other.
+
+**The system remembers its shape.** It is written in the system's sizing record (`initialSizing.shape`). A re-design
+after a turn asks for the same shape; a system designed before the shape was kept is read off its trunk.
+
+**"Re-design as…" on the unit's card.** The card says "Ducts: Rectangular" and offers the other three shapes. One click:
+- the optimiser designs the system again in that shape, in its worker, as the system was set: its terminals, airflows,
+  services, sizing basis and fan speed;
+- while it works, the card says "Re-designing DU-1's ducts as round…" with Cancel;
+- the result is one undo step;
+- the status says what changed, each figure against what it was: "DU-1's ducts re-designed as round: 4.0 m of duct
+  (was 5.3 m), 2 elbows (was 1), 22 Pa for the fan (was 26 Pa), first cost USD 271 (was USD 400)."
+
+A design that would break more rules than the ducts it replaces is not taken, and the status says which rules. A
+change meanwhile to what it replaces or serves leaves the ducts as they are; so does a locked run ("unlock it to
+re-design them").
+
+**Constant friction is the default** (`autoSizingMethod`); the life-cycle optimum stays as an option. Each section is
+sized at the friction rate for the air it carries, under its part's velocity limit, onto fabrication sizes:
+- **Rectangular sides** go in steps of 25, 50 or 100 mm: a project setting, "Rectangular sizes in" (Systems → Ducts),
+  default 50. The optimiser's grid, the router's take-off mains, the split sides and the cards' recommended sizes all
+  use it.
+- **Round** takes the stocked list.
+
+**The economical trunk height.** The three cheapest routes are each sized again at every standard height that fits the
+void (up to 600 mm), one height through the trunk with the width reducing. Each is verified and priced exactly as the
+optimiser's own (sheet, fabrication, insulation, reducers, fittings, supports), and the cheapest is kept: fewer errors
+first, then the lower first cost, a tie to fewer pieces. Heights are tried nearest the optimiser's own first. A height
+whose sizes come out as one already priced is not verified again (the take-offs raise a low trunk to the same
+sections). On the FDU280 test case, this took a route from 600×500 at USD 1,873 to 700×350 at USD 1,798, and that route
+became the selected design.
+
+**The fit at the collar.** Sizing by constant friction widens a take-off's first section toward the collar at the same
+height, rather than ending in a transition steeper than the rules allow. A collar's own size is used only where it is
+at least as tall as the section.
+
+**The card's line** gives the basis and what came of it: "Constant friction 0.80 Pa/m · 600 m³/h · trunk 400×250 →
+300×250 · 2 reducers · max 4.2 m/s". The trunk is the stretches carrying two terminals or more (not the run on to the
+last one). The same line, measured on the ducts as drawn, heads the applied system's summary.
+
+### Verified
+
+- **Unit tests:**
+  - `ductSystemShape` 17:
+    - the settings and the step grid;
+    - rectangular throughout on a roomy row (shoe take-offs, square-to-rounds, runouts, no planner errors);
+    - the fallback on a tight row with its note, and the cost limit with its figures;
+    - in the project's room: two diffusers rectangular throughout, nothing back past the unit's face; four in a row
+      falling back;
+    - the routing graph keeping out of the unit's casing;
+    - the end-leg rule, exactly the realiser's;
+    - the record keeping the shape, a turn re-design asking for it, the card reading it;
+    - the re-design request and its refusals; a round re-design end to end (one command, no errors, the sentence);
+    - the command applied as the store applies it; the phrases; the sizing line.
+  - `highCapacityUnits` 4 (one new): the sizing line, and the economical trunk height. No other standard height that
+    fits the void prices the FDU280's system lower, and the trunk keeps one height with its width reducing. Its time
+    budget is raised to 60 s: under the full suite's load, the 20 s budget stopped the search early and kept another
+    design.
+  - `ductTopCollar` 17; `ductYSplit` 11.
+- **Full suite:** 275 files / 2,445 tests (the benchmark gate's 43 cases run on their own).
+- **Benchmark gate:** `DUCT_BENCHMARK=1` 43/43, before and after the routing graph took in the unit's casing.
+- **On canvas,** each restoring the project exactly:
+  - `smooth-p1` 24/24, `turn-p2` 15/15, `slide-p3` 31/31, `collar-p4` 28/28, `split-p5` 12/12;
+  - `shape-p6` 32/32 in the project's room (the FDUM22, two square Ø200 diffusers 2.3 m out, 2.6 m either side):
+    - Auto duct Rectangular: the four shapes, the card's sizing line, rectangular throughout applied (a 350 × 150
+      trunk, a shoe take-off with its damper, a square-to-round and runout at each terminal), no errors, the shape
+      kept;
+    - the unit's card: "Ducts Rectangular", Re-design as Round (busy with Cancel, the status's figures, round
+      throughout, one undo back exactly), Cancel at once (nothing changes, and it says so), Re-design as Rect + round;
+    - the applied system's measured line;
+    - 100 mm steps;
+    - four diffusers in the row: the fallback said on its own line, kept when another design is picked.
+- **Regressions** on the final code, each restoring the project exactly: `unit-panel` 34/34, `air-p1` 25/25,
+  `redesign-p3` 46/46, `collar-p4` 28/28, `duct-seg-p3` 29/29, `duct-seg-p4` 16/16, `duct-seg-p5` 14/14, `dims-p2`
+  23/23, `resize-p2` 26/26, `slide-p3` 31/31, `move-p1` 24/24, `move-p2` 33/33, `rotate-p2` 32/32, `turn-p2` 15/15,
+  `smooth-p1` 24/24, `split-p5` 12/12, `unit-high-capacity` 20/20.
+- **Driver note:** the shape radio once named "Rect" is now "Rect + round". A driver picks it with `exact: true`;
+  "Rect" alone matches "Rectangular" too.
+
+### Found while verifying, fixed
+
+- **Guides held the drag.** Pairing every guide with every edge held a moving diffuser on some guide in 76 % of frames.
+  Guides now pair a centre with a centre and an edge with the same edge, per axis.
+- **A turned unit's runs re-drawn solid.** In 3D, the preview re-drew the waiting runs against the turned unit; they are
+  frozen until the design lands.
+- **A run that could not follow said nothing.** A move left a run as it was without the reason ("can no longer reach
+  it"); the reason is now reported for unchanged runs too.
+- **Collar options did not show.** Options in the card's terminal block need chips (that block has no tab).
+- **Constant friction made a plenum design fail.** A take-off's first section ended in a 152° transition at a wider,
+  shorter collar. Constant friction now widens toward the collar at the same height, and takes the collar's size only
+  where it is as tall.
+- **Rectangular gave spin-ins and stubs.** The all-flexible seed trees and the router's stubs came through in the
+  rectangular shape. They are filtered out, and the leaf straight rule and the DP's end rule make room for the
+  square-to-round.
+- **The split's side width was off the step.** Auto duct's split-trunk layout sized its sides on the default 50 mm,
+  whatever the step setting; it now uses the setting.
+- **Trunk heights priced twice.** Low heights that the take-offs raise to the same sections were each verified, and the
+  cap of eight could stop short of the tall heights in a deep void. Identical sizings are verified once, nearest the
+  optimiser's own height first.
+- **Rectangular failed in the project's own room.** The driver's first layout did not fit the 6.45 m room, and the
+  layouts that did all came out with clashes. Three stages disagreed about a rectangular branch:
+  - the router asked 625 mm before its runout where the realiser needs about 960 mm;
+  - the sizing used a 100 mm collar where a shoe's is 152 mm or more;
+  - the realiser moved take-offs off the collar transition by up to 370 mm, so a rigid branch's runout bent too tight.
+
+  Only contorted trees survived (trunks doubling back past the unit). The rules are now aligned (above), the casing is
+  an obstacle, and the cost limit keeps a design that still winds round from being shown as rectangular.
+- **The fallback was buried.** The card listed "designed with a rectangular main and round branches instead" among its
+  collapsed notes, below the chart. It now opens the result, under the card's buttons. It also stays when another
+  design is picked on the chart (it had been dropped with the issues of the design first shown).
+- **A take-off stopped the collar's transition.** Sizing by constant friction (the fit at the collar, above) treated
+  a run's first take-off as fixed, so in the unit panel a main velocity the main already met widened it to 300 × 300.
+  The rule now looks only at what stays put (elbows, walls, the run's end); take-offs are placed past the transition.
+- **A reserved collar straight, tried and taken out.** Keeping every route off the straight in front of the collar
+  removed the take-offs the router places there (the realiser moves them past the transition; a flexible stub takes
+  that up), and contorted the designs of the unit panel's layout. The casing alone is kept.
+- **A take-off slid back stops sooner.** With constant friction the default, the slide driver's trunk is narrower and its
+  collar transition longer: a take-off dragged 300 mm back stops after 130 mm, the readout saying it would overlap the
+  transition. That is right; the driver's check now accepts any stop the readout explains, and its 3D drag stays within
+  the room.
+- **The sizing line called a square-to-round a reducer.** On a trunk running on to its last terminal, the line read
+  "trunk 250×250 → Ø200 · 1 reducer". It now gives the trunk's own stretches.
+
+### Known limits
+
+- **Rectangular throughout needs room.** Each rectangular branch needs a straight for its square-to-round before the
+  runout, and the router cannot take two branches off at one station (a cross). In tight layouts Auto duct falls back
+  to Rect + round and says so.
+- **Rectangular takes twice as long** to design (Rect + round is designed alongside it for the comparison): a few
+  seconds in the worker.
+- **The trunk height is priced for the three cheapest routes,** at up to eight distinct sizings each; other routes keep
+  the height the optimiser chose.
+- **Re-design as…** designs the unit's whole system. Its accessories are set again where a straight takes them, else
+  listed, as in a turn re-design.
+- **Fitting losses** for the divided-flow Y are practice values built from its parts, not a certified table.
+- **Front and Side** views cannot pin a take-off behind the unit to slide it; use Iso or the plan.
+- **A run can cross itself (found here, not new).** Two diffusers 0.8 m either side of an FDUM22's axis, 1.6 m out:
+  every layout the optimiser verifies winds round, and the one it keeps runs its trunk back over its own straight.
+  The clash check does not compare a run's own pieces, so it counts as clean. The same design comes out at f63d035,
+  before this work. It needs a self-crossing check in verification and a router that does not loop back; to be
+  planned.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
