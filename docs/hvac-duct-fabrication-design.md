@@ -2699,6 +2699,126 @@ last one). The same line, measured on the ducts as drawn, heads the applied syst
   before this work. It needs a self-crossing check in verification and a router that does not loop back; to be
   planned.
 
+## A run that crosses itself, and diffusers close to the unit (22–23 October 2026)
+
+**The request:** "yes do", then "yes": plan, then fix, the trunk found running back over itself while verifying the six
+duct fixes. Approved plan: `C:\Users\idang\.claude\plans\duct-self-crossing-and-close-diffusers.md`.
+
+**Your decisions (22 October 2026):** "yes", so every recommended option:
+1. A run crossing itself is an error: Auto duct looks for another design, and the canvas flags drawn runs.
+2. The plenum places its spigots for clean runouts and turns the diffusers' collars to suit.
+3. A design that still winds round gets a note on the Auto duct card (a branch over 3 times the straight distance),
+   with what would help.
+
+**What was found.** In the project's room (the FDUM22, two square Ø200 diffusers 1.6 m out, 0.8 m either side), every
+shape kept a design counted clean that no designer would draw:
+- Rect + round ran its trunk 2.3 m out, back down beside itself, across its own first straight at the collar, and up
+  the axis to D1 (USD 537).
+- Round and Optimal looped each branch of a wye round the far side of its diffuser: about 4 m of duct to reach
+  diffusers about 1 m away (USD 407).
+
+The same designs came out at `f63d035`, before the six fixes. Two causes:
+- The clash check compared a run with other runs, terminals, equipment and pipes, never with its own pieces.
+- The router joins a run's path from parts it solves separately; nothing stops a later part from running back over
+  an earlier one.
+
+### Phase 1: a run crossing itself is a clash (b206bf0)
+
+`findDuctClashes` compares each run's pieces with its own pieces further along. It leaves out the piece each is joined
+to, and a piece's own boxes never meet (a runout's curve is the bend check's).
+- **Reported as** kind `self`, with both marks: "S-004 crosses R-01 of its own run." On the canvas: "Supply duct: S-004
+  crosses R-01 of the same run at (x, y, z)", with "Re-route the run so it does not double back over itself, or change
+  the level of one stretch." Auto duct's verification and the sizing report share one message (`clashMessage`).
+- **In Auto duct** the error feeds the router's cuts like any clash, so the router steers off the crossing; where
+  nothing clean is left, the least bad design shows the error with the optimiser's reasons.
+- **A unit turned 45°:** its quick re-route also runs back over itself, so the reason the optimiser's design is taken
+  reads "would break 2 clashes" (the turn tests now assert the crossing).
+
+Over 64 designs (the benchmark's rows, lines and grids, collars dropped and turned to the unit, in Optimal and Rect +
+round), one other crossed itself: a row of three with collars turned to the unit, in Rect + round.
+
+### Phase 2: the plenum's spigots (935580e)
+
+The plenum on the collar put each spigot as near its diffuser as the face allowed, scored only against the diffuser's
+current collar side. It now tries, for each diffuser:
+- each face (end, left, right);
+- each place along it, every 25 mm, clear of the face's other spigot;
+- each of the diffuser's collar sides with room in front.
+
+Each runout is scored as the planner draws it: the shortest clean one wins; where none is clean, the nearest to clean
+(how far its bend falls short of one diameter), then the nearest to the diffuser's front. The chosen collar side is
+turned as Auto duct turns collars.
+
+Close two-diffuser layouts in the project's room now get a clean plenum: 2.3 m out at ±0.8 m or ±1.2 m, and 1.6 m out at
+±1.5 m. At 1.6 m out, ±0.8 m, Rect + round keeps the plenum (USD 245, 1.4 m of rigid duct, no elbows) with one runout
+bending at 173 mm, where the rule is 200 mm (see Known limits).
+
+### Phase 3: a note where the design winds round (935580e)
+
+`ductAutoWinding.ts`: for each terminal of the kept design, the duct from the unit's collar (along the trunk, through
+each take-off, split or spigot, then its own run) against the straight distance from the collar's lip to its spigot.
+Past 3 times, and 1.5 m longer (so a terminal right by the unit is not flagged for its runout), the Auto duct card
+says so, naming it:
+
+"D1: its duct runs 5.7 m to reach it, 3.8 times the 1.5 m straight from the collar (it winds round to come at its
+collar straight). Moving it a little, or a top collar (its runout then comes down from above), may give a shorter
+design."
+
+Auto duct already tries each diffuser's side collars, so the note points at what it does not try: moving the
+diffuser, or a top collar.
+
+It is worked out when a design is selected, so it follows the design picked on the chart.
+
+### Verified
+
+- **Unit tests:**
+  - `ductSelfClash` 7: a run doubling back, a run crossing itself, an offset, back-to-back elbows and a U-turn with
+    room, the canvas message; and in the project's room, no shape keeping a crossing, the plenum in Rect + round, the
+    winding named in Round and Optimal.
+  - `ductAutoWinding` 2: a winding run named with its figures; a direct run and a terminal by the unit not.
+  - `ductTurnRedesign`, `turnRedesignController`: the 45° re-route's own crossing.
+- **HVAC and store suites:** 228 files / 2,092 tests. **Full suite:** 277 files / 2,454 tests.
+- **Benchmark gate:** 43/43.
+- **On canvas:** `selfcross-p4` 7/7 in the project's room, restoring it exactly:
+  - a run drawn back across itself: the checks panel lists "Supply duct: S-003 crosses R-01 of the same run at (…)";
+    one undo takes it away;
+  - two diffusers 1.6 m out, ±0.8 m: Rect + round previews the plenum with a runout to each, nothing crossing itself;
+  - Round: the card names both diffusers with the winding figures.
+- **Regressions,** each restoring the project exactly: `unit-panel` 34/34, `dims-p2` 23/23, `resize-p2` 26/26,
+  `move-p1` 24/24, `move-p2` 33/33, `redesign-p3` 45/45, `shape-p6` 32/32, `slide-p3` 31/31, `air-p1` 25/25,
+  `collar-p4` 28/28, `duct-seg-p3` 29/29, `duct-seg-p4` 16/16, `duct-seg-p5` 14/14, `rotate-p2` 32/32, `turn-p2` 15/15,
+  `smooth-p1` 24/24, `split-p5` 12/12, `unit-high-capacity` 20/20.
+
+### Found while verifying
+
+- **The plenum fix fell short in the room's own layout.** The plan expected spigots at about ±225 mm to give clean
+  runouts. Measured, the runout curve bends tighter than that: clean only within about 115 mm of the axis, and two
+  spigots must sit 250 mm apart. D1 now gets a clean runout and D2 one at 173 mm.
+- **Six drivers stood on designs that crossed themselves or now get the plenum.**
+  - The unit panel, dims, resize and both move drivers placed two diffusers at this very layout. They sized and
+    dragged the looping trunk. They now place them to one side (2.3 m out, 1.5 m and 2.7 m across): a clean trunk
+    that turns, with a take-off on its second straight.
+  - The re-design driver's three diffusers (1.5 m out at ±1.6 m, and 2.35 m on the axis) had a trunk whose elbow
+    E-03 ran back over the collar's connector C-01. It was counted clean before; it is now an error, and that layout
+    has no clean design. The driver places a third diffuser by the two (1.3 m out, 2.7 m across) for a trunk with a
+    long second straight for its access door.
+  - In the new layout, `move-p1` nudges the unit away from its ducts (toward them, its take-off met a transition).
+    `move-p2` types its 1,000 mm move on the nearer diffuser, toward the axis (the far one met the room's side wall).
+    Their checks are otherwise unchanged.
+
+### Known limits
+
+- **The runout curve model.** A runout is drawn as a Bézier curve, with a 100 mm straight lead at each end and
+  handles 0.4 of its chord. For a 90° turn with unequal offsets, it bends tighter than the true arc a fitter makes:
+  at 150 mm off the axis, 173 mm against an arc's 225 mm. This rejects some runouts a fitter would make. A follow-up
+  could shape it as straight + arc + straight (or optimise the handles); it changes every runout's drawing, length
+  and loss, so it needs its own plan.
+- **Opposed take-offs** (two spin-ins on opposite walls at one station) are refused by the planner ("two take-offs
+  overlap"). At the room's spacing they would not help: the runout has about 100 mm to drop into the diffuser's side
+  collar.
+- **Lines of diffusers on the collar's axis** come out with 1–6 errors in Rect + round (Optimal is clean): a separate
+  limit, seen in the survey.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
