@@ -27,6 +27,8 @@ export type AutoDuctIssueCode =
   | 'DU_AUTO_WALL'
   | 'DU_AUTO_ESP'
   | 'DU_AUTO_SPIGOT'
+  | 'DU_AUTO_SHAPE'
+  | 'DU_AUTO_WINDING'
   | 'DU_TERMINAL_VELOCITY';
 
 export interface AutoDuctIssue {

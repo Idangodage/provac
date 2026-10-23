@@ -5,11 +5,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { HvacElement } from '../../../../types';
+import type { HvacElement, Point2D } from '../../../../types';
 
 import { resolveUnitAirPorts } from './ductAirPorts';
+import { generateAutoDuctInShape, type AutoDuctShape } from './ductAutoLayout';
 import { buildDuctRunDraftElement } from './ductDraft';
 import { DEFAULT_DUCT_SETTINGS } from './ductSettings';
+import { terminalEnvelope, typicalTerminalSpec } from './ductTerminals';
+import { readDuctRunSpec } from './ductTypes';
 import { validateDuctRuns } from './ductValidation';
 import { clashMessage, findDuctClashes } from './ductVolumes';
 
@@ -55,4 +58,60 @@ describe('a run that crosses itself', () => {
     expect(issue!.message).toMatch(/: [A-Z]-\d+ crosses [A-Z]-\d+ of the same run at \(-?\d+, -?\d+, z \d+\)\.$/);
     expect(issue!.suggestedFix).toMatch(/does not double back over itself/);
   });
+});
+
+describe('two diffusers close to the unit, in the project\'s 6.45 × 4.65 m room', () => {
+  // The FDUM22 2.8 m from the wall its collar faces; two square Ø200 diffusers 1.6 m out, 0.8 m either side.
+  const roomUnit: HvacElement = { ...unit, id: 'fdum', position: { x: 5053.94, y: 4242.02 } };
+  const lip = resolveUnitAirPorts(roomUnit).find((entry) => entry.kind === 'supply')!.lip;
+  function diffuser(id: string, centre: Point2D): HvacElement {
+    const spec = typicalTerminalSpec('square-4way', 200);
+    const envelope = terminalEnvelope(spec);
+    return {
+      id, type: 'diffuser', position: { x: centre.x - envelope.widthMm / 2, y: centre.y - envelope.depthMm / 2 }, rotation: 0,
+      width: envelope.widthMm, depth: envelope.depthMm, height: envelope.heightMm, elevation: 2400, mountType: 'ceiling',
+      label: id.toUpperCase(), supplyZoneRatio: 0.5, roomId: 'r', properties: { terminal: spec },
+    };
+  }
+  const terminals = [diffuser('d1', { x: lip.x - 800, y: lip.y - 1600 }), diffuser('d2', { x: lip.x + 800, y: lip.y - 1600 })];
+  const walls = [
+    { id: 'w1', startPoint: { x: 2300, y: 1350 }, endPoint: { x: 8900, y: 1350 }, thickness: 150 },
+    { id: 'w2', startPoint: { x: 8900, y: 1350 }, endPoint: { x: 8900, y: 6150 }, thickness: 150 },
+    { id: 'w3', startPoint: { x: 8900, y: 6150 }, endPoint: { x: 2300, y: 6150 }, thickness: 150 },
+    { id: 'w4', startPoint: { x: 2300, y: 6150 }, endPoint: { x: 2300, y: 1350 }, thickness: 150 },
+  ];
+  const rooms = [{ id: 'r', vertices: [{ x: 2375, y: 1425 }, { x: 8825, y: 1425 }, { x: 8825, y: 6075 }, { x: 2375, y: 6075 }] }];
+  const design = (shape: AutoDuctShape) => {
+    const drawing = [roomUnit, ...terminals];
+    const result = generateAutoDuctInShape(drawing, {
+      unitId: 'fdum', terminalIds: ['d1', 'd2'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false },
+      rebuildExisting: false, shape, walls, rooms,
+    }, DEFAULT_DUCT_SETTINGS);
+    const turned = new Map(result.terminalUpdates.map((element) => [element.id, element]));
+    return { result, scene: [...drawing.map((element) => turned.get(element.id) ?? element), ...result.runs] };
+  };
+
+  it('no shape keeps a design that crosses itself (Rect + round once kept a trunk running back over its own straight)', () => {
+    for (const shape of ['rect', 'round', 'optimal'] as const) {
+      const { scene } = design(shape);
+      expect(findDuctClashes(scene, DEFAULT_DUCT_SETTINGS, []).filter((clash) => clash.kind === 'self'), shape).toEqual([]);
+    }
+  }, 240000);
+
+  it('Rect + round keeps a plenum on the collar, its spigots placed for the runouts, both on its end face', () => {
+    const { result } = design('rect');
+    const specs = result.runs.map((run) => readDuctRunSpec(run)!);
+    expect(specs.find((spec) => spec.start.kind === 'unit-port')!.end.kind).toBe('plenum');
+    const spigots = specs.filter((spec) => spec.start.kind === 'spigot');
+    expect(spigots).toHaveLength(2);
+    expect(spigots.every((spec) => spec.start.kind === 'spigot' && spec.start.face === 'end')).toBe(true);
+  }, 240000);
+
+  it('Round and Optimal keep a wye whose branches wind round the diffusers, and say so, naming each', () => {
+    for (const shape of ['round', 'optimal'] as const) {
+      const { result } = design(shape);
+      const winding = result.issues.filter((issue) => issue.code === 'DU_AUTO_WINDING');
+      expect(winding.map((issue) => issue.message.slice(0, 3)).sort(), shape).toEqual(['D1:', 'D2:']);
+    }
+  }, 240000);
 });

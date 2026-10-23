@@ -54,6 +54,7 @@ import {
   type ServiceCtx,
   type TerminalCtx,
 } from './ductAutoContext';
+import { windingIssues } from './ductAutoWinding';
 import { spigotOrigin, splitOrigin, tapOrigin } from './ductBranchTargets';
 import { legNormal } from './ductBranches';
 import { ductWallsFromInputs, withActiveDuctBuilding, type DuctRoomOutline, type DuctWall, type DuctWallInput } from './ductBuilding';
@@ -483,6 +484,8 @@ function candidateTerminalSides(ctx: ServiceCtx, build: Build): Pick<Candidate, 
 const PLENUM_NECK_MM = 400;
 const PLENUM_MAX_TERMINALS = 4;
 const PLENUM_MAX_REACH_MM = 4000;
+/** Places a plenum spigot is tried at along its face (mm). */
+const PLENUM_SPIGOT_STEP_MM = 25;
 
 function plenumCandidate(ctx: ServiceCtx): Candidate | null {
   const { terminals, port, settings, frame } = ctx;
@@ -503,32 +506,41 @@ function plenumCandidate(ctx: ServiceCtx): Candidate | null {
   const margin = 50;
   type Spigot = { terminal: TerminalCtx; face: DuctSpigotFace; alongMm: number; acrossMm: number };
   const spigots: Spigot[] = [];
-  // Where on a face a spigot for this terminal would go, and how well its runout would sit.
+  /**
+   * The best spigot for this terminal on a face: each place along it (every
+   * PLENUM_SPIGOT_STEP_MM, clear of the face's other spigot) and each of the
+   * terminal's collar sides with room in front, scored by its runout as the
+   * planner draws it — a clean bend within the flex length, the shortest;
+   * else the nearest to clean. Null where the face is full.
+   */
   const option = (terminal: TerminalCtx, face: DuctSpigotFace) => {
-    const r = terminal.branch / 2;
     const taken = spigots.filter((spigot) => spigot.face === face);
     if (taken.length >= 2) return null;
-    const spanFrom = margin + r;
-    const spanTo = (face === 'end' ? width : length) - margin - r;
-    let at = face === 'end'
-      ? Math.min(Math.max(terminal.lip.y + width / 2, spanFrom), spanTo)
-      : Math.min(Math.max(terminal.lip.x - back, spanFrom), spanTo);
-    for (const other of taken) {
-      const otherAt = face === 'end' ? other.acrossMm + width / 2 : other.alongMm;
-      const gap = (other.terminal.branch + terminal.branch) / 2 + margin;
-      if (Math.abs(at - otherAt) < gap) at = at >= otherAt ? otherAt + gap : otherAt - gap;
+    const span = face === 'end' ? width : length;
+    const sides = [terminal, ...(terminal.variants ?? []).filter((variant) => variant.spec.spigotSide !== terminal.spec.spigotSide)];
+    let best: { spigot: Spigot; score: number } | null = null;
+    for (const side of sides) {
+      const r = side.branch / 2;
+      for (let at = margin + r; at <= span - margin - r + 1e-6; at += PLENUM_SPIGOT_STEP_MM) {
+        const clash = taken.some((other) => Math.abs(at - (face === 'end' ? other.acrossMm + width / 2 : other.alongMm)) < (other.terminal.branch + side.branch) / 2 + margin - 1e-6);
+        if (clash) continue;
+        const stubEnd = face === 'end' ? { x: endX + stub, y: at - width / 2 }
+          : { x: back + at, y: (face === 'left' ? 1 : -1) * (width / 2 + stub) };
+        const out = face === 'end' ? { x: 1, y: 0 } : { x: 0, y: face === 'left' ? 1 : -1 };
+        const fit = flexFit(ctx, stubEnd, out, ctx.bottomZ + height / 2 - side.neck / 2, side);
+        const front = { x: side.lip.x + side.normal.x * RUNOUT_TARGETS_MM[0]!, y: side.lip.y + side.normal.y * RUNOUT_TARGETS_MM[0]! };
+        const wall = { x: stubEnd.x - out.x * stub, y: stubEnd.y - out.y * stub };
+        // The collar + damper are not routed: a stub into a pipe or a unit rules the place out.
+        const blocked = stretchBlocked(ctx, wall, stubEnd, side.branch, ctx.bottomZ + height / 2 - side.branch / 2, new Set([side.element.id, ctx.unitId]));
+        // Not clean: the nearest to clean first (how far its bend falls short of one diameter, how far it is over
+        // the flex length), then the nearest to the terminal's front (where a rigid branch would hand over).
+        const shortfall = Math.max(0, side.neck + 2 - fit.radiusMm) + Math.max(0, fit.lengthMm - settings.flexMaxLengthMm);
+        const score = (blocked ? 20000 : 0) + (flexOk(fit, side, settings) ? fit.lengthMm
+          : 3000 + 10 * shortfall + Math.abs(front.x - stubEnd.x) + Math.abs(front.y - stubEnd.y));
+        if (!best || score < best.score - 1e-6) best = { spigot: { terminal: side, face, alongMm: face === 'end' ? 0 : at, acrossMm: face === 'end' ? at - width / 2 : 0 }, score };
+      }
     }
-    if (at < spanFrom - 1e-6 || at > spanTo + 1e-6) return null;
-    const stubEnd = face === 'end' ? { x: endX + stub, y: at - width / 2 }
-      : { x: back + at, y: (face === 'left' ? 1 : -1) * (width / 2 + stub) };
-    const out = face === 'end' ? { x: 1, y: 0 } : { x: 0, y: face === 'left' ? 1 : -1 };
-    const fit = flexFit(ctx, stubEnd, out, ctx.bottomZ + height / 2 - terminal.neck / 2, terminal);
-    const front = { x: terminal.lip.x + terminal.normal.x * RUNOUT_TARGETS_MM[0]!, y: terminal.lip.y + terminal.normal.y * RUNOUT_TARGETS_MM[0]! };
-    const wall = { x: stubEnd.x - out.x * stub, y: stubEnd.y - out.y * stub };
-    // The collar + damper are not routed: a stub into a pipe or a unit rules the face out.
-    const blocked = stretchBlocked(ctx, wall, stubEnd, terminal.branch, ctx.bottomZ + height / 2 - terminal.branch / 2, new Set([terminal.element.id, ctx.unitId]));
-    const score = (blocked ? 20000 : 0) + (flexOk(fit, terminal, settings) ? fit.lengthMm : 3000 + Math.abs(front.x - stubEnd.x) + Math.abs(front.y - stubEnd.y));
-    return { spigot: { terminal, face, alongMm: face === 'end' ? 0 : at, acrossMm: face === 'end' ? at - width / 2 : 0 }, score };
+    return best;
   };
   for (const terminal of [...terminals].sort((a, b) => Math.hypot(b.lip.x - endX, b.lip.y) - Math.hypot(a.lip.x - endX, a.lip.y))) {
     const options = (['end', 'left', 'right'] as const).map((face) => option(terminal, face)).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
@@ -1159,6 +1171,9 @@ export function selectAutoDuctDesign(result: AutoDuctResult, index: number): Aut
       message: `The ducts need about ${Math.round(design.requiredEspPa)} Pa of external static pressure; ${result.unitLabel} gives at most ${result.maxEspPa} Pa. Enlarge the ducts or shorten the index run.`,
     });
   }
+  // Where the design winds round to reach a terminal: said, naming it.
+  const labels = new Map(design.services.flatMap((service) => service.terminals.map((terminal) => [terminal.terminalId, terminal.label] as const)));
+  issues.push(...windingIssues(design.runs, labels));
   return {
     ...result,
     selected: index,
