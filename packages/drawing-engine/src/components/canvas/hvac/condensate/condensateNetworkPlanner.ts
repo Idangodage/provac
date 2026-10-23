@@ -199,6 +199,8 @@ const DEFAULT_NOMINAL = { nominalSize: '32', outerDiameterMm: 32, innerDiameterM
 const PUMP_ASSIGNMENT_PENALTY_MM = 3000;
 const INFEASIBLE_PENALTY = 1e9;
 const LIFT_STEP_MM = 25;
+/** Clear gap kept between two drains of one network where they do not join (insulation and hangers; practice). */
+const DRAIN_GAP_MM = 25;
 
 function defaultIdFactory(): (prefix: string) => string {
   let counter = 0;
@@ -362,6 +364,23 @@ class NetBuilder {
     return segments.sort((a, b) => a.edgeId.localeCompare(b.edgeId));
   }
 
+  /**
+   * Every piece of pipe laid so far, in plan (a riser is a point): stubs,
+   * risers, runs and joins, but not the drop into the termination, where
+   * branches arrive. `except`: edges to leave out. `nearTermination`: also
+   * the pieces that end at the termination.
+   */
+  pieces(except: ReadonlySet<string> = new Set(), nearTermination = false): Array<{ id: string; a: Point2D; b: Point2D }> {
+    const out: Array<{ id: string; a: Point2D; b: Point2D }> = [];
+    for (const node of this.nodes.values()) {
+      if (!node.down || except.has(node.id) || node.edge === 'drop' || node.edge === 'none') continue;
+      const down = this.nodes.get(node.down)!;
+      if (!nearTermination && (down.id === this.dropTopId || down.id === this.rootId)) continue;
+      out.push({ id: node.id, a: node.point, b: down.point });
+    }
+    return out;
+  }
+
   hasInflow(): boolean {
     return this.upstreamOf(this.dropTopId).length > 0;
   }
@@ -455,7 +474,12 @@ function departureIsClear(source: IndoorDrainPort, foot: Point2D, environment: C
   return true;
 }
 
-function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironment, defaultRadius: number, searchRiserFoot = true): UnitPlan {
+/**
+ * `blocked`: riser feet to pass over as well (the drains a network already
+ * has there); none passing gives the plan a failure reason.
+ */
+function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironment, defaultRadius: number, searchRiserFoot = true,
+  blocked?: (foot: Point2D) => boolean): UnitPlan {
   const { settings, envelope } = environment;
   const voidLower = envelope.voidFloorMm + defaultRadius;
   const voidUpper = envelope.voidTopMm - defaultRadius;
@@ -479,6 +503,7 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
   for (const [along, across] of RISER_FOOT_OFFSETS) {
     if (Math.hypot(along, across) > settings.liftMaxHorizontalMm + 1e-6) continue;
     const foot = footAt(along, across);
+    if (blocked?.(foot)) continue;
     if (!departureIsClear(source, foot, environment, defaultRadius)) continue;
     if (insideObstacle(foot, source.z, environment, defaultRadius)) continue;
     const top = pumped ? clearRiserTop(foot, source.z, headLimit, defaultRadius, environment) : source.z;
@@ -1255,9 +1280,8 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
   const groupKeys = [...groups.keys()].sort();
   groupKeys.forEach((key, groupIndex) => {
     progress({ stage: 'Growing drainage trees', completed: groupIndex, total: groupKeys.length });
-    const members = groups.get(key)!.map((member) => plan.networks.length
-      ? makeUnitPlan(member.source, { ...environment, services: coordinatedServices }, defaultRadius)
-      : member);
+    const unitEnvironment = plan.networks.length ? { ...environment, services: coordinatedServices } : environment;
+    const members = groups.get(key)!.map((member) => plan.networks.length ? makeUnitPlan(member.source, unitEnvironment, defaultRadius) : member);
     const sink = assignment.get(members[0]!.source.unitId)!.sink;
     const exposed = members[0]!.exposed;
     const lengthOf = (unitPlan: UnitPlan) => assignment.get(unitPlan.source.unitId)!.lengthMm;
@@ -1270,7 +1294,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
     const networkId = idFactory('cdn');
     let best: { net: NetBuilder; failed: Map<string, { points: Point2D[]; shortfallMm: number | null; reason: string }> } | null = null;
     for (const unitOrder of orders) {
-      const attempt = growTree(networkId, sink, unitOrder, exposed);
+      const attempt = growTree(networkId, sink, unitOrder, exposed, unitEnvironment);
       if (!best
         || attempt.net.units.length > best.net.units.length
         || (attempt.net.units.length === best.net.units.length && attempt.net.totalCost < best.net.totalCost - 1e-6)) {
@@ -1308,10 +1332,11 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
 
   // -------------------------------------------------------------------------
 
-  function growTree(networkId: string, sink: CondensateSink, unitOrder: UnitPlan[], exposed: boolean) {
+  function growTree(networkId: string, sink: CondensateSink, unitOrder: UnitPlan[], exposed: boolean, unitEnvironment: CondensateEnvironment) {
     const net = new NetBuilder(networkId, sink);
     const failed = new Map<string, { points: Point2D[]; shortfallMm: number | null; reason: string }>();
-    for (const unitPlan of unitOrder) {
+    for (const planned of unitOrder) {
+      const unitPlan = seatClearOfNetwork(net, planned, unitEnvironment);
       const routed = routeIntoNet(net, unitPlan, sink, exposed);
       if ('failure' in routed) {
         failed.set(unitPlan.source.unitId, routed.failure);
@@ -1320,6 +1345,21 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
       insertBranch(net, unitPlan, routed.route, settings, router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), router.services);
     }
     return { net, failed };
+  }
+
+  /**
+   * A riser cannot stand on a drain the network already runs there, nor its
+   * hose from the outlet cross one (unit plans are made before the network
+   * grows): such a unit's riser is seated again beside it, clear of them.
+   */
+  function seatClearOfNetwork(net: NetBuilder, unitPlan: UnitPlan, unitEnvironment: CondensateEnvironment): UnitPlan {
+    if (unitPlan.failureReason || !net.units.length) return unitPlan;
+    const keep = 2 * defaultRadius + DRAIN_GAP_MM;
+    const pieces = net.pieces(new Set(), true);
+    const blocked = (foot: Point2D) => pieces.some((piece) => segmentSegmentDistance(unitPlan.source.point, foot, piece.a, piece.b) < keep);
+    if (!blocked(unitPlan.stubEnd)) return unitPlan;
+    const seated = makeUnitPlan(unitPlan.source, unitEnvironment, defaultRadius, true, blocked);
+    return seated.failureReason ? { ...unitPlan, failureReason: 'no riser position beside the unit clear of the drains already run there' } : seated;
   }
 
   /** Routes one unit onto the network (or to the termination) so it can still fall to it. */
@@ -1350,12 +1390,21 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         const zLowAtTarget = Math.max(lower, (lows.get(down.id) ?? lower) + minSlope * remaining);
         return available - join >= zLowAtTarget - 1e-6;
       };
+      // The router arrives on the joinable runs and never runs along or through them. Every other piece laid so far
+      // (short jogs, stubs, risers, joins) is a keep-out it may not pass through: it joins only where it may.
+      const joinable = net.treeSegments(settings);
+      const keep = 2 * defaultRadius + DRAIN_GAP_MM;
+      const keepOut: RouterBox[] = net.pieces(new Set(joinable.map((segment) => segment.edgeId))).map((piece) => ({
+        id: `keep-${piece.id}`,
+        minX: Math.min(piece.a.x, piece.b.x) - keep, maxX: Math.max(piece.a.x, piece.b.x) + keep,
+        minY: Math.min(piece.a.y, piece.b.y) - keep, maxY: Math.max(piece.a.y, piece.b.y) + keep,
+      })).filter((box) => !(unitPlan.stubEnd.x > box.minX && unitPlan.stubEnd.x < box.maxX && unitPlan.stubEnd.y > box.minY && unitPlan.stubEnd.y < box.maxY));
       const route = routeCondensateBranch({
         start: unitPlan.stubEnd,
         startHeading: unitPlan.source.direction,
         sink: sink.point,
-        treeSegments: net.treeSegments(settings),
-        obstacles: router.obstaclesFor(unitPlan.source.unitId, sink.gullyId),
+        treeSegments: joinable,
+        obstacles: [...router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), ...keepOut],
         walls: router.walls,
         services: router.services,
         costs,
