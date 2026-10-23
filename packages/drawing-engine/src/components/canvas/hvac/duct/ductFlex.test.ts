@@ -228,6 +228,19 @@ describe('runouts bent as a fitter bends them (23 October 2026)', () => {
     expect(curve.points.at(-2)!.z).toBeCloseTo(-200, 9);
   });
 
+  it('a top collar off to one side: the shortest of its largest bends, the same for collars a hair apart', () => {
+    // From a plenum's spigot in the project's room: 0.9 m on, 0.55 m aside and 0.43 m down into the collar. The drop
+    // fixes the largest bend while its corners could still slide; the shortest runout among bends that large is taken.
+    const lengths = [[0, 0], [0.4, -0.4], [-0.5, 0.4], [1, 0], [0.1, 0.4]].map(([dx, dy]) => {
+      const curve = flexCurve(origin, east, { x: 897.6 + dx!, y: -553.6 + dy!, z: -425 }, down);
+      expect(curve.minBendRadiusMm).toBeGreaterThan(320);
+      return curve.lengthMm;
+    });
+    expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThan(5);
+    // No longer than the earlier curve here (which bends at 247 mm).
+    expect(Math.max(...lengths)).toBeLessThan(curveBefore(origin, east, { x: 897.6, y: -553.6, z: -425 }, down).lengthMm);
+  });
+
   it('a spigot facing away (a turn over 90°, a U-turn) keeps the earlier curve: bent round, the runout would pass its face', () => {
     const southWest = { x: -Math.SQRT1_2, y: Math.SQRT1_2, z: 0 };
     for (const [end, endDirection] of [[{ x: 1000, y: 600, z: 0 }, { x: -1, y: 0, z: 0 }], [{ x: 600, y: 700, z: -150 }, southWest]] as const) {

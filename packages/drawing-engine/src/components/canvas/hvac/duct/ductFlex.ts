@@ -125,6 +125,12 @@ const ARC_STEP_RAD = Math.PI / 36;
 /** The two-bend search: a grid over the corners' places, then a pattern search down to this step (mm). */
 const SEARCH_GRID = 10;
 const SEARCH_STEP_MM = 0.05;
+/**
+ * Bends within this share of the largest radius count as large as it: the
+ * shortest runout among them is taken (the largest radius is often a plateau,
+ * a drop or an offset fixing it while the corners can still slide).
+ */
+const RADIUS_SLACK = 0.005;
 
 /**
  * A turn in one plane, the lead lines meeting ahead of both leads: one arc as
@@ -160,31 +166,39 @@ function offsetBends(p0: Vec3, d: Vec3, p3: Vec3): BendPath | null {
   return { corners: [add(p0, scale(d, tangent)), sub(p3, scale(d, tangent))], radiusMm };
 }
 
+/** Two bends placed at `s` along the first lead and `u` back along the second: the largest equal radius and the runout's length then. */
+interface TwoBendFit { s: number; u: number; radiusMm: number; lengthMm: number }
+
 /**
- * The largest equal radius for two bends at `p0 + s·d0` and `p3 − u·d1`, the
- * straight between them heading on (not back against either lead); −1 where
- * it would head back.
+ * Two bends at `p0 + s·d0` and `p3 − u·d1`, the straight between them heading
+ * on (not back against either lead): the largest equal radius they take, and
+ * the length of the runout between the leads (each bend takes its two
+ * tangent lengths off the polyline and adds its arc). Null where the straight
+ * would head back.
  */
-function twoBendRadius(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3, s: number, u: number): number {
+function twoBendFit(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3, s: number, u: number): TwoBendFit | null {
+  if (s < 0 || u < 0) return null;
   const between = sub(sub(p3, scale(d1, u)), add(p0, scale(d0, s)));
   const length = norm(between);
-  if (length < 1e-9) return -1;
+  if (length < 1e-9) return null;
   const m = scale(between, 1 / length);
-  if (dot(m, d0) < -1e-9 || dot(m, d1) < -1e-9) return -1;
+  if (dot(m, d0) < -1e-9 || dot(m, d1) < -1e-9) return null;
   const t1 = tanHalfAngle(d0, m);
   const t2 = tanHalfAngle(m, d1);
-  let radius = Number.POSITIVE_INFINITY;
-  if (t1 > 0) radius = Math.min(radius, s / t1);
-  if (t2 > 0) radius = Math.min(radius, u / t2);
-  if (t1 + t2 > 0) radius = Math.min(radius, length / (t1 + t2));
-  return radius;
+  let radiusMm = Number.POSITIVE_INFINITY;
+  if (t1 > 0) radiusMm = Math.min(radiusMm, s / t1);
+  if (t2 > 0) radiusMm = Math.min(radiusMm, u / t2);
+  if (t1 + t2 > 0) radiusMm = Math.min(radiusMm, length / (t1 + t2));
+  const lengthMm = s + length + u + (Number.isFinite(radiusMm) ? radiusMm * (2 * Math.atan(t1) + 2 * Math.atan(t2) - 2 * (t1 + t2)) : 0);
+  return { s, u, radiusMm, lengthMm };
 }
 
 /**
  * Any other runout (a turn with a drop, a top collar off to one side, a turn
  * whose lead lines meet behind one end): a bend off each lead with a straight
- * between, placed for the largest radius. Null where the duct would have to
- * head back to reach the spigot.
+ * between, placed for the largest radius, and the shortest runout among bends
+ * within 0.5% of it. Null where the duct would have to head back to reach the
+ * spigot.
  */
 function twoBends(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3): BendPath | null {
   const w = sub(p3, p0);
@@ -193,34 +207,39 @@ function twoBends(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3): BendPath | null {
   const sMax = dot(w, d0);
   const uMax = dot(w, d1);
   if (sMax < 0 || uMax < 0) return null;
-  let best = -1;
-  let bestS = 0;
-  let bestU = 0;
+  const fit = (s: number, u: number) => twoBendFit(p0, d0, p3, d1, s, u);
+  // A pattern search from `from`, taking a neighbour wherever `better` says so, its step halving down to the last.
+  const climb = (from: TwoBendFit, better: (candidate: TwoBendFit, current: TwoBendFit) => boolean): TwoBendFit => {
+    let current = from;
+    for (let step = Math.max(sMax, uMax) / SEARCH_GRID; step > SEARCH_STEP_MM;) {
+      let moved = false;
+      for (const [ds, du] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]] as const) {
+        const candidate = fit(current.s + ds * step, current.u + du * step);
+        if (candidate && better(candidate, current)) [current, moved] = [candidate, true];
+      }
+      if (!moved) step /= 2;
+    }
+    return current;
+  };
+  const grid: TwoBendFit[] = [];
   for (let i = 0; i <= SEARCH_GRID; i += 1) {
     for (let j = 0; j <= SEARCH_GRID; j += 1) {
-      const s = (sMax * i) / SEARCH_GRID;
-      const u = (uMax * j) / SEARCH_GRID;
-      const radius = twoBendRadius(p0, d0, p3, d1, s, u);
-      if (radius > best) [best, bestS, bestU] = [radius, s, u];
+      const point = fit((sMax * i) / SEARCH_GRID, (uMax * j) / SEARCH_GRID);
+      if (point) grid.push(point);
     }
   }
-  if (!(best > 0)) return null;
-  for (let step = Math.max(sMax, uMax) / SEARCH_GRID; step > SEARCH_STEP_MM;) {
-    let moved = false;
-    for (const [ds, du] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]] as const) {
-      const s = bestS + ds * step;
-      const u = bestU + du * step;
-      if (s < 0 || u < 0) continue;
-      const radius = twoBendRadius(p0, d0, p3, d1, s, u);
-      if (radius > best + 1e-9) {
-        [best, bestS, bestU] = [radius, s, u];
-        moved = true;
-      }
-    }
-    if (!moved) step /= 2;
-  }
-  if (!Number.isFinite(best)) return { corners: [], radiusMm: Number.POSITIVE_INFINITY };
-  return { corners: [add(p0, scale(d0, bestS)), sub(p3, scale(d1, bestU))], radiusMm: best };
+  const start = grid.reduce<TwoBendFit | null>((best, point) => (!best || point.radiusMm > best.radiusMm ? point : best), null);
+  if (!start || !(start.radiusMm > 0)) return null;
+  // The largest radius first …
+  const largest = climb(start, (candidate, current) => candidate.radiusMm > current.radiusMm + 1e-9);
+  if (!Number.isFinite(largest.radiusMm)) return { corners: [], radiusMm: Number.POSITIVE_INFINITY };
+  // … then, among bends as large within the slack, the shortest runout.
+  const floor = largest.radiusMm * (1 - RADIUS_SLACK);
+  const shortest = climb(
+    grid.filter((point) => point.radiusMm >= floor).reduce((best, point) => (point.lengthMm < best.lengthMm ? point : best), largest),
+    (candidate, current) => candidate.radiusMm >= floor && candidate.lengthMm < current.lengthMm - 1e-9,
+  );
+  return { corners: [add(p0, scale(d0, shortest.s)), sub(p3, scale(d1, shortest.u))], radiusMm: shortest.radiusMm };
 }
 
 /** The runout along a bend path: straights and arcs sampled about every `stepMm`, the arcs at 5° at most. */
