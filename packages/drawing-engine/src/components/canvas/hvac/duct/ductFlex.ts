@@ -126,11 +126,13 @@ const ARC_STEP_RAD = Math.PI / 36;
 const SEARCH_GRID = 10;
 const SEARCH_STEP_MM = 0.05;
 /**
- * Bends within this share of the largest radius count as large as it: the
- * shortest runout among them is taken (the largest radius is often a plateau,
- * a drop or an offset fixing it while the corners can still slide).
+ * Bends within this share of the largest radius count as large as it, and the
+ * shortest runout among them is taken: the largest radius is often a plateau
+ * (a drop or an offset fixing it while the corners can still slide). Kept
+ * tiny, so it never takes a bend that only just passes one diameter under it
+ * (0.5% did, in Auto duct's take-off runouts).
  */
-const RADIUS_SLACK = 0.005;
+const RADIUS_SLACK = 0.0001;
 
 /**
  * A turn in one plane, the lead lines meeting ahead of both leads: one arc as
@@ -197,8 +199,7 @@ function twoBendFit(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3, s: number, u: number
  * Any other runout (a turn with a drop, a top collar off to one side, a turn
  * whose lead lines meet behind one end): a bend off each lead with a straight
  * between, placed for the largest radius, and the shortest runout among bends
- * within 0.5% of it. Null where the duct would have to head back to reach the
- * spigot.
+ * as large. Null where the duct would have to head back to reach the spigot.
  */
 function twoBends(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3): BendPath | null {
   const w = sub(p3, p0);
