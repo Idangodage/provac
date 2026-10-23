@@ -263,6 +263,11 @@ function bendRunout(start: Vec3, p0: Vec3, path: BendPath, p3: Vec3, end: Vec3, 
   return geometry(points, path.radiusMm, tightestAt);
 }
 
+/** Runouts already worked out, by their ends, directions and options: Auto duct fits the same ones many times over. */
+const RUNOUTS = new Map<string, DuctFlexGeometry>();
+/** At most this many are kept, the oldest going first. */
+const RUNOUTS_KEPT = 4096;
+
 /**
  * The runout from `start` (leaving along `startDirection`) to `end` (arriving
  * along `endDirection`, i.e. into the spigot): straight for the lead off each
@@ -280,6 +285,9 @@ function bendRunout(start: Vec3, p0: Vec3, path: BendPath, p3: Vec3, end: Vec3, 
  * it keeps the earlier model's curve (one cubic Bezier between the leads), as
  * does any runout that curve bends more gently, so none bends tighter than it
  * did before 23 October 2026; on an equal bend, the shorter.
+ *
+ * The result is shared with every caller asking for the same runout, so it is
+ * frozen: read it, do not change it.
  */
 export function flexCurve(
   start: Vec3,
@@ -288,6 +296,19 @@ export function flexCurve(
   endDirection: Vec3,
   options: { leadMm?: number; samples?: number } = {},
 ): DuctFlexGeometry {
+  const key = `${start.x},${start.y},${start.z},${startDirection.x},${startDirection.y},${startDirection.z},${end.x},${end.y},${end.z},${endDirection.x},${endDirection.y},${endDirection.z},${options.leadMm ?? ''},${options.samples ?? ''}`;
+  const kept = RUNOUTS.get(key);
+  if (kept) return kept;
+  const curve = runoutBetween(start, startDirection, end, endDirection, options);
+  Object.freeze(curve.points);
+  Object.freeze(curve.stations);
+  Object.freeze(curve);
+  if (RUNOUTS.size >= RUNOUTS_KEPT) RUNOUTS.delete(RUNOUTS.keys().next().value!);
+  RUNOUTS.set(key, curve);
+  return curve;
+}
+
+function runoutBetween(start: Vec3, startDirection: Vec3, end: Vec3, endDirection: Vec3, options: { leadMm?: number; samples?: number }): DuctFlexGeometry {
   const lead = options.leadMm ?? FLEX_STRAIGHT_LEAD_MM;
   const samples = options.samples ?? 32;
   const d0 = unit3(startDirection);
