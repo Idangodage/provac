@@ -2808,16 +2808,188 @@ It is worked out when a design is selected, so it follows the design picked on t
 
 ### Known limits
 
-- **The runout curve model.** A runout is drawn as a Bézier curve, with a 100 mm straight lead at each end and
-  handles 0.4 of its chord. For a 90° turn with unequal offsets, it bends tighter than the true arc a fitter makes:
-  at 150 mm off the axis, 173 mm against an arc's 225 mm. This rejects some runouts a fitter would make. A follow-up
-  could shape it as straight + arc + straight (or optimise the handles); it changes every runout's drawing, length
-  and loss, so it needs its own plan.
+- **The runout curve model** (closed 23 October 2026: see "Runouts bent as a fitter bends them" below). A runout
+  was drawn as a Bézier curve, with a 100 mm straight lead at each end and handles 0.4 of its chord. For a 90° turn
+  with unequal offsets, it bent tighter than the true arc a fitter makes: at 150 mm off the axis, 173 mm against an
+  arc's 225 mm.
 - **Opposed take-offs** (two spin-ins on opposite walls at one station) are refused by the planner ("two take-offs
   overlap"). At the room's spacing they would not help: the runout has about 100 mm to drop into the diffuser's side
   collar.
 - **Lines of diffusers on the collar's axis** come out with 1–6 errors in Rect + round (Optimal is clean): a separate
   limit, seen in the survey.
+
+## Runouts bent as a fitter bends them (23 October 2026)
+
+**The request:** "yes do", then "yes": plan, then build, the runout curve change proposed after the self-crossing fix,
+so that the two diffusers close to the FDUM22 in the project's room come out fully clean. Approved plan:
+`C:\Users\idang\.claude\plans\duct-runout-arc-shape.md`.
+
+**Your decisions (23 October 2026):** "yes", so the recommended options:
+1. Each runout is the gentler of the new bend path and the earlier curve: none bends tighter than before.
+2. Existing runouts redraw in the new shape. A runout's shape is worked out, not stored, so their checks run again.
+
+### The shape (c6d4b6c)
+
+`flexCurve` (`ductFlex.ts`) still runs the flex straight for 100 mm off each collar. Between the leads it now bends the
+duct as a fitter does: straight, then arcs as large as the space allows, then straight.
+
+| Runout | How it bends | Example | Before |
+|---|---|---|---|
+| A turn in one plane (the lead lines meet ahead of both leads) | One arc, as large as the shorter leg allows; the rest straight | Legs 300 and 800 mm: 300 mm | 223 mm |
+| A top collar straight ahead of its duct | The same, in the vertical plane of the turn | 500 mm across, 200 mm down: 200 mm | 147 mm |
+| Leads parallel, offset (an S) | Two equal arcs, each turning 2·atan(offset / run); past 90° each turns 90° with a straight across between | 300 mm across over 900 mm: 750 mm | 654 mm |
+| A turn with a drop, a top collar off to one side | A bend off each lead with a straight between, sloping with the drop, placed for the largest radius (the shortest runout among bends as large) | Legs 250 and 250 mm, 200 mm drop: 214 mm | 176 mm |
+| A spigot facing away (a turn over 90°, a U-turn) | The earlier curve, unchanged | | |
+
+- **The search** (a turn with a drop): a grid over where the two bends sit, then a pattern search to 0.05 mm for the
+  largest radius, then another for the shortest runout among bends as large (within 0.01%).
+- **It never passes the spigot's face.** Every bend turns 90° at most, and the straight between two bends never heads
+  back against either lead. So the runout heads on toward the spigot all the way, and never swings past it or into
+  its terminal's box. A spigot facing away would need the runout to come round the back of the box: it keeps the
+  earlier curve, flagged as before where that bends under one diameter (the fix is to turn the collar).
+- **The earlier curve stays where it bends more gently:** one cubic Bézier between the leads, its handles 0.4 of the
+  chord. On an equal bend, the shorter is kept.
+- **The radius it reports** is the arcs' own. The drawn samples, 5° apart on an arc at most, bend no tighter.
+
+**The cost, and a memory of runouts (b1549cb).** Bending a runout that turns and drops takes a search, so a fit costs
+about twice the earlier curve, and Auto duct slowed by about a fifth. But Auto duct fits the same runout many times
+over: a row of four diffusers asks for 18,000 fits, half of them repeats; a 2 × 3 grid 43,000, two thirds repeats.
+`flexCurve` now keeps the last 4,096 runouts it worked out (by their ends, directions and options) and hands back the
+same result, frozen so that no caller can change what another reads. Auto duct runs at least as fast as before: the
+row of four in 3.8 s (3.9 s before), the grid in 20–22 s (23.5 s before); the survey below in 143 s (187 s before),
+the benchmark in 299 s (327 s).
+
+**Changed from the plan.** The plan drew a turn with a drop as the plan's arc, with the drop eased along it. Measured,
+that bends tighter than the earlier curve once the drop is more than a little: legs 250 and 250 mm with a 200 mm drop
+give 122 mm, against 176 mm. It would rarely have been kept. Two bends in tilted planes with a sloped straight between
+bend more gently than the earlier curve in every case measured. They also cover a top collar off to one side, which the
+plan had left to the earlier curve.
+
+### What it changes
+
+**The project's room** (the FDUM22, two square Ø200 diffusers 1.6 m out, 0.8 m either side). Every shape now keeps the
+plenum on the collar, clean, at USD 245:
+- Rect + round: the runout that bent at 173 mm bends at 225 mm.
+- Round and Optimal: the plenum, where they took the wye that wound round both diffusers (USD 407); the winding note
+  goes.
+
+**The same designs, their runouts redrawn:** 64 designs (the benchmark's rows, lines and grids, two and three diffusers
+close together, collars dropped and turned to the unit, in Optimal and Rect + round), and the room in each shape:
+- no runout bends tighter;
+- runout lengths (BOM): +1.1% at the median, +3.3% at most;
+- bend losses: +15% in all (454 → 522 Pa over every design's runouts, at 300 m³/h), see below;
+- `DU_FLEX_BEND` on the designs kept: 4 → 1 (over every design Auto duct showed: 23 → 16).
+
+**The designs Auto duct now picks** (the same 64 and the room):
+- **Errors:** 13 designs had errors. 8 are now clean: lines of 3, 4, 5 and 6 with collars dropped, in Rect + round
+  (the last three cheaper too: USD 917 → 840, 1,106 → 939, 1,294 → 1,000); three close in a row turned to the unit, in
+  both shapes; the pair 1.6 m out turned to the unit, and the room, in Rect + round. The other 5 keep the errors they
+  had (lines on the collar's axis turned to the unit, and a pair 1.2 m out, in Rect + round); none has new ones.
+- **First cost,** over the 54 designs clean before and after: 15 cheaper, 31 within USD 2, 8 dearer; −2.8% in all
+  (USD 29,448 → 28,634). Cheaper: the room's Round and Optimal (USD 407 → 245), a row of 3 turned to the unit in
+  Rect + round (714 → 574), a 2 × 3 grid in Optimal (613 → 555). Dearer: a row of 2 in Optimal (230 → 256, collars
+  either way), a row of 3 dropped in Optimal (462 → 497), three close in a row dropped in Optimal (540 → 573), and four
+  others by USD 6–13.
+
+**Why a few are dearer.** Not because their runouts break anything. Redrawn with the new runouts, the earlier designs
+are still clean (no errors, clashes or checks); Auto duct no longer reaches them.
+
+Take the row of 2 (USD 230 before, 256 now):
+- Before, the USD 230 design came from the router's second round. A failure in the first round steered it there: a
+  fitting with no straight before its runout, which the router then cut.
+- The new runouts shift the model's costs a little. The row is nearly mirror-symmetric, and the router's first tree is
+  now the mirror image. That tree builds without the failure, so no cut is made and the second round never goes there.
+
+The optimiser's search is that sensitive to small changes in its model. A follow-up could have it try each tree's
+mirror image and its other sizes before settling.
+
+**Bend losses rise where a runout is an S or drops while it turns.** The plan expected them to fall.
+- **Why:** the loss model charges a bend by how far it turns: 0.84–0.87 velocity pressures per 90°, almost whatever the
+  radius from 1 to 4 diameters (Thermaflex). The largest arcs make an S turn further at its middle: 37° each way
+  against the earlier curve's 30°, for 300 mm across over 900 mm (74° of turning in all, against 60°).
+- **Plain turns** come out a little lower: the same turn, with more of the arc's own friction taken off.
+- **On a design:** under 1 Pa on its index path.
+
+### Verified
+
+- **Unit tests:**
+  - `ductFlex` 16 (7 new): an unequal turn's single arc (each sample on the arc or the straight); an S's two equal arcs,
+    point-symmetric about its middle; a top collar straight ahead, bent in its vertical plane; a turn with a drop that
+    never climbs; a spigot facing away keeping the earlier curve; and a seeded sweep of 4,000 runouts against the
+    earlier curve (a frozen copy of it): never tighter, on the collars and straight for the leads exactly, the radius
+    the samples' own, no kink, never past the spigot's face, and runouts as drawn (turns to 90°, offsets, drops)
+    within 5% of their length; and a top collar off to one side, the same length for collars a hair apart.
+  - `ductSelfClash` 7: in the project's room every shape keeps the clean plenum, each runout at a diameter or more and
+    no winding note; the facing pair still winds round in Round and Optimal, and the card names both.
+  - `highCapacityUnits` 4: the FDU280's split trunk at its economical height.
+  - `ductBranchReaim` 6 (1 new): a tee made a lateral with room for its runout keeps the bare stub; 1.6 m away the
+    take-off slides back and an elbow turns the stub onto its old heading.
+  - `ductTapSlide` 3: slid 1.2 m, the branch is laid again, its runout within the maximum length.
+- **Full suite:** 277 files / 2,462 tests (the benchmark's 43 run on request, below).
+- **Benchmark gate:** 43/43, in 299 s (327 s before the change).
+- **On canvas:** `arc-p3` 16/16 in the project's room, restoring it exactly:
+  - Auto duct in Round, Optimal and Rect + round previews the plenum on the collar with a runout to each diffuser, no
+    error and no winding note on the card;
+  - applied, the two runouts bend at 209 and 217 mm (one diameter is 200 mm), the drawn samples at exactly those
+    radii, and the checks list no `DU_FLEX_BEND`. In plan each runs straight off the plenum's end face and turns one
+    arc into its diffuser's side collar; in 3D the corrugated flex follows the same sweep. The other checks there are
+    the plenum design's own, as before the change: no clear support position within 610 mm of each spigot stub's ends
+    (warnings), the collar's aspect ratio and the plenum's cross-break (information);
+  - each runout's card gives its length as the plan has it (0.68 m) and its pressure (friction 0.57 Pa, the bend
+    3.44 Pa: "4.0 Pa");
+  - one undo takes the design away.
+- **Regressions,** each restoring the project exactly: `selfcross-p4` 9/9, `collar-p4` 28/28, `duct-seg-p3` 29/29,
+  `duct-seg-p4` 16/16, `duct-seg-p5` 15/15, `unit-panel` 34/34, `dims-p2` 23/23, `resize-p2` 26/26, `move-p1` 24/24,
+  `move-p2` 33/33, `redesign-p3` 46/46, `shape-p6` 32/32, `slide-p3` 31/31, `air-p1` 25/25, `rotate-p2` 32/32,
+  `turn-p2` 15/15, `smooth-p1` 24/24, `split-p5` 12/12, `unit-high-capacity` 20/20.
+
+### Found while building and verifying
+
+- **A U-turn bent round passed the bend rule while doubling back round its own box.** A semicircle as wide as the gap
+  was tried for opposed leads. The top-collar test caught it: a collar moved to the side facing away from its duct
+  came out clean, its runout running over the box and back down into the spigot. A runout is not clash-checked
+  against the terminal it serves, so nothing else would have caught it; the earlier curve bends tightly there, so it
+  was always flagged. So no bend may turn past 90°, and a spigot facing away keeps the earlier curve (above).
+- **The FDU280 with six Ø300 diffusers** now gets a split trunk (USD 1,635, life-cycle 2,158) where it took a
+  reducing trunk (USD 1,798, life-cycle 2,356): with the gentler runouts its take-offs stay short. The test that its
+  trunk is at the economical height took the trunk as the main from the collar only; it now takes every rectangular
+  stretch carrying two terminals or more (the main, and a split's branches), as the sizing's trunk height does. The
+  height still holds: no other standard height that fits the void is cheaper.
+- **The largest bend was a plateau.** For a top collar off to one side, the drop fixes the largest radius while the
+  two bends can still slide along their leads. The search stopped wherever it landed, so collars a hair apart got
+  runouts from 1.38 m to 1.53 m long. In the project's room one came out over the 1.5 m maximum, and Auto duct laid that
+  branch as a rigid detour that broke the leg rule (`collar-p4` on the canvas). The search now takes the shortest
+  runout among bends as large as the largest (ccb60a5, d15a037): 1.37 m at a 325 mm bend every time there (the earlier
+  curve: 1.37 m at 247 mm). A test holds five collars a hair apart to one length within 5 mm. "As large" was first
+  within 0.5%: that let a take-off's runout that only just bent at one diameter slip under it, and a row of two
+  diffusers came out at USD 276 (Rect + round 308); 0.01% keeps the plateau, which is flat to the millimetre, and not
+  that.
+- **A take-off slid along its main** has its runout branch repaired where the slide breaks a rule: its terminal's
+  spigot turns to meet the runout, or the branch is laid again with a new elbow. Slid 1.2 m, a runout used to bend
+  too tightly as well as run long, and the bend error set off the repair. Bent as a fitter bends it, it ran 1.69 m to
+  the spigot with only a length warning, and was left so. The slide now also repairs a runout it leaves over the
+  project's maximum length (where it was within it), and either repair keeps the runout within it: laid again, that
+  runout is 1.34 m. Where the slide breaks a rule and only a long runout is left, the turned spigot is still taken.
+- **A tee made a lateral** keeps the bare 45° stub where its runout has room to bend (1.8 m away: 1.25 m at a 306 mm
+  bend), where it used to slide the take-off back and add an elbow. Re-aiming takes the cheapest candidate that breaks
+  no rule, and the bare stub no longer breaks the bend rule. The slide-back-and-elbow case is now tested 1.6 m away.
+- **Three segment-card drivers** (`duct-seg-p3`, `-p4`, `-p5`) generate a system for an FDUM22 and three diffusers
+  1.5–1.9 m ahead of it, and check the cards of its main's take-offs and straights. Auto duct now serves those
+  diffusers from a plenum on the collar (clean), so there is no main to check. The drivers place them 300 mm further
+  ahead (the room's front wall allows no more), where it gives a round main with tee take-offs as before. There,
+  `duct-seg-p5` lengthens its attenuator to a length its straight takes (the card rightly disables 1,200 mm on the new
+  main's straight), and `duct-seg-p3`'s diffuser nudge stops at the room's edge after 374 mm (it asks 300 mm now).
+  `duct-seg-p5` had crashed on that disabled length without counting a failure: it, `duct-seg-p3`, `-p4` and `air-p1`
+  now count a crash as one.
+- **The winding note's own check** used the room's pair, which no longer winds. It now uses a pair 1.2 m out, 0.9 m
+  either side, with their spigots facing the unit: Round and Optimal still wind round there, and the card names both.
+  The `selfcross-p4` driver does the same on the canvas.
+
+### Known limits
+
+- **A runout is not clash-checked against the terminal it serves.** That is why no bend turns past 90°: a spigot
+  facing away keeps the earlier curve, and the bend check flags it where it is tight.
+- **The optimiser's search** can miss a cheaper tree that a small change in its model no longer leads it to (above).
 
 ## Known limits (auto duct, 30 September 2026)
 
