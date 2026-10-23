@@ -222,8 +222,50 @@ interface EdgeInfo {
   crossings: Array<{ serviceId: string; point: Point2D }>;
 }
 
+/** The search area's margin round the branch's ends when the caller sets none (mm). */
+const LOCAL_MARGIN_MM = 1500;
+/** The next margin tried when the local area has no route at all (mm). */
+const WIDER_MARGIN_MM = 6000;
+/** How many times the grid and search caps grow for a widened search. */
+const WIDE_CAP_FACTOR = 3;
+
+/**
+ * A branch route. The search covers the branch's ends and a margin. When a
+ * caller sets no margin and the local area has no route at all (ducts or
+ * equipment wall it off), the search widens: 6 m round the ends, then the
+ * whole drawing (every obstacle and wall), with larger caps. A route that was
+ * found but could not fall is returned as it is: widening cannot add fall.
+ */
 export function routeCondensateBranch(request: CondensateRouteRequest): CondensateRoute | null {
-  const margin = request.marginMm ?? 1500;
+  const local = searchCondensateBranch(request);
+  if (local || request.marginMm !== undefined) return local;
+  const caps = {
+    maxGridNodes: (request.maxGridNodes ?? 40000) * WIDE_CAP_FACTOR,
+    maxExpandedStates: (request.maxExpandedStates ?? 120000) * WIDE_CAP_FACTOR,
+  };
+  const wider = searchCondensateBranch({ ...request, ...caps, marginMm: WIDER_MARGIN_MM });
+  if (wider) return wider;
+  const whole = wholeDrawingMarginMm(request);
+  return whole > WIDER_MARGIN_MM ? searchCondensateBranch({ ...request, ...caps, marginMm: whole }) : null;
+}
+
+/** The margin that brings every obstacle and wall into the search area (mm). */
+function wholeDrawingMarginMm(request: CondensateRouteRequest): number {
+  const anchors = [request.start, ...(request.sink ? [request.sink] : []), ...request.treeSegments.flatMap((segment) => [segment.a, segment.b])];
+  const minX = Math.min(...anchors.map((p) => p.x));
+  const maxX = Math.max(...anchors.map((p) => p.x));
+  const minY = Math.min(...anchors.map((p) => p.y));
+  const maxY = Math.max(...anchors.map((p) => p.y));
+  let reach = 0;
+  for (const box of request.obstacles) reach = Math.max(reach, minX - box.minX, box.maxX - maxX, minY - box.minY, box.maxY - maxY);
+  for (const wall of request.walls) {
+    for (const p of [wall.a, wall.b]) reach = Math.max(reach, minX - p.x, p.x - maxX, minY - p.y, p.y - maxY);
+  }
+  return reach + LOCAL_MARGIN_MM;
+}
+
+function searchCondensateBranch(request: CondensateRouteRequest): CondensateRoute | null {
+  const margin = request.marginMm ?? LOCAL_MARGIN_MM;
   const maxGridNodes = request.maxGridNodes ?? 40000;
   const maxExpanded = request.maxExpandedStates ?? 120000;
   const costs = request.costs;
