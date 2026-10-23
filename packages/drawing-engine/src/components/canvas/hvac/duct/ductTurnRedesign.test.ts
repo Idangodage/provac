@@ -19,6 +19,7 @@ import {
   unitDuctSystems, type DuctSystemAppraisal, type TurnRedesignTarget,
 } from './ductTurnRedesign';
 import { isDuctElement, readDuctRunSpec, roundLeg } from './ductTypes';
+import { findDuctClashes } from './ductVolumes';
 
 const settings = resolveDuctSettings({ soffitMm: 3000 });
 const STAMP = '2026-10-19T00:00:00.000Z';
@@ -198,10 +199,13 @@ describe('turnRedesignCommand: the optimiser\'s design for the turned collar', (
 
   it('in open space: at 45° the design replaces the re-route (which clashes); at 90° the re-route, clean and cheaper, is kept', () => {
     const at45 = turned(designed, ['fdum'], 45);
-    const r45 = redesign(at45, turnRedesignTargets(designed, at45, new Set(['fdum']), new Set(), settings).targets[0]!);
+    const target45 = turnRedesignTargets(designed, at45, new Set(['fdum']), new Set(), settings).targets[0]!;
+    const r45 = redesign(at45, target45);
     expect(r45.reroute.errors).toContain('DU_CLASH');
+    // Turned 45°, the re-route also runs back over itself: a clash of its own.
+    expect(findDuctClashes(at45, settings, []).filter((clash) => target45.runIds.includes(clash.ductId)).map((clash) => clash.kind)).toContain('self');
     expect(r45.appraisal.errors).toEqual([]);
-    expect(r45.choice).toEqual({ take: 'design', why: 'the turn\'s re-route would break a clash' });
+    expect(r45.choice).toEqual({ take: 'design', why: 'the turn\'s re-route would break 2 clashes' });
     const at90 = turned(designed, ['fdum'], 90);
     const r90 = redesign(at90, turnRedesignTargets(designed, at90, new Set(['fdum']), new Set(), settings).targets[0]!);
     expect(r90.reroute.errors).toEqual([]);

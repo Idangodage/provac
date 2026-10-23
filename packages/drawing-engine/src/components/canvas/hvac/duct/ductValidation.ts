@@ -65,6 +65,17 @@ export function validateDuctRuns(
         : clash.kind === 'equipment' ? `equipment ${other?.label || clash.otherId}`
         : `${SERVICE_NAMES[clash.service ?? ''] ?? 'pipe'} ${other?.label || clash.otherId}`;
     const subject = duct && !isDuctElement(duct) ? duct.label || 'Air terminal' : duct?.label || 'Duct run';
+    if (clash.kind === 'self') {
+      issues.push({
+        id: `DU_CLASH:${clash.ductId}:self`,
+        level: 'error',
+        code: 'DU_CLASH',
+        entityId: clash.ductId,
+        message: `${subject}: ${clash.mark} crosses ${clash.otherMark ?? 'another piece'} of the same run at (${Math.round(clash.point.x)}, ${Math.round(clash.point.y)}, z ${Math.round(clash.point.z)}).`,
+        suggestedFix: 'Re-route the run so it does not double back over itself, or change the level of one stretch.',
+      });
+      continue;
+    }
     issues.push({
       id: `DU_CLASH:${clash.ductId}:${clash.otherId}`,
       level: 'error',

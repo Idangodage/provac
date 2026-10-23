@@ -280,9 +280,37 @@ export interface DuctClash {
   ductId: string;
   mark: string;
   otherId: string;
-  kind: 'pipe' | 'duct' | 'terminal' | 'equipment';
+  /** `self`: a run crossing itself (`otherId` is the run, `otherMark` the piece it crosses). */
+  kind: 'pipe' | 'duct' | 'terminal' | 'equipment' | 'self';
   service?: string;
+  otherMark?: string;
   point: Vec3;
+}
+
+/** A clash in a sentence, as Auto duct and the sizing report it ("S-004 crosses R-01 of its own run."). */
+export function clashMessage(clash: DuctClash): string {
+  if (clash.kind === 'self') return `${clash.mark} crosses ${clash.otherMark ?? 'another piece'} of its own run.`;
+  return `${clash.mark} clashes with ${clash.kind === 'pipe' ? `a ${clash.service ?? 'pipe'}` : clash.kind === 'terminal' ? 'an air terminal' : clash.kind === 'equipment' ? 'an equipment casing' : 'another duct'}.`;
+}
+
+/**
+ * Where a run crosses itself: its pieces against its own pieces further
+ * along, leaving out the piece each is joined to (a piece's own boxes never
+ * meet: a flexible runout's curve is the bend check's). The later piece and
+ * the one it crosses; null where the run keeps clear of itself.
+ */
+function selfCrossing(plan: DuctFabricationPlan, boxes: readonly DuctBox[]): { box: DuctBox; other: DuctBox } | null {
+  const order = new Map(plan.pieces.map((piece, index) => [piece.mark, index]));
+  for (let i = 0; i < boxes.length; i += 1) {
+    const a = order.get(boxes[i]!.mark);
+    if (a === undefined) continue;
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      const b = order.get(boxes[j]!.mark);
+      if (b === undefined || Math.abs(a - b) <= 1) continue;
+      if (boxesOverlap(boxes[i]!, boxes[j]!)) return a < b ? { box: boxes[j]!, other: boxes[i]! } : { box: boxes[i]!, other: boxes[j]! };
+    }
+  }
+  return null;
 }
 
 /** Only the planned attachment may overlap its parent; downstream loops remain solid. */
@@ -369,6 +397,16 @@ export function findDuctClashes(
           }
         }
       }
+    }
+  }
+  // A run that doubles back over itself, or crosses itself.
+  for (const [runId, boxes] of boxesByRun) {
+    const crossing = selfCrossing(plansByRun.get(runId)!, boxes);
+    if (crossing) {
+      clashes.push({
+        ductId: runId, mark: crossing.box.mark, otherId: runId, otherMark: crossing.other.mark, kind: 'self',
+        point: scale(add(crossing.box.centre, crossing.other.centre), 0.5),
+      });
     }
   }
   const runs = [...boxesByRun.keys()];

@@ -93,7 +93,7 @@ describe('redesignAfterTurn: a turned unit\'s ducts re-designed by the optimiser
         return spec?.end.kind === 'terminal' && spec.end.terminalId === id;
       }), id).toBe(true);
     }
-    expect(store().processingStatus).toMatch(/^DU-1's ducts re-designed for the turn by the optimiser: [\d.]+ m of duct \(was [\d.]+ m\), \d+ elbows? \(was \d+\), \d+ Pa for the fan, first cost USD [\d,]+; the turn's re-route would break a clash\.$/);
+    expect(store().processingStatus).toMatch(/^DU-1's ducts re-designed for the turn by the optimiser: [\d.]+ m of duct \(was [\d.]+ m\), \d+ elbows? \(was \d+\), \d+ Pa for the fan, first cost USD [\d,]+; the turn's re-route would break 2 clashes\.$/);
     // One undo: the drawing as it was before the turn; redo: the turn with its design.
     const designedNow = JSON.stringify(store().hvacElements);
     store().undo();
