@@ -16,7 +16,7 @@ import { moveDuctNetwork } from '../move/ductNetworkMove';
 import { findAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
 import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLegWidthMm, tapAttachment } from './ductBranches';
-import { accessDoorFor, getDuctRunPlan, inlineAccessoryLengthMm, planDuctRunSpec } from './ductFabricationPlanner';
+import { accessDoorFor, getDuctRunPlan, inlineAccessoryLengthMm, planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
 import { dot, ductLegs } from './ductGeometry';
@@ -1043,14 +1043,14 @@ function reformRunout(scene: readonly HvacElement[], settings: DuctDesignSetting
 
 /**
  * A runout's terminal turned to meet it: where the slid branch's flexible
- * runout bends too tight into the spigot, a square or round box's spigot turns
- * to another side (the side facing the runout first), as Auto duct chooses a
- * spigot's side, the runout ending on it. The branch and the turned terminal,
- * or null when no side gives a runout the planner finds no new error in (or
- * the project keeps spigots where they are).
+ * runout bends too tight into the spigot (or runs too long), a square or round
+ * box's spigot turns to another side (the side facing the runout first), as
+ * Auto duct chooses a spigot's side, the runout ending on it. The branch and
+ * the turned terminal, or null when no side gives a run whose plan `accept`
+ * takes (or the project keeps spigots where they are).
  */
 function turnSpigotToRunout(
-  scene: readonly HvacElement[], settings: DuctDesignSettings, element: HvacElement, spec: DuctRunSpec, baseline: Map<string, number>,
+  scene: readonly HvacElement[], settings: DuctDesignSettings, element: HvacElement, spec: DuctRunSpec, accept: (plan: DuctFabricationPlan) => boolean,
 ): { spec: DuctRunSpec; terminal: HvacElement; side: string } | null {
   const end = spec.end;
   if (!settings.autoChooseSpigotSide || end.kind !== 'terminal' || !end.flex || spec.path.length < 3) return null;
@@ -1070,7 +1070,7 @@ function turnSpigotToRunout(
   for (const { side, turned, port } of sides) {
     const candidate: DuctRunSpec = { ...spec, path: [...spec.path.slice(0, -1), { x: port.lip.x, y: port.lip.y, z: port.lip.z - (flex.diameterMm ?? flex.heightMm) / 2 }] };
     const trial = scene.map((other) => (other.id === turned.id ? turned : other.id === element.id ? ductRunElementWithSpec(element, candidate) : other));
-    if (noNewErrors(baseline, errorCodes(planDuctRunSpec(element.id, candidate, { settings, scene: trial })))) return { spec: candidate, terminal: turned, side };
+    if (accept(planDuctRunSpec(element.id, candidate, { settings, scene: trial }))) return { spec: candidate, terminal: turned, side };
   }
   return null;
 }
@@ -1093,18 +1093,28 @@ function editTapStation(scene: readonly HvacElement[], settings: DuctDesignSetti
   const changed = new Map([[element.id, ductRunElementWithSpec(element, restated)]]);
   let notes = ['the branch slides with it, still ending where it did'];
   let updates = settle(scene, changed, settings, notes);
-  // Where its slid stub would bend its runout too tight, the runout branch is laid again: a new elbow turns it toward
-  // its terminal and the flexible runout re-curves into the spigot.
+  // Where its slid stub would bend its runout too tight, or leave it longer than the project allows (where it was
+  // not), its terminal's spigot turns to meet the runout, or the runout branch is laid again: a new elbow turns it
+  // toward its terminal and the flexible runout re-curves into the spigot.
   const slid = updates.find((candidate) => candidate.id === element.id);
-  const baseline = errorCodes(getDuctRunPlan(element, scene, settings));
+  const before = getDuctRunPlan(element, scene, settings);
+  const baseline = errorCodes(before);
+  const tooLong = (plan: DuctFabricationPlan | null) => Boolean(plan?.issues.some((issue) => issue.code === 'DU_FLEX_LENGTH'));
+  const wasLong = tooLong(before);
   if (slid) {
     const replaced = new Map(updates.map((candidate) => [candidate.id, candidate]));
     const next = scene.map((candidate) => replaced.get(candidate.id) ?? candidate);
     const slidSpec = readDuctRunSpec(slid);
-    if (slidSpec && !noNewErrors(baseline, errorCodes(getDuctRunPlan(slid, next, settings)))) {
+    const slidPlan = getDuctRunPlan(slid, next, settings);
+    const broke = !noNewErrors(baseline, errorCodes(slidPlan));
+    if (slidSpec && (broke || (!wasLong && tooLong(slidPlan)))) {
       // First its terminal's spigot turned to meet the runout (as Auto duct would choose it); else the branch laid again.
-      const turned = turnSpigotToRunout(next, settings, slid, slidSpec, baseline);
+      // Either breaks nothing the run did not break before; where the slide broke a rule, a spigot turned onto a runout
+      // longer than the maximum still does better than the slide.
+      const clean = (plan: DuctFabricationPlan) => noNewErrors(baseline, errorCodes(plan)) && (wasLong || !tooLong(plan));
+      let turned = turnSpigotToRunout(next, settings, slid, slidSpec, clean);
       const reformed = turned ? null : reformRunout(scene, settings, element, restated, baseline);
+      if (!turned && !reformed && broke) turned = turnSpigotToRunout(next, settings, slid, slidSpec, (plan) => noNewErrors(baseline, errorCodes(plan)));
       if (turned) {
         notes = [`${turned.terminal.label || 'its terminal'}'s spigot turns to its ${turned.side} side to meet the runout`];
         updates = settle(scene, new Map([[element.id, ductRunElementWithSpec(element, turned.spec)], [turned.terminal.id, turned.terminal]]), settings, notes);

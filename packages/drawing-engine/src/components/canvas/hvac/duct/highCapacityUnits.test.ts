@@ -101,13 +101,18 @@ describe('an FDU280KXZE1 with six Ø300 diffusers, by constant friction', () => 
     const drawn = [unit, ...terminals.map((terminal) => turned.get(terminal.id) ?? terminal), ...result.runs];
     const root = result.runs.find((run) => readDuctRunSpec(run)?.start.kind === 'unit-port')!;
     const ids = result.runs.map((run) => run.id);
-    const trunkOf = (report: ReturnType<typeof sizeDuctSystem>['report']) => report.sections.filter((section) => section.runId === root.id && section.part === 'trunk' && !isRoundLeg(section.section));
+    // The trunk: its rectangular stretches carrying two terminals or more (the main from the collar, and a split's
+    // branches where the design splits), as the sizing's trunk height takes them.
+    const trunkOf = (report: ReturnType<typeof sizeDuctSystem>['report']) => report.sections.filter((section) => section.part === 'trunk' && !isRoundLeg(section.section));
     const trunk = trunkOf(sizeDuctSystem(drawn, root.id, { basis, measure: true, verify: false }, settings).report);
     expect(trunk.length).toBeGreaterThan(1);
     const height = trunk[0]!.section.heightMm;
     expect(trunk.every((section) => section.section.heightMm === height)).toBe(true);
-    // The width reduces along it, the height kept.
-    for (let i = 1; i < trunk.length; i += 1) expect(trunk[i]!.section.widthMm).toBeLessThanOrEqual(trunk[i - 1]!.section.widthMm);
+    // Along each run the width reduces, the height kept.
+    for (const runId of new Set(trunk.map((section) => section.runId))) {
+      const along = trunk.filter((section) => section.runId === runId);
+      for (let i = 1; i < along.length; i += 1) expect(along[i]!.section.widthMm).toBeLessThanOrEqual(along[i - 1]!.section.widthMm);
+    }
     const chosen = appraiseDuctSystem(drawn, ids, settings, result.pricePerPa);
     expect(chosen.errors).toEqual([]);
     let priced = 0;

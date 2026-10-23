@@ -72,6 +72,8 @@ describe('tap-station: a take-off slid along its main, its runout branch followi
     expect((spec.start as { stationMm: number }).stationMm).toBe(4200);
     expect(errors(after, 'branch')).toEqual([]);
     expect(errors(after, 'main')).toEqual([]);
+    // Nor longer than the project allows: slid on its own, its runout would run 1.7 m round to the spigot.
+    expect(getDuctRunPlan(byId(after, 'branch'), after, settings)!.issues.map((issue) => issue.code)).not.toContain('DU_FLEX_LENGTH');
     const turned = readDuctTerminalSpec(byId(after, 'd1'))!.spigotSide !== 'left';
     expect(turned || spec.path.length > 3).toBe(true);
     expect(result.notes[0]).toMatch(/spigot turns|laid again/);

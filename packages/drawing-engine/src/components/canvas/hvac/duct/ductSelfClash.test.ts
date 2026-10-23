@@ -64,11 +64,11 @@ describe('two diffusers close to the unit, in the project\'s 6.45 × 4.65 m room
   // The FDUM22 2.8 m from the wall its collar faces; two square Ø200 diffusers 1.6 m out, 0.8 m either side.
   const roomUnit: HvacElement = { ...unit, id: 'fdum', position: { x: 5053.94, y: 4242.02 } };
   const lip = resolveUnitAirPorts(roomUnit).find((entry) => entry.kind === 'supply')!.lip;
-  function diffuser(id: string, centre: Point2D): HvacElement {
+  function diffuser(id: string, centre: Point2D, rotation = 0): HvacElement {
     const spec = typicalTerminalSpec('square-4way', 200);
     const envelope = terminalEnvelope(spec);
     return {
-      id, type: 'diffuser', position: { x: centre.x - envelope.widthMm / 2, y: centre.y - envelope.depthMm / 2 }, rotation: 0,
+      id, type: 'diffuser', position: { x: centre.x - envelope.widthMm / 2, y: centre.y - envelope.depthMm / 2 }, rotation,
       width: envelope.widthMm, depth: envelope.depthMm, height: envelope.heightMm, elevation: 2400, mountType: 'ceiling',
       label: id.toUpperCase(), supplyZoneRatio: 0.5, roomId: 'r', properties: { terminal: spec },
     };
@@ -81,10 +81,10 @@ describe('two diffusers close to the unit, in the project\'s 6.45 × 4.65 m room
     { id: 'w4', startPoint: { x: 2300, y: 6150 }, endPoint: { x: 2300, y: 1350 }, thickness: 150 },
   ];
   const rooms = [{ id: 'r', vertices: [{ x: 2375, y: 1425 }, { x: 8825, y: 1425 }, { x: 8825, y: 6075 }, { x: 2375, y: 6075 }] }];
-  const design = (shape: AutoDuctShape) => {
-    const drawing = [roomUnit, ...terminals];
+  const design = (shape: AutoDuctShape, placed: readonly HvacElement[] = terminals) => {
+    const drawing = [roomUnit, ...placed];
     const result = generateAutoDuctInShape(drawing, {
-      unitId: 'fdum', terminalIds: ['d1', 'd2'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false },
+      unitId: 'fdum', terminalIds: placed.map((element) => element.id), fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false },
       rebuildExisting: false, shape, walls, rooms,
     }, DEFAULT_DUCT_SETTINGS);
     const turned = new Map(result.terminalUpdates.map((element) => [element.id, element]));
@@ -98,18 +98,29 @@ describe('two diffusers close to the unit, in the project\'s 6.45 × 4.65 m room
     }
   }, 240000);
 
-  it('Rect + round keeps a plenum on the collar, its spigots placed for the runouts, both on its end face', () => {
-    const { result } = design('rect');
-    const specs = result.runs.map((run) => readDuctRunSpec(run)!);
-    expect(specs.find((spec) => spec.start.kind === 'unit-port')!.end.kind).toBe('plenum');
-    const spigots = specs.filter((spec) => spec.start.kind === 'spigot');
-    expect(spigots).toHaveLength(2);
-    expect(spigots.every((spec) => spec.start.kind === 'spigot' && spec.start.face === 'end')).toBe(true);
+  it('every shape keeps a clean plenum on the collar: its spigots on its end face, each runout bending at a diameter or more', () => {
+    // Before runouts were bent as fitters bend them (23 October 2026), one of them bent at 173 mm and Round and Optimal
+    // took a wye that wound round both diffusers instead.
+    for (const shape of ['rect', 'round', 'optimal'] as const) {
+      const { result } = design(shape);
+      const specs = result.runs.map((run) => readDuctRunSpec(run)!);
+      expect(specs.find((spec) => spec.start.kind === 'unit-port')!.end.kind, shape).toBe('plenum');
+      const spigots = specs.filter((spec) => spec.start.kind === 'spigot');
+      expect(spigots, shape).toHaveLength(2);
+      expect(spigots.every((spec) => spec.start.kind === 'spigot' && spec.start.face === 'end'), shape).toBe(true);
+      const kept = result.designs[result.selected]!;
+      expect(kept.errors, shape).toBe(0);
+      const runouts = kept.services.flatMap((service) => service.plans.flatMap((plan) => plan.pieces.filter((piece) => piece.kind === 'flex')));
+      expect(runouts, shape).toHaveLength(2);
+      for (const runout of runouts) expect(runout.flex!.minBendRadiusMm, shape).toBeGreaterThanOrEqual(200);
+      expect(result.issues.filter((issue) => issue.code === 'DU_AUTO_WINDING'), shape).toEqual([]);
+    }
   }, 240000);
 
-  it('Round and Optimal keep a wye whose branches wind round the diffusers, and say so, naming each', () => {
+  it('Round and Optimal: a pair 1.2 m out, 0.9 m either side, its spigots facing the unit, still winds round, and the card says so', () => {
+    const facing = [diffuser('d1', { x: lip.x - 900, y: lip.y - 1200 }, 180), diffuser('d2', { x: lip.x + 900, y: lip.y - 1200 }, 180)];
     for (const shape of ['round', 'optimal'] as const) {
-      const { result } = design(shape);
+      const { result } = design(shape, facing);
       const winding = result.issues.filter((issue) => issue.code === 'DU_AUTO_WINDING');
       expect(winding.map((issue) => issue.message.slice(0, 3)).sort(), shape).toEqual(['D1:', 'D2:']);
     }

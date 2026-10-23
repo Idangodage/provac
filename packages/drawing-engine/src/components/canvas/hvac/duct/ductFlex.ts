@@ -5,8 +5,9 @@
  *
  * Its centreline is a smooth 3D curve: a straight lead off each collar (the
  * duct "should extend straight for several inches from a connection before
- * bending", Fig. 3-9; 100 mm here, practice) and a cubic Bezier between them,
- * tangent to both. Bends are checked against one diameter (S3.24), the length
+ * bending", Fig. 3-9; 100 mm here, practice) and, between them, the duct bent
+ * as a fitter bends it: straight, then arcs as large as the space allows, then
+ * straight (see `flexCurve`). Bends are checked against one diameter (S3.24), the length
  * against the project maximum (institutional 1.5 m; S3.23 asks for the
  * minimum). Horizontal supports follow ASHRAE 2024 chapter 19 / ADC:
  * ≤ 1.2 m spacing, ≥ 40 mm saddles (rounded conservatively from 4 ft and
@@ -42,6 +43,8 @@ type Vec3 = DuctPoint3;
 const sub = (a: Vec3, b: Vec3): Vec3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
 const add = (a: Vec3, b: Vec3): Vec3 => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
 const scale = (a: Vec3, k: number): Vec3 => ({ x: a.x * k, y: a.y * k, z: a.z * k });
+const dot = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z;
+const cross = (a: Vec3, b: Vec3): Vec3 => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
 const norm = (a: Vec3) => Math.hypot(a.x, a.y, a.z);
 const unit3 = (a: Vec3): Vec3 => {
   const length = norm(a);
@@ -65,28 +68,36 @@ function circumradius(a: Vec3, b: Vec3, c: Vec3): number {
   const ab = norm(sub(b, a));
   const bc = norm(sub(c, b));
   const ca = norm(sub(a, c));
-  const u = sub(b, a);
-  const v = sub(c, a);
-  const cross = { x: u.y * v.z - u.z * v.y, y: u.z * v.x - u.x * v.z, z: u.x * v.y - u.y * v.x };
-  const area2 = norm(cross);
+  const area2 = norm(cross(sub(b, a), sub(c, a)));
   return area2 < 1e-9 ? Number.POSITIVE_INFINITY : (ab * bc * ca) / (2 * area2);
 }
 
-/**
- * The runout from `start` (leaving along `startDirection`) to `end` (arriving
- * along `endDirection`, i.e. into the spigot).
- */
-export function flexCurve(
-  start: Vec3,
-  startDirection: Vec3,
-  end: Vec3,
-  endDirection: Vec3,
-  options: { leadMm?: number; samples?: number } = {},
-): DuctFlexGeometry {
-  const lead = options.leadMm ?? FLEX_STRAIGHT_LEAD_MM;
-  const samples = options.samples ?? 32;
-  const d0 = unit3(startDirection);
-  const d1 = unit3(endDirection);
+/** Tangent of half the angle between two unit vectors (0 when they point the same way). */
+function tanHalfAngle(a: Vec3, b: Vec3): number {
+  const sin = norm(cross(a, b));
+  return sin < 1e-12 ? 0 : sin / (1 + dot(a, b));
+}
+
+/** A runout's samples with their stations, length and tightest bend (measured on the samples unless given). */
+function geometry(points: Vec3[], minBendRadiusMm?: number, tightestAt?: Vec3): DuctFlexGeometry {
+  const stations = [0];
+  for (let index = 1; index < points.length; index += 1) stations.push(stations[index - 1]! + norm(sub(points[index]!, points[index - 1]!)));
+  if (minBendRadiusMm === undefined) {
+    // Measured on the samples: the tightest circle through three in a row.
+    minBendRadiusMm = Number.POSITIVE_INFINITY;
+    for (let index = 1; index + 1 < points.length; index += 1) {
+      const radius = circumradius(points[index - 1]!, points[index]!, points[index + 1]!);
+      if (radius < minBendRadiusMm) {
+        minBendRadiusMm = radius;
+        tightestAt = points[index]!;
+      }
+    }
+  }
+  return { points, stations, lengthMm: stations[stations.length - 1]!, minBendRadiusMm, tightestAt: tightestAt ?? points[0]! };
+}
+
+/** The runout drawn as one cubic Bezier between the leads, its handles 0.4 of the chord (the model before 23 October 2026). */
+function bezierRunout(start: Vec3, d0: Vec3, end: Vec3, d1: Vec3, lead: number, samples: number): DuctFlexGeometry {
   const p0 = add(start, scale(d0, lead));
   const p3 = sub(end, scale(d1, lead));
   const handle = Math.max(1, 0.4 * norm(sub(p3, p0)));
@@ -99,18 +110,200 @@ export function flexCurve(
     points.push(add(add(scale(p0, u * u * u), scale(p1, 3 * u * u * t)), add(scale(p2, 3 * u * t * t), scale(p3, t * t * t))));
   }
   points.push(end);
-  const stations = [0];
-  for (let index = 1; index < points.length; index += 1) stations.push(stations[index - 1]! + norm(sub(points[index]!, points[index - 1]!)));
-  let minBendRadiusMm = Number.POSITIVE_INFINITY;
-  let tightestAt = points[0]!;
-  for (let index = 1; index + 1 < points.length; index += 1) {
-    const radius = circumradius(points[index - 1]!, points[index]!, points[index + 1]!);
-    if (radius < minBendRadiusMm) {
-      minBendRadiusMm = radius;
-      tightestAt = points[index]!;
+  return geometry(points);
+}
+
+/**
+ * A runout bent as a fitter bends it, between the ends of its leads: the
+ * polyline from `p0` through `corners` to `p3`, each corner rounded by an arc
+ * of `radiusMm`.
+ */
+interface BendPath { corners: Vec3[]; radiusMm: number }
+
+/** Arcs are drawn at 5° a sample at most. */
+const ARC_STEP_RAD = Math.PI / 36;
+/** The two-bend search: a grid over the corners' places, then a pattern search down to this step (mm). */
+const SEARCH_GRID = 10;
+const SEARCH_STEP_MM = 0.05;
+
+/**
+ * A turn in one plane, the lead lines meeting ahead of both leads: one arc as
+ * large as the shorter leg allows, the rest straight. The largest bend a turn
+ * can have without swinging past either end.
+ */
+function singleBend(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3): BendPath | null {
+  const w = sub(p3, p0);
+  const normal = cross(d0, d1);
+  const sin = norm(normal);
+  if (sin < 1e-9 || Math.abs(dot(w, normal)) / sin > 1e-6 * Math.max(1, norm(w))) return null;
+  const c = dot(d0, d1);
+  const s = (dot(w, d0) - c * dot(w, d1)) / (1 - c * c);
+  const u = (dot(w, d1) - c * dot(w, d0)) / (1 - c * c);
+  if (s < -1e-6 || u < -1e-6) return null;
+  return { corners: [add(p0, scale(d0, Math.max(0, s)))], radiusMm: Math.max(0, Math.min(s, u)) / tanHalfAngle(d0, d1) };
+}
+
+/**
+ * Leads parallel and offset: two equal arcs (an S), each turning
+ * 2·atan(offset / run) and so as large as the offset allows; past 90° each
+ * turns 90° with a straight across between them. Straight ahead when in line.
+ */
+function offsetBends(p0: Vec3, d: Vec3, p3: Vec3): BendPath | null {
+  const w = sub(p3, p0);
+  const run = dot(w, d);
+  if (run <= 1e-6) return null;
+  const offset = norm(sub(w, scale(d, run)));
+  if (offset < 1e-9) return { corners: [], radiusMm: Number.POSITIVE_INFINITY };
+  const turn = 2 * Math.atan2(offset, run);
+  const radiusMm = turn < Math.PI / 2 ? run / (2 * Math.sin(turn)) : run / 2;
+  const tangent = turn < Math.PI / 2 ? radiusMm * Math.tan(turn / 2) : radiusMm;
+  return { corners: [add(p0, scale(d, tangent)), sub(p3, scale(d, tangent))], radiusMm };
+}
+
+/**
+ * The largest equal radius for two bends at `p0 + s·d0` and `p3 − u·d1`, the
+ * straight between them heading on (not back against either lead); −1 where
+ * it would head back.
+ */
+function twoBendRadius(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3, s: number, u: number): number {
+  const between = sub(sub(p3, scale(d1, u)), add(p0, scale(d0, s)));
+  const length = norm(between);
+  if (length < 1e-9) return -1;
+  const m = scale(between, 1 / length);
+  if (dot(m, d0) < -1e-9 || dot(m, d1) < -1e-9) return -1;
+  const t1 = tanHalfAngle(d0, m);
+  const t2 = tanHalfAngle(m, d1);
+  let radius = Number.POSITIVE_INFINITY;
+  if (t1 > 0) radius = Math.min(radius, s / t1);
+  if (t2 > 0) radius = Math.min(radius, u / t2);
+  if (t1 + t2 > 0) radius = Math.min(radius, length / (t1 + t2));
+  return radius;
+}
+
+/**
+ * Any other runout (a turn with a drop, a top collar off to one side, a turn
+ * whose lead lines meet behind one end): a bend off each lead with a straight
+ * between, placed for the largest radius. Null where the duct would have to
+ * head back to reach the spigot.
+ */
+function twoBends(p0: Vec3, d0: Vec3, p3: Vec3, d1: Vec3): BendPath | null {
+  const w = sub(p3, p0);
+  if (norm(w) < 1e-6) return null;
+  // The straight between the bends heads on: with the leads turning 90° at most, s ≤ w·d0 and u ≤ w·d1.
+  const sMax = dot(w, d0);
+  const uMax = dot(w, d1);
+  if (sMax < 0 || uMax < 0) return null;
+  let best = -1;
+  let bestS = 0;
+  let bestU = 0;
+  for (let i = 0; i <= SEARCH_GRID; i += 1) {
+    for (let j = 0; j <= SEARCH_GRID; j += 1) {
+      const s = (sMax * i) / SEARCH_GRID;
+      const u = (uMax * j) / SEARCH_GRID;
+      const radius = twoBendRadius(p0, d0, p3, d1, s, u);
+      if (radius > best) [best, bestS, bestU] = [radius, s, u];
     }
   }
-  return { points, stations, lengthMm: stations[stations.length - 1]!, minBendRadiusMm, tightestAt };
+  if (!(best > 0)) return null;
+  for (let step = Math.max(sMax, uMax) / SEARCH_GRID; step > SEARCH_STEP_MM;) {
+    let moved = false;
+    for (const [ds, du] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]] as const) {
+      const s = bestS + ds * step;
+      const u = bestU + du * step;
+      if (s < 0 || u < 0) continue;
+      const radius = twoBendRadius(p0, d0, p3, d1, s, u);
+      if (radius > best + 1e-9) {
+        [best, bestS, bestU] = [radius, s, u];
+        moved = true;
+      }
+    }
+    if (!moved) step /= 2;
+  }
+  if (!Number.isFinite(best)) return { corners: [], radiusMm: Number.POSITIVE_INFINITY };
+  return { corners: [add(p0, scale(d0, bestS)), sub(p3, scale(d1, bestU))], radiusMm: best };
+}
+
+/** The runout along a bend path: straights and arcs sampled about every `stepMm`, the arcs at 5° at most. */
+function bendRunout(start: Vec3, p0: Vec3, path: BendPath, p3: Vec3, end: Vec3, stepMm: number): DuctFlexGeometry {
+  const polyline = [p0, ...path.corners, p3];
+  const points: Vec3[] = [start, p0];
+  let from = p0;
+  let tightestAt = p0;
+  let widestTurn = -1;
+  const straightTo = (to: Vec3) => {
+    const length = norm(sub(to, from));
+    // A straight shorter than this is the float noise of an arc meeting its lead: no point of its own.
+    if (length < 0.01) return;
+    const count = Math.max(1, Math.ceil(length / stepMm - 1e-9));
+    for (let index = 1; index <= count; index += 1) points.push(index === count ? to : add(from, scale(sub(to, from), index / count)));
+  };
+  for (let index = 1; index + 1 < polyline.length; index += 1) {
+    const a = unit3(sub(polyline[index]!, polyline[index - 1]!));
+    const b = unit3(sub(polyline[index + 1]!, polyline[index]!));
+    const tanHalf = tanHalfAngle(a, b);
+    if (tanHalf === 0 || !Number.isFinite(path.radiusMm)) continue;
+    const cos = Math.max(-1, Math.min(1, dot(a, b)));
+    const turn = Math.acos(cos);
+    const tangent = path.radiusMm * tanHalf;
+    const arcStart = sub(polyline[index]!, scale(a, tangent));
+    const inward = unit3(sub(b, scale(a, cos)));
+    const centre = add(arcStart, scale(inward, path.radiusMm));
+    const at = (angle: number) => add(sub(centre, scale(inward, path.radiusMm * Math.cos(angle))), scale(a, path.radiusMm * Math.sin(angle)));
+    straightTo(arcStart);
+    const count = Math.max(2, Math.ceil((path.radiusMm * turn) / stepMm - 1e-9), Math.ceil(turn / ARC_STEP_RAD - 1e-9));
+    for (let step = 1; step <= count; step += 1) points.push(at((turn * step) / count));
+    if (turn > widestTurn) [widestTurn, tightestAt] = [turn, at(turn / 2)];
+    from = points[points.length - 1]!;
+  }
+  straightTo(p3);
+  // The last sample is the lead's end exactly (an arc ending on it lands within float noise).
+  if (points.length > 2) points[points.length - 1] = p3;
+  else points.push(p3);
+  points.push(end);
+  return geometry(points, path.radiusMm, tightestAt);
+}
+
+/**
+ * The runout from `start` (leaving along `startDirection`) to `end` (arriving
+ * along `endDirection`, i.e. into the spigot): straight for the lead off each
+ * collar, then bent as a fitter bends it, with bends as large as the space
+ * allows:
+ * - a turn in one plane (the lead lines meet ahead of both): one arc as large
+ *   as the shorter leg allows, the rest straight; in the plane of the turn, so
+ *   a top collar straight ahead of its duct too;
+ * - leads parallel and offset: two equal arcs (an S);
+ * - otherwise (a turn with a drop, a top collar off to one side): a bend off
+ *   each lead with a straight between, placed for the largest radius.
+ * Bent so, the runout heads on toward the spigot all the way: it never passes
+ * the spigot's face, so never into its terminal's box. A runout turning more
+ * than 90° (its spigot facing away) would have to, round the back of the box:
+ * it keeps the earlier model's curve (one cubic Bezier between the leads), as
+ * does any runout that curve bends more gently, so none bends tighter than it
+ * did before 23 October 2026; on an equal bend, the shorter.
+ */
+export function flexCurve(
+  start: Vec3,
+  startDirection: Vec3,
+  end: Vec3,
+  endDirection: Vec3,
+  options: { leadMm?: number; samples?: number } = {},
+): DuctFlexGeometry {
+  const lead = options.leadMm ?? FLEX_STRAIGHT_LEAD_MM;
+  const samples = options.samples ?? 32;
+  const d0 = unit3(startDirection);
+  const d1 = unit3(endDirection);
+  const bezier = bezierRunout(start, d0, end, d1, lead, samples);
+  const p0 = add(start, scale(d0, lead));
+  const p3 = sub(end, scale(d1, lead));
+  if (norm(sub(p3, p0)) < 0.01 || dot(d0, d1) < -1e-9) return bezier;
+  const path = norm(cross(d0, d1)) < 1e-9 ? offsetBends(p0, d0, p3) : singleBend(p0, d0, p3, d1) ?? twoBends(p0, d0, p3, d1);
+  if (!path || !(path.radiusMm > 0)) return bezier;
+  const polylineMm = [p0, ...path.corners, p3].reduce((sum, point, index, all) => (index ? sum + norm(sub(point, all[index - 1]!)) : 0), 0);
+  const bent = bendRunout(start, p0, path, p3, end, Math.max(5, polylineMm / samples));
+  const tie = bent.minBendRadiusMm === bezier.minBendRadiusMm
+    || Math.abs(bent.minBendRadiusMm - bezier.minBendRadiusMm) <= 1e-9 * bezier.minBendRadiusMm;
+  if (tie) return bent.lengthMm < bezier.lengthMm ? bent : bezier;
+  return bent.minBendRadiusMm > bezier.minBendRadiusMm ? bent : bezier;
 }
 
 /** The point at arc length `station` along the curve. */

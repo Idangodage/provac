@@ -106,12 +106,12 @@ describe('a branch turns with its new fitting, keeping its end', () => {
     expect(errors(after, 'main')).toEqual([]);
   });
 
-  it('a tee onto a flexible runout made a lateral: the take-off slides back and a 45° elbow brings the stub onto its old heading; the runout stays straight', () => {
+  /** A tee off the round main at 3 m onto a straight flexible runout to a diffuser `across` to its side, its spigot facing it. */
+  function teeOntoRunout(across: number): HvacElement[] {
     const main = roundMain();
     const terminalSpec = { ...typicalTerminalSpec('square-4way', 200), designAirflowM3h: null };
     const envelope = terminalEnvelope(terminalSpec);
-    const centre = S(3000, 1800);
-    // Straight ahead of the take-off, its spigot facing it.
+    const centre = S(3000, across);
     const terminal: HvacElement = {
       id: 'sad', type: 'diffuser', position: { x: centre.x - envelope.widthMm / 2, y: centre.y - envelope.depthMm / 2 }, rotation: 270,
       width: envelope.widthMm, depth: envelope.depthMm, height: envelope.heightMm, elevation: 2400, mountType: 'ceiling',
@@ -124,7 +124,30 @@ describe('a branch turns with its new fitting, keeping its end', () => {
       origin, points: [{ x: origin.point.x + origin.direction.x * 300, y: origin.point.y + origin.direction.y * 300 }, { x: lip.lip.x, y: lip.lip.y, z: lip.lip.z - lip.heightMm / 2 }],
       legSizes: [roundLeg(200), roundLeg(200)], end: { kind: 'terminal', terminalId: 'sad', portId: lip.portId, flex: true },
     }, 'b');
-    const before = [unit, main, terminal, tee];
+    return [unit, main, terminal, tee];
+  }
+
+  it('a tee onto a flexible runout made a lateral, with room for the runout to bend: the stub leaves at 45°, the runout re-curving to the spigot', () => {
+    const before = teeOntoRunout(1800);
+    expect(errors(before, 'b')).toEqual([]);
+    const result = applyDuctSegmentEdit(before, settings, { kind: 'tap', runId: 'b', style: 'round-lateral' });
+    expect(result.refused).toBeUndefined();
+    const after = withUpdates(before, result.updates);
+    const spec = specOf(after, 'b');
+    expect(spec.start).toMatchObject({ style: 'round-lateral', stationMm: 3000 });
+    // The cheapest way round: no new elbow; the runout bends at a diameter or more, within its length.
+    expect(spec.path).toHaveLength(3);
+    const runout = getDuctRunPlan(byId(after, 'b'), after, settings)!.pieces.find((piece) => piece.kind === 'flex')!;
+    expect(runout.flex!.minBendRadiusMm).toBeGreaterThanOrEqual(200);
+    expect(runout.lengthMm).toBeLessThanOrEqual(settings.flexMaxLengthMm);
+    expect(spec.path.at(-1)).toEqual(specOf(before, 'b').path.at(-1));
+    expect(errors(after, 'b')).toEqual([]);
+    expect(result.notes.join(' ')).toMatch(/runout re-curves/);
+  });
+
+  it('a tee onto a flexible runout made a lateral: the take-off slides back and a 45° elbow brings the stub onto its old heading; the runout stays straight', () => {
+    // 1.6 m across: too close for the runout to bend off a bare 45° stub.
+    const before = teeOntoRunout(1600);
     expect(errors(before, 'b')).toEqual([]);
     const result = applyDuctSegmentEdit(before, settings, { kind: 'tap', runId: 'b', style: 'round-lateral' });
     expect(result.refused).toBeUndefined();
