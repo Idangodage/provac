@@ -174,7 +174,7 @@ describe('atomic coordinated Auto route Apply', () => {
     previewStore.setUnified({ ...current, ducts: { ...current.ducts!, units: [designed('source', 'DU-1', 'designed'), designed('other', 'DU-2', 'kept')] } }, previewStore.signatures);
     expect(applyAutoRoutePreview()).toMatch(/No viable duct layout for 1 unit/);
     expect(useSmartDrawingStore.getState().historyIndex).toBe(0);
-    expect(applyAutoRoutePreview({ designedUnitsOnly: true }))
+    expect(applyAutoRoutePreview({ completeOnly: true }))
       .toBe('Auto route applied without DU-2 (no duct layout; it keeps its ducts): 1 duct run for 1 unit. One undo reverts it.');
     expect(useSmartDrawingStore.getState().hvacElements.some((element) => element.id === 'new-duct')).toBe(true);
     expect(useSmartDrawingStore.getState().historyIndex).toBe(1);

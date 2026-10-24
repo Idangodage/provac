@@ -70,18 +70,18 @@ function FarTerminalsBanner({ result, onRouteAgain }: { result: UnifiedAutoRoute
 }
 
 /**
- * "Apply N designed units": when some ducted units have no layout, the ones
- * that have one can still be applied (one undo); the panel names the units
- * left out. The main Apply keeps refusing an incomplete preview.
+ * "Apply complete parts": when some parts are incomplete, the complete ones
+ * can still be applied (one undo); the panel names the parts left out. The
+ * main Apply keeps refusing an incomplete preview.
  */
-function PartialApply({ units, leftOut, reason }: { units: number; leftOut: readonly string[]; reason: string | null }) {
+function PartialApply({ leftOut, reason }: { leftOut: readonly string[]; reason: string | null }) {
   return <div className="ml-[25px] mt-2 border-t border-amber-200 pt-2">
-    <button type="button" data-testid="auto-route-apply-designed" disabled={Boolean(reason)} onClick={() => applyAutoRoutePreview({ designedUnitsOnly: true })}
-      title={reason ?? 'Apply the units that have a layout as one undo step; the others are left as they are'}
+    <button type="button" data-testid="auto-route-apply-complete" disabled={Boolean(reason)} onClick={() => applyAutoRoutePreview({ completeOnly: true })}
+      title={reason ?? 'Apply every part that is complete as one undo step; the parts left out stay as they are, flagged'}
       className="inline-flex items-center gap-1 rounded-md bg-sky-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-sky-800 disabled:opacity-40">
-      <Check size={12} aria-hidden="true" /> Apply {units} designed unit{units === 1 ? '' : 's'}</button>
+      <Check size={12} aria-hidden="true" /> Apply complete parts</button>
     <p className="mt-1 text-[11px]" data-testid="auto-route-left-out">
-      {leftOut.join(', ')} {leftOut.length === 1 ? 'keeps its' : 'keep their'} existing ducts.{reason ? ` Not yet: ${reason}` : ''}</p>
+      Left out: {leftOut.join(', ')}.{reason ? ` Not yet: ${reason}` : ''}</p>
   </div>;
 }
 
@@ -164,7 +164,7 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
 }) {
   const existingElements = useSmartDrawingStore(state => state.hvacElements);
   const existingIds = new Set(existingElements.map(element => element.id));
-  const review = buildAutoRouteReview(result, approved);
+  const review = buildAutoRouteReview(result, approved, id => existingElements.find(element => element.id === id)?.label || id);
   const { ducts, refrigerant, condensate } = result;
   const equipmentToReview = refrigerant?.connectedIndoorIds.find(id => existingIds.has(id));
   const feedback = autoRouteDuctFeedback(ducts);

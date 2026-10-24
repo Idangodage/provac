@@ -1,4 +1,4 @@
-import { incompleteDuctRouteRefusal, incompleteServiceRouteRefusal, partialDuctApplyRefusal } from './autoRouteCompleteness';
+import { incompleteServiceRouteRefusal, incompletenessRefusals, leftOutParts, partialApplyRefusal, type LeftOutPart } from './autoRouteCompleteness';
 import type { AutoRouteDuctUnit } from './duct/ductAutoRoute';
 import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
 
@@ -42,7 +42,18 @@ export function ductUnitReview(unit: AutoRouteDuctUnit) {
 }
 
 /** Presentation derives from final checks, not just connected-unit counts. */
-export function buildAutoRouteReview(result: UnifiedAutoRouteResult, approvedHopKeys: readonly string[]) {
+/** A part "Apply complete parts" leaves out, as the panel names it. */
+export function describeLeftOut(part: LeftOutPart): string {
+  switch (part.service) {
+    case 'ducts': return `${part.label} (no duct layout)`;
+    case 'terminals': return `${part.label} (no duct reaches it)`;
+    case 'refrigerant': return `${part.label} (no refrigerant route)`;
+    default: return `${part.label} (no drain route)`;
+  }
+}
+
+/** `labelOf`: an element's label (the units and terminals a part names), from the drawing. */
+export function buildAutoRouteReview(result: UnifiedAutoRouteResult, approvedHopKeys: readonly string[], labelOf: (id: string) => string = (id) => id) {
   const issues: RouteReviewIssue[] = [];
   const seenMessages = new Set<string>();
   const seenEntities = new Set<string>();
@@ -95,14 +106,14 @@ export function buildAutoRouteReview(result: UnifiedAutoRouteResult, approvedHop
   const installationNotes = advisory.filter(message => !manufacturerSet.has(message));
   const hopsReason = pendingHops.length ? `Approve ${pendingHops.length} required pipe hop${pendingHops.length === 1 ? '' : 's'} before applying.` : null;
   const applyReason = incompleteServiceRouteRefusal(result) ?? issues[0]?.message ?? hopsReason;
-  // "Apply N designed units": blocked only by what blocks the units that have a layout (not by the failed units' refusal).
-  const designedDuctUnits = ducts?.units.filter(unit => unit.status === 'designed') ?? [];
-  const ductRefusal = incompleteDuctRouteRefusal(result);
-  const otherIssues = issues.filter(issue => issue.key !== 'unserved-terminals' && (!ductRefusal || canonical(issue.message) !== canonical(ductRefusal)));
-  const partialApply = failedDuctUnits.length && designedDuctUnits.length ? {
-    units: designedDuctUnits.length,
-    leftOut: failedDuctUnits.map(unit => unit.tag ?? unit.unitLabel),
-    reason: partialDuctApplyRefusal(result) ?? otherIssues[0]?.message ?? hopsReason,
+  // "Apply complete parts": blocked only by what blocks the parts that are complete (a clash, a hop to approve), not by
+  // the refusals that only say a part is incomplete: those parts are left out, and named.
+  const incompleteness = new Set(incompletenessRefusals(result).map(canonical));
+  const otherIssues = issues.filter(issue => issue.key !== 'unserved-terminals' && !issue.key.startsWith('drain:') && !incompleteness.has(canonical(issue.message)));
+  const leftOut = leftOutParts(result, labelOf);
+  const partialApply = leftOut.length && !partialApplyRefusal(result) ? {
+    leftOut: leftOut.map(describeLeftOut),
+    reason: otherIssues[0]?.message ?? hopsReason,
   } : null;
   return { issues, failedDuctUnits, pendingHops, hasChanges, applyReason, partialApply, manufacturerNotes, installationNotes,
     state: applyReason ? 'blocked' as const : hasChanges ? 'ready' as const : 'unchanged' as const };

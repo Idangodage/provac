@@ -9,7 +9,7 @@ import type { HvacElement } from '../../../types';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 
 import { autoRouteSourceSignature, prepareAutoRouteCommand } from './autoRouteCommand';
-import { incompleteServiceRouteRefusal, partialDuctApplyRefusal } from './autoRouteCompleteness';
+import { incompleteServiceRouteRefusal, leftOutParts, partialApplyRefusal } from './autoRouteCompleteness';
 import { effectiveAutoRouteSettings, type AutoRouteCostRates } from './autoRouteEvaluation';
 import { condensateSourceSignature, prepareCondensateCommand, type CondensateCommandSource } from './condensate/condensateCommand';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
@@ -186,11 +186,12 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
 
 /**
  * Commits the open preview as one undo step. Returns the status message shown
- * to the user. `designedUnitsOnly` ("Apply N designed units"): the duct units
- * with no layout are left out (they have nothing in the preview, and keep the
- * ducts they have) instead of refusing the whole preview.
+ * to the user. `completeOnly` ("Apply complete parts"): the parts that are
+ * incomplete are left out (duct units with no layout keep the ducts they
+ * have, units with no refrigerant or drain route stay unconnected) instead of
+ * refusing the whole preview; the message names them.
  */
-export function applyAutoRoutePreview(options: { designedUnitsOnly?: boolean } = {}): string {
+export function applyAutoRoutePreview(options: { completeOnly?: boolean } = {}): string {
   const preview = useCondensatePreviewStore.getState();
   const { unified, signatures } = preview;
   if (!unified || !signatures) return 'Run Auto route first.';
@@ -198,9 +199,10 @@ export function applyAutoRoutePreview(options: { designedUnitsOnly?: boolean } =
     preview.setMessage(message);
     return message;
   };
-  const incomplete = options.designedUnitsOnly ? partialDuctApplyRefusal(unified) : incompleteServiceRouteRefusal(unified);
+  const incomplete = options.completeOnly ? partialApplyRefusal(unified) : incompleteServiceRouteRefusal(unified);
   if (incomplete) return refuse(incomplete);
-  const leftOut = options.designedUnitsOnly ? (unified.ducts?.units ?? []).filter((unit) => unit.status !== 'designed').map((unit) => unit.tag ?? unit.unitLabel) : [];
+  const labels = new Map(useSmartDrawingStore.getState().hvacElements.map((element) => [element.id, element.label || element.id]));
+  const leftOut = options.completeOnly ? leftOutParts(unified, (id) => labels.get(id) ?? id) : [];
   if (unified.condensate?.hopProposals.some((proposal) => !preview.approvedHopKeys.includes(proposal.key))) {
     return refuse('Review and approve the required refrigerant hops before applying. Nothing was changed.');
   }
@@ -271,8 +273,13 @@ export function applyAutoRoutePreview(options: { designedUnitsOnly?: boolean } =
     refrigerantChanged ? `${refrigerantUnits} unit${refrigerantUnits === 1 ? '' : 's'} on refrigerant` : null,
     unified.condensate ? `${drainUnits} drain${drainUnits === 1 ? '' : 's'}` : null,
   ].filter(Boolean);
-  // The units left out come first: the toolbar shows the start of a long message.
-  const without = leftOut.length ? ` without ${leftOut.join(', ')} (no duct layout; ${leftOut.length === 1 ? 'it keeps its' : 'they keep their'} ducts)` : '';
+  // The parts left out come first: the toolbar shows the start of a long message.
+  const ductless = leftOut.filter((part) => part.service === 'ducts').map((part) => part.label);
+  const without = leftOut.length ? ` without ${[
+    ductless.length ? `${ductless.join(', ')} (no duct layout; ${ductless.length === 1 ? 'it keeps its' : 'they keep their'} ducts)` : null,
+    ...leftOut.filter((part) => part.service !== 'ducts').map((part) => `${part.label} (${part.service === 'refrigerant' ? 'no refrigerant route'
+      : part.service === 'drains' ? 'no drain route' : 'no duct reaches it'})`),
+  ].filter(Boolean).join(', ')}` : '';
   const message = `Auto route applied${without}: ${parts.join(', ')}. One undo reverts it.${hopMessage}`;
   previewProfile = undefined;
   preview.clear();

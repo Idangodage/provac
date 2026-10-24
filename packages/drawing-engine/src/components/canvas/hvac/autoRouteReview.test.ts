@@ -48,7 +48,7 @@ describe('coordinated route review', () => {
     expect(review.partialApply).toBeNull();
   });
 
-  it('offers the designed units alone when only some duct layouts failed, naming the units left out', () => {
+  it('offers the complete parts when only some duct layouts failed, naming the parts left out', () => {
     const services = { gas: false, liquid: false, condensate: false, supplyDuct: true, returnDuct: true };
     const ducts = { units: [unit({ unitId: 'a', tag: 'DU-1', status: 'designed', runIds: ['run-a'] }), unit({ unitId: 'b', tag: 'DU-2' }), unit({ unitId: 'c', tag: 'DU-3' })],
       elementsToAdd: [], removeElementIds: [], terminalUpdates: [], issues: [] };
@@ -56,12 +56,13 @@ describe('coordinated route review', () => {
     const refusal = 'No viable duct layout for 2 units. Resolve duct issues, or turn off ducts and route again.';
     const review = buildAutoRouteReview(result({ services, ducts, blockingIssues: [refusal], issues: [refusal] }), []);
     expect(review.applyReason).toBe(refusal);
-    expect(review.partialApply).toEqual({ units: 1, leftOut: ['DU-2', 'DU-3'], reason: null });
-    // Anything else wrong still blocks them: here a refrigerant connection that was asked for.
+    expect(review.partialApply).toEqual({ leftOut: ['DU-2 (no duct layout)', 'DU-3 (no duct layout)'], reason: null });
+    // A unit the refrigerant could not reach is left out too, named (it does not block the complete parts).
     const refrigerant = { elementsToAdd: [], removeElementIds: [], updates: [], complete: false, connectedIndoorIds: ['a'], unconnectedIndoorIds: ['x'],
       issues: [], metrics: null, evaluations: [], evaluatedCandidates: 1 } as unknown as UnifiedAutoRouteResult['refrigerant'];
     const withPipes = buildAutoRouteReview(result({ services: { ...services, gas: true, liquid: true }, ducts, refrigerant, blockingIssues: [refusal] }), []);
-    expect(withPipes.partialApply?.reason).toMatch(/no refrigerant route/);
+    expect(withPipes.partialApply).toEqual({ leftOut: ['DU-2 (no duct layout)', 'DU-3 (no duct layout)', 'x (no refrigerant route)'], reason: null });
+    // A clash still blocks them.
     const clash = 'Supply duct DU-1 runs into the cassette.';
     expect(buildAutoRouteReview(result({ services, ducts, blockingIssues: [refusal, clash] }), []).partialApply?.reason).toBe(clash);
   });
