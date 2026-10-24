@@ -59,6 +59,7 @@ import { estimateTagTextPx, layoutDuctTags, TAG_FONT_PX, type DuctTagSource, typ
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec } from './ductTypes';
 import type { ScreenRect } from './popoverPlacement';
+import { useTerminalProposalStore } from './terminalProposalStore';
 import { useDuctBuilding } from './useDuctBuilding';
 
 export interface DuctOverlayDraft {
@@ -670,6 +671,12 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const previewMarkup = useMemo(() => previewPresentations.map((presentation) => ductRunMarkup(presentation, {
     k, draft: true, showTags: markupStyle(k, settings).showTags, sectionTags: false, showJointTicks: true, showMarks: false,
   })).join(''), [previewPresentations, k, settings]);
+  // Terminals the Auto route panel proposes for a unit short of them: dashed, until they are added or put away.
+  const proposal = useTerminalProposalStore((state) => state.proposal);
+  const proposalMarkup = useMemo(() => (proposal?.add ?? []).flatMap((element) => {
+    const spec = readDuctTerminalSpec(element);
+    return spec ? [airTerminalMarkup(element, spec, k, markupStyle(k, settings).showTags)] : [];
+  }).join(''), [proposal, k, settings]);
   const runs = useMemo(() => hvacElements
     .filter(isDuctElement)
     .map((element) => getDuctRunPlan(element, hvacElements, settings))
@@ -748,6 +755,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
             data-testid="duct-terminals"
             dangerouslySetInnerHTML={{ __html: terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, k, style.showTags)).join('') }}
           />
+          {proposalMarkup ? <g data-testid="duct-terminal-proposal" opacity={0.7} style={{ strokeDasharray: '5 3' }} dangerouslySetInnerHTML={{ __html: proposalMarkup }} /> : null}
           <g ref={runsRef}>
             {runs.filter((plan) => !replacedIds.has(plan.elementId)).map((plan) => (
               <g

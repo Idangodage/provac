@@ -118,6 +118,7 @@ import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
 import { getDuctSupportPlan, resolveSoffitZ } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
+import { useTerminalProposalStore } from "./canvas/hvac/duct/terminalProposalStore";
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
 import { DuctResizeGrips } from "./canvas/hvac/move/DuctResizeGrips";
 import { DuctResizeGrips3D } from "./canvas/hvac/move/DuctResizeGrips3D";
@@ -1906,6 +1907,8 @@ export function DrawingCanvas({
   const condensatePreview = useCondensatePreviewStore((state) => state.result);
   const refrigerantPreview = useCondensatePreviewStore((state) => state.unified?.refrigerant ?? null);
   const ductRoutePreview = useCondensatePreviewStore((state) => state.unified?.ducts ?? null);
+  // Terminals the Auto route panel proposes (shown until added or put away).
+  const terminalProposal = useTerminalProposalStore((state) => state.proposal);
   // Terminals an Auto duct card preview turns the spigot of show turned in 3D until Apply or Discard.
   const autoDuctTurned = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, ductSettings, walls) && state.result?.terminalUpdates?.length ? state.result.terminalUpdates : null));
   // An Auto route preview renders in 3D through the same transient path as a
@@ -1923,7 +1926,7 @@ export function DrawingCanvas({
   // In plan, a refrigerant card's option is drawn by the pipe overlay in place of the lines it changes.
   const refrigerantCardPreview = useSegmentUiStore((state) => (state.preview && domainOf(state.preview) === "refrigerant" ? state.preview.updates : null));
   const autoRoutePreviewElements = useMemo(() => {
-    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview && !autoDuctTurned && !ductSegmentPreview) return null;
+    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview && !autoDuctTurned && !ductSegmentPreview && !terminalProposal) return null;
     const removed = new Set([
       ...(ductRoutePreview?.removeElementIds ?? []),
       ...(condensatePreview?.removeElementIds ?? []),
@@ -1943,9 +1946,10 @@ export function DrawingCanvas({
       ...(condensatePreview?.elementsToAdd ?? []),
       ...(condensateEditPreview?.elements ?? []),
       ...(ductSegmentPreview ?? []),
+      ...(terminalProposal ? [...terminalProposal.add, ...terminalProposal.updates] : []),
       ...hidden,
     ];
-  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, autoDuctTurned, ductSegmentPreview, segmentCardPreview, hvacElements]);
+  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, autoDuctTurned, ductSegmentPreview, segmentCardPreview, terminalProposal, hvacElements]);
   const hybridPlanPaintPendingRef = useRef(false);
   const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the

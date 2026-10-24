@@ -1,17 +1,23 @@
 'use client';
 
-import { AlertTriangle, Check, CheckCircle2, Circle, Droplets, Focus, Info, Network, Shuffle, Wind } from 'lucide-react';
+import { AlertTriangle, Check, CheckCircle2, Circle, Droplets, Focus, Info, LayoutGrid, Network, RotateCw, Shuffle, Wind, X } from 'lucide-react';
 import { useMemo } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../store';
+import { generateId } from '../../../utils/geometry';
 
 import { applyAutoRoutePreview } from './autoRouteController';
 import { autoRouteDuctFeedback } from './autoRouteDuctFeedback';
 import { buildAutoRouteReview, ductUnitReview } from './autoRouteReview';
 import { farAssignments } from './duct/airSystemAssignment';
 import { assignmentWallsOf, reassignToNearestUnits } from './duct/airSystemController';
+import type { AutoRouteDuctAdvice, AutoRouteDuctUnit } from './duct/ductAutoRoute';
 import { formatCost } from './duct/ductEconomics';
+import { proposeTerminals } from './duct/ductUnitAdvice';
+import { useTerminalProposalStore } from './duct/terminalProposalStore';
+import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
+import { requestHvacRotate } from './move/hvacMoveBus';
 import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
 
 function inspect(ids: readonly string[]): void {
@@ -79,6 +85,69 @@ function PartialApply({ units, leftOut, reason }: { units: number; leftOut: read
   </div>;
 }
 
+const adviceButton = 'mt-1.5 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium';
+
+/** Turns the unit as advised (ducts, pipes and drains follow; one undo), then routes again. */
+function turnUnit(unitId: string, angleDeg: number, onRouteAgain?: () => void): void {
+  useSmartDrawingStore.getState().setSelectedIds([unitId]);
+  if (requestHvacRotate({ angleDeg, pivot: 'group' })) onRouteAgain?.();
+  else useCondensatePreviewStore.getState().setMessage('The unit cannot be turned there: a placement rule stops it. Turn it in its properties, or move it first.');
+}
+
+/**
+ * What puts a unit right, each with its one-click change: a quarter turn so
+ * its collars face its terminals; the terminals a service needs, proposed on
+ * the drawing first and added (one undo) only when asked.
+ */
+function UnitAdvice({ unit, onRouteAgain }: { unit: AutoRouteDuctUnit; onRouteAgain?: () => void }) {
+  const proposal = useTerminalProposalStore(state => state.proposal);
+  if (!unit.advice?.length) return null;
+  const propose = (advice: Extract<AutoRouteDuctAdvice, { kind: 'add-terminals' }>) => {
+    const state = useSmartDrawingStore.getState();
+    const next = proposeTerminals(state.hvacElements, state.rooms, unit.unitId, unit.terminalIds ?? [], advice.service, advice.airflowM3h, state.ductSettings, generateId);
+    useTerminalProposalStore.getState().setProposal(next);
+    if (!next) useCondensatePreviewStore.getState().setMessage('No free ceiling in the room to place them: add the terminals by hand.');
+  };
+  const add = () => {
+    if (!proposal) return;
+    useSmartDrawingStore.getState().commitHvacElementCommand('Add air terminals', {
+      add: proposal.add,
+      updates: proposal.updates.map(element => ({ id: element.id, updates: {
+        modelLabel: element.modelLabel, subtype: element.subtype, position: element.position,
+        width: element.width, depth: element.depth, height: element.height, properties: element.properties,
+      } })),
+      selectedIds: [],
+    });
+    useTerminalProposalStore.getState().setProposal(null);
+    onRouteAgain?.();
+  };
+  return <div className="space-y-1.5" data-testid="auto-route-unit-advice">
+    {unit.advice.map(advice => {
+      const open = advice.kind === 'add-terminals' && proposal?.unitId === unit.unitId && proposal.service === advice.service ? proposal : null;
+      return <div key={advice.kind === 'turn-unit' ? 'turn' : advice.service} className="rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900">
+        <p className="break-words">{advice.message}</p>
+        {advice.kind === 'turn-unit'
+          ? <button type="button" onClick={() => turnUnit(unit.unitId, advice.angleDeg, onRouteAgain)} data-testid="auto-route-turn-unit"
+            title="Turn the unit about its centre (its ducts, pipes and drains follow; one undo), then run Auto route again"
+            className={`${adviceButton} bg-amber-600 text-white hover:bg-amber-700`}><RotateCw size={12} aria-hidden="true" /> Turn {advice.angleDeg}° and route again</button>
+          : open
+            ? <div className="flex flex-wrap gap-1.5">
+              <button type="button" onClick={add} data-testid="auto-route-add-terminals"
+                title="Add the terminals shown dashed on the drawing (and re-neck the ones there) as one undo step, then run Auto route again"
+                className={`${adviceButton} bg-amber-600 text-white hover:bg-amber-700`}><Check size={12} aria-hidden="true" />
+                {open.add.length ? `Add ${open.add.length} terminal${open.add.length === 1 ? '' : 's'}` : `Make them Ø${open.neckMm}`} and route again</button>
+              <button type="button" onClick={() => useTerminalProposalStore.getState().setProposal(null)}
+                className={`${adviceButton} border border-amber-300 bg-white text-amber-900 hover:bg-amber-100`}><X size={12} aria-hidden="true" /> Cancel</button>
+              <p className="w-full text-[10px] text-amber-800">{open.total} × Ø{open.neckMm} in all: {open.add.length} new (dashed on the drawing){open.updates.length ? `, ${open.updates.length} there ${open.updates.length === 1 ? 'joins' : 'join'} the unit's air system at Ø${open.neckMm}` : ''}.</p>
+            </div>
+            : <button type="button" onClick={() => propose(advice)} data-testid="auto-route-propose-terminals"
+              title="Show where the terminals would go: spread over the free ceiling of the unit's room, clear of walls, units and the other service"
+              className={`${adviceButton} bg-amber-600 text-white hover:bg-amber-700`}><LayoutGrid size={12} aria-hidden="true" /> Propose terminals</button>}
+      </div>;
+    })}
+  </div>;
+}
+
 export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain }: {
   result: UnifiedAutoRouteResult; approved: readonly string[]; toggleHop: (key: string) => void;
   /** Runs Auto route again with the same options (after a reassignment). */
@@ -138,6 +207,7 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
             {unit.supplyTerminals !== undefined ? <span className="ml-1 text-[11px] text-slate-500" data-testid="auto-route-unit-terminals">· supply {unit.supplyTerminals} · return {unit.returnTerminals}</span> : null}
             <span className={`ml-1.5 inline-block rounded px-1.5 text-[10px] ${designed ? 'bg-teal-50 text-teal-800' : 'bg-amber-100 text-amber-900'}`}>{designed ? 'Proposed' : 'Needs layout'}</span></summary>
           <div className="mt-2 space-y-2">
+            <UnitAdvice unit={unit} onRouteAgain={onRouteAgain} />
             {designed && unit.services.map(service => <div key={service.service} className="flex items-start gap-2 text-[11px]">
               <span className={`mt-1 h-2 w-3 shrink-0 rounded-sm border ${service.service === 'supply' ? 'border-blue-600 bg-blue-50' : 'border-teal-600 bg-teal-50'}`} aria-hidden="true" />
               <span><span className="font-medium capitalize">{service.service}</span> · {service.trunk} · {service.terminals} terminals<br /><span className="text-slate-500">{service.layout}</span></span>

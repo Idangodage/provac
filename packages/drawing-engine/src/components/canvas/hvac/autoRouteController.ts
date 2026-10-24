@@ -20,6 +20,7 @@ import { ductWallInputs } from './duct/ductBuilding';
 import type { FanSpeed } from './duct/ductSizing';
 import { stampDesignedAt } from './duct/ductSizingRecord';
 import { isDuctTerminalElement } from './duct/ductTerminals';
+import { useTerminalProposalStore } from './duct/terminalProposalStore';
 import { applyServiceRouteCommand, serviceRouteCommitIssues } from './serviceRouteValidation';
 import {
   foldRefrigerantHopUpdates,
@@ -76,6 +77,7 @@ export function cancelAutoRoute(): void {
 export function discardAutoRoutePreview(): void {
   previewProfile = undefined;
   useCondensatePreviewStore.getState().clear();
+  useTerminalProposalStore.getState().setProposal(null);
 }
 
 export function runAutoRoute(options: AutoRouteRunOptions): void {
@@ -93,8 +95,9 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
     preview.setMessage('Select the units (and their gullies, diffusers or grilles) to route, or choose all units in the drawing.');
     return;
   }
-  // End any live manual draft before a generated network is previewed.
+  // End any live manual draft before a generated network is previewed; terminals proposed for the last one go.
   state.setTool('select');
+  useTerminalProposalStore.getState().setProposal(null);
   const signatures = {
     refrigerant: services.gas || services.liquid ? autoRouteSourceSignature(refrigerantSource(options.profile)) : null,
     condensate: services.condensate ? condensateSourceSignature(condensateSource()) : null,

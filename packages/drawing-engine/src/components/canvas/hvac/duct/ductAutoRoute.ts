@@ -38,6 +38,7 @@ import { withInitialSizingRecords } from './ductSizingRecord';
 import { basisAirflowM3h, defaultSizingBasis } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService } from './ductTypes';
+import { terminalShortfall, unitTurnToFaceTerminals } from './ductUnitAdvice';
 import { withReplaced } from './optimizer/designTree';
 
 
@@ -93,6 +94,43 @@ export interface AutoRouteDuctUnit {
   tag?: string;
   supplyTerminals?: number;
   returnTerminals?: number;
+  /** What would put the unit right, most effective first: each a change the Auto route panel offers in one click. */
+  advice?: AutoRouteDuctAdvice[];
+}
+
+/**
+ * A change that puts a unit right: a quarter turn so its collars face its
+ * terminals (a duct leaves a collar forwards); the terminals a service needs
+ * for the unit's airflow (each neck within its velocity limit).
+ */
+export type AutoRouteDuctAdvice =
+  | { kind: 'turn-unit'; angleDeg: 90 | 180 | 270; message: string }
+  | { kind: 'add-terminals'; service: DuctService; neckMm: number; total: number; current: number; airflowM3h: number; message: string };
+
+/** The advice for one unit, from its terminals, its airflow and what the design found. */
+export function unitAdvice(unit: HvacElement, terminals: readonly HvacElement[], airflowM3h: number, diagnostics: readonly AutoDuctIssue[],
+  tag: string, settings: DuctDesignSettings): AutoRouteDuctAdvice[] {
+  const advice: AutoRouteDuctAdvice[] = [];
+  if (diagnostics.some((issue) => issue.code === 'DU_AUTO_BEHIND_COLLAR')) {
+    const turn = unitTurnToFaceTerminals(unit, terminals);
+    if (turn) {
+      const after = turn.ahead === turn.total ? `all ${turn.total} of its terminals are` : `${turn.ahead} of its ${turn.total} terminals are`;
+      advice.push({ kind: 'turn-unit', angleDeg: turn.angleDeg,
+        message: `Turn ${tag} ${turn.angleDeg}°: ${after} then ahead of their collars (${turn.aheadNow === 0 ? 'none are' : `${turn.aheadNow} ${turn.aheadNow === 1 ? 'is' : 'are'}`} now).` });
+    }
+  }
+  for (const service of ['supply', 'return'] as const) {
+    const short = terminalShortfall(terminals, service, airflowM3h, settings);
+    if (!short) continue;
+    const each = `${Math.round(short.perTerminalM3h).toLocaleString('en-US')} m³/h each`;
+    const needed = short.needed.map((entry) => `${entry.count} × Ø${entry.neckMm}`).join(' or ');
+    advice.push({
+      kind: 'add-terminals', service, neckMm: short.needed[0]!.neckMm, total: short.needed[0]!.count, current: short.count, airflowM3h,
+      message: `${tag} ${service}: ${Math.round(airflowM3h).toLocaleString('en-US')} m³/h through ${short.count} × Ø${short.neckMm} is ${each}, `
+        + `${short.velocityMs.toFixed(1)} m/s in the neck (limit ${short.capMs} m/s). It needs at least ${needed} ${service === 'supply' ? 'diffusers' : 'return grilles'}.`,
+    });
+  }
+  return advice;
 }
 
 export interface AutoRouteDuctResult {
@@ -348,6 +386,12 @@ export function planAutoRouteDucts(
         pass.terminalUpdates.push(...terminalUpdates);
         const removed = new Set(auto.removeIds);
         working = [...withReplaced(working.filter((element) => !removed.has(element.id)), terminalUpdates), ...runs];
+      }
+      // What puts the unit right, ahead of the notes: it is what to do.
+      const advice = unitAdvice(unit, group, auto.airflowM3h ?? airflowOf(unit), diagnostics, unitResult.tag ?? label, options.settings);
+      if (advice.length) {
+        unitResult.advice = advice;
+        unitResult.notes = [...advice.map((entry) => entry.message), ...unitResult.notes.filter((note) => !advice.some((entry) => entry.message === note))];
       }
       pass.units.push(unitResult);
     });
