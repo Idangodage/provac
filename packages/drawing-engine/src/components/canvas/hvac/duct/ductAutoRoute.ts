@@ -292,7 +292,10 @@ export function planAutoRouteDucts(
         } : {}),
       }, options.settings);
       const design = auto.designs[auto.selected] ?? null;
-      const canPropose = Boolean(design && auto.runs.length && design.errors === 0);
+      // A unit is designed as a whole: a service whose terminals have no layout keeps the other's layout out too,
+      // never a silent return-only (or supply-only) proposal.
+      const unbuilt = auto.staticServices.filter((service) => service.issues.some((issue) => issue.code === 'DU_AUTO_NO_LAYOUT')).map((service) => service.service);
+      const canPropose = Boolean(design && auto.runs.length && design.errors === 0 && !unbuilt.length);
       const diagnostics = [...new Map([...auto.issues, ...auto.services.flatMap((service) => service.issues)]
         // A rejected candidate has not turned any terminal. Do not report its
         // speculative spigot adjustments as completed changes.
@@ -317,6 +320,9 @@ export function planAutoRouteDucts(
       }));
       if (!design || !auto.runs.length) {
         unitResult.notes = messages.length ? messages : ['No duct layout could be built for its terminals.'];
+      } else if (unbuilt.length) {
+        const built = unitResult.services.map((service) => service.service).filter((service) => !unbuilt.includes(service));
+        unitResult.notes = [`No ${unbuilt.join(' or ')} layout${built.length ? `, so its ${built.join(' and ')} layout is not applied on its own` : ''}: the unit is left as it is.`, ...messages];
       } else if (design.errors > 0) {
         unitResult.notes = [`Its best design still has ${design.errors} issue${design.errors === 1 ? '' : 's'}; left as it is — study it in the Auto duct card.`, ...messages];
       } else {
