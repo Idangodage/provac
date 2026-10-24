@@ -785,15 +785,14 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
       const ordered = [...available].sort((a, b) => distance(b.port.point, system.outdoor.port.point) - distance(a.port.point, system.outdoor.port.point) || a.element.id.localeCompare(b.element.id));
       const seeds = [...new Map([ordered[0]!, ordered[1] ?? ordered[0]!, ordered.at(-1)!].map(unit => [unit.element.id, unit])).values()];
       const baselineIds = new Set(baseline.map(element => element.id));
-      let best: Candidate | null = null;
-      for (const [seedIndex, seed] of seeds.entries()) {
-        options.onProgress?.({ completed: result.connectedIndoorIds.length, total: requested.length,
-          stage: `Comparing network ${seedIndex + 1}/${seeds.length} for ${system.outdoor.element.label || 'outdoor unit'}` });
+      /** The network grown from one start: the seed's own run from the outdoor unit, then every other unit inserted. */
+      const growFrom = (seed: Unit, seedIndex: number, nearestFirst: boolean, stage: string): Candidate | null => {
+        options.onProgress?.({ completed: result.connectedIndoorIds.length, total: requested.length, stage });
         const seeded = seedNetwork(baseline, system, seed, allUnits, options, seedIndex, searchStats);
-        if (!seeded) continue;
+        if (!seeded) return null;
         const seedEvaluation = evaluation(seeded, system, [seed.element.id], options);
         searchStats.evaluatedCandidates += 1;
-        if (!seedEvaluation.feasible) { recordRejections(searchStats, seedEvaluation.hardIssues); continue; }
+        if (!seedEvaluation.feasible) { recordRejections(searchStats, seedEvaluation.hardIssues); return null; }
         let candidate: Candidate = { scene: seeded, connected: [seed.element.id], evaluation: seedEvaluation };
         // Farthest-first and nearest-first insertion orders explore different shared-trunk trees.
         // A unit that cannot use the current tree may become feasible after a later
@@ -801,7 +800,7 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
         // after the topology has grown. This reaches a fixed point without looping
         // on an unchanged network or weakening any fitting/clearance rule.
         let pending = ordered.filter(unit => unit.element.id !== seed.element.id);
-        if (seedIndex % 2) pending.reverse();
+        if (nearestFirst) pending.reverse();
         while (pending.length) {
           const deferred: Unit[] = [];
           let topologyGrew = false;
@@ -815,8 +814,20 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
           if (!topologyGrew) break;
           pending = deferred;
         }
-        candidate = refineCandidateRisers(candidate, baselineIds, system, allUnits, options, searchStats);
-        if (better(candidate, best)) best = candidate;
+        return refineCandidateRisers(candidate, baselineIds, system, allUnits, options, searchStats);
+      };
+      let best: Candidate | null = null;
+      for (const [seedIndex, seed] of seeds.entries()) {
+        const grown = growFrom(seed, seedIndex, seedIndex % 2 === 1,
+          `Comparing network ${seedIndex + 1}/${seeds.length} for ${system.outdoor.element.label || 'outdoor unit'}`);
+        if (grown && better(grown, best)) best = grown;
+      }
+      // A unit the bounded starts leave out (ducts or other units shaping the main past it) is often reached when the
+      // main is laid out from it: one more start from each such unit, at most two. Nothing more runs when all are in.
+      const leftOut = ordered.filter(unit => !best?.connected.includes(unit.element.id) && !seeds.includes(unit)).slice(0, 2);
+      for (const [index, seed] of leftOut.entries()) {
+        const grown = growFrom(seed, seeds.length + index, false, `Starting a network from ${seed.element.label || seed.element.id}`);
+        if (grown && better(grown, best)) best = grown;
       }
       const previousIndoorIds = new Set([...existingCircuit.indoorIds,
         ...workingScene.filter(element => removableSet.has(element.id)).flatMap(element => ownership(element)?.indoorUnitIds ?? [])]);
