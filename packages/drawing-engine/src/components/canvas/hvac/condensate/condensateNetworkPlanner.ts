@@ -34,7 +34,7 @@ import {
   type CondensateSink,
   type ServiceSegment,
 } from './condensateEnvironment';
-import { add, closestOnSegment, distance, dot, normalize, pointToSegmentDistance, scale, segmentIntersection, segmentSegmentDistance, sub } from './condensateGeometry';
+import { add, closestOnSegment, distance, dot, normalize, pointToSegmentDistance, scale, segmentIntersection, segmentSegmentDistance, simplifyPolylineWithin, sub } from './condensateGeometry';
 import { selectCondensatePipeSize, type CondensatePipeSize } from './condensatePipeCatalog';
 import type { IndoorDrainPort } from './condensatePorts';
 import { maxFeasibleSlope, solveProfile, type ProfileNode, type ProfileSolution } from './condensateProfileSolver';
@@ -201,6 +201,8 @@ const INFEASIBLE_PENALTY = 1e9;
 const LIFT_STEP_MM = 25;
 /** Clear gap kept between two drains of one network where they do not join (insulation and hangers; practice). */
 const DRAIN_GAP_MM = 25;
+/** How far the plan router's simplified picture of another service may stray from its true path (mm). */
+const SERVICE_PLAN_TOLERANCE_MM = 10;
 
 function defaultIdFactory(): (prefix: string) => string {
   let counter = 0;
@@ -249,16 +251,29 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
       maxY: obstacle.maxY + inflate,
     },
   }));
+  // The other services as the plan router sees them: each run's plan path within SERVICE_PLAN_TOLERANCE_MM (a bend's
+  // many short chords become two or three), as wide as the run plus that tolerance. Risers (no plan length) and every
+  // crossing's heights are taken from the exact segments (crossing windows), never from these lines.
   const services: RouterServiceLine[] = [];
-  environment.services.forEach((segment, index) => {
-    if (distance(segment.a, segment.b) < 1) return; // risers are handled as crossing windows
-    services.push({
-      id: `${segment.elementId}#${index}`,
-      a: { x: segment.a.x, y: segment.a.y },
-      b: { x: segment.b.x, y: segment.b.y },
-      halfWidthMm: segment.radiusMm + defaultRadius + settings.refrigerantClearanceMm,
-    });
-  });
+  let chain: { elementId: string; radiusMm: number; points: Point2D[] } | null = null;
+  const flush = () => {
+    if (!chain) return;
+    const points = simplifyPolylineWithin(chain.points, SERVICE_PLAN_TOLERANCE_MM);
+    for (let index = 1; index < points.length; index += 1) {
+      if (distance(points[index - 1]!, points[index]!) < 1) continue;
+      services.push({
+        id: `${chain.elementId}#${services.length}`, a: points[index - 1]!, b: points[index]!,
+        halfWidthMm: chain.radiusMm + defaultRadius + settings.refrigerantClearanceMm + SERVICE_PLAN_TOLERANCE_MM,
+      });
+    }
+    chain = null;
+  };
+  for (const segment of environment.services) {
+    const a = { x: segment.a.x, y: segment.a.y };
+    const b = { x: segment.b.x, y: segment.b.y };
+    const last = chain?.points.at(-1);
+    if (!chain || chain.elementId !== segment.elementId || !last || distance(last, a) > 0.5) {
+      flush();
       chain = { elementId: segment.elementId, radiusMm: segment.radiusMm, points: [a] };
     }
     chain.radiusMm = Math.max(chain.radiusMm, segment.radiusMm);

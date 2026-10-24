@@ -69,6 +69,32 @@ export function polylineLength(points: readonly Point2D[]): number {
   return total;
 }
 
+/**
+ * The polyline with every vertex dropped that lies within `toleranceMm` of the
+ * chord replacing it (Douglas–Peucker): a bend's many short chords become two
+ * or three. The ends are always kept.
+ */
+export function simplifyPolylineWithin(points: readonly Point2D[], toleranceMm: number): Point2D[] {
+  if (points.length <= 2) return points.map((point) => ({ ...point }));
+  const keep = new Array<boolean>(points.length).fill(false);
+  keep[0] = true;
+  keep[points.length - 1] = true;
+  const stack: Array<[number, number]> = [[0, points.length - 1]];
+  while (stack.length) {
+    const [first, last] = stack.pop()!;
+    let farthest = -1;
+    let farthestDistance = toleranceMm;
+    for (let index = first + 1; index < last; index += 1) {
+      const gap = pointToSegmentDistance(points[index]!, points[first]!, points[last]!);
+      if (gap > farthestDistance) { farthest = index; farthestDistance = gap; }
+    }
+    if (farthest < 0) continue;
+    keep[farthest] = true;
+    stack.push([first, farthest], [farthest, last]);
+  }
+  return points.filter((_, index) => keep[index]).map((point) => ({ ...point }));
+}
+
 /** Removes consecutive duplicates and collinear interior vertices. */
 export function simplifyPolyline(points: readonly Point2D[], tolerance = 0.05): Point2D[] {
   const deduped: Point2D[] = [];

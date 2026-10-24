@@ -286,19 +286,24 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     xs.add(ROUND(box.minX)); xs.add(ROUND(box.maxX));
     ys.add(ROUND(box.minY)); ys.add(ROUND(box.maxY));
   }
+  const minX = Math.min(...boundsPoints.map((p) => p.x)) - margin;
+  const maxX = Math.max(...boundsPoints.map((p) => p.x)) + margin;
+  const minY = Math.min(...boundsPoints.map((p) => p.y)) - margin;
+  const maxY = Math.max(...boundsPoints.map((p) => p.y)) + margin;
+  // Only the service lines that reach into the search area count (every edge is tested against each).
+  const services = request.services.filter((service) => Math.max(service.a.x, service.b.x) + service.halfWidthMm >= minX
+    && Math.min(service.a.x, service.b.x) - service.halfWidthMm <= maxX
+    && Math.max(service.a.y, service.b.y) + service.halfWidthMm >= minY
+    && Math.min(service.a.y, service.b.y) - service.halfWidthMm <= maxY);
   const corridorXs = new Set<number>();
   const corridorYs = new Set<number>();
-  for (const service of request.services) {
+  for (const service of services) {
     const horizontal = Math.abs(service.a.y - service.b.y) <= 1;
     const vertical = Math.abs(service.a.x - service.b.x) <= 1;
     const lane = service.halfWidthMm + 5;
     if (horizontal) { corridorYs.add(ROUND(service.a.y - lane)); corridorYs.add(ROUND(service.a.y + lane)); }
     if (vertical) { corridorXs.add(ROUND(service.a.x - lane)); corridorXs.add(ROUND(service.a.x + lane)); }
   }
-  const minX = Math.min(...boundsPoints.map((p) => p.x)) - margin;
-  const maxX = Math.max(...boundsPoints.map((p) => p.x)) + margin;
-  const minY = Math.min(...boundsPoints.map((p) => p.y)) - margin;
-  const maxY = Math.max(...boundsPoints.map((p) => p.y)) + margin;
   xs.add(ROUND(minX)); xs.add(ROUND(maxX)); ys.add(ROUND(minY)); ys.add(ROUND(maxY));
   const within = (value: number, lo: number, hi: number) => value >= lo - EPS && value <= hi + EPS;
   let gridX = [...xs].filter((x) => within(x, minX, maxX));
@@ -327,6 +332,12 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
   const sinkNode = sink ? (xIndex.get(sink.x)! * ny + yIndex.get(sink.y)!) : -1;
   const corridorXSet = corridorXs;
   const corridorYSet = corridorYs;
+  // Obstacles by grid line: an edge runs along one line, so it can only meet the boxes whose open span holds that
+  // line (the same test as segmentHitsBox, looked up once per line). Rotated casings are tested whole.
+  const rotated = request.obstacles.filter((box) => box.oriented);
+  const square = request.obstacles.filter((box) => !box.oriented);
+  const rowBoxes = gridY.map((y) => square.filter((box) => y > box.minY + EPS && y < box.maxY - EPS));
+  const columnBoxes = gridX.map((x) => square.filter((box) => x > box.minX + EPS && x < box.maxX - EPS));
 
   // --- Tree targets ------------------------------------------------------
   const targetCache = new Map<number, RouteTarget | null>();
@@ -344,7 +355,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     const hit = onTree(point);
     // A branch drops vertically into the crown of the main at the junction, so a
     // junction inside another service's plan footprint would pass through it.
-    const underService = request.services.some((service) => distance(service.a, service.b) > EPS
+    const underService = services.some((service) => distance(service.a, service.b) > EPS
       && pointToSegmentPlanDistance(point, service.a, service.b) < service.halfWidthMm);
     const target = hit && !underService && hit.station >= hit.segment.minStation - 0.6 && hit.station <= hit.segment.maxStation + 0.6
       ? { kind: 'tree' as const, edgeId: hit.segment.edgeId, point, station: hit.station }
@@ -362,8 +373,12 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     const a = nodePoint(from);
     const b = nodePoint(to);
     const length = distance(a, b);
-    let blocked = request.obstacles.some((box) => segmentHitsBox(a, b, box));
     const horizontal = Math.abs(a.y - b.y) <= EPS;
+    const along = horizontal ? rowBoxes[from % ny]! : columnBoxes[Math.floor(from / ny)]!;
+    const low = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
+    const high = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
+    let blocked = along.some((box) => (horizontal ? high > box.minX + EPS && low < box.maxX - EPS : high > box.minY + EPS && low < box.maxY - EPS))
+      || rotated.some((box) => segmentHitsBox(a, b, box));
     // Never run along or through the network already built (only arrive on it).
     if (!blocked) {
       for (const segment of tree) {
@@ -392,7 +407,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
         if (hit) walls.push({ wallId: wall.id, point: hit.point });
       }
       let overlap = 0;
-      for (const service of request.services) {
+      for (const service of services) {
         const hit = segmentIntersection(a, b, service.a, service.b, false);
         const serviceLength = distance(service.a, service.b);
         if (hit && serviceLength > EPS) {
