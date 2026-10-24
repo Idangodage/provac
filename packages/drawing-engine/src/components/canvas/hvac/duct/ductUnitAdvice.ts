@@ -15,7 +15,7 @@ import { isPointInPolygon } from '../../../../utils/geometry';
 
 import { isCondensateGully, isCondensatePipe } from '../condensate/condensateTypes';
 
-import { resolveUnitAirPorts } from './ductAirPorts';
+import { resolveUnitAirPorts, type DuctAirPort } from './ductAirPorts';
 import type { DuctDesignSettings } from './ductSettings';
 import { neckVelocityMs } from './ductSizing';
 import type { DuctTerminalKind } from './ductTerminalCatalog';
@@ -141,18 +141,27 @@ const WALL_CLEARANCE_MM = 800;
 const UNIT_CLEARANCE_MM = 900;
 const BODY_CLEARANCE_MM = 300;
 const OTHER_SERVICE_MM = 1500;
+/** How far ahead of its service's collar a new terminal goes at least: a duct leaves a collar forwards (mm). */
+const AHEAD_OF_COLLAR_MM = 1500;
+/** A row of terminals: at least this far ahead of the collar, terminals within this of it on it, its stations' step (mm). */
+const ROW_MIN_AHEAD_MM = 2500;
+const ROW_TOLERANCE_MM = 1200;
+const ROW_STEP_MM = 50;
 /** The step of the candidate positions (a ceiling-tile module). */
 const GRID_STEP_MM = 300;
 
 /**
  * The terminals one service of a unit needs for its airflow, at the largest
  * catalogue neck of their face: the ones there re-necked to it, the rest
- * added where they spread the air most evenly — each new one where it is
- * farthest from the service's other terminals, inside the room of the unit
- * (or of its terminals), clear of the walls, the unit, other equipment and,
- * where the room allows, the other service's terminals (supply and return
- * apart, so the air does not short-circuit). Null when nothing is short or
- * there is no room to place in.
+ * added as a designer lays them out: in a row parallel to the collar's face
+ * with the service's terminals already there, in its free places (see
+ * rowPlaces); where no row takes them, each where it is farthest from the
+ * service's other terminals. Always inside the room of the unit (or of its
+ * terminals), at least 1.5 m ahead of the service's collar (a duct leaves a
+ * collar forwards), clear of the walls, the unit, other equipment and, where
+ * the room allows, the other service's terminals (supply and return apart, so
+ * the air does not short-circuit). Null when nothing is short or there is no
+ * room to place in.
  */
 export function proposeTerminals(
   scene: readonly HvacElement[], rooms: readonly Room[], unitId: string, terminalIds: readonly string[], service: DuctService,
@@ -172,16 +181,42 @@ export function proposeTerminals(
   if (!definition) return null;
   const spec = definition.defaultProperties!.terminal as Record<string, unknown>;
 
-  // The service's terminals there: each joins the unit's air system, and one with a smaller neck takes the catalogue
-  // entry with the chosen neck, centred where it is.
-  const updates = own.flatMap((element): HvacElement[] => {
+  // Where to place: the room holding the unit, else the rooms holding its terminals.
+  const roomOf = (point: Point2D) => rooms.find((room) => room.vertices.length >= 3 && isPointInPolygon(point, room.vertices));
+  const unitRoom = roomOf(centreOf(unit));
+  const places = unitRoom ? [unitRoom] : [...new Set(own.map((element) => roomOf(centreOf(element))).filter((room): room is Room => Boolean(room)))];
+  const count = total - own.length;
+  const halfFace = Math.max(definition.widthMm, definition.depthMm) / 2;
+  // Bodies in the ceiling plane: units and terminals (pipes, kits, drains and ducts run in the void above it).
+  const others = scene.filter((element) => element.id !== unit.id && !ids.has(element.id) && element.width > 0 && element.depth > 0
+    && element.type !== 'refrigerant-pipe' && element.type !== 'refrigerant-branch-kit' && !isDuctElement(element)
+    && !isCondensatePipe(element) && !isCondensateGully(element));
+  const otherService = scene.filter((element) => readDuctTerminalSpec(element) && readDuctTerminalSpec(element)!.service !== service).map(centreOf);
+  // A duct leaves its collar forwards: a new terminal goes ahead of its service's collar (behind it, no duct reaches).
+  const collar = resolveUnitAirPorts(unit).find((port) => port.kind === service && !port.vertical);
+  const ahead = (point: Point2D) => !collar
+    || (point.x - collar.lip.x) * collar.normal.x + (point.y - collar.lip.y) * collar.normal.y >= AHEAD_OF_COLLAR_MM;
+  const gap = halfFace * 2 + BODY_CLEARANCE_MM;
+  const fits = (point: Point2D, room: Room) => isPointInPolygon(point, room.vertices) && edgeDistance(point, room.vertices) >= WALL_CLEARANCE_MM
+    && rectangleDistance(point, unit) >= UNIT_CLEARANCE_MM + halfFace
+    && others.every((element) => rectangleDistance(point, element) >= BODY_CLEARANCE_MM + halfFace);
+  const placed: Point2D[] = own.map(centreOf);
+  // A row first, as a designer lays them out: the service's terminals evenly along a line parallel to the collar's
+  // face, where its terminals already are, else halfway across the room ahead of it. The terminals there move onto
+  // their places in it (a proposal, shown before it is applied); the new ones take its free places.
+  const row = count > 0 && collar && unitRoom ? rowLayout(collar, unitRoom, placed, total, count, gap, (point) => fits(point, unitRoom)) : null;
+
+  // The service's terminals there: each joins the unit's air system, one with a smaller neck takes the catalogue
+  // entry with the chosen neck, and one on the row moves onto its place (each centred where it then is).
+  const updates = own.flatMap((element, index): HvacElement[] => {
     const reneck = readDuctTerminalSpec(element)!.neckDiameterMm < neckMm;
     const joins = (element.properties.airSystem as { unitId?: unknown } | undefined)?.unitId !== unitId;
-    if (!reneck && !joins) return [];
+    const moveTo = row?.snapped[index] ?? null;
+    if (!reneck && !joins && !moveTo) return [];
+    const centre = moveTo ?? centreOf(element);
     const joined = { ...element, properties: { ...element.properties, airSystem: { unitId } } };
-    if (!reneck) return [joined];
+    if (!reneck) return [{ ...joined, position: { x: centre.x - element.width / 2, y: centre.y - element.depth / 2 } }];
     const old = (element.properties.terminal ?? {}) as Record<string, unknown>;
-    const centre = centreOf(element);
     return [{
       ...joined, modelLabel: definition.modelLabel, subtype: definition.subtype,
       position: { x: centre.x - definition.widthMm / 2, y: centre.y - definition.depthMm / 2 },
@@ -190,44 +225,35 @@ export function proposeTerminals(
     }];
   });
 
-  // Where to place: the room holding the unit, else the rooms holding its terminals.
-  const roomOf = (point: Point2D) => rooms.find((room) => room.vertices.length >= 3 && isPointInPolygon(point, room.vertices));
-  const unitRoom = roomOf(centreOf(unit));
-  const places = unitRoom ? [unitRoom] : [...new Set(own.map((element) => roomOf(centreOf(element))).filter((room): room is Room => Boolean(room)))];
-  const count = total - own.length;
   const add: HvacElement[] = [];
   if (count > 0 && places.length) {
-    const halfFace = Math.max(definition.widthMm, definition.depthMm) / 2;
-    // Bodies in the ceiling plane: units and terminals (pipes, kits, drains and ducts run in the void above it).
-    const others = scene.filter((element) => element.id !== unit.id && !ids.has(element.id) && element.width > 0 && element.depth > 0
-      && element.type !== 'refrigerant-pipe' && element.type !== 'refrigerant-branch-kit' && !isDuctElement(element)
-      && !isCondensatePipe(element) && !isCondensateGully(element));
-    const otherService = scene.filter((element) => readDuctTerminalSpec(element) && readDuctTerminalSpec(element)!.service !== service).map(centreOf);
-    const candidates = places.flatMap((room) => {
-      const xs = room.vertices.map((vertex) => vertex.x);
-      const ys = room.vertices.map((vertex) => vertex.y);
-      const out: Point2D[] = [];
-      for (let x = Math.min(...xs) + GRID_STEP_MM / 2; x < Math.max(...xs); x += GRID_STEP_MM) {
-        for (let y = Math.min(...ys) + GRID_STEP_MM / 2; y < Math.max(...ys); y += GRID_STEP_MM) {
-          const point = { x, y };
-          if (!isPointInPolygon(point, room.vertices) || edgeDistance(point, room.vertices) < WALL_CLEARANCE_MM) continue;
-          if (rectangleDistance(point, unit) < UNIT_CLEARANCE_MM + halfFace) continue;
-          if (others.some((element) => rectangleDistance(point, element) < BODY_CLEARANCE_MM + halfFace)) continue;
-          out.push(point);
+    const chosen: Point2D[] = [...(row?.add ?? [])];
+    const settledPlaces = own.map((element, index) => row?.snapped[index] ?? centreOf(element));
+    // Where no row takes them all: the free spot farthest from the service's terminals, one by one.
+    if (chosen.length < count) {
+      const candidates = places.flatMap((room) => {
+        const xs = room.vertices.map((vertex) => vertex.x);
+        const ys = room.vertices.map((vertex) => vertex.y);
+        const out: Point2D[] = [];
+        for (let x = Math.min(...xs) + GRID_STEP_MM / 2; x < Math.max(...xs); x += GRID_STEP_MM) {
+          for (let y = Math.min(...ys) + GRID_STEP_MM / 2; y < Math.max(...ys); y += GRID_STEP_MM) {
+            const point = { x, y };
+            if (ahead(point) && fits(point, room)) out.push(point);
+          }
         }
+        return out;
+      });
+      const clearOfOther = (point: Point2D) => otherService.every((centre) => Math.hypot(point.x - centre.x, point.y - centre.y) >= OTHER_SERVICE_MM);
+      while (chosen.length < count) {
+        const taken = [...settledPlaces, ...chosen];
+        const pool = candidates.filter((point) => taken.every((centre) => Math.hypot(point.x - centre.x, point.y - centre.y) >= gap));
+        const preferred = pool.filter(clearOfOther);
+        const choices = preferred.length ? preferred : pool;
+        if (!choices.length) break;
+        chosen.push(choices.reduce((winner, point) => (nearest(point, taken) > nearest(winner, taken) ? point : winner)));
       }
-      return out;
-    });
-    const placed: Point2D[] = own.map(centreOf);
-    const clearOfOther = (point: Point2D) => otherService.every((centre) => Math.hypot(point.x - centre.x, point.y - centre.y) >= OTHER_SERVICE_MM);
-    for (let index = 0; index < count; index += 1) {
-      // The free spot farthest from the service's terminals; apart from the other service where the room allows.
-      const pool = candidates.filter((point) => placed.every((centre) => Math.hypot(point.x - centre.x, point.y - centre.y) >= halfFace * 2 + BODY_CLEARANCE_MM));
-      const preferred = pool.filter(clearOfOther);
-      const choices = preferred.length ? preferred : pool;
-      if (!choices.length) break;
-      const best = choices.reduce((winner, point) => (nearest(point, placed) > nearest(winner, placed) ? point : winner));
-      placed.push(best);
+    }
+    for (const best of chosen) {
       const label = nextTerminalTag([...scene, ...add], readDuctTerminalSpec({ type: definition.type, properties: definition.defaultProperties ?? {} })!);
       add.push({
         id: newId(), type: definition.type, category: definition.equipmentCategory, subtype: definition.subtype, modelLabel: definition.modelLabel,
@@ -245,6 +271,73 @@ export function proposeTerminals(
   }
   if (!add.length && !updates.length) return null;
   return { unitId, service, neckMm, total: own.length + add.length, current: own.length, add, updates };
+}
+
+/**
+ * A row of `total` terminals: a line parallel to the collar's face, where the
+ * service's terminals already are (at least 2.5 m ahead; the median of
+ * theirs), else halfway across the room ahead of the collar; across the
+ * longest stretch of the room there, cut into `total` equal strips, a place
+ * at the middle of each (each terminal serving an equal share of the room).
+ * A terminal near the row moves onto the nearest free place (where it fits);
+ * the new ones take the free places left, those farthest from the terminals
+ * first, each moved along the row (up to a quarter of the spacing) where a
+ * wall or equipment is too near its place. Null when no row fits.
+ */
+function rowLayout(collar: DuctAirPort, room: Room, existing: readonly Point2D[], total: number, count: number, gap: number,
+  fits: (point: Point2D) => boolean): { add: Point2D[]; snapped: Array<Point2D | null> } | null {
+  const n = collar.normal;
+  const t = { x: -n.y, y: n.x };
+  const lip = collar.lip;
+  const aheadOf = (point: Point2D) => (point.x - lip.x) * n.x + (point.y - lip.y) * n.y;
+  const acrossOf = (point: Point2D) => (point.x - lip.x) * t.x + (point.y - lip.y) * t.y;
+  const at = (ahead: number, across: number): Point2D => ({ x: lip.x + n.x * ahead + t.x * across, y: lip.y + n.y * ahead + t.y * across });
+  const reach = Math.max(...room.vertices.map(aheadOf)) - WALL_CLEARANCE_MM;
+  const already = existing.map(aheadOf).filter((value) => value >= ROW_MIN_AHEAD_MM).sort((a, b) => a - b);
+  const ahead = Math.min(already.length ? already[Math.floor(already.length / 2)]! : Math.max(ROW_MIN_AHEAD_MM, reach / 2), reach);
+  if (ahead < ROW_MIN_AHEAD_MM) return null;
+  const span = Math.max(...room.vertices.map((vertex) => Math.hypot(vertex.x - lip.x, vertex.y - lip.y))) + 1000;
+  let best: { from: number; to: number } | null = null;
+  let run: { from: number; to: number } | null = null;
+  for (let across = -span; across <= span; across += ROW_STEP_MM) {
+    if (isPointInPolygon(at(ahead, across), room.vertices)) {
+      run = run ? { from: run.from, to: across } : { from: across, to: across };
+      if (!best || run.to - run.from > best.to - best.from) best = { ...run };
+    } else run = null;
+  }
+  if (!best || best.to <= best.from) return null;
+  const spacing = (best.to - best.from) / total;
+  const slots = Array.from({ length: total }, (_, index) => best!.from + (index + 0.5) * spacing);
+  // The terminals near the row onto their nearest free places (where they fit there), nearest first.
+  const taken = new Set<number>();
+  const snapped: Array<Point2D | null> = existing.map(() => null);
+  const near = existing.map((point, index) => ({ point, index })).filter(({ point }) => Math.abs(aheadOf(point) - ahead) <= ROW_TOLERANCE_MM)
+    .map(({ point, index }) => {
+      const slot = slots.reduce((winner, candidate, k) => (Math.abs(candidate - acrossOf(point)) < Math.abs(slots[winner]! - acrossOf(point)) ? k : winner), 0);
+      return { index, slot, off: Math.abs(slots[slot]! - acrossOf(point)) };
+    }).sort((a, b) => a.off - b.off);
+  for (const { index, slot, off } of near) {
+    if (taken.has(slot) || off >= spacing / 2) continue;
+    const point = at(ahead, slots[slot]!);
+    if (!fits(point)) continue;
+    taken.add(slot);
+    snapped[index] = point;
+  }
+  const settled = existing.map((point, index) => snapped[index] ?? point);
+  const fromSettled = (slot: number) => nearest(at(ahead, slot), settled);
+  const free = slots.filter((_, k) => !taken.has(k)).sort((a, b) => fromSettled(b) - fromSettled(a));
+  const add: Point2D[] = [];
+  for (const slot of free) {
+    if (add.length >= count) break;
+    const shifts = [0];
+    for (let shift = 150; shift <= spacing / 4; shift += 150) shifts.push(shift, -shift);
+    for (const shift of shifts) {
+      const point = at(ahead, slot + shift);
+      const clear = (other: Point2D) => Math.hypot(point.x - other.x, point.y - other.y) >= gap;
+      if (fits(point) && settled.every(clear) && add.every(clear)) { add.push(point); break; }
+    }
+  }
+  return { add, snapped };
 }
 
 function pick(source: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
