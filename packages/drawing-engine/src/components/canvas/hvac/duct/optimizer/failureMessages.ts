@@ -4,9 +4,11 @@
  * concerns, with what would free it — instead of a bare issue count.
  */
 import type { AutoDuctIssue, ServiceCtx, TerminalCtx } from '../ductAutoContext';
+import { neckVelocityMs } from '../ductSizing';
 
 import { allRuns, servedTerminals, type RunDesign } from './designTree';
 import type { ServiceOption, TreeFailure } from './ductOptimizer';
+import type { RoutingGraph } from './routingGraph';
 
 type Cause = 'collar' | 'runout' | 'take-off' | 'end' | 'split' | 'clash' | 'wall' | 'penetration';
 
@@ -122,4 +124,55 @@ export function explainNoCleanDesign(ctx: ServiceCtx, failures: readonly TreeFai
       code: 'DU_AUTO_WHY', severity: 'warning' as const, service: ctx.service,
       message: sentence(entry.cause, entry.terminals.map(labelOf).join(' and ') || 'A terminal'),
     }));
+}
+
+/** A neck this many times over its velocity limit is why a layout fails, not a note beside it. */
+const TOO_MUCH_AIR = 1.5;
+
+const names = (terminals: readonly TerminalCtx[]) => {
+  const labels = terminals.map(labelOf);
+  return labels.length <= 1 ? labels.join('') : `${labels.slice(0, -1).join(', ')} and ${labels.at(-1)}`;
+};
+
+/**
+ * Why the optimiser built no layout at all, the most actionable cause first:
+ * terminals behind the collar (the unit faces away from them), too much air
+ * through each terminal's neck, terminals no flexible runout reaches, then
+ * what failed most often across the trees tried. The issues explain; the
+ * reason is the short form for the "No buildable layout" line (null: none of
+ * the plain causes, only the trees' failures).
+ */
+export function explainNoLayout(ctx: ServiceCtx, graphs: readonly RoutingGraph[], failures: readonly TreeFailure[]): { issues: AutoDuctIssue[]; reason: string | null } {
+  const issues: AutoDuctIssue[] = [];
+  const reasons: string[] = [];
+  // Terminals the router could reach from nowhere in any of its graphs.
+  const unreachable = graphs.length ? ctx.terminals.filter((_, index) => graphs.every((graph) => !graph.leaves[index]?.length)) : [];
+  const behind = unreachable.filter((terminal) => {
+    const index = ctx.terminals.indexOf(terminal);
+    return graphs.every((graph) => {
+      const report = graph.leafReport?.[index];
+      return report !== undefined && report.tried > 0 && report.behind === report.tried;
+    });
+  });
+  if (behind.length) {
+    const one = behind.length === 1;
+    issues.push({
+      code: 'DU_AUTO_BEHIND_COLLAR', severity: 'warning', service: ctx.service,
+      message: `${names(behind)} ${one ? 'is' : 'are'} behind the ${ctx.service} collar: a duct leaves the collar forwards and cannot reach ${one ? 'it' : 'them'}. Turn the unit so the collar faces ${one ? 'it' : 'them'}.`,
+    });
+    reasons.push(`${names(behind)} ${one ? 'is' : 'are'} behind the ${ctx.service} collar`);
+  }
+  const cap = ctx.service === 'return' ? ctx.settings.autoMaxNeckVelocityReturnMs : ctx.settings.autoMaxNeckVelocitySupplyMs;
+  const overloaded = ctx.terminals.filter((terminal) => neckVelocityMs({ neckDiameterMm: terminal.neck }, terminal.airflowM3h) > cap * TOO_MUCH_AIR);
+  if (overloaded.length) {
+    reasons.push(`too much air through ${overloaded.length === ctx.terminals.length && overloaded.length > 1 ? 'each terminal' : names(overloaded)} for ${overloaded.length === 1 ? 'its neck' : 'their necks'}`);
+  }
+  const stranded = unreachable.filter((terminal) => !behind.includes(terminal));
+  if (stranded.length) {
+    issues.push({ code: 'DU_AUTO_WHY', severity: 'warning', service: ctx.service, message: sentence('runout', names(stranded)) });
+    reasons.push(`no flexible runout reaches ${names(stranded)}`);
+  }
+  // Nothing as plain as those: what failed most often across the trees (its sentences stand beside the line).
+  if (!reasons.length && failures.length) issues.push(...explainNoCleanDesign(ctx, failures, []));
+  return { issues, reason: reasons.length ? reasons.join('; ') : null };
 }

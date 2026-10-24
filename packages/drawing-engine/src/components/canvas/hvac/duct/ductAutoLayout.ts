@@ -100,7 +100,7 @@ import {
 import { boxesOverlap, ductBoxesOf, findDuctClashes, terminalBoxOf } from './ductVolumes';
 import { allRuns, designFromRuns, withReplaced, type ServiceDesign } from './optimizer/designTree';
 import { optimiseService, verifyRuns, type ServiceOption, type TreeFailure } from './optimizer/ductOptimizer';
-import { explainBlockedCollar, explainNoCleanDesign } from './optimizer/failureMessages';
+import { explainBlockedCollar, explainNoCleanDesign, explainNoLayout } from './optimizer/failureMessages';
 import { cutsFromErrors, cutsFromFailures } from './optimizer/routerCuts';
 import { buildRoutingGraph } from './optimizer/routingGraph';
 import { legLabel, MAX_RECT_HEIGHT_MM, SizingModel, type ShapeMode } from './optimizer/sizingModel';
@@ -1866,11 +1866,13 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
     // (Tests see the options, and why trees failed, before the shortlist: none at all included.)
     optionsInspector?.(ctx, options, failures);
     if (!options.length) {
-      serviceResult.issues.push({
+      // Never a bare "no layout": why, the most actionable cause first.
+      const why = explainNoLayout(ctx, routers.map((router) => router.graph), failures);
+      serviceResult.issues.push(...why.issues, {
         code: 'DU_AUTO_NO_LAYOUT', severity: 'error', service,
-        message: shape === 'round'
+        message: shape === 'round' && !why.reason
           ? 'No buildable round layout for these terminals: the square-to-round off the collar and the round-main taps need more straight than the room gives. Try Optimal or Rectangular.'
-          : 'No buildable layout for these terminals.',
+          : `No buildable layout for these terminals${why.reason ? `: ${why.reason}` : ''}.`,
       });
       result.staticServices.push(serviceResult);
       continue;

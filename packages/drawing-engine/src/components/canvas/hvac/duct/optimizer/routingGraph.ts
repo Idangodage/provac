@@ -73,6 +73,12 @@ export interface RoutingGraph {
   /** Candidate roots on the collar's axis: the node where the fan-outlet straight ends, and its length. */
   roots: Array<{ node: number; outletMm: number }>;
   /**
+   * Per terminal (the service's order): the runout positions tried and how
+   * many lay behind the collar, where the graph does not reach (it spans only
+   * what is ahead of the collar). All of them behind: the unit faces away.
+   */
+  leafReport?: Array<{ tried: number; behind: number }>;
+  /**
    * Per node and direction, an edge through a wall: the wall (index into
    * `crossWalls`; −1 none), the crossing's price, and the straight the edge
    * keeps before and after the wall (a fire damper's sleeve taken off; mm).
@@ -338,9 +344,10 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
     const least = turnXs.includes(outletMm) ? turnFloor : floor;
     if (outletMm >= least - 1 && straightClear(outletMm)) roots.push({ node, outletMm });
   }
+  const leafReport = leafPoints.map((points) => ({ tried: points.length, behind: points.filter(({ point }) => point.x < -MERGE_MM / 2).length }));
   return {
     xs, ys, nodeX: Float64Array.from(nodeXs), nodeY: Float64Array.from(nodeYs), nodeCount: count,
-    neighbour, edgeLength, corridor, nodeClear, leaves, roots,
+    neighbour, edgeLength, corridor, nodeClear, leaves, roots, leafReport,
     ...(cross && crossWalls.length ? { cross, crossCost: crossCost!, crossBefore: crossBefore!, crossAfter: crossAfter!, crossWalls } : {}),
   };
 }
