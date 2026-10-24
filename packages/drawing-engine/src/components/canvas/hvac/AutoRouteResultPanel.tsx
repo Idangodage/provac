@@ -87,6 +87,15 @@ function PartialApply({ units, leftOut, reason }: { units: number; leftOut: read
 
 const adviceButton = 'mt-1.5 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium';
 
+/** Gives a unit short of fall a drain pump (one undo; the unit's "Drain pump" setting), then routes again. */
+function fitPump(unitId: string, onRouteAgain?: () => void): void {
+  const state = useSmartDrawingStore.getState();
+  const unit = state.hvacElements.find(element => element.id === unitId);
+  if (!unit) return;
+  state.commitHvacElementCommand('Fit condensate pump', { updates: [{ id: unitId, updates: { properties: { ...unit.properties, hasDrainPump: true } } }] });
+  onRouteAgain?.();
+}
+
 /** Turns the unit as advised (ducts, pipes and drains follow; one undo), then routes again. */
 function turnUnit(unitId: string, angleDeg: number, onRouteAgain?: () => void): void {
   useSmartDrawingStore.getState().setSelectedIds([unitId]);
@@ -191,6 +200,9 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
       {review.issues.map(issue => <details key={issue.key} className="rounded-lg border border-amber-200 bg-amber-50/40 p-2">
         <summary className="cursor-pointer font-medium text-amber-900">{issue.title}</summary>
         <p className="mt-1.5 break-words">{issue.message}</p>
+        {issue.action?.kind === 'fit-pump' ? <button type="button" onClick={() => fitPump(issue.action!.unitId, onRouteAgain)} data-testid="auto-route-fit-pump"
+          title="Give the unit a condensate pump (its Drain pump setting; one undo), then run Auto route again"
+          className={`${adviceButton} mr-1.5 bg-amber-600 text-white hover:bg-amber-700`}><Droplets size={12} aria-hidden="true" /> Fit a condensate pump and route again</button> : null}
         {issue.elementIds.some(id => existingIds.has(id)) ? <button type="button" onClick={() => inspect(issue.elementIds)} className="mt-2 inline-flex items-center gap-1 rounded border border-amber-300 bg-white px-2 py-1 text-teal-800">
           <Focus size={12} aria-hidden="true" /> Inspect objects</button>
           : issue.elementIds.length > 0 ? <p className="mt-2 text-[11px] text-slate-500">Review these proposed routes in the drawing preview.</p> : null}

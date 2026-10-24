@@ -60,6 +60,8 @@ export interface CondensateUnitResult {
   liftMm: number;
   shortfallMm?: number;
   reason?: string;
+  /** Short of fall by gravity, with no drain pump: a pump of the project's lift would carry it. */
+  pumpWouldHelp?: boolean;
 }
 
 export interface CondensateCrossing {
@@ -1265,6 +1267,14 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
       && (remainingCapacity.get(candidate.sink.gullyId) ?? 0) >= unitPlan.source.capacityKw);
     if (!choice) {
       const best = list[0];
+      // The fall a gravity drain needs over its route, against what the void gives between the outlet (or the pump's
+      // head) and the lowest a run may go at the termination.
+      const fall = best && !best.feasibleGravity && !best.feasiblePumped ? {
+        needed: minSlope * best.lengthMm,
+        available: Math.max(0, unitPlan.headTopZ - sinkLowerZ(best.sink, classLower(environment, unitPlan.exposed, defaultRadius, routing))),
+      } : null;
+      const pumpWouldHelp = Boolean(fall && !unitPlan.source.hasDrainPump && !unitPlan.exposed && settings.pumpPolicy !== 'never'
+        && best!.shortfallMm < settings.defaultPumpMaxLiftMm - settings.liftMarginMm);
       plan.perUnit.push({
         unitId: unitPlan.source.unitId,
         label: unitPlan.source.label,
@@ -1275,11 +1285,14 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         headMarginMm: 0,
         liftMm: 0,
         ...(best ? { shortfallMm: Math.round(best.shortfallMm) } : {}),
+        ...(pumpWouldHelp ? { pumpWouldHelp } : {}),
         reason: !best
           ? unitPlan.failureReason ?? 'no plan route to any termination'
-          : best.feasibleGravity || best.feasiblePumped
+          : !fall
             ? 'termination capacity limit reached'
-            : `lacks ${Math.round(best.shortfallMm)} mm of fall to ${best.sink.label}${unitPlan.pumped ? ' even with the drain pump' : unitPlan.source.hasDrainPump ? '' : ' (no drain pump)'}`,
+            : `about ${Math.round(best.lengthMm / 1000)} m of drain to ${best.sink.label} needs about ${Math.round(fall.needed / 10) * 10} mm of fall; `
+              + `the void gives about ${Math.round(fall.available / 10) * 10} mm${unitPlan.pumped ? ' even with the drain pump' : unitPlan.source.hasDrainPump ? '' : ' (no drain pump)'}`
+              + ` — ${Math.round(best.shortfallMm)} mm short`,
       });
       if (best) plan.unresolvedPaths.push({ unitId: unitPlan.source.unitId, points: [unitPlan.source.point, ...best.points], shortfallMm: best.shortfallMm });
       continue;

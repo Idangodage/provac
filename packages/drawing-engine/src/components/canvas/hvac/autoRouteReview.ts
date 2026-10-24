@@ -7,6 +7,8 @@ export interface RouteReviewIssue {
   title: string;
   message: string;
   elementIds: string[];
+  /** A one-click fix the panel offers with it: a drain pump on a unit short of fall. */
+  action?: { kind: 'fit-pump'; unitId: string };
 }
 
 const canonical = (message: string) => message.trim().replace(/\s+/g, ' ').replace(/[.!]$/, '').toLowerCase();
@@ -62,7 +64,10 @@ export function buildAutoRouteReview(result: UnifiedAutoRouteResult, approvedHop
     elementIds: unservedTerminalIds });
   for (const unit of result.condensate?.perUnit ?? []) {
     if (unit.status === 'infeasible') add({ key: `drain:${unit.unitId}`, title: `${unit.label}: drain route unavailable`,
-      message: unit.reason ?? 'Review the available fall, drain outlet and termination positions.', elementIds: [unit.unitId] });
+      message: unit.pumpWouldHelp
+        ? `${unit.reason}. Fit a condensate pump, put a drain point nearer, or raise the unit by the shortfall.`
+        : unit.reason ?? 'Review the available fall, drain outlet and termination positions.',
+      elementIds: [unit.unitId], ...(unit.pumpWouldHelp ? { action: { kind: 'fit-pump' as const, unitId: unit.unitId } } : {}) });
   }
   for (const [index, message] of (result.blockingIssues ?? []).entries()) {
     if (!seenMessages.has(canonical(message))) add({ key: `block:${index}`, title: 'Route needs correction', message, elementIds: [] });
