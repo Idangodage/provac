@@ -192,6 +192,41 @@ route: fall, risers, 45° offsets, wyes, sizes, fittings, crossings, hangers).
   `getSelectedIds`, `autoRoute(services, scope)`, `getAutoRoutePreview`, `approveAllHops`,
   `applyAutoRoute`.
 
+## Round ducts and the drains already laid (24 October 2026)
+
+From the user's building (see `hvac-duct-fabrication-design.md`, "What Auto route left out of the user's building").
+
+- **The search widens when the local area has no route (b516cfd).** A branch's grid covered its ends and 1.5 m round
+  them. Ducts can wall that box in from side to side (the middle room's supply ducts north, returns south): the
+  bottom-left FDUM140 had "no plan route to any termination" though a route ran just outside it. When a caller sets no
+  margin and the search finds nothing it can take, it tries 6 m round the ends, then the whole drawing (every obstacle
+  and wall), with three times the grid and search caps. "Nothing it can take" is no route at all, or (759cab4) only
+  routes to places the branch cannot fall into: a wider area can reach the termination or a lower place on the
+  network (the user's FDU224, pumped, among the ducts of its new terminals). Failing that, the best route found is
+  kept for the diagnosis.
+- **A branch keeps clear of the drains already laid (c1f9447).** The router knew only the network's runs longer than
+  twice the junction spacing, the places a branch may join; short jogs, unit stubs and pump risers were invisible, so a
+  later branch could pass straight through them. Every piece laid so far that a branch may not join is now a keep-out
+  (insulated sizes plus a 25 mm gap); a branch crosses one only where it joins. A riser that would stand on, or whose
+  hose would cross, a drain already there is seated again beside its unit (the planner's foot positions), clear of it.
+- **Other units' riser spots are kept clear (7b7c06b).** Unit plans are made before a tree grows, so the branch laid
+  first could take the spot a later unit's riser needs (two cassettes with their outlets on one line). Every other
+  unit's planned outlet stub and riser is a keep-out for a branch's route; where that leaves no route, the branch routes
+  without them, and such a riser is seated elsewhere or says why it cannot.
+- **Faster round refrigerant (4589088).** Each refrigerant run reached the router as hundreds of short chords (its
+  bends), each tested on every grid edge: drains round the user's refrigerant took 270 s (17 s without). The router
+  sees each run's plan path simplified to within 10 mm, 10 mm wider (crossing heights still come from the exact
+  segments), only the lines reaching into a search's area count, and obstacles are looked up per grid line. The same
+  drains: 32 s.
+- **A drain short of fall says why, and is offered a pump (202703d).** "about 24 m of drain to Floor Gully / Floor Drain
+  needs about 240 mm of fall; the void gives about 160 mm (no drain pump) — 84 mm short". The Auto route review adds
+  what puts it right (a condensate pump, a drain point nearer, or the unit raised by the shortfall); where the unit has
+  no pump and the project's pump lift would carry it, **Fit a condensate pump and route again** sets the unit's Drain
+  pump (one undo) and routes again.
+- **Tests:** `condensateRouter.test.ts` (the widening), `condensateNetworkKeepOut.test.ts` (two cassettes with their
+  outlets on one line, the gully south-west and due south: no drain through the other), `condensateShortfall.test.ts`
+  (the FDU224's message, the pump offer, pumped with a pump).
+
 ## Verification
 
 - Vitest: `src/components/canvas/hvac/condensate/*.test.ts` (catalogue, ports, solver incl.

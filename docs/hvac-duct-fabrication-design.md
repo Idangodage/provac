@@ -1451,7 +1451,7 @@ and labels cluttered; then "you fix the issues as you observed". Approved plan:
 
 ### B. Apply the units that have a layout (7bd71fe)
 
-- When some units have no layout, the result panel offers **Apply N designed units** and names what is left out
+- When some units have no layout, the result panel offers **Apply N designed units** (since 24 October 2026 **Apply complete parts**, see below) and names what is left out
   ("DU-2, DU-3, DU-4 keep their existing ducts."). The main Apply still refuses the whole preview.
 - `partialDuctApplyRefusal()` (`autoRouteCompleteness.ts`): allowed while some requested unit has no layout, at least
   one has, and every other requested service is complete. Anything else that would block Apply still blocks it: a
@@ -2990,6 +2990,163 @@ mirror image and its other sizes before settling.
 - **A runout is not clash-checked against the terminal it serves.** That is why no bend turns past 90°: a spigot
   facing away keeps the earlier curve, and the bend check flags it where it is tight.
 - **The optimiser's search** can miss a cheaper tree that a small change in its model no longer leads it to (above).
+
+## What Auto route left out of the user's building, and why (23–24 October 2026)
+
+**The request:** "see some of details are generated for some areas. it may be pipe, duct and etc. so please
+investigate why this kind of issues can append and solve those issues very professional way", then "page was
+refreshed. so can you analys the image and fix the issues instead of the json file", then "do according to your
+recommendation". Approved plan: `C:\Users\idang\.claude\plans\auto-route-missing-services.md`.
+
+**Your decisions (24 October 2026):** the recommended options:
+1. Too few terminals: Auto route proposes them, dashed on the drawing, and adds them on request.
+2. Apply while something cannot be routed: "Apply complete parts".
+3. An outdoor unit too small for its system: a connection-ratio check, 50–130 % by default.
+
+### The building
+
+The drawing was not saved, so it was rebuilt from the two screenshots: walls and rooms measured off the plan
+(43.457 mm a pixel), an FDU224KXZE1 in the top hall, FDUM140KXE6Fs bottom left and in the middle room, four FDT28KXZE1
+cassettes in the east wing, an FDC280KXZE1 outside, one floor gully, and the Ø250 diffusers and grilles as drawn. The
+app's own Auto route reproduces the screenshot exactly (the same parts missing, "short 84 mm" for the screenshot's 85).
+It is a test fixture now (`hvac/__fixtures__/usersBuilding.ts`), run through Auto route on request:
+`AUTO_ROUTE_BUILDING=1 npx vitest run src/components/canvas/hvac/autoRouteBuilding.test.ts` (about 9 minutes).
+
+### Why parts were left out
+
+| Missing | Cause | Fix |
+|---|---|---|
+| FDU224: no ducts | **Turned away from its terminals.** At rotation 0 its supply collar faces down the plan, the FDUM140's up; placed alike, both its diffusers were behind the supply collar and both grilles behind the return. The duct router's graph spans only what is ahead of a collar, so no terminal had a way in, and the message said only "No buildable layout". | Turn advice and button; the reason named; SA / RA marks in plan |
+| FDU224: no ducts | **Far too few terminals:** 4,320 m³/h through two Ø250 diffusers is 12.2 m/s in each neck (limit 3 m/s). | Terminal advice; terminals proposed and added |
+| Bottom left: return duct only | One diffuser for 1,920 m³/h (10.9 m/s). The unit was marked "Proposed" with its supply dropped in a note. | Designed as a whole; terminal advice |
+| Middle: designed, noisy | Four Ø250 necks at 960 m³/h each (5.4 m/s), shown only as warnings. | Terminal advice (not refused) |
+| NE cassette: no refrigerant | All three starts of the network search laid the main past it (the ducts shaped them): every branch-kit position near it was too close, clashed, or lacked straight for the level change. | One more start from each unit left out |
+| FDU224: no drain ("short 85 mm") | A gravity drain (no pump built in, MHI KX-T-222) about 24 m from the only gully: about 240 mm of fall needed, about 160 mm in the void. | The shortfall explained; a pump offered in one click |
+| Bottom left: no drain | The drain router searched only 1.5 m round the unit and the gully; the middle room's ducts sealed that box. | The search widens when it finds nothing |
+| Nothing could be applied | Any failure blocked everything, even "Apply N designed units". | Apply complete parts |
+
+Also found: a drain passing through another's pump riser (once the NE cassette was on refrigerant), the outdoor unit
+at 220 % (61.6 kW of indoor units on 28 kW), and the drain router taking minutes round refrigerant.
+
+### Ducts
+
+- **Designed as a whole (5377f54).** A service whose terminals have no layout keeps the unit as it is: "No supply
+  layout, so its return layout is not applied on its own: the unit is left as it is." A busy or missing collar still
+  lets the other service be designed.
+- **Why no layout (d8d3d49).** The routing graph reports, per terminal, the runout positions tried and how many lay
+  behind the collar. "No buildable layout for these terminals" now names the cause, the most actionable first: terminals
+  behind the collar; too much air through each neck (over 1.5 times its limit); terminals no runout reaches; else what
+  failed most often across the trees. The FDU224: "… SAD-1 and SAD-2 are behind the supply collar; too much air
+  through each terminal for their necks."
+- **Advice with one click (5f65e42).** A unit's card leads with what puts it right:
+  - turned away from its terminals: the quarter turn that puts the most of them ahead of their collars, 180° first
+    (the footprint stays). "Turn DU-1 180°: all 4 of its terminals are then ahead of their collars (none are now)."
+    The button turns the unit through the existing rotate (ducts, pipes and drains follow, one undo) and routes again;
+  - too few terminals for the unit's airflow (an equal share over the neck's limit): how many at each catalogue neck of
+    their face. "DU-1 supply: 4,320 m³/h through 2 × Ø250 is 2,160 m³/h each, 12.2 m/s in the neck (limit 3 m/s). It
+    needs at least 6 × Ø300 or 9 × Ø250 diffusers." **Propose terminals** shows them dashed in plan and 3D, laid out
+    as a designer lays them (68a37f5): in a row parallel to the collar's face, where the service's terminals already
+    are (at least 2.5 m ahead of the collar), else halfway across the room; the room's stretch there cut into equal
+    strips, one terminal at the middle of each; the terminals there re-necked to the largest neck, joined to the
+    unit's air system and moved onto their nearest places in the row, the new ones in the free places. Always at least
+    1.5 m ahead of the collar, 800 mm from walls, 900 mm from the unit and 300 mm from other bodies; where no row takes
+    them all, the rest go where they spread the air most evenly. **Add terminals** commits them (one undo) and routes
+    again. A new Auto route run, or putting the preview away, clears a proposal.
+- **SA / RA marks in plan (c6e070d).** Every ducted unit's collars are marked outside the duct tool too: the collar's
+  edge in its service's colour and "SA" or "RA" just outside it.
+
+### Refrigerant
+
+- **One more start from a unit left out (a1eb1e4).** The search grows trees from three starts (the farthest unit, the
+  next, the nearest). When units are left out, one more is grown from each of them (at most two), the main laid out
+  from that unit first; the most connected network wins as before. As drawn: 7 of 7 (6 before). Put right, with 32
+  duct runs in the void, the three starts connect 2 of 7 and the extra start 7 of 7.
+- **A unit left out says why (c87da48),** from the reason its branch-kit positions failed most often: "FDUM140: not
+  connected — every branch-kit position near it leaves too little straight for the bends down to its connections.
+  Move the unit, or the ducts and pipes by its connections, or route its pipes by hand."
+- **The connection ratio (4807f89).** The indoor units' nominal capacity over the outdoor unit's, against Connection
+  Min / Max in the routing settings (50–130 %; confirm with the maker). Out of range, Auto route says it first, on its
+  own in the panel, without blocking Apply; the live checks put a warning on the outdoor unit. The user's FDC280:
+  "… is too small for its system: its 7 indoor units total 61.6 kW: 220 % of its 28.0 kW (allowed 50–130 %). Use a
+  larger outdoor unit, or split the indoor units over two systems."
+
+### Drains
+
+See `condensate-drainage-design.md` (24 October 2026): the search widens when ducts wall a unit in (b516cfd), and when
+the only route found cannot fall (759cab4); a branch keeps clear of the drains already laid (c1f9447) and of other
+units' riser spots (7b7c06b); the router is eight times faster round refrigerant (4589088); a drain short of fall says
+by how much and offers a pump (202703d).
+
+### Apply complete parts (ffe29ce)
+
+"Apply N designed units" becomes **Apply complete parts**: the duct units with a layout, the refrigerant network as far
+as it reaches (sealed; a partial network never replaces one already there), and the drains that route, as one undo.
+The panel and the status message name each part left out ("DU-2 (no duct layout)", "… (no refrigerant route)", "…
+(no drain route)"); those keep what they have and stay flagged. A clash or a hop to approve still blocks it, and the
+main Apply still refuses an incomplete preview.
+
+### Verified
+
+- **Unit tests (new):** `condensateRouter` 4 (the widening: walled-off area, the caller's area kept, the whole
+  drawing, no way at all); `condensateNetworkKeepOut` 2 (two cassettes with their outlets on one line, the gully
+  south-west and due south: no drain through the other); `condensateShortfall` 2 (the FDU224's message, the pump
+  offer, pumped with a pump); `ductUnitAdvice` 9 (the turn, the shortfall at 3 and 3.5 m/s, the row proposal ahead of
+  the collar, and the turned FDU224 designed from its proposed terminals); `ductAutoRouteAdvice` 2 (as drawn: kept,
+  the reasons, the three pieces of advice; turned: no word of turning); `ductCollarMarks` 2; `connectionRatio` 6
+  (220 %, in and under the range, two outdoor units, the setting, the live warning, the panel); plus the per-unit
+  reason in `autoRouteNetwork.completeness` and the complete-parts rules in `autoRouteReview` and the controller.
+- **Full suite:** 284 files, 2,489 tests, all pass (344 s); the two gated files, the benchmark and the building, skipped.
+- **Benchmark gate:** 43/43 (349 s, alongside a canvas run).
+- **The user's building** (`autoRouteBuilding`, on request): 3/3 in 529 s —
+  - as drawn: the FDU224 kept with "turn 180°", "6 × Ø300" and "5 × Ø300"; the bottom-left FDUM140 kept with
+    "3 × Ø300" twice; the middle one designed with its advice; 7 of 7 on refrigerant; the bottom-left drain pumped; the
+    FDU224's drain short of fall with a pump offered; 220 %; no drain crossing another;
+  - as advised (turned, the proposed terminals added for all three units, the pump fitted): three layouts, no advice
+    left, 7 of 7 on refrigerant, 7 of 7 drains, no clashes, applied;
+  - put right by hand (the grid of terminals used in the investigation): the same.
+- **On canvas:** `building-fixes` 21/21, restoring the project exactly. The building drawn with the toolbox (six
+  rooms); SA / RA marked on all three ducted units; Auto route as drawn shows every reason and fix above; "Turn 180°
+  and route again" turns the FDU224; "Propose terminals" draws four diffusers dashed, "Add 4 terminals and route
+  again" adds them, then three grilles; "Fit a condensate pump and route again"; the two FDUM140s' terminals the same
+  way; then three layouts, 7 of 7 on refrigerant, 7 of 7 drains, Apply open and applied ("Auto route applied: 33
+  duct runs for 3 units, 7 units on refrigerant, 7 drains"); screenshots `building-01` to `-07` (plan and 3D).
+  Regressions: `rotate-p2` 32/32, `turn-p2` 15/15, `smooth-p1` 24/24 (the turn handler), `duct-partial-apply` 6/6 (three units designed, DU-1 left out and named, "Apply complete parts" applies the
+  three, one undo takes them out), restoring the project exactly.
+
+### Found while building and verifying
+
+- **A drain–duct "clash"** in an early probe was the probe's own: it checked the proposal against the drawing without
+  the terminals' spigot turns, so the runouts it built differed from the planner's. The planner's audit has it right.
+- **The drain–drain clash had two forms.** A branch passing through a pump riser of the network (the router saw only
+  the network's long runs) — and, once that was fixed, the south cassette's riser landing on the NE cassette's drain
+  laid first (both outlets on one line). Hence the keep-outs and the reserved riser spots.
+- **The drains took 270 s round the refrigerant** (17 s without): every refrigerant bend reached the router as hundreds
+  of short chords, each tested on every grid edge, and the widened searches multiplied it. Now 32 s.
+- **"Apply N designed units"'s refusal by an incomplete refrigerant network** is gone with it: such a unit is now a part
+  left out (a test kept the old refusal and was changed to the new rule).
+- **On the canvas, "Turn 180° and route again" turned the wrong thing** (986b2da): it selected the unit and asked for
+  the turn at once, but the canvas's turn handler read the selection as it was at its last render, and turned the
+  grille selected before. The handler now reads the selection and the drawing when it is called. The drain's "Fit a
+  condensate pump" button sat in a collapsed entry; an entry that offers a fix now shows open.
+- **Following the advice still left two units without ducts** on the canvas: the first proposal spread the new
+  terminals over the whole room, some behind the supply collar and the rest in layouts the optimiser could not build
+  cleanly. Hence the row ahead of the collar, in equal strips (68a37f5), checked by a test that designs the turned
+  FDU224 from the proposed terminals, and by the building test's "as advised" case.
+- **The FDU224's pumped drain then found only a junction it could not fall into** among the new ducts, and the search
+  did not widen for that. It widens now (759cab4), and the FDU224 drains (+245 mm).
+
+### Known limits
+
+- **The refrigerant route search plans in plan without seeing the ducts**; only the 3D check rejects a crossing. In a
+  dense ceiling it relies on the extra starts, and a unit still left out says why. The plan's deeper option (the
+  search seeing the ducts' true footprints, the main above the duct layer, branch positions further along) was not
+  needed on this building and is not built.
+- **A terminal beside or behind a collar** in a layout that is otherwise ahead is not reached (the turn advice covers a
+  unit turned away from all of them).
+- **The terminal proposal** lays a row ahead of the collar, and spreads the rest over the free ceiling where no row
+  takes them all; it does not model throw or coverage, and uses the largest catalogue neck of the face.
+- **The connection ratio** uses nominal kW, not the makers' capacity indices (absent from the library).
+- **Auto route on this building** takes about 3.5 minutes as drawn and 4 put right (in tests).
 
 ## Known limits (auto duct, 30 September 2026)
 
