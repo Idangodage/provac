@@ -427,6 +427,25 @@ export function airPortMarkup(ports: readonly DuctAirPort[], k: number, hoveredK
   }).join('');
 }
 
+/**
+ * Every ducted unit's collars marked in plan, outside the duct tool too: the
+ * collar's edge in its service's colour and "SA" or "RA" just outside it, so
+ * a unit placed facing away from its terminals shows at a glance.
+ */
+export function collarMarksMarkup(ports: readonly DuctAirPort[], k: number): string {
+  const px = (value: number) => value / Math.max(k, 1e-6);
+  return ports.filter((port) => port.diameterMm === undefined).map((port) => {
+    const color = port.kind === 'supply' ? COLORS.supply.stroke : COLORS.return.stroke;
+    const out = { x: port.lip.x + port.normal.x * px(11), y: port.lip.y + port.normal.y * px(11) };
+    return [
+      `<g data-collar-mark="${escapeText(`${port.unitId}:${port.portId}`)}">`,
+      `<path d="${pathData([port.edgeA, port.edgeB])}" stroke="${color}" stroke-width="2.2" stroke-linecap="round" vector-effect="non-scaling-stroke" opacity="0.85"/>`,
+      textMarkup(out, port.kind === 'supply' ? 'SA' : 'RA', px(9), color),
+      '</g>',
+    ].join('');
+  }).join('');
+}
+
 /** Where a click would start a branch: the wall a take-off opens, or the split side. */
 export function branchTargetMarkup(target: { kind: 'tap' | 'split' | 'spigot'; marker: readonly [Point2D, Point2D]; label: string }, k: number): string {
   const px = (value: number) => value / Math.max(k, 1e-6);

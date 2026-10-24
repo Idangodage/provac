@@ -40,6 +40,7 @@ import {
   airTerminalMarkup,
   airTerminalTagObstacles,
   branchTargetMarkup,
+  collarMarksMarkup,
   draftLabelMarkup,
   ductRunMarkup,
   ductRunTagObstacles,
@@ -228,6 +229,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   }, []);
 
   const ports = useMemo(() => (showPorts ? [...listAirPorts(hvacElements), ...listTerminalPorts(hvacElements)] : []), [showPorts, hvacElements]);
+  // Outside the duct tool every ducted unit's collars are still marked (SA / RA), lighter.
+  const collarPorts = useMemo(() => (showPorts ? [] : listAirPorts(hvacElements)), [showPorts, hvacElements]);
   const occupied = useMemo(() => {
     const keys = new Set<string>();
     for (const element of hvacElements) {
@@ -774,6 +777,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
           <g ref={optionPreviewRef} data-testid="duct-option-preview" style={{ pointerEvents: 'none' }} />
           <g ref={segmentRef} data-testid="duct-segment-focus" style={{ pointerEvents: 'none' }} />
           <g ref={portsRef} data-testid="duct-ports" />
+          {collarPorts.length ? <g data-testid="duct-collar-marks" dangerouslySetInnerHTML={{ __html: collarMarksMarkup(collarPorts, k) }} /> : null}
           <g ref={targetRef} data-testid="duct-branch-target" />
           <g ref={draftRef} data-testid="duct-draft" />
           {hitAreas.length > 0 ? (
