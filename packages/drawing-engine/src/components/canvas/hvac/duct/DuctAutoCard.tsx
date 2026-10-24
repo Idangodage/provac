@@ -14,19 +14,22 @@
  * terminal's airflow). Changed after Generate, the preview re-sizes live; on
  * ducts already applied, each change re-sizes them on the drawing (one undo).
  */
-import { Circle, Coins, Fan, Gauge, LayoutGrid, Loader2, Ruler, ShieldCheck, Sparkles, Square, Star, Wand2, Wind, X } from 'lucide-react';
+import { Circle, Coins, Gauge, LayoutGrid, Loader2, ShieldCheck, Sparkles, Square, Star, Wand2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
+import { Caption } from '../unit/unitPanelKit';
 
 import { DuctFrontierChart } from './DuctFrontierChart';
 import {
   AppliedSizingSummary,
   BasisEditor,
+  FanSpeedPicker,
   ServiceTabs,
   SizingMethodSwitch,
   SizingTable,
+  SystemAirflowRow,
   TerminalAirflowList,
   type SizingMethod,
   type TerminalAirflows,
@@ -46,7 +49,7 @@ import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPre
 import { sameAutoDuctInputs } from './ductAutoWorkflow';
 import { formatCost, type DuctCostBreakdown } from './ductEconomics';
 import { parseDuctNumber } from './ductNumericValue';
-import { FAN_SPEED_LABELS, FAN_SPEEDS, neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
+import { neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
 import { useDuctSizingDraft, useDuctSizingDraftStore, type DuctSizingDraft } from './ductSizingDraft';
 import { basisAirflowM3h, defaultSizingBasis, linkSizingBasis, sizingOutcomeLine } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
@@ -411,24 +414,6 @@ export function DuctAutoCard() {
           ))}
         </div>
       </Line>
-      <Line label="Fan speed" icon={<Fan size={12} />}>
-        {air.airflowM3h ? (
-          <select value={fanSpeed} onChange={(event) => setFanSpeed(event.target.value as FanSpeed)} className={select} aria-label="Auto duct fan speed">
-            {FAN_SPEEDS.map((speed) => <option key={speed} value={speed}>{FAN_SPEED_LABELS[speed]} · {Math.round(air.airflowM3h![speed])} m³/h</option>)}
-          </select>
-        ) : <span className={`text-[10px] ${defaultAirflow ? 'text-slate-500' : 'text-amber-700'}`}>{defaultAirflow ? 'using the unit’s airflow' : 'no airflow data: enter it below'}</span>}
-      </Line>
-      <Line label="Airflow" icon={<Wind size={12} />}>
-        <input type="number" step={10} min={0.01} max={50000} value={airflowDraft} placeholder={defaultAirflow ? String(Math.round(defaultAirflow)) : 'm³/h'}
-          onChange={(event) => { setAirflowDraft(event.target.value); setAirflowBadInput(event.target.validity.badInput); }}
-          onKeyDown={(event) => { if (event.key === 'Escape') { setAirflowDraft(''); setAirflowBadInput(false); event.stopPropagation(); } }}
-          className={`w-20 rounded-md border px-1 text-xs ${airflowError ? 'border-red-400' : 'border-slate-200'}`} aria-label="Auto duct airflow"
-          aria-invalid={Boolean(airflowError)} aria-describedby="duct-auto-airflow-help" />
-        <span className="text-[10px] text-slate-400">m³/h</span>
-      </Line>
-      <p id="duct-auto-airflow-help" className={`text-[10px] ${airflowError ? 'text-red-600' : 'text-slate-500'}`}>
-        {airflowError ?? (airflowDraft ? 'Manual airflow override. Clear to use the unit’s airflow.' : defaultAirflow ? `Using ${Math.round(defaultAirflow)} m³/h from the unit. Enter a value to override.` : 'Enter a positive airflow from the unit specification.')}
-      </p>
       <Line label="Layout" icon={<LayoutGrid size={12} />}>
         <select value={layout} onChange={(event) => setLayout(event.target.value as AutoDuctLayoutChoice)} className={select} aria-label="Auto duct layout">
           <option value="auto">Any (optimiser)</option>
@@ -441,19 +426,45 @@ export function DuctAutoCard() {
         <label className="ml-1 flex items-center gap-1"><input type="checkbox" checked={services.return} onChange={(event) => setServices({ ...services, return: event.target.checked })} aria-label="Auto duct return" /><span className="inline-block h-2 w-3 rounded-[2px] border-[1.5px] border-teal-700 bg-teal-500/15" aria-hidden="true" />Return</label>
       </Line>
       {!occupied || rebuild || current ? (
-      <div className="space-y-1 border-t border-sky-100 pt-1" data-testid="duct-sizing">
-        <Line label="Sizing" icon={<Ruler size={12} />}>
-          <span className="text-[10px] text-slate-500">
-            {method === 'constant-friction' ? (current ? 'changes resize the preview live' : 'Generate sizes at this basis') : 'least first cost + fan energy'}
-          </span>
-        </Line>
-        <SizingMethodSwitch method={method} onChange={changeMethod} />
-        <ServiceTabs services={sizingServices} active={tab} onChange={setSizingTab} />
-        {method === 'constant-friction' && sizingServices.length ? (
-          <BasisEditor key={`${unit.id}:${tab}`} basis={basisFor(tab)} live onChange={(next) => updateBasis(tab, next)} />
-        ) : null}
-        <TerminalAirflowList rows={airflowRows} neckCapMs={neckCap} systemAirflowM3h={systemAirflow} live onChange={(id, value) => updateAirflow(id, value)} />
-      </div>
+        <div className="overflow-hidden rounded-[10px] border border-sky-100 bg-white" data-testid="duct-sizing">
+          <div className="space-y-1.5 px-2.5 pb-2 pt-2">
+            <Caption aside={<span className="text-slate-400">
+              {method === 'constant-friction' ? (current ? 'changes resize the preview live' : 'Generate sizes at this basis') : 'least first cost + fan energy'}
+            </span>}>Sizing</Caption>
+            <SizingMethodSwitch method={method} onChange={changeMethod} />
+          </div>
+          <div className="space-y-1 border-t border-slate-100 px-2.5 py-2">
+            {air.airflowM3h ? <FanSpeedPicker label="Auto duct fan speed" value={fanSpeed} airflowM3h={air.airflowM3h} onChange={setFanSpeed} />
+              : <p className={`text-[10.5px] ${defaultAirflow ? 'text-slate-500' : 'text-amber-700'}`}>{defaultAirflow ? 'Using the unit’s Airflow field.' : 'No airflow data: enter the system airflow.'}</p>}
+            <SystemAirflowRow source={airflowDraft ? (
+              <button type="button" aria-label="Use the unit's airflow" title="Clear: the unit's airflow" onClick={() => { setAirflowDraft(''); setAirflowBadInput(false); }}
+                className="inline-flex items-center gap-0.5 rounded px-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">typed<X size={10} aria-hidden="true" /></button>
+            ) : defaultAirflow ? (air.airflowM3h ? 'fan speed' : 'Airflow field') : null}>
+              <span className={`inline-flex h-6 items-center rounded-[7px] border bg-white transition-colors ${airflowError ? 'border-red-400' : 'border-slate-200 focus-within:border-sky-400 focus-within:ring-2 focus-within:ring-sky-100'}`}>
+                <input type="number" step={10} min={0.01} max={50000} value={airflowDraft} placeholder={defaultAirflow ? String(Math.round(defaultAirflow)) : 'm³/h'}
+                  onChange={(event) => { setAirflowDraft(event.target.value); setAirflowBadInput(event.target.validity.badInput); }}
+                  onKeyDown={(event) => { if (event.key === 'Escape') { setAirflowDraft(''); setAirflowBadInput(false); event.stopPropagation(); } }}
+                  className="w-[52px] min-w-0 bg-transparent px-1.5 text-right text-xs font-medium tabular-nums text-slate-900 outline-none placeholder:font-normal placeholder:italic placeholder:text-slate-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  aria-label="Auto duct airflow" aria-invalid={Boolean(airflowError)} aria-describedby={airflowError ? 'duct-auto-airflow-help' : undefined} />
+                <span className="shrink-0 pr-1.5 text-[10px] text-slate-400">m³/h</span>
+              </span>
+            </SystemAirflowRow>
+            {airflowError ? <p id="duct-auto-airflow-help" className="text-right text-[10.5px] text-red-600">{airflowError}</p> : null}
+          </div>
+          {sizingServices.length > 1 || (method === 'constant-friction' && sizingServices.length) ? (
+            <div className="space-y-1.5 border-t border-slate-100 px-2.5 py-2">
+              <ServiceTabs services={sizingServices} active={tab} onChange={setSizingTab} />
+              {method === 'constant-friction' && sizingServices.length ? (
+                <BasisEditor key={`${unit.id}:${tab}`} basis={basisFor(tab)} live onChange={(next) => updateBasis(tab, next)} />
+              ) : null}
+            </div>
+          ) : null}
+          {airflowRows.length ? (
+            <div className="border-t border-slate-100 px-2.5 py-2">
+              <TerminalAirflowList rows={airflowRows} neckCapMs={neckCap} systemAirflowM3h={systemAirflow} live foldable onChange={(id, value) => updateAirflow(id, value)} />
+            </div>
+          ) : null}
+        </div>
       ) : null}
       {occupied ? (
         <div>
