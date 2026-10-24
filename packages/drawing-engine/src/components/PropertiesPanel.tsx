@@ -3113,6 +3113,22 @@ function RefrigerantPipeToolSection() {
       suffix: "mm",
     },
     {
+      key: "connectionRatioMinPercent",
+      label: "Connection Min",
+      min: 0,
+      max: 200,
+      step: 5,
+      suffix: "%",
+    },
+    {
+      key: "connectionRatioMaxPercent",
+      label: "Connection Max",
+      min: 50,
+      max: 300,
+      step: 5,
+      suffix: "%",
+    },
+    {
       key: "zOffsetClearanceMm",
       label: "Clash Clearance",
       min: 0,

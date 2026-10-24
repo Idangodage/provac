@@ -98,6 +98,13 @@ export interface PipeRoutingSettings {
    * overlaid on the intact run as a legacy presentation-only fitting.
    */
   enableRealTeeTopology: boolean;
+  /**
+   * The range of a VRF system's connection ratio (indoor kW over outdoor kW, %)
+   * outside which Auto route and the checks warn. 50–130 % is the usual VRF
+   * range; some makers allow more under conditions: confirm with the maker.
+   */
+  connectionRatioMinPercent: number;
+  connectionRatioMaxPercent: number;
 }
 
 /**
@@ -125,6 +132,8 @@ export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
   clashMergeWindowMm: CLASH_MERGE_WINDOW_MM, // 320 mm
   autoBypassOnCommit: false, // clean commits by default; bypass is opt-in via the card
   enableRealTeeTopology: true, // split the run into a real flow-connected tee on accept (W3b)
+  connectionRatioMinPercent: 50,
+  connectionRatioMaxPercent: 130,
 };
 
 function isFiniteNumber(value: unknown): value is number {

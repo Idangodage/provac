@@ -66,6 +66,8 @@ describe.runIf(ENABLED)("the user's building through Auto route", () => {
     expect(unit(USERS_BUILDING_IDS.middle).status).toBe('designed');
     expect(unit(USERS_BUILDING_IDS.middle).advice?.map((advice) => advice.kind)).toEqual(['add-terminals', 'add-terminals']);
     expect(result.refrigerant?.unconnectedIndoorIds).toEqual([]);
+    // 61.6 kW of indoor units on a 28 kW outdoor unit: said, without blocking anything.
+    expect(Math.round(result.refrigerant?.connectionRatios?.[0]?.percent ?? 0)).toBe(220);
     expect(drain(result, USERS_BUILDING_IDS.bottomLeft)?.status).toBe('pumped');
     expect(drain(result, USERS_BUILDING_IDS.fdu224)).toMatchObject({ status: 'infeasible', pumpWouldHelp: true });
     expect(previewClashes(result)).toEqual([]);

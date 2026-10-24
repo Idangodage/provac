@@ -4,6 +4,7 @@ import { PROJECT_FALLBACK_RULE_PROFILE, type ManufacturerRuleProfile } from '../
 
 import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork, type AutoRouteCostRates } from './autoRouteEvaluation';
 import { directBranchApproachStations } from './branchApproachStations';
+import { connectionRatioMessage, connectionRatioProblems, type ConnectionRatio } from './connectionRatio';
 import { buildBranchKitInsertion, getBranchKitApproachRouteOptions, proposeBranchKit, type BranchKitProposal } from './branchKitProposal';
 import { coordinatedBranchApproachStations } from './coordinatedBranchStations';
 import { hasNewNetworkPipeClash } from './networkPipeClearance';
@@ -47,6 +48,8 @@ export interface AutoRouteNetworkResult {
   metrics: Evaluation['metrics'] | null;
   evaluations: Evaluation[];
   evaluatedCandidates: number;
+  /** Systems whose connection ratio is outside the project's range (indoor kW over outdoor kW). */
+  connectionRatios?: ConnectionRatio[];
 }
 interface Unit { element: HvacElement; port: RefrigerantPipeBundleConnection }
 interface System { outdoor: Unit; indoors: Unit[] }
@@ -913,6 +916,12 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
       issues.push(`${element?.label || id}: not connected — ${UNIT_REJECTION_TEXT[counts[0]![0]]}. Move the unit, or the ducts and pipes by its connections, or route its pipes by hand.`);
     }
     if (!result.complete) issues.push(...searchStats.rejectedReasons);
+    // An outdoor unit too small (or too large) for the indoor units it serves: routed all the same, and said first.
+    const ratios = connectionRatioProblems(inputScene, options.settings);
+    if (ratios.length) {
+      result.connectionRatios = ratios;
+      issues.unshift(...ratios.map(connectionRatioMessage));
+    }
     result.issues = [...new Set(issues)];
     options.onProgress?.({ completed: result.connectedIndoorIds.length, total: requested.length, stage: 'Network evaluated' });
     return result;

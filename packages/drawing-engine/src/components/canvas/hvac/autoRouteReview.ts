@@ -1,4 +1,5 @@
 import { incompleteServiceRouteRefusal, incompletenessRefusals, leftOutParts, partialApplyRefusal, type LeftOutPart } from './autoRouteCompleteness';
+import { connectionRatioMessage } from './connectionRatio';
 import type { AutoRouteDuctUnit } from './duct/ductAutoRoute';
 import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
 
@@ -96,9 +97,12 @@ export function buildAutoRouteReview(result: UnifiedAutoRouteResult, approvedHop
     + (refrigerant?.removeElementIds.length ?? 0) + (refrigerant?.updates.length ?? 0)
     + (condensate?.elementsToAdd.length ?? 0) + (condensate?.removeElementIds.length ?? 0));
   const ductNotes = new Set((ducts?.issues ?? []).map(canonical));
+  // An outdoor unit too small or too large for its system: routed, but said on its own (it does not block Apply).
+  const capacityWarnings = (refrigerant?.connectionRatios ?? []).map(connectionRatioMessage);
+  const capacitySet = new Set(capacityWarnings.map(canonical));
   const resolvedMessages = new Set(result.clashes.map(clash => canonical(clash.message)));
   const advisory = uniqueMessages(result.issues).filter(message => !seenMessages.has(canonical(message))
-    && !ductNotes.has(canonical(message)) && !resolvedMessages.has(canonical(message)));
+    && !ductNotes.has(canonical(message)) && !resolvedMessages.has(canonical(message)) && !capacitySet.has(canonical(message)));
   // These remain advisory: absent verified manufacturer data cannot become an
   // invented failure or a claim that the geometry is an approved installation.
   const manufacturerNotes = advisory.filter(message => /manufacturer|capacity ind(?:ex|ices)|equivalent length|component size|branch-kit sizing/i.test(message));
@@ -115,6 +119,6 @@ export function buildAutoRouteReview(result: UnifiedAutoRouteResult, approvedHop
     leftOut: leftOut.map(describeLeftOut),
     reason: otherIssues[0]?.message ?? hopsReason,
   } : null;
-  return { issues, failedDuctUnits, pendingHops, hasChanges, applyReason, partialApply, manufacturerNotes, installationNotes,
+  return { issues, failedDuctUnits, pendingHops, hasChanges, applyReason, partialApply, capacityWarnings, manufacturerNotes, installationNotes,
     state: applyReason ? 'blocked' as const : hasChanges ? 'ready' as const : 'unchanged' as const };
 }

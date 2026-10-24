@@ -183,6 +183,12 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
       {review.partialApply ? <PartialApply {...review.partialApply} /> : null}
     </div>
 
+    {review.capacityWarnings.map(message => <div key={message} role="note" data-testid="auto-route-capacity"
+      className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900">
+      <p className="font-semibold"><AlertTriangle size={12} className="mr-1 inline" aria-hidden="true" />Outdoor unit capacity</p>
+      <p className="mt-0.5 break-words">{message}</p>
+    </div>)}
+
     {ducts && <FarTerminalsBanner result={result} onRouteAgain={onRouteAgain} />}
 
     <div className={`grid gap-2 ${activeCount === 3 ? 'grid-cols-3' : activeCount === 2 ? 'grid-cols-2' : 'grid-cols-1'}`} aria-label="Proposed service coverage">

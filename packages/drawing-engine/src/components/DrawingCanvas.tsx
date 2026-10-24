@@ -773,7 +773,7 @@ export function DrawingCanvas({
     [panOffset.x, panOffset.y, safePaperPerRealRatio],
   );
   const projectionViewOnly = hybridViewOnly;
-  const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile);
+  const vrfValidationReport = useVrfLiveValidation(hvacElements, vrfRuleProfile, pipeRoutingSettings);
   const condensateValidationReport = useCondensateLiveValidation(hvacElements, condensateSettings, pipeRoutingSettings);
   // The walls and rooms duct plans read (sleeves, fire dampers), synced before any child plans a run.
   const ductBuilding = useDuctBuilding();
