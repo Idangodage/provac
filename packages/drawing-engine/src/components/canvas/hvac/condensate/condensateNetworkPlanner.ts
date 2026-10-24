@@ -259,6 +259,12 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
       halfWidthMm: segment.radiusMm + defaultRadius + settings.refrigerantClearanceMm,
     });
   });
+      chain = { elementId: segment.elementId, radiusMm: segment.radiusMm, points: [a] };
+    }
+    chain.radiusMm = Math.max(chain.radiusMm, segment.radiusMm);
+    if (distance(chain.points.at(-1)!, b) >= 0.5) chain.points.push(b);
+  }
+  flush();
   return {
     obstaclesFor: (unitId, gullyId) => {
       const source = environment.sources.find((candidate) => candidate.unitId === unitId);
@@ -1337,7 +1343,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
     const failed = new Map<string, { points: Point2D[]; shortfallMm: number | null; reason: string }>();
     for (const planned of unitOrder) {
       const unitPlan = seatClearOfNetwork(net, planned, unitEnvironment);
-      const routed = routeIntoNet(net, unitPlan, sink, exposed);
+      const routed = routeIntoNet(net, unitPlan, sink, exposed, reservedFor(unitPlan, unitOrder));
       if ('failure' in routed) {
         failed.set(unitPlan.source.unitId, routed.failure);
         continue;
@@ -1345,6 +1351,14 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
       insertBranch(net, unitPlan, routed.route, settings, router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), router.services);
     }
     return { net, failed };
+  }
+
+  /** Every other unit's planned outlet stub and riser (this group's plans first): spots a branch keeps clear of. */
+  function reservedFor(unitPlan: UnitPlan, group: readonly UnitPlan[]): UnitPlan[] {
+    const byUnit = new Map<string, UnitPlan>(unitPlans.map((plan) => [plan.source.unitId, plan]));
+    for (const plan of group) byUnit.set(plan.source.unitId, plan);
+    byUnit.delete(unitPlan.source.unitId);
+    return [...byUnit.values()].filter((plan) => !plan.failureReason);
   }
 
   /**
@@ -1363,7 +1377,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
   }
 
   /** Routes one unit onto the network (or to the termination) so it can still fall to it. */
-  function routeIntoNet(net: NetBuilder, unitPlan: UnitPlan, sink: CondensateSink, exposed: boolean):
+  function routeIntoNet(net: NetBuilder, unitPlan: UnitPlan, sink: CondensateSink, exposed: boolean, reserved: readonly UnitPlan[] = []):
     { route: NonNullable<ReturnType<typeof routeCondensateBranch>> } | { failure: { points: Point2D[]; shortfallMm: number | null; reason: string } } {
     if (unitPlan.failureReason) return { failure: { points: [unitPlan.source.point], shortfallMm: null, reason: unitPlan.failureReason } };
     {
@@ -1399,17 +1413,27 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         minX: Math.min(piece.a.x, piece.b.x) - keep, maxX: Math.max(piece.a.x, piece.b.x) + keep,
         minY: Math.min(piece.a.y, piece.b.y) - keep, maxY: Math.max(piece.a.y, piece.b.y) + keep,
       })).filter((box) => !(unitPlan.stubEnd.x > box.minX && unitPlan.stubEnd.x < box.maxX && unitPlan.stubEnd.y > box.minY && unitPlan.stubEnd.y < box.maxY));
-      const route = routeCondensateBranch({
+      // The other units' outlet stubs and risers are kept clear too, so a branch laid first does not take the spot a
+      // later unit's riser needs. Where that leaves no route at all, the branch routes without them (and such a unit
+      // seats its riser elsewhere beside it, or reports why it cannot).
+      const spots: RouterBox[] = reserved.map((plan) => ({
+        id: `spot-${plan.source.unitId}`,
+        minX: Math.min(plan.source.point.x, plan.stubEnd.x) - keep, maxX: Math.max(plan.source.point.x, plan.stubEnd.x) + keep,
+        minY: Math.min(plan.source.point.y, plan.stubEnd.y) - keep, maxY: Math.max(plan.source.point.y, plan.stubEnd.y) + keep,
+      }));
+      const request = {
         start: unitPlan.stubEnd,
         startHeading: unitPlan.source.direction,
         sink: sink.point,
         treeSegments: joinable,
-        obstacles: [...router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), ...keepOut],
         walls: router.walls,
         services: router.services,
         costs,
         acceptTarget,
-      });
+      };
+      const obstacles = [...router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), ...keepOut];
+      const route = (spots.length ? routeCondensateBranch({ ...request, obstacles: [...obstacles, ...spots] }) : null)
+        ?? routeCondensateBranch({ ...request, obstacles });
       if (!route || !route.accepted) {
         const shortfall = route
           ? Math.max(0, sinkLowerZ(sink, lower) - (unitPlan.headTopZ - minSlope * (route.lengthMm + unitPlan.stubLength)))
