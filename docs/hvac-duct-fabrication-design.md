@@ -3148,6 +3148,112 @@ main Apply still refuses an incomplete preview.
 - **The connection ratio** uses nominal kW, not the makers' capacity indices (absent from the library).
 - **Auto route on this building** takes about 3.5 minutes as drawn and 4 put right (in tests).
 
+## The unit panel, redesigned (24 October 2026)
+
+**The request:** "once click on the unit and details of the unit pallete in the left side have more words and it is
+not user friendly, also constant friction duct sizing looks like messy. so please do this very smart, very modern and
+very proffessional way". Approved plan: `C:\Users\idang\.claude\plans\toasty-giggling-shamir.md`; the mockup it was
+approved on (a private Design canvas): https://claude.ai/artifact/P7RKkFBZv1zJDKz4RPnHx1.
+
+**A presentation redesign.** The sizing engine, the store's commands (one undo per change), the shared draft and every
+figure are as they were; what changed is how they are shown and operated. Sentences became figures, tables and
+chips; explanations moved into tooltips; what is rarely needed folds away.
+
+### What the panel shows
+
+- **Header:** tag, kind, model, room, "◂ Toolbox", and three key figures: Cooling (heating under it), Airflow at the
+  design fan speed (L/s under it; "typed" or "Airflow field" when it comes from there), and Fan ESP: what supply and
+  return need together against the fan's maximum ("46 / 200 Pa"), a thin supply / return bar, and the setting for the
+  remote ("set 60 Pa", amber where it is outside the factory range). It replaces the Fan card; the whole sentence is
+  its tooltip.
+- **Tabs, pinned while the panel scrolls:** Duct sizing (a dot: green clean, amber warnings, red errors or over the
+  fan, grey without ducts) | Specification. A unit that is not ducted shows its specification alone. The tab and the
+  folded sections stay as they were left, for the session (`unitPanelUiStore.ts`).
+- **Duct sizing,** one card per service:
+  - Supply | Return, each with its colour and its rate; a service with neither ducts nor terminals is shown disabled,
+    the reason in its tooltip ("No return terminals: the collar draws from the ceiling void").
+  - A status line: the method, where the basis comes from ("as last sized"), and a health chip ("No issues",
+    "2 warnings", "1 drifted"). Alerts only when they apply, each one line and one action: drift → "Re-size at this
+    basis"; the issues (three, then "and n more"); over the fan.
+  - **Basis:** the fan speed as four segments with their airflow; the system airflow (its placeholder the fan speed's,
+    "typed ×" clears a typed one); the **friction rate ⇄ main velocity as two linked tiles**, the one that drives
+    marked SET, the other muted and linked (typing in either makes it drive); the velocity limits as one summary row
+    ("5.0 · 4.0 · 3.0 m/s") that opens three compact steppers; Necks follow airflow as a switch.
+  - **Main duct:** its size, large; its velocity with a dot against its part's limit; its friction; what set it, as a
+    chip ("Friction rate", "Trunk limit", "Smallest size", "As drawn"). Already at its smallest under the basis: "grows
+    at ≤ 2.5 m/s (≤ 0.31 Pa/m)" and **one click, "Use 2.5 m/s"**, in the unit that drives (one undo). A velocity limit
+    holding it: "Trunk limit 5.0 m/s holds the main below the basis (6.3 m/s)" and "Raise the limit to 6.3 m/s", or
+    "Raising it changes nothing here: the split it feeds needs that width".
+  - **Terminals:** the allocation ("600 / 600 m³/h") with a bar, then one line each: tag, neck (and "→250" where it
+    will grow), its airflow (grey: an equal share; typed: fixed), its neck velocity with a dot; "Share equally".
+  - **Folded:** *Sections* — a table grouped by run (size, m³/h, m/s, Pa/m), velocities amber near and red over their
+    part's limit, a swatch for what set each size (friction rate, velocity limit, size rule, fitting, terminal) with a
+    legend, and **Copy** (tab-separated, for a spreadsheet); *Calculation* — Q → V → Ø → R → the main → ESP → the
+    dampers, one line each, the method as one footnote; *First sizing* — the record as four small tiles, the changes
+    since as chips, "Reset to the first sizing".
+  - **Before ducts:** one banner ("No supply ducts yet. Generate sizes them at this basis." with "Generate in Auto
+    duct"; with a preview, "Preview open. Changes here resize it live." with "Apply in Auto duct"), the method switch,
+    the same basis and terminal controls, live, on the Auto duct card's draft.
+- **Specification:** the maker and the range; the fan speeds as one table (m³/h, L/s, dB(A)) with the design speed's
+  column marked; the ESP as a range bar (what can be set, what is delivered, where capacity is rated) and four short
+  rows; connections (collars in their service's colour, refrigerant and joint, pipes, drain and pump, "drawn as
+  gravity" where the drawing ignores a built-in pump); body and power; the 3D model's origin; the source as one link,
+  its reference in a tooltip. A unit without a sheet: what it holds, and one line saying so.
+- **Status colours** follow the segment cards' rule (`figureStatus`, now exported from `ductSegmentFigures.ts`: near
+  above 90 % of the limit, over above 100.1 %).
+
+### The Auto duct card
+
+Its sizing block — method, fan speed, system airflow, service, basis, terminals (folded when more than four) — is
+built from the same controls, so both panels read and behave alike. Its other rows, Generate / Apply and the design
+picks are as before. "Ducts on this unit" keeps the measured sizing line whole.
+
+### Code
+
+- `hvac/unit/unitPanelKit.tsx` (new): the card and its sections, captions, key-figure tiles, segmented pickers (tabs,
+  choices, fan speeds; arrow keys move the choice), chips, status dots, a switch, folding rows, one-line alerts, a
+  meter, a tooltip fixed to the window (`InfoTip`, so a card's clipping or the panel's scroll never cuts it), spec rows.
+- `hvac/unit/unitPanelUiStore.ts` (new): the tab and the folded sections, for the session.
+- `duct/DuctSizingSection.tsx`: the shared controls rebuilt under the same exports, plus `FanSpeedPicker`,
+  `SystemAirflowRow` and `ServiceSwitch`.
+- `duct/DuctNumberInput.tsx`: `variant` (`tile`, `compact`, `cell`), `suffix`, `displayDigits` (5.0, 0.80; a value with
+  more decimals keeps them); the default look, used by the fabrication settings, is unchanged.
+- `unit/UnitDesignPanel.tsx`: the view rebuilt; the unit's air side is measured once for the header, the tab's dot and
+  the cards.
+- `duct/DuctAutoCard.tsx`: the sizing block.
+
+### Verified
+
+- **Type-check and lint** clean on the changed files. **Full suite:** 2,487 tests passed, 2 failed (46 skipped as
+  before). The two are timeouts, not assertions — "connects a mixed group whose indoor ports face all four cardinal
+  directions" (`autoRouteNetwork.geometry`) and "serves staggered rows of eleven default-facing diffusers"
+  (`ductAutoRoute`) run 62–67 s against their 60 s limit, and do the same on the code before this work (run alone,
+  the change stashed). No component tests exist; the drivers below check the panel.
+- **On canvas** (real mouse and inputs; each driver restores the project exactly; nothing is saved):
+  - `unit-panel` 39/39 (was 34): the cassette's specification alone; an FDUM22 with two Ø200 diffusers — the key
+    figures, the Duct sizing tab first, the Specification tab (780 / 600 / 540 / 480 m³/h with L/s and dB(A)), the
+    basis set in the panel shown in the card (one draft), a preview resized live from the panel with the card keeping
+    it, Apply and its record, the status line, the Fan ESP tile (supply 26 + return – of 100 Pa), the calculation and
+    the sections opened, "◂ Toolbox" and the card's "Size it in the unit panel", 3.0 m/s changing no duct and the panel
+    saying where the main grows, **"Use 2.5 m/s" enlarging the main 200×350 → 250×350 in one click**, a diffuser at
+    500 m³/h taking a Ø250 neck, the reset, the undo chain, the toolbox back on deselecting.
+  - `unit-high-capacity` 20/20: an FDU280 with six Ø300 diffusers — its specification (settable 10–200 Pa, 1450 × 250
+    collars), Generate (46 Pa of the fan's 200), the main held by the 5 m/s trunk limit and said so, "set 60 Pa" on
+    the ESP tile, "Raise the limit to 6.3 m/s" (700×350 → 600×350, one undo).
+  - Regressions through the Auto duct card: `shape-p6` 32/32, `duct-auto` 17/17, `air-p3` 14/14, `duct-cross-room`
+    18/18.
+  - `duct-sizing` 24/26. Its two failures — after Apply one run reports `DU_TRANSITION_ANGLE` (a converging transition
+    of 78°, then 148° at 1.2 Pa/m) — are the same on the code before this work (an A/B with the change stashed): a
+    duct-engine regression since 18 October, when it last passed 26/26, not the panel's. Left for its own fix.
+
+### Found while verifying
+
+- **The dev server answered 500 on every route.** It had run since the morning through a day of hot reloads (5.7 GB,
+  at its heap limit), and `apps/web/.next/static/webpack` — about a thousand hot-update files — had become unreadable
+  ("UNKNOWN: scandir"), so a restart failed too. The damaged cache was moved aside (to
+  `D:\claude-tmp-vrf-check\next-broken-20261024`, outside the repository), its compile cache kept, and the server
+  started again. Nothing in the source was involved.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
