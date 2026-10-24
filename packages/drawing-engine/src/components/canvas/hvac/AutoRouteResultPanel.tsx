@@ -203,7 +203,7 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
 
     {review.issues.length > 0 && <section aria-label="Routing constraints" className="space-y-1.5">
       <p className="flex items-center justify-between font-semibold text-slate-800">Routing constraints <span className="rounded-full bg-amber-100 px-2 text-[11px] text-amber-900">{review.issues.length}</span></p>
-      {review.issues.map(issue => <details key={issue.key} className="rounded-lg border border-amber-200 bg-amber-50/40 p-2">
+      {review.issues.map(issue => <details key={issue.key} open={issue.action ? true : undefined} className="rounded-lg border border-amber-200 bg-amber-50/40 p-2">
         <summary className="cursor-pointer font-medium text-amber-900">{issue.title}</summary>
         <p className="mt-1.5 break-words">{issue.message}</p>
         {issue.action?.kind === 'fit-pump' ? <button type="button" onClick={() => fitPump(issue.action!.unitId, onRouteAgain)} data-testid="auto-route-fit-pump"

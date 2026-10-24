@@ -2379,20 +2379,23 @@ export function DrawingCanvas({
   // rules for the whole selection, ducts re-aimed or re-routed, pipes re-attached, drains re-solved, one undo.
   const rotateSelectedEntities = useCallback(
     (rotation: HvacRotation) => {
+      // The selection and the drawing as they are now: a caller may select, then turn, before the canvas renders
+      // again (the Auto route panel's "Turn the unit").
       const state = useSmartDrawingStore.getState();
-      const plan = planHvacMove(hvacElements, { ids: selectedIds, delta: { x: 0, y: 0, z: 0 }, rotation }, {
+      const scene = state.hvacElements;
+      const plan = planHvacMove(scene, { ids: state.selectedElementIds, delta: { x: 0, y: 0, z: 0 }, rotation }, {
         ductSettings: state.ductSettings,
         place: computeHvacPlacement,
         condensate: condensateEditContext(),
-        ceilingVoid: resolveHvacCeilingVoid(hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)),
+        ceilingVoid: resolveHvacCeilingVoid(scene, state.rooms, resolveSoffitZ(state.ductSettings)),
       });
       if (plan.messages.length) setProcessingStatus(plan.messages.join(" "), false);
       if (!hvacMoveChanges(plan)) return false;
       commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
-      redesignTurnedDucts(plan, hvacElements);
+      redesignTurnedDucts(plan, scene);
       return true;
     },
-    [computeHvacPlacement, commitHvacElementCommand, hvacElements, redesignTurnedDucts, selectedIds, setProcessingStatus],
+    [computeHvacPlacement, commitHvacElementCommand, redesignTurnedDucts, setProcessingStatus],
   );
   useEffect(() => {
     setHvacRotateHandler(rotateSelectedEntities);
