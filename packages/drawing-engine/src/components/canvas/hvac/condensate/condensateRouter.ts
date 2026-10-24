@@ -231,22 +231,25 @@ const WIDE_CAP_FACTOR = 3;
 
 /**
  * A branch route. The search covers the branch's ends and a margin. When a
- * caller sets no margin and the local area has no route at all (ducts or
- * equipment wall it off), the search widens: 6 m round the ends, then the
- * whole drawing (every obstacle and wall), with larger caps. A route that was
- * found but could not fall is returned as it is: widening cannot add fall.
+ * caller sets no margin and the local area has no route that can be taken —
+ * none at all (ducts or equipment wall it off), or only to places the branch
+ * cannot fall into — the search widens: 6 m round the ends, then the whole
+ * drawing (every obstacle and wall), with larger caps; a wider area can reach
+ * the termination, or a lower place on the network. Failing that, the best
+ * route found is returned (one that cannot fall, for its diagnosis).
  */
 export function routeCondensateBranch(request: CondensateRouteRequest): CondensateRoute | null {
   const local = searchCondensateBranch(request);
-  if (local || request.marginMm !== undefined) return local;
+  if (local?.accepted || request.marginMm !== undefined) return local;
   const caps = {
     maxGridNodes: (request.maxGridNodes ?? 40000) * WIDE_CAP_FACTOR,
     maxExpandedStates: (request.maxExpandedStates ?? 120000) * WIDE_CAP_FACTOR,
   };
   const wider = searchCondensateBranch({ ...request, ...caps, marginMm: WIDER_MARGIN_MM });
-  if (wider) return wider;
+  if (wider?.accepted) return wider;
   const whole = wholeDrawingMarginMm(request);
-  return whole > WIDER_MARGIN_MM ? searchCondensateBranch({ ...request, ...caps, marginMm: whole }) : null;
+  const all = whole > WIDER_MARGIN_MM ? searchCondensateBranch({ ...request, ...caps, marginMm: whole }) : null;
+  return all?.accepted ? all : local ?? wider ?? all;
 }
 
 /** The margin that brings every obstacle and wall into the search area (mm). */
