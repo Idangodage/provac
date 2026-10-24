@@ -47,6 +47,8 @@ describe('automatic network completeness', () => {
     expect(result.connectedIndoorIds).toEqual(['valid-cassette']);
     expect(result.unconnectedIndoorIds).toEqual(['angled-cassette']);
     expect(result.issues.join(' ')).toContain('best feasible sealed subset');
+    // The unit left out says why, in a designer's terms.
+    expect(result.issues.some(issue => /^angled-cassette: not connected — .+\. Move the unit, or the ducts and pipes by its connections, or route its pipes by hand\.$/.test(issue)), result.issues.join(' | ')).toBe(true);
 
     const document = buildVrfDocumentFromHvacElements([...scene, ...result.elementsToAdd]);
     const validPorts = Object.values(document.equipmentPorts).filter(port => port.equipmentId === valid.id);

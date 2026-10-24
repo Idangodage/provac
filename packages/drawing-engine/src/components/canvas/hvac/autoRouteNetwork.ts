@@ -58,7 +58,37 @@ interface Candidate {
    * insertion transaction instead of translating already-connected sockets. */
   attachment?: { parent: Candidate; unit: Unit; proposal: BranchKitProposal; station: BranchStation; kitElementIds: string[] };
 }
-interface SearchStats { evaluatedCandidates: number; rejectedReasons: string[] }
+interface SearchStats {
+  evaluatedCandidates: number;
+  rejectedReasons: string[];
+  /** Per indoor unit: why its branch-kit positions failed, counted (the reason a unit left out reports). */
+  unitRejections: Map<string, Map<UnitRejection, number>>;
+}
+/** Why a branch-kit position for a unit failed, in a designer's terms. */
+type UnitRejection = 'approach' | 'clash' | 'clearance-zone' | 'kit-spacing' | 'no-route' | 'equipment' | 'other';
+const UNIT_REJECTION_TEXT: Record<UnitRejection, string> = {
+  approach: 'every branch-kit position near it leaves too little straight for the bends down to its connections',
+  clash: 'every branch-kit position near it clashes with another pipe or a duct',
+  'clearance-zone': "the branch-kit positions near it lie in a unit's clearance zone",
+  'kit-spacing': 'the branch-kit positions near it are too close to other branch kits',
+  'no-route': 'no clear route reaches its connections from the network',
+  equipment: 'every approach to its connections passes through equipment',
+  other: 'no branch-kit position near it passes the fitting and clearance checks',
+};
+function noteUnitRejection(stats: SearchStats, unitId: string, why: UnitRejection): void {
+  const counts = stats.unitRejections.get(unitId) ?? new Map<UnitRejection, number>();
+  counts.set(why, (counts.get(why) ?? 0) + 1);
+  stats.unitRejections.set(unitId, counts);
+}
+/** A proposal's violation, classified. */
+function rejectionOf(violations: readonly string[]): UnitRejection {
+  const text = violations.join(' ');
+  if (/straight approach|more straight length/i.test(text)) return 'approach';
+  if (/clash/i.test(text)) return 'clash';
+  if (/clearance zone/i.test(text)) return 'clearance-zone';
+  if (/existing branch kit/i.test(text)) return 'kit-spacing';
+  return 'other';
+}
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
 const distance = (a: Point2D, b: Point2D) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 const isOutdoor = (element: HvacElement) => element.type === 'outdoor-unit' || element.category === 'outdoor-unit';
@@ -502,11 +532,13 @@ function attachUnit(candidate: Candidate, baselineIds: Set<string>, system: Syst
   const insertionFits = (insertion: ReturnType<typeof buildBranchKitInsertion>): insertion is NonNullable<typeof insertion> => {
     if (!insertion || insertion.updates?.some(element => baselineIds.has(element.id))
       || insertion.removeElementIds.some(id => baselineIds.has(id))) return false;
-    if (crossesEquipment([...(insertion.updates ?? []), ...insertion.elementsToAdd], allUnits)) return false;
+    if (crossesEquipment([...(insertion.updates ?? []), ...insertion.elementsToAdd], allUnits)) { noteUnitRejection(stats, unit.element.id, 'equipment'); return false; }
     // A delta check can retain pre-existing contact on a split host. Every new
     // automatic tree must also pass against the original, untouched scene.
     const next = applyInsertion(candidate.scene, insertion);
-    return !hasNewNetworkPipeClash(originalScene, next.filter(element => !baselineIds.has(element.id)));
+    if (!hasNewNetworkPipeClash(originalScene, next.filter(element => !baselineIds.has(element.id)))) return true;
+    noteUnitRejection(stats, unit.element.id, 'clash');
+    return false;
   };
   let best: Candidate | null = null;
   const stations = exactStations ?? branchStations(candidate.scene, generatedIds, unit.port, options.settings);
@@ -541,7 +573,7 @@ function attachUnit(candidate: Candidate, baselineIds: Set<string>, system: Syst
       proposalRadiusMm: 100, maxRecoveryStations: exactStations ? 0 : 1,
       excludeSourceIds: candidate.scene.filter(element => baselineIds.has(element.id)
         || element.id !== station.target.gasSourceElementId && element.id !== station.target.liquidSourceElementId).map(element => element.id) });
-    if (!proposal) continue;
+    if (!proposal) { noteUnitRejection(stats, unit.element.id, 'other'); continue; }
     if (exactStations && distance(proposal.teePoint, station.point) > 1) continue;
     // Invalid previews may use a display-only footprint without the requested
     // radius policy. Derive candidates using the same policy as reconstruction,
@@ -556,7 +588,7 @@ function attachUnit(candidate: Candidate, baselineIds: Set<string>, system: Syst
         station: proposal.teePoint, segmentStart: proposal.target.segmentStart, segmentEnd: proposal.target.segmentEnd });
       if (directStations.length) directGroups.push(directStations.map(point => ({ point, target: station.target })));
     }
-    if (proposal.validity === 'invalid') continue;
+    if (proposal.validity === 'invalid') { noteUnitRejection(stats, unit.element.id, rejectionOf(proposal.violations)); continue; }
     const radius = Math.max(proposal.target.gasOuterDiameterMm, proposal.target.liquidOuterDiameterMm) * options.settings.bendRadiusFactor
       + Math.hypot(proposal.gasGhost.branchOutletPoint.x - proposal.liquidGhost.branchOutletPoint.x,
         proposal.gasGhost.branchOutletPoint.y - proposal.liquidGhost.branchOutletPoint.y) / 2;
@@ -578,7 +610,7 @@ function attachUnit(candidate: Candidate, baselineIds: Set<string>, system: Syst
           acceptedInsertions.set(JSON.stringify(points), trial);
           return true;
         } }, options.obstacles ?? [], equipmentObstacles(allUnits, [unit.element.id]));
-      if (!routed) continue;
+      if (!routed) { noteUnitRejection(stats, unit.element.id, 'no-route'); continue; }
       insertion = acceptedInsertions.get(JSON.stringify(routed.points)) ?? null;
     }
     if (!insertion) continue;
@@ -752,7 +784,7 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
   const { systems, requested } = resolveSystems(inputScene, options.selectedIds, issues);
   const result: AutoRouteNetworkResult = { elementsToAdd: [], removeElementIds: [], updates: [], complete: false,
     connectedIndoorIds: [], unconnectedIndoorIds: requested, issues, metrics: null, evaluations: [], evaluatedCandidates: 0 };
-  const searchStats: SearchStats = { evaluatedCandidates: 0, rejectedReasons: [] };
+  const searchStats: SearchStats = { evaluatedCandidates: 0, rejectedReasons: [], unitRejections: new Map() };
   let workingScene = inputScene;
     const allUnits = inputScene.filter(isAutoRouteEquipment).flatMap(element => {
       const port = getRefrigerantPipeBundleSnapTargets([element])[0];
@@ -873,6 +905,13 @@ export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptio
     result.evaluatedCandidates = searchStats.evaluatedCandidates;
     result.metrics = aggregateAutoRouteMetrics(result.evaluations);
     if (result.unconnectedIndoorIds.length && result.connectedIndoorIds.length) issues.push(`${result.unconnectedIndoorIds.length} indoor unit(s) could not be connected within the available fitting and clearance constraints. The connected network has no open branch ends.`);
+    // Each unit left out, with why: the reason its branch-kit positions failed most often.
+    for (const id of result.unconnectedIndoorIds) {
+      const counts = [...(searchStats.unitRejections.get(id) ?? new Map<UnitRejection, number>())].sort((a, b) => b[1] - a[1]);
+      if (!counts.length) continue;
+      const element = inputScene.find(candidate => candidate.id === id);
+      issues.push(`${element?.label || id}: not connected — ${UNIT_REJECTION_TEXT[counts[0]![0]]}. Move the unit, or the ducts and pipes by its connections, or route its pipes by hand.`);
+    }
     if (!result.complete) issues.push(...searchStats.rejectedReasons);
     result.issues = [...new Set(issues)];
     options.onProgress?.({ completed: result.connectedIndoorIds.length, total: requested.length, stage: 'Network evaluated' });
