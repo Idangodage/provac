@@ -188,7 +188,8 @@ function systemModelOf(scene: readonly HvacElement[], settings: DuctDesignSettin
   return model;
 }
 
-function statusOf(value: number, limit: number): DuctFigureStatus {
+/** A figure against its limit: over it, near it (above 90 %), or within. The unit panel colours by the same rule. */
+export function figureStatus(value: number, limit: number): DuctFigureStatus {
   if (!(limit > 0)) return 'ok';
   if (value > limit * 1.001) return 'over';
   return value > limit * 0.9 ? 'near' : 'ok';
@@ -264,8 +265,8 @@ export function ductSegmentFigures(scene: readonly HvacElement[], settings: Duct
     part,
     terminals: first.loss.terminals,
     limits: { velocityMs: limits.maxVelocityMs, frictionPaPerM: limits.frictionPaPerM },
-    velocityStatus: statusOf(maxVelocity, limits.maxVelocityMs),
-    frictionStatus: statusOf(frictionRate, limits.frictionPaPerM),
+    velocityStatus: figureStatus(maxVelocity, limits.maxVelocityMs),
+    frictionStatus: figureStatus(frictionRate, limits.frictionPaPerM),
     onIndexPath: reach !== undefined && entries.some(({ index }) => plan.pieces[index]!.stationStartMm < reach - 1e-6),
   };
   return figures;
