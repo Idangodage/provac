@@ -168,6 +168,8 @@ export interface DuctDesignSettings {
    * velocity cap takes the next catalogue neck, its runout with it (grows only).
    */
   autoNecksFollowAirflow: boolean;
+  /** How air-side figures are shown and typed: SI (m³/h, m/s, Pa/m, Pa, mm) or IP (CFM, fpm, in. wg/100 ft, in. wg, in). */
+  unitSystem: 'si' | 'ip';
   /**
    * Economics (auto duct optimiser), in `econCurrency`. First cost: galvanised
    * sheet by mass, fabrication and installation by sheet area (fittings at a
@@ -291,6 +293,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoAllowWye: true,
   autoSizingMethod: 'constant-friction',
   autoNecksFollowAirflow: true,
+  unitSystem: 'si',
   econCurrency: 'USD',
   econSheetPerKg: 1.6,
   econFabricationRectPerM2: 14,
@@ -443,6 +446,8 @@ export const DUCT_NON_DESIGN_SETTINGS: ReadonlySet<keyof DuctDesignSettings> = n
   'farAssignmentExtraMm', 'farAssignmentRatio',
   // Read when applied ducts are resized, never by a design or its preview.
   'autoNecksFollowAirflow',
+  // How figures are shown: SI or IP.
+  'unitSystem',
 ]);
 
 /** The round stock before Ø560–Ø1000 were added (October 2026): a project still on exactly it reads the current list. */
@@ -588,6 +593,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     autoAllowWye: bool(raw.autoAllowWye, d.autoAllowWye),
     autoSizingMethod: oneOf(raw.autoSizingMethod, ['life-cycle', 'constant-friction'] as const, d.autoSizingMethod),
     autoNecksFollowAirflow: bool(raw.autoNecksFollowAirflow, d.autoNecksFollowAirflow),
+    unitSystem: oneOf(raw.unitSystem, ['si', 'ip'] as const, d.unitSystem),
     econCurrency: typeof raw.econCurrency === 'string' && /^[A-Za-z]{3}$/.test(raw.econCurrency) ? raw.econCurrency.toUpperCase() : d.econCurrency,
     econSheetPerKg: clampNumber(raw.econSheetPerKg, d.econSheetPerKg, 0, 1e4),
     econFabricationRectPerM2: clampNumber(raw.econFabricationRectPerM2, d.econFabricationRectPerM2, 0, 1e5),
