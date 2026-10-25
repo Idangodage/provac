@@ -3363,13 +3363,105 @@ thickness, support spacing — keep following the drawing's own Display / Input 
 
 ### Known limits
 
-- One set of criteria for the project; criteria per room (a different RC per unit) are a follow-up.
+- One set of criteria for the project; criteria per room (a different RC per unit) are a follow-up. *(Done: F2 below.)*
 - Refrigerant pipe and condensate figures stay SI / mm (pipe sizes in the unit's specification read in tube inches).
+  *(Done: F4 below.)*
 - Engine messages in IP keep their SI figure with the IP one beside it; they are not rewritten.
 - Terminal tags on the plan keep their catalogue names ("595 · Ø300").
-- The network's highlight is on the plan only (not in the 3D views).
+- The network's highlight is on the plan only (not in the 3D views). *(Done: F3 below.)*
 - Undo (and redo) clear the selection everywhere in the app, so after Ctrl+Z the unit panel shows the toolbox until
-  the unit is selected again.
+  the unit is selected again. *(Done: F1 below.)*
+
+## Unit panel v2 follow-ups: criteria per unit, IP for pipes and drains, the network in 3D, undo keeps the selection (25 October 2026)
+
+**The request:** "yes do" to the four follow-ups the v2 report listed. Approved plan:
+`C:\Users\idang\.claude\plans\toasty-giggling-shamir.md` (follow-ups). One commit a phase, on main.
+
+### F1 — Undo and redo keep the selection (1e5af48)
+
+`undo` / `redo` (`store/index.ts`) cleared `selectedElementIds` / `selectedIds`, so Ctrl+Z closed the unit panel and
+any inspector. They now keep the selected ids that still exist in the restored drawing (`selectionInSnapshot` in
+`store/helpers.ts`, over HVAC elements, walls, rooms, detected elements, dimensions, annotations, sketches, symbols and
+section lines); an element the undo takes away drops out of the selection. The hover is still cleared.
+
+### F2 — Design criteria per unit, suggested from its room (8d57c7c)
+
+- A unit may carry its own criteria (`unit.properties.designCriteria = { room, location }`); without them it uses the
+  project's. `unitDuctSettings(settings, unit)` (`duct/ductDesignCriteria.ts`) lays them over the project's settings,
+  memoised per settings object and criteria so the caches keyed by settings stay warm. Everything that designs, sizes
+  or measures one unit's system reads through it: Auto duct (generate, preview re-size, apply), Auto route's per-unit
+  loop, the constant-friction re-size, the unit panel (air side, draft, applied), the Auto duct card, the duct segment
+  cards (a run's unit found through its system root) and the segment figures' default basis. An open preview stays
+  current against the project's settings; the unit's criteria are in the drawing.
+- The criteria editor has a scope, **This unit · DU-1 | Project**. A unit without criteria is offered a suggestion
+  from its room: by the room's name first (meeting / conference / board → conference RC 30; office / manager →
+  private office RC 30; open plan / workspace → open-plan office RC 40; class, lecture / auditorium, library, hotel /
+  guest, patient, ward / theatre, lab, gym, lounge / café, corridor / lobby / hall, bedroom / living), then by its
+  type (Open Space, Corridor, Passage, Bedroom, Living Room); bathrooms, balconies and custom rooms suggest nothing.
+  The chip says whose criteria they are (DU-1 or project).
+- **Apply to DU-1** stores the criteria on the unit and re-sizes its ducts by them in one command (one undo); **Use the
+  project's** clears them (written as null: the store merges properties) and re-sizes back; **Use for new designs**
+  (Project) is as before.
+
+### F3 — The network in the 3D views (65cb101)
+
+Hovering or pinning a network row also washes that stretch sky blue in Iso / Front / Side and outlines it as hovered
+(stronger when pinned), apart from the segment cards' violet; the unit stays selected. `ductStretchProxy`
+(`hybrid/hybridDuctSegments.ts`) builds the proxy from the pieces overlapping the stretch (`stretchPieceIndices`,
+shared with the plan's outline); `refreshOutlineProxies` draws it with `NETWORK_HOVER_MATERIAL` /
+`NETWORK_PINNED_MATERIAL` (`postfx.ts`) and redraws when the network store changes. A dev-only readout
+(`getNetworkOutlined3D`) names what the 3D views showed.
+
+### F4 — SI | IP for refrigerant pipes and condensate drains (ae04323)
+
+The engineering figures read in IP; lengths, levels, radii and offsets stay in the drawing's mm and m, as on the air
+side.
+- **Units:** slope (a 1 % fall is 0.12 in/ft; `slopeText` names the sixteenth within 5 %, as falls are specified:
+  1 % → 1/8 in/ft, 2 % → 1/4, 0.2 % → 0.024 in/ft), flow (L/h ⇄ US gph), charge (kg/m ⇄ lb/ft). In messages a length
+  of a metre or more reads in ft ("92340 mm (303.0 ft)"), a size written to the hundredth by its inch name ("15.88 mm
+  (5/8 in)"), L/h in gph, and a percentage only in a sentence about a fall ("slope 0.50% (1/16 in/ft)"; a connection
+  ratio or a share of the air stays as written).
+- **Refrigerant cards:** the tube by its inch name first ("5/8″ (Ø15.88)"), insulation and the insulated outside in
+  inches, the fall in in/ft, the profile's size by inch name, charge in lb; Swap sizes and insulation chips in inches.
+- **Condensate cards:** outside and bore in inches, the fall in in/ft beside its ratio ("1/4 in/ft · 1:50"), flows in
+  gph, the load in kBtu/h; the Fall field and chips in in/ft (the field exact to the thousandth: 2 % reads 0.240).
+- **Inspectors and settings:** a line's size ("5/8″ OD (15.88 mm)") and slope; a drain's pipe, insulation, fall and
+  load; a unit's drain outlet; a gully's capacity limit typed in kBtu/h; the drainage settings' falls in in/ft and
+  insulation and grouped-main OD in inches. The VRF checks list annotates its messages.
+
+### Verified
+
+- **Type-check and lint** clean. **Full suite: 2,526 passed, 0 failed** (46 skipped as before; 13 new tests): undo and
+  redo keeping what still exists and dropping what they take away (F1); a unit's criteria laid over the project's
+  (merge, identity, none → the same settings object), the room suggestions, and one unit's criteria applied in a
+  drawing of two with one undo (F2); the IP units (in/ft, gph, lb/ft), the named falls, the message rules (ft from a
+  metre, a copper size by its inch name, a percentage only in a sentence about a fall), copper sizes, and the
+  refrigerant and condensate cards in IP against SI (F4).
+- **On canvas** (real mouse and inputs; each driver restores the project and the settings exactly; nothing is saved):
+  - `unit-v2` 50/50 (extended): the room suggestion; "Apply to DU-1" with RC 30 criteria — stored on the unit, its
+    trunk at 7.5 m/s, the project still open-plan office RC 40, the chip naming DU-1 — then one undo; Ctrl+Z keeping
+    the unit selected and its panel open; in Iso, hovering a network row washing its stretch and a click keeping it.
+  - `ip-pipes` 18/18 (new): in IP the project's gas line — its card "5/8″ (Ø15.88)", ⓘ "1 in insulation, Ø2.63 in
+    outside", Swap "1/2″ (Ø12.70)" … "3/4″ (Ø19.05)", insulation chips in inches, the inspector "5/8″ OD (15.88 mm)";
+    the VRF checks annotated ("2.8 kW (9.6 kBtu/h)", the connection ratio's % as written); a drain network of two
+    cassettes and a gully — a leg's fall "1/4 in/ft · 1:50", ⓘ "Ø1.26 in outside, 1.12 in bore · 3/8 in closed-cell
+    insulation … 9.6 kBtu/h · design flow 0.37 gph, 175 gph at its fall", the Fall field and chips in in/ft, the
+    drain inspector's fall in in/ft; back in SI each reads as before.
+  - Regressions: `unit-panel` 39/39, `unit-high-capacity` 20/20, `duct-auto` 17/17, `shape-p6` 32/32, `air-p3` 14/14,
+    `duct-cross-room` 18/18, `pipe-seg-refrigerant` 17/17, `pipe-seg-options` 16/16, `pipe-seg-inspector` 8/8,
+    `pipe-seg-kit` 5/5, `pipe-seg-accessories` 22/22, `cd-seg-pieces` 14/14, `cd-seg-options` 13/13; `duct-sizing`
+    24/26 — its two failures are the `DU_TRANSITION_ANGLE` ones reported above (78°, then 148°, the same figures).
+    The older `condensate` driver needed its toolbox lookup updated (tiles show short names since the redesign); it
+    then cannot drain the project's own cassette, boxed in by its refrigerant pair — the same at 436accc, before this
+    work.
+
+### Known limits
+
+- Criteria live on the unit, not the room: two units in one room may differ, and a new unit starts from the project's
+  criteria (with its room's suggestion offered).
+- Pipe and drain figures in IP are display only. The drain fall steps stay 1, 1.25, 1.5, 2 and 2.5 %, so in IP the
+  1.25 % chip reads 0.150 in/ft rather than a named fraction.
+- The duct segment card's sheet mass stays in kg.
 
 ## Known limits (auto duct, 30 September 2026)
 
