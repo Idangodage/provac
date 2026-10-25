@@ -45,6 +45,7 @@ import { resolveViewManipulationPolicy, type InteractionViewMode } from "../../.
 import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
 import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
 import { computeBoardGridSteps } from "../board/boardGridMath";
+import { useDuctNetworkFocusStore, type DuctNetworkFocus } from "../hvac/duct/ductNetworkFocusStore";
 import { domainOf, focusId, useDuctSegmentUiStore, type DuctSegmentFocus } from "../hvac/duct/ductSegmentUiStore";
 import type { DuctDesignSettings } from "../hvac/duct/ductSettings";
 import { useDuctBuilding } from "../hvac/duct/useDuctBuilding";
@@ -105,7 +106,9 @@ import { createWallOutline } from "../wall/wallThreeVisual";
 import { buildWallChunkGeometry } from "../wallview/wallMeshBuilder";
 
 import { HandleLayer3D, type HandleDef3D } from "./handleLayer3D";
-import { ductRunMeshes, ductSegmentEndRings, ductSegmentFocusAt, ductSegmentProxy, raycastDuctRun, type DuctHit3D } from "./hybridDuctSegments";
+import {
+  ductRunMeshes, ductSegmentEndRings, ductSegmentFocusAt, ductSegmentProxy, ductStretchProxy, noteNetworkOutlined, raycastDuctRun, type DuctHit3D,
+} from "./hybridDuctSegments";
 import { createHybridHvacScene } from "./hybridHvacScene";
 import {
   getProtectedPipeNodeIndexes,
@@ -132,7 +135,7 @@ import {
   planSheetOpacityForPolar,
   wallRiseForPolar,
 } from "./planSheetTransform";
-import { FOCUS_OVERLAY_MATERIAL, HybridPostFX, OUTLINE_PROXY_MATERIAL } from "./postfx";
+import { FOCUS_OVERLAY_MATERIAL, HybridPostFX, NETWORK_HOVER_MATERIAL, NETWORK_PINNED_MATERIAL, OUTLINE_PROXY_MATERIAL } from "./postfx";
 import { extractEntityTriangles, resolveWallHitId } from "./wallPicking";
 
 export type Hybrid3DViewState = {
@@ -942,6 +945,8 @@ interface SegmentOutlineFocus {
   pinned: DuctSegmentFocus | null;
   /** An option of the card is being previewed. */
   previewing: boolean;
+  /** The stretches the unit panel's network points at (hovered, pinned): their runs need not be selected. */
+  network?: { hovered: DuctNetworkFocus | null; pinned: DuctNetworkFocus | null };
 }
 
 /**
@@ -1043,6 +1048,25 @@ function refreshOutlineProxies(
     if (proxy) hoverMeshes.push(proxy);
     else hoverMeshes.push(...run);
   }
+  // The unit panel's network pointing at a stretch: a sky wash over it (stronger when pinned), outlined as hovered.
+  const outlined: string[] = [];
+  const network = focus?.network;
+  const stretches = network ? [
+    ...(network.pinned ? [{ stretch: network.pinned, pinned: true }] : []),
+    ...(network.hovered && network.hovered.key !== network.pinned?.key ? [{ stretch: network.hovered, pinned: false }] : []),
+  ] : [];
+  for (const { stretch, pinned: held } of stretches) {
+    const proxy = focus ? ductStretchProxy(focus.scene, focus.settings, stretch.runId, stretch.fromMm, stretch.toMm, stretch.toEnd) : null;
+    if (!proxy) continue;
+    layer.add(proxy);
+    hoverMeshes.push(proxy);
+    const wash = new THREE.Mesh(proxy.geometry, held ? NETWORK_PINNED_MATERIAL : NETWORK_HOVER_MATERIAL);
+    wash.name = `${proxy.name}-wash`;
+    wash.renderOrder = 900;
+    layer.add(wash);
+    outlined.push(proxy.name);
+  }
+  noteNetworkOutlined(outlined);
   postfx.setSelection(selectionMeshes);
   postfx.setHover(hoverMeshes);
   postfx.setFocus(focusMeshes);
@@ -1318,8 +1342,11 @@ export function HybridProjectionLayer({
     const sceneState = sceneStateRef.current;
     if (!sceneState) return;
     const { hovered, pinned, preview } = useDuctSegmentUiStore.getState();
-    refreshOutlineProxies(sceneState, wallsRef.current, selectedIdsRef.current, hoveredRef.current,
-      { scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered, pinned, previewing: Boolean(preview) });
+    const network = useDuctNetworkFocusStore.getState();
+    refreshOutlineProxies(sceneState, wallsRef.current, selectedIdsRef.current, hoveredRef.current, {
+      scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered, pinned, previewing: Boolean(preview),
+      network: { hovered: network.hovered, pinned: network.pinned },
+    });
     requestFrameRef.current?.();
   };
   const viewStyleRef = useRef<HybridViewStyle>(viewStyle ?? "solid");
@@ -3343,6 +3370,10 @@ export function HybridProjectionLayer({
   // A duct segment hovered or its card pinned, in either view: its outline here.
   useEffect(() => useDuctSegmentUiStore.subscribe((state, previous) => {
     if (state.hovered !== previous.hovered || state.pinned !== previous.pinned || Boolean(state.preview) !== Boolean(previous.preview)) refreshOutlinesRef.current();
+  }), []);
+  // A stretch the unit panel's network points at: its wash here.
+  useEffect(() => useDuctNetworkFocusStore.subscribe((state, previous) => {
+    if (state.hovered !== previous.hovered || state.pinned !== previous.pinned) refreshOutlinesRef.current();
   }), []);
 
   // Selection → micro-edit handle definitions (square corners + diamond mid).

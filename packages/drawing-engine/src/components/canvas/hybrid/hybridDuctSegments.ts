@@ -10,7 +10,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { HvacElement } from '../../../types';
 import { getDuctRunPlan } from '../hvac/duct/ductFabricationPlanner';
 import type { DuctSegmentFocus } from '../hvac/duct/ductSegmentUiStore';
-import { ductSegmentOf, pieceHotspot3D, segmentAtModelPoint, segmentBounds3D, segmentEnds, type DuctSegmentEnd } from '../hvac/duct/ductSegments';
+import { ductSegmentOf, pieceHotspot3D, segmentAtModelPoint, segmentBounds3D, segmentEnds, stretchPieceIndices, type DuctSegmentEnd } from '../hvac/duct/ductSegments';
 import type { DuctDesignSettings } from '../hvac/duct/ductSettings';
 import type { ScreenRect } from '../hvac/duct/popoverPlacement';
 import { ductPiecesOuterGeometry } from '../hvac/three3d/ductMeshes';
@@ -67,6 +67,29 @@ export function ductSegmentProxy(scene: readonly HvacElement[], settings: DuctDe
   const mesh = new THREE.Mesh(geometry, OUTLINE_PROXY_MATERIAL);
   mesh.name = `duct-segment-proxy-${runId}-${key}`;
   return mesh;
+}
+
+/** A stretch of a run's outline proxy (mm from its start; `toEnd`: to the run's end, its runout too), or null. */
+export function ductStretchProxy(
+  scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, fromMm: number, toMm: number, toEnd: boolean,
+): THREE.Mesh | null {
+  const element = scene.find((candidate) => candidate.id === runId);
+  const plan = element ? getDuctRunPlan(element, scene, settings) : null;
+  const indices = plan ? stretchPieceIndices(plan, fromMm, toMm, toEnd) : [];
+  const geometry = plan && indices.length ? ductPiecesOuterGeometry(plan, indices) : null;
+  if (!geometry) return null;
+  const mesh = new THREE.Mesh(geometry, OUTLINE_PROXY_MATERIAL);
+  mesh.name = `duct-stretch-proxy-${runId}-${Math.round(fromMm)}`;
+  return mesh;
+}
+
+/** The stretches the 3D views last showed for the unit panel's network (proxy names), for scripted checks. */
+let networkOutlined: readonly string[] = [];
+export function noteNetworkOutlined(names: readonly string[]): void {
+  networkOutlined = names;
+}
+export function lastNetworkOutlined(): readonly string[] {
+  return networkOutlined;
 }
 
 /** A ring stands this far clear of the duct's outer face, its tube this thick (radius), mm. */

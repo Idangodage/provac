@@ -166,7 +166,7 @@ import {
   type Hybrid3DViewState,
   type HybridViewStyle,
 } from "./canvas/hybrid/HybridProjectionLayer";
-import { segmentClientRect3D } from "./canvas/hybrid/hybridDuctSegments";
+import { lastNetworkOutlined, segmentClientRect3D } from "./canvas/hybrid/hybridDuctSegments";
 import { pipeSegmentClientRect3D } from "./canvas/hybrid/hybridPipeSegments";
 import type {
   DerivedBoardView,
@@ -984,6 +984,8 @@ export function DrawingCanvas({
         return { bom: buildDuctBom(plans, supports, state.hvacElements.filter(isDuctTerminalElement)), schedule: buildDuctFabricationSchedule(plans) };
       },
       getDuctSettings: () => useSmartDrawingStore.getState().ductSettings,
+      /** The stretches the 3D views last washed for the unit panel's network (proxy names). */
+      getNetworkOutlined3D: () => [...lastNetworkOutlined()],
       /** Add elements as one undoable command (scripted checks: e.g. a pipe across a duct). */
       commitHvacElements: (action: string, add: HvacElement[]) =>
         useSmartDrawingStore.getState().commitHvacElementCommand(action, { add, selectedIds: [] }),

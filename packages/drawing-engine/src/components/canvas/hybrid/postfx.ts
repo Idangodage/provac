@@ -75,6 +75,20 @@ export const OUTLINE_PROXY_MATERIAL = new THREE.MeshBasicMaterial({
 /** The rings marking a focused duct segment's two ends (solid violet). */
 export const FOCUS_RING_MATERIAL = new THREE.MeshBasicMaterial({ color: FOCUS_ACCENT });
 
+/** The unit panel's network pointing at a stretch: a translucent sky wash over it (pinned, stronger), apart from the segment cards' violet. */
+export const NETWORK_ACCENT = 0x0ea5e9;
+const networkWash = (opacity: number) => new THREE.MeshBasicMaterial({
+  color: NETWORK_ACCENT,
+  transparent: true,
+  opacity,
+  depthWrite: false,
+  polygonOffset: true,
+  polygonOffsetFactor: -2,
+  polygonOffsetUnits: -4,
+});
+export const NETWORK_HOVER_MATERIAL = networkWash(0.26);
+export const NETWORK_PINNED_MATERIAL = networkWash(0.44);
+
 /** A translucent violet wash over a focused duct segment's own surface (drawn just in front of it). */
 export const FOCUS_OVERLAY_MATERIAL = new THREE.MeshBasicMaterial({
   color: FOCUS_ACCENT,
