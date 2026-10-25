@@ -3254,6 +3254,123 @@ picks are as before. "Ducts on this unit" keeps the measured sizing line whole.
   `D:\claude-tmp-vrf-check\next-broken-20261024`, outside the repository), its compile cache kept, and the server
   started again. Nothing in the source was involved.
 
+## The unit panel v2: sizing drawn, practice-based criteria, SI ⇄ IP (25 October 2026)
+
+**The request,** after the first redesign: "further reduce the simple interface but comprehensive with less text and
+more graphic"; make it convincing that the initial velocity and friction set the constant friction, that every segment
+takes a standard duct size at that friction and its velocity follows; changing the friction re-sizes every segment;
+diffusers of the same spec take the same airflow unless one is set; branches carry the cumulative airflow of their
+diffusers; auto-generation uses industry practice for velocity, friction and sizes; and SI ⇄ IP. Approved plan:
+`C:\Users\idang\.claude\plans\toasty-giggling-shamir.md` (v2); mockups: the v2 row of
+https://claude.ai/artifact/P7RKkFBZv1zJDKz4RPnHx1 (V2Sizing, V2Criteria, V2Chart, V2Terminals, V2IP).
+
+What already held before v2 (verified in the code): a branch's airflow is the sum of the terminals past it
+(`ductSystemSizing.ts`, the suffix walk), and each section takes the smallest stock size within R and its velocity
+limit. What v2 adds is below, one phase a commit.
+
+### P1 — HVAC units (896facf)
+
+`units/hvacUnits.ts`: quantity kinds (airflow, velocity, friction, pressure, size, length, capacity, mass), exact
+factors (CFM = m³/h ÷ 1.69901; fpm = m/s ÷ 0.00508; in. wg/100 ft = Pa/m ÷ 8.164; in. wg = Pa ÷ 248.84 at 60 °F;
+in = mm ÷ 25.4; kBtu/h = kW × 3.412; TR = kW ÷ 3.517), the precision and input step of each, and `toDisplayText`,
+which adds the IP figure after each SI figure of an engine message ("112 Pa (0.45 in. wg)") without rewriting it.
+The choice is a duct setting (`unitSystem`, it travels with the document; missing = SI); `useHvacUnits()` gives the
+formatters; `DuctNumberInput` takes a `quantity` and then shows, steps and parses in the display system while the
+model stays SI.
+
+### P2 — The same spec, the same airflow (dec2994)
+
+`shareAirflow` gave every untyped terminal an equal share, so a Ø150 and a Ø300 took the same air. Untyped
+terminals now share what the typed ones leave **at one neck velocity** (in proportion to neck area): identical specs
+get identical airflow, larger necks more; a uniform system is unchanged. `terminalGroups.ts` groups terminals by spec
+(service, face, neck, face size, slots, filter) for the panel.
+
+### P3 — Criteria from ASHRAE HVAC Applications ch. 49 (efa8284)
+
+`duct/ductDesignCriteria.ts` holds Table 1 (room → RC: private office 30, open-plan office 40, conference 30,
+classroom 30, ward 35, laboratory 45 …), Table 8 (maximum main-duct velocity by RC and where the main runs: in a shaft
+or above drywall, above a suspended ceiling, in the occupied space; branches about 80 % of it, final runouts at most
+50 %), Table 9 (supply and return neck velocities), with RC 30 and 40 between the table's rows and caps of 12 / 10 / 8
+m/s. Open-plan office, RC 40, above a suspended ceiling gives main 10.8, branch 8.6, runout 5.4 m/s and necks 2.8
+supply / 3.4 return m/s; with the practice friction rates of 0.80 supply and 0.60 return Pa/m (about 0.1 in. wg per
+100 ft). **New documents start from those criteria; documents saved before keep their own values** (the chip says
+"Custom limits"); the engine defaults are unchanged. A new design's basis takes the practice rate, or the rate at
+which the main reaches its limit when that is lower, so every section shares one friction rate.
+
+### P4 — An inch size series (d1f4aa4)
+
+`sizeSeries: 'metric' | 'imperial'` picks the sizes every sizing path uses (`duct/ductSizeCatalog.ts`): the
+fabricator's step and the stocked round list as set, or rectangles in 2 in steps and round 4–10 in by the inch, then
+by 2 in. Steps are taken as exact multiples (never a running sum: 50.8 mm steps would drift). Constant friction, Auto
+duct and its optimiser, segment options and edits, round ⇄ rectangle equivalents and drag-resize read it. In the inch
+series a height drawn off the grid re-sizes to the nearest even inch the void gives.
+
+### P5 — The sizing card, drawn (2ee5e76)
+
+- **Design basis.** The criteria chip ("ASHRAE · Open-plan office · RC 40") opens the criteria in place: the room
+  (with its RC), where the main runs, the velocity ladder they give, the friction rates, metric | inch sizes; "Use
+  for new designs" makes them the project's, "Apply to DU-n" also re-sizes that unit's ducts by them (both services,
+  one undo). Under it, **the method strip**: V₀ main ⇄ R (the one set last marked SET, the other linked) › Sizes (how
+  many standard sizes) › Velocity (the range the sections run at, ✓ within their limits or "n over"). **R on a slider**
+  over 0.2–1.6 Pa/m with the usual 0.6–1.0 band shaded: dragging dry-runs the network at the rate under the thumb
+  (the network and the strip follow, the drawing untouched), letting go re-sizes every section (one undo); arrow keys
+  step it. The fan speed with a pencil for a typed airflow, the limits folded.
+- **The network** (`duct/ductNetworkTree.ts`, `unit/NetworkTree.tsx`): from the collar, each run on its rail and the
+  runs it feeds nested where they leave it; a row a stretch: its size, a bar of the airflow it carries (the
+  terminals past it), the airflow, the velocity coloured against its part's limit. Hovering a row outlines the
+  stretch on the plan (`ductNetworkFocusStore`, painted by `DuctOverlay`); a click pins it there. It never selects
+  the run, so the unit stays selected and the panel open.
+- **Terminals by spec:** a bar of how the air is shared between the specs, one "each" airflow a group (typing it sets
+  every terminal of that spec), each terminal under its group (open by itself where one is set on its own), necks
+  follow airflow with its cap.
+- **Friction chart** (`unit/FrictionChart.tsx`, folded): airflow against friction on log scales, lines of equal
+  diameter and velocity from the same Darcy–Weisbach figures, R and the usual band, a dot per stretch (hover ↔ its
+  row ↔ the plan), and Q · V₀ · Ø · R under it. Warnings read one line a kind ("Neck velocity over its cap · SAD-2,
+  SAD-3 +4"), each message in full on hover. The first sizing stays folded at the end.
+- **Before ducts** the same controls set what Generate sizes at; with a preview open its network and chart show.
+- **SI | IP** in the header; switching offers the matching size series and then re-sizing the unit's ducts to it
+  (one undo). The Auto duct card uses the same controls.
+
+### P6 — SI | IP across the air side (0788074)
+
+Segment cards (the figure strip, pressure class, results, the size editor in inches, the terminal airflow, option
+titles with their sizes in inches, details and issues with the IP figure beside the SI one), the air system card, the
+run inspector and duct settings, the Auto duct card's designs, chart and summary, the equipment tiles (by tons:
+"Ducted 8 TR") and their hover card, and the plan's duct size tags. **Drawing dimensions** — lengths, levels, sheet
+thickness, support spacing — keep following the drawing's own Display / Input unit.
+
+### Verified
+
+- **Type-check and lint** clean. **Full suite: 2,513 passed, 0 failed** (46 skipped as before). New tests: units
+  (conversions, round trips, formatting, message annotation, sizes in labels, pressure classes, tube fractions),
+  sharing at one neck velocity, the ch. 49 table values and interpolation, the inch catalogue (sizes land on the
+  series; an auto-generated rectangular design all on 2 in steps), and the network rows (take-offs nested after the
+  stretch they leave, a split's outlets after the run, the terminal on its run's last row).
+- **On canvas** (real mouse and inputs; each driver restores the project and the settings exactly; nothing is saved):
+  - `unit-v2` 45/45 (new): an FDU280 with four Ø300 and two Ø250 diffusers — two spec groups sharing at one neck
+    velocity (802 : 557 m³/h = 1.44, summing to 4320); the criteria editor (open-plan office RC 40 above a suspended
+    ceiling → 10.8 / 8.6 / 5.4 m/s, necks 2.8 / 3.4) and "Use for new designs"; Generate within the limits, the
+    preview's network in the panel; after Apply the network row for row against the report, hover outlining the
+    stretch on the plan and a click pinning it; dragging R to 0.50 Pa/m previewing with the drawing untouched, letting
+    go re-sizing every section, one undo back; the Ø250 group set to 500 m³/h each, one undo; the friction chart's
+    dots and trace; IP in the header, strip, network, plan tags, air system card, run inspector, a segment card and
+    the toolbox (Ducted 8 TR); "Use inch sizes" and "Re-size DU-1" putting every new duct on the inch series, one undo;
+    "Apply to DU-1" with RC 30 criteria (trunk 7.5 m/s on the project and the ducts), one undo.
+  - The first redesign's drivers, moved to v2 (same scenarios): `unit-panel` 39/39, `unit-high-capacity` 20/20.
+  - Regressions: `shape-p6` 32/32, `duct-auto` 17/17, `air-p3` 14/14, `duct-cross-room` 18/18, `duct-sizing` 24/26 —
+    its two failures are the `DU_TRANSITION_ANGLE` ones reported above (78°, then 148°, the same figures), not this
+    work's.
+
+### Known limits
+
+- One set of criteria for the project; criteria per room (a different RC per unit) are a follow-up.
+- Refrigerant pipe and condensate figures stay SI / mm (pipe sizes in the unit's specification read in tube inches).
+- Engine messages in IP keep their SI figure with the IP one beside it; they are not rewritten.
+- Terminal tags on the plan keep their catalogue names ("595 · Ø300").
+- The network's highlight is on the plan only (not in the 3D views).
+- Undo (and redo) clear the selection everywhere in the app, so after Ctrl+Z the unit panel shows the toolbox until
+  the unit is selected again.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
