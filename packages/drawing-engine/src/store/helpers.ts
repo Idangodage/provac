@@ -91,6 +91,22 @@ export function createEmptyHistorySnapshot(): HistoryEntry['snapshot'] {
     return snapshot;
 }
 
+/**
+ * The selection an undo or redo keeps: the ids still in the drawing it
+ * restores (what the step removed drops out), so a panel or inspector on a
+ * selected element stays open across Ctrl+Z.
+ */
+export function selectionInSnapshot(snapshot: HistoryEntry['snapshot'], ids: readonly string[]): string[] {
+    if (ids.length === 0) return [];
+    const present = new Set<string>();
+    const lists: ReadonlyArray<ReadonlyArray<{ id: string }> | undefined> = [
+        snapshot.hvacElements, snapshot.walls, snapshot.rooms, snapshot.detectedElements, snapshot.dimensions,
+        snapshot.annotations, snapshot.sketches, snapshot.symbols, snapshot.sectionLines,
+    ];
+    for (const list of lists) for (const item of list ?? []) present.add(item.id);
+    return ids.filter((id) => present.has(id));
+}
+
 export function createHistoryEntry(action: string, snapshot: HistoryEntry['snapshot']): HistoryEntry {
     return {
         id: generateId(),
