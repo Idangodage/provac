@@ -202,9 +202,10 @@ export function necksToGrow(
   const unit = spec.start.kind === 'unit-port' ? scene.find((element) => element.id === (spec.start as { unitId: string }).unitId) : undefined;
   const terminals = systemTerminalElements(scene, rootId);
   const effective = terminals.map((terminal) => {
-    const own = readDuctTerminalSpec(terminal)!.designAirflowM3h ?? null;
+    const terminalSpec = readDuctTerminalSpec(terminal)!;
+    const own = terminalSpec.designAirflowM3h ?? null;
     const value = terminalAirflows && Object.prototype.hasOwnProperty.call(terminalAirflows, terminal.id) ? terminalAirflows[terminal.id] ?? null : own;
-    return { id: terminal.id, spec: { designAirflowM3h: value !== null && value > 0 ? value : null } };
+    return { id: terminal.id, spec: { designAirflowM3h: value !== null && value > 0 ? value : null, neckDiameterMm: terminalSpec.neckDiameterMm } };
   });
   const { shares } = systemTerminalAirflows(unit, basis, effective);
   const neckCap = spec.service === 'return' ? settings.autoMaxNeckVelocityReturnMs : settings.autoMaxNeckVelocitySupplyMs;

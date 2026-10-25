@@ -741,7 +741,7 @@ function DraftSizing({ unit, service, terminals, settings }: { unit: HvacElement
   const shares = shareAirflow(airflow.systemAirflowM3h ?? 0, serviceTerminals.map((terminal) => {
     const spec = readDuctTerminalSpec(terminal)!;
     const set = Object.prototype.hasOwnProperty.call(draft.terminalAirflows, terminal.id) ? draft.terminalAirflows[terminal.id] : spec.designAirflowM3h;
-    return { id: terminal.id, spec: { designAirflowM3h: set ?? null } };
+    return { id: terminal.id, spec: { designAirflowM3h: set ?? null, neckDiameterMm: spec.neckDiameterMm } };
   }));
   const rows: TerminalAirflowRow[] = serviceTerminals.map((terminal, index) => {
     const spec = readDuctTerminalSpec(terminal)!;

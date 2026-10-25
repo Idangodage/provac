@@ -325,7 +325,7 @@ export function DuctAutoCard() {
   const tabShares = shareAirflow(systemAirflow ?? 0, tabTerminals.map((terminal) => {
     const spec = readDuctTerminalSpec(terminal)!;
     const set = Object.prototype.hasOwnProperty.call(terminalAirflows, terminal.id) ? terminalAirflows[terminal.id] : spec.designAirflowM3h;
-    return { id: terminal.id, spec: { designAirflowM3h: set ?? null } };
+    return { id: terminal.id, spec: { designAirflowM3h: set ?? null, neckDiameterMm: spec.neckDiameterMm } };
   }));
   const airflowRows = tabTerminals.map((terminal, index) => {
     const spec = readDuctTerminalSpec(terminal)!;

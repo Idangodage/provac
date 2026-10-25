@@ -125,7 +125,7 @@ function buildSystemModel(scene: readonly HvacElement[], settings: DuctDesignSet
     if (end.kind !== 'terminal') return [];
     const element = byId.get(end.terminalId);
     const spec = element ? readDuctTerminalSpec(element) : null;
-    return spec ? [{ id: end.terminalId, spec: { designAirflowM3h: spec.designAirflowM3h ?? null } }] : [];
+    return spec ? [{ id: end.terminalId, spec: { designAirflowM3h: spec.designAirflowM3h ?? null, neckDiameterMm: spec.neckDiameterMm } }] : [];
   });
   const requested = rootSpec.sizing ?? defaultSizingBasis(settings, rootSpec.service, null);
   const { systemAirflowM3h, shares } = systemTerminalAirflows(unit ?? undefined, requested, terminals);

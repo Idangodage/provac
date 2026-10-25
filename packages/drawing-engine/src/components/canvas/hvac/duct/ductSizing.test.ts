@@ -100,6 +100,29 @@ describe('duct sizing (equal friction, practice limits)', () => {
     ]);
   });
 
+  it('shares at one neck velocity: the same spec takes the same airflow, a larger neck more', () => {
+    const necks = [300, 300, 300, 300, 250, 250, 250, 250];
+    const shares = shareAirflow(4320, necks.map((neck, k) => ({ id: `t${k}`, spec: { neckDiameterMm: neck } })));
+    const ø300 = shares.slice(0, 4).map((share) => share.airflowM3h);
+    const ø250 = shares.slice(4).map((share) => share.airflowM3h);
+    expect(new Set(ø300.map((value) => value.toFixed(9))).size).toBe(1);
+    expect(new Set(ø250.map((value) => value.toFixed(9))).size).toBe(1);
+    expect(ø300[0]).toBeCloseTo(4320 * 9 / 61, 9); // 4 × 300² + 4 × 250² in 300² parts
+    expect(ø250[0]).toBeCloseTo(4320 * 6.25 / 61, 9);
+    expect(neckVelocityMs({ neckDiameterMm: 300 }, ø300[0]!)).toBeCloseTo(neckVelocityMs({ neckDiameterMm: 250 }, ø250[0]!), 9);
+    expect(shares.reduce((sum, share) => sum + share.airflowM3h, 0)).toBeCloseTo(4320, 9);
+    // One set on its own: the rest share what it leaves, still at one neck velocity.
+    const withOne = shareAirflow(4320, necks.map((neck, k) => ({ id: `t${k}`, spec: { neckDiameterMm: neck, designAirflowM3h: k === 5 ? 500 : null } })));
+    expect(withOne[5]).toEqual({ terminalId: 't5', airflowM3h: 500, fixed: true });
+    expect(withOne[0]!.airflowM3h).toBeCloseTo(3820 * 9 / 54.75, 9);
+    expect(withOne[4]!.airflowM3h).toBeCloseTo(3820 * 6.25 / 54.75, 9);
+    // One neck size: equal shares, exactly as before.
+    expect(shareAirflow(4320, Array.from({ length: 6 }, (_, k) => ({ id: `u${k}`, spec: { neckDiameterMm: 300 } }))).map((share) => share.airflowM3h))
+      .toEqual([720, 720, 720, 720, 720, 720]);
+    // A neck size unknown: equal shares.
+    expect(shareAirflow(600, [{ id: 'a', spec: { neckDiameterMm: 300 } }, { id: 'b', spec: {} }]).map((share) => share.airflowM3h)).toEqual([300, 300]);
+  });
+
   it('checks neck velocity and proposes the neck that keeps it within the cap', () => {
     expect(neckVelocityMs({ neckDiameterMm: 150 }, 200)).toBeCloseTo(3.14, 2);
     expect(neckForAirflow(200, 3)).toBe(200);

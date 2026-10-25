@@ -207,20 +207,33 @@ export interface TerminalAirflow {
   fixed: boolean;
 }
 
-/** Each terminal's airflow: its own design value, else an equal share of what the others leave. */
+/**
+ * Each terminal's airflow: its own design value, else a share of what the
+ * others leave in proportion to its neck's area — every shared terminal at
+ * one neck velocity — so terminals of one spec take the same airflow and a
+ * larger neck carries more. Without every neck size, equal shares.
+ */
 export function shareAirflow(
   unitAirflowM3h: number,
-  terminals: ReadonlyArray<{ id: string; spec: Pick<DuctTerminalSpec, 'designAirflowM3h'> }>,
+  terminals: ReadonlyArray<{ id: string; spec: Pick<DuctTerminalSpec, 'designAirflowM3h'> & { neckDiameterMm?: number } }>,
 ): TerminalAirflow[] {
   const fixed = terminals.filter((terminal) => (terminal.spec.designAirflowM3h ?? 0) > 0);
   const fixedTotal = fixed.reduce((total, terminal) => total + terminal.spec.designAirflowM3h!, 0);
-  const shared = terminals.length - fixed.length;
-  const share = shared > 0 ? Math.max(0, unitAirflowM3h - fixedTotal) / shared : 0;
+  const free = terminals.filter((terminal) => !((terminal.spec.designAirflowM3h ?? 0) > 0));
+  const remaining = Math.max(0, unitAirflowM3h - fixedTotal);
+  const necks = free.map((terminal) => terminal.spec.neckDiameterMm ?? 0);
+  // One neck size (or one unknown): equal shares, the arithmetic kept exactly as it was.
+  const weighted = necks.length > 0 && necks.every((neck) => neck > 0) && necks.some((neck) => neck !== necks[0]);
+  const totalWeight = weighted ? necks.reduce((total, neck) => total + neck * neck, 0) : 0;
+  const shareOf = (terminal: { spec: { neckDiameterMm?: number } }) => {
+    if (!free.length) return 0;
+    return weighted ? (remaining * terminal.spec.neckDiameterMm! ** 2) / totalWeight : remaining / free.length;
+  };
   return terminals.map((terminal) => {
     const own = terminal.spec.designAirflowM3h ?? 0;
     return own > 0
       ? { terminalId: terminal.id, airflowM3h: own, fixed: true }
-      : { terminalId: terminal.id, airflowM3h: share, fixed: false };
+      : { terminalId: terminal.id, airflowM3h: shareOf(terminal), fixed: false };
   });
 }
 

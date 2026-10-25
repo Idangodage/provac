@@ -148,14 +148,15 @@ export function basisAirflowM3h(
 
 /**
  * Each terminal's airflow in a system as the sizing takes it: its own design
- * airflow, else an equal share of what the system airflow leaves. The system
- * airflow is the basis's (typed, the unit's field, else its data at the fan
- * speed), else the terminals' own when every one has one; null without either.
+ * airflow, else a share of what the system airflow leaves at one neck
+ * velocity (`shareAirflow`: same spec, same airflow). The system airflow is
+ * the basis's (typed, the unit's field, else its data at the fan speed), else
+ * the terminals' own when every one has one; null without either.
  */
 export function systemTerminalAirflows(
   unit: Pick<HvacElement, 'properties'> | undefined,
   basis: Pick<DuctSystemSizing, 'airflowM3h' | 'fanSpeed'>,
-  terminals: ReadonlyArray<{ id: string; spec: { designAirflowM3h: number | null } }>,
+  terminals: ReadonlyArray<{ id: string; spec: { designAirflowM3h: number | null; neckDiameterMm?: number } }>,
 ): { systemAirflowM3h: number | null; source: DuctAirflowSource | null; shares: TerminalAirflow[] } {
   const air = basisAirflowM3h(unit, basis);
   const fixedTotal = terminals.reduce((sum, entry) => sum + (entry.spec.designAirflowM3h ?? 0), 0);
@@ -504,7 +505,7 @@ export function sizeDuctSystem(
     if ((next ?? 0) !== (own ?? 0)) {
       changedTerminals.push({ ...element, properties: { ...element.properties, terminal: { ...spec, designAirflowM3h: next } } });
     }
-    return { id: element.id, spec: { designAirflowM3h: next } };
+    return { id: element.id, spec: { designAirflowM3h: next, neckDiameterMm: spec.neckDiameterMm } };
   });
   const { systemAirflowM3h: systemAirflow, source: airflowSource, shares } = systemTerminalAirflows(unit, input.basis, effective);
   if (!systemAirflow) issues.push({ code: 'DU_AUTO_NO_DATA', severity: 'error', service, message: 'The unit has no airflow data: enter the system airflow, or each terminal\'s.' });
