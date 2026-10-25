@@ -61,6 +61,7 @@ import {
   type PipeRoutingSettings,
 } from "./canvas/hvac/pipeRoutingSettings";
 import { refrigerantPieceRows } from "./canvas/hvac/refrigerant/RefrigerantSegmentCard";
+import { copperInchLabel } from "./canvas/hvac/refrigerant/refrigerantPieceFigures";
 import {
   buildRefrigerantPipeVisual,
   resolveRefrigerantPipeSpec,
@@ -68,6 +69,8 @@ import {
   type RefrigerantPipeMaterial,
 } from "./canvas/hvac/refrigerantPipePairModel";
 import { SegmentPieceList } from "./canvas/hvac/segments/SegmentPieceList";
+import { slopeText } from "./canvas/hvac/units/hvacUnits";
+import { useHvacUnitSystem } from "./canvas/hvac/units/useHvacUnits";
 import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
 import {
   circularMeetingFootprintMm,
@@ -1493,6 +1496,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
       }),
       shallow,
     );
+  const unitSystem = useHvacUnitSystem();
 
   const selectedEquipment = useMemo(() => {
     return (
@@ -1682,12 +1686,15 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         </PropertyRow>
         <PropertyRow label="Size">
           <span className="text-sm text-slate-700">
-            {pipeSpec.pipeDiameterMm.toFixed(2)} mm OD
+            {unitSystem === "ip"
+              ? `${copperInchLabel(pipeSpec.pipeDiameterMm) ?? `${(pipeSpec.pipeDiameterMm / 25.4).toFixed(2)} in`} OD (${pipeSpec.pipeDiameterMm.toFixed(2)} mm)`
+              : `${pipeSpec.pipeDiameterMm.toFixed(2)} mm OD`}
           </span>
         </PropertyRow>
         <PropertyRow label="Slope">
           <span className="text-sm text-slate-700">
-            {routeSlopePercent === null ? "Planar / unset" : `${routeSlopePercent.toFixed(2)}%`}
+            {routeSlopePercent === null ? "Planar / unset"
+              : unitSystem === "ip" ? `${routeSlopePercent < 0 ? "−" : ""}${slopeText(routeSlopePercent)}` : `${routeSlopePercent.toFixed(2)}%`}
           </span>
         </PropertyRow>
         <PropertyRow label="Downstream load">

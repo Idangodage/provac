@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  displayDigits, formatNumberIn, formatQuantity, formatSection, fromDisplay, inchFractionText, inchesText, pressureClassText, sizesText, tonsOf, toDisplay, toDisplayText,
-  unitLabel,
+  displayDigits, formatNumberIn, formatQuantity, formatSection, fromDisplay, inchFractionText, inchesText, pressureClassText, sizesText, slopeFigureText, slopeText, tonsOf,
+  toDisplay, toDisplayText, unitLabel,
   type HvacQuantity,
 } from './hvacUnits';
 
@@ -19,8 +19,28 @@ describe('HVAC units', () => {
     expect(tonsOf(3.516853)).toBeCloseTo(1, 4);
   });
 
+  it('converts the pipe and drain quantities to IP by their definitions', () => {
+    expect(toDisplay('slope', 1, 'ip')).toBeCloseTo(0.12, 9); // 1 % = 12 in × 1/100 per ft
+    expect(fromDisplay('slope', 0.125, 'ip')).toBeCloseTo(1.0417, 4); // 1/8 in/ft
+    expect(toDisplay('flow', 3.785411784, 'ip')).toBeCloseTo(1, 9); // 1 US gal
+    expect(toDisplay('charge', 1, 'ip')).toBeCloseTo(0.67197, 5); // 2.20462 lb per 3.28084 ft
+    expect(formatQuantity('flow', 12, 'ip')).toBe('3.17 gph');
+    expect(formatQuantity('charge', 0.18, 'ip')).toBe('0.121 lb/ft');
+    expect(unitLabel('slope', 'ip')).toBe('in/ft');
+  });
+
+  it('names a fall by its sixteenth of an inch per foot, as falls are specified', () => {
+    expect([0.5, 1, 1.5, 2, 3, 4].map(slopeFigureText)).toEqual(['1/16', '1/8', '3/16', '1/4', '3/8', '1/2']);
+    expect(slopeText(1.04)).toBe('1/8 in/ft');
+    // Off a sixteenth: to the thousandth.
+    expect(slopeText(0.2)).toBe('0.024 in/ft');
+    expect(slopeText(0.75)).toBe('0.090 in/ft');
+    expect(slopeText(0.9)).toBe('0.108 in/ft');
+    expect(slopeText(-1)).toBe('1/8 in/ft');
+  });
+
   it('leaves SI as it is and comes back from IP exactly', () => {
-    const kinds: HvacQuantity[] = ['airflow', 'velocity', 'friction', 'pressure', 'size', 'length', 'capacity', 'mass'];
+    const kinds: HvacQuantity[] = ['airflow', 'velocity', 'friction', 'pressure', 'size', 'length', 'capacity', 'mass', 'slope', 'flow', 'charge'];
     for (const kind of kinds) {
       expect(toDisplay(kind, 123.456, 'si')).toBe(123.456);
       expect(fromDisplay(kind, toDisplay(kind, 123.456, 'ip'), 'ip')).toBeCloseTo(123.456, 9);
@@ -63,6 +83,23 @@ describe('HVAC units', () => {
       .toBe('Main 700×350 (27.6×13.8 in) at 0.80 Pa/m (0.098 in. wg/100 ft), 24 m (78.7 ft) from the gully');
     // Not a unit: an area, minutes, a count.
     expect(toDisplayText('12 m² of sheet in 3 min, 2 × Ø300', 'ip')).toBe('12 m² of sheet in 3 min, 2 × Ø300 (Ø11.8 in)');
+  });
+
+  it('gives a pipe message its lengths in feet from a metre up, a copper size by its inch name, and its falls in in/ft', () => {
+    expect(toDisplayText('Total routed length 92340 mm exceeds 90000 mm.', 'ip')).toBe('Total routed length 92340 mm (303.0 ft) exceeds 90000 mm (295.3 ft).');
+    expect(toDisplayText('Pipe diameter 15.88 mm does not match the required 19.05 mm.', 'ip'))
+      .toBe('Pipe diameter 15.88 mm (5/8 in) does not match the required 19.05 mm (3/4 in).');
+    expect(toDisplayText('Gas port straight stub 120 mm is below 300 mm.', 'ip')).toBe('Gas port straight stub 120 mm (4.7 in) is below 300 mm (11.8 in).');
+    expect(toDisplayText('CD-1 (ID 20.6 mm) is below the 25.0 mm required for 7.1 kW.', 'ip'))
+      .toBe('CD-1 (ID 20.6 mm (0.81 in)) is below the 25.0 mm (0.98 in) required for 7.1 kW (24.2 kBtu/h).');
+    expect(toDisplayText('Gas-line slope 0.50% is below 1.00% toward the outdoor unit.', 'ip'))
+      .toBe('Gas-line slope 0.50% (1/16 in/ft) is below 1.00% (1/8 in/ft) toward the outdoor unit.');
+    expect(toDisplayText('CD-2 falls only 0.40 % (minimum 1 %).', 'ip')).toBe('CD-2 falls only 0.40 % (0.048 in/ft) (minimum 1 % (1/8 in/ft)).');
+    expect(toDisplayText('design flow 3.2 L/h', 'ip')).toBe('design flow 3.2 L/h (0.85 gph)');
+    // A percentage that is not a fall is left as it is, as is one in the sentence after a fall's.
+    expect(toDisplayText('4 units total 31.2 kW: 112 % of its 28.0 kW (allowed 50–130 %)', 'ip'))
+      .toBe('4 units total 31.2 kW (106.5 kBtu/h): 112 % of its 28.0 kW (95.5 kBtu/h) (allowed 50–130 %)');
+    expect(toDisplayText('Falls 1 %. Divided 60 / 40 % of the air.', 'ip')).toBe('Falls 1 % (1/8 in/ft). Divided 60 / 40 % of the air.');
   });
 
   it('turns the sizes in a label into inches, each with its unit; SI as written', () => {

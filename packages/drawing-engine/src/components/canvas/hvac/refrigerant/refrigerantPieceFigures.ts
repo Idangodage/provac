@@ -22,6 +22,7 @@ import { buildVrfDocumentFromHvacElements } from '../../../../vrf/domain';
 import { hvacVrfSemanticIds } from '../../../../vrf/domain/hvac-element-adapter';
 import { PROJECT_FALLBACK_RULE_PROFILE, type ManufacturerRuleProfile, type RuleValue } from '../../../../vrf/rules/rule-profile';
 import { evaluateAutoRouteNetwork, type AutoRoutePathMetrics, type AutoRouteRecommendation } from '../autoRouteEvaluation';
+import type { HvacUnitSystem } from '../units/hvacUnits';
 
 import type { RefrigerantLine, RefrigerantPiece } from './refrigerantPieces';
 
@@ -38,6 +39,17 @@ export const COPPER_TUBE_SERIES_MM: readonly number[] = COPPER_SERIES.map(([od])
 /** A tube OD's inch size, when it is one of the series (within 0.05 mm). */
 export function copperInchLabel(odMm: number): string | null {
   return COPPER_SERIES.find(([od]) => Math.abs(od - odMm) <= 0.05)?.[1] ?? null;
+}
+
+/**
+ * A copper tube as the unit system reads it: "Ø15.88 (5/8″)" in SI; in IP its
+ * inch name first, "5/8″ (Ø15.88)" (a tube off the series in inches).
+ */
+export function copperSizeText(odMm: number, system: HvacUnitSystem): string {
+  const inch = copperInchLabel(odMm);
+  const mm = `Ø${odMm.toFixed(2)}`;
+  if (system === 'ip') return inch ? `${inch} (${mm})` : `Ø${(odMm / 25.4).toFixed(2)} in`;
+  return inch ? `${mm} (${inch})` : mm;
 }
 
 /**

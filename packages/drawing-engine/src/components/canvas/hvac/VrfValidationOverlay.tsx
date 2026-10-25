@@ -12,6 +12,8 @@ import { MM_TO_PX } from '../scale';
 
 import type { HvacMoveBegin } from './move/hvacMoveSession';
 import { readPipeRouteNodes3d } from './pipeRoute3d';
+import { toDisplayText } from './units/hvacUnits';
+import { useHvacUnitSystem } from './units/useHvacUnits';
 import { resolveVrfValidationIssueElement } from './vrfValidationFixes';
 
 export interface VrfValidationOverlayProps {
@@ -145,6 +147,9 @@ export function VrfValidationOverlay({
   hiddenIds,
 }: VrfValidationOverlayProps): JSX.Element | null {
   const [expanded, setExpanded] = useState(false);
+  // The checks' figures in the document's unit system (in IP each with its IP value).
+  const system = useHvacUnitSystem();
+  const text = (message: string) => toDisplayText(message, system);
   const collapsedButtonRef = useRef<HTMLButtonElement | null>(null);
   const collapseButtonRef = useRef<HTMLButtonElement | null>(null);
   const visibleIssues = useMemo(
@@ -200,7 +205,7 @@ export function VrfValidationOverlay({
           || top < -markerExtent
           || top > height + markerExtent
         ) return null;
-        const title = issues.map((issue) => `${issue.code}: ${issue.message}`).join('\n');
+        const title = issues.map((issue) => `${issue.code}: ${text(issue.message)}`).join('\n');
         return (
           <button
             type="button"
@@ -299,7 +304,7 @@ export function VrfValidationOverlay({
                 <div
                   key={issue.id}
                   className="flex items-start gap-1 px-1 hover:bg-slate-50"
-                  title={issue.suggestedFix ?? issue.message}
+                  title={text(issue.suggestedFix ?? issue.message)}
                 >
                   <button
                     type="button"
@@ -316,7 +321,7 @@ export function VrfValidationOverlay({
                     />
                     <span className="min-w-0">
                       <span className="block text-[10px] font-semibold text-slate-500">{issue.code}</span>
-                      <span className="block text-[11px] leading-4 text-slate-700">{issue.message}</span>
+                      <span className="block text-[11px] leading-4 text-slate-700">{text(issue.message)}</span>
                     </span>
                   </button>
                   {issue.fix && onApplyFix && (
@@ -327,8 +332,8 @@ export function VrfValidationOverlay({
                         onApplyFix(issue);
                       }}
                       className="mt-1.5 shrink-0 rounded bg-sky-50 px-2 py-1 text-[10px] font-semibold text-sky-700 hover:bg-sky-100"
-                      title={issue.suggestedFix ?? 'Apply deterministic fix'}
-                      aria-label={`Apply fix for ${issue.code}: ${issue.message}`}
+                      title={issue.suggestedFix ? text(issue.suggestedFix) : 'Apply deterministic fix'}
+                      aria-label={`Apply fix for ${issue.code}: ${text(issue.message)}`}
                     >
                       Fix
                     </button>

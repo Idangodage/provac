@@ -43,11 +43,13 @@ import {
 import type { SegmentPieceRow } from '../segments/SegmentPieceList';
 import type { SegmentBadge, SegmentCardModel, SegmentFieldHost, SegmentIssueLine, SegmentProvider } from '../segments/segmentProvider';
 import { useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
+import { formatQuantity, inchFractionText, slopeText, toDisplay, toDisplayText, type HvacUnitSystem } from '../units/hvacUnits';
 
 import { ACCESSORY_NAMES, ACCESSORY_ROLES, accessoryStationRange, type RefrigerantAccessoryKind } from './refrigerantAccessories';
 import { KIT_KEY, refrigerantKitOf, type RefrigerantKit } from './refrigerantKits';
 import {
   copperInchLabel,
+  copperSizeText,
   refrigerantCircuitFigures,
   refrigerantPieceFigures,
   type RefrigerantCircuitFigures,
@@ -76,6 +78,8 @@ type RefrigerantCardModel = SegmentCardModel<RefrigerantSegmentOption, Refrigera
 export interface RefrigerantCardContext {
   profile?: ManufacturerRuleProfile;
   report: VrfValidationReport;
+  /** The document's unit system: in IP a tube by its inch name, insulation in inches, a fall in in/ft, charge in lb, messages with IP figures. */
+  unitSystem?: HvacUnitSystem;
 }
 
 const KIND_TITLES: Record<RefrigerantPiece['kind'], string> = { port: 'Port stub', straight: 'Straight', riser: 'Riser', bend: 'Bend', accessory: 'Accessory' };
@@ -98,6 +102,19 @@ const LINE_NAME: Record<RefrigerantLine['lineKind'], string> = { gas: 'Gas', liq
 const metres = (mm: number, digits = 2) => `${number(mm / 1000, digits)} m`;
 const signedMm = (mm: number) => `${mm > 0 ? '+' : mm < 0 ? '−' : '±'}${number(Math.abs(mm))}`;
 const provenance = (value: RuleValue<number>) => (value.verified ? value.source.replace('manufacturer-', 'manufacturer ') : `${value.source.replace('-', ' ')}, unverified`);
+
+// The engineering figures in the document's unit system (lengths, levels and radii stay in mm and m).
+/** A tube in a sentence: "Ø15.88 mm (5/8″)" / "5/8″ (Ø15.88 mm)". */
+const tubeWords = (odMm: number, inch: string | null, system: HvacUnitSystem) => (system === 'ip'
+  ? (inch ? `${inch} (Ø${number(odMm, 2)} mm)` : `Ø${(odMm / 25.4).toFixed(2)} in`)
+  : `Ø${number(odMm, 2)} mm${inch ? ` (${inch})` : ''}`);
+/** A tube by its name alone: "Ø15.88" / "5/8″". */
+const tubeName = (odMm: number, system: HvacUnitSystem) => (system === 'ip' ? copperInchLabel(odMm) ?? `Ø${(odMm / 25.4).toFixed(2)} in` : `Ø${number(odMm, 2)}`);
+const insulationText = (mm: number, system: HvacUnitSystem) => (system === 'ip' ? `${inchFractionText(mm)} in` : `${number(mm)} mm`);
+/** An insulated tube's outside diameter. */
+const outsideText = (mm: number, system: HvacUnitSystem) => (system === 'ip' ? `Ø${(mm / 25.4).toFixed(2)} in` : `Ø${number(mm)}`);
+const fallText = (percent: number, system: HvacUnitSystem) => (system === 'ip' ? slopeText(percent) : `${number(Math.abs(percent), 1)} %`);
+const massText = (kg: number, system: HvacUnitSystem) => formatQuantity('mass', kg, system, 2);
 
 /** A piece's picture: a straight tube, a riser, an elbow, a port stub. */
 export function PipeSegmentGlyph({ kind, className }: { kind: RefrigerantPiece['kind'] | 'kit'; className?: string }) {
@@ -154,6 +171,12 @@ function stat(value: string, unit: string, title: string, status?: keyof typeof 
   );
 }
 
+/** A tube's size in the strip: "Ø15.88 5/8″" in SI; its inch name first in IP, "5/8″ Ø15.88". */
+function tubeStat(odMm: number, inch: string | null, title: string, system: HvacUnitSystem) {
+  if (system === 'si') return stat(`Ø${number(odMm, 2)}`, inch ?? '', title);
+  return inch ? stat(inch, `Ø${number(odMm, 2)}`, title) : stat(`Ø${(odMm / 25.4).toFixed(2)}`, 'in', title);
+}
+
 /** The Gas | Liquid switch of a coordinated pair: the other line's matching piece. */
 function LineSwitch({ focus, lineKind, partner }: { focus: SegmentFocus; lineKind: 'gas' | 'liquid'; partner: { id: string; key: string } }) {
   const pin = useSegmentUiStore((state) => state.pin);
@@ -177,13 +200,14 @@ function LineSwitch({ focus, lineKind, partner }: { focus: SegmentFocus; lineKin
 }
 
 /** The piece in one strip: its size, length (or a bend's angle and radius), level, and the path through it. */
-function FigureStrip({ figures, piece, focus, partner }: {
+function FigureStrip({ figures, piece, focus, partner, system }: {
   figures: RefrigerantPieceFigures;
   piece: RefrigerantPiece;
   focus: SegmentFocus;
   partner: { id: string; key: string } | null;
+  system: HvacUnitSystem;
 }) {
-  const size = `Ø${number(figures.tubeOdMm, 2)}`;
+  const tube = tubeWords(figures.tubeOdMm, figures.inch, system);
   const circuit = figures.circuit;
   const stats: ReactNode[] = [];
   if (figures.bend) {
@@ -195,14 +219,15 @@ function FigureStrip({ figures, piece, focus, partner }: {
     stats.push(<span key="p">{stat(bend.plane === 'horizontal' ? 'Level' : bend.plane === 'vertical' ? 'Vertical' : 'Inclined', '', `Turns in a ${bend.plane} plane`)}</span>);
   } else if (figures.port) {
     const port = figures.port;
-    stats.push(<span key="s">{stat(size, figures.inch ?? '', `Copper Ø${number(figures.tubeOdMm, 2)} mm${figures.inch ? ` (${figures.inch})` : ''}`)}</span>);
+    stats.push(<span key="s">{tubeStat(figures.tubeOdMm, figures.inch, `Copper ${tube}`, system)}</span>);
     stats.push(<span key="st">{stat(number(port.availableMm), 'mm', `Straight ${number(port.availableMm)} mm before the first fitting; the port reserves ${number(port.required.value)} mm (${provenance(port.required)}) — ${STATUS_TEXT[port.status]}`, port.status)}</span>);
   } else {
-    stats.push(<span key="s">{stat(size, figures.inch ?? '', `Copper Ø${number(figures.tubeOdMm, 2)} mm${figures.inch ? ` (${figures.inch})` : ''} · ${number(figures.insulationMm)} mm insulation, Ø${number(figures.outsideDiameterMm)} outside`)}</span>);
+    stats.push(<span key="s">{tubeStat(figures.tubeOdMm, figures.inch,
+      `Copper ${tube} · ${insulationText(figures.insulationMm, system)} insulation, ${outsideText(figures.outsideDiameterMm, system)} outside`, system)}</span>);
     stats.push(<span key="l">{stat(number(figures.lengthMm / 1000, 2), 'm', `Length ${metres(figures.lengthMm, 3)} along its centreline`)}</span>);
     stats.push(piece.kind === 'riser'
       ? <span key="z">{stat(`${figures.riseMm >= 0 ? '↑' : '↓'} ${number(Math.abs(figures.riseMm))}`, 'mm', `Rises ${signedMm(figures.riseMm)} mm`)}</span>
-      : <span key="z">{stat(`@ ${number(figures.levelMm / 1000, 2)}`, 'm', `Centreline at ${number(figures.levelMm)} mm${figures.slopePercent !== null ? ` · falls ${number(Math.abs(figures.slopePercent), 1)} %` : ''}`)}</span>);
+      : <span key="z">{stat(`@ ${number(figures.levelMm / 1000, 2)}`, 'm', `Centreline at ${number(figures.levelMm)} mm${figures.slopePercent !== null ? ` · falls ${fallText(figures.slopePercent, system)}` : ''}`)}</span>);
   }
   if (circuit?.longestPathMm !== null && circuit?.longestPathMm !== undefined && !figures.bend) {
     stats.push(
@@ -220,15 +245,15 @@ function FigureStrip({ figures, piece, focus, partner }: {
 }
 
 /** How the piece is built and what it serves (behind ⓘ). */
-function BuildInfo({ figures, piece, line }: { figures: RefrigerantPieceFigures; piece: RefrigerantPiece; line: RefrigerantLine }) {
+function BuildInfo({ figures, piece, line, system }: { figures: RefrigerantPieceFigures; piece: RefrigerantPiece; line: RefrigerantLine; system: HvacUnitSystem }) {
   const circuit = figures.circuit;
   const recommendation = circuit?.recommendation ?? null;
   return (
     <>
       <div>
-        Copper Ø{number(figures.tubeOdMm, 2)}{figures.inch ? ` (${figures.inch})` : ''}
+        Copper {copperSizeText(figures.tubeOdMm, system)}
         {figures.material ? ` · ${figures.material === 'hard' ? 'hard (straight lengths)' : 'flexible (annealed coil)'}` : ''}
-        {` · ${number(figures.insulationMm)} mm insulation, Ø${number(figures.outsideDiameterMm)} outside`}
+        {` · ${insulationText(figures.insulationMm, system)} insulation, ${outsideText(figures.outsideDiameterMm, system)} outside`}
       </div>
       {figures.bend ? (
         <div>
@@ -244,7 +269,7 @@ function BuildInfo({ figures, piece, line }: { figures: RefrigerantPieceFigures;
         <div>
           {metres(figures.lengthMm, 3)} straight
           {piece.legIndex !== null && line.design.legs[piece.legIndex] ? ` (${metres(line.design.legs[piece.legIndex]!.lengthMm, 3)} corner to corner)` : ''}
-          {` · centreline ${number(figures.levelMm)} mm`}{piece.kind === 'riser' ? ` · rises ${signedMm(figures.riseMm)} mm` : ''}{figures.slopePercent !== null ? ` · falls ${number(Math.abs(figures.slopePercent), 1)} %` : ''}
+          {` · centreline ${number(figures.levelMm)} mm`}{piece.kind === 'riser' ? ` · rises ${signedMm(figures.riseMm)} mm` : ''}{figures.slopePercent !== null ? ` · falls ${fallText(figures.slopePercent, system)}` : ''}
         </div>
       ) : null}
       {circuit ? (
@@ -258,15 +283,18 @@ function BuildInfo({ figures, piece, line }: { figures: RefrigerantPieceFigures;
         <div data-testid="refrigerant-segment-sizing">
           {!circuit.sizingTable ? 'No sizing table loaded: the size is not checked against a manufacturer table.'
             : recommendation?.recommendedDiameterMm !== undefined
-              ? (recommendation.status === 'matches' ? `Matches the profile size (Ø${number(recommendation.recommendedDiameterMm, 2)}).` : `The profile recommends Ø${number(recommendation.recommendedDiameterMm, 2)}.`)
-              : recommendation?.note ?? 'The profile has no size for it.'}
+              ? (recommendation.status === 'matches' ? `Matches the profile size (${tubeName(recommendation.recommendedDiameterMm, system)}).` : `The profile recommends ${tubeName(recommendation.recommendedDiameterMm, system)}.`)
+              : toDisplayText(recommendation?.note ?? 'The profile has no size for it.', system)}
           {` (${circuit.profileVerified ? 'verified profile' : 'unverified profile'})`}
         </div>
       ) : null}
       {figures.charge ? (
-        <div>Additional charge ≈ {number(figures.charge.kgPerM, 3)} kg/m · {number(figures.charge.pieceKg, 2)} kg here, {number(figures.charge.lineKg, 2)} kg on the line (practice table, unverified: the outdoor unit&apos;s table governs)</div>
+        <div>
+          Additional charge ≈ {formatQuantity('charge', figures.charge.kgPerM, system)} · {massText(figures.charge.pieceKg, system)} here, {massText(figures.charge.lineKg, system)} on the line
+          {' '}(practice table, unverified: the outdoor unit&apos;s table governs)
+        </div>
       ) : null}
-      {line.design.unresolved.length ? <div className="text-amber-700">{line.design.unresolved.join(' ')}</div> : null}
+      {line.design.unresolved.length ? <div className="text-amber-700">{toDisplayText(line.design.unresolved.join(' '), system)}</div> : null}
     </>
   );
 }
@@ -305,6 +333,21 @@ const BADGES: Record<string, SegmentBadge> = {
   },
 };
 
+/** The options in the unit system: in IP a size by its inch name, insulation in inches, the details' figures with their IP values. */
+function optionsIn(options: RefrigerantSegmentOption[], system: HvacUnitSystem): RefrigerantSegmentOption[] {
+  if (system === 'si') return options;
+  return options.map((option) => ({
+    ...option,
+    title: option.edit.kind === 'size' ? copperSizeText(option.edit.tubeOdMm, system)
+      : option.edit.kind === 'insulation' ? insulationText(option.edit.thicknessMm, system) : option.title,
+    detail: toDisplayText(option.detail, system),
+  }));
+}
+
+/** The checks' messages in the unit system. */
+const issuesIn = (issues: SegmentIssueLine[], system: HvacUnitSystem): SegmentIssueLine[] => (system === 'si' ? issues
+  : issues.map((issue) => ({ ...issue, message: toDisplayText(issue.message, system) })));
+
 /** An option's picture. */
 function OptionGlyph({ glyph, className }: { glyph: RefrigerantOptionGlyph; className?: string }) {
   const paths: Record<RefrigerantOptionGlyph, ReactNode> = {
@@ -340,8 +383,11 @@ function OptionGlyph({ glyph, className }: { glyph: RefrigerantOptionGlyph; clas
   );
 }
 
+/** A change in charge: "+0.12 kg" / "+0.26 lb". */
+const chargeDelta = (kg: number, system: HvacUnitSystem) => (system === 'ip' ? `${signed(toDisplay('mass', kg, 'ip'), 2)} lb` : `${signed(kg, 2)} kg`);
+
 /** What an option does, as chips: its change in length and charge, and the checks it would newly fail. */
-function DeltaChips({ evaluation }: { evaluation: RefrigerantOptionEvaluation }) {
+function DeltaChips({ evaluation, system }: { evaluation: RefrigerantOptionEvaluation; system: HvacUnitSystem }) {
   const chips: ReactNode[] = [];
   if (Math.abs(evaluation.deltaLengthMm) >= 5) {
     chips.push(<span key="m" className={`rounded px-1 tabular-nums ${evaluation.deltaLengthMm < 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}
@@ -349,12 +395,12 @@ function DeltaChips({ evaluation }: { evaluation: RefrigerantOptionEvaluation })
   }
   if (evaluation.deltaChargeKg !== null && Math.abs(evaluation.deltaChargeKg) >= 0.005) {
     chips.push(<span key="kg" className="rounded bg-slate-100 px-1 tabular-nums text-slate-600"
-      title="Change in the additional refrigerant charge (practice table, unverified)">{signed(evaluation.deltaChargeKg, 2)} kg</span>);
+      title="Change in the additional refrigerant charge (practice table, unverified)">{chargeDelta(evaluation.deltaChargeKg, system)}</span>);
   }
   const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error');
   if (errors.length) {
     chips.push(
-      <span key="err" className="inline-flex items-center gap-0.5 rounded bg-red-50 px-1 font-medium text-red-700" title={errors.map((issue) => `${issue.code}: ${issue.message}`).join('\n')}>
+      <span key="err" className="inline-flex items-center gap-0.5 rounded bg-red-50 px-1 font-medium text-red-700" title={errors.map((issue) => `${issue.code}: ${toDisplayText(issue.message, system)}`).join('\n')}>
         <TriangleAlert size={10} aria-hidden="true" />{errors.length}<span className="sr-only"> new error{errors.length === 1 ? '' : 's'}</span>
       </span>,
     );
@@ -363,11 +409,11 @@ function DeltaChips({ evaluation }: { evaluation: RefrigerantOptionEvaluation })
 }
 
 /** An option's whole result on one line. */
-function ResultLine({ evaluation }: { evaluation: RefrigerantOptionEvaluation }) {
-  if (evaluation.refused) return <span className="text-red-700">{evaluation.refused}</span>;
+function ResultLine({ evaluation, system }: { evaluation: RefrigerantOptionEvaluation; system: HvacUnitSystem }) {
+  if (evaluation.refused) return <span className="text-red-700">{toDisplayText(evaluation.refused, system)}</span>;
   const parts: ReactNode[] = [];
   if (Math.abs(evaluation.deltaLengthMm) >= 1) parts.push(<span key="m" className={evaluation.deltaLengthMm < 0 ? 'text-emerald-700' : 'text-amber-700'}>{signed(evaluation.deltaLengthMm / 1000, 2)} m</span>);
-  if (evaluation.deltaChargeKg !== null && Math.abs(evaluation.deltaChargeKg) >= 0.005) parts.push(<span key="kg">{signed(evaluation.deltaChargeKg, 2)} kg charge</span>);
+  if (evaluation.deltaChargeKg !== null && Math.abs(evaluation.deltaChargeKg) >= 0.005) parts.push(<span key="kg">{chargeDelta(evaluation.deltaChargeKg, system)} charge</span>);
   const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error').length;
   const warnings = evaluation.newIssues.length - errors;
   if (errors) parts.push(<span key="e" className="font-medium text-red-700">{errors} new error{errors === 1 ? '' : 's'}</span>);
@@ -376,7 +422,6 @@ function ResultLine({ evaluation }: { evaluation: RefrigerantOptionEvaluation })
   return <span className="tabular-nums">{parts.map((part, index) => <span key={index}>{index ? ' · ' : ''}{part}</span>)}</span>;
 }
 
-const resultLine = (evaluation: RefrigerantOptionEvaluation) => <ResultLine evaluation={evaluation} />;
 const ValueField = SegmentValueField<RefrigerantSegmentOption, RefrigerantOptionEvaluation>;
 type FieldHost = SegmentFieldHost<RefrigerantSegmentOption, RefrigerantOptionEvaluation>;
 
@@ -499,14 +544,16 @@ function AccessoryEditPanel({ host, element, line, piece, options }: {
 }
 
 /** An accessory in one strip: the tube it sits on, its body, where it is along its straight. */
-function AccessoryFigures({ line, piece, focus, partner }: { line: RefrigerantLine; piece: RefrigerantPiece; focus: SegmentFocus; partner: { id: string; key: string } | null }) {
+function AccessoryFigures({ line, piece, focus, partner, system }: {
+  line: RefrigerantLine; piece: RefrigerantPiece; focus: SegmentFocus; partner: { id: string; key: string } | null; system: HvacUnitSystem;
+}) {
   const placed = piece.accessory!;
   const inch = copperInchLabel(line.tubeOdMm);
   return (
     <div className="space-y-1.5 px-3 pb-2" data-testid="refrigerant-segment-figures">
       {partner && line.lineKind !== 'pair' ? <LineSwitch focus={focus} lineKind={line.lineKind} partner={partner} /> : null}
       <div className="flex items-center gap-x-3">
-        {stat(`Ø${number(line.tubeOdMm, 2)}`, inch ?? '', `On copper Ø${number(line.tubeOdMm, 2)} mm${inch ? ` (${inch})` : ''}`)}
+        {tubeStat(line.tubeOdMm, inch, `On copper ${tubeWords(line.tubeOdMm, inch, system)}`, system)}
         {stat(number(placed.lengthMm), 'mm', `Body ${number(placed.lengthMm)} mm long, Ø${number(placed.diameterMm)} (practice size, unverified)`)}
         <span className="ml-auto">
           {stat(number(placed.stationMm / 1000, 2), 'm from start', placed.problem ?? `Its centre ${number(placed.stationMm)} mm from the corner (or port) its straight starts at`, placed.problem ? 'over' : 'ok')}
@@ -516,7 +563,7 @@ function AccessoryFigures({ line, piece, focus, partner }: { line: RefrigerantLi
   );
 }
 
-function AccessoryInfo({ line, piece }: { line: RefrigerantLine; piece: RefrigerantPiece }) {
+function AccessoryInfo({ line, piece, system }: { line: RefrigerantLine; piece: RefrigerantPiece; system: HvacUnitSystem }) {
   const placed = piece.accessory!;
   const kind = placed.accessory.kind;
   const straight = line.straights.find((candidate) => candidate.legId === placed.legId);
@@ -525,7 +572,7 @@ function AccessoryInfo({ line, piece }: { line: RefrigerantLine; piece: Refriger
   return (
     <>
       <div>{ACCESSORY_NAMES[kind]}: {ACCESSORY_ROLES[kind]}.</div>
-      <div>Body ≈ {number(placed.lengthMm)} mm long, Ø{number(placed.diameterMm)}, for Ø{number(line.tubeOdMm, 2)} copper (practice size from the tube, unverified until a catalogue is loaded).</div>
+      <div>Body ≈ {number(placed.lengthMm)} mm long, Ø{number(placed.diameterMm)}, for {tubeName(line.tubeOdMm, system)} copper (practice size from the tube, unverified until a catalogue is loaded).</div>
       <div>
         On straight {straightPiece?.ordinal ?? '—'}, its centre {number(placed.stationMm)} mm from the start point
         {range ? ` · it fits with its centre ${number(range.from)}–${number(range.to)} mm, clear of the fittings` : ''}.
@@ -545,22 +592,22 @@ function buildAccessoryModel(scene: HvacElement[], focus: SegmentFocus, element:
   const partnerPiece = partnerLine ? matchingPiece(partnerLine, piece) : null;
   const partner = partnerElement && partnerPiece ? { id: partnerElement.id, key: partnerPiece.key } : null;
   const profile = context.profile ?? PROJECT_FALLBACK_RULE_PROFILE;
-  const options = refrigerantPieceOptions(scene, element, line, piece, null, profile);
-  const inch = copperInchLabel(line.tubeOdMm);
+  const system = context.unitSystem ?? 'si';
+  const options = optionsIn(refrigerantPieceOptions(scene, element, line, piece, null, profile), system);
   const token: RekeyToken = { kind: 'accessory', ordinal: piece.ordinal, legId: placed.legId };
   return {
     head: {
       title: `${LINE_NAME[line.lineKind]} · ${ACCESSORY_NAMES[placed.accessory.kind]}`,
-      size: `Ø${number(line.tubeOdMm, 2)}${inch ? ` (${inch})` : ''}`,
+      size: copperSizeText(line.tubeOdMm, system),
       detail: placed.problem ? 'no room here' : `${number(placed.lengthMm)} mm body`,
       tag: `${line.lineKind === 'liquid' ? 'L' : 'G'}-${KIND_TAGS.accessory}${piece.ordinal}`,
       glyph: <OptionGlyph glyph={placed.accessory.kind} className="h-3.5 w-3.5" />,
       tone: LINE_TONE[line.lineKind],
       kind: 'accessory',
     },
-    figures: <AccessoryFigures line={line} piece={piece} focus={focus} partner={partner} />,
-    info: <AccessoryInfo line={line} piece={piece} />,
-    issues: placed.problem ? [{ severity: 'error', code: 'ACCESSORY_FIT', message: placed.problem }] : [],
+    figures: <AccessoryFigures line={line} piece={piece} focus={focus} partner={partner} system={system} />,
+    info: <AccessoryInfo line={line} piece={piece} system={system} />,
+    issues: placed.problem ? [{ severity: 'error', code: 'ACCESSORY_FIT', message: toDisplayText(placed.problem, system) }] : [],
     options,
     evaluate: (option) => evaluateRefrigerantOption(scene, option, profile),
     tabOf: (option) => (SWAP_GROUPS.has(option.group) ? 'swap' : ADD_GROUPS.has(option.group) ? 'add' : null),
@@ -615,11 +662,12 @@ function buildKitModel(scene: HvacElement[], element: HvacElement, context: Refr
   const kit = refrigerantKitOf(element);
   if (!kit) return null;
   const profile = context.profile ?? PROJECT_FALLBACK_RULE_PROFILE;
+  const system = context.unitSystem ?? 'si';
   const circuit = kit.lines.map((line) => refrigerantCircuitFigures(scene, element, line, profile)).find((figures) => figures) ?? null;
-  const options = refrigerantKitOptions(scene, element, profile);
-  const issues: SegmentIssueLine[] = context.report.issues.flatMap((issue) => (
+  const options = optionsIn(refrigerantKitOptions(scene, element, profile), system);
+  const issues = issuesIn(context.report.issues.flatMap((issue) => (
     issue.entityId && (issue.entityId === element.id || issue.entityId.startsWith(`${element.id}:`)) && (issue.level === 'error' || issue.level === 'warning')
-      ? [{ severity: issue.level, code: issue.code, message: issue.message }] : []));
+      ? [{ severity: issue.level, code: issue.code, message: issue.message }] : [])), system);
   // A short tag: the kit's number among the kits on its line, in drawing order (G-Y1, L-Y2, Y1 for a pair kit).
   const line = kit.lines.length > 1 ? null : kit.lines[0]!;
   const sameLine = scene.filter((candidate) => {
@@ -664,7 +712,8 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Refriger
   const partner = partnerElement && partnerPiece ? { id: partnerElement.id, key: partnerPiece.key } : null;
   const pairPiece: RefrigerantPartner | null = partnerElement && partnerLine && partnerPiece ? { element: partnerElement, line: partnerLine, piece: partnerPiece } : null;
   const profile = context.profile ?? PROJECT_FALLBACK_RULE_PROFILE;
-  const options = refrigerantPieceOptions(scene, element, line, piece, pairPiece, profile);
+  const system = context.unitSystem ?? 'si';
+  const options = optionsIn(refrigerantPieceOptions(scene, element, line, piece, pairPiece, profile), system);
   const titleBits = piece.kind === 'port' ? `${KIND_TITLES.port}` : `${KIND_TITLES[piece.kind]} ${piece.ordinal}`;
   const detail = figures.bend
     ? `${number(figures.bend.angleDeg)}° ${figures.bend.construction === 'socket-elbow' ? `socket elbow${figures.bend.catalogueModel ? ` ${figures.bend.catalogueModel}` : ''}` : 'formed bend'}`
@@ -674,16 +723,16 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Refriger
   return {
     head: {
       title: `${LINE_NAME[line.lineKind]} · ${titleBits}`,
-      size: `Ø${number(line.tubeOdMm, 2)}${figures.inch ? ` (${figures.inch})` : ''}`,
+      size: copperSizeText(line.tubeOdMm, system),
       detail,
       tag: `${line.lineKind === 'liquid' ? 'L' : 'G'}-${KIND_TAGS[piece.kind]}${piece.kind === 'port' ? (piece.endpoint === 'start' ? '1' : '2') : piece.ordinal}`,
       glyph: <PipeSegmentGlyph kind={piece.kind} className="h-3.5 w-3.5" />,
       tone: LINE_TONE[line.lineKind],
       kind: piece.kind,
     },
-    figures: <FigureStrip figures={figures} piece={piece} focus={focus} partner={partner} />,
-    info: <BuildInfo figures={figures} piece={piece} line={line} />,
-    issues: pieceIssues(context.report, element, line, piece),
+    figures: <FigureStrip figures={figures} piece={piece} focus={focus} partner={partner} system={system} />,
+    info: <BuildInfo figures={figures} piece={piece} line={line} system={system} />,
+    issues: issuesIn(pieceIssues(context.report, element, line, piece), system),
     options,
     evaluate: (option) => evaluateRefrigerantOption(scene, option, profile),
     tabOf: (option) => (SWAP_GROUPS.has(option.group) ? 'swap' : ADD_GROUPS.has(option.group) ? 'add' : null),
@@ -714,6 +763,7 @@ export function refrigerantPieceRows(element: HvacElement, scene: readonly HvacE
 /** The refrigerant lines' segment cards, read with the active rule profile and the live design checks. */
 export function createRefrigerantSegmentProvider(context: RefrigerantCardContext): RefrigerantSegmentProvider {
   const cache = new WeakMap<readonly HvacElement[], Map<string, RefrigerantCardModel | null>>();
+  const system = context.unitSystem ?? 'si';
   return {
     domain: 'refrigerant',
     testIdPrefix: 'refrigerant-segment',
@@ -733,8 +783,8 @@ export function createRefrigerantSegmentProvider(context: RefrigerantCardContext
     badges: BADGES,
     recommendedBadge: 'recommended',
     optionGlyph: (option) => <OptionGlyph glyph={option.glyph} className="h-3.5 w-3.5" />,
-    chips: (evaluation) => <DeltaChips evaluation={evaluation} />,
-    result: resultLine,
+    chips: (evaluation) => <DeltaChips evaluation={evaluation} system={system} />,
+    result: (evaluation) => <ResultLine evaluation={evaluation} system={system} />,
     // A peek's quick picks after the recommended one: the least tube first.
     quickScore: (evaluation) => evaluation.deltaLengthMm,
     commit: (evaluation, option) => {

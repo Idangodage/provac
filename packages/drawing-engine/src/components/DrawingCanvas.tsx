@@ -821,12 +821,16 @@ export function DrawingCanvas({
     return rect;
   }, [projectionViewOnly]);
   // The services whose runs' pieces have cards: ducts, refrigerant lines (read with the active rule profile and the
-  // live design checks) and condensate drains (with the project's drainage settings and checks).
-  const segmentProviders = useMemo(() => [
-    createDuctSegmentProvider(ductSettings),
-    createRefrigerantSegmentProvider({ profile: vrfRuleProfile, report: vrfValidationReport }),
-    createCondensateSegmentProvider({ settings: condensateSettings, routingSettings: pipeRoutingSettings, walls, rooms, report: condensateValidationReport }),
-  ], [ductSettings, vrfRuleProfile, vrfValidationReport, condensateSettings, pipeRoutingSettings, walls, rooms, condensateValidationReport]);
+  // live design checks) and condensate drains (with the project's drainage settings and checks), all in the
+  // document's unit system.
+  const segmentProviders = useMemo(() => {
+    const unitSystem = ductSettings.unitSystem ?? "si";
+    return [
+      createDuctSegmentProvider(ductSettings),
+      createRefrigerantSegmentProvider({ profile: vrfRuleProfile, report: vrfValidationReport, unitSystem }),
+      createCondensateSegmentProvider({ settings: condensateSettings, routingSettings: pipeRoutingSettings, walls, rooms, report: condensateValidationReport, unitSystem }),
+    ];
+  }, [ductSettings, vrfRuleProfile, vrfValidationReport, condensateSettings, pipeRoutingSettings, walls, rooms, condensateValidationReport]);
   const segmentProvidersRef = useRef(segmentProviders);
   segmentProvidersRef.current = segmentProviders;
   const selectFromDesignCheck = useCallback((elementId: string, additive = false) => {

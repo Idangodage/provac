@@ -11,6 +11,8 @@ import { shallow } from 'zustand/shallow';
 import { useSmartDrawingStore } from '../../../../store';
 import type { ManufacturerRuleProfile } from '../../../../vrf/rules';
 import { applyAutoRoutePreview, discardAutoRoutePreview, runAutoRoute } from '../autoRouteController';
+import { fromDisplay, slopeText, toDisplay, toDisplayText, unitLabel } from '../units/hvacUnits';
+import { useHvacUnitSystem } from '../units/useHvacUnits';
 
 import { buildCondensateBom, condensateBomToCsv } from './condensateBom';
 import { deriveCondensateEnvelope } from './condensateEnvironment';
@@ -27,10 +29,11 @@ type NumericKey = {
   [K in keyof CondensateDesignSettings]: CondensateDesignSettings[K] extends number ? K : never;
 }[keyof CondensateDesignSettings];
 
-const NUMBER_ROWS: Array<{ key: NumericKey; label: string; unit: string; step: number }> = [
-  { key: 'minSlopePercent', label: 'Minimum fall', unit: '%', step: 0.1 },
-  { key: 'preferredSlopePercent', label: 'Preferred fall', unit: '%', step: 0.1 },
-  { key: 'insulationThicknessMm', label: 'Anti-sweat insulation', unit: 'mm', step: 1 },
+/** `ip`: how the row reads in IP (a fall in in/ft, a thickness in inches); the rest are lengths and levels, in mm in either system. */
+const NUMBER_ROWS: Array<{ key: NumericKey; label: string; unit: string; step: number; ip?: { kind: 'slope' | 'size'; step: number } }> = [
+  { key: 'minSlopePercent', label: 'Minimum fall', unit: '%', step: 0.1, ip: { kind: 'slope', step: 0.01 } },
+  { key: 'preferredSlopePercent', label: 'Preferred fall', unit: '%', step: 0.1, ip: { kind: 'slope', step: 0.01 } },
+  { key: 'insulationThicknessMm', label: 'Anti-sweat insulation', unit: 'mm', step: 1, ip: { kind: 'size', step: 0.125 } },
   { key: 'envelopeClearanceMm', label: 'Clear space in void', unit: 'mm', step: 5 },
   { key: 'refrigerantClearanceMm', label: 'Clearance to refrigerant', unit: 'mm', step: 5 },
   { key: 'defaultPumpMaxLiftMm', label: 'Default pump lift', unit: 'mm', step: 25 },
@@ -63,7 +66,7 @@ function SettingRow({ label, value, unit, step, modified, source, onCommit }: {
           onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); }}
           className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-right text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
         />
-        <span className="w-6 text-xs text-slate-500">{unit}</span>
+        <span className="min-w-6 text-xs text-slate-500">{unit}</span>
       </span>
     </label>
   );
@@ -85,6 +88,8 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
   const toggleHop = useCondensatePreviewStore((state) => state.toggleHop);
   const setHighlight = useCondensatePreviewStore((state) => state.setHighlightUnit);
   const [copied, setCopied] = useState(false);
+  const system = useHvacUnitSystem();
+  const ip = system === 'ip';
 
   const envelope = useMemo(() => deriveCondensateEnvelope(hvacElements, settings, routing, rooms), [hvacElements, settings, routing, rooms]);
   const committedBom = useMemo(() => buildCondensateBom(hvacElements.filter(isCondensateElement), settings), [hvacElements, settings]);
@@ -126,12 +131,12 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
         ) : null}
       </div>
       {!gullyCount ? <p className="text-xs text-slate-500">Place a floor gully, stack connection or external discharge from the Condensate Drainage palette first.</p> : null}
-      {message ? <p role="status" className="rounded-md bg-slate-50 p-2 text-xs leading-4 text-slate-700">{message}</p> : null}
+      {message ? <p role="status" className="rounded-md bg-slate-50 p-2 text-xs leading-4 text-slate-700">{toDisplayText(message, system)}</p> : null}
       {applyIssue && !message ? <p role="status" className="rounded-md bg-amber-50 p-2 text-xs text-amber-900">{applyIssue}</p> : null}
 
       {preview ? (
         <div className="space-y-2">
-          {preview.issues.map((issue) => <p key={issue} className="rounded-md bg-amber-50 p-2 text-xs text-amber-800">{issue}</p>)}
+          {preview.issues.map((issue) => <p key={issue} className="rounded-md bg-amber-50 p-2 text-xs text-amber-800">{toDisplayText(issue, system)}</p>)}
           <table className="w-full text-left text-xs">
             <thead className="text-slate-500"><tr><th className="py-1">Unit</th><th>Drain</th><th className="text-right">Run</th><th className="text-right">Margin</th></tr></thead>
             <tbody>
@@ -149,7 +154,7 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
           </table>
           {preview.networks.map((network) => (
             <p key={network.networkId} className="text-xs text-slate-600">
-              {network.gullyLabel}: {network.unitIds.length} unit{network.unitIds.length === 1 ? '' : 's'}, main fall {formatFallRatio(network.mainSlopePercent)} ({network.mainSlopePercent.toFixed(2)} %)
+              {network.gullyLabel}: {network.unitIds.length} unit{network.unitIds.length === 1 ? '' : 's'}, main fall {formatFallRatio(network.mainSlopePercent)} ({ip ? slopeText(network.mainSlopePercent) : `${network.mainSlopePercent.toFixed(2)} %`})
             </p>
           ))}
           {preview.crossings.length ? (
@@ -175,15 +180,24 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
       <details>
         <summary className="cursor-pointer py-1 text-xs font-medium text-slate-700">Design rules</summary>
         <div className="divide-y divide-amber-100/70">
-          {NUMBER_ROWS.map((row) => (
-            <SettingRow key={row.key} label={row.label} value={settings[row.key]} unit={row.unit} step={row.step}
-              modified={settings[row.key] !== DEFAULT_CONDENSATE_SETTINGS[row.key]}
-              source={CONDENSATE_RULE_SOURCES[row.key] ? `${CONDENSATE_RULE_SOURCES[row.key]!.source}${CONDENSATE_RULE_SOURCES[row.key]!.verified ? '' : ' (unverified — confirm for this project)'}` : undefined}
-              onCommit={(value) => setSettings({ [row.key]: value } as Partial<CondensateDesignSettings>)} />
-          ))}
-          <label className="flex items-center justify-between py-1.5 text-sm text-slate-600">Grouped main min. OD
-            <input type="number" step={1} placeholder="off" value={settings.groupedMainMinOuterDiameterMm ?? ''}
-              onChange={(event) => setSettings({ groupedMainMinOuterDiameterMm: event.target.value.trim() === '' ? null : Number.parseFloat(event.target.value) })}
+          {NUMBER_ROWS.map((row) => {
+            // In IP a fall is typed in in/ft and a thickness in inches (to the thousandth); the settings keep % and mm.
+            const asIp = ip && row.ip ? row.ip : null;
+            return (
+              <SettingRow key={row.key} label={row.label} value={asIp ? Number(toDisplay(asIp.kind, settings[row.key], 'ip').toFixed(3)) : settings[row.key]}
+                unit={asIp ? unitLabel(asIp.kind, 'ip') : row.unit} step={asIp ? asIp.step : row.step}
+                modified={settings[row.key] !== DEFAULT_CONDENSATE_SETTINGS[row.key]}
+                source={CONDENSATE_RULE_SOURCES[row.key] ? `${CONDENSATE_RULE_SOURCES[row.key]!.source}${CONDENSATE_RULE_SOURCES[row.key]!.verified ? '' : ' (unverified — confirm for this project)'}` : undefined}
+                onCommit={(value) => setSettings({ [row.key]: asIp ? Math.round(fromDisplay(asIp.kind, value, 'ip') * 1e4) / 1e4 : value } as Partial<CondensateDesignSettings>)} />
+            );
+          })}
+          <label className="flex items-center justify-between py-1.5 text-sm text-slate-600">Grouped main min. OD{ip ? ' (in)' : ''}
+            <input type="number" step={ip ? 0.125 : 1} placeholder="off"
+              value={settings.groupedMainMinOuterDiameterMm === null ? '' : ip ? Number((settings.groupedMainMinOuterDiameterMm / 25.4).toFixed(3)) : settings.groupedMainMinOuterDiameterMm}
+              onChange={(event) => {
+                const typed = Number.parseFloat(event.target.value);
+                setSettings({ groupedMainMinOuterDiameterMm: event.target.value.trim() === '' || !Number.isFinite(typed) ? null : ip ? Math.round(typed * 25.4 * 100) / 100 : typed });
+              }}
               className="w-20 rounded border border-amber-200/80 bg-white px-2 py-1 text-right text-sm" />
           </label>
           {([

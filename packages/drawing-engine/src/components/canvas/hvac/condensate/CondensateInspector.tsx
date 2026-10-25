@@ -9,6 +9,8 @@ import type React from 'react';
 
 import type { HvacElement } from '../../../../types';
 import { SegmentPieceList } from '../segments/SegmentPieceList';
+import { formatQuantity, fromDisplay, inchFractionText, slopeText, toDisplay, unitLabel, type HvacUnitSystem } from '../units/hvacUnits';
+import { useHvacUnitSystem } from '../units/useHvacUnits';
 
 import { condensatePieceRows } from './CondensateSegmentCard';
 import { getCondensatePipeSystem } from './condensatePipeCatalog';
@@ -70,12 +72,18 @@ function NumberInput({ value, onCommit, step = 1, min, unit, ariaLabel }: {
 
 type UpdateProperties = (properties: Record<string, unknown>) => void;
 
+// A pipe's sizes, insulation and fall in the document's unit system (levels and lengths stay in mm).
+/** An outside diameter: "Ø 25 mm" / "Ø 0.98 in". */
+const outsideText = (mm: number, system: HvacUnitSystem) => (system === 'ip' ? `Ø ${(mm / 25.4).toFixed(2)} in` : `Ø ${mm.toFixed(0)} mm`);
+const fallText = (percent: number, system: HvacUnitSystem) => (system === 'ip' ? slopeText(percent) : `${percent.toFixed(2)} %`);
+
 /** Drain rows appended to an indoor unit's inspector. */
 export function UnitDrainageRows({ element, settings, onUpdateProperties }: {
   element: HvacElement;
   settings: CondensateDesignSettings;
   onUpdateProperties: UpdateProperties;
 }) {
+  const system = useHvacUnitSystem();
   const port = getIndoorUnitDrainPort(element, settings);
   if (!port) return null;
   const pumpSetting = element.properties.hasDrainPump;
@@ -85,7 +93,7 @@ export function UnitDrainageRows({ element, settings, onUpdateProperties }: {
       <Heading>Condensate drain</Heading>
       <Row label="Drain outlet" title={port.synthesized ? 'This unit type has no drawn drain port; a typical manufacturer position is assumed.' : undefined}>
         <span className="text-sm text-slate-700">
-          Ø {port.outletOuterDiameterMm.toFixed(0)} mm @ {Math.round(port.z)} mm{port.synthesized ? ' (typical)' : ''}
+          {outsideText(port.outletOuterDiameterMm, system)} @ {Math.round(port.z)} mm{port.synthesized ? ' (typical)' : ''}
         </span>
       </Row>
       <Row label="Drain pump">
@@ -149,8 +157,10 @@ export function CondensateGullyInspector({ element, onUpdate }: {
   element: HvacElement;
   onUpdate: (updates: Partial<HvacElement>) => void;
 }) {
+  const system = useHvacUnitSystem();
   const spec = readCondensateGullySpec(element);
   const updateProperties = (properties: Record<string, unknown>) => onUpdate({ properties });
+  const capacityLimit = spec.maxConnectedCapacityKw;
   return (
     <>
       <Heading>Condensate termination</Heading>
@@ -199,8 +209,9 @@ export function CondensateGullyInspector({ element, onUpdate }: {
         </Row>
       ) : null}
       <Row label="Capacity limit" title="Optional: the generator will not connect more cooling capacity than this.">
-        <NumberInput ariaLabel="Connected capacity limit" value={spec.maxConnectedCapacityKw} min={0} step={1} unit="kW"
-          onCommit={(value) => updateProperties({ maxConnectedCapacityKw: value && value > 0 ? value : undefined })} />
+        <NumberInput ariaLabel="Connected capacity limit" value={capacityLimit === null || capacityLimit === undefined ? null : toDisplay('capacity', capacityLimit, system)}
+          min={0} step={system === 'ip' ? 5 : 1} unit={unitLabel('capacity', system)}
+          onCommit={(value) => updateProperties({ maxConnectedCapacityKw: value && value > 0 ? fromDisplay('capacity', value, system) : undefined })} />
       </Row>
     </>
   );
@@ -210,6 +221,7 @@ export function CondensatePipeInspector({ element, onUpdate }: {
   element: HvacElement;
   onUpdate: (updates: Partial<HvacElement>) => void;
 }) {
+  const unitSystem = useHvacUnitSystem();
   const spec = readCondensatePipeSpec(element);
   const nodes = spec.routeNodes3d;
   const first = nodes[0];
@@ -224,7 +236,7 @@ export function CondensatePipeInspector({ element, onUpdate }: {
     if (run > 50) minSlope = Math.min(minSlope, ((a.z - b.z) / run) * 100);
   }
   const fall = first && last ? first.z - last.z : 0;
-  const system = getCondensatePipeSystem(spec.pipeSystem);
+  const pipeSystem = getCondensatePipeSystem(spec.pipeSystem);
   const owner = getCondensateOwnership(element);
   const invert = (z: number) => Math.round(z - spec.innerDiameterMm / 2);
   return (
@@ -234,15 +246,21 @@ export function CondensatePipeInspector({ element, onUpdate }: {
         <span className="text-sm text-slate-700">{spec.segmentRole.replace('-', ' ')}</span>
       </Row>
       <Row label="Pipe">
-        <span className="text-sm text-slate-700">{system.label} {spec.nominalSize} (Ø{spec.outerDiameterMm} / {spec.innerDiameterMm} mm)</span>
+        <span className="text-sm text-slate-700">
+          {pipeSystem.label} {spec.nominalSize} ({unitSystem === 'ip'
+            ? `Ø${(spec.outerDiameterMm / 25.4).toFixed(2)} / ${(spec.innerDiameterMm / 25.4).toFixed(2)} in`
+            : `Ø${spec.outerDiameterMm} / ${spec.innerDiameterMm} mm`})
+        </span>
       </Row>
       <Row label="Insulation">
-        <span className="text-sm text-slate-700">{spec.insulationThicknessMm > 0 ? `${spec.insulationThicknessMm} mm closed-cell` : 'None'}</span>
+        <span className="text-sm text-slate-700">
+          {spec.insulationThicknessMm > 0 ? `${unitSystem === 'ip' ? `${inchFractionText(spec.insulationThicknessMm)} in` : `${spec.insulationThicknessMm} mm`} closed-cell` : 'None'}
+        </span>
       </Row>
       <Row label="Design fall">
         <span className="text-sm text-slate-700">
-          {spec.designSlopePercent.toFixed(2)} % ({formatFallRatio(spec.designSlopePercent)})
-          {Number.isFinite(minSlope) ? ` · min ${minSlope.toFixed(2)} %` : ''}
+          {fallText(spec.designSlopePercent, unitSystem)} ({formatFallRatio(spec.designSlopePercent)})
+          {Number.isFinite(minSlope) ? ` · min ${fallText(minSlope, unitSystem)}` : ''}
         </span>
       </Row>
       <Row label="Run / fall">
@@ -254,7 +272,7 @@ export function CondensatePipeInspector({ element, onUpdate }: {
         </Row>
       ) : null}
       <Row label="Serves">
-        <span className="text-sm text-slate-700">{spec.upstreamUnitIds.length} unit{spec.upstreamUnitIds.length === 1 ? '' : 's'} · {spec.upstreamCapacityKw.toFixed(1)} kW</span>
+        <span className="text-sm text-slate-700">{spec.upstreamUnitIds.length} unit{spec.upstreamUnitIds.length === 1 ? '' : 's'} · {formatQuantity('capacity', spec.upstreamCapacityKw, unitSystem)}</span>
       </Row>
       {spec.fittings.length ? (
         <Row label="Fittings">

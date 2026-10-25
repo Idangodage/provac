@@ -5,7 +5,7 @@ import { buildVrfDocumentFromHvacElements } from '../../../../vrf/domain';
 import { PROJECT_FALLBACK_RULE_PROFILE, type ManufacturerRuleProfile, type RuleValue } from '../../../../vrf/rules';
 import { getRefrigerantPipeBundleSnapTargets, resolveRefrigerantPipeSpec } from '../refrigerantPipePairModel';
 
-import { copperInchLabel, refrigerantCircuitFigures, refrigerantPieceFigures } from './refrigerantPieceFigures';
+import { copperInchLabel, copperSizeText, refrigerantCircuitFigures, refrigerantPieceFigures } from './refrigerantPieceFigures';
 import { refrigerantLineOf } from './refrigerantPieces';
 
 interface Point3 { x: number; y: number; z: number }
@@ -73,6 +73,13 @@ describe('a refrigerant piece\'s figures', () => {
     expect(copperInchLabel(15.88)).toBe('5/8″');
     expect(copperInchLabel(9.52)).toBe('3/8″');
     expect(copperInchLabel(16)).toBeNull();
+  });
+
+  it('reads a copper size in mm first in SI and by its inch name first in IP', () => {
+    expect(copperSizeText(15.88, 'si')).toBe('Ø15.88 (5/8″)');
+    expect(copperSizeText(15.88, 'ip')).toBe('5/8″ (Ø15.88)');
+    expect(copperSizeText(16, 'si')).toBe('Ø16.00');
+    expect(copperSizeText(16, 'ip')).toBe('Ø0.63 in');
   });
 
   it('reads the circuit: its outdoor unit, the indoor units it serves, the longest path and the profile limit', () => {

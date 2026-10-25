@@ -68,6 +68,19 @@ describe('the refrigerant segment provider', () => {
     expect(bendModel.options.some((option) => option.group === 'remove-bend' && bendModel.tabOf(option) === 'add')).toBe(true);
   });
 
+  it('reads in IP: the tube by its inch name, insulation in inches, the checks with their IP figures', () => {
+    const report = { ...EMPTY_REPORT, issues: [{ ...issue('PIPE_LENGTH', 'gas'), message: 'Total routed length 92340 mm exceeds 90000 mm.' }] };
+    const model = createRefrigerantSegmentProvider({ report, unitSystem: 'ip' }).model(scene, focusOn('gas', straight.key))!;
+    const titles = (group: string) => model.options.filter((option) => option.group === group).map((option) => option.title);
+    expect(model.head.size).toBe('5/8″ (Ø15.88)');
+    expect(titles('size')).toEqual(['1/2″ (Ø12.70)', '5/8″ (Ø15.88)', '3/4″ (Ø19.05)']);
+    expect(titles('insulation')).toEqual(['1 in', '1-1/4 in', '1-1/2 in', '2 in']);
+    expect(model.issues.map((line) => line.message)).toEqual(['Total routed length 92340 mm (303.0 ft) exceeds 90000 mm (295.3 ft).']);
+    // SI reads as it did.
+    expect(provider.model(scene, focusOn('gas', straight.key))!.options.filter((option) => option.group === 'insulation').map((option) => option.title))
+      .toEqual(['25 mm', '32 mm', '38 mm', '50 mm']);
+  });
+
   it('commits through the drawing\'s command (one undo) and recommends the profile\'s size', () => {
     expect(typeof provider.commit).toBe('function');
     expect(provider.recommendedBadge).toBe('recommended');

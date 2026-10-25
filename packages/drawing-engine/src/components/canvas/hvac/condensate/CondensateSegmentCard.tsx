@@ -38,6 +38,9 @@ import {
 import type { SegmentPieceRow } from '../segments/SegmentPieceList';
 import type { SegmentCardModel, SegmentFieldHost, SegmentIssueLine, SegmentProvider } from '../segments/segmentProvider';
 import type { SegmentFocus } from '../segments/segmentUiStore';
+import {
+  formatQuantity, fromDisplay, inchFractionText, slopeFigureText, slopeText, toDisplay, toDisplayText, unitLabel, type HvacUnitSystem,
+} from '../units/hvacUnits';
 
 import type { CondensateEditContext } from './condensateEditing';
 import { condensateNetworkBaseline, condensatePieceFigures, condensateSessionFor, type CondensatePieceFigures } from './condensatePieceFigures';
@@ -61,6 +64,8 @@ type CondensateCardModel = SegmentCardModel<CondensateSegmentOption, CondensateO
 
 export interface CondensateCardContext extends CondensateEditContext {
   report: VrfValidationReport;
+  /** The document's unit system: in IP a pipe's outside and bore and its insulation in inches, falls in in/ft, flows in gph, messages with IP figures. */
+  unitSystem?: HvacUnitSystem;
 }
 
 const ROLE_WORD: Record<CondensateSegmentRole, string> = { 'unit-branch': 'Branch', main: 'Main', lift: 'Lift', drop: 'Drop', terminal: 'Outlet' };
@@ -78,6 +83,20 @@ const KIND_WORD: Record<CondensatePieceKind, string> = {
   eye: 'Rodding eye', vent: 'Air vent', sleeve: 'Wall sleeve',
 };
 const percent = (value: number) => `${number(value, value < 10 ? 1 : 0)} %`;
+
+// The engineering figures in the document's unit system (lengths, levels, lifts and margins stay in mm and m).
+const fallText = (value: number, system: HvacUnitSystem) => (system === 'ip' ? slopeText(value) : percent(value));
+/** A pipe's outside and bore: "Ø32.0 outside, 28.4 mm bore" / "Ø1.26 in outside, 1.12 in bore". */
+const pipeText = (outerMm: number, innerMm: number, system: HvacUnitSystem) => (system === 'ip'
+  ? `Ø${(outerMm / 25.4).toFixed(2)} in outside, ${(innerMm / 25.4).toFixed(2)} in bore`
+  : `Ø${number(outerMm, 1)} outside, ${number(innerMm, 1)} mm bore`);
+const insulationText = (mm: number, system: HvacUnitSystem) => (system === 'ip' ? `${inchFractionText(mm)} in` : `${number(mm)} mm`);
+/** A flow's figure: L/h (to `siDigits`), or gph to the hundredth under 10, the tenth under 100, whole above. */
+const flowNumber = (litresPerHour: number, system: HvacUnitSystem, siDigits: number) => {
+  if (system === 'si') return number(litresPerHour, siDigits);
+  const gph = toDisplay('flow', litresPerHour, 'ip');
+  return number(gph, gph < 10 ? 2 : gph < 100 ? 1 : 0);
+};
 
 /** A piece's picture. */
 export function DrainSegmentGlyph({ kind, className }: { kind: CondensatePieceKind; className?: string }) {
@@ -112,17 +131,21 @@ function stat(value: string, unit: string, title: string, status?: FigureStatus 
 const MARGIN_TEXT: Record<FigureStatus, string> = { ok: '100 mm or more to spare', near: 'under 100 mm to spare', over: 'under 40 mm to spare' };
 
 /** The piece in one strip: what matters for its kind first. */
-function FigureStrip({ figures, piece }: { figures: CondensatePieceFigures; piece: CondensatePiece }) {
+function FigureStrip({ figures, piece, system }: { figures: CondensatePieceFigures; piece: CondensatePiece; system: HvacUnitSystem }) {
   const stats: ReactNode[] = [];
-  const size = stat(`CD ${figures.nominalSize}`, '', `${figures.system.label} ${figures.nominalSize}: Ø${number(figures.outerDiameterMm, 1)} outside, ${number(figures.innerDiameterMm, 1)} mm bore`);
+  const size = stat(`CD ${figures.nominalSize}`, '', `${figures.system.label} ${figures.nominalSize}: ${pipeText(figures.outerDiameterMm, figures.innerDiameterMm, system)}`);
   const margin = figures.headMarginMm !== null && figures.headStatus
     ? stat(number(figures.headMarginMm), 'mm', `Head margin: ${number(figures.headMarginMm)} mm above the lowest profile that still meets the minimum fall — ${MARGIN_TEXT[figures.headStatus]}`, figures.headStatus, 'condensate-segment-margin')
     : null;
   if (figures.fall) {
     const fall = figures.fall;
+    const title = `Falls ${fallText(fall.slopePercent, system)} (${fall.ratio}) — minimum ${fallText(fall.minimumPercent, system)}, preferred ${fallText(fall.preferredPercent, system)}: ${STATUS_TEXT[fall.status]}`;
     stats.push(<span key="s">{size}</span>);
     stats.push(<span key="l">{stat(number(figures.planLengthMm / 1000, 2), 'm', `${metres(figures.planLengthMm, 3)} in plan, ${metres(figures.lengthMm, 3)} along it`)}</span>);
-    stats.push(<span key="f">{stat(fall.ratio, percent(fall.slopePercent), `Falls ${percent(fall.slopePercent)} (${fall.ratio}) — minimum ${percent(fall.minimumPercent)}, preferred ${percent(fall.preferredPercent)}: ${STATUS_TEXT[fall.status]}`, fall.status, 'condensate-segment-fall')}</span>);
+    // The ratio reads alike in both systems; in IP the fall is named in inches per foot first.
+    stats.push(<span key="f">{system === 'ip'
+      ? stat(slopeFigureText(fall.slopePercent), `in/ft · ${fall.ratio}`, title, fall.status, 'condensate-segment-fall')
+      : stat(fall.ratio, percent(fall.slopePercent), title, fall.status, 'condensate-segment-fall')}</span>);
     if (margin) stats.push(<span key="m" className="ml-auto">{margin}</span>);
   } else if (figures.lift) {
     const lift = figures.lift;
@@ -154,33 +177,35 @@ function FigureStrip({ figures, piece }: { figures: CondensatePieceFigures; piec
     stats.push(<span key="s">{size}</span>);
   }
   if (figures.capacity && figures.capacity.status !== 'ok') {
-    stats.push(<span key="q">{stat(number(figures.capacity.designLitresPerHour, 1), `of ${number(figures.capacity.capacityLitresPerHour)} L/h`, 'Design flow against what it carries at its fall', figures.capacity.status)}</span>);
+    stats.push(<span key="q">{stat(flowNumber(figures.capacity.designLitresPerHour, system, 1),
+      `of ${flowNumber(figures.capacity.capacityLitresPerHour, system, 0)} ${unitLabel('flow', system)}`, 'Design flow against what it carries at its fall', figures.capacity.status)}</span>);
   }
   return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pb-2" data-testid="condensate-segment-figures">{stats}</div>;
 }
 
 /** How the piece is built and what it carries (behind ⓘ). */
-function BuildInfo({ figures, piece }: { figures: CondensatePieceFigures; piece: CondensatePiece }) {
+function BuildInfo({ figures, piece, system }: { figures: CondensatePieceFigures; piece: CondensatePiece; system: HvacUnitSystem }) {
   const fittings = Object.entries(piece.fittings.reduce<Record<string, number>>((counts, fitting) => {
     counts[fitting.kind] = (counts[fitting.kind] ?? 0) + 1;
     return counts;
   }, {})).map(([kind, count]) => `${count}× ${kind.replace('-', ' ')}`);
+  const flowUnit = unitLabel('flow', system);
   return (
     <>
       <div>
-        {figures.system.label} {figures.nominalSize} · Ø{number(figures.outerDiameterMm, 1)} outside, {number(figures.innerDiameterMm, 1)} mm bore
-        {figures.insulationMm > 0 ? ` · ${number(figures.insulationMm)} mm closed-cell insulation` : ' · uninsulated'}
+        {figures.system.label} {figures.nominalSize} · {pipeText(figures.outerDiameterMm, figures.innerDiameterMm, system)}
+        {figures.insulationMm > 0 ? ` · ${insulationText(figures.insulationMm, system)} closed-cell insulation` : ' · uninsulated'}
         {figures.system.verified ? '' : ' (catalogue walls unverified)'}
       </div>
       <div>
-        {ROLE_WORD[figures.role]} · carries {figures.unitsServed} unit{figures.unitsServed === 1 ? '' : 's'}, {number(figures.capacityKw, 1)} kW
-        {figures.capacity ? ` · design flow ${number(figures.capacity.designLitresPerHour, 1)} L/h, ${number(figures.capacity.capacityLitresPerHour)} L/h at its fall ${number(figures.capacity.fillRatio * 100)} % full (Manning)` : ''}
+        {ROLE_WORD[figures.role]} · carries {figures.unitsServed} unit{figures.unitsServed === 1 ? '' : 's'}, {formatQuantity('capacity', figures.capacityKw, system)}
+        {figures.capacity ? ` · design flow ${flowNumber(figures.capacity.designLitresPerHour, system, 1)} ${flowUnit}, ${flowNumber(figures.capacity.capacityLitresPerHour, system, 0)} ${flowUnit} at its fall ${number(figures.capacity.fillRatio * 100)} % full (Manning)` : ''}
       </div>
       {figures.fall ? (
         <div>
-          Falls {percent(figures.fall.slopePercent)} ({formatFallRatio(Math.max(0, figures.fall.slopePercent))}) over {metres(figures.planLengthMm, 2)}
+          Falls {fallText(figures.fall.slopePercent, system)} ({formatFallRatio(Math.max(0, figures.fall.slopePercent))}) over {metres(figures.planLengthMm, 2)}
           {figures.fall.offsets.count ? ` · ${figures.fall.offsets.count === 1 ? 'a 45° offset drops' : `${figures.fall.offsets.count} 45° offsets drop`} it ${number(figures.fall.offsets.dropMm)} mm` : ''}
-          {` · minimum ${percent(figures.fall.minimumPercent)}, preferred ${percent(figures.fall.preferredPercent)}`}
+          {` · minimum ${fallText(figures.fall.minimumPercent, system)}, preferred ${fallText(figures.fall.preferredPercent, system)}`}
         </div>
       ) : null}
       {figures.invert ? <div>Invert level {number(figures.invert.fromMm)} → {number(figures.invert.toMm)} mm (pipe bottom inside, above the floor)</div> : null}
@@ -286,7 +311,7 @@ function OptionGlyph({ glyph, className }: { glyph: CondensateOptionGlyph; class
 }
 
 /** What an option does, as chips: the change in the network's head margin and the checks it would newly fail. */
-function DeltaChips({ evaluation }: { evaluation: CondensateOptionEvaluation }) {
+function DeltaChips({ evaluation, system }: { evaluation: CondensateOptionEvaluation; system: HvacUnitSystem }) {
   const chips: ReactNode[] = [];
   if (evaluation.deltaMarginMm !== null && Math.abs(evaluation.deltaMarginMm) >= 5) {
     chips.push(<span key="m" className={`rounded px-1 tabular-nums ${evaluation.deltaMarginMm > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}
@@ -295,7 +320,7 @@ function DeltaChips({ evaluation }: { evaluation: CondensateOptionEvaluation }) 
   const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error');
   if (errors.length) {
     chips.push(
-      <span key="err" className="inline-flex items-center gap-0.5 rounded bg-red-50 px-1 font-medium text-red-700" title={errors.map((issue) => `${issue.code}: ${issue.message}`).join('\n')}>
+      <span key="err" className="inline-flex items-center gap-0.5 rounded bg-red-50 px-1 font-medium text-red-700" title={errors.map((issue) => `${issue.code}: ${toDisplayText(issue.message, system)}`).join('\n')}>
         <TriangleAlert size={10} aria-hidden="true" />{errors.length}<span className="sr-only"> new error{errors.length === 1 ? '' : 's'}</span>
       </span>,
     );
@@ -304,9 +329,9 @@ function DeltaChips({ evaluation }: { evaluation: CondensateOptionEvaluation }) 
 }
 
 /** An option's whole result on one line: the engine's verdict, the margin it gains or loses, the new checks. */
-function ResultLine({ evaluation }: { evaluation: CondensateOptionEvaluation }) {
-  if (evaluation.refused) return <span className="text-red-700">{evaluation.refused}</span>;
-  const parts: ReactNode[] = [<span key="v">{evaluation.verdict}</span>];
+function ResultLine({ evaluation, system }: { evaluation: CondensateOptionEvaluation; system: HvacUnitSystem }) {
+  if (evaluation.refused) return <span className="text-red-700">{toDisplayText(evaluation.refused, system)}</span>;
+  const parts: ReactNode[] = [<span key="v">{toDisplayText(evaluation.verdict, system)}</span>];
   if (evaluation.deltaMarginMm !== null && Math.abs(evaluation.deltaMarginMm) >= 1) {
     parts.push(<span key="m" className={evaluation.deltaMarginMm > 0 ? 'text-emerald-700' : 'text-amber-700'}>{signed(evaluation.deltaMarginMm)} mm margin</span>);
   }
@@ -318,12 +343,11 @@ function ResultLine({ evaluation }: { evaluation: CondensateOptionEvaluation }) 
   return <span className="tabular-nums">{parts.map((part, index) => <span key={index}>{index ? ' · ' : ''}{part}</span>)}</span>;
 }
 
-const resultLine = (evaluation: CondensateOptionEvaluation) => <ResultLine evaluation={evaluation} />;
 const ValueField = SegmentValueField<CondensateSegmentOption, CondensateOptionEvaluation>;
 type FieldHost = SegmentFieldHost<CondensateSegmentOption, CondensateOptionEvaluation>;
 
 /** The Edit tab: the network's fall, a level the run keeps under, a leg sideways, a riser's height, a wye, a termination's level. */
-function EditPanel({ host, scene, element, run, piece, figures, route, options }: {
+function EditPanel({ host, scene, element, run, piece, figures, route, options, system }: {
   host: FieldHost;
   scene: readonly HvacElement[];
   element: HvacElement;
@@ -332,6 +356,7 @@ function EditPanel({ host, scene, element, run, piece, figures, route, options }
   figures: CondensatePieceFigures;
   route: PlanRoute | undefined;
   options: readonly CondensateSegmentOption[];
+  system: HvacUnitSystem;
 }): ReactNode {
   const chipRow = (group: CondensateSegmentOption['group']) => (
     <ChipRow options={options.filter((option) => option.group === group)} evaluations={host.evaluations} onHover={host.onHover} onApply={host.onApply} />
@@ -340,12 +365,19 @@ function EditPanel({ host, scene, element, run, piece, figures, route, options }
   const blocks: ReactNode[] = [];
   if (piece.kind === 'leg') {
     const fallNow = Math.round((figures.fall?.slopePercent ?? 1) * 100) / 100;
+    // In IP the fall is typed in inches per foot, to the thousandth (1/8 is 0.125); the network keeps it in %.
+    const ip = system === 'ip';
+    const shownNow = ip ? Number(toDisplay('slope', fallNow, 'ip').toFixed(3)) : fallNow;
     blocks.push(
       <EditBlock key="fall" title="Fall · the whole network">
         <div className="px-1">{chipRow('fall')}</div>
-        <ValueField host={host} label="Fall" unit="%" current={fallNow} min={0.5} max={10} step={0.25} fineStep={0.05} decimals={2} testId="condensate-segment-fall-field"
+        <ValueField host={host} label="Fall" unit={unitLabel('slope', system)} current={shownNow} min={ip ? 0.06 : 0.5} max={ip ? 1.2 : 10}
+          step={ip ? 0.01 : 0.25} fineStep={ip ? 0.005 : 0.05} decimals={ip ? 3 : 2} testId="condensate-segment-fall-field"
           hint="the least fall on every run; steeper where the head allows"
-          makeOption={(value) => (Math.abs(value - fallNow) < 1e-3 ? null : condensateValueOption(element, run, piece, { kind: 'fall', percent: value }))} />
+          makeOption={(value) => {
+            const fall = ip ? Math.round(fromDisplay('slope', value, 'ip') * 1e4) / 1e4 : value;
+            return Math.abs(fall - fallNow) < 1e-3 ? null : condensateValueOption(element, run, piece, { kind: 'fall', percent: fall });
+          }} />
       </EditBlock>,
     );
     const top = Math.round(Math.max(...run.nodes.map((node) => node.z)));
@@ -399,6 +431,24 @@ function EditPanel({ host, scene, element, run, piece, figures, route, options }
   return blocks.length ? <div className="space-y-2" data-testid="condensate-segment-edit-panel">{blocks}</div> : null;
 }
 
+/** A size option's detail: "Ø32 · bore 28.4 mm · …". */
+const SIZE_DETAIL = /^Ø(\d+(?:\.\d+)?) · bore (\d+(?:\.\d+)?) mm/;
+
+/** The options in the unit system: in IP a fall named in in/ft, a size's outside and bore in inches, the details' figures with their IP values. */
+function optionsIn(options: CondensateSegmentOption[], system: HvacUnitSystem): CondensateSegmentOption[] {
+  if (system === 'si') return options;
+  return options.map((option) => {
+    const fall = option.group === 'fall' ? /^fall(?:-custom)?:(\d+(?:\.\d+)?)$/.exec(option.id) : null;
+    return {
+      ...option,
+      title: fall ? slopeText(Number(fall[1])) : option.title,
+      detail: option.group === 'size'
+        ? option.detail.replace(SIZE_DETAIL, (_match, outer: string, bore: string) => `Ø${(Number(outer) / 25.4).toFixed(2)} in · bore ${(Number(bore) / 25.4).toFixed(2)} in`)
+        : toDisplayText(option.detail, system),
+    };
+  });
+}
+
 function titleOf(piece: CondensatePiece, figures: CondensatePieceFigures, run: CondensateRun): { title: string; detail: string } {
   const role = ROLE_WORD[run.role];
   switch (piece.kind) {
@@ -436,9 +486,11 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Condensa
   const baseline = networkId ? condensateNetworkBaseline(scene, networkId, context) : null;
   const figures = condensatePieceFigures(scene, element, run, piece, context.settings, baseline);
   const { title, detail } = titleOf(piece, figures, run);
-  const options = condensatePieceOptions(scene, element, run, piece, context);
+  const system = context.unitSystem ?? 'si';
+  const options = optionsIn(condensatePieceOptions(scene, element, run, piece, context), system);
   const route = networkId ? condensateSessionFor(scene, networkId, context)?.model.routes.get(element.id) : undefined;
   const token: RekeyToken = { kind: piece.kind, ordinal: piece.ordinal };
+  const issues = condensatePieceIssues(context.report, element, run, piece, figures);
   return {
     head: {
       title,
@@ -449,13 +501,13 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Condensa
       tone: TONE,
       kind: piece.kind,
     },
-    figures: <FigureStrip figures={figures} piece={piece} />,
-    info: <BuildInfo figures={figures} piece={piece} />,
-    issues: condensatePieceIssues(context.report, element, run, piece, figures),
+    figures: <FigureStrip figures={figures} piece={piece} system={system} />,
+    info: <BuildInfo figures={figures} piece={piece} system={system} />,
+    issues: system === 'si' ? issues : issues.map((issue) => ({ ...issue, message: toDisplayText(issue.message, system) })),
     options,
     evaluate: (option) => evaluateCondensateOption(scene, option, context),
     tabOf: (option) => (SWAP_GROUPS.has(option.group) ? 'swap' : ADD_GROUPS.has(option.group) ? 'add' : null),
-    edit: (host) => EditPanel({ host, scene, element, run, piece, figures, route, options }),
+    edit: (host) => EditPanel({ host, scene, element, run, piece, figures, route, options, system }),
     neighbour: (direction) => {
       const next = neighbourCondensatePiece(run, piece.key, direction);
       return next ? { key: next.key, anchorMark: null } : null;
@@ -484,6 +536,7 @@ export function condensatePieceRows(element: HvacElement): SegmentPieceRow[] {
 /** The condensate drains' segment cards, read with the project's condensate settings and the live design checks. */
 export function createCondensateSegmentProvider(context: CondensateCardContext): CondensateSegmentProvider {
   const cache = new WeakMap<readonly HvacElement[], Map<string, CondensateCardModel | null>>();
+  const system = context.unitSystem ?? 'si';
   return {
     domain: 'condensate',
     testIdPrefix: 'condensate-segment',
@@ -498,8 +551,8 @@ export function createCondensateSegmentProvider(context: CondensateCardContext):
       return byPiece.get(id) ?? null;
     },
     optionGlyph: (option) => <OptionGlyph glyph={option.glyph} className="h-3.5 w-3.5" />,
-    chips: (evaluation) => <DeltaChips evaluation={evaluation} />,
-    result: resultLine,
+    chips: (evaluation) => <DeltaChips evaluation={evaluation} system={system} />,
+    result: (evaluation) => <ResultLine evaluation={evaluation} system={system} />,
     // A peek's quick picks: the most head margin gained first.
     quickScore: (evaluation) => -(evaluation.deltaMarginMm ?? 0),
     // One undo step, as a drain handle's edit is (ids kept; a re-solve may add or take out runs).
