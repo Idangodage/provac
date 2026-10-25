@@ -97,6 +97,17 @@ export function inchesText(mm: number): string {
 }
 
 /** A duct section as the system reads it: "600×350" / "Ø300" in mm, "24×14" / "Ø12" in inches. */
+/** A tube's size in inches to the nearest eighth, as copper tube is named: 6.35 → "1/4", 28.58 → "1-1/8". */
+export function inchFractionText(mm: number): string {
+  const eighths = Math.round(mm / (IN_MM / 8));
+  const whole = Math.floor(eighths / 8);
+  let rest = eighths % 8;
+  let denominator = 8;
+  while (rest > 0 && rest % 2 === 0) { rest /= 2; denominator /= 2; }
+  if (!rest) return String(whole);
+  return whole ? `${whole}-${rest}/${denominator}` : `${rest}/${denominator}`;
+}
+
 export function formatSection(section: { widthMm: number; heightMm: number; diameterMm?: number }, system: HvacUnitSystem): string {
   if (section.diameterMm !== undefined) return system === 'ip' ? `Ø${inchesText(section.diameterMm)}` : `Ø${Math.round(section.diameterMm)}`;
   return system === 'ip'

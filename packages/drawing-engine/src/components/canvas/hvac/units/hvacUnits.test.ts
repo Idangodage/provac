@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  displayDigits, formatNumberIn, formatQuantity, formatSection, fromDisplay, inchesText, tonsOf, toDisplay, toDisplayText, unitLabel,
+  displayDigits, formatNumberIn, formatQuantity, formatSection, fromDisplay, inchFractionText, inchesText, tonsOf, toDisplay, toDisplayText, unitLabel,
   type HvacQuantity,
 } from './hvacUnits';
 
@@ -62,5 +62,11 @@ describe('HVAC units', () => {
       .toBe('Main 700×350 (27.6×13.8 in) at 0.80 Pa/m (0.098 in. wg/100 ft), 24 m (78.7 ft) from the gully');
     // Not a unit: an area, minutes, a count.
     expect(toDisplayText('12 m² of sheet in 3 min, 2 × Ø300', 'ip')).toBe('12 m² of sheet in 3 min, 2 × Ø300 (Ø11.8 in)');
+  });
+
+  it('names copper tube in inches to the eighth, as it is sold', () => {
+    expect(['6.35', '9.52', '12.7', '15.88', '19.05', '22.22', '28.58', '34.92', '41.28'].map((mm) => inchFractionText(Number(mm))))
+      .toEqual(['1/4', '3/8', '1/2', '5/8', '3/4', '7/8', '1-1/8', '1-3/8', '1-5/8']);
+    expect(inchFractionText(25.4)).toBe('1');
   });
 });

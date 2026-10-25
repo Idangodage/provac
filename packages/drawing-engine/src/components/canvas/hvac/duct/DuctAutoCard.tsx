@@ -21,16 +21,14 @@ import { shallow } from 'zustand/shallow';
 import { useSmartDrawingStore } from '../../../../store';
 import { Caption } from '../unit/unitPanelKit';
 
+import { DesignCriteriaPicker } from './DuctDesignCriteriaPicker';
 import { DuctFrontierChart } from './DuctFrontierChart';
+import { FanSpeedAirflow, FrictionSlider, MethodStrip, TerminalGroupList, VelocityLimits, type TerminalRow } from './DuctSizingBasis';
 import {
   AppliedSizingSummary,
-  BasisEditor,
-  FanSpeedPicker,
   ServiceTabs,
   SizingMethodSwitch,
   SizingTable,
-  SystemAirflowRow,
-  TerminalAirflowList,
   type SizingMethod,
   type TerminalAirflows,
 } from './DuctSizingSection';
@@ -253,7 +251,6 @@ export function DuctAutoCard() {
   }), shallow);
   const { result, message, running, request, resizing } = preview;
   const cardRef = useRef<HTMLDivElement>(null);
-  const [airflowBadInput, setAirflowBadInput] = useState(false);
   const [layout, setLayout] = useState<AutoDuctLayoutChoice>('auto');
   const [shape, setShape] = useState<AutoDuctShape>('optimal');
   /** The terminals' collars for this design: as each is set, or all on their sides, or all on top. */
@@ -261,6 +258,7 @@ export function DuctAutoCard() {
   const [rebuild, setRebuild] = useState(false);
   const { ductSettings, setDuctSettings } = useSmartDrawingStore((state) => ({ ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings }), shallow);
   const [sizingTab, setSizingTab] = useState<DuctService>('supply');
+  const [limitsOpen, setLimitsOpen] = useState(false);
   const rooms = useSmartDrawingStore((state) => state.rooms);
   const selection = useMemo(() => autoDuctSelection(selectedElementIds, hvacElements, { includeConnected: rebuild, rooms }), [selectedElementIds, hvacElements, rebuild, rooms]);
   const systemTag = selection ? airSystemTags(hvacElements).get(selection.unit.id) ?? (selection.unit.label || 'Unit') : '';
@@ -277,7 +275,6 @@ export function DuctAutoCard() {
   const setBases = (value: Partial<Record<DuctService, DuctSystemSizing>>) => patchDraft({ bases: value });
   const setTerminalAirflows = (value: TerminalAirflows) => patchDraft({ terminalAirflows: value });
   useEffect(() => {
-    setAirflowBadInput(false);
     setRebuild(false);
   }, [unitId]);
   if (!selection) return null;
@@ -294,7 +291,7 @@ export function DuctAutoCard() {
   }));
   const occupied = occupiedServices.size > 0;
   const airflowEntry = parseDuctNumber(airflowDraft, 0.01, 50000, true);
-  const airflowError = airflowBadInput ? 'Enter a valid airflow.' : airflowEntry.valid ? null : airflowEntry.message;
+  const airflowError = airflowEntry.valid ? null : airflowEntry.message;
   const airflowOverride = airflowEntry.valid ? airflowEntry.value : null;
   const current = result?.unitId === unit.id && isAutoDuctPreviewCurrent(preview, hvacElements, ductSettings, walls) ? result : null;
   // ---- Sizing ----
@@ -313,8 +310,8 @@ export function DuctAutoCard() {
     setBases(nextBases);
     if (current && method === 'constant-friction') resizeAutoDuctPreview(allBases(nextBases), airflowEntries);
   };
-  const updateAirflow = (id: string, value: number | null) => {
-    const next = { ...terminalAirflows, [id]: value };
+  const updateAirflows = (ids: readonly string[], value: number | null) => {
+    const next = { ...terminalAirflows, ...Object.fromEntries(ids.map((id) => [id, value])) };
     setTerminalAirflows(next);
     if (current && method === 'constant-friction') resizeAutoDuctPreview(allBases(), next);
   };
@@ -327,11 +324,11 @@ export function DuctAutoCard() {
     const set = Object.prototype.hasOwnProperty.call(terminalAirflows, terminal.id) ? terminalAirflows[terminal.id] : spec.designAirflowM3h;
     return { id: terminal.id, spec: { designAirflowM3h: set ?? null, neckDiameterMm: spec.neckDiameterMm } };
   }));
-  const airflowRows = tabTerminals.map((terminal, index) => {
+  const airflowRows: TerminalRow[] = tabTerminals.map((terminal, index) => {
     const spec = readDuctTerminalSpec(terminal)!;
     const share = tabShares[index]!;
     return {
-      id: terminal.id, label: terminal.label || spec.kind, airflowM3h: share.airflowM3h, fixed: share.fixed,
+      id: terminal.id, label: terminal.label || spec.kind, spec, airflowM3h: share.airflowM3h, fixed: share.fixed,
       neckMm: spec.neckDiameterMm, neckVelocityMs: neckVelocityMs(spec, share.airflowM3h),
     };
   });
@@ -434,34 +431,31 @@ export function DuctAutoCard() {
             <SizingMethodSwitch method={method} onChange={changeMethod} />
           </div>
           <div className="space-y-1 border-t border-slate-100 px-2.5 py-2">
-            {air.airflowM3h ? <FanSpeedPicker label="Auto duct fan speed" value={fanSpeed} airflowM3h={air.airflowM3h} onChange={setFanSpeed} />
-              : <p className={`text-[10.5px] ${defaultAirflow ? 'text-slate-500' : 'text-amber-700'}`}>{defaultAirflow ? 'Using the unit’s Airflow field.' : 'No airflow data: enter the system airflow.'}</p>}
-            <SystemAirflowRow source={airflowDraft ? (
-              <button type="button" aria-label="Use the unit's airflow" title="Clear: the unit's airflow" onClick={() => { setAirflowDraft(''); setAirflowBadInput(false); }}
-                className="inline-flex items-center gap-0.5 rounded px-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700">typed<X size={10} aria-hidden="true" /></button>
-            ) : defaultAirflow ? (air.airflowM3h ? 'fan speed' : 'Airflow field') : null}>
-              <span className={`inline-flex h-6 items-center rounded-[7px] border bg-white transition-colors ${airflowError ? 'border-red-400' : 'border-slate-200 focus-within:border-sky-400 focus-within:ring-2 focus-within:ring-sky-100'}`}>
-                <input type="number" step={10} min={0.01} max={50000} value={airflowDraft} placeholder={defaultAirflow ? String(Math.round(defaultAirflow)) : 'm³/h'}
-                  onChange={(event) => { setAirflowDraft(event.target.value); setAirflowBadInput(event.target.validity.badInput); }}
-                  onKeyDown={(event) => { if (event.key === 'Escape') { setAirflowDraft(''); setAirflowBadInput(false); event.stopPropagation(); } }}
-                  className="w-[52px] min-w-0 bg-transparent px-1.5 text-right text-xs font-medium tabular-nums text-slate-900 outline-none placeholder:font-normal placeholder:italic placeholder:text-slate-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                  aria-label="Auto duct airflow" aria-invalid={Boolean(airflowError)} aria-describedby={airflowError ? 'duct-auto-airflow-help' : undefined} />
-                <span className="shrink-0 pr-1.5 text-[10px] text-slate-400">m³/h</span>
-              </span>
-            </SystemAirflowRow>
+            {!air.airflowM3h ? <p className={`text-[10.5px] ${defaultAirflow ? 'text-slate-500' : 'text-amber-700'}`}>{defaultAirflow ? 'Using the unit’s Airflow field.' : 'No airflow data: enter the system airflow.'}</p> : null}
+            <FanSpeedAirflow speedLabel="Auto duct fan speed" airflowLabel="Auto duct airflow" fanSpeed={fanSpeed} airflowM3h={air.airflowM3h} expanded live
+              typedM3h={airflowOverride} defaultM3h={defaultAirflow} sourceNote={defaultAirflow ? (air.airflowM3h ? 'fan speed' : 'Airflow field') : null}
+              onFanSpeed={setFanSpeed} onTypedAirflow={(value) => setAirflowDraft(value === null ? '' : String(value))} />
             {airflowError ? <p id="duct-auto-airflow-help" className="text-right text-[10.5px] text-red-600">{airflowError}</p> : null}
           </div>
           {sizingServices.length > 1 || (method === 'constant-friction' && sizingServices.length) ? (
             <div className="space-y-1.5 border-t border-slate-100 px-2.5 py-2">
               <ServiceTabs services={sizingServices} active={tab} onChange={setSizingTab} />
               {method === 'constant-friction' && sizingServices.length ? (
-                <BasisEditor key={`${unit.id}:${tab}`} basis={basisFor(tab)} live onChange={(next) => updateBasis(tab, next)} />
+                <div className="space-y-1" key={`${unit.id}:${tab}`}>
+                  <DesignCriteriaPicker unitId={unit.id} unitTag={systemTag} canApply={occupied && !current} />
+                  <MethodStrip basis={basisFor(tab)} report={current?.services.find((entry) => entry.service === tab)?.sizingReport ?? null} live compact
+                    onChange={(next) => updateBasis(tab, next)} />
+                  <FrictionSlider frictionPaPerM={basisFor(tab).frictionPaPerM} label="Auto duct friction rate slider" testId="duct-auto-slider"
+                    onPreview={(rate) => { if (rate !== null) updateBasis(tab, { ...basisFor(tab), drive: 'friction', frictionPaPerM: rate }); }}
+                    onCommit={(rate) => updateBasis(tab, { ...basisFor(tab), drive: 'friction', frictionPaPerM: rate })} />
+                  <VelocityLimits basis={basisFor(tab)} live onChange={(next) => updateBasis(tab, next)} open={limitsOpen} onOpenChange={setLimitsOpen} />
+                </div>
               ) : null}
             </div>
           ) : null}
           {airflowRows.length ? (
             <div className="border-t border-slate-100 px-2.5 py-2">
-              <TerminalAirflowList rows={airflowRows} neckCapMs={neckCap} systemAirflowM3h={systemAirflow} live foldable onChange={(id, value) => updateAirflow(id, value)} />
+              <TerminalGroupList rows={airflowRows} neckCapMs={neckCap} systemAirflowM3h={systemAirflow} live onChange={(ids, value) => updateAirflows(ids, value)} />
             </div>
           ) : null}
         </div>

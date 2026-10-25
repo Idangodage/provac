@@ -21,8 +21,9 @@ import {
 } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { ductWallInputs } from './ductBuilding';
+import { designCriteriaSettings, type DesignCriteria } from './ductDesignCriteria';
 import { stampDesignedAt, withInitialSizingRecords } from './ductSizingRecord';
-import { ductSystemRootOf, type DuctSystemSizingReport } from './ductSystemSizing';
+import { ductSystemRootOf, initialSizingBasis, type DuctSystemSizingReport } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
 import { cancelAutoDuctWorker, runAutoDuctInWorker } from './optimizer/ductOptimizerClient';
@@ -295,6 +296,66 @@ export function resizeDuctSystemAtBasis(unitId: string, service: DuctService): D
   const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
   const { basis } = continueBasis(hvacElements, unitId, service, ductSettings);
   return resizeDuctSystemOnDrawing(unitId, service, basis, undefined, `Duct sizing (${service}): re-sized at ${basis.frictionPaPerM.toFixed(2)} Pa/m`);
+}
+
+/**
+ * Sizes several of a unit's services on the drawing, each at its own basis,
+ * as one command (one undo): the second sized on what the first made of the
+ * drawing. Returns each service's report.
+ */
+export function resizeUnitDuctsOnDrawing(
+  unitId: string,
+  services: ReadonlyArray<{ service: DuctService; basis: DuctSystemSizing }>,
+  action: string,
+): Partial<Record<DuctService, DuctSystemSizingReport>> {
+  const state = useSmartDrawingStore.getState();
+  let working: readonly HvacElement[] = state.hvacElements;
+  const changed = new Map<string, HvacElement>();
+  const reports: Partial<Record<DuctService, DuctSystemSizingReport>> = {};
+  for (const { service, basis } of services) {
+    const sized = sizeUnitService(working, unitId, service, basis, undefined, state.ductSettings, { necks: state.ductSettings.autoNecksFollowAirflow });
+    if (!sized) continue;
+    reports[service] = sized.report;
+    const replaced = new Map(sized.updates.map((element) => [element.id, element]));
+    for (const element of sized.updates) changed.set(element.id, element);
+    working = working.map((element) => replaced.get(element.id) ?? element);
+  }
+  if (changed.size) {
+    state.commitHvacElementCommand(action, { updates: [...changed.values()].map(elementUpdate) });
+    const runs = [...changed.values()].filter(isDuctElement).length;
+    state.setProcessingStatus(`${action}: ${runs} run${runs === 1 ? '' : 's'} resized.`, false);
+  }
+  return reports;
+}
+
+/** Each of a unit's services that has ducts, at the basis it continues from. */
+function unitServiceBases(unitId: string): Array<{ service: DuctService; basis: DuctSystemSizing }> {
+  const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
+  return (['supply', 'return'] as const)
+    .filter((service) => ductSystemRootOf(hvacElements, unitId, service))
+    .map((service) => ({ service, basis: continueBasis(hvacElements, unitId, service, ductSettings).basis }));
+}
+
+/** Every duct of the unit sized again at its basis, both services one undo (after the size series changes). */
+export function resizeUnitDuctsAtBasis(unitId: string, action: string): Partial<Record<DuctService, DuctSystemSizingReport>> {
+  return resizeUnitDuctsOnDrawing(unitId, unitServiceBases(unitId), action);
+}
+
+/**
+ * Makes `criteria` the project's (what new designs size at) and sizes the
+ * unit's ducts by them: each service's limits and friction rate as a new
+ * design takes them (the practice rate, or the rate at which the main
+ * reaches its limit when that is lower), its fan speed and any typed
+ * airflow kept; both services one undo.
+ */
+export function applyDesignCriteriaToUnit(unitId: string, criteria: DesignCriteria, action: string): Partial<Record<DuctService, DuctSystemSizingReport>> {
+  useSmartDrawingStore.getState().setDuctSettings(designCriteriaSettings(criteria));
+  const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
+  const services = unitServiceBases(unitId).map(({ service, basis }) => {
+    const airflow = basis.airflowM3h ?? measureUnitService(hvacElements, unitId, service, ductSettings, basis, { espCheck: false })?.airflowM3h ?? null;
+    return { service, basis: { ...initialSizingBasis(ductSettings, service, airflow, basis.fanSpeed), airflowM3h: basis.airflowM3h } };
+  });
+  return resizeUnitDuctsOnDrawing(unitId, services, action);
 }
 
 /**

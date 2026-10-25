@@ -277,6 +277,14 @@ export function segmentOutlines(plan: DuctFabricationPlan, key: string): Point2D
   return getDuctPlanPresentation(plan).piecePolygons.filter((polygon) => marks.has(polygon.mark)).map((polygon) => polygon.polygon);
 }
 
+/** The plan outlines of the pieces in a stretch of a run (mm from its start); `toEnd`: every piece past `fromMm`. */
+export function stretchOutlines(plan: DuctFabricationPlan, fromMm: number, toMm: number, toEnd = false): Point2D[][] {
+  const marks = new Set(plan.pieces
+    .filter((piece) => piece.stationEndMm > fromMm + 0.5 && (toEnd || piece.stationStartMm < toMm - 0.5))
+    .map((piece) => piece.mark));
+  return getDuctPlanPresentation(plan).piecePolygons.filter((polygon) => marks.has(polygon.mark)).map((polygon) => polygon.polygon);
+}
+
 /** The segment whose outline is nearest a plan point, within `toleranceMm`, and the piece of it there. */
 export function segmentPieceAtPlanPoint(plan: DuctFabricationPlan, point: Point2D, toleranceMm: number): { segment: DuctSegment; mark: string } | null {
   let best: { mark: string; distance: number } | null = null;

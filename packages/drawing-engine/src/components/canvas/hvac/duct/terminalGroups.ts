@@ -11,10 +11,10 @@ export function terminalSpecKey(spec: DuctTerminalSpec): string {
   return [spec.service, spec.kind, spec.neckDiameterMm, `${spec.faceWidthMm}x${spec.faceDepthMm}`, spec.slots ?? '', spec.filter ?? ''].join('|');
 }
 
-/** "Square 4-way Ø300", "Linear slot ×2 Ø200", "Egg-crate Ø300 · G4". */
-export function terminalSpecLabel(spec: DuctTerminalSpec): string {
+/** "Square 4-way Ø300", "Linear slot ×2 Ø200", "Egg-crate Ø300 · G4" (`neck`: the neck as the display shows it, "Ø12"). */
+export function terminalSpecLabel(spec: DuctTerminalSpec, neck: (diameterMm: number) => string = (diameterMm) => `Ø${diameterMm}`): string {
   const slots = spec.kind === 'linear-slot' && spec.slots ? ` ×${spec.slots}` : '';
-  return `${TERMINAL_FACE_LABELS[spec.kind]}${slots} Ø${spec.neckDiameterMm}${spec.filter ? ` · ${spec.filter}` : ''}`;
+  return `${TERMINAL_FACE_LABELS[spec.kind]}${slots} ${neck(spec.neckDiameterMm)}${spec.filter ? ` · ${spec.filter}` : ''}`;
 }
 
 export interface TerminalSpecGroup<T> {

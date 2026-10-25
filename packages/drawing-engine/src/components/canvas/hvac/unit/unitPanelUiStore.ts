@@ -5,21 +5,28 @@
  */
 import { create } from 'zustand';
 
+import type { HvacUnitSystem } from '../units/hvacUnits';
+
 export type UnitPanelTab = 'sizing' | 'spec';
 
 interface UnitPanelUiState {
   tab: UnitPanelTab;
-  /** Folded sections by key ('sections', 'calculation', 'first-sizing', 'limits', …): open or not. */
+  /** Folded sections by key ('chart', 'first-sizing', 'limits', …): open or not. */
   open: Record<string, boolean>;
+  /** The size series offered with a unit system, declined for the session ("Keep metric"). */
+  seriesDeclined: Partial<Record<HvacUnitSystem, boolean>>;
   setTab: (tab: UnitPanelTab) => void;
   setOpen: (key: string, open: boolean) => void;
+  declineSeries: (system: HvacUnitSystem) => void;
 }
 
 export const useUnitPanelUiStore = create<UnitPanelUiState>((set) => ({
   tab: 'sizing',
   open: {},
+  seriesDeclined: {},
   setTab: (tab) => set({ tab }),
   setOpen: (key, open) => set((state) => (state.open[key] === open ? state : { open: { ...state.open, [key]: open } })),
+  declineSeries: (system) => set((state) => ({ seriesDeclined: { ...state.seriesDeclined, [system]: true } })),
 }));
 
 /** A folded section's state (closed until opened) and its setter. */

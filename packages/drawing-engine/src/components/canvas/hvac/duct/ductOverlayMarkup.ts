@@ -192,6 +192,22 @@ export function placedDuctTagMarkup(tags: readonly PlacedDuctTag[], k: number): 
 }
 
 /** Segment focus in plan: violet, apart from the amber of a selected run and the blue / teal of the services. */
+export const NETWORK_FOCUS_COLORS = {
+  hovered: { stroke: '#0284c7', fill: 'rgba(14,165,233,0.16)' },
+  pinned: { stroke: '#0369a1', fill: 'rgba(2,132,199,0.28)', glow: 'rgba(14,165,233,0.24)' },
+} as const;
+
+/** A stretch the unit panel points at (sky, apart from the segment cards' violet): hovered, a light fill; pinned, in a halo. */
+export function networkFocusMarkup(outlines: readonly Point2D[][], tone: 'hovered' | 'pinned'): string {
+  const colors = NETWORK_FOCUS_COLORS[tone];
+  return outlines.map((outline) => {
+    const d = pathData(outline, true);
+    const halo = tone === 'pinned'
+      ? `<path d="${d}" fill="none" stroke="${NETWORK_FOCUS_COLORS.pinned.glow}" stroke-width="12" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>` : '';
+    return `${halo}<path d="${d}" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="${tone === 'pinned' ? 2.4 : 1.8}" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
+  }).join('');
+}
+
 export const SEGMENT_FOCUS_COLORS = {
   hovered: { stroke: '#8b5cf6', fill: 'rgba(139,92,246,0.08)' },
   pinned: { stroke: '#7c3aed', fill: 'rgba(124,58,237,0.26)', glow: 'rgba(124,58,237,0.22)' },

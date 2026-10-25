@@ -35,6 +35,7 @@ import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPre
 import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, type DuctEditResult } from './ductEdits';
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
+import { useDuctNetworkFocusStore, type DuctNetworkFocus } from './ductNetworkFocusStore';
 import {
   airPortMarkup,
   airTerminalMarkup,
@@ -46,6 +47,7 @@ import {
   ductRunTagObstacles,
   ductSupportMarkup,
   equipmentTagObstacle,
+  networkFocusMarkup,
   placedDuctTagMarkup,
   segmentFocusMarkup,
   type DuctMarkupStyle,
@@ -53,7 +55,7 @@ import {
 import { distanceToPolygon, getDuctPlanPresentation } from './ductPick';
 import { buildDuctPlanPresentation, type DuctPlanPresentation } from './ductPlanPresentation';
 import { domainOf, useDuctSegmentUiStore, type DuctSegmentFocus } from './ductSegmentUiStore';
-import { ductSegmentOfMark, polygonHotspot, segmentEnds, segmentOutlines } from './ductSegments';
+import { ductSegmentOfMark, polygonHotspot, segmentEnds, segmentOutlines, stretchOutlines } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { getDuctSupportPlan } from './ductSupports';
 import { estimateTagTextPx, layoutDuctTags, TAG_FONT_PX, type DuctTagSource, type PlacedDuctTag, type TagObstacle } from './ductTagLayout';
@@ -181,6 +183,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const heldMoveRef = useRef<readonly HvacElement[] | null>(null);
   /** The segment focus outlines (painted imperatively from the segment store). */
   const segmentRef = useRef<SVGGElement | null>(null);
+  /** The stretch the unit panel's network points at (painted imperatively from its store). */
+  const networkRef = useRef<SVGGElement | null>(null);
   /** A segment option shown before it is applied: the runs it changes, drawn as they would be (dashed). */
   const optionPreviewRef = useRef<SVGGElement | null>(null);
   const previewHiddenRef = useRef<ReadonlySet<string>>(new Set());
@@ -610,6 +614,21 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   }, [planOf, paintOptionPreview]);
   useEffect(() => useDuctSegmentUiStore.subscribe(paintSegments), [paintSegments]);
 
+  /** Outline the stretch the unit panel's network row (or chart dot) points at, and the one pinned there. */
+  const paintNetwork = useCallback(() => {
+    const target = networkRef.current;
+    if (!target) return;
+    const { hovered, pinned } = useDuctNetworkFocusStore.getState();
+    const outlinesOf = (focus: DuctNetworkFocus) => {
+      const plan = planOf(focus.runId);
+      return plan ? stretchOutlines(plan, focus.fromMm, focus.toMm, focus.toEnd) : [];
+    };
+    const markup = (pinned ? networkFocusMarkup(outlinesOf(pinned), 'pinned') : '')
+      + (hovered && hovered.key !== pinned?.key ? networkFocusMarkup(outlinesOf(hovered), 'hovered') : '');
+    if (target.innerHTML !== markup) target.innerHTML = markup;
+  }, [planOf]);
+  useEffect(() => useDuctNetworkFocusStore.subscribe(paintNetwork), [paintNetwork]);
+
   useImperativeHandle(ref, () => ({ syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect, previewMove }),
     [syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect, previewMove]);
 
@@ -622,6 +641,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     applyHiddenTerminals();
     applyFadedRuns();
     paintSegments();
+    paintNetwork();
   });
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -774,6 +794,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
           <AirSystemLayer analysis={airSystems} hvacElements={hvacElements} k={k} focusUnitIds={focusUnitIds}
             showAll={settings.showAirSystems} showTags={style.showTags} />
           <g data-testid="duct-auto-preview" dangerouslySetInnerHTML={{ __html: previewMarkup + tagMarkup.preview }} />
+          <g ref={networkRef} data-testid="duct-network-focus" style={{ pointerEvents: 'none' }} />
           <g ref={optionPreviewRef} data-testid="duct-option-preview" style={{ pointerEvents: 'none' }} />
           <g ref={segmentRef} data-testid="duct-segment-focus" style={{ pointerEvents: 'none' }} />
           <g ref={portsRef} data-testid="duct-ports" />
