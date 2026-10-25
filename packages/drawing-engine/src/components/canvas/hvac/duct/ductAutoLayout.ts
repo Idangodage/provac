@@ -68,6 +68,7 @@ import { checkSpigotFit } from './ductPlenum';
 import { systemPressure, type ServicePressure } from './ductPressure';
 import { SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';
+import { ductRectStepMm, ductRoundSizesMm, onStep } from './ductSizeCatalog';
 import {
   equivalentDiameterMm,
   neckForAirflow,
@@ -495,8 +496,8 @@ function plenumCandidate(ctx: ServiceCtx): Candidate | null {
   // A box with room for the spigots (practice sizes, see defaultPlenumSize): two a face once there are three or more.
   const pitch = biggest + 100;
   const perFace = terminals.length >= 3 ? 2 : 1;
-  const width = roundUp(Math.max(port.widthMm + 200, perFace * pitch + 100));
-  const height = roundUp(Math.max(port.heightMm, biggest + 100));
+  const width = roundUp(Math.max(port.widthMm + 200, perFace * pitch + 100), ductRectStepMm(settings));
+  const height = roundUp(Math.max(port.heightMm, biggest + 100), ductRectStepMm(settings));
   const length = roundUp(Math.max(500, perFace * pitch + 100));
   if (height > ctx.maxHeightMm) return null;
   const back = PLENUM_NECK_MM;
@@ -732,7 +733,7 @@ function sizeTrunk(
 ): { vertices: Point2D[]; legSizes: DuctLeg[]; taps: TapPlan[]; sections: Array<{ widthMm: number; heightMm: number; airflowM3h: number }> } {
   const { settings } = ctx;
   const limits = sizingLimits(settings, ctx.service, 'trunk');
-  const widthFor = (airflow: number) => sizeRectangular(Math.max(airflow, 1), heightMm, limits, { stepMm: settings.rectStepMm, minWidthMm: heightMm, maxAspect: 4, maxHeightMm: heightMm }).widthMm;
+  const widthFor = (airflow: number) => sizeRectangular(Math.max(airflow, 1), heightMm, limits, { stepMm: ductRectStepMm(settings), minWidthMm: heightMm, maxAspect: 4, maxHeightMm: heightMm }).widthMm;
   const legs = vertices.slice(1).map((end, index) => {
     const start = vertices[index]!;
     return { start, end, length: Math.hypot(end.x - start.x, end.y - start.y) };
@@ -810,9 +811,9 @@ function trunkObstacleHits(ctx: ServiceCtx, vertices: readonly Point2D[], widthM
 function trunkHeight(ctx: ServiceCtx, terminals: readonly TerminalCtx[]): number {
   const biggest = Math.max(...terminals.map((terminal) => terminal.branch));
   // A spin-in fits the side wall: the trunk is at least the branch + 50 mm high.
-  const minimum = roundUp(Math.max(ctx.port.heightMm, biggest + 50), ctx.settings.rectStepMm);
+  const minimum = roundUp(Math.max(ctx.port.heightMm, biggest + 50), ductRectStepMm(ctx.settings));
   const limits = sizingLimits(ctx.settings, ctx.service, 'trunk');
-  const sized = sizeRectangular(ctx.airflowM3h, minimum, limits, { stepMm: ctx.settings.rectStepMm, minWidthMm: minimum, maxAspect: 4, maxHeightMm: Math.max(minimum, ctx.maxHeightMm) });
+  const sized = sizeRectangular(ctx.airflowM3h, minimum, limits, { stepMm: ductRectStepMm(ctx.settings), minWidthMm: minimum, maxAspect: 4, maxHeightMm: Math.max(minimum, ctx.maxHeightMm) });
   return sized.heightMm;
 }
 
@@ -861,7 +862,7 @@ function buildTrunkRun(
         return [Math.min(...stations) - pad, Math.max(...stations) + pad];
       });
   };
-  const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { stepMm: ctx.settings.rectStepMm, minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked, ctx.tapStations === 'at-terminals' ? undefined : alternateStations);
+  const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { stepMm: ductRectStepMm(ctx.settings), minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked, ctx.tapStations === 'at-terminals' ? undefined : alternateStations);
   if (!placed) return null;
   const sized = sizeTrunk(ctx, placed.vertices, placed.taps, heightMm, airflow, minFirstWidthMm);
   const points = sized.vertices.slice(1).map((point) => ({ ...toWorld(ctx.frame, point), z: origin && origin.kind !== 'port' && origin.kind !== 'free' ? origin.bottomZ : ctx.bottomZ }));
@@ -887,7 +888,7 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
   const { terminals, settings } = ctx;
   const height = trunkHeight(ctx, terminals);
   if (height > ctx.maxHeightMm) return [];
-  const width = sizeRectangular(ctx.airflowM3h, height, sizingLimits(settings, ctx.service, 'trunk'), { stepMm: settings.rectStepMm, minWidthMm: height, maxHeightMm: height }).widthMm;
+  const width = sizeRectangular(ctx.airflowM3h, height, sizingLimits(settings, ctx.service, 'trunk'), { stepMm: ductRectStepMm(settings), minWidthMm: height, maxHeightMm: height }).widthMm;
   const turnSetback = settings.elbowCentrelineRatio * width + settings.elbowNeckMm;
   const out: Candidate[] = [];
   const far = 1e5;
@@ -921,7 +922,7 @@ function trunkCandidatesAt(ctx: ServiceCtx, exit: number): Candidate[] {
     if (!left.length || !right.length) continue;
     // A split divides the flow: its main is at least as wide as both outlets together.
     const sideWidth = (group: TerminalCtx[]) => sizeRectangular(group.reduce((total, terminal) => total + terminal.airflowM3h, 0), height,
-      sizingLimits(settings, ctx.service, 'trunk'), { stepMm: settings.rectStepMm, minWidthMm: height, maxHeightMm: height }).widthMm;
+      sizingLimits(settings, ctx.service, 'trunk'), { stepMm: ductRectStepMm(settings), minWidthMm: height, maxHeightMm: height }).widthMm;
     const mainWidth = sideWidth(left) + sideWidth(right);
     const flowOf = (group: TerminalCtx[]) => group.reduce((total, terminal) => total + terminal.airflowM3h, 0);
     // A Y's splitter divides the main in its sides' airflow ratio.
@@ -1237,11 +1238,14 @@ function constantFrictionOption(
     // insulation, reducers and fittings); the cheapest is kept.
     const rect = chosen.sized.report.sections.filter((section) => section.runId === root.id && section.part === 'trunk' && !isRoundLeg(section.section));
     if (rect.length) {
-      const step = ctx.settings.rectStepMm;
+      const step = ductRectStepMm(ctx.settings);
       const own = rect[0]!.section.heightMm;
       const tallest = Math.min(MAX_RECT_HEIGHT_MM, ctx.maxHeightMm);
       const heights: number[] = [];
-      for (let h = Math.ceil(100 / step) * step; h <= tallest + 1e-6; h += step) if (Math.abs(h - own) > 0.5) heights.push(h);
+      for (let k = Math.ceil(100 / step - 1e-9); onStep(k, step) <= tallest + 1e-6; k += 1) {
+        const h = onStep(k, step);
+        if (Math.abs(h - own) > 0.5) heights.push(h);
+      }
       heights.sort((a, b) => Math.abs(a - own) - Math.abs(b - own) || a - b);
       const priced = new Set([sizesOf(chosen.sized)]);
       for (const height of heights) {
@@ -1610,7 +1614,7 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
           message: `${element.label || 'Terminal'}: ${velocity.toFixed(1)} m/s in its Ø${neck} neck at ${Math.round(share.airflowM3h)} m³/h (cap ${neckCap} m/s)${better ? `; a Ø${better} neck keeps it within` : '; use a larger terminal or split the airflow'}.`,
         });
       }
-      const branch = sizeRound(share.airflowM3h, sizingLimits(settings, service, 'branch'), settings.autoRoundSizesMm, { minimumMm: neck });
+      const branch = sizeRound(share.airflowM3h, sizingLimits(settings, service, 'branch'), ductRoundSizesMm(settings), { minimumMm: neck });
       const placed: TerminalCtx = {
         element, spec, port: tport, lip: toLocal(frame, tport.lip), normal: cardinal(dirToLocal(frame, tport.normal)),
         airflowM3h: share.airflowM3h, fixed: share.fixed, neck, branch, dropPa: terminalPressureDropPa(spec, share.airflowM3h, settings),

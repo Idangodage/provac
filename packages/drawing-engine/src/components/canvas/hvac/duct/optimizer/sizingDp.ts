@@ -27,6 +27,7 @@ import type { Point2D } from '../../../../../types';
 import type { TerminalCtx } from '../ductAutoContext';
 import { FITTING_LOSS_COEFFICIENTS } from '../ductPressure';
 import { maxRoundBranchMm } from '../ductRoundFittings';
+import { nearestStep, onStep, stepAtOrAbove } from '../ductSizeCatalog';
 import { velocityMs, velocityPressurePa } from '../ductSizing';
 import { isRoundLeg, type DuctLeg, type DuctSplitStyle, type DuctTapStyle } from '../ductTypes';
 
@@ -285,15 +286,15 @@ function segmentOptions(run: RunDesign, segment: RunSegment, index: number, chil
     const cap = model.settings.autoMaxVelocityTrunkMs;
     const extra: DuctLeg[] = [];
     if (model.shape === 'round' || model.shape === 'optimal') {
-      const d = model.settings.autoRoundSizesMm.find((size) => maxRoundBranchMm(size) >= smallest - 0.5 && size <= model.maxHeightMm);
+      const d = model.roundSizesMm.find((size) => maxRoundBranchMm(size) >= smallest - 0.5 && size <= model.maxHeightMm);
       if (d) extra.push({ widthMm: d, heightMm: d, diameterMm: d });
     }
     if (model.shape !== 'round') {
       const step = model.rectStepMm;
-      const h = Math.ceil((smallest + 50) / step) * step;
+      const h = stepAtOrAbove(smallest + 50, step);
       if (h <= model.maxHeightMm) {
-        for (let w = h; w <= 4 * h; w += step) {
-          const leg = { widthMm: w, heightMm: h };
+        for (let k = Math.round(h / step); onStep(k, step) <= 4 * h + 1e-6; k += 1) {
+          const leg = { widthMm: onStep(k, step), heightMm: h };
           if (segment.flowIn / 3600 / areaOf(leg) <= cap * 1.001) { extra.push(leg); break; }
         }
       }
@@ -303,7 +304,7 @@ function segmentOptions(run: RunDesign, segment: RunSegment, index: number, chil
   // Off the collar, sections as wide as the collar (a short transition) at the heights offered: slow for
   // the flow, but where the collar's straight is short they may be the only ones whose transition fits.
   if (run.start.kind === 'unit' && index === 0 && model.shape !== 'round') {
-    const width = Math.max(100, Math.round(model.ctx.port.widthMm / model.rectStepMm) * model.rectStepMm);
+    const width = Math.max(100, nearestStep(model.ctx.port.widthMm, model.rectStepMm));
     const heights = new Set(options.filter((leg) => !isRoundLeg(leg)).map((leg) => leg.heightMm));
     for (const h of heights) if (h <= model.maxHeightMm && width <= 4 * h) options.push({ widthMm: width, heightMm: h });
   }

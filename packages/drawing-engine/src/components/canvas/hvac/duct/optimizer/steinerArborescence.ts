@@ -38,6 +38,7 @@ import { branchStubMm, flexClear, flexOk, runoutPath, runoutStaysOut, simplifyCo
 import { PENETRATION_JOINT_MARGIN_MM } from '../ductPenetrations';
 import { flexBendLossPa } from '../ductPressure';
 import { maxRoundBranchMm } from '../ductRoundFittings';
+import { onStep, stepAtOrAbove } from '../ductSizeCatalog';
 import { isRoundLeg, roundLeg, type DuctLeg, type DuctTapStyle } from '../ductTypes';
 
 import { allRuns, computeFlows, runLengthMm, type DesignStart, type RunDesign, type ServiceDesign } from './designTree';
@@ -112,7 +113,7 @@ function layerClearMm(model: SizingModel, best: DuctLeg, neckMm: number | null, 
   // Rectangular throughout, a branch leaves on a 45° shoe (its lead-in widens the window), about as wide as its neck.
   const rectangular = model.shape === 'rectangular' && !isRoundLeg(best);
   const branch = rectangular
-    ? { widthMm: Math.ceil(branchNeckMm / model.rectStepMm) * model.rectStepMm, heightMm: Math.min(best.heightMm, branchNeckMm) }
+    ? { widthMm: stepAtOrAbove(branchNeckMm, model.rectStepMm), heightMm: Math.min(best.heightMm, branchNeckMm) }
     : roundLeg(branchNeckMm);
   const styles: DuctTapStyle[] = rectangular ? ['shoe-45'] : isRoundLeg(best) ? [...model.settings.autoRoundMainStyles] : ['spin-in', 'conical'];
   const window = Math.max(0, ...styles.map((style) => model.tapWindowHalfMm(style, branch, best)));
@@ -479,11 +480,13 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     if (tapMainCache.has(key)) return tapMainCache.get(key)!;
     const flow = flows[S]!;
     const candidates = [...model.trunkOptions(flow)];
-    const round = model.settings.autoRoundSizesMm.find((size) => maxRoundBranchMm(size) >= neckMm - 0.5 && size <= model.maxHeightMm);
+    const round = model.roundSizesMm.find((size) => maxRoundBranchMm(size) >= neckMm - 0.5 && size <= model.maxHeightMm);
     if (round && (model.shape === 'round' || model.shape === 'optimal')) candidates.push({ widthMm: round, heightMm: round, diameterMm: round });
-    const h = Math.ceil((neckMm + 50) / model.rectStepMm) * model.rectStepMm;
+    const step = model.rectStepMm;
+    const h = stepAtOrAbove(neckMm + 50, step);
     if (model.shape !== 'round' && h <= model.maxHeightMm) {
-      for (let w = h; w <= 4 * h; w += model.rectStepMm) {
+      for (let k = Math.round(h / step); onStep(k, step) <= 4 * h + 1e-6; k += 1) {
+        const w = onStep(k, step);
         if (flow / 3600 / ((w / 1000) * (h / 1000)) <= model.settings.autoMaxVelocityTrunkMs * 1.001) { candidates.push({ widthMm: w, heightMm: h }); break; }
       }
     }

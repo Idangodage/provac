@@ -33,6 +33,7 @@ import { INLINE_TITLES, MIN_STRAIGHT_MM, applyDuctSegmentEdit, transitionStretch
 import { ductSegmentFigures, type DuctFigureStatus } from '../duct/ductSegmentFigures';
 import { sectionLabel } from '../duct/ductSegments';
 import type { DuctDesignSettings } from '../duct/ductSettings';
+import { IMPERIAL_RECT_STEP_MM, ductRoundSizesMm, nearestStep, onStep } from '../duct/ductSizeCatalog';
 import { getDuctSupportPlan, resolveSoffitZ } from '../duct/ductSupports';
 import { isDuctElement, isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec } from '../duct/ductTypes';
 import { findDuctClashes } from '../duct/ductVolumes';
@@ -86,6 +87,11 @@ export const RESIZE_LENGTH_STEP_MM = 10;
 /** A slid piece is tried this often on its way (mm): it stops at the first place the rules refuse, never jumping a fitting. */
 const SLIDE_PROBE_MM = 25;
 export const RESIZE_SECTION_STEP_MM = 50;
+
+/** The step a section snaps to (mm): 50 mm, or 2 in for the inch series. */
+export function resizeSectionStepMm(settings: Pick<DuctDesignSettings, 'sizeSeries'>): number {
+  return settings.sizeSeries === 'imperial' ? IMPERIAL_RECT_STEP_MM : RESIZE_SECTION_STEP_MM;
+}
 /** What a value may be (mm): the card's own limits. */
 const LIMITS: Record<'length' | 'width' | 'depth' | 'diameter' | 'runout' | 'slide', [number, number]> = {
   length: [MIN_STRAIGHT_MM, 60000], width: [50, 4000], depth: [50, 2000], diameter: [75, 2000], runout: [300, 3000], slide: [0, 60000],
@@ -100,16 +106,16 @@ function limitsOf(grip: Pick<DuctResizeGrip, 'kind' | 'round'>): [number, number
 
 const clamp = (value: number, [lo, hi]: [number, number]) => Math.min(hi, Math.max(lo, value));
 
-/** The value a raw one snaps to: lengths to 10 mm, sections to 50 mm (a round duct's to a stocked size); `fine`: 1 mm. */
-export function snapResizeValue(grip: Pick<DuctResizeGrip, 'kind' | 'round'>, raw: number, settings: Pick<DuctDesignSettings, 'autoRoundSizesMm'>, fine = false): number {
+/** The value a raw one snaps to: lengths to 10 mm, sections to 50 mm or 2 in (a round duct's to a stocked size); `fine`: 1 mm. */
+export function snapResizeValue(grip: Pick<DuctResizeGrip, 'kind' | 'round'>, raw: number, settings: Pick<DuctDesignSettings, 'autoRoundSizesMm' | 'sizeSeries'>, fine = false): number {
   const limits = limitsOf(grip);
   if (fine) return clamp(Math.round(raw), limits);
   if (grip.kind === 'width' || grip.kind === 'depth') {
     if (grip.round) {
-      const stock = settings.autoRoundSizesMm.filter((size) => size >= limits[0] && size <= limits[1]);
+      const stock = ductRoundSizesMm(settings).filter((size) => size >= limits[0] && size <= limits[1]);
       if (stock.length) return stock.reduce((best, size) => (Math.abs(size - raw) < Math.abs(best - raw) ? size : best));
     }
-    return clamp(Math.round(raw / RESIZE_SECTION_STEP_MM) * RESIZE_SECTION_STEP_MM, limits);
+    return clamp(nearestStep(raw, resizeSectionStepMm(settings)), limits);
   }
   return clamp(Math.round(raw / RESIZE_LENGTH_STEP_MM) * RESIZE_LENGTH_STEP_MM, limits);
 }
@@ -492,12 +498,12 @@ export class DuctResizeSolver {
     const hi = Math.max(a, b);
     const inside = (value: number) => value > lo + 0.5 && value < hi - 0.5;
     if (!fine && this.grip.round && (this.grip.kind === 'width' || this.grip.kind === 'depth')) {
-      const stock = this.settings.autoRoundSizesMm.filter(inside);
+      const stock = ductRoundSizesMm(this.settings).filter(inside);
       return stock.length ? stock[Math.floor(stock.length / 2)]! : null;
     }
-    const step = fine ? 1 : this.grip.kind === 'width' || this.grip.kind === 'depth' ? RESIZE_SECTION_STEP_MM : RESIZE_LENGTH_STEP_MM;
-    const middle = Math.round((lo + hi) / 2 / step) * step;
-    for (const candidate of [middle, middle - step, middle + step]) if (inside(candidate)) return candidate;
+    const step = fine ? 1 : this.grip.kind === 'width' || this.grip.kind === 'depth' ? resizeSectionStepMm(this.settings) : RESIZE_LENGTH_STEP_MM;
+    const middle = Math.round((lo + hi) / 2 / step);
+    for (const candidate of [middle, middle - 1, middle + 1].map((k) => onStep(k, step))) if (inside(candidate)) return candidate;
     return null;
   }
 

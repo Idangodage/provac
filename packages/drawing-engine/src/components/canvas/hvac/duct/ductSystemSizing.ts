@@ -34,6 +34,7 @@ import { runPenetrationZones } from './ductPenetrations';
 import { systemPressure, type ServicePressure } from './ductPressure';
 import { maxRoundBranchMm } from './ductRoundFittings';
 import type { DuctDesignSettings } from './ductSettings';
+import { ductRectStepMm, ductRoundSizesMm, isOnStep, nearestStep, stepAtOrAbove } from './ductSizeCatalog';
 import {
   frictionPaPerM,
   neckVelocityMs,
@@ -538,10 +539,16 @@ export function sizeDuctSystem(
   // airflows don't add up to the system's, the mismatch is reported above).
   const mainAirflow = terminalsAirflow > 0 ? terminalsAirflow : systemAirflow;
   const basis = linkSizingBasis(input.basis, mainAirflow);
-  const stock = [...settings.autoRoundSizesMm].sort((a, b) => a - b);
-  // Rectangles on the fabricator's step.
-  const STEP_MM = settings.rectStepMm;
-  const ceilStep = (value: number) => Math.ceil(value / STEP_MM - 1e-9) * STEP_MM;
+  const stock = ductRoundSizesMm(settings).sort((a, b) => a - b);
+  // Rectangles on the fabricator's step (an inch series: even inches).
+  const STEP_MM = ductRectStepMm(settings);
+  const ceilStep = (value: number) => stepAtOrAbove(value, STEP_MM);
+  // The inch series takes a height drawn off its grid to the nearest even inch the void gives (metric keeps it as drawn).
+  const seriesHeight = (height: number, maxHeight: number) => {
+    if (settings.sizeSeries !== 'imperial' || isOnStep(height, STEP_MM)) return height;
+    const near = Math.max(ceilStep(100), nearestStep(height, STEP_MM));
+    return near > height && near > maxHeight + 0.5 ? Math.max(ceilStep(100), near - STEP_MM) : near;
+  };
 
   // ---- Sizes, bottom-up: children first (a take-off or a split needs its branches' sections) ----
   const firstSection = (node: RunNode): DuctLeg => (node.fixed ? node.spec.legs[0]! : node.segments[0]?.section ?? node.spec.legs[0]!);
@@ -622,8 +629,8 @@ export function sizeDuctSystem(
       }
       // The trunk at the height asked (one height through it), else each stretch at its height as drawn.
       const asked = input.trunkHeightMm !== undefined && segment.part === 'trunk' ? input.trunkHeightMm : null;
-      const height = asked ?? sample.heightMm;
-      const minWidth = asked !== null ? Math.min(height, STEP_MM * Math.ceil(100 / STEP_MM)) : Math.min(height, sample.widthMm);
+      const height = asked ?? seriesHeight(sample.heightMm, maxHeight);
+      const minWidth = asked !== null ? Math.min(height, stepAtOrAbove(100, STEP_MM)) : Math.min(height, sample.widthMm);
       const sized = rectAt(segment.airflow, height, minWidth, limits, maxHeight);
       segment.section = { widthMm: sized.widthMm, heightMm: sized.heightMm };
       if (sized.capped) segment.setBy = 'capped';
@@ -857,7 +864,9 @@ export function sizeDuctSystem(
           const from = sections[0]!;
           const toward = Math.sign(collar.widthMm - from.widthMm);
           let chosen: DuctLeg | null = collar.heightMm >= from.heightMm - 0.5 ? collar : null;
-          for (let width = from.widthMm + toward * STEP_MM; toward !== 0 && (width - collar.widthMm) * toward < 0; width += toward * STEP_MM) {
+          for (let k = 1; toward !== 0; k += 1) {
+            const width = Math.round((from.widthMm + toward * k * STEP_MM) * 1000) / 1000;
+            if ((width - collar.widthMm) * toward >= 0) break;
             const leg = { widthMm: width, heightMm: from.heightMm };
             if (fits(leg)) { chosen = leg; break; }
           }

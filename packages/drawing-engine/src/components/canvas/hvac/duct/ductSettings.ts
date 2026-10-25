@@ -8,6 +8,7 @@
 import { readDesignCriteria, type DesignCriteria } from './ductDesignCriteria';
 import { ELBOW_RULES, FAN_CONNECTOR, TRANSITION_LIMITS, type DuctVaneType } from './ductFittingRules';
 import type { DuctRoundSeam, DuctRoundVelocityBand } from './ductRoundRules';
+import type { DuctSizeSeries } from './ductSizeCatalog';
 import type { DuctRuleProvenance } from './ductSources';
 import { SUPPORT_RULES, type MetricRod } from './ductSupportTables';
 import { ROUND_MAIN_TAP_STYLES, type DuctRoundMainTapStyle } from './ductTypes';
@@ -151,6 +152,11 @@ export interface DuctDesignSettings {
   autoReducerStepMm: number;
   /** Rectangular ducts are sized in steps of this much on each side (mm): the fabricator's sizes. */
   rectStepMm: 25 | 50 | 100;
+  /**
+   * The size series designs are made of: metric (`rectStepMm`, `autoRoundSizesMm`) or inch (2 in rectangular
+   * steps, the inch round series). See ductSizeCatalog.
+   */
+  sizeSeries: DuctSizeSeries;
   /** Optimiser: exact tree search up to this many terminals per service (above it, a heuristic). */
   autoExactTerminals: number;
   /** Optimiser: time for one unit's design, after which the best verified design so far is kept (ms). */
@@ -293,6 +299,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500, 560, 630, 710, 800, 900, 1000],
   autoReducerStepMm: 100,
   rectStepMm: 50,
+  sizeSeries: 'metric',
   autoExactTerminals: 8,
   autoTimeBudgetMs: 20000,
   autoChooseSpigotSide: true,
@@ -415,6 +422,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex); Ø560–Ø1000 follow the EN 1506 series for the mains of large units.' },
   autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
   rectStepMm: practice('Rectangular duct is fabricated to round sizes: 50 mm steps are usual (25 for a fine fit, 100 for a short list of sizes).'),
+  sizeSeries: practice('Metric: the fabricator\'s step and the EN 1506 round series. Inch: rectangular sides in even inches and the usual stocked round sizes (4–10 in by the inch, then by 2 in).'),
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
   autoTimeBudgetMs: practice('The optimiser stops learning (routing again after a failed check) past this time and keeps the best verified design; the result says so.'),
   autoChooseSpigotSide: practice('A symmetric face throws the same pattern whichever side its plenum box is fed from; the optimiser picks the side the duct reaches best. Linear slots keep theirs.'),
@@ -593,6 +601,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     autoRoundSizesMm: resolveRoundStock(raw.autoRoundSizesMm, d.autoRoundSizesMm),
     autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),
     rectStepMm: raw.rectStepMm === 25 || raw.rectStepMm === 50 || raw.rectStepMm === 100 ? raw.rectStepMm : d.rectStepMm,
+    sizeSeries: oneOf(raw.sizeSeries, ['metric', 'imperial'] as const, d.sizeSeries),
     autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 10)),
     autoTimeBudgetMs: Math.round(clampNumber(raw.autoTimeBudgetMs, d.autoTimeBudgetMs, 1000, 60000)),
     autoChooseSpigotSide: bool(raw.autoChooseSpigotSide, d.autoChooseSpigotSide),

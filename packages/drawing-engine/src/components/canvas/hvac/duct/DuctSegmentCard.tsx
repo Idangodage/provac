@@ -58,6 +58,7 @@ import {
 } from './ductSegmentOptions';
 import { ductSegmentOf, neighbourSegment, sectionLabel, segmentIssues, type DuctSegment } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
+import { ductRectStepMm, ductRoundSizesMm } from './ductSizeCatalog';
 import { equivalentDiameterMm } from './ductSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
 import { isRoundLeg, roundLeg, type DuctLeg, type DuctRunSpec } from './ductTypes';
@@ -191,10 +192,10 @@ interface FieldHost extends SegmentFieldHost<DuctSegmentOption, DuctOptionEvalua
 /** Equal-friction size of `section` in the other shape, at the void the duct has. */
 function otherShape(section: DuctLeg, settings: DuctDesignSettings, voidHeightMm: number): DuctLeg {
   if (isRoundLeg(section)) {
-    const rects = rectangularEquivalents(section.diameterMm!, { maxHeightMm: Math.min(voidHeightMm, section.diameterMm!), maxAspect: settings.aspectRatioAdvisory });
+    const rects = rectangularEquivalents(section.diameterMm!, { maxHeightMm: Math.min(voidHeightMm, section.diameterMm!), maxAspect: settings.aspectRatioAdvisory, stepMm: ductRectStepMm(settings) });
     return [...rects].sort((a, b) => Math.abs(a.widthMm / a.heightMm - 2) - Math.abs(b.widthMm / b.heightMm - 2))[0] ?? { widthMm: section.widthMm, heightMm: section.heightMm };
   }
-  return roundEquivalents(section, settings.autoRoundSizesMm).atOrAbove ?? roundLeg(Math.round(equivalentDiameterMm(section)));
+  return roundEquivalents(section, ductRoundSizesMm(settings)).atOrAbove ?? roundLeg(Math.round(equivalentDiameterMm(section)));
 }
 
 /** Type the size of a leg (or of every leg of its size), round or rectangular; see what it does, then apply. */

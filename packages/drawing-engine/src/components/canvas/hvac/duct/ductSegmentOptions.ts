@@ -31,6 +31,7 @@ import { applyDuctSegmentEdit, INLINE_TITLES, outletSplitShare, rigidLegIndices,
 import { ductSegmentFigures, splitAirflowShare, type DuctFigureStatus, type DuctSegmentFigures } from './ductSegmentFigures';
 import { ductSegmentOf, sectionLabel, TAKEOFF_TITLES, type DuctSegment } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
+import { ductRectStepMm, ductRoundSizesMm, onStep } from './ductSizeCatalog';
 import { equivalentDiameterMm, sizeRectangular, sizeRound, velocityMs } from './ductSizing';
 import { resolveSoffitZ } from './ductSupports';
 import { DUCT_TERMINAL_NECKS_MM, TERMINAL_FACE_LABELS, TERMINAL_FACES_BY_SERVICE, terminalLabel } from './ductTerminalCatalog';
@@ -85,8 +86,8 @@ function voidHeightOf(spec: DuctRunSpec, legIndex: number, settings: DuctDesignS
 }
 
 /** The rectangle of a round section's friction nearest 2 : 1, lying flat and no taller than the round or `maxHeightMm`; null when none fits. */
-function moderateRectangle(diameterMm: number, maxHeightMm: number, maxAspect: number): DuctLeg | null {
-  const rects = rectangularEquivalents(diameterMm, { maxHeightMm: Math.min(maxHeightMm, diameterMm), maxAspect });
+function moderateRectangle(diameterMm: number, maxHeightMm: number, maxAspect: number, stepMm: number): DuctLeg | null {
+  const rects = rectangularEquivalents(diameterMm, { maxHeightMm: Math.min(maxHeightMm, diameterMm), maxAspect, stepMm });
   return [...rects].sort((a, b) => Math.abs(aspectOf(a) - 2) - Math.abs(aspectOf(b) - 2))[0] ?? null;
 }
 
@@ -116,7 +117,7 @@ function sectionOptions(runId: string, legs: number[], current: DuctLeg, context
       edit: { kind: 'leg-section', runId, sections: legs.map((leg) => ({ leg, section })) },
     });
   };
-  const stock = settings.autoRoundSizesMm;
+  const stock = ductRoundSizesMm(settings);
   const de = equivalentDiameterMm(current);
   const seam = context.plan.seamRound === 'spiral' ? 'spiral' : 'round';
   const maxAspect = settings.aspectRatioAdvisory;
@@ -124,7 +125,7 @@ function sectionOptions(runId: string, legs: number[], current: DuctLeg, context
     const { atOrAbove, below } = roundEquivalents(current, stock);
     if (atOrAbove) add(atOrAbove, `Ø${atOrAbove.diameterMm} ${seam}`, `same friction (equivalent Ø${Math.round(de)})`, `round:${atOrAbove.diameterMm}`);
     if (below && below.diameterMm! >= de * 0.9) add(below, `Ø${below.diameterMm} ${seam}`, 'a size smaller: a little more friction', `round:${below.diameterMm}`);
-    const rects = rectangularEquivalents(de, { maxHeightMm: context.voidHeightMm, maxAspect });
+    const rects = rectangularEquivalents(de, { maxHeightMm: context.voidHeightMm, maxAspect, stepMm: ductRectStepMm(settings) });
     const flatter = [...rects].reverse().find((leg) => leg.heightMm < current.heightMm);
     const squarer = rects.find((leg) => leg.heightMm > current.heightMm);
     const squarest = rects[rects.length - 1];
@@ -133,7 +134,7 @@ function sectionOptions(runId: string, legs: number[], current: DuctLeg, context
     if (squarest && squarest !== squarer) add(squarest, sectionLabel(squarest), `same friction, the squarest that fits (aspect ${round1(aspectOf(squarest))})`, `rect:${squarest.widthMm}x${squarest.heightMm}`);
   } else {
     const d = current.diameterMm!;
-    const rects = rectangularEquivalents(d, { maxHeightMm: Math.min(context.voidHeightMm, d), maxAspect });
+    const rects = rectangularEquivalents(d, { maxHeightMm: Math.min(context.voidHeightMm, d), maxAspect, stepMm: ductRectStepMm(settings) });
     const flattest = rects[0];
     const moderate = [...rects].sort((a, b) => Math.abs(aspectOf(a) - 2) - Math.abs(aspectOf(b) - 2))[0];
     const squarest = rects[rects.length - 1];
@@ -155,12 +156,13 @@ function sectionOptions(runId: string, legs: number[], current: DuctLeg, context
       : (() => {
         // The tallest height up to the current one at which the narrowest size within the limits lies flat (a ceiling duct).
         const top = Math.min(current.heightMm, context.voidHeightMm);
-        const step = settings.rectStepMm;
-        for (let height = Math.floor(top / step) * step; height >= 100; height -= step) {
+        const step = ductRectStepMm(settings);
+        for (let k = Math.floor(top / step + 1e-9); onStep(k, step) >= 100; k -= 1) {
+          const height = onStep(k, step);
           const rect = sizeRectangular(flow.airflowM3h.max, height, limits, { stepMm: step, maxAspect, maxHeightMm: height });
           if (!rect.capped && rect.widthMm >= rect.heightMm) return { widthMm: rect.widthMm, heightMm: rect.heightMm };
         }
-        const rect = sizeRectangular(flow.airflowM3h.max, top, limits, { stepMm: settings.rectStepMm, maxAspect, maxHeightMm: context.voidHeightMm });
+        const rect = sizeRectangular(flow.airflowM3h.max, top, limits, { stepMm: ductRectStepMm(settings), maxAspect, maxHeightMm: context.voidHeightMm });
         return { widthMm: Math.max(rect.widthMm, rect.heightMm), heightMm: Math.min(rect.widthMm, rect.heightMm) };
       })();
     if (!sameSectionSize(recommended, current)) {
@@ -210,7 +212,7 @@ function elbowOptions(runId: string, context: DuctSegmentOptionContext, settings
         { ...override, elbowStyle: 'square-vaned', vaneType: 'double-large', centrelineRatio: undefined }, elbow.style === 'square-vaned' && override.vaneType === 'double-large'));
     }
     // The same turn in spiral duct: the legs either side take their equal-friction round size.
-    const sections = legs.map((leg) => ({ leg, section: roundEquivalents(spec.legs[leg]!, settings.autoRoundSizesMm).atOrAbove }))
+    const sections = legs.map((leg) => ({ leg, section: roundEquivalents(spec.legs[leg]!, ductRoundSizesMm(settings)).atOrAbove }))
       .filter((entry): entry is { leg: number; section: DuctLeg } => entry.section !== null);
     if (sections.length === legs.length && legs.length > 0) {
       const sizes = [...new Set(sections.map((entry) => sectionLabel(entry.section)))].join(' / ');
@@ -228,7 +230,7 @@ function elbowOptions(runId: string, context: DuctSegmentOptionContext, settings
     }
     const sections = legs.map((leg) => {
       const d = spec.legs[leg]!.diameterMm ?? spec.legs[leg]!.widthMm;
-      const rects = rectangularEquivalents(d, { maxHeightMm: Math.min(context.voidHeightMm, d), maxAspect: settings.aspectRatioAdvisory });
+      const rects = rectangularEquivalents(d, { maxHeightMm: Math.min(context.voidHeightMm, d), maxAspect: settings.aspectRatioAdvisory, stepMm: ductRectStepMm(settings) });
       const moderate = [...rects].sort((a, b) => Math.abs(aspectOf(a) - 2) - Math.abs(aspectOf(b) - 2))[0];
       return moderate ? { leg, section: moderate } : null;
     }).filter((entry): entry is { leg: number; section: DuctLeg } => entry !== null);
@@ -265,7 +267,7 @@ function transitionOptions(runId: string, context: DuctSegmentOptionContext, set
     // of the same friction keeps the duct square; this becomes a rectangular transition (or goes, at the collar's size).
     const first = spec.legs[0];
     if (first && isRoundLeg(first) && rigid.includes(0)) {
-      const rect = moderateRectangle(first.diameterMm!, context.voidHeightMm, settings.aspectRatioAdvisory);
+      const rect = moderateRectangle(first.diameterMm!, context.voidHeightMm, settings.aspectRatioAdvisory, ductRectStepMm(settings));
       if (rect) {
         options.push({
           id: `rect-first:${rect.widthMm}x${rect.heightMm}`, group: 'swap', glyph: 'rect', title: `Rectangular duct ${sectionLabel(rect)}`,
@@ -274,7 +276,7 @@ function transitionOptions(runId: string, context: DuctSegmentOptionContext, set
         });
       }
       const run = rigid.filter((index) => isRoundLeg(spec.legs[index]!)).flatMap((index) => {
-        const section = moderateRectangle(spec.legs[index]!.diameterMm!, voidHeightOf(spec, index, settings), settings.aspectRatioAdvisory);
+        const section = moderateRectangle(spec.legs[index]!.diameterMm!, voidHeightOf(spec, index, settings), settings.aspectRatioAdvisory, ductRectStepMm(settings));
         return section ? [{ leg: index, section }] : [];
       });
       if (run.length > 1) {
@@ -324,7 +326,7 @@ function takeoffOptions(scene: readonly HvacElement[], runId: string, context: D
     offer('round-tee', '90° tap with a 51 mm spigot (SMACNA Fig. 3-4)');
     offer('round-lateral', 'leaves at 45° downstream: the lowest loss (SMACNA Fig. 3-4)');
     // The main as a rectangle of the same friction: the take-off becomes the square collar that fits it.
-    const rects = rectangularEquivalents(main.diameterMm!, { maxHeightMm: Math.min(context.voidHeightMm, main.diameterMm!), maxAspect: settings.aspectRatioAdvisory });
+    const rects = rectangularEquivalents(main.diameterMm!, { maxHeightMm: Math.min(context.voidHeightMm, main.diameterMm!), maxAspect: settings.aspectRatioAdvisory, stepMm: ductRectStepMm(settings) });
     const moderate = [...rects].sort((a, b) => Math.abs(aspectOf(a) - 2) - Math.abs(aspectOf(b) - 2))[0];
     if (moderate) {
       options.push({
@@ -335,9 +337,9 @@ function takeoffOptions(scene: readonly HvacElement[], runId: string, context: D
       });
     }
   } else {
-    const roundBranch = isRoundLeg(first) ? first : roundEquivalents(first, settings.autoRoundSizesMm).atOrAbove ?? roundLeg(Math.min(first.widthMm, first.heightMm));
+    const roundBranch = isRoundLeg(first) ? first : roundEquivalents(first, ductRoundSizesMm(settings)).atOrAbove ?? roundLeg(Math.min(first.widthMm, first.heightMm));
     const rectBranch = !isRoundLeg(first) ? first : (() => {
-      const rects = rectangularEquivalents(first.diameterMm!, { maxHeightMm: Math.min(main.heightMm, context.voidHeightMm), maxAspect: settings.aspectRatioAdvisory });
+      const rects = rectangularEquivalents(first.diameterMm!, { maxHeightMm: Math.min(main.heightMm, context.voidHeightMm), maxAspect: settings.aspectRatioAdvisory, stepMm: ductRectStepMm(settings) });
       return rects[rects.length - 1] ?? { widthMm: first.widthMm, heightMm: Math.min(first.heightMm, main.heightMm) };
     })();
     offer('shoe-45', `45° entry, lead-in ${Math.round(Math.max(102, rectBranch.widthMm / 4))} mm: the lowest loss (SMACNA Fig. 2-6)`, isRoundLeg(first) ? rectBranch : undefined);
@@ -417,7 +419,7 @@ function accessoryOptions(scene: readonly HvacElement[], runId: string, context:
         }
       }
       // The same split in spiral duct: the last leg its equal-friction round size, a wye, the outlets round and turned 45°.
-      const round = section ? roundEquivalents(section, settings.autoRoundSizesMm).atOrAbove : null;
+      const round = section ? roundEquivalents(section, ductRoundSizesMm(settings)).atOrAbove : null;
       if (round && last !== undefined) {
         options.push({
           id: `split:wye:${round.diameterMm}`, group: 'swap', glyph: 'split-y', title: `Wye in Ø${round.diameterMm} spiral`,
@@ -433,7 +435,7 @@ function accessoryOptions(scene: readonly HvacElement[], runId: string, context:
       }
     } else if (section && last !== undefined) {
       options.push({ id: 'split:wye', group: 'swap', glyph: 'split-y', title: 'Wye', detail: 'SMACNA Fig. 3-5', edit: { kind: 'split', runId, style: 'wye' }, current: true });
-      const rects = rectangularEquivalents(section.diameterMm!, { maxHeightMm: Math.min(context.voidHeightMm, section.diameterMm!), maxAspect: settings.aspectRatioAdvisory });
+      const rects = rectangularEquivalents(section.diameterMm!, { maxHeightMm: Math.min(context.voidHeightMm, section.diameterMm!), maxAspect: settings.aspectRatioAdvisory, stepMm: ductRectStepMm(settings) });
       const moderate = [...rects].sort((a, b) => Math.abs(aspectOf(a) - 2) - Math.abs(aspectOf(b) - 2))[0];
       if (moderate) {
         // A Y junction leaves at the wye's own 45°: its outlets turn into rectangles where they are, nothing re-routed.

@@ -266,7 +266,7 @@ describe('tree router: exact against brute force (two terminals, an open grid)',
   const trunk: DuctLeg = { widthMm: 100, heightMm: 100 };
   const branch = roundLeg(100);
   const mock = {
-    ctx, settings, costContext: { insulationMm: 0 },
+    ctx, settings, costContext: { insulationMm: 0 }, roundSizesMm: settings.autoRoundSizesMm,
     trunkOptions: () => [trunk], branchOptions: () => [branch],
     costPerMetre: (leg: DuctLeg) => 1000 * perMm(leg === trunk ? 200 : 100),
     friction: () => 0, elbowRadiusMm: () => 0,

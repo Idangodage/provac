@@ -21,9 +21,10 @@ import { MM_TO_PX } from '../../scale';
 import { ductLegs } from '../duct/ductGeometry';
 import { domainOf, useDuctSegmentUiStore } from '../duct/ductSegmentUiStore';
 import type { DuctDesignSettings } from '../duct/ductSettings';
+import { ductRoundSizesMm } from '../duct/ductSizeCatalog';
 import { readDuctRunSpec } from '../duct/ductTypes';
 
-import { RESIZE_LENGTH_STEP_MM, RESIZE_SECTION_STEP_MM, ductResizeGrips, snapResizeValue, type DuctResizeGrip } from './ductResize';
+import { RESIZE_LENGTH_STEP_MM, ductResizeGrips, resizeSectionStepMm, snapResizeValue, type DuctResizeGrip } from './ductResize';
 import { useDuctResizePreviewStore } from './ductResizePreviewStore';
 import type { HvacResizeBegin } from './hvacMoveSession';
 
@@ -59,11 +60,11 @@ export function steppedValue(grip: DuctResizeGrip, direction: 1 | -1, event: { s
   if (event.altKey) return snapResizeValue(grip, grip.value + direction, settings, true);
   const sectional = grip.kind === 'width' || grip.kind === 'depth';
   if (sectional && grip.round) {
-    const stock = [...settings.autoRoundSizesMm].sort((a, b) => a - b);
+    const stock = ductRoundSizesMm(settings).sort((a, b) => a - b);
     const next = direction > 0 ? stock.find((size) => size > grip.value + 0.5) : [...stock].reverse().find((size) => size < grip.value - 0.5);
     return next ?? grip.value;
   }
-  const step = (sectional ? RESIZE_SECTION_STEP_MM : RESIZE_LENGTH_STEP_MM) * (event.shiftKey ? 5 : 1);
+  const step = (sectional ? resizeSectionStepMm(settings) : RESIZE_LENGTH_STEP_MM) * (event.shiftKey ? 5 : 1);
   const snapped = snapResizeValue(grip, grip.value + direction * step, settings);
   // (A value off the grid steps onto it; one already on it moves a whole step.)
   return Math.abs(snapped - grip.value) < 0.5 ? snapResizeValue(grip, grip.value + 2 * direction * step, settings) : snapped;

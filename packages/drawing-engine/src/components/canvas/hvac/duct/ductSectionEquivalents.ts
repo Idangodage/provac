@@ -4,9 +4,10 @@
  * friction per metre at the same airflow as a rectangle, and the rectangles
  * with the friction of a round duct or of another rectangle. These are the
  * sizes a designer swaps between without upsetting the system's balance.
- * Rectangles run in the fabricator's 50 mm steps; round sizes are the
- * stocked list (spiral duct is bought by the size).
+ * Rectangles run in the fabricator's steps (50 mm, or 2 in for the inch
+ * series); round sizes are the stocked list (spiral duct is bought by the size).
  */
+import { onStep } from './ductSizeCatalog';
 import { equivalentDiameterMm } from './ductSizing';
 import { roundLeg, type DuctLeg } from './ductTypes';
 
@@ -30,7 +31,8 @@ export function roundEquivalents(section: DuctLeg, stockMm: readonly number[]): 
 export function widthForEquivalent(deMm: number, heightMm: number, stepMm = SECTION_STEP_MM, maxWidthMm = 3000): number | null {
   if (!(deMm > 0) || !(heightMm > 0)) return null;
   // Equivalent diameter rises with the width, so the first step that reaches it is the narrowest.
-  for (let width = Math.max(stepMm, MIN_RECT_SIDE_MM); width <= maxWidthMm + tolerance; width += stepMm) {
+  for (let k = Math.max(1, Math.ceil(MIN_RECT_SIDE_MM / stepMm - 1e-9)); onStep(k, stepMm) <= maxWidthMm + tolerance; k += 1) {
+    const width = onStep(k, stepMm);
     if (equivalentDiameterMm({ widthMm: width, heightMm }) >= deMm - tolerance) return width;
   }
   return null;
@@ -54,7 +56,8 @@ export function rectangularEquivalents(deMm: number, options: RectangularEquival
   const step = options.stepMm ?? SECTION_STEP_MM;
   const out: DuctLeg[] = [];
   const lowest = Math.max(MIN_RECT_SIDE_MM, options.minHeightMm ?? MIN_RECT_SIDE_MM);
-  for (let height = Math.ceil(lowest / step) * step; height <= options.maxHeightMm + tolerance; height += step) {
+  for (let k = Math.ceil(lowest / step - 1e-9); onStep(k, step) <= options.maxHeightMm + tolerance; k += 1) {
+    const height = onStep(k, step);
     const width = widthForEquivalent(deMm, height, step);
     if (width === null) continue;
     const wide = Math.max(width, height);

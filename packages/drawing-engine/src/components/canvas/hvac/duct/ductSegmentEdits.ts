@@ -27,6 +27,7 @@ import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './duc
 import { splitAirflowShare } from './ductSegmentFigures';
 import { sectionLabel, splitTitle, TAKEOFF_TITLES } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
+import { ductRectStepMm, ductRoundSizesMm } from './ductSizeCatalog';
 import { equivalentDiameterMm } from './ductSizing';
 import { TERMINAL_TAG_PATTERN, terminalLabel, terminalTypeTag, typicalTerminalSpec, type DuctTerminalKind, type DuctTerminalSpigotEntry, type DuctTerminalSpigotSide } from './ductTerminalCatalog';
 import { findTerminalPort, nextTerminalTag, readDuctTerminalSpec, SQUARE_BOX_TERMINAL_KINDS, terminalEnvelope, terminalSpigotPort } from './ductTerminals';
@@ -288,13 +289,14 @@ function reaimTurningBranches(scene: readonly HvacElement[], settings: DuctDesig
 function outletSection(first: DuctLeg, main: DuctLeg, round: boolean, outlets: number, settings: DuctDesignSettings): DuctLeg | null {
   if (round) {
     if (isRoundLeg(first)) return first;
-    const stock = settings.autoRoundSizesMm.length ? settings.autoRoundSizesMm : DEFAULT_STOCK;
+    const catalogue = ductRoundSizesMm(settings);
+    const stock = catalogue.length ? catalogue : DEFAULT_STOCK;
     const wanted = roundEquivalents(first, stock).atOrAbove?.diameterMm ?? Math.min(first.widthMm, first.heightMm);
     const fitting = [...stock].sort((a, b) => b - a).find((size) => size <= Math.min(wanted, main.diameterMm ?? main.widthMm) + 0.5);
     return roundLeg(fitting ?? wanted);
   }
   if (!isRoundLeg(first)) return first;
-  const rects = rectangularEquivalents(first.diameterMm!, { maxHeightMm: main.heightMm, maxAspect: settings.aspectRatioAdvisory });
+  const rects = rectangularEquivalents(first.diameterMm!, { maxHeightMm: main.heightMm, maxAspect: settings.aspectRatioAdvisory, stepMm: ductRectStepMm(settings) });
   const share = main.widthMm / Math.max(1, outlets);
   const flat = rects.find((leg) => leg.widthMm <= share + 0.5);
   if (flat) return flat;
@@ -316,7 +318,7 @@ function tapOnNewMain(
   let branchLegs = branch.spec.legs;
   const first = branchLegs[0]!;
   if (isRoundLeg(section) && !isRoundLeg(first)) {
-    const round = roundBranchFor(first, section.diameterMm!, settings.autoRoundSizesMm);
+    const round = roundBranchFor(first, section.diameterMm!, ductRoundSizesMm(settings));
     const tail = flexTail(branch.spec) ? branchLegs.length - 1 : branchLegs.length;
     branchLegs = branchLegs.map((leg, index) => (index === 0 || (wholeBranches && index < tail && !isRoundLeg(leg)) ? round : leg));
     notes.push(`${label}: its ${wholeBranches ? 'duct' : 'first leg'} becomes ${sectionLabel(round)} (was ${sectionLabel(first)})`);

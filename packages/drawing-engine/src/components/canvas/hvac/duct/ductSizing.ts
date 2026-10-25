@@ -18,6 +18,7 @@ import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../../data/ac-equipment-libr
 import type { HvacElement } from '../../../../types';
 
 import type { DuctDesignSettings } from './ductSettings';
+import { onStep } from './ductSizeCatalog';
 import { DUCT_TERMINAL_NECKS_MM, type DuctTerminalSpec } from './ductTerminalCatalog';
 import { isRoundLeg, type DuctLeg } from './ductTypes';
 
@@ -141,10 +142,13 @@ export function sizeRectangular(
     throw new RangeError('Duct sizing requires finite positive dimensions and a width step, and an aspect limit of at least 1.');
   }
   let best: RectangularSize = { widthMm: minWidth, heightMm, capped: true };
-  for (let height = heightMm; height <= maxHeight + 1e-6; height += step) {
-    const widest = Math.max(minWidth, Math.floor((height * maxAspect) / step) * step);
-    const narrowest = Math.ceil(Math.max(minWidth, height / maxAspect) / step) * step;
-    for (let width = narrowest; width <= widest; width += step) {
+  // Sides as multiples of the step (never a running sum: an inch step, 50.8 mm, would drift).
+  for (let h = 0; heightMm + h * step <= maxHeight + 1e-6; h += 1) {
+    const height = h === 0 ? heightMm : Math.round((heightMm + h * step) * 1000) / 1000;
+    const widest = Math.max(minWidth, onStep(Math.floor((height * maxAspect) / step + 1e-9), step));
+    const first = Math.ceil(Math.max(minWidth, height / maxAspect) / step - 1e-9);
+    for (let k = first; onStep(k, step) <= widest + 1e-6; k += 1) {
+      const width = onStep(k, step);
       if (Math.max(width / height, height / width) <= maxAspect
         && withinLimits({ widthMm: width, heightMm: height }, airflowM3h, limits)) return { widthMm: width, heightMm: height, capped: false };
     }

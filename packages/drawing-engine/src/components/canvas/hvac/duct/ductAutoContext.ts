@@ -62,7 +62,8 @@ export const dirToWorld = (frame: Frame, direction: Point2D): Point2D => ({
 });
 export const cardinal = (direction: Point2D): Point2D => (Math.abs(direction.x) >= Math.abs(direction.y)
   ? { x: Math.sign(direction.x) || 1, y: 0 } : { x: 0, y: Math.sign(direction.y) || 1 });
-export const roundUp = (value: number, step = 50) => Math.ceil(value / step - 1e-9) * step;
+/** The next multiple of the step at or above a length, exact (an inch step, 50.8 mm, leaves no float noise). */
+export const roundUp = (value: number, step = 50) => Math.round(Math.ceil(value / step - 1e-9) * step * 1000) / 1000;
 
 export function boxToLocal(frame: Frame, corners: readonly Point2D[], padMm: number, id?: string): OrthogonalRouteObstacle {
   const local = corners.map((corner) => toLocal(frame, corner));
