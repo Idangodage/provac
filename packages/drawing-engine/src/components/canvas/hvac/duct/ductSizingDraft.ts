@@ -13,7 +13,7 @@ import type { AutoDuctSizingBases } from './ductAutoLayout';
 import { parseDuctNumber } from './ductNumericValue';
 import type { DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
-import { basisAirflowM3h, defaultSizingBasis, linkSizingBasis } from './ductSystemSizing';
+import { basisAirflowM3h, initialSizingBasis, linkSizingBasis } from './ductSystemSizing';
 import type { DuctService, DuctSystemSizing } from './ductTypes';
 
 export interface DuctSizingDraft {
@@ -80,10 +80,10 @@ export function draftAirflow(unit: Pick<HvacElement, 'properties'>, draft: DuctS
   };
 }
 
-/** A service's basis in the draft (the project's defaults until changed), linked at the system airflow. */
+/** A service's basis in the draft (where a new design starts until changed), linked at the system airflow. */
 export function draftBasis(service: DuctService, draft: DuctSizingDraft, settings: DuctDesignSettings, airflow: DraftAirflow): DuctSystemSizing {
   return linkSizingBasis({
-    ...(draft.bases[service] ?? defaultSizingBasis(settings, service, null, draft.fanSpeed)),
+    ...(draft.bases[service] ?? initialSizingBasis(settings, service, airflow.systemAirflowM3h, draft.fanSpeed)),
     fanSpeed: draft.fanSpeed,
     airflowM3h: airflow.override,
   }, airflow.systemAirflowM3h);

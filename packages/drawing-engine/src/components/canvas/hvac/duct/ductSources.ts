@@ -7,6 +7,7 @@
 export type DuctSourceId =
   | 'smacna-1995'
   | 'ashrae-2024-flex'
+  | 'ashrae-2023-ch49'
   | 'ductmate-spec'
   | 'institutional-specs'
   | 'fabricator-practice'
@@ -30,6 +31,10 @@ export const DUCT_SOURCES: Record<DuctSourceId, DuctSource> = {
   'ashrae-2024-flex': {
     document: 'ASHRAE Handbook 2024, chapter 19: flexible duct hangers, supports and installation (ADC guidance)',
     url: 'https://handbook.ashrae.org/Handbooks/S24/IP/S24_Ch19/S24_Ch19_ip.aspx',
+  },
+  'ashrae-2023-ch49': {
+    document: 'ASHRAE Handbook — HVAC Applications (2023), chapter 49 Noise and Vibration Control: Table 1 (room sound targets, RC/NC), Table 8 (maximum main-duct velocities; branches about 80 %, final runouts 50 % or less), Table 9 (maximum diffuser and grille neck velocities)',
+    url: 'https://handbook.ashrae.org/Handbooks/A23/IP/A23_Ch49/a23_ch49_ip.aspx',
   },
   'smacna-1995': {
     document: 'SMACNA HVAC Duct Construction Standards, Metal and Flexible, 2nd ed. 1995 (Addendum 1, 1997)',

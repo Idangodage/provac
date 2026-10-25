@@ -35,7 +35,7 @@ import type { DuctWallInput } from './ductBuilding';
 import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
 import { withInitialSizingRecords } from './ductSizingRecord';
-import { basisAirflowM3h, defaultSizingBasis } from './ductSystemSizing';
+import { basisAirflowM3h, initialSizingBasis } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService } from './ductTypes';
 import { terminalShortfall, unitTurnToFaceTerminals } from './ductUnitAdvice';
@@ -324,8 +324,9 @@ export function planAutoRouteDucts(
         ...(options.rooms ? { rooms: options.rooms } : {}),
         ...(constantFriction ? {
           sizing: {
-            supply: defaultSizingBasis(options.settings, 'supply', null, options.fanSpeed),
-            return: defaultSizingBasis(options.settings, 'return', null, options.fanSpeed),
+            // Where a new design starts: with design criteria, one friction rate the main keeps within its limit.
+            supply: initialSizingBasis(options.settings, 'supply', airflowOf(unit), options.fanSpeed),
+            return: initialSizingBasis(options.settings, 'return', airflowOf(unit), options.fanSpeed),
           },
         } : {}),
       }, options.settings);

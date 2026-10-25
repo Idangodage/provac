@@ -125,6 +125,26 @@ export function defaultSizingBasis(
   }, airflowM3h);
 }
 
+/**
+ * The basis a new design starts from. With design criteria (ASHRAE ch. 49)
+ * it is equal friction with the main's velocity as its bound: the project's
+ * friction rate, unless at that rate the main would run faster than its
+ * limit — then the rate at which it runs at its limit (rounded down), so
+ * every segment is sized at one friction rate rather than the main alone
+ * being held by its limit. Without criteria, the settings as they are.
+ */
+export function initialSizingBasis(
+  settings: Parameters<typeof defaultSizingBasis>[0] & Pick<DuctDesignSettings, 'designCriteria'>,
+  service: DuctService,
+  airflowM3h: number | null,
+  fanSpeed: FanSpeed = 'hi',
+): DuctSystemSizing {
+  const basis = defaultSizingBasis(settings, service, airflowM3h, fanSpeed);
+  if (!settings.designCriteria || !airflowM3h || airflowM3h <= 0) return basis;
+  const atLimit = Math.floor(frictionAtVelocity(airflowM3h, settings.autoMaxVelocityTrunkMs) * 100) / 100;
+  return atLimit > 0 && atLimit < basis.frictionPaPerM ? linkSizingBasis({ ...basis, frictionPaPerM: atLimit }, airflowM3h) : basis;
+}
+
 export type DuctSizingPart = 'trunk' | 'branch' | 'runout';
 
 export function basisLimits(basis: Pick<DuctSystemSizing, 'frictionPaPerM' | 'maxVelocity'>, part: DuctSizingPart): DuctSizingLimits {

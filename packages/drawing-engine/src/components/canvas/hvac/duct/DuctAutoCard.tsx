@@ -51,7 +51,7 @@ import { formatCost, type DuctCostBreakdown } from './ductEconomics';
 import { parseDuctNumber } from './ductNumericValue';
 import { neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
 import { useDuctSizingDraft, useDuctSizingDraftStore, type DuctSizingDraft } from './ductSizingDraft';
-import { basisAirflowM3h, defaultSizingBasis, linkSizingBasis, sizingOutcomeLine } from './ductSystemSizing';
+import { basisAirflowM3h, initialSizingBasis, linkSizingBasis, sizingOutcomeLine } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
 
@@ -304,7 +304,7 @@ export function DuctAutoCard() {
   const sizingServices = (['supply', 'return'] as const).filter((service) => services[service] && counts[service] > 0);
   const tab: DuctService = sizingServices.includes(sizingTab) ? sizingTab : sizingServices[0] ?? 'supply';
   const basisFor = (service: DuctService, from = bases): DuctSystemSizing => linkSizingBasis({
-    ...(from[service] ?? defaultSizingBasis(ductSettings, service, null, fanSpeed)), fanSpeed, airflowM3h: airflowOverride,
+    ...(from[service] ?? initialSizingBasis(ductSettings, service, systemAirflow, fanSpeed)), fanSpeed, airflowM3h: airflowOverride,
   }, systemAirflow);
   const allBases = (from = bases): AutoDuctSizingBases => Object.fromEntries(sizingServices.map((service) => [service, basisFor(service, from)]));
   const airflowEntries = Object.keys(terminalAirflows).length ? terminalAirflows : undefined;

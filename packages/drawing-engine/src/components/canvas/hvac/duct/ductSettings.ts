@@ -5,6 +5,7 @@
  * Every value names its provenance so the panel can show whether a default is
  * verified.
  */
+import { readDesignCriteria, type DesignCriteria } from './ductDesignCriteria';
 import { ELBOW_RULES, FAN_CONNECTOR, TRANSITION_LIMITS, type DuctVaneType } from './ductFittingRules';
 import type { DuctRoundSeam, DuctRoundVelocityBand } from './ductRoundRules';
 import type { DuctRuleProvenance } from './ductSources';
@@ -171,6 +172,13 @@ export interface DuctDesignSettings {
   /** How air-side figures are shown and typed: SI (m³/h, m/s, Pa/m, Pa, mm) or IP (CFM, fpm, in. wg/100 ft, in. wg, in). */
   unitSystem: 'si' | 'ip';
   /**
+   * The design criteria the friction rates and velocity limits were set from
+   * (room type and where the main runs, ASHRAE HVAC Applications ch. 49), or
+   * null: the values are the designer's own. With criteria, a new system's
+   * friction rate is lowered where the main would otherwise exceed its limit.
+   */
+  designCriteria: DesignCriteria | null;
+  /**
    * Economics (auto duct optimiser), in `econCurrency`. First cost: galvanised
    * sheet by mass, fabrication and installation by sheet area (fittings at a
    * multiple), NBR by area, flexible duct per metre at Ø200 (scaled by the
@@ -294,6 +302,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   autoSizingMethod: 'constant-friction',
   autoNecksFollowAirflow: true,
   unitSystem: 'si',
+  designCriteria: null,
   econCurrency: 'USD',
   econSheetPerKg: 1.6,
   econFabricationRectPerM2: 14,
@@ -377,13 +386,14 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   flexType: { sourceId: 'smacna-1995', reference: 'Fig. 3-7, S3.32–S3.34', verified: true, note: 'Your decision: insulated non-metallic (NM-IL) with draw bands.' },
   flexJacketMm: practice('Insulation on the flexible duct; 25 mm is the common NM-IL grade.'),
   terminalHangerWires: { sourceId: 'smacna-1995', reference: 'S3.40, Fig. 2-15', verified: true, note: 'Terminals on flex are supported independently: by the ceiling grid (default) or by their own wires.' },
-  autoFrictionSupplyPaPerM: practice('Equal-friction sizing (method: ASHRAE Fundamentals ch. 21); 0.8 Pa/m is the usual low-pressure supply rate.'),
+  autoFrictionSupplyPaPerM: practice('Equal-friction sizing (method: ASHRAE Fundamentals ch. 21); 0.8 Pa/m (about 0.1 in. wg per 100 ft) is the commonly used low-pressure supply rate.'),
   autoFrictionReturnPaPerM: practice('Return sized a little lower than supply to keep the fan pressure down.'),
-  autoMaxVelocityTrunkMs: practice('Low-velocity trunk above an occupied space (noise).'),
-  autoMaxVelocityBranchMs: practice('Branch ducts to terminals.'),
-  autoMaxVelocityRunoutMs: practice('Flexible runouts and the last rigid length before a terminal.'),
-  autoMaxNeckVelocitySupplyMs: practice('Diffuser neck velocity for a quiet office (about NC 30–35); check the supplier\'s data.'),
-  autoMaxNeckVelocityReturnMs: practice('Return grille neck velocity; check the supplier\'s data.'),
+  autoMaxVelocityTrunkMs: { sourceId: 'ashrae-2023-ch49', reference: 'Table 8, rectangular, by RC and where the main runs', verified: true, note: 'Set from the design criteria; the default 5 m/s (a quiet main above an occupied space) applies when none are chosen.' },
+  autoMaxVelocityBranchMs: { sourceId: 'ashrae-2023-ch49', reference: 'Table 8 note: branches at about 80 % of the main', verified: true, note: 'Set from the design criteria; default 4 m/s without them.' },
+  autoMaxVelocityRunoutMs: { sourceId: 'ashrae-2023-ch49', reference: 'Table 8 note: final runouts at 50 % of the main or less', verified: true, note: 'Set from the design criteria; default 3 m/s without them.' },
+  autoMaxNeckVelocitySupplyMs: { sourceId: 'ashrae-2023-ch49', reference: 'Table 9, supply outlet, by RC', verified: true, note: 'For use when the diffuser\'s own sound data is not known; the supplier\'s data replaces it.' },
+  autoMaxNeckVelocityReturnMs: { sourceId: 'ashrae-2023-ch49', reference: 'Table 9, return opening, by RC', verified: true, note: 'For use when the grille\'s own sound data is not known; the supplier\'s data replaces it.' },
+  designCriteria: { sourceId: 'ashrae-2023-ch49', reference: 'Tables 1, 8 and 9', verified: true, note: 'Room type → RC (Table 1) → main, branch and runout limits (Table 8) and neck limits (Table 9); RC 30 and 40 between Table 8\'s rows.' },
   autoDiffuserDropPa: practice('Placeholder terminal pressure drop until the supplier\'s data is entered.'),
   autoGrilleDropPa: practice('Placeholder terminal pressure drop until the supplier\'s data is entered.'),
   filterG4RatedDropPa: practice('Clean drop of a 25 mm G4 panel at the rated face velocity; the supplier\'s curve replaces it.'),
@@ -594,6 +604,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     autoSizingMethod: oneOf(raw.autoSizingMethod, ['life-cycle', 'constant-friction'] as const, d.autoSizingMethod),
     autoNecksFollowAirflow: bool(raw.autoNecksFollowAirflow, d.autoNecksFollowAirflow),
     unitSystem: oneOf(raw.unitSystem, ['si', 'ip'] as const, d.unitSystem),
+    designCriteria: raw.designCriteria === undefined ? d.designCriteria : readDesignCriteria(raw.designCriteria),
     econCurrency: typeof raw.econCurrency === 'string' && /^[A-Za-z]{3}$/.test(raw.econCurrency) ? raw.econCurrency.toUpperCase() : d.econCurrency,
     econSheetPerKg: clampNumber(raw.econSheetPerKg, d.econSheetPerKg, 0, 1e4),
     econFabricationRectPerM2: clampNumber(raw.econFabricationRectPerM2, d.econFabricationRectPerM2, 0, 1e5),

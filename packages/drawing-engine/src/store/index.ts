@@ -35,6 +35,7 @@ import {
   resolveCondensateSettings,
   type CondensateDesignSettings,
 } from '../components/canvas/hvac/condensate/condensateSettings';
+import { RECOMMENDED_DESIGN_CRITERIA, designCriteriaSettings } from '../components/canvas/hvac/duct/ductDesignCriteria';
 import { expandDuctDeletion } from '../components/canvas/hvac/duct/ductNetwork';
 import {
   DEFAULT_DUCT_SETTINGS,
@@ -5356,10 +5357,12 @@ export const useDrawingStore = create<DrawingState>()(
               ? (data.condensateSettings as Partial<CondensateDesignSettings>)
               : null,
           );
+          // A document that has never had duct settings (a new one) starts from the recommended design criteria
+          // (ASHRAE ch. 49); a saved document keeps its own.
           const nextDuctSettings = resolveDuctSettings(
             typeof data.ductSettings === 'object' && data.ductSettings
               ? (data.ductSettings as Partial<DuctDesignSettings>)
-              : null,
+              : designCriteriaSettings(RECOMMENDED_DESIGN_CRITERIA),
           );
 
           // Board/sheet context travels with the document so a drawing reopens
