@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  RECOMMENDED_DESIGN_CRITERIA, criteriaStillApply, designCriteriaLimits, designCriteriaSettings, readDesignCriteria,
+  RECOMMENDED_DESIGN_CRITERIA, criteriaStillApply, designCriteriaLimits, designCriteriaSettings, readDesignCriteria, readUnitCriteria, suggestDesignRoom,
+  unitDuctSettings,
 } from './ductDesignCriteria';
 import { DEFAULT_DUCT_SETTINGS, resolveDuctSettings } from './ductSettings';
 import { defaultSizingBasis, frictionAtVelocity, initialSizingBasis } from './ductSystemSizing';
@@ -71,5 +72,49 @@ describe('design criteria (ASHRAE HVAC Applications 2023, ch. 49)', () => {
     // Without criteria the settings are the designer's own: the default basis, unchanged.
     expect(initialSizingBasis(DEFAULT_DUCT_SETTINGS, 'supply', 4320)).toEqual(defaultSizingBasis(DEFAULT_DUCT_SETTINGS, 'supply', 4320));
     expect(initialSizingBasis(quiet, 'supply', null)).toEqual(defaultSizingBasis(quiet, 'supply', null));
+  });
+});
+
+describe("a unit's own criteria", () => {
+  const project = resolveDuctSettings(designCriteriaSettings(RECOMMENDED_DESIGN_CRITERIA));
+  const unit = (criteria?: unknown) => ({ properties: criteria === undefined ? {} : { designCriteria: criteria } });
+
+  it("designs a unit by its own criteria, else by the project's settings themselves", () => {
+    expect(unitDuctSettings(project, unit())).toBe(project);
+    expect(unitDuctSettings(project, null)).toBe(project);
+    expect(unitDuctSettings(project, unit({ room: 'nonsense', location: 'suspended' }))).toBe(project);
+    const office = unitDuctSettings(project, unit({ room: 'private-office', location: 'suspended' }));
+    const limits = designCriteriaLimits({ room: 'private-office', location: 'suspended' });
+    expect(office.autoMaxVelocityTrunkMs).toBe(limits.mainMs);
+    expect(office.autoMaxNeckVelocitySupplyMs).toBe(limits.neckSupplyMs);
+    expect(office.designCriteria).toEqual({ room: 'private-office', location: 'suspended' });
+    // Everything else is the project's; the project's own settings are untouched.
+    expect(office.rectStepMm).toBe(project.rectStepMm);
+    expect(project.autoMaxVelocityTrunkMs).toBe(10.8);
+    // The same object for the same criteria (caches keyed by the settings stay warm).
+    expect(unitDuctSettings(project, unit({ room: 'private-office', location: 'suspended' }))).toBe(office);
+    expect(readUnitCriteria(unit({ room: 'ward', location: 'shaft' }))).toEqual({ room: 'ward', location: 'shaft' });
+  });
+
+  it("suggests a room's criteria from its name, else from its type", () => {
+    const cases: Array<[string, string, string | null]> = [
+      ['Meeting Room 2', 'Open Space', 'conference'],
+      ['Board room', 'Custom', 'conference'],
+      ['Open Space 2', 'Open Space', 'open-office'],
+      ['Manager office', 'Custom', 'private-office'],
+      ['Lecture hall', 'Custom', 'lecture'],
+      ['Reception', 'Custom', 'corridor'],
+      ['Corridor 10:42', 'Corridor', 'corridor'],
+      ['Passage 10:43', 'Passage', 'corridor'],
+      ['Bedroom 2', 'Bedroom', 'residence'],
+      ['Room 4', 'Living Room', 'residence'],
+      ['Bathroom/Closet 09:12', 'Bathroom/Closet', null],
+      ['Balcony', 'Balcony', null],
+      ['Room 7', 'Custom', null],
+    ];
+    for (const [name, roomType, expected] of cases) {
+      expect(suggestDesignRoom({ name, roomType: roomType as never }), name).toBe(expected);
+    }
+    expect(suggestDesignRoom(null)).toBeNull();
   });
 });

@@ -37,6 +37,7 @@ import {
   autoDuctSelection, resetDuctSystemToInitial, resizeAutoDuctPreview, resizeDuctSystemAtBasis, resizeDuctSystemOnDrawing, resizeUnitDuctsAtBasis,
 } from '../duct/ductAutoController';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from '../duct/ductAutoPreviewStore';
+import { unitDuctSettings } from '../duct/ductDesignCriteria';
 import { ductNetworkRows } from '../duct/ductNetworkTree';
 import type { DuctDesignSettings } from '../duct/ductSettings';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from '../duct/ductSizing';
@@ -698,7 +699,7 @@ function AppliedSizing({ unit, unitTag, service, root, rootSpec, report, setting
       ) : null}
 
       <CardSection testId="unit-sizing-continue">
-        <DesignCriteriaPicker unitId={unit.id} unitTag={unitTag} canApply />
+        <DesignCriteriaPicker unit={unit} unitTag={unitTag} hasDucts />
         <div className="mt-2 space-y-1">
           <MethodStrip basis={shownBasis} report={shown} live={false} onChange={(next, what) => resize(next, what)} />
           <FrictionSlider frictionPaPerM={basis.frictionPaPerM} onPreview={setHeld}
@@ -787,9 +788,12 @@ function DraftSizing({ unit, unitTag, service, terminals, settings }: { unit: Hv
   const update = useDuctSizingDraftStore((state) => state.update);
   const [limitsOpen, setLimitsOpen] = useUnitPanelSection('limits');
   const [chartOpen, setChartOpen] = useUnitPanelSection('chart');
-  const { hvacElements, walls, setDuctSettings } = useSmartDrawingStore((state) => ({ hvacElements: state.hvacElements, walls: state.walls, setDuctSettings: state.setDuctSettings }), shallow);
+  const { hvacElements, walls, setDuctSettings, projectSettings } = useSmartDrawingStore((state) => ({
+    hvacElements: state.hvacElements, walls: state.walls, setDuctSettings: state.setDuctSettings, projectSettings: state.ductSettings,
+  }), shallow);
   const preview = useDuctAutoPreviewStore((state) => ({ result: state.result, scene: state.scene, inputs: state.inputs }), shallow);
-  const current = preview.result?.unitId === unit.id && isAutoDuctPreviewCurrent(preview, hvacElements, settings, walls);
+  // (A preview is keyed to the project's settings; `settings` are the unit's own where it has criteria.)
+  const current = preview.result?.unitId === unit.id && isAutoDuctPreviewCurrent(preview, hvacElements, projectSettings, walls);
   const air = readUnitAirData(unit);
   const counts = { supply: 0, return: 0 };
   for (const terminal of terminals) {
@@ -849,7 +853,7 @@ function DraftSizing({ unit, unitTag, service, terminals, settings }: { unit: Hv
         <SizingMethodSwitch method={method} onChange={(next) => { if (next !== method) setDuctSettings({ autoSizingMethod: next }); }} />
       </CardSection>
       <CardSection testId="unit-sizing-continue">
-        <DesignCriteriaPicker unitId={unit.id} unitTag={unitTag} canApply={false} />
+        <DesignCriteriaPicker unit={unit} unitTag={unitTag} />
         <div className="mt-2 space-y-1">
           {method === 'constant-friction' ? (
             <>
@@ -1003,7 +1007,9 @@ export function UnitDesignPanel({ unitId, onShowToolbox, autoOpen, onAutoOpenCha
   const unit = unitId ? scene.find((element) => element.id === unitId) ?? hvacElements.find((element) => element.id === unitId) ?? null : null;
   const spec = useMemo(() => (unit ? unitSpecificationFor(unit) : null), [unit]);
   const tags = useMemo(() => airSystemTags(scene), [scene]);
-  const airSide = useUnitAirSide(unit, spec, ductSettings, scene);
+  // The unit's ducts are designed and checked by its own criteria where it has them, else the project's.
+  const designSettings = unitDuctSettings(ductSettings, unit);
+  const airSide = useUnitAirSide(unit, spec, designSettings, scene);
   const draft = useDuctSizingDraft(unit?.id);
   const tab = useUnitPanelUiStore((state) => state.tab);
   const setTab = useUnitPanelUiStore((state) => state.setTab);
@@ -1041,7 +1047,7 @@ export function UnitDesignPanel({ unitId, onShowToolbox, autoOpen, onAutoOpenCha
               </div>
               <div role="tabpanel" aria-label={activeTab === 'sizing' ? 'Duct sizing' : 'Specification'}>
                 {activeTab === 'sizing'
-                  ? <DuctSizingTab unit={unit} unitTag={tag} settings={ductSettings} scene={scene} rooms={rooms} airSide={airSide} airflowM3h={air?.airflowM3h ?? null} />
+                  ? <DuctSizingTab unit={unit} unitTag={tag} settings={designSettings} scene={scene} rooms={rooms} airSide={airSide} airflowM3h={air?.airflowM3h ?? null} />
                   : <SpecificationTab unit={unit} spec={spec} designSpeed={design.fanSpeed} />}
               </div>
             </>

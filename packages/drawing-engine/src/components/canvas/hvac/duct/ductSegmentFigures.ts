@@ -13,6 +13,7 @@ import type { HvacElement } from '../../../../types';
 
 import { getActiveDuctBuilding } from './ductBuilding';
 import { gaugeLabelForSheet } from './ductCatalog';
+import { unitDuctSettings } from './ductDesignCriteria';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { describeJoint } from './ductGauge';
 import { ductBranchesOf } from './ductNetwork';
@@ -127,7 +128,8 @@ function buildSystemModel(scene: readonly HvacElement[], settings: DuctDesignSet
     const spec = element ? readDuctTerminalSpec(element) : null;
     return spec ? [{ id: end.terminalId, spec: { designAirflowM3h: spec.designAirflowM3h ?? null, neckDiameterMm: spec.neckDiameterMm } }] : [];
   });
-  const requested = rootSpec.sizing ?? defaultSizingBasis(settings, rootSpec.service, null);
+  // A system without a stored basis is judged by its unit's criteria (its own, else the project's).
+  const requested = rootSpec.sizing ?? defaultSizingBasis(unitDuctSettings(settings, unit), rootSpec.service, null);
   const { systemAirflowM3h, shares } = systemTerminalAirflows(unit ?? undefined, requested, terminals);
   const basis = linkSizingBasis(requested, systemAirflowM3h);
   const airflow = new Map(shares.map((share) => [share.terminalId, share.airflowM3h]));

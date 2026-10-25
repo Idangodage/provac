@@ -46,6 +46,7 @@ import {
 import { AUTO_DUCT_LAYOUT_LABELS, type AutoDuctLayoutChoice, type AutoDuctRequest, type AutoDuctResult, type AutoDuctShape, type AutoDuctSizingBases } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { sameAutoDuctInputs } from './ductAutoWorkflow';
+import { unitDuctSettings } from './ductDesignCriteria';
 import { formatCost, type DuctCostBreakdown } from './ductEconomics';
 import { parseDuctNumber } from './ductNumericValue';
 import { neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
@@ -280,6 +281,8 @@ export function DuctAutoCard() {
   }, [unitId]);
   if (!selection) return null;
   const { unit, terminals } = selection;
+  // The unit's own design criteria where it has them (the preview's freshness stays keyed to the project's settings).
+  const designSettings = unitDuctSettings(ductSettings, unit);
   const air = readUnitAirData(unit);
   const counts = { supply: 0, return: 0 };
   for (const terminal of terminals) {
@@ -302,7 +305,7 @@ export function DuctAutoCard() {
   const sizingServices = (['supply', 'return'] as const).filter((service) => services[service] && counts[service] > 0);
   const tab: DuctService = sizingServices.includes(sizingTab) ? sizingTab : sizingServices[0] ?? 'supply';
   const basisFor = (service: DuctService, from = bases): DuctSystemSizing => linkSizingBasis({
-    ...(from[service] ?? initialSizingBasis(ductSettings, service, systemAirflow, fanSpeed)), fanSpeed, airflowM3h: airflowOverride,
+    ...(from[service] ?? initialSizingBasis(designSettings, service, systemAirflow, fanSpeed)), fanSpeed, airflowM3h: airflowOverride,
   }, systemAirflow);
   const allBases = (from = bases): AutoDuctSizingBases => Object.fromEntries(sizingServices.map((service) => [service, basisFor(service, from)]));
   const airflowEntries = Object.keys(terminalAirflows).length ? terminalAirflows : undefined;
@@ -333,7 +336,7 @@ export function DuctAutoCard() {
       neckMm: spec.neckDiameterMm, neckVelocityMs: neckVelocityMs(spec, share.airflowM3h),
     };
   });
-  const neckCap = tab === 'return' ? ductSettings.autoMaxNeckVelocityReturnMs : ductSettings.autoMaxNeckVelocitySupplyMs;
+  const neckCap = tab === 'return' ? designSettings.autoMaxNeckVelocityReturnMs : designSettings.autoMaxNeckVelocitySupplyMs;
   const intendedRequest: AutoDuctRequest = {
     unitId: unit.id, terminalIds: terminals.map((terminal) => terminal.id), fanSpeed,
     airflowM3h: airflowOverride, layout, services, rebuildExisting: rebuild, shape,
@@ -443,7 +446,7 @@ export function DuctAutoCard() {
               <ServiceTabs services={sizingServices} active={tab} onChange={setSizingTab} />
               {method === 'constant-friction' && sizingServices.length ? (
                 <div className="space-y-1" key={`${unit.id}:${tab}`}>
-                  <DesignCriteriaPicker unitId={unit.id} unitTag={systemTag} canApply={occupied && !current} />
+                  <DesignCriteriaPicker unit={unit} unitTag={systemTag} hasDucts={occupied} />
                   <MethodStrip basis={basisFor(tab)} report={current?.services.find((entry) => entry.service === tab)?.sizingReport ?? null} live compact
                     onChange={(next) => updateBasis(tab, next)} />
                   <FrictionSlider frictionPaPerM={basisFor(tab).frictionPaPerM} label="Auto duct friction rate slider" testId="duct-auto-slider"

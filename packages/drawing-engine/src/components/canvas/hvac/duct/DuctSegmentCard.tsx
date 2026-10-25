@@ -40,6 +40,7 @@ import { useHvacUnits, type HvacUnits } from '../units/useHvacUnits';
 
 import { DuctSegmentGlyph } from './DuctSegmentGlyph';
 import { getActiveDuctBuilding } from './ductBuilding';
+import { unitDuctSettings } from './ductDesignCriteria';
 import { commitDuctSegmentEdit } from './ductEditController';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
@@ -62,8 +63,9 @@ import { ductSegmentOf, neighbourSegment, sectionLabel, segmentIssues, type Duct
 import type { DuctDesignSettings } from './ductSettings';
 import { ductRectStepMm, ductRoundSizesMm } from './ductSizeCatalog';
 import { equivalentDiameterMm } from './ductSizing';
+import { ductSystemRootOfRun } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
-import { isRoundLeg, roundLeg, type DuctLeg, type DuctRunSpec } from './ductTypes';
+import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec } from './ductTypes';
 
 export type DuctSegmentProvider = SegmentProvider<DuctSegmentOption, DuctOptionEvaluation>;
 type DuctCardModel = SegmentCardModel<DuctSegmentOption, DuctOptionEvaluation>;
@@ -693,12 +695,20 @@ function ductCardModel(scene: HvacElement[], settings: DuctDesignSettings, focus
   return model;
 }
 
-/** The duct runs' segment cards, read with the document's duct settings. */
+/** The settings a run's card reads: its unit's own criteria where the unit has them, else the project's. */
+function settingsForRun(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string): DuctDesignSettings {
+  const root = ductSystemRootOfRun(scene, runId);
+  const start = root ? readDuctRunSpec(root)?.start : undefined;
+  const unitId = start?.kind === 'unit-port' ? start.unitId : null;
+  return unitDuctSettings(settings, unitId ? scene.find((element) => element.id === unitId) : undefined);
+}
+
+/** The duct runs' segment cards, read with the document's duct settings (a unit's own criteria for its ducts). */
 export function createDuctSegmentProvider(settings: DuctDesignSettings): DuctSegmentProvider {
   return {
     domain: 'duct',
     testIdPrefix: 'duct-segment',
-    model: (scene, focus) => ductCardModel(scene, settings, focus),
+    model: (scene, focus) => ductCardModel(scene, settingsForRun(scene, settings, focus.runId), focus),
     rank: rankDuctOptions,
     badges: BADGES,
     recommendedBadge: 'recommended',

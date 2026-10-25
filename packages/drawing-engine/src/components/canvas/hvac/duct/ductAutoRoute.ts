@@ -32,6 +32,7 @@ import { airSystemTags, analyseAirSystems, readAirSystemAssignment, servingUnits
 import type { AutoDuctIssue } from './ductAutoContext';
 import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuctInShape, removalTree, type AutoDuctShape } from './ductAutoLayout';
 import type { DuctWallInput } from './ductBuilding';
+import { unitDuctSettings } from './ductDesignCriteria';
 import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
 import { withInitialSizingRecords } from './ductSizingRecord';
@@ -315,8 +316,10 @@ export function planAutoRouteDucts(
       onProgress({ stage: `${stage}${label} (${index + 1} of ${order.length})`, completed: index, total: order.length });
       const group = assigned.get(unit.id)!;
       const kinds = new Set(group.map((terminal) => terminalPorts.get(terminal.id)!.kind));
+      // The unit's own design criteria where it has them, else the project's.
+      const settings = unitDuctSettings(options.settings, unit);
       // The project's sizing method: constant friction at its friction rates and velocity limits, or the life-cycle optimum.
-      const constantFriction = options.settings.autoSizingMethod === 'constant-friction';
+      const constantFriction = settings.autoSizingMethod === 'constant-friction';
       const auto = generateAutoDuctInShape(working, {
         unitId: unit.id, terminalIds: group.map((terminal) => terminal.id), fanSpeed: options.fanSpeed, layout: 'auto',
         services: { supply: kinds.has('supply'), return: kinds.has('return') }, rebuildExisting: options.rebuildExisting, shape: options.shape,
@@ -325,11 +328,11 @@ export function planAutoRouteDucts(
         ...(constantFriction ? {
           sizing: {
             // Where a new design starts: with design criteria, one friction rate the main keeps within its limit.
-            supply: initialSizingBasis(options.settings, 'supply', airflowOf(unit), options.fanSpeed),
-            return: initialSizingBasis(options.settings, 'return', airflowOf(unit), options.fanSpeed),
+            supply: initialSizingBasis(settings, 'supply', airflowOf(unit), options.fanSpeed),
+            return: initialSizingBasis(settings, 'return', airflowOf(unit), options.fanSpeed),
           },
         } : {}),
-      }, options.settings);
+      }, settings);
       const design = auto.designs[auto.selected] ?? null;
       // A unit is designed as a whole: a service whose terminals have no layout keeps the other's layout out too,
       // never a silent return-only (or supply-only) proposal.
@@ -381,7 +384,7 @@ export function planAutoRouteDucts(
         const runs = withInitialSizingRecords({
           fanSpeed: auto.fanSpeed, airflowM3h: auto.airflowM3h, airflowSource: auto.airflowSource,
           runs: auto.runs, removeIds: auto.removeIds, terminalUpdates: auto.terminalUpdates, services: auto.services, shape: auto.shape,
-        }, working, options.settings, 'auto-route');
+        }, working, settings, 'auto-route');
         pass.elementsToAdd.push(...runs);
         pass.removeElementIds.push(...auto.removeIds);
         pass.terminalUpdates.push(...terminalUpdates);
@@ -389,7 +392,7 @@ export function planAutoRouteDucts(
         working = [...withReplaced(working.filter((element) => !removed.has(element.id)), terminalUpdates), ...runs];
       }
       // What puts the unit right, ahead of the notes: it is what to do.
-      const advice = unitAdvice(unit, group, auto.airflowM3h ?? airflowOf(unit), diagnostics, unitResult.tag ?? label, options.settings);
+      const advice = unitAdvice(unit, group, auto.airflowM3h ?? airflowOf(unit), diagnostics, unitResult.tag ?? label, settings);
       if (advice.length) {
         unitResult.advice = advice;
         unitResult.notes = [...advice.map((entry) => entry.message), ...unitResult.notes.filter((note) => !advice.some((entry) => entry.message === note))];

@@ -21,7 +21,8 @@ import {
 } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { ductWallInputs } from './ductBuilding';
-import { designCriteriaSettings, type DesignCriteria } from './ductDesignCriteria';
+import { unitDuctSettings, type DesignCriteria } from './ductDesignCriteria';
+import type { DuctDesignSettings } from './ductSettings';
 import { stampDesignedAt, withInitialSizingRecords } from './ductSizingRecord';
 import { ductSystemRootOf, initialSizingBasis, type DuctSystemSizingReport } from './ductSystemSizing';
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
@@ -117,6 +118,11 @@ export function autoDuctSelection(
 let previewGeneration = 0;
 
 /** Routes, sizes and verifies the designs in the worker; the preview shows the best life-cycle one. */
+/** The settings a unit's ducts are designed by: the project's, with the unit's own criteria when it has them. */
+function settingsForUnit(scene: readonly HvacElement[], unitId: string | null | undefined, settings: DuctDesignSettings): DuctDesignSettings {
+  return unitDuctSettings(settings, unitId ? scene.find((element) => element.id === unitId) : undefined);
+}
+
 export async function generateAutoDuctPreview(request: AutoDuctRequest): Promise<void> {
   const generation = ++previewGeneration;
   const { hvacElements, ductSettings, walls, rooms } = useSmartDrawingStore.getState();
@@ -131,7 +137,9 @@ export async function generateAutoDuctPreview(request: AutoDuctRequest): Promise
       ...request, walls: request.walls ?? ductWallInputs(walls),
       rooms: request.rooms ?? rooms.map((room) => ({ id: room.id, vertices: room.vertices })),
     };
-    const result = await runAutoDuctInWorker(hvacElements, withWalls, ductSettings);
+    // Designed by the unit's own criteria where it has them; the preview stays keyed to the project's settings (a
+    // change of the unit's criteria changes the drawing, which makes the preview stale).
+    const result = await runAutoDuctInWorker(hvacElements, withWalls, settingsForUnit(hvacElements, request.unitId, ductSettings));
     if (generation !== previewGeneration) return;
     const current = useSmartDrawingStore.getState();
     const inputs = { settings: ductSettings, walls };
@@ -191,7 +199,8 @@ export function resizeAutoDuctPreviewNow(bases: AutoDuctSizingBases, terminalAir
   const effectiveAirflows = terminalAirflows ?? request.terminalAirflows;
   const replaced = new Map<number, AutoDuctDesign>();
   const indices = options.all ? result.designs.map((_, index) => index) : [result.selected];
-  for (const index of indices) replaced.set(index, resizeAutoDuctDesign(result, index, bases, effectiveAirflows, scene, state.ductSettings));
+  const settings = settingsForUnit(scene, request.unitId, state.ductSettings);
+  for (const index of indices) replaced.set(index, resizeAutoDuctDesign(result, index, bases, effectiveAirflows, scene, settings));
   const next = withAutoDuctDesigns(result, replaced, bases, airflowUpdates(scene, request.terminalIds, effectiveAirflows));
   useDuctAutoPreviewStore.getState().setPreview(next, { ...request, sizing: bases, ...(effectiveAirflows ? { terminalAirflows: effectiveAirflows } : {}) }, scene);
   return next;
@@ -224,7 +233,7 @@ export function resizeAutoDuctPreview(bases: AutoDuctSizingBases, terminalAirflo
         }
         try {
           const request = useDuctAutoPreviewStore.getState().request;
-          const design = resizeAutoDuctDesign(result, index, bases, terminalAirflows ?? request?.terminalAirflows, scene, state.ductSettings);
+          const design = resizeAutoDuctDesign(result, index, bases, terminalAirflows ?? request?.terminalAirflows, scene, settingsForUnit(scene, result.unitId, state.ductSettings));
           if (request) useDuctAutoPreviewStore.getState().setPreview(withAutoDuctDesigns(result, new Map([[index, design]]), bases, result.terminalAirflowUpdates), request, scene);
           if (pending.length) resizeTimer = setTimeout(step, 0);
           else useDuctAutoPreviewStore.getState().setResizing(false);
@@ -245,7 +254,7 @@ export function resizeAutoDuctPreview(bases: AutoDuctSizingBases, terminalAirflo
 /** The applied system of a unit's collar, its sections as drawn (nothing changes); the other service counts in the fan check. */
 export function measureDuctSystem(unitId: string, service: DuctService, basis?: DuctSystemSizing): DuctSystemSizingReport | null {
   const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
-  return measureUnitService(hvacElements, unitId, service, ductSettings, basis);
+  return measureUnitService(hvacElements, unitId, service, settingsForUnit(hvacElements, unitId, ductSettings), basis);
 }
 
 /** An element as the command stores it (a terminal given another neck moves and resizes its box). */
@@ -269,8 +278,8 @@ export function resizeDuctSystemOnDrawing(
   action = `Duct sizing (${service})`,
 ): DuctSystemSizingReport | null {
   const state = useSmartDrawingStore.getState();
-  const sized = sizeUnitService(state.hvacElements, unitId, service, basis, terminalAirflows, state.ductSettings,
-    { necks: state.ductSettings.autoNecksFollowAirflow });
+  const settings = settingsForUnit(state.hvacElements, unitId, state.ductSettings);
+  const sized = sizeUnitService(state.hvacElements, unitId, service, basis, terminalAirflows, settings, { necks: settings.autoNecksFollowAirflow });
   if (!sized) return null;
   if (sized.updates.length) {
     state.commitHvacElementCommand(action, { updates: sized.updates.map(elementUpdate) });
@@ -294,26 +303,31 @@ export function resizeDuctSystemOnDrawing(
  */
 export function resizeDuctSystemAtBasis(unitId: string, service: DuctService): DuctSystemSizingReport | null {
   const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
-  const { basis } = continueBasis(hvacElements, unitId, service, ductSettings);
+  const { basis } = continueBasis(hvacElements, unitId, service, settingsForUnit(hvacElements, unitId, ductSettings));
   return resizeDuctSystemOnDrawing(unitId, service, basis, undefined, `Duct sizing (${service}): re-sized at ${basis.frictionPaPerM.toFixed(2)} Pa/m`);
 }
 
 /**
  * Sizes several of a unit's services on the drawing, each at its own basis,
  * as one command (one undo): the second sized on what the first made of the
- * drawing. Returns each service's report.
+ * drawing. `extraUpdates` (the unit with new criteria) apply first, by the
+ * settings they give, and go in the same command. Returns each service's
+ * report.
  */
 export function resizeUnitDuctsOnDrawing(
   unitId: string,
   services: ReadonlyArray<{ service: DuctService; basis: DuctSystemSizing }>,
   action: string,
+  options: { extraUpdates?: readonly HvacElement[] } = {},
 ): Partial<Record<DuctService, DuctSystemSizingReport>> {
   const state = useSmartDrawingStore.getState();
-  let working: readonly HvacElement[] = state.hvacElements;
-  const changed = new Map<string, HvacElement>();
+  const extra = new Map((options.extraUpdates ?? []).map((element) => [element.id, element]));
+  let working: readonly HvacElement[] = extra.size ? state.hvacElements.map((element) => extra.get(element.id) ?? element) : state.hvacElements;
+  const settings = settingsForUnit(working, unitId, state.ductSettings);
+  const changed = new Map<string, HvacElement>(extra);
   const reports: Partial<Record<DuctService, DuctSystemSizingReport>> = {};
   for (const { service, basis } of services) {
-    const sized = sizeUnitService(working, unitId, service, basis, undefined, state.ductSettings, { necks: state.ductSettings.autoNecksFollowAirflow });
+    const sized = sizeUnitService(working, unitId, service, basis, undefined, settings, { necks: settings.autoNecksFollowAirflow });
     if (!sized) continue;
     reports[service] = sized.report;
     const replaced = new Map(sized.updates.map((element) => [element.id, element]));
@@ -323,7 +337,7 @@ export function resizeUnitDuctsOnDrawing(
   if (changed.size) {
     state.commitHvacElementCommand(action, { updates: [...changed.values()].map(elementUpdate) });
     const runs = [...changed.values()].filter(isDuctElement).length;
-    state.setProcessingStatus(`${action}: ${runs} run${runs === 1 ? '' : 's'} resized.`, false);
+    state.setProcessingStatus(runs ? `${action}: ${runs} run${runs === 1 ? '' : 's'} resized.` : `${action}.`, false);
   }
   return reports;
 }
@@ -331,9 +345,10 @@ export function resizeUnitDuctsOnDrawing(
 /** Each of a unit's services that has ducts, at the basis it continues from. */
 function unitServiceBases(unitId: string): Array<{ service: DuctService; basis: DuctSystemSizing }> {
   const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
+  const settings = settingsForUnit(hvacElements, unitId, ductSettings);
   return (['supply', 'return'] as const)
     .filter((service) => ductSystemRootOf(hvacElements, unitId, service))
-    .map((service) => ({ service, basis: continueBasis(hvacElements, unitId, service, ductSettings).basis }));
+    .map((service) => ({ service, basis: continueBasis(hvacElements, unitId, service, settings).basis }));
 }
 
 /** Every duct of the unit sized again at its basis, both services one undo (after the size series changes). */
@@ -342,20 +357,27 @@ export function resizeUnitDuctsAtBasis(unitId: string, action: string): Partial<
 }
 
 /**
- * Makes `criteria` the project's (what new designs size at) and sizes the
- * unit's ducts by them: each service's limits and friction rate as a new
+ * Gives the unit its own design criteria (null: back to the project's) and
+ * sizes its ducts by them: each service's limits and friction rate as a new
  * design takes them (the practice rate, or the rate at which the main
- * reaches its limit when that is lower), its fan speed and any typed
- * airflow kept; both services one undo.
+ * reaches its limit when that is lower), its fan speed and any typed airflow
+ * kept. The unit and its ducts change as one command (one undo); the
+ * project's criteria stay as they are.
  */
-export function applyDesignCriteriaToUnit(unitId: string, criteria: DesignCriteria, action: string): Partial<Record<DuctService, DuctSystemSizingReport>> {
-  useSmartDrawingStore.getState().setDuctSettings(designCriteriaSettings(criteria));
+export function applyDesignCriteriaToUnit(unitId: string, criteria: DesignCriteria | null, action: string): Partial<Record<DuctService, DuctSystemSizingReport>> {
   const { hvacElements, ductSettings } = useSmartDrawingStore.getState();
-  const services = unitServiceBases(unitId).map(({ service, basis }) => {
-    const airflow = basis.airflowM3h ?? measureUnitService(hvacElements, unitId, service, ductSettings, basis, { espCheck: false })?.airflowM3h ?? null;
-    return { service, basis: { ...initialSizingBasis(ductSettings, service, airflow, basis.fanSpeed), airflowM3h: basis.airflowM3h } };
+  const unit = hvacElements.find((element) => element.id === unitId);
+  if (!unit) return {};
+  // (An update merges properties: null, not a missing key, says "none of its own".)
+  const updated: HvacElement = { ...unit, properties: { ...unit.properties, designCriteria: criteria ? { room: criteria.room, location: criteria.location } : null } };
+  const scene = hvacElements.map((element) => (element.id === unitId ? updated : element));
+  const settings = unitDuctSettings(ductSettings, updated);
+  const services = (['supply', 'return'] as const).filter((service) => ductSystemRootOf(scene, unitId, service)).map((service) => {
+    const { basis } = continueBasis(scene, unitId, service, settings);
+    const airflow = basis.airflowM3h ?? measureUnitService(scene, unitId, service, settings, basis, { espCheck: false })?.airflowM3h ?? null;
+    return { service, basis: { ...initialSizingBasis(settings, service, airflow, basis.fanSpeed), airflowM3h: basis.airflowM3h } };
   });
-  return resizeUnitDuctsOnDrawing(unitId, services, action);
+  return resizeUnitDuctsOnDrawing(unitId, services, action, { extraUpdates: [updated] });
 }
 
 /**
@@ -403,7 +425,7 @@ export function applyAutoDuctPreview(): string {
     fanSpeed: result.fanSpeed, airflowM3h: result.airflowM3h, airflowSource: result.airflowSource,
     runs: result.runs, removeIds: result.removeIds, terminalUpdates: result.terminalUpdates, terminalAirflowUpdates: result.terminalAirflowUpdates,
     services: result.services, shape: result.shape,
-  }, state.hvacElements, state.ductSettings, 'auto-duct'), new Date().toISOString());
+  }, state.hvacElements, settingsForUnit(state.hvacElements, result.unitId, state.ductSettings), 'auto-duct'), new Date().toISOString());
   state.commitHvacElementCommand('Auto duct', { add: runs, removeIds: result.removeIds, updates: [...terminalSpigotUpdates(assigned), ...tagUpdates], selectedIds: ids });
   const message = `Auto duct: ${result.runs.length} run${result.runs.length === 1 ? '' : 's'} added${result.removeIds.length ? `, ${result.removeIds.length} replaced` : ''}`
     + `${turned.length ? `, ${turned.length} spigot${turned.length === 1 ? '' : 's'} turned` : ''}${joined ? `, ${joined} terminal${joined === 1 ? '' : 's'} joined ${tag}` : ''}.`;

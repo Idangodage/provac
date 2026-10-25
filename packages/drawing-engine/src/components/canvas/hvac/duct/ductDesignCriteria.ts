@@ -16,7 +16,12 @@
  * 12, branch 10, runout 8 m/s). The friction rates are practice: 0.8 Pa/m for
  * supply (about 0.1 in. wg per 100 ft, the commonly used design rate), 0.6 Pa/m
  * for return.
+ *
+ * The project's criteria set what new designs size at; a unit may carry its
+ * own (`unitDuctSettings`), suggested from its room (`suggestDesignRoom`).
  */
+import type { HvacElement, Room, RoomType } from '../../../../types';
+
 import type { DuctDesignSettings } from './ductSettings';
 
 export type DuctMainLocation = 'shaft' | 'suspended' | 'occupied';
@@ -187,4 +192,76 @@ export function criteriaStillApply(settings: DesignCriteriaSettings): boolean {
   const expected = designCriteriaSettings(settings.designCriteria);
   return (Object.keys(expected) as Array<keyof DesignCriteriaSettings>).every((key) => key === 'designCriteria'
     || Math.abs((settings[key] as number) - (expected[key] as number)) < 1e-9);
+}
+
+// ---- A unit's own criteria ----
+
+/** A unit's own criteria (`properties.designCriteria`); none: it designs by the project's. */
+export function readUnitCriteria(unit: Pick<HvacElement, 'properties'> | null | undefined): DesignCriteria | null {
+  return unit ? readDesignCriteria(unit.properties?.designCriteria) : null;
+}
+
+const UNIT_SETTINGS = new WeakMap<DuctDesignSettings, Map<string, DuctDesignSettings>>();
+
+/**
+ * The settings a unit's ducts are designed and checked by: the project's,
+ * with the unit's own criteria (their limits, friction rates and neck caps)
+ * when it has them. The same object comes back for the same settings and
+ * criteria, so caches keyed by the settings stay warm; a unit without
+ * criteria gets the project's settings themselves.
+ */
+export function unitDuctSettings(settings: DuctDesignSettings, unit: Pick<HvacElement, 'properties'> | null | undefined): DuctDesignSettings {
+  const criteria = readUnitCriteria(unit);
+  if (!criteria) return settings;
+  let byCriteria = UNIT_SETTINGS.get(settings);
+  if (!byCriteria) {
+    byCriteria = new Map();
+    UNIT_SETTINGS.set(settings, byCriteria);
+  }
+  const key = `${criteria.room}|${criteria.location}`;
+  let merged = byCriteria.get(key);
+  if (!merged) {
+    merged = { ...settings, ...designCriteriaSettings(criteria) };
+    byCriteria.set(key, merged);
+  }
+  return merged;
+}
+
+/** Words in a room's name that say what it is used for, the more specific first. */
+const ROOM_NAME_HINTS: ReadonlyArray<readonly [RegExp, DesignRoomId]> = [
+  [/tele.?conf|video/i, 'teleconference'],
+  [/conference|meeting|board ?room/i, 'conference'],
+  [/lecture|auditorium/i, 'lecture'],
+  [/class ?room|\bclass\b|training/i, 'classroom'],
+  [/library/i, 'library'],
+  [/open.?(plan|office|space)|work ?space|workstation/i, 'open-office'],
+  [/office|manager|director/i, 'private-office'],
+  [/hotel|guest ?room|\bsuite\b/i, 'hotel-room'],
+  [/patient/i, 'patient-room'],
+  [/\bward\b|theatre|theater|operating/i, 'ward'],
+  [/\blab\b|laborator/i, 'laboratory'],
+  [/\bgym|fitness|sports/i, 'gymnasium'],
+  [/collab|breakout|lounge|cafe|pantry/i, 'collaborative'],
+  [/corridor|lobby|\bhall\b|hallway|reception|foyer/i, 'corridor'],
+  [/bed ?room|living|dining|family|study/i, 'residence'],
+];
+
+/** What a drawn room's type maps to, where it maps at all. */
+const ROOM_TYPE_HINTS: Partial<Record<RoomType, DesignRoomId>> = {
+  'Open Space': 'open-office',
+  Corridor: 'corridor',
+  Passage: 'corridor',
+  Bedroom: 'residence',
+  'Living Room': 'residence',
+};
+
+/**
+ * The criteria room a drawn room suggests: what its name says it is used
+ * for, else what its type maps to; null when neither tells (a bathroom, a
+ * balcony, a custom room without a telling name).
+ */
+export function suggestDesignRoom(room: Pick<Room, 'name' | 'roomType'> | null | undefined): DesignRoomId | null {
+  if (!room) return null;
+  const hint = ROOM_NAME_HINTS.find(([pattern]) => pattern.test(room.name ?? ''));
+  return hint ? hint[1] : ROOM_TYPE_HINTS[room.roomType] ?? null;
 }
