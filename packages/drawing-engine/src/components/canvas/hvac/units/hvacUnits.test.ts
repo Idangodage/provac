@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  displayDigits, formatNumberIn, formatQuantity, formatSection, fromDisplay, inchFractionText, inchesText, tonsOf, toDisplay, toDisplayText, unitLabel,
+  displayDigits, formatNumberIn, formatQuantity, formatSection, fromDisplay, inchFractionText, inchesText, pressureClassText, sizesText, tonsOf, toDisplay, toDisplayText,
+  unitLabel,
   type HvacQuantity,
 } from './hvacUnits';
 
@@ -62,6 +63,21 @@ describe('HVAC units', () => {
       .toBe('Main 700×350 (27.6×13.8 in) at 0.80 Pa/m (0.098 in. wg/100 ft), 24 m (78.7 ft) from the gully');
     // Not a unit: an area, minutes, a count.
     expect(toDisplayText('12 m² of sheet in 3 min, 2 × Ø300', 'ip')).toBe('12 m² of sheet in 3 min, 2 × Ø300 (Ø11.8 in)');
+  });
+
+  it('turns the sizes in a label into inches, each with its unit; SI as written', () => {
+    expect(sizesText('600×300 → Ø450', 'ip')).toBe('23.6×11.8 in → Ø17.7 in');
+    expect(sizesText('Ø406.4 spiral', 'ip')).toBe('Ø16 in spiral');
+    expect(sizesText('Rectangular radius elbow 609.6×254', 'ip')).toBe('Rectangular radius elbow 24×10 in');
+    expect(sizesText('600×300 → Ø450', 'si')).toBe('600×300 → Ø450');
+    expect(sizesText('R/W 1.5 · 2 pieces', 'ip')).toBe('R/W 1.5 · 2 pieces');
+    expect(sizesText('PLENUM 800×350×500 · GI 0.70', 'ip')).toBe('PLENUM 800×350×500 · GI 0.70');
+    expect(sizesText('600×350 · GI 0.70 (24 ga) · TDC · BOD 2479', 'ip')).toBe('23.6×13.8 in · GI 0.70 (24 ga) · TDC · BOD 2479');
+  });
+
+  it('names a SMACNA pressure class in Pa or in inches of water', () => {
+    expect([125, 250, 500, 750, 1000, 1500, 2500].map((pa) => pressureClassText(pa, 'ip'))).toEqual(['0.5 in. wg', '1 in. wg', '2 in. wg', '3 in. wg', '4 in. wg', '6 in. wg', '10 in. wg']);
+    expect(pressureClassText(500, 'si')).toBe('500 Pa');
   });
 
   it('names copper tube in inches to the eighth, as it is sold', () => {

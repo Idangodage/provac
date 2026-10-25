@@ -97,6 +97,24 @@ export function inchesText(mm: number): string {
 }
 
 /** A duct section as the system reads it: "600×350" / "Ø300" in mm, "24×14" / "Ø12" in inches. */
+/**
+ * The duct sizes in a label in the display system, each followed by its unit:
+ * "Ø450 spiral" / "Ø17.7 in spiral", "600×300 → Ø450" / "23.6×11.8 in → Ø17.7 in".
+ * Only sizes change (a label's other figures are left as they are); SI is unchanged.
+ */
+export function sizesText(text: string, system: HvacUnitSystem): string {
+  if (system === 'si' || !text) return text;
+  // (A box's W×H×L is not a duct size: left as written.)
+  return text.replace(/Ø(\d+(?:\.\d+)?)(?! ?mm)|(?<![×\d.])\b(\d{2,4}(?:\.\d+)?)×(\d{2,4}(?:\.\d+)?)\b(?!×)/g, (match, diameter?: string, width?: string, height?: string) => (diameter !== undefined
+    ? `Ø${inchesText(Number(diameter))} in`
+    : `${inchesText(Number(width))}×${inchesText(Number(height))} in`));
+}
+
+/** A SMACNA pressure class: "500 Pa" / "2 in. wg" (in IP the classes are whole or half inches of water). */
+export function pressureClassText(pa: number, system: HvacUnitSystem): string {
+  return system === 'ip' ? `${Math.round((pa / IN_WG_PA) * 2) / 2} in. wg` : `${Math.round(pa)} Pa`;
+}
+
 /** A tube's size in inches to the nearest eighth, as copper tube is named: 6.35 → "1/4", 28.58 → "1-1/8". */
 export function inchFractionText(mm: number): string {
   const eighths = Math.round(mm / (IN_MM / 8));

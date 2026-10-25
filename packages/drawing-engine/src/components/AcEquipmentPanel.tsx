@@ -22,6 +22,8 @@ import { useSmartDrawingStore } from '../store';
 import { useAirSystemUiStore } from './canvas/hvac/duct/airSystemUiStore';
 import { airSystemTags } from './canvas/hvac/duct/ductAirSystems';
 import { EQUIPMENT_CATEGORY_ICONS, EquipmentIcon, equipmentIconKind } from './canvas/hvac/equipmentIcons';
+import { tonsOf, type HvacUnitSystem } from './canvas/hvac/units/hvacUnits';
+import { useHvacUnits } from './canvas/hvac/units/useHvacUnits';
 
 export interface AcEquipmentPanelProps {
   className?: string;
@@ -78,16 +80,17 @@ function modelCode(definition: AcEquipmentDefinition): string {
   return parts[parts.length - 1] ?? definition.modelLabel;
 }
 
-/** What a tile says: a short name and one caption line (model, neck, line). */
-export function equipmentTileText(definition: AcEquipmentDefinition): TileText {
+/** What a tile says: a short name and one caption line (model, neck, line); a ducted unit's capacity in kW, or tons in IP. */
+export function equipmentTileText(definition: AcEquipmentDefinition, system: HvacUnitSystem = 'si'): TileText {
   switch (definition.type) {
     case 'ceiling-cassette-ac': return { title: 'Cassette', caption: modelCode(definition), tone: null };
     case 'wall-mounted-ac': return { title: 'Wall unit', caption: modelCode(definition), tone: null };
     case 'ceiling-suspended-ac': return { title: 'Suspended', caption: modelCode(definition), tone: null };
     case 'ducted-ac': {
-      // The capacity tells the units apart at a glance (2.2 kW … 28 kW); the caption names the model.
+      // The capacity tells the units apart at a glance (2.2 kW … 28 kW, 0.6 … 8 TR); the caption names the model.
       const kw = definition.defaultProperties?.capacityKw;
-      return { title: typeof kw === 'number' ? `Ducted ${kw} kW` : 'Ducted', caption: modelCode(definition), tone: null };
+      const capacity = typeof kw !== 'number' ? null : system === 'ip' ? `${Number(tonsOf(kw).toFixed(1))} TR` : `${kw} kW`;
+      return { title: capacity ? `Ducted ${capacity}` : 'Ducted', caption: modelCode(definition), tone: null };
     }
     case 'outdoor-unit': return { title: 'Outdoor', caption: modelCode(definition), tone: null };
     case 'refrigerant-branch-kit': {
@@ -147,8 +150,10 @@ function EquipmentHoverCard({ hover, placedCount, id }: { hover: HoverState; pla
     const height = ref.current?.getBoundingClientRect().height ?? 0;
     setTop(Math.max(8, Math.min(anchor.top - 6, window.innerHeight - height - 8)));
   }, [anchor]);
-  const text = equipmentTileText(definition);
+  const units = useHvacUnits();
+  const text = equipmentTileText(definition, units.system);
   const spec = unitSpecificationFor({ properties: definition.defaultProperties ?? {} });
+  const sizes = [definition.widthMm, definition.depthMm, definition.heightMm];
   return (
     <div ref={ref} id={id} role="tooltip" data-testid="equipment-hover-card" style={{ left, top, width: CARD_WIDTH }}
       className="pointer-events-none fixed z-[1000] rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-xl ring-1 ring-black/5">
@@ -166,23 +171,25 @@ function EquipmentHoverCard({ hover, placedCount, id }: { hover: HoverState; pla
       </div>
       <dl className="mt-2.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
         <dt className="text-slate-400">Size</dt>
-        <dd className="text-slate-700">{Math.round(definition.widthMm)} × {Math.round(definition.depthMm)} × {Math.round(definition.heightMm)} mm</dd>
+        <dd className="text-slate-700">{sizes.map((mm) => units.num('size', mm)).join(' × ')} {units.unit('size')}</dd>
         <dt className="text-slate-400">Placement</dt>
         <dd className="text-slate-700">{PLACEMENT_LABELS[definition.placementMode]}{MOUNT_LABELS[definition.mountType] ? ` · ${MOUNT_LABELS[definition.mountType]} mounted` : ''}</dd>
         {spec ? (
           <>
             <dt className="text-slate-400">Capacity</dt>
-            <dd className="text-slate-700">{spec.coolingKw} kW cooling{spec.heatingKw ? ` · ${spec.heatingKw} kW heating` : ''}</dd>
+            <dd className="text-slate-700">
+              {units.fmt('capacity', spec.coolingKw)} cooling{units.system === 'ip' ? ` (${tonsOf(spec.coolingKw).toFixed(1)} TR)` : ''}{spec.heatingKw ? ` · ${units.fmt('capacity', spec.heatingKw)} heating` : ''}
+            </dd>
             {spec.airflowM3min ? (
               <>
                 <dt className="text-slate-400">Airflow</dt>
-                <dd className="text-slate-700">{Math.round(spec.airflowM3min.hi * 60)} m³/h at Hi · {Math.round(spec.airflowM3min['p-hi'] * 60)} at P-Hi</dd>
+                <dd className="text-slate-700">{units.fmt('airflow', spec.airflowM3min.hi * 60)} at Hi · {units.num('airflow', spec.airflowM3min['p-hi'] * 60)} at P-Hi</dd>
               </>
             ) : null}
             {spec.esp ? (
               <>
                 <dt className="text-slate-400">ESP</dt>
-                <dd className="text-slate-700">up to {spec.esp.maxPa} Pa</dd>
+                <dd className="text-slate-700">up to {units.fmt('pressure', spec.esp.maxPa)}</dd>
               </>
             ) : null}
           </>
@@ -208,6 +215,7 @@ export function AcEquipmentPanel({
   onStartPlacement,
   onCancelPlacement,
 }: AcEquipmentPanelProps) {
+  const units = useHvacUnits();
   const grouped = useMemo(() => groupAcEquipmentByCategory(equipment), [equipment]);
   const totalPlaced = Object.values(placedCountByType).reduce((sum, count) => sum + count, 0);
   const pending = pendingEquipmentId ? equipment.find((definition) => definition.id === pendingEquipmentId) ?? null : null;
@@ -282,7 +290,7 @@ export function AcEquipmentPanel({
           <div className="rounded-xl border border-amber-400 bg-amber-100/80 px-2.5 py-1.5 text-xs text-amber-900" role="status" data-testid="placement-banner">
             <div className="flex items-center gap-2">
               <EquipmentIcon kind={equipmentIconKind(pending)} size={18} />
-              <span className="min-w-0 flex-1 truncate">Placing <span className="font-medium">{equipmentTileText(pending).title}</span> — click the canvas{pending.placementMode === 'wall' ? ' near a wall' : ''}</span>
+              <span className="min-w-0 flex-1 truncate">Placing <span className="font-medium">{equipmentTileText(pending, units.system).title}</span> — click the canvas{pending.placementMode === 'wall' ? ' near a wall' : ''}</span>
               <button type="button" onClick={onCancelPlacement} aria-label="Stop placing" className="rounded p-0.5 text-amber-800 hover:bg-amber-200/70">
                 <X size={14} />
               </button>
@@ -315,7 +323,7 @@ export function AcEquipmentPanel({
                 {definitions.map((definition) => {
                   const isActive = pendingEquipmentId === definition.id;
                   const placedCount = placedCountByDefinition[definition.id] ?? 0;
-                  const text = equipmentTileText(definition);
+                  const text = equipmentTileText(definition, units.system);
                   return (
                     <button
                       key={definition.id}

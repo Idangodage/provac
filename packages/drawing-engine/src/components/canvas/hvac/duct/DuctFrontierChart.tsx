@@ -7,6 +7,8 @@
  * same over the life (first cost + the energy its pressure takes), so designs
  * below it would be better and none is. Click a point to preview it.
  */
+import type { HvacUnits } from '../units/useHvacUnits';
+
 import type { AutoDuctDesign } from './ductAutoLayout';
 import { formatCost } from './ductEconomics';
 
@@ -18,13 +20,15 @@ export interface DuctFrontierChartProps {
   pricePerPa: number;
   currency: string;
   onSelect: (index: number) => void;
+  /** The display system for its pressures (SI without it). */
+  units?: HvacUnits;
 }
 
 const WIDTH = 260;
 const HEIGHT = 128;
 const PAD = { left: 38, right: 8, top: 8, bottom: 22 };
 
-export function DuctFrontierChart({ designs, picks, selected, maxEspPa, pricePerPa, currency, onSelect }: DuctFrontierChartProps) {
+export function DuctFrontierChart({ designs, picks, selected, maxEspPa, pricePerPa, currency, onSelect, units }: DuctFrontierChartProps) {
   if (!designs.length) return null;
   const esps = designs.map((design) => design.requiredEspPa);
   const costs = designs.map((design) => design.firstCost);
@@ -53,11 +57,11 @@ export function DuctFrontierChart({ designs, picks, selected, maxEspPa, pricePer
         ) : null}
       </g>
       {maxEspPa !== null && x(maxEspPa) < WIDTH - PAD.right ? (
-        <text x={x(maxEspPa) - 2} y={PAD.top + 8} textAnchor="end" fontSize={7} fill="#ef4444">fan max {maxEspPa} Pa</text>
+        <text x={x(maxEspPa) - 2} y={PAD.top + 8} textAnchor="end" fontSize={7} fill="#ef4444">fan max {units ? units.fmt('pressure', maxEspPa) : `${maxEspPa} Pa`}</text>
       ) : null}
       {/* Axes */}
       <text x={PAD.left} y={HEIGHT - 6} fontSize={7} fill="#64748b">{Math.round(xMin)}</text>
-      <text x={WIDTH - PAD.right} y={HEIGHT - 6} fontSize={7} fill="#64748b" textAnchor="end">{Math.round(xMax)} Pa</text>
+      <text x={WIDTH - PAD.right} y={HEIGHT - 6} fontSize={7} fill="#64748b" textAnchor="end">{units ? units.fmt('pressure', xMax) : `${Math.round(xMax)} Pa`}</text>
       <text x={(PAD.left + WIDTH - PAD.right) / 2} y={HEIGHT - 6} fontSize={7} fill="#64748b" textAnchor="middle">external static pressure</text>
       <text x={PAD.left - 3} y={PAD.top + 6} fontSize={7} fill="#64748b" textAnchor="end">{Math.round(yMax)}</text>
       <text x={PAD.left - 3} y={HEIGHT - PAD.bottom} fontSize={7} fill="#64748b" textAnchor="end">{Math.round(yMin)}</text>
@@ -67,7 +71,7 @@ export function DuctFrontierChart({ designs, picks, selected, maxEspPa, pricePer
         const cy = y(design.firstCost);
         const kind = role(index);
         const reference = design.label.includes('(equal friction)');
-        const label = `${reference ? 'Equal friction (reference)' : design.label}: ${formatCost(design.firstCost, currency)}, ${design.requiredEspPa.toFixed(1)} Pa, life-cycle ${formatCost(design.lifeCycleCost, currency)}${design.errors ? `, ${design.errors} issue(s)` : ''}`;
+        const label = `${reference ? 'Equal friction (reference)' : design.label}: ${formatCost(design.firstCost, currency)}, ${units ? units.fmt('pressure', design.requiredEspPa, units.system === 'ip' ? 2 : 1) : `${design.requiredEspPa.toFixed(1)} Pa`}, life-cycle ${formatCost(design.lifeCycleCost, currency)}${design.errors ? `, ${design.errors} issue(s)` : ''}`;
         return (
           <g key={design.key} role="button" tabIndex={0} aria-label={label} aria-pressed={index === selected} className="cursor-pointer outline-none"
             onClick={() => onSelect(index)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(index); } }}>

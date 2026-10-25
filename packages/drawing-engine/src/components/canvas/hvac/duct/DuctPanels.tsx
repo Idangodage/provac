@@ -14,6 +14,8 @@ import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
+import { pressureClassText, type HvacQuantity } from '../units/hvacUnits';
+import { useHvacUnits } from '../units/useHvacUnits';
 
 import { DuctNumberInput } from './DuctNumberInput';
 import { openUnitPanel } from './DuctSizingSection';
@@ -114,14 +116,18 @@ type NumericSettingKey = {
 }[keyof DuctDesignSettings];
 
 /** One numeric project setting, committed on blur, with its source badge. */
-export function SettingNumber({ settingKey, label, step, min, max, unit = 'mm' }: {
+export function SettingNumber({ settingKey, label, step, min, max, unit = 'mm', quantity }: {
   settingKey: NumericSettingKey; label: string; step: number; min: number; max: number; unit?: string;
+  /** An air-side figure: shown and typed in the document's unit system. */
+  quantity?: HvacQuantity;
 }) {
+  const units = useHvacUnits();
   const { value, setDuctSettings } = useSmartDrawingStore((state) => ({ value: state.ductSettings[settingKey], setDuctSettings: state.setDuctSettings }), shallow);
   return (
     <Row label={label}>
-      <CommitNumber label={label} value={value} step={step} min={min} max={max} onCommit={(next) => setDuctSettings({ [settingKey]: next })} />
-      {unit ? <span className="ml-0.5 text-[10px] text-slate-400">{unit}</span> : null}
+      <DuctNumberInput label={label} value={value} step={step} min={min} max={max} quantity={quantity} unitSystem={units.system}
+        onChange={(next) => { if (next !== null) setDuctSettings({ [settingKey]: next }); }} />
+      {quantity ? <span className="ml-0.5 text-[10px] text-slate-400">{units.unit(quantity)}</span> : unit ? <span className="ml-0.5 text-[10px] text-slate-400">{unit}</span> : null}
       <SourceBadge settingKey={settingKey} />
     </Row>
   );
@@ -205,11 +211,14 @@ function RunPenetrations({ plan, policy, onSet }: {
 }
 
 /** A number field that commits on blur or Enter (never per keystroke). */
-function CommitNumber({ value, onCommit, step = 10, min = 50, max = 3000, label }: {
+function CommitNumber({ value, onCommit, step = 10, min = 50, max = 3000, label, quantity }: {
   value: number; onCommit: (value: number) => void; step?: number; min?: number; max?: number; label: string;
+  /** An air-side figure (a duct size): shown and typed in the document's unit system. */
+  quantity?: HvacQuantity;
 }) {
+  const units = useHvacUnits();
   return (
-    <DuctNumberInput value={value} label={label} step={step} min={min} max={max}
+    <DuctNumberInput value={value} label={label} step={step} min={min} max={max} quantity={quantity} unitSystem={units.system}
       onChange={(next) => { if (next !== null) onCommit(next); }} />
   );
 }
@@ -245,8 +254,9 @@ function legCaption(spec: DuctRunSpec, index: number): string {
 /** A diffuser or return grille: its size (typical catalog, practice), spigot and ceiling level. */
 /** A number that may be left blank (null); commits on Enter or blur. */
 function TerminalAirflowInput({ value, onCommit }: { value: number | null; onCommit: (value: number | null) => void }) {
+  const units = useHvacUnits();
   return (
-    <DuctNumberInput value={value} onChange={onCommit} step={10} min={0.01} max={20000}
+    <DuctNumberInput value={value} onChange={onCommit} step={10} min={0.01} max={20000} quantity="airflow" unitSystem={units.system}
       label="Terminal design airflow" placeholder="share" allowEmpty />
   );
 }
@@ -283,6 +293,7 @@ function ServedByRow({ element }: { element: HvacElement }) {
 const TERMINAL_FACES = TERMINAL_FACES_BY_SERVICE;
 
 export function DuctTerminalInspector({ element }: { element: HvacElement }) {
+  const units = useHvacUnits();
   const { updateHvacElement, hvacElements, ductSettings } = useSmartDrawingStore((state) => ({
     updateHvacElement: state.updateHvacElement, hvacElements: state.hvacElements, ductSettings: state.ductSettings,
   }), shallow);
@@ -359,13 +370,15 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
               <option key={filter} value={filter}>{TERMINAL_FILTER_LABELS[filter].label} ({TERMINAL_FILTER_LABELS[filter].equivalent})</option>
             ))}
           </select>
-          {filterDrop !== null ? <span className="ml-1 text-[10px] text-slate-500">≈ {Math.round(filterDrop)} Pa at its airflow</span> : null}
+          {filterDrop !== null ? <span className="ml-1 text-[10px] text-slate-500">≈ {units.fmt('pressure', filterDrop)} at its airflow</span> : null}
         </Row>
       ) : null}
       <Row label="Spigot Ø">
         <select value={spec.neckDiameterMm} aria-label="Terminal spigot diameter" className={select}
           onChange={(event) => commitDuctTerminalEdit(element, { spec: reshape(Number(event.target.value)) }, 'Terminal spigot size')}>
-          {[...new Set([...DUCT_TERMINAL_NECKS_MM, spec.neckDiameterMm])].sort((a, b) => a - b).map((neck) => <option key={neck} value={neck}>Ø{neck}</option>)}
+          {[...new Set([...DUCT_TERMINAL_NECKS_MM, spec.neckDiameterMm])].sort((a, b) => a - b).map((neck) => (
+            <option key={neck} value={neck}>{units.section({ widthMm: neck, heightMm: neck, diameterMm: neck })}{units.system === 'ip' ? ' in' : ''}</option>
+          ))}
         </select>
       </Row>
       <Row label="Collar">
@@ -400,9 +413,9 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
         <TerminalAirflowInput
           value={spec.designAirflowM3h ?? null}
           onCommit={(designAirflowM3h) => commitDuctTerminalEdit(element, { spec: { ...spec, designAirflowM3h } }, 'Terminal airflow')} />
-        <span className="ml-0.5 text-[10px] text-slate-400">m³/h</span>
+        <span className="ml-0.5 text-[10px] text-slate-400">{units.unit('airflow')}</span>
         {spec.designAirflowM3h ? (
-          <span className="ml-1 text-[10px] text-slate-500">{neckVelocityMs(spec, spec.designAirflowM3h).toFixed(1)} m/s in the neck</span>
+          <span className="ml-1 text-[10px] text-slate-500">{units.fmt('velocity', neckVelocityMs(spec, spec.designAirflowM3h))} in the neck</span>
         ) : null}
       </Row>
     </div>
@@ -411,6 +424,7 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
 
 /** The system a run belongs to: its unit, and how it is sized (constant friction at its basis, or the optimiser). */
 function SystemLine({ element }: { element: HvacElement }) {
+  const units = useHvacUnits();
   const { hvacElements, selectElement } = useSmartDrawingStore((state) => ({ hvacElements: state.hvacElements, selectElement: state.selectElement }), shallow);
   const root = useMemo(() => ductSystemRootOfRun(hvacElements, element.id), [hvacElements, element.id]);
   const spec = root ? readDuctRunSpec(root) : null;
@@ -422,7 +436,7 @@ function SystemLine({ element }: { element: HvacElement }) {
     <Row label="System">
       <span className="text-xs" data-testid="duct-run-system">
         {(unit?.label || 'Unit')} {spec.service} · {sizing
-          ? `constant friction ${sizing.frictionPaPerM.toFixed(2)} Pa/m · ${sizing.mainVelocityMs.toFixed(1)} m/s`
+          ? `constant friction ${units.fmt('friction', sizing.frictionPaPerM)} · ${units.fmt('velocity', sizing.mainVelocityMs)}`
           : 'life-cycle optimum'}
       </span>
       {unit ? (
@@ -436,6 +450,7 @@ function SystemLine({ element }: { element: HvacElement }) {
 }
 
 export function DuctRunInspector({ element }: { element: HvacElement }) {
+  const units = useHvacUnits();
   const { hvacElements, ductSettings, updateHvacElement } = useSmartDrawingStore((state) => ({
     hvacElements: state.hvacElements,
     ductSettings: state.ductSettings,
@@ -557,7 +572,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
       </Row>
       {!spec.legacy ? (
         <div className="rounded border border-slate-100 px-2 py-1" data-testid="duct-leg-sizes">
-          <div className="text-xs text-slate-500">Each straight: length (centreline, corner to corner) · clear section W × D mm (a change adds a transition)</div>
+          <div className="text-xs text-slate-500">Each straight: length (centreline, corner to corner, mm) · clear section W × D {units.unit('size')} (a change adds a transition)</div>
           {spec.legs.map((leg, index) => (
             <div key={index} data-segment-key={`leg:${index}`} className={`flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 py-0.5 text-xs${focusRow(`leg:${index}`)}`}>
               <span className="text-slate-500">
@@ -583,21 +598,21 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
                     <span className="text-slate-300"> · </span>
                   </>
                 ) : null}
-                <CommitNumber label={`Leg ${index + 1} width`} value={leg.widthMm} onCommit={(widthMm) => setLeg(index, { widthMm })} />
+                <CommitNumber label={`Leg ${index + 1} width`} value={leg.widthMm} quantity="size" onCommit={(widthMm) => setLeg(index, { widthMm })} />
                 {' × '}
-                <CommitNumber label={`Leg ${index + 1} depth`} value={leg.heightMm} onCommit={(heightMm) => setLeg(index, { heightMm })} />
+                <CommitNumber label={`Leg ${index + 1} depth`} value={leg.heightMm} quantity="size" onCommit={(heightMm) => setLeg(index, { heightMm })} />
               </span>
             </div>
           ))}
         </div>
       ) : (
-        <Row label="Clear section">{Math.round(spec.legs[0]!.widthMm)} × {Math.round(spec.legs[0]!.heightMm)} mm</Row>
+        <Row label="Clear section">{units.section({ widthMm: spec.legs[0]!.widthMm, heightMm: spec.legs[0]!.heightMm })} {units.unit('size')}</Row>
       )}
       <Row label="Pressure class">
         <select value={spec.pressureClassPa ?? 'project'} aria-label="Run pressure class" className={select}
           onChange={(event) => commit({ ...spec, pressureClassPa: event.target.value === 'project' ? null : Number(event.target.value) }, 'Duct pressure class')}>
-          <option value="project">Project ({spec.service === 'supply' ? ductSettings.supplyPressureClassPa : ductSettings.returnPressureClassPa} Pa)</option>
-          {DUCT_SUPPORTED_PRESSURE_CLASSES_PA.map((pa) => <option key={pa} value={pa}>{pa} Pa</option>)}
+          <option value="project">Project ({pressureClassText(spec.service === 'supply' ? ductSettings.supplyPressureClassPa : ductSettings.returnPressureClassPa, units.system)})</option>
+          {DUCT_SUPPORTED_PRESSURE_CLASSES_PA.map((pa) => <option key={pa} value={pa}>{pressureClassText(pa, units.system)}</option>)}
         </select>
       </Row>
       {construction && construction.status === 'ok' ? (
@@ -722,7 +737,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
         <ul className="space-y-0.5 pt-1" data-testid="duct-run-issues">
           {plan.issues.map((issue, index) => (
             <li key={index} className={`text-xs ${issue.severity === 'error' ? 'text-red-700' : issue.severity === 'warning' ? 'text-amber-700' : 'text-slate-500'}`}>
-              {issue.code}: {issue.message}
+              {issue.code}: {units.text(issue.message)}
             </li>
           ))}
         </ul>
@@ -883,6 +898,7 @@ export function DuctToolSection() {
 }
 
 export function DuctSystemsSection() {
+  const units = useHvacUnits();
   const { hvacElements, ductSettings, setDuctSettings } = useSmartDrawingStore((state) => ({
     hvacElements: state.hvacElements, ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings,
   }), shallow);
@@ -972,9 +988,9 @@ export function DuctSystemsSection() {
       <Row label="Round elbow velocity">
         <select value={ductSettings.roundVelocityBand} aria-label="Round elbow velocity" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
           onChange={(event) => setDuctSettings({ roundVelocityBand: event.target.value as DuctDesignSettings['roundVelocityBand'] })}>
-          <option value="low">≤ 5.1 m/s: R/D 0.6, 3 pieces</option>
-          <option value="medium">5.1–7.6 m/s: R/D 1.0, 4 pieces</option>
-          <option value="high">&gt; 7.6 m/s: R/D 1.5, 5 pieces</option>
+          <option value="low">≤ {units.fmt('velocity', 5.1)}: R/D 0.6, 3 pieces</option>
+          <option value="medium">{units.num('velocity', 5.1)}–{units.fmt('velocity', 7.6)}: R/D 1.0, 4 pieces</option>
+          <option value="high">&gt; {units.fmt('velocity', 7.6)}: R/D 1.5, 5 pieces</option>
         </select>
         <SourceBadge settingKey="roundVelocityBand" />
       </Row>
@@ -993,18 +1009,18 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="washersPerBolt" label="Washers per bolt" step={1} min={0} max={4} unit="" />
       <SettingNumber settingKey="transitionTaperDeg" label="Transition design taper" step={1} min={5} max={30} unit="° / side" />
       <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Auto duct sizing</div>
-      <SettingNumber settingKey="autoFrictionSupplyPaPerM" label="Friction rate, supply" step={0.1} min={0.2} max={3} unit="Pa/m" />
-      <SettingNumber settingKey="autoFrictionReturnPaPerM" label="Friction rate, return" step={0.1} min={0.2} max={3} unit="Pa/m" />
-      <SettingNumber settingKey="autoMaxVelocityTrunkMs" label="Max velocity, trunk" step={0.5} min={1} max={12} unit="m/s" />
-      <SettingNumber settingKey="autoMaxVelocityBranchMs" label="Max velocity, branch" step={0.5} min={1} max={10} unit="m/s" />
-      <SettingNumber settingKey="autoMaxVelocityRunoutMs" label="Max velocity, runout" step={0.5} min={1} max={8} unit="m/s" />
-      <SettingNumber settingKey="autoMaxNeckVelocitySupplyMs" label="Max neck velocity, diffuser" step={0.5} min={1} max={8} unit="m/s" />
-      <SettingNumber settingKey="autoMaxNeckVelocityReturnMs" label="Max neck velocity, grille" step={0.5} min={1} max={8} unit="m/s" />
+      <SettingNumber quantity="friction" settingKey="autoFrictionSupplyPaPerM" label="Friction rate, supply" step={0.1} min={0.2} max={3} unit="Pa/m" />
+      <SettingNumber quantity="friction" settingKey="autoFrictionReturnPaPerM" label="Friction rate, return" step={0.1} min={0.2} max={3} unit="Pa/m" />
+      <SettingNumber quantity="velocity" settingKey="autoMaxVelocityTrunkMs" label="Max velocity, trunk" step={0.5} min={1} max={12} unit="m/s" />
+      <SettingNumber quantity="velocity" settingKey="autoMaxVelocityBranchMs" label="Max velocity, branch" step={0.5} min={1} max={10} unit="m/s" />
+      <SettingNumber quantity="velocity" settingKey="autoMaxVelocityRunoutMs" label="Max velocity, runout" step={0.5} min={1} max={8} unit="m/s" />
+      <SettingNumber quantity="velocity" settingKey="autoMaxNeckVelocitySupplyMs" label="Max neck velocity, diffuser" step={0.5} min={1} max={8} unit="m/s" />
+      <SettingNumber quantity="velocity" settingKey="autoMaxNeckVelocityReturnMs" label="Max neck velocity, grille" step={0.5} min={1} max={8} unit="m/s" />
       <SettingNumber settingKey="autoDiffuserDropPa" label="Supply terminal pressure drop" step={1} min={0} max={150} unit="Pa" />
       <SettingNumber settingKey="autoGrilleDropPa" label="Return terminal pressure drop" step={1} min={0} max={150} unit="Pa" />
       <SettingNumber settingKey="filterG4RatedDropPa" label="G4 filter, clean drop" step={1} min={0} max={500} unit="Pa" />
       <SettingNumber settingKey="filterM5RatedDropPa" label="M5 filter, clean drop" step={1} min={0} max={500} unit="Pa" />
-      <SettingNumber settingKey="filterRatedVelocityMs" label="… at face velocity" step={0.1} min={0.5} max={5} unit="m/s" />
+      <SettingNumber quantity="velocity" settingKey="filterRatedVelocityMs" label="… at face velocity" step={0.1} min={0.5} max={5} unit="m/s" />
       <SettingNumber settingKey="filterDesignFactor" label="Filter mid-life factor" step={0.1} min={1} max={3} unit="×" />
       <SettingNumber settingKey="autoReducerStepMm" label="Reduce the trunk from" step={50} min={0} max={500} />
       <Row label="Rectangular sizes in">

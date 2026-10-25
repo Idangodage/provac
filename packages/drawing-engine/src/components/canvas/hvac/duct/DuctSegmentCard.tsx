@@ -35,6 +35,8 @@ import {
 } from '../segments/SegmentCardKit';
 import type { SegmentBadge, SegmentCardModel, SegmentFieldHost, SegmentProvider } from '../segments/segmentProvider';
 import { useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
+import { fromDisplay, pressureClassText, sizesText, toDisplay, toDisplayText, type HvacQuantity } from '../units/hvacUnits';
+import { useHvacUnits, type HvacUnits } from '../units/useHvacUnits';
 
 import { DuctSegmentGlyph } from './DuctSegmentGlyph';
 import { getActiveDuctBuilding } from './ductBuilding';
@@ -79,8 +81,14 @@ function markRange(segment: DuctSegment): string {
 
 // ---------------------------------------------------------------------------------------------------- small parts
 
+/** A span of SI figures in the display system ("4320", "4320–3518"). */
+function rangeOf(units: HvacUnits, kind: HvacQuantity, span: { max: number; min: number }): string {
+  return range({ max: units.toDisplay(kind, span.max), min: units.toDisplay(kind, span.min) }, units.digits(kind));
+}
+
 /** The segment's air in one strip: airflow · velocity (against its limit) · pressure; the rest in tooltips. */
 function FigureStrip({ figures }: { figures: DuctSegmentFigures | null }) {
+  const units = useHvacUnits();
   const flow = figures?.flow ?? null;
   if (!flow) {
     const why = !figures?.system ? 'This run is not on a unit\'s system.'
@@ -95,14 +103,18 @@ function FigureStrip({ figures }: { figures: DuctSegmentFigures | null }) {
     </span>
   );
   const system = figures?.system;
+  const airflow = rangeOf(units, 'airflow', flow.airflowM3h);
+  const velocity = rangeOf(units, 'velocity', flow.velocityMs);
+  // A segment's loss is small: Pa to a decimal under 10, in. wg to the thousandth.
+  const pressureDigits = units.system === 'ip' ? 3 : flow.totalPa < 10 ? 1 : 0;
   return (
     <div className="flex items-center gap-x-3 px-3 pb-2" data-testid="duct-segment-figures">
-      {stat(range(flow.airflowM3h, 0), 'm³/h', `Airflow ${range(flow.airflowM3h, 0)} m³/h (${flow.part}) · ${flow.terminals} terminal${flow.terminals === 1 ? '' : 's'}`)}
-      {stat(range(flow.velocityMs, 1), 'm/s', `Velocity ${range(flow.velocityMs, 1)} m/s, ${STATUS_TEXT[flow.velocityStatus]} (${number(flow.limits.velocityMs, 1)} m/s for a ${flow.part})`, STATUS_DOT[flow.velocityStatus])}
-      {stat(number(flow.totalPa, flow.totalPa < 10 ? 1 : 0), 'Pa', `Pressure ${number(flow.totalPa, 1)} Pa${flow.coefficient !== null ? ` · ζ ${number(flow.coefficient, 2)}` : ''} · friction ${number(flow.frictionPaPerM, 2)} Pa/m (${STATUS_TEXT[flow.frictionStatus]}, target ${number(flow.limits.frictionPaPerM, 2)})`)}
+      {stat(airflow, units.unit('airflow'), `Airflow ${airflow} ${units.unit('airflow')} (${flow.part}) · ${flow.terminals} terminal${flow.terminals === 1 ? '' : 's'}`)}
+      {stat(velocity, units.unit('velocity'), `Velocity ${velocity} ${units.unit('velocity')}, ${STATUS_TEXT[flow.velocityStatus]} (${units.fmt('velocity', flow.limits.velocityMs)} for a ${flow.part})`, STATUS_DOT[flow.velocityStatus])}
+      {stat(units.num('pressure', flow.totalPa, pressureDigits), units.unit('pressure'), `Pressure ${units.fmt('pressure', flow.totalPa, pressureDigits)}${flow.coefficient !== null ? ` · ζ ${number(flow.coefficient, 2)}` : ''} · friction ${units.fmt('friction', flow.frictionPaPerM)} (${STATUS_TEXT[flow.frictionStatus]}, target ${units.num('friction', flow.limits.frictionPaPerM)})`)}
       {flow.onIndexPath ? (
         <span className="ml-auto inline-flex shrink-0 items-center rounded-full bg-amber-50 p-1 text-amber-600 ring-1 ring-inset ring-amber-200"
-          title={`On the fan's index path${system?.indexPa ? ` (${number(system.indexPa)} Pa)` : ''}: the path the fan has to overcome runs through this segment`}>
+          title={`On the fan's index path${system?.indexPa ? ` (${units.fmt('pressure', system.indexPa)})` : ''}: the path the fan has to overcome runs through this segment`}>
           <Flag size={10} aria-hidden="true" /><span className="sr-only">On the index path</span>
         </span>
       ) : null}
@@ -112,13 +124,14 @@ function FigureStrip({ figures }: { figures: DuctSegmentFigures | null }) {
 
 /** How the segment is built: its sheet, joints and class; its pieces; its system. */
 function BuildInfo({ figures }: { figures: DuctSegmentFigures | null }) {
+  const units = useHvacUnits();
   const construction = figures?.construction ?? null;
   return (
     <>
       {construction ? (
         <div>
           GI {construction.sheetMm !== null ? `${construction.sheetMm.toFixed(2)} mm (${construction.gauge})` : '—'} · {construction.joint} · {construction.seam}
-          {construction.insulationMm > 0 ? ` · NBR ${Math.round(construction.insulationMm)}` : ''} · {construction.pressureClassPa} Pa class
+          {construction.insulationMm > 0 ? ` · NBR ${Math.round(construction.insulationMm)}` : ''} · {pressureClassText(construction.pressureClassPa, units.system)} class
         </div>
       ) : null}
       {figures ? (
@@ -127,18 +140,21 @@ function BuildInfo({ figures }: { figures: DuctSegmentFigures | null }) {
           {figures.fabrication.areaM2 > 0 ? ` · ${figures.fabrication.areaM2.toFixed(2)} m² · ${figures.fabrication.massKg.toFixed(1)} kg` : ''}
         </div>
       ) : null}
-      {figures?.system ? <div>{figures.system.unitLabel ?? 'unit'} {figures.system.service}{figures.system.airflowM3h ? ` · ${number(figures.system.airflowM3h)} m³/h` : ''}</div> : null}
+      {figures?.system ? <div>{figures.system.unitLabel ?? 'unit'} {figures.system.service}{figures.system.airflowM3h ? ` · ${units.fmt('airflow', figures.system.airflowM3h)}` : ''}</div> : null}
     </>
   );
 }
 
 /** What an option does, as chips: its change in pressure and mass, and any rule it would newly break. */
 function DeltaChips({ evaluation }: { evaluation: DuctOptionEvaluation }) {
+  const units = useHvacUnits();
   const chips: ReactNode[] = [];
   const pressure = evaluation.deltaIndexPa ?? evaluation.deltaSegmentPa;
   if (pressure !== null && Math.abs(pressure) >= 0.05) {
     chips.push(<span key="dp" className={`rounded px-1 tabular-nums ${pressure < 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}
-      title={evaluation.deltaIndexPa !== null ? 'Change on the fan\'s index path' : 'Change in this segment\'s loss'}>ΔP {signed(pressure, 1)}</span>);
+      title={`${evaluation.deltaIndexPa !== null ? 'Change on the fan\'s index path' : 'Change in this segment\'s loss'} (${units.unit('pressure')})`}>
+      ΔP {signed(units.toDisplay('pressure', pressure), units.system === 'ip' ? 3 : 1)}
+    </span>);
   }
   if (Math.abs(evaluation.deltaMassKg) >= 0.05) {
     chips.push(<span key="kg" className="rounded bg-slate-100 px-1 tabular-nums text-slate-600" title="Change in galvanised sheet">{signed(evaluation.deltaMassKg, 1)} kg</span>);
@@ -159,17 +175,23 @@ function DeltaChips({ evaluation }: { evaluation: DuctOptionEvaluation }) {
 
 /** An option's whole result on one line: velocity, pressure, mass, height, and the rules it would break. */
 function ResultLine({ evaluation }: { evaluation: DuctOptionEvaluation }) {
-  if (evaluation.refused) return <span className="text-red-700">{evaluation.refused}</span>;
+  const units = useHvacUnits();
+  if (evaluation.refused) return <span className="text-red-700">{units.text(evaluation.refused)}</span>;
+  const ip = units.system === 'ip';
   const parts: ReactNode[] = [];
   if (evaluation.velocityMs !== null) {
     const status = evaluation.velocityStatus ?? 'ok';
-    parts.push(<span key="v" className={status === 'over' ? 'text-red-700' : status === 'near' ? 'text-amber-700' : ''}>{number(evaluation.velocityMs, 1)} m/s</span>);
+    parts.push(<span key="v" className={status === 'over' ? 'text-red-700' : status === 'near' ? 'text-amber-700' : ''}>{units.fmt('velocity', evaluation.velocityMs)}</span>);
   }
   const pressure = evaluation.deltaIndexPa ?? evaluation.deltaSegmentPa;
-  if (pressure !== null && Math.abs(pressure) >= 0.05) parts.push(<span key="p" className={pressure < 0 ? 'text-emerald-700' : 'text-amber-700'}>ΔP {signed(pressure, 1)} Pa</span>);
+  if (pressure !== null && Math.abs(pressure) >= 0.05) {
+    parts.push(<span key="p" className={pressure < 0 ? 'text-emerald-700' : 'text-amber-700'}>ΔP {signed(units.toDisplay('pressure', pressure), ip ? 3 : 1)} {units.unit('pressure')}</span>);
+  }
   if (Math.abs(evaluation.deltaMassKg) >= 0.05) parts.push(<span key="m">{signed(evaluation.deltaMassKg, 1)} kg</span>);
   if (evaluation.deltaOuterHeightMm !== null && Math.abs(evaluation.deltaOuterHeightMm) >= 5) {
-    parts.push(<span key="h" className={evaluation.deltaOuterHeightMm < 0 ? 'text-emerald-700' : 'text-amber-700'}>{signed(evaluation.deltaOuterHeightMm)} mm high</span>);
+    parts.push(<span key="h" className={evaluation.deltaOuterHeightMm < 0 ? 'text-emerald-700' : 'text-amber-700'}>
+      {ip ? `${signed(evaluation.deltaOuterHeightMm / 25.4, 1)} in` : `${signed(evaluation.deltaOuterHeightMm)} mm`} high
+    </span>);
   }
   const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error').length;
   const warnings = evaluation.newIssues.length - errors;
@@ -201,40 +223,52 @@ function otherShape(section: DuctLeg, settings: DuctDesignSettings, voidHeightMm
 /** Type the size of a leg (or of every leg of its size), round or rectangular; see what it does, then apply. */
 function SizeEditor({ host, segment, spec, voidHeightMm }: { host: FieldHost; segment: DuctSegment; spec: DuctRunSpec; voidHeightMm: number }) {
   const { scene, settings, focus } = host;
+  const units = useHvacUnits();
+  // In IP the fields hold inches (to a tenth), else millimetres; the section is held in mm either way.
+  const ip = units.system === 'ip';
+  const shownOf = (mm: number) => (ip ? String(Number((mm / 25.4).toFixed(1))) : String(Math.round(mm)));
   const current = spec.legs[segment.legIndex]!;
   const [shape, setShape] = useState<'rect' | 'round'>(isRoundLeg(current) ? 'round' : 'rect');
-  const [width, setWidth] = useState(String(Math.round(current.widthMm)));
-  const [height, setHeight] = useState(String(Math.round(current.heightMm)));
-  const [diameter, setDiameter] = useState(String(Math.round(current.diameterMm ?? equivalentDiameterMm(current))));
+  const [width, setWidth] = useState(shownOf(current.widthMm));
+  const [height, setHeight] = useState(shownOf(current.heightMm));
+  const [diameter, setDiameter] = useState(shownOf(current.diameterMm ?? equivalentDiameterMm(current)));
   const [scope, setScope] = useState<DuctOptionScope>('leg');
   const sameSize = scopeLegs(spec, segment.legIndex, 'size').length;
   const legs = scopeLegs(spec, segment.legIndex, scope);
   const section: DuctLeg | null = useMemo(() => {
+    const mm = (text: string) => {
+      const value = Number.parseFloat(text);
+      return ip ? Math.round(value * 25.4 * 1000) / 1000 : Math.round(value);
+    };
     if (shape === 'round') {
-      const d = Number.parseFloat(diameter);
-      return Number.isFinite(d) && d >= 75 && d <= 2000 ? roundLeg(Math.round(d)) : null;
+      const d = mm(diameter);
+      return Number.isFinite(d) && d >= 75 && d <= 2000 ? roundLeg(d) : null;
     }
-    const w = Number.parseFloat(width);
-    const h = Number.parseFloat(height);
-    return Number.isFinite(w) && Number.isFinite(h) && w >= 50 && h >= 50 && w <= 4000 && h <= 2000 ? { widthMm: Math.round(w), heightMm: Math.round(h) } : null;
-  }, [shape, width, height, diameter]);
+    const w = mm(width);
+    const h = mm(height);
+    return Number.isFinite(w) && Number.isFinite(h) && w >= 50 && h >= 50 && w <= 4000 && h <= 2000 ? { widthMm: w, heightMm: h } : null;
+  }, [shape, width, height, diameter, ip]);
   const option = useMemo<DuctSegmentOption | null>(() => (section && !sameSectionSize(section, current) && legs.length
     ? {
-      id: `custom:${sectionLabel(section)}:${scope}`, group: 'size', glyph: isRoundLeg(section) ? 'round' : 'rect', title: sectionLabel(section), detail: 'as typed',
+      id: `custom:${sectionLabel(section)}:${scope}`, group: 'size', glyph: isRoundLeg(section) ? 'round' : 'rect', title: units.section(section), detail: 'as typed',
       edit: { kind: 'leg-section', runId: focus.runId, sections: legs.map((leg) => ({ leg, section })) },
-    } : null), [section, current, legs, scope, focus.runId]);
+    } : null), [section, current, legs, scope, focus.runId, units]);
   const evaluation = useMemo(() => (option ? evaluateDuctSegmentOption(scene, settings, focus.runId, focus.key, option) : null), [option, scene, settings, focus.runId, focus.key]);
   const switchShape = (next: 'rect' | 'round') => {
     if (next === shape) return;
     const base = section ?? current;
     const other = otherShape(base, settings, voidHeightMm);
-    if (next === 'round') setDiameter(String(other.diameterMm ?? Math.round(equivalentDiameterMm(base))));
+    if (next === 'round') setDiameter(shownOf(other.diameterMm ?? equivalentDiameterMm(base)));
     else {
-      setWidth(String(other.widthMm));
-      setHeight(String(other.heightMm));
+      setWidth(shownOf(other.widthMm));
+      setHeight(shownOf(other.heightMm));
     }
     setShape(next);
   };
+  // Steps: 50 mm (10 fine), or 2 in; the limits as the engine holds them.
+  const step = ip ? 2 : 50;
+  const fine = ip ? 2 : 10;
+  const limit = (mm: number) => (ip ? Math.round(mm / 25.4) : mm);
   const apply = () => {
     if (option && evaluation && !evaluation.refused) host.onApply(option);
   };
@@ -273,23 +307,23 @@ function SizeEditor({ host, segment, spec, voidHeightMm }: { host: FieldHost; se
       <div className="mt-1.5 flex items-center gap-1.5 pl-[76px]">
         {shape === 'round' ? (
           <>
-            <Stepper label="Diameter" value={diameter} onChange={setDiameter} onEnter={apply} step={50} fineStep={10} min={75} max={2000} scrubLabel="Ø" onScrubEnd={apply} />
+            <Stepper label="Diameter" value={diameter} onChange={setDiameter} onEnter={apply} step={step} fineStep={fine} min={limit(75)} max={limit(2000)} scrubLabel="Ø" onScrubEnd={apply} />
           </>
         ) : (
           <>
-            <Stepper label="Width" value={width} onChange={setWidth} onEnter={apply} step={50} fineStep={10} min={50} max={4000} width="w-12" scrubLabel="W" onScrubEnd={apply} />
+            <Stepper label="Width" value={width} onChange={setWidth} onEnter={apply} step={step} fineStep={fine} min={limit(50)} max={limit(4000)} width="w-12" scrubLabel="W" onScrubEnd={apply} />
             <span className="text-[11px] text-slate-400">×</span>
-            <Stepper label="Depth" value={height} onChange={setHeight} onEnter={apply} step={50} fineStep={10} min={50} max={2000} width="w-12" scrubLabel="D" onScrubEnd={apply} />
+            <Stepper label="Depth" value={height} onChange={setHeight} onEnter={apply} step={step} fineStep={fine} min={limit(50)} max={limit(2000)} width="w-12" scrubLabel="D" onScrubEnd={apply} />
           </>
         )}
-        <span className="text-[10.5px] text-slate-400">mm</span>
+        <span className="text-[10.5px] text-slate-400">{units.unit('size')}</span>
       </div>
       {sameSize > 1 ? (
         <div className="mt-1 flex items-center gap-3 pl-[76px] text-[11px] text-slate-500" role="radiogroup" aria-label="Apply to">
           {(['leg', 'size'] as const).map((value) => (
             <label key={value} className="inline-flex cursor-pointer items-center gap-1">
               <input type="radio" name={`scope-${focus.runId}-${focus.key}`} checked={scope === value} onChange={() => setScope(value)} className="accent-violet-600" />
-              {value === 'leg' ? 'This leg' : `All ${sameSize} of ${sectionLabel(current)}`}
+              {value === 'leg' ? 'This leg' : `All ${sameSize} of ${units.section(current)}`}
             </label>
           ))}
         </div>
@@ -428,7 +462,7 @@ function EditPanel({ host, plan, segment, context, options }: {
               edit: { kind: 'leg-length', runId, legIndex, lengthMm: value },
             })} />
         ) : null}
-        <SizeEditor key={`size|${sectionLabel(section)}`} host={host} segment={segment} spec={spec} voidHeightMm={context.voidHeightMm} />
+        <SizeEditor key={`size|${sectionLabel(section)}|${settings.unitSystem}`} host={host} segment={segment} spec={spec} voidHeightMm={context.voidHeightMm} />
       </EditBlock>,
     );
   }
@@ -541,6 +575,9 @@ function EditPanel({ host, plan, segment, context, options }: {
       const share = context.figures?.flow?.airflowM3h.min ?? 0;
       const designed = terminalSpec.designAirflowM3h ?? null;
       const terminalId = terminal.id;
+      // The airflow in the display system (CFM in IP); the edit holds m³/h.
+      const system = settings.unitSystem;
+      const shownAirflow = (m3h: number) => Math.round(toDisplay('airflow', m3h, system));
       blocks.push(
         <EditBlock key="terminal" title={`Terminal ${terminal.label || ''}`.trim()}>
           <div className="flex items-center gap-2 px-1">
@@ -551,7 +588,7 @@ function EditPanel({ host, plan, segment, context, options }: {
             <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500">Collar</span>
             {chipRow('collar:')}
           </div>
-          <ValueField host={host} label="Airflow" unit="m³/h" current={Math.round(designed ?? share)} min={10} max={10000} step={10} fineStep={5} testId="duct-segment-airflow"
+          <ValueField host={host} label="Airflow" unit={system === 'ip' ? 'CFM' : 'm³/h'} current={shownAirflow(designed ?? share)} min={shownAirflow(10)} max={shownAirflow(10000)} step={10} fineStep={5} testId="duct-segment-airflow"
             hint={designed ? 'its design airflow' : 'an equal share of the system airflow'}
             extra={designed ? (
               <button type="button" className="rounded-md px-1.5 text-[10.5px] text-slate-500 hover:bg-slate-100 hover:text-slate-800" title="Back to an equal share of the system airflow"
@@ -559,10 +596,13 @@ function EditPanel({ host, plan, segment, context, options }: {
                 Share
               </button>
             ) : null}
-            makeOption={(value) => ({
-              id: `airflow:${value}`, group: 'tune', glyph: 'terminal', title: `${value} m³/h`, detail: 'its design airflow',
-              edit: { kind: 'terminal', terminalId, airflowM3h: value },
-            })} />
+            makeOption={(value) => {
+              const airflowM3h = system === 'ip' ? Math.round(fromDisplay('airflow', value, 'ip') * 10) / 10 : value;
+              return {
+                id: `airflow:${airflowM3h}`, group: 'tune', glyph: 'terminal', title: `${value} ${system === 'ip' ? 'CFM' : 'm³/h'}`, detail: 'its design airflow',
+                edit: { kind: 'terminal', terminalId, airflowM3h },
+              };
+            }} />
         </EditBlock>,
       );
     }
@@ -604,14 +644,17 @@ function buildDuctCardModel(scene: HvacElement[], settings: DuctDesignSettings, 
   const context = segment ? segmentOptionContext(scene, settings, focus.runId, focus.key) : null;
   if (!plan || !segment || !context) return null;
   const figures = ductSegmentFigures(scene, settings, focus.runId, focus.key);
-  const issues = segmentIssues(plan, focus.key).flatMap((issue) => (issue.severity === 'info' ? [] : [{ severity: issue.severity, code: issue.code, message: issue.message }]));
-  const options = ductSegmentOptions(scene, settings, focus.runId, focus.key);
+  // Read in the document's unit system: sizes in the titles, figures in the details and messages (the edits are as built).
+  const system = settings.unitSystem;
+  const issues = segmentIssues(plan, focus.key).flatMap((issue) => (issue.severity === 'info' ? [] : [{ severity: issue.severity, code: issue.code, message: toDisplayText(issue.message, system) }]));
+  const built = ductSegmentOptions(scene, settings, focus.runId, focus.key);
+  const options = system === 'si' ? built : built.map((option) => ({ ...option, title: sizesText(option.title, system), detail: toDisplayText(option.detail, system) }));
   const token: DuctRekeyToken = { legIndex: segment.legIndex };
   return {
     head: {
       title: segment.title,
-      size: segment.size,
-      detail: segment.detail,
+      size: sizesText(segment.size, system),
+      detail: toDisplayText(segment.detail, system),
       tag: markRange(segment),
       glyph: <DuctSegmentGlyph glyph={segmentGlyph(segment)} className="h-3.5 w-3.5" />,
       tone: plan.spec.service === 'return' ? 'bg-teal-50 text-teal-600' : 'bg-blue-50 text-blue-600',

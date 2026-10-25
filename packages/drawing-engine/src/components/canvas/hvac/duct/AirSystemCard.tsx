@@ -19,6 +19,7 @@ import { shallow } from 'zustand/shallow';
 import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../../data';
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
+import { useHvacUnits, type HvacUnits } from '../units/useHvacUnits';
 
 import { farAssignments, type FarAssignment } from './airSystemAssignment';
 import {
@@ -56,11 +57,10 @@ function TagEditor({ system }: { system: AirSystem }) {
   );
 }
 
-function balanceText(group: AirSystemService, airflow: number | null): { text: string; ok: boolean } {
-  const total = Math.round(group.totalM3h);
-  if (!airflow) return { text: `${total} m³/h`, ok: true };
+function balanceText(group: AirSystemService, airflow: number | null, units: HvacUnits): { text: string; ok: boolean } {
+  if (!airflow) return { text: units.fmt('airflow', group.totalM3h), ok: true };
   const ok = Math.abs(group.totalM3h - airflow) <= airflow * AIR_BALANCE_TOLERANCE;
-  return { text: `${total} of ${Math.round(airflow)} m³/h`, ok };
+  return { text: `${units.num('airflow', group.totalM3h)} of ${units.fmt('airflow', airflow)}`, ok };
 }
 
 const metres = (mm: number) => (mm / 1000).toFixed(1);
@@ -78,8 +78,9 @@ function FarNote({ far }: { far: FarAssignment | undefined }) {
 }
 
 function ServiceGroup({ system, group, far }: { system: AirSystem; group: AirSystemService; far: ReadonlyMap<string, FarAssignment> }) {
+  const units = useHvacUnits();
   const tone = SERVICE_TONE[group.service];
-  const balance = balanceText(group, system.airflowM3h);
+  const balance = balanceText(group, system.airflowM3h, units);
   return (
     <div className="rounded-md bg-white/80 p-1" data-testid={`air-system-${group.service}`}>
       <div className="flex items-center justify-between gap-1 text-[11px]">
@@ -101,9 +102,9 @@ function ServiceGroup({ system, group, far }: { system: AirSystem; group: AirSys
             <li key={member.terminal.id} className="flex items-start justify-between gap-1 rounded px-0.5 text-[10px] hover:bg-slate-50" data-air-system-row={member.terminal.id}>
               <span className="min-w-0">
                 <span className="font-medium text-slate-800">{member.tag}</span>
-                <span className="text-slate-500"> · {TERMINAL_FACE_LABELS[member.spec.kind]}{member.spec.filter ? ` · ${member.spec.filter}` : ''} · Ø{member.spec.neckDiameterMm}</span>
+                <span className="text-slate-500"> · {TERMINAL_FACE_LABELS[member.spec.kind]}{member.spec.filter ? ` · ${member.spec.filter}` : ''} · {units.section({ widthMm: member.spec.neckDiameterMm, heightMm: member.spec.neckDiameterMm, diameterMm: member.spec.neckDiameterMm })}</span>
                 <span className="block text-slate-500">
-                  {Math.round(member.airflowM3h)} m³/h{member.fixed ? '' : ' (share)'} · {member.neckVelocityMs.toFixed(1)} m/s ·{' '}
+                  {units.fmt('airflow', member.airflowM3h)}{member.fixed ? '' : ' (share)'} · {units.fmt('velocity', member.neckVelocityMs)} ·{' '}
                   {member.mismatch ? <span className="text-red-600">ducted from another unit</span>
                     : member.connection ? <span className="text-emerald-700">● ducted</span> : <span className="text-slate-400">○ not ducted yet</span>}
                 </span>
@@ -137,6 +138,7 @@ function hints(system: AirSystem): string[] {
 }
 
 function UnitSystemCard({ unit, selectedIds }: { unit: HvacElement; selectedIds: readonly string[] }) {
+  const units = useHvacUnits();
   const { hvacElements, rooms, walls, ductSettings } = useSmartDrawingStore((state) => ({
     hvacElements: state.hvacElements, rooms: state.rooms, walls: state.walls, ductSettings: state.ductSettings,
   }), shallow);
@@ -168,7 +170,7 @@ function UnitSystemCard({ unit, selectedIds }: { unit: HvacElement; selectedIds:
         </span>
       </div>
       <p className="text-[10px] text-slate-500">
-        {system.airflowM3h ? `${Math.round(system.airflowM3h)} m³/h at Hi` : 'No airflow data: enter it in the Auto duct card'}
+        {system.airflowM3h ? `${units.fmt('airflow', system.airflowM3h)} at Hi` : 'No airflow data: enter it in the Auto duct card'}
         {roomNames.length ? ` · serves ${roomNames.join(', ')}` : ''}
       </p>
       <ServiceGroup system={system} group={system.supply} far={far} />

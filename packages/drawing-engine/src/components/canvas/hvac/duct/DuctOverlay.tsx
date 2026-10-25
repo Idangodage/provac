@@ -26,6 +26,7 @@ import {
 import { MM_TO_PX } from '../../scale';
 import { useCondensatePreviewStore } from '../condensate/condensatePreviewStore';
 import type { HvacMoveBegin } from '../move/hvacMoveSession';
+import { sizesText, type HvacUnitSystem } from '../units/hvacUnits';
 
 import { AirSystemLayer } from './AirSystemLayer';
 import { listAirPorts } from './ductAirPorts';
@@ -162,6 +163,11 @@ const GRIP_CLEARANCE_PX = 18;
 /** A run that waits for a turn's release, or is being designed, is drawn this faint. */
 const FADED_RUN_OPACITY = 0.28;
 
+/** A run's size tags in the document's unit system: the size in inches in IP, the rest (gauge, BOD) as written. */
+function tagsIn(tags: DuctPlanPresentation['tags'], system: HvacUnitSystem): DuctPlanPresentation['tags'] {
+  return system === 'si' ? tags : tags.map((tag) => ({ ...tag, text: sizesText(tag.text, system), short: tag.short ? sizesText(tag.short, system) : tag.short }));
+}
+
 export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(function DuctOverlay(props, ref) {
   const { enabled, width, height, viewportZoom, panOffset, hvacElements, selectedIds, settings, showPorts, moveEnabled, onBeginMove, onEditCommit, fadedRunIds } = props;
   const gRef = useRef<SVGGElement | null>(null);
@@ -218,7 +224,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       ...presentations.flatMap(({ presentation }) => ductRunTagObstacles(presentation, style, measureTagText)),
     ];
     const sources: DuctTagSource[] = presentations.map(({ presentation, selected }) => ({
-      runId: presentation.id, service: presentation.service, status: presentation.status, selected, tags: presentation.tags,
+      runId: presentation.id, service: presentation.service, status: presentation.status, selected, tags: tagsIn(presentation.tags, sceneRef.current.settings.unitSystem),
     }));
     return placedDuctTagMarkup(layoutDuctTags(sources, k, { measure: measureTagText, obstacles }), k);
   }, []);
@@ -721,7 +727,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       ...drawn.flatMap(({ presentation }) => ductRunTagObstacles(presentation, style, measureTagText)),
     ];
     const sources: DuctTagSource[] = drawn.map(({ presentation, selected, draft }) => ({
-      runId: presentation.id, service: presentation.service, status: presentation.status, selected, draft, tags: presentation.tags,
+      runId: presentation.id, service: presentation.service, status: presentation.status, selected, draft, tags: tagsIn(presentation.tags, settings.unitSystem),
     }));
     return { placed: layoutDuctTags(sources, k, { measure: measureTagText, obstacles }), obstacles };
   }, [settings, k, hvacElements, terminals, runs, replacedIds, selectedSet, previewPresentations]);

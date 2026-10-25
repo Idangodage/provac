@@ -20,6 +20,7 @@ import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
 import { Caption } from '../unit/unitPanelKit';
+import { useHvacUnits } from '../units/useHvacUnits';
 
 import { DesignCriteriaPicker } from './DuctDesignCriteriaPicker';
 import { DuctFrontierChart } from './DuctFrontierChart';
@@ -83,11 +84,8 @@ const COST_ROWS: Array<[keyof DuctCostBreakdown, string]> = [
   ['joints', 'Joints'], ['hangers', 'Hangers and straps'],
 ];
 
-function sectionText(section: { widthMm: number; heightMm: number; diameterMm?: number }): string {
-  return section.diameterMm !== undefined ? `Ø${Math.round(section.diameterMm)}` : `${Math.round(section.widthMm)}×${Math.round(section.heightMm)}`;
-}
-
 function Designs({ result }: { result: AutoDuctResult }) {
+  const units = useHvacUnits();
   const selectDesign = useDuctAutoPreviewStore((state) => state.selectDesign);
   const design = result.designs[result.selected];
   if (!design || !result.picks) return null;
@@ -113,7 +111,7 @@ function Designs({ result }: { result: AutoDuctResult }) {
         </div>
       ) : null}
       <DuctFrontierChart designs={result.designs} picks={picks} selected={result.selected} maxEspPa={result.maxEspPa}
-        pricePerPa={result.pricePerPa} currency={currency} onSelect={selectDesign} />
+        pricePerPa={result.pricePerPa} currency={currency} onSelect={selectDesign} units={units} />
       <div className="grid grid-cols-3 gap-1" role="group" aria-label="Design picks">
         {pickButtons.map((pick) => {
           const candidate = result.designs[pick.index]!;
@@ -123,7 +121,7 @@ function Designs({ result }: { result: AutoDuctResult }) {
               className={`rounded-md border px-1 py-1 text-left transition-colors ${active ? 'border-teal-600 bg-teal-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
               <span className={`flex items-center gap-1 text-[10px] font-medium ${active ? 'text-teal-800' : 'text-slate-600'}`}>{pick.icon}{pick.label}</span>
               <span className="block text-[11px] font-semibold text-slate-800">{formatCost(candidate.firstCost, currency)}</span>
-              <span className="block text-[10px] text-slate-500">{candidate.requiredEspPa.toFixed(1)} Pa</span>
+              <span className="block text-[10px] text-slate-500">{units.fmt('pressure', candidate.requiredEspPa, units.system === 'ip' ? 2 : 1)}</span>
             </button>
           );
         })}
@@ -132,8 +130,8 @@ function Designs({ result }: { result: AutoDuctResult }) {
         <Line label="First cost">{formatCost(design.firstCost, currency)}</Line>
         <Line label="Fan energy (present worth)">
           {formatCost(design.energyCost, currency)}
-          <span className="text-[10px] text-slate-400" title="Each pascal of external static pressure, over the operating hours and life, at the tariff (Economics settings)">
-            ({result.pricePerPa.toFixed(2)} / Pa)
+          <span className="text-[10px] text-slate-400" title="Each unit of external static pressure, over the operating hours and life, at the tariff (Economics settings)">
+            ({(result.pricePerPa / units.toDisplay('pressure', 1)).toFixed(units.system === 'ip' ? 0 : 2)} / {units.unit('pressure')})
           </span>
         </Line>
         <Line label="Life-cycle cost"><span className="font-semibold">{formatCost(design.lifeCycleCost, currency)}</span></Line>
@@ -160,11 +158,13 @@ function Designs({ result }: { result: AutoDuctResult }) {
 
 /** Designed in another shape than the one asked for: why, where the result begins. */
 function ShapeNote({ result }: { result: AutoDuctResult }) {
+  const units = useHvacUnits();
   const note = result.issues.find((issue) => issue.code === 'DU_AUTO_SHAPE');
-  return note ? <p className="rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-4 text-amber-800" role="note" data-testid="duct-auto-shape-note">{note.message}</p> : null;
+  return note ? <p className="rounded bg-amber-50 px-1.5 py-1 text-[10px] leading-4 text-amber-800" role="note" data-testid="duct-auto-shape-note">{units.text(note.message)}</p> : null;
 }
 
 function Summary({ result }: { result: AutoDuctResult }) {
+  const units = useHvacUnits();
   const issues = [...result.issues, ...result.services.flatMap((service) => service.issues)];
   const errors = issues.filter((issue) => issue.severity === 'error');
   const warnings = issues.filter((issue) => issue.severity === 'warning');
@@ -175,7 +175,7 @@ function Summary({ result }: { result: AutoDuctResult }) {
   return (
     <div className="mt-1 space-y-1 border-t border-sky-100 pt-1" data-testid="duct-auto-summary">
       {result.airflowM3h !== null ? (
-        <Line label="Airflow">{Math.round(result.airflowM3h)} m³/h <span className="text-[10px] text-slate-500">({result.airflowSource ? SOURCE_LABEL[result.airflowSource] : ''})</span></Line>
+        <Line label="Airflow">{units.fmt('airflow', result.airflowM3h)} <span className="text-[10px] text-slate-500">({result.airflowSource ? SOURCE_LABEL[result.airflowSource] : ''})</span></Line>
       ) : null}
       {result.services.map((service) => (
         <div key={service.service} className="rounded-md bg-white/70 p-1">
@@ -183,12 +183,12 @@ function Summary({ result }: { result: AutoDuctResult }) {
             {service.service === 'supply' ? 'Supply' : 'Return'}: {service.label || (service.layout ? AUTO_DUCT_LAYOUT_LABELS[service.layout] : 'no layout')}
           </div>
           {service.sizingReport ? (
-            <div className="text-[11px] text-slate-700" data-testid="duct-auto-sizing-line">{sizingOutcomeLine(service.sizingReport)}</div>
+            <div className="text-[11px] text-slate-700" data-testid="duct-auto-sizing-line">{units.text(sizingOutcomeLine(service.sizingReport))}</div>
           ) : null}
           {service.trunkSections.length ? (
             <div className="text-[11px] text-slate-600">
               {service.layout === 'plenum' ? 'Plenum ' : 'Trunk '}
-              {service.trunkSections.map(sectionText).join(' → ')}
+              {service.trunkSections.map((section) => units.section(section)).join(' → ')}{units.system === 'ip' ? ' in' : ''}
             </div>
           ) : null}
           {service.sizingReport ? <div className="mt-0.5"><SizingTable report={service.sizingReport} /></div> : null}
@@ -197,11 +197,11 @@ function Summary({ result }: { result: AutoDuctResult }) {
               {service.terminals.map((terminal) => (
                 <tr key={terminal.terminalId}>
                   <td className="pr-1">{terminal.label}</td>
-                  <td className="pr-1 text-right">{terminal.airflowM3h} m³/h</td>
-                  <td className="pr-1 text-right">Ø{terminal.branchDiameterMm}</td>
-                  <td className="pr-1 text-right">{terminal.neckVelocityMs.toFixed(1)} m/s</td>
+                  <td className="pr-1 text-right">{units.fmt('airflow', terminal.airflowM3h)}</td>
+                  <td className="pr-1 text-right">{units.section({ widthMm: terminal.branchDiameterMm, heightMm: terminal.branchDiameterMm, diameterMm: terminal.branchDiameterMm })}</td>
+                  <td className="pr-1 text-right">{units.fmt('velocity', terminal.neckVelocityMs)}</td>
                   <td className="text-right" title="Pressure its damper throttles to balance">
-                    {service.pressure ? `−${Math.round(service.pressure.throttlePa[terminal.terminalId] ?? 0)} Pa` : ''}
+                    {service.pressure ? `−${units.fmt('pressure', service.pressure.throttlePa[terminal.terminalId] ?? 0)}` : ''}
                   </td>
                 </tr>
               ))}
@@ -212,21 +212,21 @@ function Summary({ result }: { result: AutoDuctResult }) {
       {esp !== null ? (
         <Line label="External static pressure">
           <span className={result.maxEspPa !== null && esp > result.maxEspPa ? 'font-semibold text-red-600' : 'text-emerald-700'}>
-            {Math.round(esp)} Pa
+            {units.fmt('pressure', esp)}
           </span>
-          {result.maxEspPa !== null ? <span className="text-[10px] text-slate-500"> of {result.maxEspPa} Pa max</span> : null}
+          {result.maxEspPa !== null ? <span className="text-[10px] text-slate-500"> of {units.fmt('pressure', result.maxEspPa)} max</span> : null}
         </Line>
       ) : null}
       {turned.length ? (
         <ul className="space-y-0.5 text-[10px] text-sky-700" data-testid="duct-auto-spigots">
-          {turned.map((issue, index) => <li key={index}>{issue.message}</li>)}
+          {turned.map((issue, index) => <li key={index}>{units.text(issue.message)}</li>)}
         </ul>
       ) : null}
       {[...errors, ...warnings].length ? (
         <ul className="space-y-0.5 text-[10px]" data-testid="duct-auto-issues">
           {[...errors, ...warnings].map((issue, index) => (
             <li key={index} className={issue.severity === 'error' ? 'text-red-600' : 'text-amber-700'}>
-              {issue.code}: {issue.message}
+              {issue.code}: {units.text(issue.message)}
             </li>
           ))}
         </ul>
@@ -234,7 +234,7 @@ function Summary({ result }: { result: AutoDuctResult }) {
       {notes.length ? (
         <details className="text-[10px] text-slate-500">
           <summary className="cursor-pointer">{notes.length} note{notes.length === 1 ? '' : 's'}</summary>
-          <ul>{notes.map((issue, index) => <li key={index}>{issue.message}</li>)}</ul>
+          <ul>{notes.map((issue, index) => <li key={index}>{units.text(issue.message)}</li>)}</ul>
         </details>
       ) : null}
     </div>
@@ -259,6 +259,7 @@ export function DuctAutoCard() {
   const { ductSettings, setDuctSettings } = useSmartDrawingStore((state) => ({ ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings }), shallow);
   const [sizingTab, setSizingTab] = useState<DuctService>('supply');
   const [limitsOpen, setLimitsOpen] = useState(false);
+  const units = useHvacUnits();
   const rooms = useSmartDrawingStore((state) => state.rooms);
   const selection = useMemo(() => autoDuctSelection(selectedElementIds, hvacElements, { includeConnected: rebuild, rooms }), [selectedElementIds, hvacElements, rebuild, rooms]);
   const systemTag = selection ? airSystemTags(hvacElements).get(selection.unit.id) ?? (selection.unit.label || 'Unit') : '';
@@ -345,7 +346,7 @@ export function DuctAutoCard() {
   const busy = running === unit.id;
   const occupiedSelection = sizingServices.filter((service) => occupiedServices.has(service));
   const generateProblem = airflowError ? `Airflow: ${airflowError}`
-    : !systemAirflow ? 'Enter this unit’s airflow in m³/h before generating ducts.'
+    : !systemAirflow ? `Enter this unit’s airflow in ${units.unit('airflow')} before generating ducts.`
       : !services.supply && !services.return ? 'Choose Supply, Return, or both.'
         : !sizingServices.length ? `Add supply or return terminals to ${systemTag}'s air system (the card above), or select them with the unit.`
           : !rebuild && occupiedSelection.length ? `The ${occupiedSelection.join(' and ')} duct is already connected. Enable Rebuild existing or turn off that service.` : null;
