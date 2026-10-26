@@ -86,7 +86,7 @@ import {
   type PipeStudioOverlayHandle,
 } from "./canvas/hvac/PipeStudioOverlay";
 import { selectionAfterMarkerClick, VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
-import { applyAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteController";
+import { applyAutoRoutePreview, discardAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteController";
 import { CondensateEditGizmo3D } from "./canvas/hvac/condensate/CondensateEditGizmo3D";
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
 import { createCondensateSegmentProvider } from "./canvas/hvac/condensate/CondensateSegmentCard";
@@ -907,6 +907,7 @@ export function DrawingCanvas({
         for (const hop of store.unified?.condensate?.hopProposals ?? []) if (!store.approvedHopKeys.includes(hop.key)) store.toggleHop(hop.key);
       },
       applyAutoRoute: () => applyAutoRoutePreview(),
+      discardAutoRoute: () => discardAutoRoutePreview(),
       planCondensate: () => {
         const state = useSmartDrawingStore.getState();
         return generateCondensateNetwork([...state.hvacElements], {
@@ -1996,6 +1997,7 @@ export function DrawingCanvas({
   const condensatePreview = useCondensatePreviewStore((state) => state.result);
   const refrigerantPreview = useCondensatePreviewStore((state) => state.unified?.refrigerant ?? null);
   const ductRoutePreview = useCondensatePreviewStore((state) => state.unified?.ducts ?? null);
+  const turnedUnitsPreview = useCondensatePreviewStore((state) => (state.unified?.orientation?.units.length ? state.unified.orientation.units : null));
   // Terminals the Auto route panel proposes (shown until added or put away).
   const terminalProposal = useTerminalProposalStore((state) => state.proposal);
   // Terminals an Auto duct card preview turns the spigot of show turned in 3D until Apply or Discard.
@@ -2027,7 +2029,8 @@ export function DrawingCanvas({
   // lines it changes, without the ones it removes.
   const refrigerantCardPreview = useSegmentUiStore((state) => (state.preview && domainOf(state.preview) === "refrigerant" ? state.preview : null));
   const autoRoutePreviewElements = useMemo(() => {
-    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview && !autoDuctTurned && !ductSegmentPreview && !terminalProposal) return null;
+    if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview && !autoDuctTurned && !ductSegmentPreview && !terminalProposal
+      && !turnedUnitsPreview) return null;
     const removed = new Set([
       ...(ductRoutePreview?.removeElementIds ?? []),
       ...(condensatePreview?.removeElementIds ?? []),
@@ -2039,6 +2042,7 @@ export function DrawingCanvas({
       .filter((element) => removed.has(element.id))
       .map((element): HvacElement => ({ ...element, type: "condensate-pipe", properties: { routeNodes3d: [], routePoints: [], fittings: [] } }));
     return [
+      ...(turnedUnitsPreview ?? []),
       ...(ductRoutePreview?.elementsToAdd ?? []),
       ...(ductRoutePreview?.terminalUpdates ?? []),
       ...(autoDuctTurned ?? []),
@@ -2050,7 +2054,8 @@ export function DrawingCanvas({
       ...(terminalProposal ? [...terminalProposal.add, ...terminalProposal.updates] : []),
       ...hidden,
     ];
-  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, autoDuctTurned, ductSegmentPreview, segmentCardPreview, terminalProposal, hvacElements]);
+  }, [condensatePreview, refrigerantPreview, condensateEditPreview, ductRoutePreview, autoDuctTurned, ductSegmentPreview, segmentCardPreview, terminalProposal,
+    turnedUnitsPreview, hvacElements]);
   const hybridPlanPaintPendingRef = useRef(false);
   const hybridPipeInteractionRef = useRef<HybridPipeInteractionHandle | null>(null);
   // The 2D plan stack as one tiltable sheet (see projectionPlaneStyle) and the

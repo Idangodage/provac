@@ -3,6 +3,10 @@
  * liquid, condensate — coordinated so the services do not clash.
  *
  * Order (and why):
+ *  First, the turns: 4-way cassettes whose services this run lays are turned
+ *     a quarter where their pipes and drain then reach their networks shorter
+ *     (unitOrientation); every step after sees them turned, and Apply turns
+ *     them with the routes (one undo).
  *  0. Ducts — the largest bodies, tied to fixed collars and terminals, with
  *     the least freedom to move; pipes can pass them, not the other way round.
  *     Each ducted unit gets the optimiser's best life-cycle design; the new
@@ -48,6 +52,7 @@ import { isRefrigerantBranchKitElement, resolveRefrigerantBranchKitLineSelection
 import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
 import { rankServiceRouteCandidates, type ServiceRouteCandidate, type ServiceRouteObjective } from './serviceRouteObjective';
 import { applyServiceRouteCommand, serviceRouteCommitDiagnostics, type ServiceRouteCommand, type ServiceRouteIssue } from './serviceRouteValidation';
+import { applyUnitTurns, planUnitOrientations, unitRuns, type AutoTurnSettings, type UnitKept, type UnitTurn } from './unitOrientation';
 
 export interface AutoRouteServices {
   gas: boolean;
@@ -82,6 +87,8 @@ export interface UnifiedAutoRouteOptions {
   };
   /** Duct design (and the duct settings every step plans duct bodies with). */
   duct?: AutoRouteDuctOptions;
+  /** Auto-turn: 4-way cassettes turned for shorter runs before anything is routed (absent: none). */
+  orientation?: AutoTurnSettings;
   onProgress?: (progress: UnifiedAutoRouteProgress) => void;
 }
 
@@ -109,6 +116,8 @@ export interface UnifiedAutoRouteResult {
   /** Entity references retained for focusing conflicts from the review. */
   blockingDetails?: ServiceRouteIssue[];
   coordination?: { strategy: 'refrigerant-first' | 'drainage-first'; candidatesEvaluated: number };
+  /** The cassettes turned before routing (as they will be), and those kept as placed (why). */
+  orientation?: { turns: UnitTurn[]; kept: UnitKept[]; units: HvacElement[] };
 }
 
 export function routedServiceOf(element: HvacElement | undefined): RoutedService {
@@ -271,12 +280,27 @@ export function applyRefrigerantProposal(scene: readonly HvacElement[], result: 
 }
 
 /** Compose before checking: terminal moves and approved hops affect other services. */
-export function unifiedRouteCommand(result: Pick<UnifiedAutoRouteResult, 'ducts' | 'refrigerant' | 'condensate'>): ServiceRouteCommand {
+export function unifiedRouteCommand(result: Pick<UnifiedAutoRouteResult, 'ducts' | 'refrigerant' | 'condensate' | 'orientation'>): ServiceRouteCommand {
   return {
     add: [...(result.ducts?.elementsToAdd ?? []), ...(result.refrigerant?.elementsToAdd ?? []), ...(result.condensate?.elementsToAdd ?? [])],
     removeIds: [...(result.ducts?.removeElementIds ?? []), ...(result.refrigerant?.removeElementIds ?? []), ...(result.condensate?.removeElementIds ?? [])],
-    updates: [...terminalSpigotUpdates(result.ducts?.terminalUpdates ?? []), ...(result.refrigerant?.updates ?? []).map((element) => ({ id: element.id, updates: element }))],
+    updates: [
+      // The cassettes turned first: the routes are laid to them as turned.
+      ...unitTurnCommandUpdates(result.orientation),
+      ...terminalSpigotUpdates(result.ducts?.terminalUpdates ?? []), ...(result.refrigerant?.updates ?? []).map((element) => ({ id: element.id, updates: element })),
+    ],
   };
+}
+
+/** The updates that turn an Auto route's turned cassettes (their rotation, and who set it). */
+export function unitTurnCommandUpdates(orientation: UnifiedAutoRouteResult['orientation']): HvacElementUpdate[] {
+  return (orientation?.units ?? []).map((unit) => ({ id: unit.id, updates: { rotation: unit.rotation, properties: unit.properties } }));
+}
+
+/** Every run a turned cassette had is replaced (its ports moved: a run kept would no longer reach it). */
+function turnsHold(scene: readonly HvacElement[], result: UnifiedAutoRouteResult, turns: readonly UnitTurn[]): boolean {
+  const removed = new Set(unifiedRouteCommand(result).removeIds ?? []);
+  return turns.every((turn) => unitRuns(scene, turn.unitId).every((run) => removed.has(run.id)));
 }
 
 export { incompleteDuctRouteRefusal, incompleteServiceRouteRefusal } from './autoRouteCompleteness';
@@ -330,7 +354,7 @@ function auditCandidateWithSettings(originalScene: HvacElement[], result: Unifie
   return { ...result, refrigerant, clashes, blockingIssues, blockingDetails, issues: [...new Set([...result.issues, ...blockingIssues])] };
 }
 
-export async function planUnifiedAutoRoute(originalScene: HvacElement[], options: UnifiedAutoRouteOptions): Promise<UnifiedAutoRouteResult> {
+export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: UnifiedAutoRouteOptions): Promise<UnifiedAutoRouteResult> {
   const { services } = options;
   const progress = options.onProgress ?? (() => undefined);
   const issues: string[] = [];
@@ -338,6 +362,29 @@ export async function planUnifiedAutoRoute(originalScene: HvacElement[], options
   const routeDucts = wantsDucts(services) && Boolean(options.duct);
   if (!wantsRefrigerant && !services.condensate && !routeDucts) {
     return { services, ducts: null, refrigerant: null, condensate: null, clashes: [], issues: ['Tick at least one service to route.'] };
+  }
+
+  // First, the turns (see the module comment): every step below sees the cassettes turned.
+  let originalScene = drawnScene;
+  let orientation: UnifiedAutoRouteResult['orientation'];
+  if (options.orientation?.enabled && (wantsRefrigerant || services.condensate)) {
+    progress({ stage: 'Turning cassettes for shorter runs', completed: 0, total: 0 });
+    const replaceable = new Set([
+      ...(services.condensate ? replaceableCondensatePipeIds(drawnScene, options.condensate.settings, options.condensate) : []),
+      ...(services.gas && services.liquid ? replaceableGeneratedRefrigerantIds(drawnScene, options.refrigerant) : []),
+    ]);
+    const scope = options.refrigerant.selectedIds ?? options.condensate.unitIds;
+    const planned = planUnitOrientations(drawnScene, {
+      refrigerant: wantsRefrigerant, condensate: services.condensate, walls: options.condensate.walls ?? [],
+      settings: options.orientation, condensateSettings: options.condensate.settings, routing: options.refrigerant.settings,
+      ...(scope ? { unitIds: scope } : {}), ...(options.condensate.gullyIds ? { gullyIds: options.condensate.gullyIds } : {}),
+      replaceable,
+    });
+    if (planned.turns.length) {
+      originalScene = applyUnitTurns(drawnScene, planned.turns);
+      const turned = new Set(planned.turns.map((turn) => turn.unitId));
+      orientation = { ...planned, units: originalScene.filter((element) => turned.has(element.id)) };
+    } else if (planned.kept.length) orientation = { turns: [], kept: planned.kept, units: [] };
   }
   // Pipes are clash-checked against duct bodies planned with the document's duct settings (also in the worker).
   if (options.duct) setActiveDuctSettings(options.duct.settings);
@@ -454,7 +501,16 @@ export async function planUnifiedAutoRoute(originalScene: HvacElement[], options
     }
   }
   const selected = selectServiceRouteCandidate(candidates, options.refrigerant.objective);
-  return { ...selected.result, coordination: { strategy: selected.key as 'refrigerant-first' | 'drainage-first', candidatesEvaluated: candidates.length } };
+  const result: UnifiedAutoRouteResult = {
+    ...selected.result, ...(orientation ? { orientation } : {}),
+    coordination: { strategy: selected.key as 'refrigerant-first' | 'drainage-first', candidatesEvaluated: candidates.length },
+  };
+  // A turned cassette must lose every run it had: where a run of it is kept (its network kept as it is), route unturned.
+  if (orientation?.turns.length && !turnsHold(drawnScene, result, orientation.turns)) {
+    const unturned = await planUnifiedAutoRoute(drawnScene, { ...options, orientation: { ...options.orientation!, enabled: false } });
+    return { ...unturned, issues: [...unturned.issues, 'Cassettes were not turned: a run they keep would no longer reach them.'] };
+  }
+  return result;
 }
 
 /**

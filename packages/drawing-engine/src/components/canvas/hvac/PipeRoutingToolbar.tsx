@@ -76,12 +76,15 @@ export function PipeDrawingControls({ unit = 'mm', serviceLocked = false, servic
   </div>;
 }
 
-function DefaultDistance({ label, value, min, max, onCommit }: {
+function DefaultDistance({ label, value, min, max, onCommit, unit = 'mm', badge }: {
   label: string;
   value: number;
   min: number;
   max: number;
   onCommit: (value: number) => void;
+  unit?: string;
+  /** Where the value comes from, when it is a practice value (shown beside the label). */
+  badge?: string;
 }) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => setDraft(String(value)), [value]);
@@ -95,7 +98,7 @@ function DefaultDistance({ label, value, min, max, onCommit }: {
   };
   return (
     <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
-      {label}
+      <span>{label}{badge ? <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-600" title={badge}>practice</span> : null}</span>
       <span className="flex items-center gap-1.5 text-slate-400">
         <input
           type="number" min={min} max={max} step="any" value={draft}
@@ -108,7 +111,7 @@ function DefaultDistance({ label, value, min, max, onCommit }: {
           }}
           className="w-20 rounded-md border border-slate-200 px-2 py-1.5 text-right text-slate-800 outline-none focus:border-teal-500"
         />
-        mm
+        {unit}
       </span>
     </label>
   );
@@ -173,6 +176,24 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
             </select>
           </label>
           <p className="max-w-80 text-[11px] leading-4 text-slate-400">90° and 45° turns use C×C socket elbows where they fit. Copper detail hides fitting covers for inspection. Planning profiles still need project part selection.</p>
+          <div className="space-y-2 border-t border-slate-100 pt-2.5" data-testid="auto-turn-settings">
+            <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
+              Auto route turns 4-way cassettes for shorter runs
+              <input type="checkbox" aria-label="Auto route turns 4-way cassettes" checked={settings.autoTurnCassettes}
+                onChange={(event) => setSettings({ autoTurnCassettes: event.target.checked })} />
+            </label>
+            {settings.autoTurnCassettes ? (
+              <>
+                <DefaultDistance label="Clear space at the connection side" value={settings.cassetteConnectionClearanceMm} min={0} max={3000}
+                  onCommit={update('cassetteConnectionClearanceMm')} badge="Site practice for fitting and service access, not a maker's figure: replace with the unit's installation manual." />
+                <DefaultDistance label="Turn when it saves at least" value={settings.autoTurnMinGainMm} min={0} max={20000}
+                  onCommit={update('autoTurnMinGainMm')} badge="A turn must be worth it: practice threshold." />
+                <DefaultDistance label="…and at least" value={settings.autoTurnMinGainPercent} min={0} max={100} unit="%"
+                  onCommit={update('autoTurnMinGainPercent')} badge="Of the approach as placed: practice threshold." />
+                <p className="max-w-80 text-[11px] leading-4 text-slate-400">Quarter turns on the unit's centre, square to the ceiling grid. Units turned by hand, locked, or piped by hand are kept.</p>
+              </>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </div>

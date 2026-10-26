@@ -25,11 +25,13 @@ import { applyServiceRouteCommand, serviceRouteCommitIssues } from './serviceRou
 import {
   foldRefrigerantHopUpdates,
   planUnifiedAutoRoute,
+  unitTurnCommandUpdates,
   wantsDucts,
   type AutoRouteServices,
   type HvacElementUpdate,
 } from './unifiedAutoRoute';
 import type { UnifiedAutoRouteRequest, UnifiedAutoRouteResponse } from './unifiedAutoRouteProtocol';
+import { autoTurnSettingsOf } from './unitOrientation';
 
 export interface AutoRouteRunOptions {
   services: AutoRouteServices;
@@ -126,6 +128,8 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
           gullyIds: selection.filter((element) => element.type === 'condensate-gully').map((element) => element.id),
         } : {}),
       },
+      // Auto-turn: 4-way cassettes turned for shorter runs first (Route defaults).
+      orientation: autoTurnSettingsOf(state.pipeRoutingSettings),
       // Always passed: every step plans duct bodies with the document's duct settings.
       duct: {
         settings: state.ductSettings,
@@ -209,7 +213,8 @@ export function applyAutoRoutePreview(options: { completeOnly?: boolean } = {}):
   }
   let add: HvacElement[] = [];
   const removeIds: string[] = [];
-  let updates: HvacElementUpdate[] = [];
+  // The cassettes Auto route turned, first: everything after is laid to them as turned.
+  let updates: HvacElementUpdate[] = unitTurnCommandUpdates(unified.orientation);
 
   const ducts = unified.ducts;
   if (ducts && signatures.ducts && (ducts.elementsToAdd.length || ducts.removeElementIds.length || ducts.terminalUpdates?.length)) {
@@ -268,7 +273,9 @@ export function applyAutoRoutePreview(options: { completeOnly?: boolean } = {}):
   const drainUnits = unified.condensate?.metrics.unitsConnected ?? 0;
   const ductRuns = unified.ducts?.elementsToAdd.length ?? 0;
   const ductUnits = unified.ducts?.units.filter((unit) => unit.status === 'designed').length ?? 0;
+  const turnedUnits = unified.orientation?.turns.length ?? 0;
   const parts = [
+    turnedUnits ? `${turnedUnits} cassette${turnedUnits === 1 ? '' : 's'} turned for shorter runs` : null,
     ductRuns ? `${ductRuns} duct run${ductRuns === 1 ? '' : 's'} for ${ductUnits} unit${ductUnits === 1 ? '' : 's'}` : null,
     unified.refrigerant && !refrigerantChanged ? 'refrigerant unchanged' : null,
     refrigerantChanged ? `${refrigerantUnits} unit${refrigerantUnits === 1 ? '' : 's'} on refrigerant` : null,

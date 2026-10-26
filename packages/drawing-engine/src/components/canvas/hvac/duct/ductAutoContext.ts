@@ -156,6 +156,8 @@ export function spigotVariants(frame: Frame, terminal: TerminalCtx, enabled: boo
   const placed = { ...terminal, variants: undefined, turnedTo: undefined };
   // A top collar takes its runout from any side, whatever the face (the side is only the way the runout comes).
   const top = Boolean(terminal.port.vertical);
+  // A side picked by hand stays (the terminal's Spigot side).
+  if (terminal.element.properties?.spigotSideSetBy === 'user') return [placed];
   if (!enabled || (!top && !TURNABLE.has(terminal.spec.kind))) return [placed];
   const centre = top ? terminal.lip : { x: terminal.lip.x - terminal.normal.x * 300, y: terminal.lip.y - terminal.normal.y * 300 };
   const onAxis = Math.abs(centre.y) < 150;

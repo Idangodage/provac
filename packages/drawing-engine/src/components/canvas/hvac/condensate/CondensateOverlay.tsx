@@ -28,6 +28,7 @@ import {
   type FabricViewportMatrix,
 } from '../../coordinateTransform';
 import { MM_TO_PX } from '../../scale';
+import { UnitTurnGhosts } from '../UnitTurnGhosts';
 import { useDuctGapStore } from '../duct/ductGapController';
 import { openEndsMarkup, segmentFocusMarkup } from '../duct/ductOverlayMarkup';
 import type { ScreenRect } from '../duct/popoverPlacement';
@@ -90,6 +91,8 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
   const toolGRef = useRef<SVGGElement | null>(null);
   const liveViewportRef = useRef<FabricViewportMatrix | null>(null);
   const preview = useCondensatePreviewStore((state) => state.result);
+  // An Auto route preview's turned cassettes (drawn here, in the drawing's frame, with the preview's drains).
+  const turnPreview = useCondensatePreviewStore((state) => state.unified?.orientation ?? null);
   const highlightUnitId = useCondensatePreviewStore((state) => state.highlightUnitId);
 
   const syncViewTransform = useCallback((vpt: readonly number[]) => {
@@ -260,7 +263,7 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
   }, []);
   useEffect(() => useDuctGapStore.subscribe(paintGapWay), [paintGapWay]);
 
-  if (!enabled || (!committed.length && !gullies.length && !preview && !drawing)) return null;
+  if (!enabled || (!committed.length && !gullies.length && !preview && !drawing && !turnPreview?.turns.length)) return null;
   const showDetail = k > 0.05;
   const matrix = liveViewportRef.current
     ? affineMatrixToSvg(fabricViewportToWorldSvgMatrix(liveViewportRef.current))
@@ -360,6 +363,7 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
                 })}
               </g>
             ) : null}
+            {turnPreview ? <UnitTurnGhosts turns={turnPreview.turns} units={turnPreview.units} hpx={hpx} /> : null}
             <g ref={focusRef} data-testid="condensate-segment-focus" style={{ pointerEvents: 'none' }} />
             {openEndMarkup ? <g data-testid="drain-open-ends" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: openEndMarkup }} /> : null}
             <g ref={gapWayRef} data-testid="drain-gap-way" style={{ pointerEvents: 'none' }} />

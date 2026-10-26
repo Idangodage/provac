@@ -105,6 +105,14 @@ export interface PipeRoutingSettings {
    */
   connectionRatioMinPercent: number;
   connectionRatioMaxPercent: number;
+  /** Auto route may turn 4-way cassettes (quarter turns on their centre) for shorter pipe and drain runs. */
+  autoTurnCassettes: boolean;
+  /** Clear space kept in front of a cassette's connection side when Auto route turns it (practice). */
+  cassetteConnectionClearanceMm: number;
+  /** Auto route turns a cassette only when that saves at least this much approach … */
+  autoTurnMinGainMm: number;
+  /** … and at least this share of it (%). */
+  autoTurnMinGainPercent: number;
 }
 
 /**
@@ -134,6 +142,10 @@ export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
   enableRealTeeTopology: true, // split the run into a real flow-connected tee on accept (W3b)
   connectionRatioMinPercent: 50,
   connectionRatioMaxPercent: 130,
+  autoTurnCassettes: true,
+  cassetteConnectionClearanceMm: 300, // practice
+  autoTurnMinGainMm: 300, // practice
+  autoTurnMinGainPercent: 5, // practice
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -174,6 +186,10 @@ export function resolvePipeRoutingSettings(
         if (typeof value === "boolean") {
           merged.enableRealTeeTopology = value;
         }
+        return;
+      }
+      if (key === "autoTurnCassettes") {
+        if (typeof value === "boolean") merged.autoTurnCassettes = value;
         return;
       }
       if (isFiniteNumber(value)) {

@@ -396,7 +396,8 @@ export function DuctTerminalInspector({ element }: { element: HvacElement }) {
           </div>
           {entry === 'side' ? (
             <select value={spec.spigotSide} aria-label="Terminal spigot side" className={select}
-              onChange={(event) => commitDuctTerminalEdit(element, { spec: { ...spec, spigotSide: event.target.value as DuctTerminalSpigotSide } }, 'Terminal spigot side')}>
+              onChange={(event) => commitDuctTerminalEdit({ ...element, properties: { ...element.properties, spigotSideSetBy: 'user' } },
+                { spec: { ...spec, spigotSide: event.target.value as DuctTerminalSpigotSide } }, 'Terminal spigot side')}>
               {(['back', 'front', 'left', 'right'] as const).map((side) => <option key={side} value={side}>{side}</option>)}
             </select>
           ) : null}

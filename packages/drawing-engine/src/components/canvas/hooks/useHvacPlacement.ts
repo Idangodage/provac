@@ -630,6 +630,8 @@ export function useHvacPlacement(options: UseHvacPlacementOptions) {
                 ...(targetUnit ? { airSystem: { unitId: targetUnit.id } } : {}),
                 // A ducted unit heads an air system: it takes the next free tag ("DU-3").
                 ...(isAirSystemUnit(pendingPlacementEquipmentDefinition) ? { airSystemTag: nextAirSystemTag(hvacElements) } : {}),
+                // Turned with R while placing: as a person turned it (Auto route keeps it).
+                ...(!isAirTerminal && Math.round(placementRotationDeg) % 360 !== 0 ? { orientationSetBy: 'user' } : {}),
                 // A new air terminal takes the project's collar (on a side, or on top).
                 ...(isAirTerminal && useSmartDrawingStore.getState().ductSettings.defaultCollarEntry === 'top' ? {
                     terminal: { ...((pendingPlacementEquipmentDefinition.defaultProperties?.terminal as Record<string, unknown> | undefined) ?? {}), spigotEntry: 'top' },

@@ -674,7 +674,8 @@ function planHvacRotation(scene: readonly HvacElement[], request: HvacMoveReques
   const turnElement = (element: HvacElement, angle: number): { element: HvacElement; valid: boolean; reason: string | null } => {
     const centre = centreOf(element);
     const nextCentre = pivot ? turnPoint(centre, pivot, angle) : centre;
-    let properties = element.properties;
+    // A unit turned by a person stays as they turned it: Auto route does not turn it again.
+    let properties = isDuctTerminalElement(element) ? element.properties : { ...element.properties, orientationSetBy: 'user' };
     if (isDuctTerminalElement(element) && !wholeTerminals.has(element.id)) {
       const side = spigotSideKeptFacing(element, angle, rotation.spigotSides?.[element.id]);
       const raw = (element.properties.terminal ?? {}) as Record<string, unknown>;

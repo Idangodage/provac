@@ -41,6 +41,7 @@ import {
 } from "../types/wall";
 import type { ManufacturerRuleProfile } from "../vrf/rules";
 
+import { AutoTurnNote } from "./canvas/hvac/AutoTurnNote";
 import { NetworkRiserUpgradeAction } from "./canvas/hvac/NetworkRiserUpgradeAction";
 import { CondensateDrainageSection } from "./canvas/hvac/condensate/CondensateDrainageSection";
 import {
@@ -1927,6 +1928,7 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         />
         <span className="text-xs text-slate-500">°</span>
       </PropertyRow>
+      <AutoTurnNote element={selectedEquipment} />
       <PropertyRow label="Elevation">
         <input
           type="number"
