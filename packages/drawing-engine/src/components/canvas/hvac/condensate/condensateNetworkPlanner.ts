@@ -429,7 +429,11 @@ const RISER_FOOT_OFFSETS: ReadonlyArray<readonly [number, number]> = (() => {
  * Highest centreline level a plumb riser at `foot` can reach from `baseZ`
  * before it comes within clearance of a service pipe (the unit's OWN
  * refrigerant included: a riser climbs straight through their level) or
- * null when the riser foot itself is already too close.
+ * null when the riser foot itself is already too close. With `source`, within
+ * the manufacturer's connection zone round its drain outlet the unit's own
+ * refrigerant stubs need only their physical outer radii, as its departure
+ * hose and the final validator take them (a cassette's pair can leave right
+ * beside its drain socket).
  */
 function clearRiserTop(
   foot: Point2D,
@@ -437,6 +441,7 @@ function clearRiserTop(
   topZ: number,
   radius: number,
   environment: CondensateEnvironment,
+  source?: IndoorDrainPort,
 ): number | null {
   let top = topZ;
   const start = { ...foot, z: baseZ };
@@ -454,8 +459,10 @@ function clearRiserTop(
     }
     top = Math.min(top, clear);
   }
+  const ownZone = source !== undefined && distance(foot, source.point) <= UNIT_CONNECTION_ZONE_MM;
   for (const service of environment.services) {
-    const required = service.radiusMm + radius + environment.settings.refrigerantClearanceMm;
+    const own = ownZone && service.service !== 'drain' && service.connectedUnitIds.includes(source!.unitId);
+    const required = service.radiusMm + radius + (own ? 0 : environment.settings.refrigerantClearanceMm);
     if (pointToSegmentDistance(foot, service.a, service.b) >= required) continue;
     const allowed = riserTopBelowPipe(foot, baseZ, top, service.a, service.b, required);
     if (allowed === null) return null;
@@ -522,19 +529,25 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
     // The foot is given (a micro-edit): `withRiserFoot` checks that one position.
     return { source, exposed, pumped, headTopZ: headLimit, stubEnd: gravityFoot, stubLength: distance(source.point, gravityFoot) };
   }
-  let best: { foot: Point2D; top: number } | null = null;
-  for (const [along, across] of RISER_FOOT_OFFSETS) {
-    if (Math.hypot(along, across) > settings.liftMaxHorizontalMm + 1e-6) continue;
-    const foot = footAt(along, across);
-    if (blocked?.(foot)) continue;
-    if (!departureIsClear(source, foot, environment, defaultRadius)) continue;
-    if (insideObstacle(foot, source.z, environment, defaultRadius)) continue;
-    const top = pumped ? clearRiserTop(foot, source.z, headLimit, defaultRadius, environment) : source.z;
-    if (top === null) continue;
-    // Prefer the nearest foot unless another one climbs meaningfully higher.
-    if (!best || top > best.top + 10) best = { foot, top };
-    if (!pumped) break;
-  }
+  // `zone`: the unit's own refrigerant stubs need only their physical radii within its connection zone — tried only
+  // where no foot keeps the full coordination gap from them (a pair leaving right beside the drain socket).
+  const search = (zone: boolean) => {
+    let best: { foot: Point2D; top: number } | null = null;
+    for (const [along, across] of RISER_FOOT_OFFSETS) {
+      if (Math.hypot(along, across) > settings.liftMaxHorizontalMm + 1e-6) continue;
+      const foot = footAt(along, across);
+      if (blocked?.(foot)) continue;
+      if (!departureIsClear(source, foot, environment, defaultRadius)) continue;
+      if (insideObstacle(foot, source.z, environment, defaultRadius)) continue;
+      const top = pumped ? clearRiserTop(foot, source.z, headLimit, defaultRadius, environment, zone ? source : undefined) : source.z;
+      if (top === null) continue;
+      // Prefer the nearest foot unless another one climbs meaningfully higher.
+      if (!best || top > best.top + 10) best = { foot, top };
+      if (!pumped) break;
+    }
+    return best;
+  };
+  const best = search(false) ?? (pumped ? search(true) : null);
   const chosen = best ?? { foot: gravityFoot, top: source.z };
   return {
     source,
@@ -562,7 +575,9 @@ function withRiserFoot(
     const snapped = { x: Math.round(foot.x * 2) / 2, y: Math.round(foot.y * 2) / 2 };
     const voidUpper = environment.envelope.voidTopMm - defaultRadius;
     const headLimit = Math.max(source.z, Math.min(source.z + source.pumpMaxLiftMm, voidUpper));
-    const top = plan.pumped ? clearRiserTop(snapped, source.z, headLimit, defaultRadius, environment) : null;
+    const top = plan.pumped
+      ? clearRiserTop(snapped, source.z, headLimit, defaultRadius, environment) ?? clearRiserTop(snapped, source.z, headLimit, defaultRadius, environment, source)
+      : null;
     const clear = departureIsClear(source, snapped, environment, defaultRadius)
       && (!plan.pumped || top !== null);
     next = {
