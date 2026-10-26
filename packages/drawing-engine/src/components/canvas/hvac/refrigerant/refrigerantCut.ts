@@ -19,7 +19,7 @@
  */
 import type { HvacElement, Point2D } from '../../../../types';
 import { authoredGuideForHalf, bypassesForStationRange, materialsForSubroute, readRoutePoints } from '../branchKitProposal';
-import { PIPE_DESIGN_PROPERTY } from '../pipeDesignModel';
+import { PIPE_DESIGN_PROPERTY, readPipeRouteNodes } from '../pipeDesignModel';
 import { isPipeRouteLocked } from '../pipeEditRetention';
 import { normalizePipeRouteNodes3d, splitPipeRoute3dAtPlanInterval, type PipeRouteNode3D } from '../pipeRoute3d';
 import {
@@ -30,7 +30,7 @@ import {
 } from '../refrigerantPipePairModel';
 
 import { readRefrigerantAccessories } from './refrigerantAccessories';
-import { refrigerantLineOf } from './refrigerantPieces';
+import { refrigerantLineOf, type RefrigerantPiece } from './refrigerantPieces';
 
 export interface PipePiecePick {
   runId: string;
@@ -47,6 +47,11 @@ export interface PipeGapRef {
   removed: PipeRouteNode3D[] | null;
   /** A lone end: the connection it had (a unit's port, a branch kit's). */
   was: RefrigerantPipeConnection | null;
+  /**
+   * The line had no 3D route of its own (its level came from its start port, its risers from its ports): its parts
+   * store one only to keep that level, and a line put back together leaves it to be derived again.
+   */
+  levelKept?: true;
 }
 
 export interface RefrigerantCutResult {
@@ -80,7 +85,18 @@ function readGap(value: unknown): PipeGapRef | null {
       ? { runId: partner.runId, end: partner.end } : null,
     removed: Array.isArray(raw.removed) ? normalizePipeRouteNodes3d(raw.removed) : null,
     was: raw.was && typeof raw.was === 'object' ? raw.was as RefrigerantPipeConnection : null,
+    ...(raw.levelKept === true ? { levelKept: true as const } : {}),
   };
+}
+
+/**
+ * A line's connection at one end as it is stored (else as resolved): what a cut keeps on a part and a reconnect
+ * puts back, so a line put back as it was stores exactly what it stored.
+ */
+export function storedPipeConnection(element: Pick<HvacElement, 'properties'>, end: 'start' | 'end', resolved: RefrigerantPipeConnection | null): RefrigerantPipeConnection | null {
+  if (!resolved) return null;
+  const raw = element.properties[end === 'start' ? 'startConnection' : 'endConnection'];
+  return raw && typeof raw === 'object' ? raw as RefrigerantPipeConnection : resolved;
 }
 
 /** The gaps a line's open ends remember. */
@@ -198,6 +214,10 @@ function cutLine(
   const route = readRoutePoints(element);
   const total = cumulative(route)[route.length - 1] ?? 0;
   const nodes = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
+  // A line with no 3D route of its own takes its level from its start port (its risers from its ports): a part that
+  // no longer starts at that port stores the route at that level, so it stays where it was.
+  const keepLevel = nodes.length < 2;
+  const traced = keepLevel ? readPipeRouteNodes(element) : nodes;
   const merged = merge(cuts.map((cut) => ({ ...cut, from: Math.max(0, cut.from), to: Math.min(total, cut.to) })));
   // The parts kept between the cuts (a riser's cut is one plan point, with its two levels).
   const kept: Array<{ from: number; to: number; zFrom?: number; zTo?: number; cutBefore: number; cutAfter: number }> = [];
@@ -220,25 +240,26 @@ function cutLine(
     const routePart = subRoute(route, range.from, range.to);
     const removedOf = (cutIndex: number) => {
       const cut = merged[cutIndex]!;
-      const stretch = slice3d(route, nodes, cut.from, cut.to, cut.zFrom, cut.zTo, total);
+      const stretch = slice3d(route, traced, cut.from, cut.to, cut.zFrom, cut.zTo, total);
       return stretch.length >= 2 ? stretch : null;
     };
     const atStart = range.from <= EPS;
     const atEnd = range.to >= total - EPS;
+    const levelKept = keepLevel ? { levelKept: true as const } : {};
     const startGap: PipeGapRef | null = atStart ? null : {
       id: gapIds[range.cutBefore]!, lineKind: spec.lineKind,
       partner: index > 0 ? { runId: ids[index - 1]!, end: 'end' } : null,
-      removed: removedOf(range.cutBefore), was: index > 0 ? null : spec.startConnection,
+      removed: removedOf(range.cutBefore), was: index > 0 ? null : storedPipeConnection(element, 'start', spec.startConnection), ...levelKept,
     };
     const endGap: PipeGapRef | null = atEnd ? null : {
       id: gapIds[range.cutAfter]!, lineKind: spec.lineKind,
       partner: index < kept.length - 1 ? { runId: ids[index + 1]!, end: 'start' } : null,
-      removed: removedOf(range.cutAfter), was: index < kept.length - 1 ? null : spec.endConnection,
+      removed: removedOf(range.cutAfter), was: index < kept.length - 1 ? null : storedPipeConnection(element, 'end', spec.endConnection), ...levelKept,
     };
     if (startGap) gaps += startGap.partner ? 0.5 : startGap.was ? 1 : 0;
     if (endGap) gaps += endGap.partner ? 0.5 : endGap.was ? 1 : 0;
-    const startConnection = atStart ? spec.startConnection : null;
-    const endConnection = atEnd ? spec.endConnection : null;
+    const startConnection = atStart ? storedPipeConnection(element, 'start', spec.startConnection) : null;
+    const endConnection = atEnd ? storedPipeConnection(element, 'end', spec.endConnection) : null;
     const bundleId = bundleOf(index);
     const built = buildRefrigerantPipeElement(routePart, {
       lineKind: spec.lineKind, label: element.label,
@@ -246,29 +267,32 @@ function cutLine(
       pipeDiameterMm: spec.pipeDiameterMm, outerDiameterMm: spec.outerDiameterMm, insulationThicknessMm: spec.insulationThicknessMm,
       ...(bundleId ? { bundleId } : {}), startConnection, endConnection, elevationMm: element.elevation,
     });
-    const nodesPart = slice3d(route, nodes, range.from, range.to, range.zFrom, range.zTo, total);
+    // (The part that still starts at the line's start port keeps its level without a route of its own.)
+    const nodesPart = keepLevel && atStart && spec.startConnection ? [] : slice3d(route, traced, range.from, range.to, range.zFrom, range.zTo, total);
     const properties: Record<string, unknown> = {
       ...baseProps,
       ...(built.properties ?? {}),
       ...(bundleId ? { bundleId } : {}),
-      bypasses: bypassesForStationRange(baseProps.bypasses, route, range.from, range.to),
     };
-    if (bundleId === undefined) delete properties.bundleId;
+    const bypasses = bypassesForStationRange(baseProps.bypasses, route, range.from, range.to);
+    if (bypasses.length) properties.bypasses = bypasses;
+    else properties.bypasses = undefined;
+    if (bundleId === undefined) properties.bundleId = undefined;
     // The design is derived again from this part's route (its legs and joints renamed; accessories re-attach by place).
-    delete properties[PIPE_DESIGN_PROPERTY];
+    properties[PIPE_DESIGN_PROPERTY] = undefined;
     if (Object.prototype.hasOwnProperty.call(baseProps, 'authoredCenterlineRoute')) {
       properties.authoredCenterlineRoute = authoredGuideForHalf(baseProps.authoredCenterlineRoute, routePart, atStart, atEnd);
     }
     if (nodesPart.length >= 2) properties.routeNodes3d = nodesPart;
-    else delete properties.routeNodes3d;
+    else properties.routeNodes3d = undefined;
     const own = accessories.filter((item) => {
       const station = stationOf(route, item.at);
       return station > range.from + EPS && station < range.to - EPS;
     });
     if (own.length) properties.inlineAccessories = own;
-    else delete properties.inlineAccessories;
+    else properties.inlineAccessories = undefined;
     if (startGap || endGap) properties[PIPE_GAP_PROPERTY] = { ...(startGap ? { start: startGap } : {}), ...(endGap ? { end: endGap } : {}) };
-    else delete properties[PIPE_GAP_PROPERTY];
+    else properties[PIPE_GAP_PROPERTY] = undefined;
     return { ...element, ...built, id: ids[index]!, properties } as HvacElement;
   });
   return { parts, gaps: Math.round(gaps), gapIds };
@@ -300,6 +324,197 @@ function cutsOf(element: HvacElement, scene: readonly HvacElement[], keys: reado
     else cuts.push({ from: Math.min(a, b), to: Math.max(a, b) });
   }
   return { cuts, accessories, pieces };
+}
+
+// ---- A pair's other line: the pieces alongside, cut at one cross-section. ----
+
+/** How far beside each other the two lines of a pair may run (centre to centre, mm). */
+const PAIR_REACH_MM = 350;
+const PARALLEL = 0.985;
+/** The straight a cut leaves past a bend drawn as an arc of chords (mm). */
+const ARC_SPIGOT_MM = 50;
+
+function planWay(a: Point2D, b: Point2D): Point2D | null {
+  const length = Math.hypot(b.x - a.x, b.y - a.y);
+  return length > 1e-6 ? { x: (b.x - a.x) / length, y: (b.y - a.y) / length } : null;
+}
+
+function way3(a: PipeRouteNode3D, b: PipeRouteNode3D): PipeRouteNode3D | null {
+  const length = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+  return length > 1e-6 ? { x: (b.x - a.x) / length, y: (b.y - a.y) / length, z: (b.z - a.z) / length } : null;
+}
+
+const dot3 = (a: PipeRouteNode3D | null, b: PipeRouteNode3D | null) => (a && b ? a.x * b.x + a.y * b.y + a.z * b.z : -1);
+
+/**
+ * The piece of a pair's other line that runs alongside `piece`: the straight parallel to it and beside it, the bend
+ * turning the same way near it, the riser beside it, the stub at the same port. Null when there is none (the lines
+ * part there).
+ */
+function alongsidePiece(piece: RefrigerantPiece, others: readonly RefrigerantPiece[]): RefrigerantPiece | null {
+  if (piece.kind === 'accessory' || piece.path.length < 2) return null;
+  if (piece.kind === 'port') return others.find((other) => other.key === piece.key) ?? null;
+  const first = piece.path[0]!;
+  const last = piece.path[piece.path.length - 1]!;
+  let best: { piece: RefrigerantPiece; score: number } | null = null;
+  for (const other of others) {
+    if (other.kind !== piece.kind || other.path.length < 2) continue;
+    const p = other.path[0]!;
+    const q = other.path[other.path.length - 1]!;
+    let score: number;
+    if (piece.kind === 'straight') {
+      const way = planWay(first, last);
+      const otherWay = planWay(p, q);
+      if (!way || !otherWay || way.x * otherWay.x + way.y * otherWay.y < PARALLEL) continue;
+      const side = Math.abs(((p.x + q.x) / 2 - first.x) * -way.y + ((p.y + q.y) / 2 - first.y) * way.x);
+      const length = Math.hypot(last.x - first.x, last.y - first.y);
+      const t0 = (p.x - first.x) * way.x + (p.y - first.y) * way.y;
+      const t1 = (q.x - first.x) * way.x + (q.y - first.y) * way.y;
+      const overlap = Math.min(length, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1));
+      if (side > PAIR_REACH_MM || overlap <= EPS) continue;
+      score = side - overlap * 1e-3;
+    } else if (piece.kind === 'riser') {
+      score = Math.hypot(p.x - first.x, p.y - first.y);
+      if (score > PAIR_REACH_MM || Math.sign(q.z - p.z) !== Math.sign(last.z - first.z)) continue;
+    } else {
+      const n = piece.path.length;
+      const m = other.path.length;
+      if (dot3(way3(first, piece.path[1]!), way3(p, other.path[1]!)) < PARALLEL
+        || dot3(way3(piece.path[n - 2]!, last), way3(other.path[m - 2]!, q)) < PARALLEL) continue;
+      const mid = piece.path[Math.floor(n / 2)]!;
+      const otherMid = other.path[Math.floor(m / 2)]!;
+      score = Math.hypot(mid.x - otherMid.x, mid.y - otherMid.y, mid.z - otherMid.z);
+      if (score > PAIR_REACH_MM * 1.5) continue;
+    }
+    if (!best || score < best.score) best = { piece: other, score };
+  }
+  return best?.piece ?? null;
+}
+
+/**
+ * A line's plan route and its straights (and port stubs): their ends as stations on the route, their way, and the
+ * stretch of the route that is that straight (`cleanFrom`..`cleanTo`). A route drawn by an older pipe tool keeps its
+ * bends as many short chords of a wider arc than the bend its pieces show: there a straight's drawn part is shorter.
+ */
+interface LineGeometry {
+  route: Point2D[];
+  total: number;
+  straights: Array<{ from: number; to: number; cleanFrom: number; cleanTo: number; a: Point2D; b: Point2D; way: Point2D }>;
+}
+
+function geometryOf(element: HvacElement, pieces: readonly RefrigerantPiece[]): LineGeometry {
+  const route = readRoutePoints(element);
+  const at = cumulative(route);
+  const straights = pieces.flatMap((piece) => {
+    if ((piece.kind !== 'straight' && piece.kind !== 'port') || piece.path.length < 2) return [];
+    const first = piece.path[0]!;
+    const last = piece.path[piece.path.length - 1]!;
+    const stationA = stationOf(route, first);
+    const stationB = stationOf(route, last);
+    const [a, b] = stationA <= stationB ? [first, last] : [last, first];
+    const way = planWay(a, b);
+    if (!way) return [];
+    const from = Math.min(stationA, stationB);
+    const to = Math.max(stationA, stationB);
+    // The route's own segments along this straight, within its range.
+    const onLine = (point: Point2D) => Math.abs((point.x - a.x) * -way.y + (point.y - a.y) * way.x) <= 0.75;
+    let cleanFrom = Infinity;
+    let cleanTo = -Infinity;
+    for (let index = 1; index < route.length; index += 1) {
+      const s0 = at[index - 1]!;
+      const s1 = at[index]!;
+      if (s1 - s0 < 1e-6 || s1 < from - EPS || s0 > to + EPS) continue;
+      const segment = planWay(route[index - 1]!, route[index]!);
+      if (!segment || segment.x * way.x + segment.y * way.y < 0.9999 || !onLine(route[index - 1]!) || !onLine(route[index]!)) continue;
+      cleanFrom = Math.min(cleanFrom, Math.max(from, s0));
+      cleanTo = Math.max(cleanTo, Math.min(to, s1));
+    }
+    if (!(cleanFrom < cleanTo)) { cleanFrom = from; cleanTo = to; }
+    // Past a drawn arc a cut leaves a short spigot of the straight (the part then ends straight, as cut on site).
+    const spigot = Math.min(ARC_SPIGOT_MM, (cleanTo - cleanFrom) / 3);
+    if (cleanFrom > from + EPS) cleanFrom += spigot;
+    if (cleanTo < to - EPS) cleanTo -= spigot;
+    return [{ from, to, cleanFrom, cleanTo, a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y }, way }];
+  });
+  return { route, total: at[route.length - 1] ?? 0, straights };
+}
+
+/** The straight of `line` at `station` running on after it (`after`) or coming to it. */
+function straightAt(line: LineGeometry, station: number, side: 'after' | 'before') {
+  return line.straights.find((range) => range.from - EPS <= station && station <= range.to + EPS
+    && (side === 'after' ? range.to - station > EPS : station - range.from > EPS)) ?? null;
+}
+
+/**
+ * A cut kept to the route as it is drawn: a straight deleted goes where the route is that straight (its bends'
+ * chords stay with the bends), a bend deleted takes its whole drawn arc (to where its straights are drawn straight).
+ */
+function cleanCut(line: LineGeometry, cut: Cut): Cut {
+  if (cut.to - cut.from <= EPS) return cut;
+  let { from, to } = cut;
+  const deletedFirst = straightAt(line, from, 'after');
+  const keptBefore = straightAt(line, from, 'before');
+  if (deletedFirst && Math.abs(deletedFirst.from - from) <= EPS) from = Math.max(from, deletedFirst.cleanFrom);
+  else if (keptBefore && Math.abs(keptBefore.to - from) <= EPS) from = Math.min(from, keptBefore.cleanTo);
+  const deletedLast = straightAt(line, to, 'before');
+  const keptAfter = straightAt(line, to, 'after');
+  if (deletedLast && Math.abs(deletedLast.to - to) <= EPS) to = Math.min(to, deletedLast.cleanTo);
+  else if (keptAfter && Math.abs(keptAfter.from - to) <= EPS) to = Math.max(to, keptAfter.cleanFrom);
+  return to - from > EPS ? { ...cut, from, to } : cut;
+}
+
+/** The station on `line`'s route of `point` on the straight `on` (its foot there), when the route runs through it. */
+function stationOnStraight(line: LineGeometry, on: { a: Point2D; way: Point2D }, point: Point2D): number | null {
+  const t = (point.x - on.a.x) * on.way.x + (point.y - on.a.y) * on.way.y;
+  const foot = { x: on.a.x + on.way.x * t, y: on.a.y + on.way.y * t };
+  const station = stationOf(line.route, foot);
+  const there = pointAt(line.route, station);
+  return Math.hypot(there.x - foot.x, there.y - foot.y) <= 1 ? station : null;
+}
+
+/**
+ * A pair's two cuts brought to one cross-section. Where the two lines' open ends would be staggered along the way (a
+ * bend's inner line turns sooner than its outer one, or one line's straight is drawn shorter), the cut of the line
+ * that falls short moves on into its deleted straight (it keeps a short stub), else, where a bend went, the cut of the
+ * one that runs on moves back along its kept straight (a little more of it goes): the two ends face the gap side by
+ * side, as a fitter cuts a pair, and the parts are a pair again for the pipe tool and the reconnect.
+ */
+function abreast(own: LineGeometry, partner: LineGeometry, ownCuts: readonly Cut[], partnerCuts: readonly Cut[]): [Cut[], Cut[]] {
+  const mine = merge(ownCuts.map((cut) => cleanCut(own, cut)));
+  const theirs = merge(partnerCuts.map((cut) => cleanCut(partner, cut)));
+  if (mine.length !== theirs.length) return [mine, theirs];
+  type Straight = LineGeometry['straights'][number];
+  mine.forEach((cut, index) => {
+    const other = theirs[index]!;
+    // (A riser's cut is one plan point: nothing to bring abreast.)
+    if (cut.to - cut.from <= EPS || other.to - other.from <= EPS) return;
+    const sides = [{ line: own, cut }, { line: partner, cut: other }] as const;
+    /** Both cuts' `end` to the cross-section through the farther (or nearer) of the two along the straights. */
+    const level = (end: 'from' | 'to', straights: Array<Straight | null>, pick: 'far' | 'near') => {
+      const [first, second] = straights;
+      if (!first || !second || first.way.x * second.way.x + first.way.y * second.way.y < PARALLEL) return false;
+      const points = sides.map((side) => pointAt(side.line.route, side.cut[end]));
+      const along = points.map((point) => point.x * first.way.x + point.y * first.way.y);
+      if (Math.abs(along[0]! - along[1]!) <= 1) return true;
+      const target = points[(pick === 'far') === (along[0]! > along[1]!) ? 0 : 1]!;
+      const stations = sides.map((side, at) => stationOnStraight(side.line, straights[at]!, target));
+      const valid = stations.every((station, at) => {
+        const side = sides[at]!;
+        return station !== null && (end === 'from' ? station > EPS && station < side.cut.to - 1 : station > side.cut.from + 1 && station < side.line.total - EPS);
+      });
+      if (valid) sides.forEach((side, at) => { side.cut[end] = stations[at]!; });
+      return valid;
+    };
+    // The ends of the parts before the cut: a straight deleted on both, else a bend deleted after their straights.
+    if (cut.from > EPS && other.from > EPS && !level('from', sides.map((side) => straightAt(side.line, side.cut.from, 'after')), 'far')) {
+      level('from', sides.map((side) => straightAt(side.line, side.cut.from, 'before')), 'near');
+    }
+    // The starts of the parts after it.
+    if (cut.to < own.total - EPS && other.to < partner.total - EPS && !level('to', sides.map((side) => straightAt(side.line, side.cut.to, 'before')), 'near')) {
+      level('to', sides.map((side) => straightAt(side.line, side.cut.to, 'after')), 'far');
+    }
+  });
+  return [mine, theirs];
 }
 
 /** The other line of a coordinated pair: same bundle, the other service. */
@@ -341,19 +556,37 @@ export function cutRefrigerantPieces(
     const own = cutsOf(element, scene, keys);
     result.pieces += own.pieces;
     const partner = pairs ? partnerOf(element, scene) : null;
-    const lines: Array<{ element: HvacElement; cuts: Cut[]; accessories: Set<string> }> = [{ element, cuts: own.cuts, accessories: own.accessories }];
+    const ownPieces = refrigerantLineOf(element, scene)?.pieces ?? [];
+    const ownGeometry = geometryOf(element, ownPieces);
+    const lines: Array<{ element: HvacElement; cuts: Cut[]; accessories: Set<string> }> = [
+      { element, cuts: own.cuts.map((cut) => cleanCut(ownGeometry, cut)), accessories: own.accessories },
+    ];
     if (partner && !isPipeRouteLocked(partner)) {
-      // The partner loses the stretch alongside (each cut's ends projected onto it), and its own picks.
-      const route = readRoutePoints(element);
-      const partnerRoute = readRoutePoints(partner);
-      const projected = own.cuts.map((cut): Cut => {
-        const a = stationOf(partnerRoute, pointAt(route, cut.from));
-        const b = stationOf(partnerRoute, pointAt(route, cut.to));
-        return cut.to - cut.from <= EPS ? { from: a, to: a, zFrom: cut.zFrom, zTo: cut.zTo } : { from: Math.min(a, b), to: Math.max(a, b) };
-      });
+      // The partner loses the pieces alongside the ones picked (each line keeps its own bends), the two cut at one
+      // cross-section; where a piece has none alongside (the lines part there), the stretch between each cut's ends
+      // projected onto it.
+      const partnerPieces = refrigerantLineOf(partner, scene)?.pieces ?? [];
+      const partnerGeometry = geometryOf(partner, partnerPieces);
+      const picked = [...new Set(keys)].map((key) => ownPieces.find((piece) => piece.key === key))
+        .filter((piece): piece is RefrigerantPiece => Boolean(piece && piece.kind !== 'accessory' && piece.path.length >= 2));
+      const matching = picked.map((piece) => alongsidePiece(piece, partnerPieces));
+      let alongside: Cut[];
+      if (matching.every((piece) => piece !== null)) {
+        const [ownCuts, partnerCuts] = abreast(ownGeometry, partnerGeometry, own.cuts, cutsOf(partner, scene, matching.map((piece) => piece!.key)).cuts);
+        lines[0]!.cuts = ownCuts;
+        alongside = partnerCuts;
+      } else {
+        const route = readRoutePoints(element);
+        const partnerRoute = readRoutePoints(partner);
+        alongside = own.cuts.map((cut): Cut => {
+          const a = stationOf(partnerRoute, pointAt(route, cut.from));
+          const b = stationOf(partnerRoute, pointAt(route, cut.to));
+          return cut.to - cut.from <= EPS ? { from: a, to: a, zFrom: cut.zFrom, zTo: cut.zTo } : { from: Math.min(a, b), to: Math.max(a, b) };
+        });
+      }
       const extra = cutsOf(partner, scene, byLine.get(partner.id) ?? []);
       result.pieces += extra.pieces;
-      lines.push({ element: partner, cuts: [...projected, ...extra.cuts], accessories: extra.accessories });
+      lines.push({ element: partner, cuts: [...alongside, ...extra.cuts.map((cut) => cleanCut(partnerGeometry, cut))], accessories: extra.accessories });
       done.add(partner.id);
     }
     // The two lines' parts pair up again: part k of each takes one bundle.
@@ -367,7 +600,7 @@ export function cutRefrigerantPieces(
         const accessories = readRefrigerantAccessories(line.element).filter((item) => !line.accessories.has(item.id));
         const properties = { ...line.element.properties };
         if (accessories.length) properties.inlineAccessories = accessories;
-        else delete properties.inlineAccessories;
+        else properties.inlineAccessories = undefined;
         result.updates.push({ ...line.element, properties });
         continue;
       }
@@ -408,18 +641,25 @@ export function refrigerantOpenEnds(scene: readonly HvacElement[]): PipeOpenEndR
     const gaps = readPipeGaps(element);
     if (!gaps.start && !gaps.end) continue;
     const spec = resolveRefrigerantPipeSpec(element.properties);
-    const nodes = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
+    const nodes = readPipeRouteNodes(element);
     const route = readRoutePoints(element);
-    const z = element.elevation + spec.outerDiameterMm / 2;
-    const at = (index: number): PipeRouteNode3D => nodes.length >= 2 ? nodes[index < 0 ? nodes.length + index : index]! : { ...route[index < 0 ? route.length + index : index]!, z };
+    const at = (index: number): PipeRouteNode3D => nodes[index < 0 ? nodes.length + index : index]!;
     const direction = (a: Point2D, b: Point2D) => {
       const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
       return { x: (b.x - a.x) / length, y: (b.y - a.y) / length };
     };
     if (route.length < 2) continue;
+    // The way it faces as its pieces show it (its first or last leg): a route drawn as arc chords ends on a chord.
+    const legs = refrigerantLineOf(element, scene)?.design.legs ?? [];
+    const legWay = (leg: (typeof legs)[number] | undefined, sign: 1 | -1) => {
+      const length = leg ? Math.hypot(leg.direction.x, leg.direction.y) : 0;
+      return leg && length > 0.5 ? { x: (sign * leg.direction.x) / length, y: (sign * leg.direction.y) / length } : null;
+    };
     const common = { runId: element.id, lineKind: spec.lineKind, bundleId: spec.bundleId ?? null, outerDiameterMm: spec.outerDiameterMm };
-    if (gaps.start) out.push({ ...common, end: 'start', point: at(0), outward: direction(route[1]!, route[0]!), gap: gaps.start });
-    if (gaps.end) out.push({ ...common, end: 'end', point: at(-1), outward: direction(route[route.length - 2]!, route[route.length - 1]!), gap: gaps.end });
+    if (gaps.start) out.push({ ...common, end: 'start', point: at(0), outward: legWay(legs[0], -1) ?? direction(route[1]!, route[0]!), gap: gaps.start });
+    if (gaps.end) {
+      out.push({ ...common, end: 'end', point: at(-1), outward: legWay(legs[legs.length - 1], 1) ?? direction(route[route.length - 2]!, route[route.length - 1]!), gap: gaps.end });
+    }
   }
   return out;
 }

@@ -678,7 +678,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const target = gapWayRef.current;
     if (!target) return;
     const { proposals, index } = useDuctGapStore.getState();
-    const bridge = proposals?.candidates[index]?.bridge ?? [];
+    // (A refrigerant line's way is drawn by the pipe overlay, over the pipes.)
+    const bridge = proposals?.domain === 'duct' ? proposals.candidates[index]?.bridge ?? [] : [];
     const plan = bridge.filter((point, at) => at === 0 || Math.hypot(point.x - bridge[at - 1]!.x, point.y - bridge[at - 1]!.y) > 0.5);
     const markup = plan.length >= 2
       ? `<path d="M${plan.map((point) => `${point.x} ${point.y}`).join(' L')}" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`

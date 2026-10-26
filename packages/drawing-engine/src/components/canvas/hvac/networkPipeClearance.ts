@@ -795,9 +795,11 @@ function findNetworkPipeClashes(scene: HvacElement[], proposed: HvacElement[], r
       const lanes = baselineLanes(scene);
       baseline = { lanes, byKey: new Map(lanes.map(previous => [previous.key, previous])) };
     }
+    // Its own old lane, and the removed lanes of its service it may have taken in (a split's replacement retains
+    // its host's portion; a line rejoined across a gap retains the parts it absorbs).
     const old = baseline.byKey.get(lane.key);
-    const previous = old ? [old] : baseline.lanes.filter(prior => removed.has(prior.id)
-      && prior.service === lane.service && overlaps(prior.bounds, lane.bounds));
+    const previous = [...(old ? [old] : []), ...baseline.lanes.filter(prior => removed.has(prior.id) && prior.key !== lane.key
+      && prior.service === lane.service && overlaps(prior.bounds, lane.bounds))];
     previousByKey.set(lane.key, previous);
     return previous;
   };

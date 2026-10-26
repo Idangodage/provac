@@ -78,6 +78,19 @@ describe('new physical pipe-body interference', () => {
     expect(findNewNetworkPipeClashes([host, other], [before, after], ['host'])).toEqual([]);
   });
 
+  it('recognizes the parts a line rejoined across a gap takes in: their contacts are not new, the stretch put back is checked', () => {
+    // The line cut into two: its first part keeps its id, the second part already crossed another pipe at x 750.
+    const first = pipe('host', [node(0), node(450)]);
+    const second = pipe('host-part', [node(600), node(1000)]);
+    const other = pipe('other', [node(750, -500), node(750, 500)]);
+    const rejoined = pipe('host', [node(0), node(1000)]);
+    expect(findNewNetworkPipeClashes([first, second, other], [rejoined], ['host-part'])).toEqual([]);
+    // A pipe that now crosses the gap is a new clash for the stretch put back.
+    const inGap = pipe('in-gap', [node(520, -500), node(520, 500)]);
+    expect(findNewNetworkPipeClashes([first, second, other, inGap], [rejoined], ['host-part'])).toEqual([
+      expect.objectContaining({ elementIds: ['host', 'in-gap'] })]);
+  });
+
   it('does not hide an extended parallel overlap behind an existing nearest contact', () => {
     const original = pipe('a', [node(0), node(500)]);
     const other = pipe('b', [node(100, 20), node(1000, 20)]);

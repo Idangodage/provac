@@ -27,6 +27,7 @@ import {
   type PipePlacementPoint,
 } from '../hvac/pipeRoute3d';
 import { getActivePipeRoutingSettings, type PipeRoutingSettings } from '../hvac/pipeRoutingSettings';
+import { closeDrawnRefrigerantGaps } from '../hvac/refrigerant/refrigerantGapProposal';
 import {
   buildRefrigerantPipeElements,
   buildRefrigerantPipeExtensionMerge,
@@ -1035,14 +1036,23 @@ export function useRefrigerantPipeTool(
         routePoints.push(candidateFinalPoint);
       }
     }
-    const dedupedPoints = routePoints.filter((point, index) => {
+    const drawnPoints = routePoints.filter((point, index) => {
       const previous = routePoints[index - 1];
       return !previous || distance(previous, point) > 0.01;
     });
-    if (dedupedPoints.length < 2) {
+    if (drawnPoints.length < 2) {
       setProcessingStatus('Pipe route needs at least a start point and an end point.', false);
       return false;
     }
+    // Drawn on the plan from one open pipe end to another (a gap closed by hand), with no level change of its own:
+    // its levels are the lines', so it is a plan route, merged into the line it continues (and joined to the other).
+    const pipeEndToPipeEnd = [startBundleRef.current, endBundleRef.current]
+      .every((bundle) => bundle?.connectionKind === 'field-pipe' && !bundle.terminalRole);
+    const ownLevelChange = drawnPoints.some((point, index) => index > 0
+      && Math.hypot(point.x - drawnPoints[index - 1]!.x, point.y - drawnPoints[index - 1]!.y) < 0.01);
+    const dedupedPoints: PipePlacementPoint[] = planRouting && pipeEndToPipeEnd && !ownLevelChange
+      ? drawnPoints.map(({ x, y }) => ({ x, y }))
+      : drawnPoints;
 
     const rawNextElements = buildRefrigerantPipeElements(dedupedPoints, {
       bundleId: createRefrigerantBundleId(),
@@ -1133,6 +1143,29 @@ export function useRefrigerantPipeTool(
         startBundleRef.current,
         nextElements,
       );
+      // Drawn on from (or onto) an open end left by deleted pieces: the gap is
+      // closed or joined across (one line per service again), one undo.
+      const closing = mergeUpdates
+        ? closeDrawnRefrigerantGaps(hvacElements, mergeUpdates.map((update) => ({
+          ...hvacElements.find((element) => element.id === update.id)!,
+          position: update.position,
+          width: update.width,
+          depth: update.depth,
+          properties: update.properties,
+        })))
+        : null;
+      if (closing) {
+        commitHvacElementCommand(closing.joined ? 'Join refrigerant lines' : 'Extend refrigerant pipe', {
+          updates: closing.updates.map((element) => ({ id: element.id, updates: element })),
+          removeIds: closing.removeIds,
+          selectedIds: closing.updates.map((element) => element.id),
+        });
+        setProcessingStatus(closing.joined > 1
+          ? 'Joined: gas + liquid, each one line again (the gap closed).'
+          : closing.joined ? 'Joined: one line again (the gap closed).' : 'Pipe extended — continuous run', false);
+        resetDrawing();
+        return true;
+      }
       if (mergeUpdates) {
         mergeUpdates.forEach((update) => {
           updateHvacElement(
@@ -1208,10 +1241,12 @@ export function useRefrigerantPipeTool(
     return true;
   }, [
     addHvacElements,
+    commitHvacElementCommand,
     hvacElements,
     logDebug,
     pipeLineMode,
     pipeMaterialMode,
+    planRouting,
     resetDrawing,
     saveToHistory,
     setProcessingStatus,

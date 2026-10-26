@@ -5867,6 +5867,16 @@ export function buildRefrigerantPipeExtensionMerge(
       routePoints: mergedRoute,
       segmentMaterials: mergedMaterials,
     };
+    // A host that stores its 3D route gets the extension in it too, at the
+    // level of the end it continues, so plan and 3D cannot diverge.
+    const hostNodes = normalizePipeRouteNodes3d(host.properties?.routeNodes3d);
+    if (hostNodes.length >= 2) {
+      const z = hostEnd === 'end' ? hostNodes[hostNodes.length - 1]!.z : hostNodes[0]!.z;
+      const extensionNodes = extensionTail.map((point) => ({ x: point.x, y: point.y, z }));
+      mergedProperties.routeNodes3d = hostEnd === 'end'
+        ? [...hostNodes, ...extensionNodes]
+        : [...[...extensionNodes].reverse(), ...hostNodes];
+    }
     // The extended side stops being an open end; whatever the extension's far
     // end welded onto (another pipe end / port) becomes the merged terminal.
     if (hostEnd === 'end') {

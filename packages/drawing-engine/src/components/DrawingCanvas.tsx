@@ -114,8 +114,7 @@ import { ductOpenEnds } from "./canvas/hvac/duct/ductCut";
 import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
 import { commitDuctRunEdit } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
-import { dismissGap, useDuctGapStore } from "./canvas/hvac/duct/ductGapController";
-import { proposeDuctGap } from "./canvas/hvac/duct/ductGapProposal";
+import { dismissGap, proposeGap, useDuctGapStore } from "./canvas/hvac/duct/ductGapController";
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
@@ -147,10 +146,12 @@ import {
 import { routingSettingsFromRuleProfile } from "./canvas/hvac/pipeRoutingSettings";
 import { resolvePipeRuleContext } from "./canvas/hvac/pipeRuleModel";
 import { createRefrigerantSegmentProvider } from "./canvas/hvac/refrigerant/RefrigerantSegmentCard";
+import { refrigerantOpenEnds } from "./canvas/hvac/refrigerant/refrigerantCut";
 import { refrigerantKitOf } from "./canvas/hvac/refrigerant/refrigerantKits";
 import { pieceMidpoint, refrigerantLineOf } from "./canvas/hvac/refrigerant/refrigerantPieces";
 import {
   buildRefrigerantPipeVisual,
+  findNearestRefrigerantPipeExtensionTarget,
   getRefrigerantPipeBundleSnapTargets,
   isRefrigerantPipeElementType,
   type RefrigerantPipeBundleConnection,
@@ -1162,13 +1163,20 @@ export function DrawingCanvas({
       deletePicks: () => deletePickedPieces(),
       /** Every duct open end: where, which way it faces, and the gap it remembers. */
       getOpenEnds: () => ductOpenEnds(useSmartDrawingStore.getState().hvacElements),
-      /** The ways to reconnect a gap, best first (what the chip offers). */
+      /** Every refrigerant line's open end that remembers a gap. */
+      getPipeOpenEnds: () => refrigerantOpenEnds(useSmartDrawingStore.getState().hvacElements),
+      /** What the pipe tool would continue from a plan point: a pair's two ends, or one line's (within `reachMm`). */
+      getPipeExtensionTarget: (point: Point2D, reachMm = 5) => {
+        const target = findNearestRefrigerantPipeExtensionTarget(useSmartDrawingStore.getState().hvacElements, point, reachMm);
+        return target ? { lineMode: target.lineMode, point: target.bundle.point, gasPoint: target.bundle.gasPoint, liquidPoint: target.bundle.liquidPoint, connectionKind: target.bundle.connectionKind } : null;
+      },
+      /** The ways to reconnect a gap (a duct's or a refrigerant line's), best first (what the chip offers). */
       getGapProposal: (gapId: string) => {
         const state = useSmartDrawingStore.getState();
-        const result = proposeDuctGap(state.hvacElements, gapId, state.ductSettings);
+        const result = proposeGap(state.hvacElements, gapId, state.ductSettings);
         return {
-          reason: result.reason, ends: result.ends,
-          candidates: result.candidates.map(({ key, label, lengthMm, elbows, bridge, updates, removeIds }) => ({ key, label, lengthMm, elbows, bridge, updateIds: updates.map((element) => element.id), removeIds })),
+          domain: result.domain, reason: result.reason,
+          candidates: result.candidates.map(({ key, label, lengthMm, elbows, bridge, bridges, updates, removeIds }) => ({ key, label, lengthMm, elbows, bridge, bridges: bridges ?? [bridge], updateIds: updates.map((element) => element.id), removeIds })),
         };
       },
       /** The gap the chip is showing, and the way shown. */
@@ -1955,7 +1963,7 @@ export function DrawingCanvas({
     setSelectedIds,
     setProcessingStatus,
   });
-  /** A gap's [Draw]: the duct tool, drawing on from the gap's first open end (finish on the other part's open start). */
+  /** A duct gap's [Draw]: the duct tool, drawing on from the gap's first open end (finish on the other part's open start). */
   const drawDuctGap = useCallback((gapId: string) => {
     const ends = ductOpenEnds(useSmartDrawingStore.getState().hvacElements).filter((end) => end.gap?.id === gapId);
     const from = ends.find((end) => end.end === "end") ?? ends[0];
@@ -1989,8 +1997,9 @@ export function DrawingCanvas({
   // runs it adds as well (a drain's network solved again).
   const segmentCardPreview = useSegmentUiStore((state) => state.preview);
   const ductSegmentPreview = useMemo(() => (segmentCardPreview ? [...segmentCardPreview.updates, ...(segmentCardPreview.add ?? [])] : null), [segmentCardPreview]);
-  // In plan, a refrigerant card's option is drawn by the pipe overlay in place of the lines it changes.
-  const refrigerantCardPreview = useSegmentUiStore((state) => (state.preview && domainOf(state.preview) === "refrigerant" ? state.preview.updates : null));
+  // In plan, a refrigerant card's option (or a pipe gap's reconnection) is drawn by the pipe overlay in place of the
+  // lines it changes, without the ones it removes.
+  const refrigerantCardPreview = useSegmentUiStore((state) => (state.preview && domainOf(state.preview) === "refrigerant" ? state.preview : null));
   const autoRoutePreviewElements = useMemo(() => {
     if (!condensatePreview && !refrigerantPreview && !condensateEditPreview && !ductRoutePreview && !autoDuctTurned && !ductSegmentPreview && !terminalProposal) return null;
     const removed = new Set([
@@ -2034,8 +2043,10 @@ export function DrawingCanvas({
     // The plan pipe studio paints the refrigerant part of an Auto route preview.
     const base = refrigerantPreview ? applyRefrigerantProposal(hvacElements, refrigerantPreview) : hvacElements;
     if (!pipeEditPreview && !refrigerantCardPreview) return base;
-    const replacements = new Map([...(refrigerantCardPreview ?? []), ...(pipeEditPreview ?? [])].map(element => [element.id, element]));
-    return base.map(element => replacements.get(element.id) ?? element);
+    const replacements = new Map([...(refrigerantCardPreview?.updates ?? []), ...(pipeEditPreview ?? [])].map(element => [element.id, element]));
+    const removed = new Set(refrigerantCardPreview?.removeIds ?? []);
+    const shown = base.filter(element => !removed.has(element.id)).map(element => replacements.get(element.id) ?? element);
+    return refrigerantCardPreview?.add?.length ? [...shown, ...refrigerantCardPreview.add] : shown;
   }, [hvacElements, pipeEditPreview, refrigerantPreview, refrigerantCardPreview]);
   const handleHybridControllerReady = useCallback(
     (controller: HybridViewportController | null) => {
@@ -2398,6 +2409,26 @@ export function DrawingCanvas({
     },
     [setTool, beginRefrigerantRouteFromBundle],
   );
+
+  /**
+   * A gap's [Draw]: the gap's own tool from its first open end. A refrigerant gap continues as the open end itself is
+   * (a pair's two ends as a pair, a lone line as that line); finishing on the other part's open end joins them.
+   */
+  const drawGap = useCallback((gapId: string, domain: "duct" | "refrigerant") => {
+    if (domain === "duct") {
+      drawDuctGap(gapId);
+      return;
+    }
+    const scene = useSmartDrawingStore.getState().hvacElements;
+    const ends = refrigerantOpenEnds(scene).filter((end) => end.gap.id === gapId);
+    const from = ends.find((end) => end.end === "end" && end.lineKind === "gas") ?? ends.find((end) => end.end === "end") ?? ends[0];
+    const target = from ? findNearestRefrigerantPipeExtensionTarget(scene, from.point, 5) : null;
+    if (!from || !target) return;
+    dismissGap();
+    handleBeginExtendRoute(target.bundle, target.lineMode);
+    setProcessingStatus(`Drawing on from the ${target.lineMode === "pair" ? "pair's open ends" : `${target.lineMode} line's open end`}: `
+      + "finish on the other part's open end to join them.", false);
+  }, [drawDuctGap, handleBeginExtendRoute, setProcessingStatus]);
 
   // Arrow keys (Alt + Up / Down, or Up / Down in Front and Side: up and down) move the selection through the one
   // move model every input shares: rules hold for the whole selection, what is attached follows, one undo.
@@ -3962,7 +3993,7 @@ export function DrawingCanvas({
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />
         <SegmentCardLayer enabled={tool === "select"} hvacElements={hvacElements} providers={segmentProviders}
           selectedIds={selectedIds} resolveAnchor={resolveSegmentAnchor} dragging={Boolean(movingIds)} />
-        <DuctGapChip enabled={tool === "select" && !movingIds} toClient={gapToClient} hostRef={hostRef} onDraw={drawDuctGap} />
+        <DuctGapChip enabled={tool === "select" && !movingIds} toClient={gapToClient} hostRef={hostRef} onDraw={drawGap} />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
           showInteriorNodeHandles={projectionViewOnly} cardView={projectionViewOnly ? "3d" : "2d"}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}

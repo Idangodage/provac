@@ -68,6 +68,23 @@ describe('buildRefrigerantPipeExtensionMerge', () => {
     ]);
   });
 
+  it('carries a host\'s stored 3D route along the extension, at the level of the end continued', () => {
+    const built = buildRefrigerantPipeElements([p(0, 0), p(1000, 0)], { lineMode: 'gas' });
+    const stored = [{ x: 0, y: 0, z: 2650 }, { x: 1000, y: 0, z: 2650 }];
+    const host = withIds(built.map((element) => ({ ...element, properties: { ...element.properties, routeNodes3d: stored } })), 'g');
+    for (const [from, to, expected] of [
+      [p(1000, 0), p(1000, 600), [{ x: 0, y: 0, z: 2650 }, { x: 1000, y: 0, z: 2650 }, { x: 1000, y: 600, z: 2650 }]],
+      [p(0, 0), p(-500, 0), [{ x: -500, y: 0, z: 2650 }, { x: 0, y: 0, z: 2650 }, { x: 1000, y: 0, z: 2650 }]],
+    ] as const) {
+      const target = findNearestRefrigerantPipeExtensionTarget(host, from, 50)!;
+      const extension = buildRefrigerantPipeElements([from, to], { lineMode: 'gas', startBundleConnection: target.bundle });
+      const updates = buildRefrigerantPipeExtensionMerge(host, target.bundle, extension)!;
+      // The plan route and the stored 3D route still describe the same line.
+      expect(updates[0]!.properties.routeNodes3d).toEqual(expected);
+      expect(routeOf(updates[0]!)).toEqual(expected.map(({ x, y }) => p(x, y)));
+    }
+  });
+
   it('merges a pair extension into BOTH host lines', () => {
     const host = withIds(
       buildRefrigerantPipeElements([p(0, 0), p(1000, 0)], { bundleId: 'b1' }),

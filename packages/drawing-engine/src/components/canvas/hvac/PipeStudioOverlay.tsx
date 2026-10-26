@@ -56,6 +56,7 @@ import {
 import { branchKitSpriteTransform } from './branchKitSpriteTransform';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import type { CopperSocketElbowPlacement } from './copperSocketElbowRoute';
+import { useDuctGapStore } from './duct/ductGapController';
 import { openEndsMarkup, segmentFocusMarkup } from './duct/ductOverlayMarkup';
 import type { ScreenRect } from './duct/popoverPlacement';
 import type { PipeSnapIndicator } from './pipeDraftingPolicy';
@@ -568,6 +569,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const gRef = useRef<SVGGElement | null>(null);
   /** The refrigerant piece under the pointer and the one whose card is pinned, outlined (painted from the segment store). */
   const focusRef = useRef<SVGGElement | null>(null);
+  const gapWayRef = useRef<SVGGElement | null>(null);
   const sceneRef = useRef(hvacElements);
   sceneRef.current = hvacElements;
   const kRef = useRef(1);
@@ -1122,9 +1124,9 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       return segmentFocusMarkup([refrigerantPieceOutline(line, piece)], tone, tone === 'pinned' ? refrigerantPieceEnds(line, piece) : [], kRef.current);
     };
     // While one of its card's options is previewed the drawing shows the option (the lines it changes, as they would
-    // be, outlined dashed), not the piece it replaces.
+    // be, outlined dashed), not the piece it replaces. (A gap's reconnection shows its new stretches: paintGapWay.)
     const previewed = preview && domainOf(preview) === 'refrigerant'
-      ? preview.updates.flatMap((element) => {
+      ? preview.optionId.startsWith('gap:') ? [] : preview.updates.flatMap((element) => {
         // The option as drawn: its lines as they would be.
         const shown = sceneRef.current.find((candidate) => candidate.id === element.id) ?? element;
         const kit = refrigerantKitOf(shown);
@@ -1135,12 +1137,29 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       : null;
     // The other pieces picked (Ctrl/⌘, Shift) in the pinned colour; the pinned one with its brackets.
     const others = picked.filter((pick) => focusId(pick) !== focusId(pinned)).map((pick) => shapes(pick, 'picked')).join('');
-    const markup = previewed ? segmentFocusMarkup(previewed, 'hovered')
+    const markup = previewed ? (previewed.length ? segmentFocusMarkup(previewed, 'hovered') : '')
       : others + shapes(pinned, 'pinned') + (hovered && focusId(hovered) !== focusId(pinned) ? shapes(hovered, 'hovered') : '');
     if (target.innerHTML !== markup) target.innerHTML = markup;
   }, [lineFor, kitFor]);
   useEffect(() => useSegmentUiStore.subscribe(paintPieceFocus), [paintPieceFocus]);
   useEffect(() => paintPieceFocus(), [paintPieceFocus, hvacElements, k]);
+
+  /** The new stretches of the reconnection shown for a pipe gap: a teal centreline along each (a pair's two). */
+  const paintGapWay = useCallback(() => {
+    const target = gapWayRef.current;
+    if (!target) return;
+    const { proposals, index } = useDuctGapStore.getState();
+    const candidate = proposals?.domain === 'refrigerant' ? proposals.candidates[index] ?? null : null;
+    const markup = (candidate ? candidate.bridges ?? [candidate.bridge] : []).map((bridge) => {
+      const plan = bridge.filter((point, at) => at === 0 || Math.hypot(point.x - bridge[at - 1]!.x, point.y - bridge[at - 1]!.y) > 0.5);
+      if (plan.length < 2) return '';
+      const d = `M${plan.map((point) => `${point.x} ${point.y}`).join(' L')}`;
+      return `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+        + `<path d="${d}" fill="none" stroke="#0d9488" stroke-width="2.5" stroke-dasharray="8 5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+    }).join('');
+    if (target.innerHTML !== markup) target.innerHTML = markup;
+  }, []);
+  useEffect(() => useDuctGapStore.subscribe(paintGapWay), [paintGapWay]);
 
   // A piece under the pointer belongs to a selected pipe, in the plan's select tool.
   useEffect(() => {
@@ -2585,6 +2604,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
           <g ref={focusRef} data-testid="refrigerant-segment-focus" style={{ pointerEvents: 'none' }} />
           {/* Open ends left by deleted pieces: an amber bar and a "+" at each, the stretch deleted traced. */}
           {pipeOpenEndMarkup ? <g data-testid="pipe-open-ends" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: pipeOpenEndMarkup }} /> : null}
+          {/* The new stretches of a gap's reconnection while its chip shows it (painted from the gap store). */}
+          <g ref={gapWayRef} data-testid="pipe-gap-way" style={{ pointerEvents: 'none' }} />
           {/* Snap-hover indicator (pushed by the draw tool): the SAME
               endpoint-handle bullseye a committed pipe shows — white disc, teal
               ring, solid teal dot — so every snap affordance is one component. */}

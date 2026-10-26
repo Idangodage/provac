@@ -117,6 +117,76 @@ describe('deleting pieces of a refrigerant line', () => {
     expect(second[0]!.z).toBeGreaterThan(first.at(-1)!.z);
   });
 
+  it('a line with no 3D route of its own: the part after the cut keeps its level, the part at its start port needs none', () => {
+    // Its level comes from its start port (2650), a riser to its end port (1400) is derived: no stored route.
+    const port = (x: number, y: number, elevationMm: number) => ({ connectionKind: 'unit-port', portPoint: { x, y }, direction: { x: 1, y: 0 }, elevationMm });
+    const gas = line('gas', ROUTE, { startConnection: port(0, 0, 2650), endConnection: port(5000, 3000, 1400) });
+    delete (gas.properties as Record<string, unknown>).routeNodes3d;
+    const straight = refrigerantLineOf(gas, [gas])!.pieces.filter((piece) => piece.kind === 'straight')[1]!;
+    const result = cutRefrigerantPieces([gas], [{ runId: 'gas', key: straight.key }], { newId: ids() });
+    const first = result.updates[0]!;
+    const second = result.add[0]!;
+    expect(first.properties.routeNodes3d).toBeUndefined();
+    const nodes = second.properties.routeNodes3d as PipeRouteNode3D[];
+    expect(nodes.length).toBeGreaterThanOrEqual(2);
+    expect(nodes.every((node) => node.z === 2650)).toBe(true);
+    expect(readPipeGaps(second).start?.levelKept).toBe(true);
+    // The stretch deleted is remembered at that level too.
+    expect(readPipeGaps(first).end?.removed?.every((node) => node.z === 2650)).toBe(true);
+  });
+
+  it('a pair whose lines differ in shape: the other line loses the straight alongside, the two cut level with each other', () => {
+    // The gas line jogs 40 mm before its long straight; the liquid line turns once, 120 mm beside it.
+    const gasRoute: PipeRouteNode3D[] = [{ x: 0, y: 0, z: Z }, { x: 1000, y: 0, z: Z }, { x: 1000, y: 40, z: Z }, { x: 2000, y: 40, z: Z },
+      { x: 2000, y: 4000, z: Z }, { x: 5000, y: 4000, z: Z }];
+    const liquidRoute: PipeRouteNode3D[] = [{ x: 0, y: 160, z: Z }, { x: 1880, y: 160, z: Z }, { x: 1880, y: 4120, z: Z }, { x: 5000, y: 4120, z: Z }];
+    const gas = line('gas', gasRoute, { bundleId: 'b1' });
+    const liquid = line('liquid', liquidRoute, { bundleId: 'b1', lineKind: 'liquid' });
+    const scene = [gas, liquid];
+    const long = refrigerantLineOf(gas, scene)!.pieces.filter((piece) => piece.kind === 'straight').sort((a, b) => b.lengthMm - a.lengthMm)[0]!;
+    const result = cutRefrigerantPieces(scene, [{ runId: 'gas', key: long.key }], { newId: ids() });
+    const ends = refrigerantOpenEnds([...result.updates, ...result.add]);
+    const at = (kind: string, end: 'start' | 'end') => ends.find((candidate) => candidate.lineKind === kind && candidate.end === end)!.point;
+    // Each line still keeps its own bends (the liquid's corner is not cut), and the open ends face each other abreast.
+    expect(at('liquid', 'end').x).toBeCloseTo(1880, 3);
+    expect(at('gas', 'end').y).toBeCloseTo(at('liquid', 'end').y, 3);
+    expect(at('gas', 'start').y).toBeCloseTo(at('liquid', 'start').y, 3);
+    expect(at('liquid', 'start').x).toBeCloseTo(1880, 3);
+  });
+
+  it('a line drawn with its bends as arc chords: cut where it is drawn straight, its arcs left whole, the pair still level', () => {
+    // The liquid line as an older pipe tool drew it: each bend a 90° arc of radius 80 in 12 chords.
+    const arc = (corner: { x: number; y: number }, from: { x: number; y: number }, to: { x: number; y: number }, r: number) => {
+      const start = { x: corner.x - from.x * r, y: corner.y - from.y * r };
+      const centre = { x: start.x + to.x * r, y: start.y + to.y * r };
+      return Array.from({ length: 13 }, (_, index) => {
+        const t = (index / 12) * (Math.PI / 2);
+        // From the start round to the end, about the centre.
+        const ux = start.x - centre.x; const uy = start.y - centre.y;
+        const vx = corner.x + to.x * r - centre.x; const vy = corner.y + to.y * r - centre.y;
+        return { x: centre.x + ux * Math.cos(t) + vx * Math.sin(t), y: centre.y + uy * Math.cos(t) + vy * Math.sin(t), z: Z };
+      });
+    };
+    const liquidRoute: PipeRouteNode3D[] = [{ x: 0, y: 120, z: Z },
+      ...arc({ x: 1880, y: 120 }, { x: 1, y: 0 }, { x: 0, y: 1 }, 80), ...arc({ x: 1880, y: 4120 }, { x: 0, y: 1 }, { x: 1, y: 0 }, 80), { x: 5000, y: 4120, z: Z }];
+    const gas = line('gas', ROUTE.map((node) => ({ ...node, y: node.y === 3000 ? 4000 : node.y })), { bundleId: 'b1' });
+    const liquid = line('liquid', liquidRoute, { bundleId: 'b1', lineKind: 'liquid' });
+    const scene = [gas, liquid];
+    const long = refrigerantLineOf(gas, scene)!.pieces.filter((piece) => piece.kind === 'straight')[1]!;
+    const result = cutRefrigerantPieces(scene, [{ runId: 'gas', key: long.key }], { newId: ids() });
+    const ends = refrigerantOpenEnds([...result.updates, ...result.add]);
+    const at = (kind: string, end: 'start' | 'end') => ends.find((candidate) => candidate.lineKind === kind && candidate.end === end)!;
+    // The liquid's open ends sit on its drawn straight (x 1880), each arc kept whole on its part; the two lines level.
+    for (const end of ['end', 'start'] as const) {
+      expect(at('liquid', end).point.x).toBeCloseTo(1880, 3);
+      expect(at('gas', end).point.y).toBeCloseTo(at('liquid', end).point.y, 3);
+      expect(Math.abs(at('liquid', end).outward.y)).toBeCloseTo(1, 6);
+    }
+    // The first part of the liquid line keeps all 13 points of its arc.
+    const first = result.updates.find((element) => element.id === 'liquid')!;
+    expect((first.properties.routePoints as unknown[]).length).toBeGreaterThanOrEqual(14);
+  });
+
   it('a locked line is refused', () => {
     const gas = line('gas', ROUTE, { routeLocked: true });
     const straight = refrigerantLineOf(gas, [gas])!.pieces.find((piece) => piece.kind === 'straight')!;

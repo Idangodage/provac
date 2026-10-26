@@ -1,21 +1,23 @@
 'use client';
 
 /**
- * The reconnect chip: point at a gap left by deleted duct pieces (on the plan
- * or in 3D) and its best way to reconnect shows on the drawing, with a chip
- * beside it — what the way is (as it was, the shortest, the fewest fittings,
- * back to its terminal …), its length and turns, and Apply (Enter), another
- * way (Tab), draw it by hand, or dismiss (Esc). With several gaps open it
- * offers to reconnect them all. The chip follows the gap as the view moves
- * (its transform written each frame, no React render).
+ * The reconnect chip: point at a gap left by deleted duct or refrigerant
+ * pieces (on the plan or in 3D) and its best way to reconnect shows on the
+ * drawing, with a chip beside it — what the way is (as it was, the shortest,
+ * the fewest fittings, back to its terminal or port …), its length and turns,
+ * and Apply (Enter), another way (Tab), draw it by hand, or dismiss (Esc).
+ * With several gaps open it offers to reconnect them all. The chip follows the
+ * gap as the view moves (its transform written each frame, no React render).
  */
 import { CornerDownLeft, Repeat2, Spline, Workflow, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
 
 import { useSmartDrawingStore } from '../../../../store';
+import type { HvacElement } from '../../../../types';
+import { refrigerantOpenEnds } from '../refrigerant/refrigerantCut';
 
 import { ductOpenEnds } from './ductCut';
-import { applyGapWay, dismissGap, nextGapWay, openGapIds, pointAtGap, reconnectAllGaps, useDuctGapStore } from './ductGapController';
+import { applyGapWay, dismissGap, nextGapWay, openGapIds, pointAtGap, reconnectAllGaps, turnsLabel, useDuctGapStore, type GapDomain } from './ductGapController';
 import type { DuctPoint3 } from './ductTypes';
 
 /** How near the pointer must come to a gap (screen px). */
@@ -25,21 +27,31 @@ const GRACE_MS = 600;
 
 interface DuctGapChipProps {
   enabled: boolean;
-  /** A model point (clear-bottom level) on screen, in the view shown; null when it is not. */
+  /** A model point (a duct's clear-bottom level, a pipe's centreline) on screen, in the view shown; null when it is not. */
   toClient: (point: DuctPoint3) => { x: number; y: number } | null;
   hostRef: RefObject<HTMLElement | null>;
-  /** [Draw it]: the duct tool from the gap's open end. */
-  onDraw?: (gapId: string) => void;
+  /** [Draw it]: the gap's tool (duct or pipe) from its open end. */
+  onDraw?: (gapId: string, domain: GapDomain) => void;
 }
 
-/** A gap's line on the drawing: the stretch deleted, else its two ends, else its one end. */
-function gapLines(scene: Parameters<typeof ductOpenEnds>[0]): Map<string, DuctPoint3[]> {
-  const out = new Map<string, DuctPoint3[]>();
-  for (const end of ductOpenEnds(scene)) {
-    if (!end.gap) continue;
-    const removed = end.gap.removed?.path;
-    if (removed && removed.length >= 2 && end.gap.partner) out.set(end.gap.id, removed);
-    else out.set(end.gap.id, [...(out.get(end.gap.id) ?? []), end.point]);
+/**
+ * A gap's lines on the drawing: the stretch deleted (a pair's two), else its two ends, else its one end. A pipe's lone
+ * end that had no connection is no gap (nothing to go back to).
+ */
+function gapLines(scene: readonly HvacElement[]): Map<string, DuctPoint3[][]> {
+  const out = new Map<string, DuctPoint3[][]>();
+  const add = (id: string, removed: DuctPoint3[] | null | undefined, point: DuctPoint3, joined: boolean) => {
+    const lines = out.get(id) ?? [];
+    if (removed && removed.length >= 2 && joined) lines.push(removed);
+    else lines.push([point]);
+    out.set(id, lines);
+  };
+  for (const end of ductOpenEnds(scene)) if (end.gap) add(end.gap.id, end.gap.removed?.path, end.point, Boolean(end.gap.partner));
+  for (const end of refrigerantOpenEnds(scene)) {
+    if (!end.gap.partner && !end.gap.was) continue;
+    // Both ends of a line's gap remember its stretch: it is drawn once (a lone end's, the stub to its port).
+    if (end.gap.partner && end.end === 'start') continue;
+    add(end.gap.id, end.gap.removed, end.point, true);
   }
   return out;
 }
@@ -95,11 +107,13 @@ export function DuctGapChip({ enabled, toClient, hostRef, onDraw }: DuctGapChipP
         return;
       }
       let best: { id: string; distance: number } | null = null;
-      for (const [id, line] of lines) {
-        const screen = line.map((point) => toClientRef.current(point)).filter((point): point is { x: number; y: number } => point !== null);
-        if (!screen.length) continue;
-        const distance = distanceToPolyline({ x: event.clientX, y: event.clientY }, screen);
-        if (distance <= REACH_PX && (!best || distance < best.distance)) best = { id, distance };
+      for (const [id, polylines] of lines) {
+        for (const line of polylines) {
+          const screen = line.map((point) => toClientRef.current(point)).filter((point): point is { x: number; y: number } => point !== null);
+          if (!screen.length) continue;
+          const distance = distanceToPolyline({ x: event.clientX, y: event.clientY }, screen);
+          if (distance <= REACH_PX && (!best || distance < best.distance)) best = { id, distance };
+        }
       }
       if (best) {
         hold();
@@ -140,9 +154,9 @@ export function DuctGapChip({ enabled, toClient, hostRef, onDraw }: DuctGapChipP
       frame = requestAnimationFrame(place);
       const chip = chipRef.current;
       const host = hostRef.current?.getBoundingClientRect();
-      const line = lines.get(gapId);
-      if (!chip || !host || !line) return;
-      const screen = line.map((point) => toClientRef.current(point)).filter((point): point is { x: number; y: number } => point !== null);
+      const polylines = lines.get(gapId);
+      if (!chip || !host || !polylines) return;
+      const screen = polylines.flat().map((point) => toClientRef.current(point)).filter((point): point is { x: number; y: number } => point !== null);
       if (!screen.length) { chip.style.visibility = 'hidden'; return; }
       const xs = screen.map((point) => point.x);
       const ys = screen.map((point) => point.y);
@@ -163,9 +177,10 @@ export function DuctGapChip({ enabled, toClient, hostRef, onDraw }: DuctGapChipP
   if (!enabled || !gapId || !proposals) return null;
   const candidate = proposals.candidates[index] ?? null;
   const gaps = openGapIds().length;
+  const pair = proposals.domain === 'refrigerant' && (candidate?.updates.length ?? 0) > 1;
   const button = 'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium transition-colors';
   return (
-    <div ref={chipRef} role="dialog" aria-label="Reconnect the gap" data-testid="duct-gap-chip" data-hvac-overlay-ui="" data-gap={gapId} data-way={candidate?.key ?? ''}
+    <div ref={chipRef} role="dialog" aria-label="Reconnect the gap" data-testid="duct-gap-chip" data-hvac-overlay-ui="" data-gap={gapId} data-domain={proposals.domain} data-way={candidate?.key ?? ''}
       className="pointer-events-auto absolute left-0 top-0 z-[30] flex max-w-[30rem] items-center gap-2 rounded-2xl border border-teal-200 bg-white/95 py-1.5 pl-3 pr-1.5 text-xs text-slate-700 shadow-lg backdrop-blur"
       style={{ visibility: 'hidden' }}>
       <Workflow size={14} className="shrink-0 text-teal-600" aria-hidden="true" />
@@ -176,7 +191,7 @@ export function DuctGapChip({ enabled, toClient, hostRef, onDraw }: DuctGapChipP
             {proposals.candidates.length > 1 ? <span className="ml-1 font-normal text-slate-400">{index + 1}/{proposals.candidates.length}</span> : null}
           </div>
           <div className="text-[11px] text-slate-500" data-testid="duct-gap-figures">
-            {(candidate.lengthMm / 1000).toFixed(2)} m · {candidate.elbows} elbow{candidate.elbows === 1 ? '' : 's'}
+            {(candidate.lengthMm / 1000).toFixed(2)} m · {candidate.elbows} {turnsLabel(proposals.domain, candidate.elbows)}{pair ? ' · gas + liquid' : ''}
           </div>
         </div>
       ) : (
@@ -196,7 +211,7 @@ export function DuctGapChip({ enabled, toClient, hostRef, onDraw }: DuctGapChipP
           </button>
         ) : null}
         {onDraw ? (
-          <button type="button" data-testid="duct-gap-draw" title="Draw it with the duct tool from its open end" onClick={() => onDraw(gapId)}
+          <button type="button" data-testid="duct-gap-draw" title={`Draw it with the ${proposals.domain === 'duct' ? 'duct' : 'pipe'} tool from its open end`} onClick={() => onDraw(gapId, proposals.domain)}
             className={`${button} border border-slate-200 bg-white text-slate-600 hover:bg-slate-50`}>
             <Spline size={12} aria-hidden="true" />Draw
           </button>
