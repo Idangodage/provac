@@ -9,6 +9,7 @@ import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
 import { DEFAULT_PIPE_ROUTING_SETTINGS, setActivePipeRoutingSettings } from '../pipeRoutingSettings';
 
+import { condensateBomRowIn, condensateBomToCsv, type CondensateBomRow } from './condensateBom';
 import { drainNetworksOffSeries, resizeDrainNetworksToSeries } from './condensateEditController';
 import { generateCondensateNetwork } from './condensateGenerator';
 import { CONDENSATE_PIPE_SYSTEMS } from './condensatePipeCatalog';
@@ -31,6 +32,26 @@ const gully: HvacElement = {
 
 const state = () => useSmartDrawingStore.getState();
 const pipes = () => state().hvacElements.filter(isCondensatePipe).map((element) => ({ id: element.id, spec: readCondensatePipeSpec(element) }));
+
+describe('the drain bill of materials in IP', () => {
+  it('gives lengths in ft and an insulation by its inch thickness; counts as they are; SI as written', () => {
+    const rows: CondensateBomRow[] = [
+      { category: 'Pipe', description: 'Metric uPVC waste (BS EN 1329) pipe (installed length)', size: '32', quantity: 6.46, unit: 'm' },
+      { category: 'Pipe', description: 'Metric uPVC waste (BS EN 1329) stock lengths (3 m, +10 % waste)', size: '32', quantity: 3, unit: 'lengths' },
+      { category: 'Insulation', description: '9 mm closed-cell insulation', size: '32', quantity: 6.46, unit: 'm' },
+      { category: 'Fitting', description: 'Rodding eye / cleanout', size: '32', quantity: 2, unit: 'no.' },
+    ];
+    expect(rows.map((row) => condensateBomRowIn(row, 'si'))).toEqual(rows);
+    const ip = rows.map((row) => condensateBomRowIn(row, 'ip'));
+    expect(ip.map((row) => [row.description, row.quantity, row.unit])).toEqual([
+      ['Metric uPVC waste (BS EN 1329) pipe (installed length)', 21.19, 'ft'],
+      ['Metric uPVC waste (BS EN 1329) stock lengths (3 m (9.8 ft), +10 % waste)', 3, 'lengths'],
+      ['3/8 in closed-cell insulation', 21.19, 'ft'],
+      ['Rodding eye / cleanout', 2, 'no.'],
+    ]);
+    expect(condensateBomToCsv(rows, 'ip').split('\n')[3]).toBe('Insulation,3/8 in closed-cell insulation,32,21.19,ft');
+  });
+});
 
 describe('drains re-sized to another pipe series', () => {
   beforeEach(() => {

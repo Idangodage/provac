@@ -3,7 +3,7 @@
  * (so it reflects field edits, not only what the generator produced).
  */
 import type { HvacElement } from '../../../../types';
-import { toDisplay, toDisplayText, unitLabel, type HvacUnitSystem } from '../units/hvacUnits';
+import { inchFractionText, toDisplay, toDisplayText, unitLabel, type HvacUnitSystem } from '../units/hvacUnits';
 
 import { getCondensatePipeSystem } from './condensatePipeCatalog';
 import type { CondensateDesignSettings } from './condensateSettings';
@@ -117,10 +117,15 @@ export function buildCondensateBom(
   return rows;
 }
 
-/** A row as the display system reads it: in IP lengths in ft, the description's figures annotated. */
+/**
+ * A row as the display system reads it: in IP lengths in ft, an insulation by
+ * its inch thickness ("3/8 in closed-cell insulation"), the description's
+ * other figures annotated.
+ */
 export function condensateBomRowIn(row: CondensateBomRow, system: HvacUnitSystem): Omit<CondensateBomRow, 'unit'> & { unit: string } {
   if (system === 'si') return row;
-  const description = toDisplayText(row.description, system);
+  const insulation = /^(\d+(?:\.\d+)?) mm (closed-cell insulation)$/.exec(row.description);
+  const description = insulation ? `${inchFractionText(Number(insulation[1]))} in ${insulation[2]}` : toDisplayText(row.description, system);
   return row.unit === 'm'
     ? { ...row, description, quantity: Math.round(toDisplay('length', row.quantity, system) * 100) / 100, unit: unitLabel('length', system) }
     : { ...row, description };
