@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  displayDigits, formatNumberIn, formatQuantity, formatSection, fromDisplay, inchFractionText, inchesText, pressureClassText, sizesText, slopeFigureText, slopeText, tonsOf,
+  displayDigits, formatNumberIn, formatQuantity, formatSection, fromDisplay, inchFractionText, inchesText, pressureClassText, sizesText, slopeFigureText, slopeText, storedFieldText, storedFieldValue, tonsOf,
   toDisplay, toDisplayText, unitLabel,
   type HvacQuantity,
 } from './hvacUnits';
@@ -39,6 +39,20 @@ describe('HVAC units', () => {
     expect(formatQuantity('area', 2.5, 'ip')).toBe('26.9 ft²');
     expect(formatQuantity('mass', 12.34, 'ip', 1)).toBe('27.2 lb');
     expect(unitLabel('perMass', 'ip')).toBe('/ lb');
+  });
+
+  it('shows a stored figure in a field in the display system and stores what is typed back in SI', () => {
+    // A unit's airflow is stored in L/s: in IP it is typed in CFM (through m³/h, 3.6 per L/s).
+    expect(storedFieldText(333, 'airflow', 'si', 0, 3.6)).toBe('333');
+    expect(storedFieldText(333, 'airflow', 'ip', 0, 3.6)).toBe('706');
+    expect(storedFieldValue('706', 'airflow', 'ip', 3.6)).toBeCloseTo(333.2, 1);
+    expect(storedFieldText(2.2, 'capacity', 'ip', 1)).toBe('7.5');
+    expect(storedFieldValue('7.5', 'capacity', 'ip')).toBeCloseTo(2.198, 3);
+    expect(storedFieldValue('0.4', 'pressure', 'ip')).toBeCloseTo(99.536, 3);
+    expect(storedFieldValue('2.5', 'capacity', 'si')).toBe(2.5);
+    expect(storedFieldText(null, 'pressure', 'ip', 2)).toBe('');
+    expect(storedFieldValue('  ', 'pressure', 'ip')).toBeNull();
+    expect(storedFieldValue('-', 'pressure', 'ip')).toBeUndefined();
   });
 
   it('names a fall by its sixteenth of an inch per foot, as falls are specified', () => {

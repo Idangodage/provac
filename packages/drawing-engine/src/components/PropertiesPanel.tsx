@@ -84,7 +84,7 @@ import {
   type RefrigerantPipeMaterial,
 } from "./canvas/hvac/refrigerantPipePairModel";
 import { SegmentPieceList } from "./canvas/hvac/segments/SegmentPieceList";
-import { fromDisplay, slopeText, toDisplay, toDisplayText, unitLabel, type HvacQuantity, type HvacUnitSystem } from "./canvas/hvac/units/hvacUnits";
+import { slopeText, storedFieldText, storedFieldValue, toDisplay, toDisplayText, unitLabel, type HvacQuantity, type HvacUnitSystem } from "./canvas/hvac/units/hvacUnits";
 import { useHvacUnitSystem } from "./canvas/hvac/units/useHvacUnits";
 import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
 import {
@@ -187,22 +187,18 @@ function SystemNumberInput({ value, quantity, system, digits, scale = 1, placeho
   placeholder?: string; title?: string; ariaLabel: string; onCommit: (next: number | null) => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
-  const shown = value === null ? "" : String(Number((system === "ip" ? toDisplay(quantity, value * scale, "ip") : value).toFixed(digits)));
   return (
     <input
       type="number"
       step={digits > 0 ? 1 / 10 ** Math.min(digits, 2) : 1}
-      value={draft ?? shown}
+      value={draft ?? storedFieldText(value, quantity, system, digits, scale)}
       placeholder={placeholder}
       title={title}
       aria-label={ariaLabel}
       onChange={(event) => {
         setDraft(event.target.value);
-        const text = event.target.value.trim();
-        if (text === "") { onCommit(null); return; }
-        const parsed = Number.parseFloat(text);
-        if (!Number.isFinite(parsed)) return;
-        onCommit(system === "ip" ? fromDisplay(quantity, parsed, "ip") / scale : parsed);
+        const next = storedFieldValue(event.target.value, quantity, system, scale);
+        if (next !== undefined) onCommit(next);
       }}
       onBlur={() => setDraft(null)}
       className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"

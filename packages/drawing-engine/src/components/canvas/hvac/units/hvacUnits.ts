@@ -98,6 +98,25 @@ export function formatNumberIn(kind: HvacQuantity, si: number | null | undefined
   return toDisplay(kind, si, system).toFixed(digits ?? displayDigits(kind, system));
 }
 
+/**
+ * A stored SI figure as a field shows it, to `digits`: in IP converted
+ * (`scale` takes the stored unit to the quantity's SI one: L/s to m³/h is
+ * 3.6), in SI as stored. Empty for none.
+ */
+export function storedFieldText(value: number | null, quantity: HvacQuantity, system: HvacUnitSystem, digits: number, scale = 1): string {
+  if (value === null) return '';
+  return String(Number((system === 'ip' ? toDisplay(quantity, value * scale, 'ip') : value).toFixed(digits)));
+}
+
+/** What a field's typed text stores (SI, in the stored unit): null when empty, undefined when it is not a number. */
+export function storedFieldValue(text: string, quantity: HvacQuantity, system: HvacUnitSystem, scale = 1): number | null | undefined {
+  const trimmed = text.trim();
+  if (trimmed === '') return null;
+  const parsed = Number.parseFloat(trimmed);
+  if (!Number.isFinite(parsed)) return undefined;
+  return system === 'ip' ? fromDisplay(quantity, parsed, 'ip') / scale : parsed;
+}
+
 /** "4320 m³/h", "2543 CFM". */
 export function formatQuantity(kind: HvacQuantity, si: number | null | undefined, system: HvacUnitSystem, digits?: number): string {
   return `${formatNumberIn(kind, si, system, digits)} ${unitLabel(kind, system)}`;
