@@ -90,6 +90,7 @@ import { applyAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteCont
 import { CondensateEditGizmo3D } from "./canvas/hvac/condensate/CondensateEditGizmo3D";
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
 import { createCondensateSegmentProvider } from "./canvas/hvac/condensate/CondensateSegmentCard";
+import { condensateOpenEnds } from "./canvas/hvac/condensate/condensateCut";
 import { condensateEditContext } from "./canvas/hvac/condensate/condensateEditController";
 import { generateCondensateNetwork } from "./canvas/hvac/condensate/condensateGenerator";
 import { condensatePieceMidpoint, condensateRunOf } from "./canvas/hvac/condensate/condensatePieces";
@@ -97,6 +98,7 @@ import { getIndoorUnitDrainPorts } from "./canvas/hvac/condensate/condensatePort
 import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePreviewStore";
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
+import { startDrainDraw, stopDrainDraw, useDrainDrawStore } from "./canvas/hvac/condensate/drainDrawSession";
 import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
 import { DuctGapChip } from "./canvas/hvac/duct/DuctGapChip";
 import { DuctLegDimension } from "./canvas/hvac/duct/DuctLegDimension";
@@ -114,7 +116,7 @@ import { ductOpenEnds } from "./canvas/hvac/duct/ductCut";
 import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
 import { commitDuctRunEdit } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
-import { dismissGap, proposeGap, useDuctGapStore } from "./canvas/hvac/duct/ductGapController";
+import { dismissGap, proposeGap, useDuctGapStore, type GapDomain } from "./canvas/hvac/duct/ductGapController";
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
@@ -1165,6 +1167,9 @@ export function DrawingCanvas({
       getOpenEnds: () => ductOpenEnds(useSmartDrawingStore.getState().hvacElements),
       /** Every refrigerant line's open end that remembers a gap. */
       getPipeOpenEnds: () => refrigerantOpenEnds(useSmartDrawingStore.getState().hvacElements),
+      /** Every drain's open end that remembers a gap, and the drain being drawn by hand (if any). */
+      getDrainOpenEnds: () => condensateOpenEnds(useSmartDrawingStore.getState().hvacElements),
+      getDrainDraw: () => useDrainDrawStore.getState().session,
       /** What the pipe tool would continue from a plan point: a pair's two ends, or one line's (within `reachMm`). */
       getPipeExtensionTarget: (point: Point2D, reachMm = 5) => {
         const target = findNearestRefrigerantPipeExtensionTarget(useSmartDrawingStore.getState().hvacElements, point, reachMm);
@@ -1996,6 +2001,12 @@ export function DrawingCanvas({
   // A segment card's option on the drawing before it is applied (any service): 3D draws it as a transient preview,
   // runs it adds as well (a drain's network solved again).
   const segmentCardPreview = useSegmentUiStore((state) => state.preview);
+  // A drain gap drawn by hand on the plan: the reconnect chip and the design-check markers keep out of its way, and
+  // it stops when another tool is taken or the view leaves the plan.
+  const drainDrawing = useDrainDrawStore((state) => Boolean(state.session));
+  useEffect(() => {
+    if (tool !== "select" || projectionViewOnly) stopDrainDraw();
+  }, [tool, projectionViewOnly]);
   const ductSegmentPreview = useMemo(() => (segmentCardPreview ? [...segmentCardPreview.updates, ...(segmentCardPreview.add ?? [])] : null), [segmentCardPreview]);
   // In plan, a refrigerant card's option (or a pipe gap's reconnection) is drawn by the pipe overlay in place of the
   // lines it changes, without the ones it removes.
@@ -2414,9 +2425,16 @@ export function DrawingCanvas({
    * A gap's [Draw]: the gap's own tool from its first open end. A refrigerant gap continues as the open end itself is
    * (a pair's two ends as a pair, a lone line as that line); finishing on the other part's open end joins them.
    */
-  const drawGap = useCallback((gapId: string, domain: "duct" | "refrigerant") => {
+  const drawGap = useCallback((gapId: string, domain: GapDomain) => {
     if (domain === "duct") {
       drawDuctGap(gapId);
+      return;
+    }
+    if (domain === "condensate") {
+      // Drawn on the plan: clicks where the drain turns, finished on the other part's open end.
+      dismissGap();
+      if (projectionViewOnly) setCameraView("plan");
+      startDrainDraw(gapId);
       return;
     }
     const scene = useSmartDrawingStore.getState().hvacElements;
@@ -2428,7 +2446,7 @@ export function DrawingCanvas({
     handleBeginExtendRoute(target.bundle, target.lineMode);
     setProcessingStatus(`Drawing on from the ${target.lineMode === "pair" ? "pair's open ends" : `${target.lineMode} line's open end`}: `
       + "finish on the other part's open end to join them.", false);
-  }, [drawDuctGap, handleBeginExtendRoute, setProcessingStatus]);
+  }, [drawDuctGap, handleBeginExtendRoute, projectionViewOnly, setCameraView, setProcessingStatus]);
 
   // Arrow keys (Alt + Up / Down, or Up / Down in Front and Side: up and down) move the selection through the one
   // move model every input shares: rules hold for the whole selection, what is attached follows, one undo.
@@ -3836,7 +3854,7 @@ export function DrawingCanvas({
           />
           <VrfValidationOverlay
             enabled={!projectionViewOnly}
-            showMarkers={!drawingToolActive}
+            showMarkers={!drawingToolActive && !drainDrawing}
             showSummary={false}
             width={hostWidth}
             height={hostHeight}
@@ -3993,7 +4011,7 @@ export function DrawingCanvas({
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />
         <SegmentCardLayer enabled={tool === "select"} hvacElements={hvacElements} providers={segmentProviders}
           selectedIds={selectedIds} resolveAnchor={resolveSegmentAnchor} dragging={Boolean(movingIds)} />
-        <DuctGapChip enabled={tool === "select" && !movingIds} toClient={gapToClient} hostRef={hostRef} onDraw={drawGap} />
+        <DuctGapChip enabled={tool === "select" && !movingIds && !drainDrawing} toClient={gapToClient} hostRef={hostRef} onDraw={drawGap} />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
           showInteriorNodeHandles={projectionViewOnly} cardView={projectionViewOnly ? "3d" : "2d"}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}

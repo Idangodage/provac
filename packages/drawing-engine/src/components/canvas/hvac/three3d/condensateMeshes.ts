@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 
 import type { HvacElement } from '../../../../types';
+import { readDrainGaps } from '../condensate/condensateCut';
 import { layoutCondensateSupports } from '../condensate/condensateSupports';
 import {
   CONDENSATE_TUNDISH_HEIGHT_MM,
@@ -367,6 +368,18 @@ export function addCondensatePipeMeshes(group: THREE.Group, element: HvacElement
   }
   addHangers(group, element, spec, radius);
   for (const fitting of spec.fittings) addFittingMesh(group, fitting, radius);
+  // Open ends left by deleted pieces (a gap the run remembers): an amber band round each, as the plan marks it.
+  const gaps = readDrainGaps(element);
+  const points = nodes.map(vec);
+  const band = (at: THREE.Vector3, toward: THREE.Vector3) => {
+    const axis = toward.clone().sub(at);
+    if (axis.lengthSq() < 1e-6) return;
+    axis.normalize();
+    const mesh = cylinderBetween(at, at.clone().addScaledVector(axis, 36), radius + 6, '#d97706', 'drain-open-end');
+    if (mesh) { mesh.renderOrder = 19; group.add(mesh); }
+  };
+  if (gaps.start) band(points[0]!, points[1]!);
+  if (gaps.end) band(points[points.length - 1]!, points[points.length - 2]!);
 }
 
 /** Builds a termination in WORLD coordinates (the caller's group sits at the origin). */

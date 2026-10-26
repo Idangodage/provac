@@ -1,19 +1,22 @@
 'use client';
 
 /**
- * The reconnect chip: point at a gap left by deleted duct or refrigerant
- * pieces (on the plan or in 3D) and its best way to reconnect shows on the
- * drawing, with a chip beside it — what the way is (as it was, the shortest,
- * the fewest fittings, back to its terminal or port …), its length and turns,
- * and Apply (Enter), another way (Tab), draw it by hand, or dismiss (Esc).
- * With several gaps open it offers to reconnect them all. The chip follows the
- * gap as the view moves (its transform written each frame, no React render).
+ * The reconnect chip: point at a gap left by deleted duct, refrigerant or
+ * drain pieces (on the plan or in 3D) and its best way to reconnect shows on
+ * the drawing, with a chip beside it — what the way is (as it was, the
+ * shortest, the fewest fittings, back to its terminal or port …), its length
+ * and turns (and what else it changes: a drain network's levels solved
+ * again), and Apply (Enter), another way (Tab), draw it by hand, or dismiss
+ * (Esc). With several gaps open it offers to reconnect them all. The chip
+ * follows the gap as the view moves (its transform written each frame, no
+ * React render).
  */
 import { CornerDownLeft, Repeat2, Spline, Workflow, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
 
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
+import { condensateOpenEnds } from '../condensate/condensateCut';
 import { refrigerantOpenEnds } from '../refrigerant/refrigerantCut';
 
 import { ductOpenEnds } from './ductCut';
@@ -50,6 +53,11 @@ function gapLines(scene: readonly HvacElement[]): Map<string, DuctPoint3[][]> {
   for (const end of refrigerantOpenEnds(scene)) {
     if (!end.gap.partner && !end.gap.was) continue;
     // Both ends of a line's gap remember its stretch: it is drawn once (a lone end's, the stub to its port).
+    if (end.gap.partner && end.end === 'start') continue;
+    add(end.gap.id, end.gap.removed, end.point, true);
+  }
+  for (const end of condensateOpenEnds(scene)) {
+    if (!end.gap.partner && !end.gap.was && !end.gap.removedRun) continue;
     if (end.gap.partner && end.end === 'start') continue;
     add(end.gap.id, end.gap.removed, end.point, true);
   }
@@ -193,6 +201,7 @@ export function DuctGapChip({ enabled, toClient, hostRef, onDraw }: DuctGapChipP
           <div className="text-[11px] text-slate-500" data-testid="duct-gap-figures">
             {(candidate.lengthMm / 1000).toFixed(2)} m · {candidate.elbows} {turnsLabel(proposals.domain, candidate.elbows)}{pair ? ' · gas + liquid' : ''}
           </div>
+          {candidate.note ? <div className="text-[11px] text-sky-700" data-testid="duct-gap-note">{candidate.note}</div> : null}
         </div>
       ) : (
         <div className="max-w-[16rem] text-[11px] text-amber-800" data-testid="duct-gap-reason">{proposals.reason}</div>
@@ -211,7 +220,7 @@ export function DuctGapChip({ enabled, toClient, hostRef, onDraw }: DuctGapChipP
           </button>
         ) : null}
         {onDraw ? (
-          <button type="button" data-testid="duct-gap-draw" title={`Draw it with the ${proposals.domain === 'duct' ? 'duct' : 'pipe'} tool from its open end`} onClick={() => onDraw(gapId, proposals.domain)}
+          <button type="button" data-testid="duct-gap-draw" title={`Draw it with the ${proposals.domain === 'duct' ? 'duct' : proposals.domain === 'condensate' ? 'drain' : 'pipe'} tool from its open end`} onClick={() => onDraw(gapId, proposals.domain)}
             className={`${button} border border-slate-200 bg-white text-slate-600 hover:bg-slate-50`}>
             <Spline size={12} aria-hidden="true" />Draw
           </button>

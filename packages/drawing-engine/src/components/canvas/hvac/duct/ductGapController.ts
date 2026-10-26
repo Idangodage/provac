@@ -1,15 +1,18 @@
 /**
- * Reconnect proposals on the drawing: the gap the pointer is at (a duct's, or
- * a refrigerant line's), the way to reconnect it that is shown (as a preview,
- * in plan and 3D) and the chip's actions — Apply (one undo), another way,
- * dismiss, and reconnecting every gap at once. The ways come from
- * ductGapProposal and refrigerantGapProposal, computed once per gap and
- * drawing.
+ * Reconnect proposals on the drawing: the gap the pointer is at (a duct's, a
+ * refrigerant line's or a drain's), the way to reconnect it that is shown (as
+ * a preview, in plan and 3D) and the chip's actions — Apply (one undo),
+ * another way, dismiss, and reconnecting every gap at once. The ways come
+ * from ductGapProposal, refrigerantGapProposal and condensateGapProposal,
+ * computed once per gap and drawing.
  */
 import { create } from 'zustand';
 
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
+import { condensateOpenEnds } from '../condensate/condensateCut';
+import { condensateEditContext } from '../condensate/condensateEditController';
+import { proposeCondensateGap } from '../condensate/condensateGapProposal';
 import { refrigerantOpenEnds } from '../refrigerant/refrigerantCut';
 import { proposeRefrigerantGap } from '../refrigerant/refrigerantGapProposal';
 import { useSegmentUiStore } from '../segments/segmentUiStore';
@@ -19,13 +22,15 @@ import { ductOpenEnds } from './ductCut';
 import { proposeDuctGap } from './ductGapProposal';
 import type { DuctDesignSettings } from './ductSettings';
 
-export type GapDomain = 'duct' | 'refrigerant';
+export type GapDomain = 'duct' | 'refrigerant' | 'condensate';
 
 /** One way to reconnect a gap, whichever service it is in. */
 export interface GapWay {
   key: string;
   label: string;
   updates: HvacElement[];
+  /** Runs it adds (a drain network solved again, a drop put back). */
+  add?: HvacElement[];
   removeIds: string[];
   /** The new stretch (a pair's gas line), its length and turns. */
   bridge: Array<{ x: number; y: number; z: number }>;
@@ -33,6 +38,8 @@ export interface GapWay {
   bridges?: Array<Array<{ x: number; y: number; z: number }>>;
   lengthMm: number;
   elbows: number;
+  /** What else it changes (a drain network's levels solved again). */
+  note?: string | null;
 }
 
 export interface GapProposals {
@@ -56,16 +63,22 @@ export const useDuctGapStore = create<GapUiState>(() => ({ gapId: null, proposal
 const PREVIEW_PREFIX = 'gap:';
 let cache: { scene: unknown; settings: unknown; gapId: string; proposals: GapProposals } | null = null;
 
-/** Which service a gap is in (a refrigerant line's open end remembers it, else a duct's). */
+/** Which service a gap is in (whose open end remembers it). */
 export function gapDomainOf(scene: readonly HvacElement[], gapId: string): GapDomain {
-  return refrigerantOpenEnds(scene).some((end) => end.gap.id === gapId) ? 'refrigerant' : 'duct';
+  if (refrigerantOpenEnds(scene).some((end) => end.gap.id === gapId)) return 'refrigerant';
+  return condensateOpenEnds(scene).some((end) => end.gap.id === gapId) ? 'condensate' : 'duct';
 }
 
 /** The ways to reconnect gap `gapId` in `scene`, best first. */
 export function proposeGap(scene: readonly HvacElement[], gapId: string, settings: DuctDesignSettings): GapProposals {
-  if (gapDomainOf(scene, gapId) === 'refrigerant') {
+  const domain = gapDomainOf(scene, gapId);
+  if (domain === 'refrigerant') {
     const result = proposeRefrigerantGap(scene, gapId);
-    return { gapId, domain: 'refrigerant', candidates: result.candidates, reason: result.reason };
+    return { gapId, domain, candidates: result.candidates, reason: result.reason };
+  }
+  if (domain === 'condensate') {
+    const result = proposeCondensateGap(scene, gapId, condensateEditContext());
+    return { gapId, domain, candidates: result.candidates, reason: result.reason };
   }
   const result = proposeDuctGap(scene, gapId, settings, getActiveDuctBuilding());
   return { gapId, domain: 'duct', candidates: result.candidates, reason: result.reason };
@@ -85,7 +98,10 @@ function publish(): void {
   const segments = useSegmentUiStore.getState();
   const candidate = proposals?.candidates[index] ?? null;
   if (candidate) {
-    segments.setPreview({ domain: proposals!.domain, optionId: `${PREVIEW_PREFIX}${proposals!.gapId}:${candidate.key}`, updates: candidate.updates, removeIds: candidate.removeIds });
+    segments.setPreview({
+      domain: proposals!.domain, optionId: `${PREVIEW_PREFIX}${proposals!.gapId}:${candidate.key}`,
+      updates: candidate.updates, removeIds: candidate.removeIds, ...(candidate.add?.length ? { add: candidate.add } : {}),
+    });
   } else if (segments.preview?.optionId.startsWith(PREVIEW_PREFIX)) {
     segments.setPreview(null);
   }
@@ -132,10 +148,12 @@ export function applyGapWay(): boolean {
   const candidate = proposals?.candidates[index];
   if (!proposals || !candidate) return false;
   const state = useSmartDrawingStore.getState();
-  const runId = candidate.updates[0]?.id;
-  const what = proposals.domain === 'duct' ? 'duct' : candidate.updates.length > 1 ? 'refrigerant lines' : 'refrigerant line';
+  const runId = candidate.updates[0]?.id ?? candidate.add?.[0]?.id;
+  const what = proposals.domain === 'duct' ? 'duct' : proposals.domain === 'condensate' ? 'drain'
+    : candidate.updates.length > 1 ? 'refrigerant lines' : 'refrigerant line';
   state.commitHvacElementCommand(`Reconnect ${what} (${candidate.label.toLowerCase()})`, {
     updates: candidate.updates.map((element) => ({ id: element.id, updates: element })),
+    ...(candidate.add?.length ? { add: candidate.add } : {}),
     removeIds: candidate.removeIds,
     selectedIds: runId ? [runId] : [],
   });
@@ -143,16 +161,18 @@ export function applyGapWay(): boolean {
   publish();
   const metres = (candidate.lengthMm / 1000).toFixed(2);
   const lines = proposals.domain === 'refrigerant' && candidate.updates.length > 1 ? ' (gas + liquid)' : '';
-  state.setProcessingStatus(`Reconnected${lines}: ${candidate.label.toLowerCase()}, ${metres} m, ${candidate.elbows} ${turnsLabel(proposals.domain, candidate.elbows)}.`, false);
+  const note = candidate.note ? `; ${candidate.note}` : '';
+  state.setProcessingStatus(`Reconnected${lines}: ${candidate.label.toLowerCase()}, ${metres} m, ${candidate.elbows} ${turnsLabel(proposals.domain, candidate.elbows)}${note}.`, false);
   return true;
 }
 
-/** The ids of the gaps open on the drawing (each once): ducts', then refrigerant lines'. */
+/** The ids of the gaps open on the drawing (each once): ducts', refrigerant lines', drains'. */
 export function openGapIds(): string[] {
   const scene = useSmartDrawingStore.getState().hvacElements;
   return [...new Set([
     ...ductOpenEnds(scene).flatMap((end) => (end.gap ? [end.gap.id] : [])),
     ...refrigerantOpenEnds(scene).filter((end) => end.gap.partner || end.gap.was).map((end) => end.gap.id),
+    ...condensateOpenEnds(scene).filter((end) => end.gap.partner || end.gap.was || end.gap.removedRun).map((end) => end.gap.id),
   ])];
 }
 
@@ -161,6 +181,7 @@ export function reconnectAllGaps(): { reconnected: number; left: number } {
   const state = useSmartDrawingStore.getState();
   let scene = state.hvacElements;
   const updates = new Map<string, (typeof scene)[number]>();
+  const added = new Map<string, (typeof scene)[number]>();
   const removed = new Set<string>();
   let reconnected = 0;
   const ids = openGapIds();
@@ -168,14 +189,19 @@ export function reconnectAllGaps(): { reconnected: number; left: number } {
     const best = proposeGap(scene, gapId, state.ductSettings).candidates[0];
     if (!best) continue;
     const replaced = new Map(best.updates.map((element) => [element.id, element]));
-    scene = scene.filter((element) => !best.removeIds.includes(element.id)).map((element) => replaced.get(element.id) ?? element);
-    for (const element of best.updates) updates.set(element.id, element);
-    for (const id of best.removeIds) { removed.add(id); updates.delete(id); }
+    scene = [...scene.filter((element) => !best.removeIds.includes(element.id)).map((element) => replaced.get(element.id) ?? element), ...(best.add ?? [])];
+    for (const element of best.updates) (added.has(element.id) ? added : updates).set(element.id, element);
+    for (const element of best.add ?? []) added.set(element.id, element);
+    for (const id of best.removeIds) {
+      if (!added.delete(id)) removed.add(id);
+      updates.delete(id);
+    }
     reconnected += 1;
   }
   if (reconnected) {
     state.commitHvacElementCommand(`Reconnect ${reconnected} gap${reconnected === 1 ? '' : 's'}`, {
       updates: [...updates.values()].filter((element) => !removed.has(element.id)).map((element) => ({ id: element.id, updates: element })),
+      add: [...added.values()],
       removeIds: [...removed],
     });
   }

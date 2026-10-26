@@ -15,7 +15,7 @@
  *  CD_AIR_BREAK     the drop does not stop an air break above the receptor
  *  CD_ENVELOPE      a run leaves the ceiling void
  *  CD_CLASH         a drain is closer to a refrigerant run than their insulation
- *  CD_OPEN_END      a pipe ends at a junction nothing continues from
+ *  CD_OPEN_END      a pipe ends at a junction nothing continues from, or open where pieces were deleted
  *  CD_STALE         a unit or termination moved after the network was generated
  *  CD_UNCONNECTED_UNIT  an indoor unit drain is not connected (information)
  */
@@ -24,6 +24,7 @@ import type { VrfValidationIssue, VrfValidationReport } from '../../../../vrf/ru
 import { listNetworkPipeLanes } from '../networkPipeClearance';
 import type { PipeRoutingSettings } from '../pipeRoutingSettings';
 
+import { readDrainGaps } from './condensateCut';
 import { condensateNetworkSourceSignature } from './condensateElements';
 import { buildCondensateSink, connectedUnitIdsOf, deriveCondensateEnvelope, UNIT_CONNECTION_ZONE_MM } from './condensateEnvironment';
 import { minimumInnerDiameterForCapacity } from './condensatePipeCatalog';
@@ -158,6 +159,19 @@ export function validateCondensateNetwork(scene: readonly HvacElement[], options
     }
     if (shallow !== null) {
       issues.push(issue('CD_FALL_MIN', 'error', pipe.id, `${label} falls only ${(shallow as number).toFixed(2)} % (minimum ${settings.minSlopePercent} %).`, 'Regenerate the network to restore the fall.', true));
+    }
+    // Left open where pieces were deleted: the water does not reach a termination until it is reconnected.
+    const gaps = readDrainGaps(pipe);
+    const open = (['start', 'end'] as const).filter((end) => gaps[end]);
+    if (open.length) {
+      const deleted = open.map((end) => {
+        const removed = gaps[end]!.removed ?? [];
+        return removed.slice(1).reduce((sum, point, index) => sum + Math.hypot(point.x - removed[index]!.x, point.y - removed[index]!.y, point.z - removed[index]!.z), 0);
+      });
+      const where = open.length === 2 ? 'is open at both ends' : open[0] === 'end' ? 'ends open' : 'starts open';
+      issues.push(issue('CD_OPEN_END', 'error', pipe.id,
+        `${label} ${where} where ${(Math.max(...deleted) / 1000).toFixed(2)} m was deleted: the water does not reach a termination.`,
+        'Point at the gap to reconnect it, or draw it from its open end.'));
     }
     // Branch into the crown of the main.
     for (const fitting of spec.fittings) {

@@ -17,6 +17,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 
 import type { HvacElement, Point2D } from '../../../../types';
+import { deletablePicks } from '../segments/pieceDeleteController';
+import { domainOf } from '../segments/segmentUiStore';
 
 import { commitCondensateEdit, condensateEditContext, deleteDrainNetwork, editRunFittings, runCondensateEdit } from './condensateEditController';
 import {
@@ -54,6 +56,9 @@ type DragKind = CondensateDragKind;
 export interface CondensatePointerPoint {
   plan: Point2D;
   z: number | null;
+  /** The keys held when it was pressed: Ctrl/⌘ picks a piece in or out, Shift the stretch to it. */
+  additive?: boolean;
+  range?: boolean;
 }
 
 /** 3D drags bring their own pointer -> model solver (camera ray on an axis or plane). */
@@ -70,6 +75,9 @@ interface DragState {
   startZ: number | null;
   pointerId: number;
   resolve?: CondensatePointerResolver['resolve'];
+  /** Ctrl/⌘ or Shift held at the press (a click then picks pieces). */
+  additive: boolean;
+  range: boolean;
 }
 
 /** A level change smaller than this is not a level edit (mm). */
@@ -253,7 +261,7 @@ export function useCondensateEditing(options: {
           const label = drag.kind !== 'riser-top' && levelMoved && !planMoved ? 'Set drain level limit' : labels[drag.kind];
           commitCondensateEdit(final, label, [drag.pipeId]);
         }
-      } else onClickRef.current?.(drag.pipeId, { plan: drag.startWorld, z: drag.startZ });
+      } else onClickRef.current?.(drag.pipeId, { plan: drag.startWorld, z: drag.startZ, additive: drag.additive, range: drag.range });
     }
     latestRef.current = null;
     publish(null);
@@ -318,6 +326,8 @@ export function useCondensateEditing(options: {
       }
       const selected = hvacElements.filter((element) => options.selectedIds.includes(element.id));
       if (!selected.length || !selected.every(isCondensatePipe)) return;
+      // Pieces picked (a click pins one): Delete takes those pieces, through the canvas's own Delete.
+      if (event.key === 'Delete' && deletablePicks().some((pick) => domainOf(pick) === 'condensate')) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       const branches = selected.filter((element) => isUnitBranchSpec(readCondensatePipeSpec(element)));
@@ -345,7 +355,10 @@ export function useCondensateEditing(options: {
     if (!start || !session()) return;
     event.stopPropagation();
     event.preventDefault();
-    dragRef.current = { kind, pipeId: pipe.id, index, startWorld: start.plan, startZ: start.z, pointerId: event.pointerId, resolve: resolver?.resolve };
+    dragRef.current = {
+      kind, pipeId: pipe.id, index, startWorld: start.plan, startZ: start.z, pointerId: event.pointerId, resolve: resolver?.resolve,
+      additive: event.ctrlKey || event.metaKey, range: event.shiftKey && !(event.ctrlKey || event.metaKey),
+    };
     latestRef.current = { world: start.plan, z: start.z, shift: event.shiftKey };
   }, [enabled, pipe, toWorld, session]);
 

@@ -5,6 +5,7 @@
  * on its own). A plain click pins one piece alone (the segment store's `pin`).
  */
 import { useSmartDrawingStore } from '../../../../store';
+import { condensateRunOf } from '../condensate/condensatePieces';
 import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
 import { ductSegments } from '../duct/ductSegments';
 import { refrigerantLineOf } from '../refrigerant/refrigerantPieces';
@@ -21,6 +22,7 @@ function orderedKeys(focus: SegmentFocus): string[] | null {
     return plan ? ductSegments(plan).map((segment) => segment.key) : null;
   }
   if (domainOf(focus) === 'refrigerant') return refrigerantLineOf(element, state.hvacElements)?.pieces.map((piece) => piece.key) ?? null;
+  if (domainOf(focus) === 'condensate') return condensateRunOf(element)?.pieces.map((piece) => piece.key) ?? null;
   return null;
 }
 

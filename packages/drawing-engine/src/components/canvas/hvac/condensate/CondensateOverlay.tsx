@@ -28,12 +28,16 @@ import {
   type FabricViewportMatrix,
 } from '../../coordinateTransform';
 import { MM_TO_PX } from '../../scale';
-import { segmentFocusMarkup } from '../duct/ductOverlayMarkup';
+import { useDuctGapStore } from '../duct/ductGapController';
+import { openEndsMarkup, segmentFocusMarkup } from '../duct/ductOverlayMarkup';
 import type { ScreenRect } from '../duct/popoverPlacement';
+import { pickWithModifier } from '../segments/piecePicking';
 import { domainOf, focusId, useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
 
 import { CondensateEditBar } from './CondensateEditBar';
 import { CondensateEditHandles, useCondensateEditing } from './CondensateEditLayer';
+import { DrainDrawLayer } from './DrainDrawLayer';
+import { condensateOpenEnds } from './condensateCut';
 import {
   condensatePieceAtPlanPoint,
   condensatePieceEnds,
@@ -53,6 +57,7 @@ import { useCondensatePreviewStore } from './condensatePreviewStore';
 import type { CondensateDesignSettings } from './condensateSettings';
 import { layoutCondensateSupports } from './condensateSupports';
 import { isCondensateGully, isCondensatePipe, readCondensateGullySpec } from './condensateTypes';
+import { useDrainDrawStore } from './drainDrawSession';
 
 export interface CondensateOverlayHandle {
   syncViewTransform: (viewport: readonly number[]) => void;
@@ -138,15 +143,17 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
   const paintPieceFocus = useCallback(() => {
     const target = focusRef.current;
     if (!target) return;
-    const { hovered, pinned } = useSegmentUiStore.getState();
-    const shapes = (focus: SegmentFocus | null, tone: 'hovered' | 'pinned') => {
+    const { hovered, pinned, picked } = useSegmentUiStore.getState();
+    const shapes = (focus: SegmentFocus | null, tone: 'hovered' | 'pinned' | 'picked') => {
       if (!focus || domainOf(focus) !== 'condensate') return '';
       const run = runOf(focus.runId);
       const piece = run ? condensatePieceOf(run, focus.key) : null;
       if (!run || !piece) return '';
       return segmentFocusMarkup([condensatePieceOutline(run, piece)], tone, tone === 'pinned' ? condensatePieceEnds(run, piece) : [], kRef.current);
     };
-    const markup = shapes(pinned, 'pinned') + (hovered && focusId(hovered) !== focusId(pinned) ? shapes(hovered, 'hovered') : '');
+    // The other pieces picked (Ctrl/⌘, Shift) in the pinned colour; the pinned one with its brackets.
+    const others = picked.filter((pick) => focusId(pick) !== focusId(pinned)).map((pick) => shapes(pick, 'picked')).join('');
+    const markup = others + shapes(pinned, 'pinned') + (hovered && focusId(hovered) !== focusId(pinned) ? shapes(hovered, 'hovered') : '');
     if (target.innerHTML !== markup) target.innerHTML = markup;
   }, [runOf]);
   useEffect(() => useSegmentUiStore.subscribe(paintPieceFocus), [paintPieceFocus]);
@@ -158,9 +165,12 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
     const piece = run ? condensatePieceAtPlanPoint(run, world, 8 / Math.max(kRef.current, 1e-6)) : null;
     return piece ? { domain: 'condensate', runId, key: piece.key, anchorMark: null, view: '2d' } : null;
   }, [runOf]);
-  const pinPieceAt = useCallback((runId: string, at: { plan: Point2D }) => {
+  // A click pins the piece; with Ctrl/⌘ it is picked in or out, with Shift the stretch to it (to delete them).
+  const pinPieceAt = useCallback((runId: string, at: { plan: Point2D; additive?: boolean; range?: boolean }) => {
     const focus = pieceFocusAt(runId, at.plan);
-    if (focus) useSegmentUiStore.getState().pin(focus);
+    if (!focus) return;
+    if (at.additive || at.range) pickWithModifier(focus, Boolean(at.range));
+    else useSegmentUiStore.getState().pin(focus);
   }, [pieceFocusAt]);
 
   const committed = useMemo(() => hvacElements
@@ -176,11 +186,13 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
     .filter((entry): entry is CondensatePlanPresentation => entry !== null), [preview]);
   const replaced = useMemo(() => new Set(preview?.removeElementIds ?? []), [preview]);
   // The selected drain run (one at a time) is editable while no Auto route preview is open.
+  // (Not while a drain gap is drawn by hand: the plan's clicks are the drawing's.)
+  const drawing = useDrainDrawStore((state) => Boolean(state.session));
   const editPipe = useMemo(() => {
-    if (!enabled || !interactive || preview || selectedIds.length !== 1) return null;
+    if (!enabled || !interactive || preview || drawing || selectedIds.length !== 1) return null;
     const element = hvacElements.find((candidate) => candidate.id === selectedIds[0]);
     return element && isCondensatePipe(element) ? element : null;
-  }, [enabled, interactive, preview, selectedIds, hvacElements]);
+  }, [enabled, interactive, preview, drawing, selectedIds, hvacElements]);
   const edit = useCondensateEditing({
     enabled: editPipe !== null, pipe: editPipe, hvacElements, selectedIds, settings, gRef, hpx, onPreviewChange: onEditPreviewChange,
     onClick: pinPieceAt,
@@ -218,6 +230,31 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
     }
     return map;
   }, [preview]);
+  // Open ends left by deleted pieces (not while a way is previewed in their place): an amber bar and a "+" at each,
+  // the stretch deleted traced.
+  const openEndMarkup = useMemo(() => {
+    const ends = condensateOpenEnds(hvacElements).filter((end) => !editIds.has(end.runId)).map((end) => ({
+      runId: end.runId, end: end.end, point: end.point, outward: end.outward, halfWidthMm: end.radiusMm,
+      gapId: end.gap.partner ? `${end.gap.id}:drain` : null, removed: end.gap.partner ? end.gap.removed : null,
+    }));
+    return ends.length ? openEndsMarkup(ends, k) : '';
+  }, [hvacElements, editIds, k]);
+  // The new stretch of a drain gap's reconnection while its chip shows it (painted from the gap store).
+  const gapWayRef = useRef<SVGGElement | null>(null);
+  const paintGapWay = useCallback(() => {
+    const target = gapWayRef.current;
+    if (!target) return;
+    const { proposals, index } = useDuctGapStore.getState();
+    const bridge = proposals?.domain === 'condensate' ? proposals.candidates[index]?.bridge ?? [] : [];
+    const plan = bridge.filter((point, at) => at === 0 || Math.hypot(point.x - bridge[at - 1]!.x, point.y - bridge[at - 1]!.y) > 0.5);
+    const d = plan.length >= 2 ? `M${plan.map((point) => `${point.x} ${point.y}`).join(' L')}` : '';
+    const markup = d
+      ? `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+        + `<path d="${d}" fill="none" stroke="#0d9488" stroke-width="2.5" stroke-dasharray="8 5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+      : '';
+    if (target.innerHTML !== markup) target.innerHTML = markup;
+  }, []);
+  useEffect(() => useDuctGapStore.subscribe(paintGapWay), [paintGapWay]);
 
   if (!enabled || (!committed.length && !gullies.length && !preview)) return null;
   const showDetail = k > 0.05;
@@ -319,11 +356,14 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
             </g>
           ) : null}
           <g ref={focusRef} data-testid="condensate-segment-focus" style={{ pointerEvents: 'none' }} />
+          {openEndMarkup ? <g data-testid="drain-open-ends" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: openEndMarkup }} /> : null}
+          <g ref={gapWayRef} data-testid="drain-gap-way" style={{ pointerEvents: 'none' }} />
           {editPipe && edit.model ? (
             <g onPointerMove={hoverPiece} onPointerLeave={leavePiece}>
               <CondensateEditHandles api={edit} pipe={editPipe} hpx={hpx} settings={settings} />
             </g>
           ) : null}
+          <DrainDrawLayer gRef={gRef} hpx={hpx} hvacElements={hvacElements} />
         </g>
       </svg>
       {editPipe && edit.model ? <CondensateEditBar pipe={editPipe} api={edit} /> : null}

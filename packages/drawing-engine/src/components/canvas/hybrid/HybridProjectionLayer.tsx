@@ -2833,8 +2833,8 @@ export function HybridProjectionLayer({
         const pieceAt = !click || !model || !element ? null
           : isRefrigerantPipeElementType(element.type) ? refrigerantFocusAt(hvacElementsRef.current, pipeId, model)
             : element.type === "condensate-pipe" ? condensateFocusAt(hvacElementsRef.current, pipeId, model) : null;
-        // A refrigerant line's piece with Ctrl/⌘ (one, in or out) or Shift (the stretch to it), as on the plan.
-        if (modified && pieceAt && domainOf(pieceAt) === "refrigerant") {
+        // A refrigerant line's or a drain's piece with Ctrl/⌘ (one, in or out) or Shift (the stretch to it), as on the plan.
+        if (modified && pieceAt && (domainOf(pieceAt) === "refrigerant" || domainOf(pieceAt) === "condensate")) {
           if (!selectedIdsRef.current.includes(pipeId)) useSmartDrawingStore.getState().setSelectedIds([...selectedIdsRef.current, pipeId]);
           pickWithModifier(pieceAt, e.shiftKey && !(e.ctrlKey || e.metaKey));
           request();
