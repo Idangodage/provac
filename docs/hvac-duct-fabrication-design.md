@@ -3599,6 +3599,111 @@ A last fix (27d64ba): the drain BOM names its insulation by its inch thickness i
 
 None left from this work.
 
+## Pieces deleted, gaps reconnected or drawn by hand, Draw like this, Auto-turn (26 October 2026)
+
+**The request:** deleting a segment of a duct or pipe network deleted the whole run ("not professional"). Delete one or
+more pieces; when the pointer comes to a deleted section, propose the optimum path from what remains; allow drawing the
+section by hand; turn diffusers and cassettes during Auto route for the shortest compliant runs; and give the selected
+pipe or duct a matching item in the toolbar that draws exactly it. Approved plan:
+`C:\Users\idang\.claude\plans\toasty-giggling-shamir.md` (toolbox and the bar above the drawing; a pair loses the same
+stretch on both lines, Alt only the line clicked; Auto-turn only units whose services the run lays, never one turned,
+locked or piped by hand). One commit a phase, on main.
+
+### Picking and deleting pieces (P1 752104b, P4a 9dac173, P5 9869927)
+
+- A click on a run picks its piece (its card opens); **Ctrl/⌘ + click** adds or removes a piece on any run of any
+  service; **Shift + click** picks the stretch between the last pick and this one; in plan and in 3D. Picked pieces are
+  outlined; a chip counts them; Esc clears them. **Delete** removes exactly the picks, one undo; with no picks it
+  removes the whole run as before.
+- Ducts (`duct/ductCut.ts`): the fittings either side stay with open sockets; an end piece leaves an open end, a start
+  piece an open start; an inline accessory goes and the run stays whole; take-offs inside a cut are orphaned, the
+  others re-pointed; part 0 keeps the run's id and sizing.
+- Refrigerant (`refrigerant/refrigerantCut.ts`): cut on the drawn straights (50 mm spigot past an arc); a coordinated
+  pair loses the piece **alongside** on the other line, cut at one cross-section and levelled; older lines (dense arc
+  chords, no stored nodes) keep their level where a part's start is open (`levelKept`).
+- Drains (`condensate/condensateCut.ts`): the parts keep their exact levels and fittings (the network is marked
+  edited, `editPolicy: 'retain'`); a drop goes whole; an eye or vent alone; a sleeve or a locked run refuses. The
+  design checks name an open drain end (`CD_OPEN_END`).
+- Every open end remembers its gap (`DuctEnd.gap`, `pipeGap`, `drainGap`): what was removed, its partner, what it was
+  connected to. Amber marks show open ends on the plan and in 3D, the stretch removed traced faintly.
+- The store merges an update's properties **shallowly**: a key removed from an update survives, so every removed key is
+  set to `undefined` (and the tests' `applied()` helpers merge the same way).
+
+### Reconnect proposals (P2 dec224e, P4b 0f77e4b, P5)
+
+The pointer near a gap shows its best reconnection as a teal ghost and a chip, "Reconnect · As it was · 2.40 m ·
+2 bends": Enter applies, Tab the next way, Esc dismisses, [Draw it] draws it by hand, "All n" reconnects every gap.
+
+- **As it was** (exact, field by field) while the parts are where they were; **Shortest** and **Fewest bends** routed
+  square round what stands at that level (`findObstacleAwareOrthogonalRoute` in the gap's own frame), with a riser or a
+  transition where levels or sections differ; a lone end back to its collar, terminal, parent run or joint.
+- Ducts are validated by the run planner (no new errors); refrigerant by clash pairs against the parts' own (the
+  user's project has clashes of its own); a drain way is the whole network solved again along it, its levels may shift
+  to keep the fall (the chip says so), and a way that would need a refrigerant hop or has no room is refused
+  (`stretchConflict`).
+
+### Drawing by hand (P3 c5a4f7a, P4c 0f77e4b, P5b 85da175)
+
+- Ducts: [Draw it] arms the duct tool on from the first part; the other part's open start is a join target; drawing
+  back from an open start works too. Finishing joins the parts with the last elbow or transition (one undo).
+- Refrigerant: the pipe tool continues the open pair (or line) and welds into the other part on finishing.
+- Drains: **the drain tool** (`condensate/condensateDrawRoute.ts`, `drainDrawSession.ts`, `DrainDrawLayer.tsx`). It
+  starts at an open drain end or at the outlet of a unit that drains nowhere, leaving by the riser foot Auto route would
+  seat (`seatedRiserFoot`); it finishes on the gap's other part, on any drain of a network that drains (a wye, square
+  off the last leg where it can) or on a termination (into the network there, or a new network at the armed fall). The
+  drawn drain is a run like any other and its network is solved again (fall, risers, sizes, wyes; one undo). It owns
+  the pointer (its own layer above the other plan overlays); Esc steps back from drawing to picking a start, then out.
+
+### The toolbox's Ducts & pipes, and the bar above the drawing (P6 6625e51)
+
+- AC Equipment shows **Ducts & pipes** first: Supply duct, Return duct, Gas + liquid, Gas, Liquid, Drain, each with
+  what its tool draws now. The tool that is out is lit amber; the selection's own kind is lit blue.
+- The strip above the drawing (where the wall bar is not) shows, for one selected duct, line or drain, its chips
+  ("SUPPLY DUCT · Rect 400×250 · Bottom 2.70 m · GI + NBR 25 mm"; a picked duct straight gives its own section and
+  level) and **[Draw like this]**; with the duct tool out its fields (service, Rect/Round, presets in inches in IP,
+  Custom, Collar, bottom level); with the pipe tool its lines and copper; with the drain tool how to go on; and
+  **Reconnect all (n)** when gaps are open.
+- Draw like this sets the tool to exactly the selection: a duct's service, section (round stays round), level,
+  construction and insulation (the duct tool's `like`, taken by runs from a collar or free space; a branch keeps its
+  parent's); a line's lines and copper (sizes follow the port or line it starts from); a drain's fall for a network it
+  starts, from its own open end when it has one.
+
+### Auto-turn in Auto route (P7 55091ef)
+
+- Before routing, each eligible **4-way cassette** is tried at a quarter, a half and three quarters on its centre
+  (`unitOrientation.ts`): its pair's approach to the outdoor unit and its drain's to the nearest termination, routed
+  square round equipment and ducts (walls are crossed with sleeves), elbows counted. A turn needs room in front of each
+  connection (stub, first bend, the connection-side clearance) and a real gain: 300 mm and 5 % (practice values in
+  Route defaults, with a switch).
+- Eligible: a 4-way cassette (its ways, or FDT) whose services the run lays and whose runs the run replaces. Kept: one
+  turned by hand (the rotate command, placing with R: `orientationSetBy: 'user'`; Properties offer [Let Auto route turn
+  it]), locked, or piped by hand.
+- The turns are stage one of the unified Auto route: later steps see them, they go first in the same command (one
+  undo), the plan ghosts them, 3D shows them turned, the review lists them ("turned 90° clockwise: drain 2.07 m
+  shorter") and the cassettes kept, with why. A result that would keep a run a turned cassette had is planned again
+  unturned.
+- A diffuser's spigot side picked by hand (`spigotSideSetBy`) is kept by Auto duct's side choice; Auto duct already
+  turns a symmetric diffuser's spigot for the shortest duct.
+
+### Verified
+
+Unit tests: ductCut, ductGapProposal, refrigerantCut, refrigerantGapProposal, condensateCut, condensateDrawRoute,
+drawSpec, unitOrientation and the unified Auto route's orientation tests; the full suite 2619 passed (307 files). Canvas (each restores the project exactly):
+seg-delete-duct 25/25, gap-duct 19/19, gap-duct-draw 13/13, seg-delete-pipe 16/16, gap-pipe 18/18, gap-pipe-draw
+14/14, seg-delete-drain 27/27, drain-tool 29/29, draw-like-this 18/18, auto-turn 15/15. Regressions: cd-seg-pieces,
+cd-seg-options, condensate, move-p1, air-p3, rotate-p2, duct-auto. `duct-seg-p1` step 4 expects a drag of a collar-anchored run to be
+refused; moving runs has allowed it since 19 October (it fails on the code before this work too). `rotate-p1` has four
+failures (`DU_FLEX_BEND` after a turn, a half turn not re-routing the trunk) that the code before this work has too.
+
+### Known limits
+
+- Auto-turn scores each cassette's approach, not the whole network: two cassettes on one circuit are scored apart. A
+  turn needs a clear gain, and the review shows the result before Apply.
+- Only 4-way cassettes are turned. A unit is recognised by `dischargeWays: 4`, "4-way" in its name, or MHI's FDT
+  (not FDTS / FDTW).
+- The drain tool draws on the plan (taken out in 3D, the view turns to the plan).
+- A refrigerant line drawn like another takes the sizes of the port or line it starts from (no size override).
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.

@@ -339,6 +339,13 @@ project exactly.
 | Duct fittings and tags | `duct-round-rect` 10, `duct-y-junction` 9, `duct-tags` 14 |
 | Air systems and Auto route | `air-p1` 25, `air-p2` 23, `air-p3` 14, `duct-cross-room` 18, `duct-second-pass` 5, `duct-partial-apply` 6 |
 
+## Deleting pieces, reconnecting gaps, drawing by hand
+
+Since 26 October 2026 a refrigerant line or a drain loses only the pieces picked (Ctrl/⌘ and Shift + click, then
+Delete); the gaps are reconnected from a chip (as it was, shortest, fewest bends) or drawn by hand with the pipe tool or
+the drain tool, and the toolbox and the bar above the drawing offer "Draw like this". See
+[Pieces deleted, gaps reconnected or drawn by hand, Draw like this, Auto-turn](hvac-duct-fabrication-design.md#pieces-deleted-gaps-reconnected-or-drawn-by-hand-draw-like-this-auto-turn-26-october-2026).
+
 ## Known limits and open items
 
 **Limits of what was built:**
