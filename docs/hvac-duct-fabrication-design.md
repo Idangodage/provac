@@ -3510,7 +3510,8 @@ their own but 62–67 s under the full suite, past their 60 s; they now have 120
   by the offices; a new unit in a room designs by the room's from the start. Auto duct (generate, preview, apply,
   re-size, measure), Auto route's duct step, the unit panel, the Auto duct card, the duct segment cards and the turn
   and shape re-designs read through it (the two re-designs had used the project's settings even for a unit with
-  criteria of its own); an open Auto duct preview goes stale when a room's criteria change.
+  criteria of its own); so do a segment's figures, the drag-resize solver and a move (`ductSegmentFigures` takes the
+  rooms, 7be5686). An open Auto duct preview goes stale when a room's criteria change.
 - The criteria editor's scopes: **Room** (a picker when the system serves several rooms; the room's own, else what its
   name and type suggest), **DU-1 only** and **Project**. "Apply to Meeting Room" stores them on the room and re-sizes
   every unit whose criteria that changes, as a new design takes them (`applyDesignCriteriaToRoom`; the room and the
@@ -3527,6 +3528,8 @@ their own but 62–67 s under the full suite, past their 60 s; they now have 120
 - The drainage settings (Systems → Drainage) have the **drain pipe** series; in IP they offer **PVC Schedule 40**, back
   in SI the metric series, and re-size every drain network of another pipe to it
   (`resizeDrainNetworksToSeries`: re-solved along its own routes with the settings' series, falls kept, one undo).
+  Once the drawing has drains, a unit's panel makes the same offer under its SI | IP switch: "Use Schedule 40" or
+  "Keep as is", then "Re-size the drains" (a6282be).
 - Sheet metal reads in **lb and ft²** in IP: the duct card's build line, option chips and result line, the run
   inspector, the duct BOM and its CSV, the fabrication schedule's area and mass; the drain BOM gives lengths in ft.
   Messages annotate kg, kg/m and m² as well ("35 kg (77 lb)").
@@ -3535,7 +3538,8 @@ their own but 62–67 s under the full suite, past their 60 s; they now have 120
 ### D — SI | IP everywhere else (a3278a3)
 
 - **The unit's Properties:** capacity and heating in kBtu/h, airflow in CFM (stored in L/s), ESP in in. wg — typed in IP,
-  stored SI; what is typed stays as typed while the field has focus.
+  stored SI; what is typed stays as typed while the field has focus. The conversions are pure helpers
+  (`storedFieldText` / `storedFieldValue` in `hvacUnits.ts`, 539ab46), tested.
 - **Auto route:** the options (constant friction in in. wg/100 ft, the drain falls typed in in/ft, pipe rates per ft)
   and the review (the fan's pressure in in. wg, the trunk's size in inches, every engine sentence annotated, a proposed
   neck in inches).
@@ -3558,32 +3562,38 @@ A last fix (27d64ba): the drain BOM names its insulation by its inch thickness i
 
 ### Verified
 
-- **Type-check and lint** clean. **Full suite: 2,545 passed, 0 failed** (297 files; 46 skipped as before). New tests: the plenum's neck at 3 m/s and 1.2 Pa/m
+- **Type-check and lint** clean. **Full suite: 2,547 passed, 0 failed** (297 files; 46 skipped as before). New tests: the plenum's neck at 3 m/s and 1.2 Pa/m
   (A); the project's boxed-in cassette drained, clear of every refrigerant pipe (E); whose criteria a unit follows, a
   room's criteria re-sizing both its units with one undo, a new unit, clearing, save and load, re-detection and a split
-  room (B); the new unit kinds and message figures, IP fall and insulation options, both BOMs and the schedule in IP,
-  drains re-sized to Schedule 40 with one undo (C); terminal tags and the terminal schedule's CSV in IP (D). Each fix's
-  test fails without it (A, E).
+  room, a segment's figures by its rooms' criteria (B); the new unit kinds and message figures, IP fall and insulation
+  options, both BOMs and the schedule in IP, drains re-sized to Schedule 40 with one undo (C); terminal tags, the
+  terminal schedule's CSV and the Properties fields' conversions in IP (D). Each fix's test fails without it (A, E).
 - **On canvas** (real mouse and inputs; each driver restores the project and the settings exactly; nothing is saved):
   - `duct-sizing` 33/33 (its trunk scenario with Layout: Trunk, and the plenum checks: Auto gives Plenum + runouts, the
     neck at the collar's 674×164 at 3 m/s, both applied designs plan without errors);
   - `condensate`: the project's cassette drained (pumped +278 mm, 3.6 m to the gully, every run falling at 2 %, no
-    condensate errors; the drain's inspector, undo and redo);
+    condensate errors; the drain's inspector, undo and redo), and the same again after C and D;
   - `room-criteria` 14/14 (new): two rooms, two units in the first and one in the second; "Apply to Open Space 3"
     gives the room conference RC 30 and both its units show it, naming the room; the other room's unit keeps the
     project's; one undo; the room's Properties set private office RC 30 and offer where its mains run; a unit placed in
     the room afterwards reads them; Generate on the first unit designs at 7.5 m/s; a wall splitting the room leaves both
     halves with its criteria;
   - `unit-v2` 54/54 (its criteria step now on the unit's room, then "DU-1 only" laboratory as the unit's own);
-  - `ip-pipes` 26/26 (extended: the fall chips 1/8 … 5/16 in/ft and "1/4 in/ft" giving 2.0833 %, the inch insulation
-    chips, PVC Schedule 40 offered and the network re-sized from metric 32 to 1″, one undo);
+  - `ip-pipes` 30/30 (extended: the fall chips 1/8 … 5/16 in/ft and "1/4 in/ft" giving 2.0833 %, the inch insulation
+    chips, PVC Schedule 40 offered and the network re-sized from metric 32 to 1″, one undo; a cassette's unit panel
+    makes the same offer and "Re-size the drains" puts every drain in Schedule 40, one undo);
   - `ip-sweep` 17/17 (new): Auto route's review (pressure in in. wg, the trunk in inches), the unit's Properties (kBtu/h,
     CFM, in. wg; an ESP typed as 0.4 in. wg stored as 99.5 Pa), terminal tags, the duct card's ft² and lb, the
     drag-resize readout (fpm, in. wg/100 ft, the fan in in. wg), the run inspector's sheet metal and BOM, Air systems,
     duct settings, the Auto route options; back in SI as before;
   - regressions: `unit-panel` 39/39, `unit-high-capacity` 20/20, `duct-auto` 17/17, `shape-p6` 32/32, `air-p3` 14/14,
     `duct-cross-room` 18/18, `pipe-seg-refrigerant` 17/17, `pipe-seg-options` 16/16, `pipe-seg-inspector` 8/8,
-    `pipe-seg-kit` 5/5, `pipe-seg-accessories` 22/22, `cd-seg-pieces` 14/14, `cd-seg-options` 13/13.
+    `pipe-seg-kit` 5/5, `pipe-seg-accessories` 22/22, `cd-seg-pieces` 14/14, `cd-seg-options` 13/13; for the segment
+    figures by rooms, `resize-p2` 26/26, `resize-p3` 18/18, `resize-p4` 10/10 and `move-p1` 24/24. `resize-p3` and
+    `resize-p4` now place their diffusers where `resize-p2` does: the design for their symmetric pair has changed since
+    they were written (20 October), and its run from the unit is now one straight, with no second straight to size.
+    `resize-p3`'s top drag accepts the stop the readout names (200×400, "a take-off overlaps an elbow, transition or
+    connector").
 
 ### Known limits
 
