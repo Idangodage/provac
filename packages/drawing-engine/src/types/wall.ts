@@ -324,6 +324,16 @@ export interface Wall {
 }
 
 /**
+ * A room's duct design criteria (ASHRAE HVAC Applications ch. 49): what it is
+ * used for (an id of the criteria's room types, which gives its RC) and where
+ * the mains serving it run.
+ */
+export interface RoomDesignCriteria {
+  room: string;
+  location: 'shaft' | 'suspended' | 'occupied';
+}
+
+/**
  * Room - 2D room footprint + bound 3D attributes.
  */
 export interface Room {
@@ -345,6 +355,8 @@ export interface Room {
   validationWarnings: string[];
   isExterior: boolean;
   properties3D: Room3D;
+  /** The duct design criteria of the units serving it; none: the project's. */
+  designCriteria?: RoomDesignCriteria | null;
 }
 
 /**

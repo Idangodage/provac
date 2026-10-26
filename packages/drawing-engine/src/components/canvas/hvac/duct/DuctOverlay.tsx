@@ -667,7 +667,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     return focus;
   }, [hvacElements, selectedSet, airSystems]);
   // Auto duct preview: the proposed runs, dashed, over the drawing they were generated from (hiding the runs they replace).
-  const cardPreview = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, settings, props.walls) ? state.result : null));
+  const cardPreview = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, settings, props.walls, props.rooms) ? state.result : null));
   // The unified Auto route's duct proposal previews the same way.
   const routePreview = useCondensatePreviewStore((state) => state.unified?.ducts ?? null);
   const autoPreview = useMemo(() => {

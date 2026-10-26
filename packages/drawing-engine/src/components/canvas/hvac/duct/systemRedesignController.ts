@@ -17,6 +17,7 @@ import { ductWallInputs } from './ductBuilding';
 import { shapePhrase, systemRedesignSummary, systemRedesignTarget, unitDuctFigures, withRedesignApplied } from './ductSystemRedesign';
 import { appraiseDuctSystem, describeDuctErrors, ductSystemFigures, turnRedesignCommand } from './ductTurnRedesign';
 import { cancelAutoDuctWorker, runAutoDuctInWorker } from './optimizer/ductOptimizerClient';
+import { designSettingsForUnit } from './unitCriteria';
 
 export interface SystemRedesignBusy {
   unitId: string;
@@ -44,7 +45,8 @@ export function cancelSystemRedesign(): boolean {
 export async function redesignSystemAs(unitId: string, shape: AutoDuctShape): Promise<void> {
   const state = useSmartDrawingStore.getState();
   const scene = state.hvacElements;
-  const settings = state.ductSettings;
+  // By the unit's own design criteria, else the rooms' it serves, else the project's.
+  const settings = designSettingsForUnit(state.ductSettings, scene.find((element) => element.id === unitId), { scene, rooms: state.rooms });
   const asked = systemRedesignTarget(scene, unitId, shape, settings);
   if ('reason' in asked) {
     state.setProcessingStatus(`${asked.reason}.`, false);

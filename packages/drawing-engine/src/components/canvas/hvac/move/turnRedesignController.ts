@@ -22,6 +22,7 @@ import {
   type DuctSystemAppraisal, type TurnRedesignCommand,
 } from '../duct/ductTurnRedesign';
 import { cancelAutoDuctWorker, runAutoDuctInWorker } from '../duct/optimizer/ductOptimizerClient';
+import { designSettingsForUnit } from '../duct/unitCriteria';
 
 import { terminalsTurnedWhole } from './ductNetworkMove';
 import type { HvacMovePlan } from './hvacMoveModel';
@@ -119,10 +120,12 @@ export async function redesignAfterTurn(options: {
       type Candidate = { result: AutoDuctResult; command: TurnRedesignCommand; next: HvacElement[]; appraisal: DuctSystemAppraisal };
       let best: Candidate | null = null;
       let failure: string | null = null;
+      // By the unit's own design criteria, else the rooms' it serves, else the project's.
+      const unitSettings = designSettingsForUnit(settings, scene.find((element) => element.id === target.unitId), { scene, rooms: state.rooms });
       for (const attempt of turnRedesignAttempts(target)) {
         let result: AutoDuctResult;
         try {
-          result = await runAutoDuctInWorker(scene, { ...attempt.request, walls, rooms }, settings);
+          result = await runAutoDuctInWorker(scene, { ...attempt.request, walls, rooms }, unitSettings);
         } catch (error) {
           if (token !== generation) return;
           if (error instanceof Error && error.message === 'cancelled') {
@@ -135,10 +138,10 @@ export async function redesignAfterTurn(options: {
         }
         if (token !== generation) return;
         if (!result.runs.length) continue;
-        const command = turnRedesignCommand(scene, result, target, settings, new Date().toISOString(), attempt.note);
+        const command = turnRedesignCommand(scene, result, target, unitSettings, new Date().toISOString(), attempt.note);
         const next = applied(scene, command);
         // Appraised as the canvas checks it (the optimiser's own count can miss what the planner finds).
-        const appraisal = appraiseDuctSystem(next, command.add.map((element) => element.id), settings, result.pricePerPa);
+        const appraisal = appraiseDuctSystem(next, command.add.map((element) => element.id), unitSettings, result.pricePerPa);
         // (A tie keeps the trunk's own shape, tried first.)
         if (!best || betterAppraisal(appraisal, best.appraisal)) best = { result, command, next, appraisal };
         if (!appraisal.errors.length) break;
@@ -151,7 +154,7 @@ export async function redesignAfterTurn(options: {
       }
       const { result, command, next } = best;
       // The better of the two: the turn's own re-route as it stands, or the design (fewer errors, then the cheaper).
-      const choice = chooseTurnRedesign(appraiseDuctSystem(scene, target.runIds, settings, result.pricePerPa), best.appraisal, result.currency);
+      const choice = chooseTurnRedesign(appraiseDuctSystem(scene, target.runIds, unitSettings, result.pricePerPa), best.appraisal, result.currency);
       if (choice.take === 'reroute') {
         lines.push(`${target.unitName}'s ducts keep the turn's re-route: ${choice.why}.`);
         continue;

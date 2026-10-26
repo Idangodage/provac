@@ -37,7 +37,6 @@ import {
   autoDuctSelection, resetDuctSystemToInitial, resizeAutoDuctPreview, resizeDuctSystemAtBasis, resizeDuctSystemOnDrawing, resizeUnitDuctsAtBasis,
 } from '../duct/ductAutoController';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from '../duct/ductAutoPreviewStore';
-import { unitDuctSettings } from '../duct/ductDesignCriteria';
 import { ductNetworkRows } from '../duct/ductNetworkTree';
 import type { DuctDesignSettings } from '../duct/ductSettings';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from '../duct/ductSizing';
@@ -51,6 +50,7 @@ import {
   continueBasis, dryRunSizing, measureUnitService, necksToGrow, unitDuctSystems, unitEspCheck,
   type ContinueBasisSource, type UnitEspCheck, type UnitEspSettings,
 } from '../duct/unitAirSide';
+import { designSettingsForUnit } from '../duct/unitCriteria';
 import { EquipmentIcon, equipmentIconKind } from '../equipmentIcons';
 import { UnitSystemSwitch } from '../units/UnitSystemSwitch';
 import { inchFractionText, inchesText, tonsOf } from '../units/hvacUnits';
@@ -788,12 +788,12 @@ function DraftSizing({ unit, unitTag, service, terminals, settings }: { unit: Hv
   const update = useDuctSizingDraftStore((state) => state.update);
   const [limitsOpen, setLimitsOpen] = useUnitPanelSection('limits');
   const [chartOpen, setChartOpen] = useUnitPanelSection('chart');
-  const { hvacElements, walls, setDuctSettings, projectSettings } = useSmartDrawingStore((state) => ({
-    hvacElements: state.hvacElements, walls: state.walls, setDuctSettings: state.setDuctSettings, projectSettings: state.ductSettings,
+  const { hvacElements, walls, rooms, setDuctSettings, projectSettings } = useSmartDrawingStore((state) => ({
+    hvacElements: state.hvacElements, walls: state.walls, rooms: state.rooms, setDuctSettings: state.setDuctSettings, projectSettings: state.ductSettings,
   }), shallow);
   const preview = useDuctAutoPreviewStore((state) => ({ result: state.result, scene: state.scene, inputs: state.inputs }), shallow);
-  // (A preview is keyed to the project's settings; `settings` are the unit's own where it has criteria.)
-  const current = preview.result?.unitId === unit.id && isAutoDuctPreviewCurrent(preview, hvacElements, projectSettings, walls);
+  // (A preview is keyed to the project's settings and the rooms' criteria; `settings` are the unit's own or its rooms'.)
+  const current = preview.result?.unitId === unit.id && isAutoDuctPreviewCurrent(preview, hvacElements, projectSettings, walls, rooms);
   const air = readUnitAirData(unit);
   const counts = { supply: 0, return: 0 };
   for (const terminal of terminals) {
@@ -1007,8 +1007,8 @@ export function UnitDesignPanel({ unitId, onShowToolbox, autoOpen, onAutoOpenCha
   const unit = unitId ? scene.find((element) => element.id === unitId) ?? hvacElements.find((element) => element.id === unitId) ?? null : null;
   const spec = useMemo(() => (unit ? unitSpecificationFor(unit) : null), [unit]);
   const tags = useMemo(() => airSystemTags(scene), [scene]);
-  // The unit's ducts are designed and checked by its own criteria where it has them, else the project's.
-  const designSettings = unitDuctSettings(ductSettings, unit);
+  // The unit's ducts are designed and checked by its own criteria, else the rooms' it serves, else the project's.
+  const designSettings = designSettingsForUnit(ductSettings, unit, { scene, rooms });
   const airSide = useUnitAirSide(unit, spec, designSettings, scene);
   const draft = useDuctSizingDraft(unit?.id);
   const tab = useUnitPanelUiStore((state) => state.tab);

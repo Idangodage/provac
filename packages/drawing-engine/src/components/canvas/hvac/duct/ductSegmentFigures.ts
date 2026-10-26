@@ -128,7 +128,8 @@ function buildSystemModel(scene: readonly HvacElement[], settings: DuctDesignSet
     const spec = element ? readDuctTerminalSpec(element) : null;
     return spec ? [{ id: end.terminalId, spec: { designAirflowM3h: spec.designAirflowM3h ?? null, neckDiameterMm: spec.neckDiameterMm } }] : [];
   });
-  // A system without a stored basis is judged by its unit's criteria (its own, else the project's).
+  // A system without a stored basis is judged by its unit's criteria: its own here; the cards pass the settings of
+  // the rooms it serves (`designSettingsForUnit`).
   const requested = rootSpec.sizing ?? defaultSizingBasis(unitDuctSettings(settings, unit), rootSpec.service, null);
   const { systemAirflowM3h, shares } = systemTerminalAirflows(unit ?? undefined, requested, terminals);
   const basis = linkSizingBasis(requested, systemAirflowM3h);

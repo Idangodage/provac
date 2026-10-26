@@ -10,10 +10,13 @@ import type { HvacElement } from '../../../../types';
 
 import { selectAutoDuctDesign, type AutoDuctRequest, type AutoDuctResult, type AutoDuctWall } from './ductAutoLayout';
 import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
+import { roomCriteriaKey, type CriteriaRoom } from './unitCriteria';
 
 export interface AutoDuctPreviewInputs {
   settings: DuctDesignSettings;
   walls: readonly AutoDuctWall[];
+  /** The rooms' design criteria it was designed by (`roomCriteriaKey`). */
+  roomCriteria?: string;
 }
 
 const SETTINGS_KEYS = new WeakMap<DuctDesignSettings, string>();
@@ -69,14 +72,16 @@ export function isAutoDuctPreviewCurrent(
   hvacElements: readonly HvacElement[],
   settings?: DuctDesignSettings,
   walls?: readonly AutoDuctWall[],
+  rooms?: ReadonlyArray<CriteriaRoom>,
 ): boolean {
   return Boolean(preview.result && preview.scene === hvacElements
     && (!settings || (preview.inputs && designSettingsKey(preview.inputs.settings) === designSettingsKey(settings)))
-    && (!walls || preview.inputs?.walls === walls));
+    && (!walls || preview.inputs?.walls === walls)
+    && (!rooms || preview.inputs?.roomCriteria === undefined || preview.inputs.roomCriteria === roomCriteriaKey(rooms)));
 }
 
 /** The preview's runs as they would be stored, and the drawing they replace runs in; null when out of date. */
-export function currentAutoDuctPreview(hvacElements: readonly HvacElement[], settings?: DuctDesignSettings, walls?: readonly AutoDuctWall[]): AutoDuctResult | null {
+export function currentAutoDuctPreview(hvacElements: readonly HvacElement[], settings?: DuctDesignSettings, walls?: readonly AutoDuctWall[], rooms?: ReadonlyArray<CriteriaRoom>): AutoDuctResult | null {
   const preview = useDuctAutoPreviewStore.getState();
-  return isAutoDuctPreviewCurrent(preview, hvacElements, settings, walls) ? preview.result : null;
+  return isAutoDuctPreviewCurrent(preview, hvacElements, settings, walls, rooms) ? preview.result : null;
 }

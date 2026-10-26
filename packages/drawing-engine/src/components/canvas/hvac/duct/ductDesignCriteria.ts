@@ -17,8 +17,9 @@
  * supply (about 0.1 in. wg per 100 ft, the commonly used design rate), 0.6 Pa/m
  * for return.
  *
- * The project's criteria set what new designs size at; a unit may carry its
- * own (`unitDuctSettings`), suggested from its room (`suggestDesignRoom`).
+ * The project's criteria set what new designs size at; a room may carry its
+ * own (suggested from its name and type: `suggestDesignRoom`), and so may a
+ * unit (`unitCriteria.ts` decides whose a unit's ducts follow).
  */
 import type { HvacElement, Room, RoomType } from '../../../../types';
 
@@ -204,14 +205,12 @@ export function readUnitCriteria(unit: Pick<HvacElement, 'properties'> | null | 
 const UNIT_SETTINGS = new WeakMap<DuctDesignSettings, Map<string, DuctDesignSettings>>();
 
 /**
- * The settings a unit's ducts are designed and checked by: the project's,
- * with the unit's own criteria (their limits, friction rates and neck caps)
- * when it has them. The same object comes back for the same settings and
- * criteria, so caches keyed by the settings stay warm; a unit without
- * criteria gets the project's settings themselves.
+ * The project's settings with a set of criteria laid over them (their limits,
+ * friction rates and neck caps); none: the project's settings themselves. The
+ * same object comes back for the same settings and criteria, so caches keyed
+ * by the settings stay warm.
  */
-export function unitDuctSettings(settings: DuctDesignSettings, unit: Pick<HvacElement, 'properties'> | null | undefined): DuctDesignSettings {
-  const criteria = readUnitCriteria(unit);
+export function criteriaDuctSettings(settings: DuctDesignSettings, criteria: DesignCriteria | null): DuctDesignSettings {
   if (!criteria) return settings;
   let byCriteria = UNIT_SETTINGS.get(settings);
   if (!byCriteria) {
@@ -225,6 +224,15 @@ export function unitDuctSettings(settings: DuctDesignSettings, unit: Pick<HvacEl
     byCriteria.set(key, merged);
   }
   return merged;
+}
+
+/**
+ * The settings a unit's ducts are designed and checked by, as far as the unit
+ * itself tells: the project's, with the unit's own criteria when it has them
+ * (`designSettingsForUnit` adds the rooms it serves).
+ */
+export function unitDuctSettings(settings: DuctDesignSettings, unit: Pick<HvacElement, 'properties'> | null | undefined): DuctDesignSettings {
+  return criteriaDuctSettings(settings, readUnitCriteria(unit));
 }
 
 /** Words in a room's name that say what it is used for, the more specific first. */

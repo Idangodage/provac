@@ -134,7 +134,8 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
         rebuildExisting: options.duct?.rebuildExisting ?? false,
         scope: options.scope,
         walls: ductWallInputs(state.walls),
-        rooms: state.rooms.map((room) => ({ id: room.id, vertices: room.vertices })),
+        // (With each room's design criteria: a unit designs by those of the rooms it serves.)
+        rooms: state.rooms.map((room) => ({ id: room.id, vertices: room.vertices, designCriteria: room.designCriteria ?? null })),
         ...(options.scope === 'selection' ? {
           unitIds: selection.filter((element) => element.type === 'ducted-ac').map((element) => element.id),
           terminalIds: selection.filter(isDuctTerminalElement).map((element) => element.id),

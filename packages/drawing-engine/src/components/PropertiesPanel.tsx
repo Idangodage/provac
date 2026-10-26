@@ -25,6 +25,7 @@ import type {
   DimensionPlacementType,
   DisplayUnit,
   PartitionWallMode,
+  Room,
   RoomType,
   RoomOccupancySchedule,
   Wall,
@@ -51,6 +52,20 @@ import { AirSystemCard } from "./canvas/hvac/duct/AirSystemCard";
 import { AirSystemsSection } from "./canvas/hvac/duct/AirSystemsSection";
 import { DuctAutoCard } from "./canvas/hvac/duct/DuctAutoCard";
 import { DuctRunInspector, DuctSystemsSection, DuctTerminalInspector, DuctToolSection } from "./canvas/hvac/duct/DuctPanels";
+import { applyDesignCriteriaToRoom } from "./canvas/hvac/duct/ductAutoController";
+import {
+  DESIGN_ROOM_TYPES,
+  DUCT_MAIN_LOCATION_LABELS,
+  DUCT_MAIN_LOCATIONS,
+  RECOMMENDED_DESIGN_CRITERIA,
+  criteriaStillApply,
+  designRoomType,
+  suggestDesignRoom,
+  type DesignCriteria,
+  type DesignRoomId,
+  type DuctMainLocation,
+} from "./canvas/hvac/duct/ductDesignCriteria";
+import { readRoomCriteria } from "./canvas/hvac/duct/unitCriteria";
 import { HvacMoveSection } from "./canvas/hvac/move/HvacMoveSection";
 import { HvacRotateSection, HvacRotationField } from "./canvas/hvac/move/HvacRotateSection";
 import { isTurnableElement } from "./canvas/hvac/move/hvacMoveModel";
@@ -2044,6 +2059,55 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   );
 }
 
+const MAINS_RUN_LABELS: Record<DuctMainLocation, string> = {
+  shaft: "Shaft or drywall",
+  suspended: "Suspended ceiling",
+  occupied: "Exposed in the room",
+};
+
+/**
+ * A room's duct design criteria (ASHRAE ch. 49): the project's, or a room type
+ * with its RC and where the mains run; what its name suggests while it has
+ * none. A change re-sizes the ducts of the units serving it (one undo).
+ */
+function RoomDuctCriteriaRows({ room }: { room: Room }) {
+  const settings = useSmartDrawingStore((state) => state.ductSettings);
+  const own = readRoomCriteria(room);
+  const suggested = suggestDesignRoom(room);
+  const location = own?.location ?? settings.designCriteria?.location ?? RECOMMENDED_DESIGN_CRITERIA.location;
+  const project = criteriaStillApply(settings) && settings.designCriteria ? designRoomType(settings.designCriteria.room) : null;
+  const apply = (criteria: DesignCriteria | null) => {
+    const type = criteria ? designRoomType(criteria.room) : null;
+    applyDesignCriteriaToRoom(room.id, criteria, type ? `Design criteria: ${type.label} RC ${type.rc} → ${room.name}` : `Design criteria: ${room.name} → the project's`);
+  };
+  const select = "w-44 px-2 py-1 text-sm border border-amber-200/80 rounded focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white";
+  return (
+    <>
+      <PropertyRow label="Duct criteria">
+        <select value={own?.room ?? ""} aria-label="Room duct design criteria" data-testid="room-duct-criteria" className={select}
+          onChange={(event) => apply(event.target.value ? { room: event.target.value as DesignRoomId, location } : null)}>
+          <option value="">Project&apos;s{project ? ` (${project.label} · RC ${project.rc})` : " (custom limits)"}</option>
+          {DESIGN_ROOM_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label} · RC {type.rc}</option>)}
+        </select>
+      </PropertyRow>
+      {own ? (
+        <PropertyRow label="Mains run">
+          <select value={own.location} aria-label="Room duct mains location" data-testid="room-duct-criteria-location" className={select}
+            onChange={(event) => apply({ room: own.room, location: event.target.value as DuctMainLocation })}>
+            {DUCT_MAIN_LOCATIONS.map((value) => <option key={value} value={value} title={DUCT_MAIN_LOCATION_LABELS[value]}>{MAINS_RUN_LABELS[value]}</option>)}
+          </select>
+        </PropertyRow>
+      ) : suggested ? (
+        <div className="flex items-center justify-between gap-2 py-1 text-[11px] text-slate-500" data-testid="room-duct-criteria-suggested">
+          <span>Its name suggests {designRoomType(suggested).label} (RC {designRoomType(suggested).rc}).</span>
+          <button type="button" onClick={() => apply({ room: suggested, location })}
+            className="shrink-0 rounded border border-amber-200/80 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-amber-50">Use</button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
   const {
     rooms,
@@ -2315,6 +2379,7 @@ function RoomSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
 
       {tab === "thermal" && (
         <div className="space-y-1">
+          <RoomDuctCriteriaRows room={selectedRoom} />
           <PropertyRow label="HVAC Template">
             <select
               value={selectedRoom.properties3D.hvacTemplateId}

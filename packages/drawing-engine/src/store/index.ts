@@ -35,7 +35,7 @@ import {
   resolveCondensateSettings,
   type CondensateDesignSettings,
 } from '../components/canvas/hvac/condensate/condensateSettings';
-import { RECOMMENDED_DESIGN_CRITERIA, designCriteriaSettings } from '../components/canvas/hvac/duct/ductDesignCriteria';
+import { RECOMMENDED_DESIGN_CRITERIA, designCriteriaSettings, readDesignCriteria } from '../components/canvas/hvac/duct/ductDesignCriteria';
 import { expandDuctDeletion } from '../components/canvas/hvac/duct/ductNetwork';
 import {
   DEFAULT_DUCT_SETTINGS,
@@ -86,6 +86,7 @@ import type {
   SplineMethod,
   Room,
   Room3D,
+  RoomDesignCriteria,
   RoomType,
   HvacDesignConditions,
   ElevationSettings,
@@ -258,6 +259,7 @@ function preserveCurrentRoomMetadata(detectedRooms: Room[], currentRooms: Room[]
       showLabel: current.showLabel,
       isExterior: current.isExterior,
       properties3D: { ...current.properties3D },
+      ...(current.designCriteria !== undefined ? { designCriteria: current.designCriteria } : {}),
     };
   });
 }
@@ -2055,6 +2057,12 @@ export interface DrawingState {
     properties3D?: Partial<Room3D>;
   }) => string;
   updateRoom: (id: string, updates: Partial<Room>) => void;
+  /**
+   * A room's duct design criteria (null: the project's). `skipHistory` folds
+   * the change into a history step the caller saves itself (with the ducts it
+   * re-sizes).
+   */
+  setRoomDesignCriteria: (id: string, criteria: RoomDesignCriteria | null, options?: { skipHistory?: boolean }) => void;
   updateRoom3DAttributes: (id: string, updates: Partial<Room3D>) => void;
   setHvacDesignConditions: (updates: Partial<HvacDesignConditions>) => void;
   setPipeRoutingSettings: (updates: Partial<PipeRoutingSettings>) => void;
@@ -3815,6 +3823,15 @@ export const useDrawingStore = create<DrawingState>()(
         get().saveToHistory('Update room');
       },
 
+      setRoomDesignCriteria: (id, criteria, options) => {
+        set((state) => ({
+          rooms: state.rooms.map((room) => (room.id === id
+            ? { ...room, designCriteria: criteria ? { room: criteria.room, location: criteria.location } : null }
+            : room)),
+        }));
+        if (!options?.skipHistory) get().saveToHistory('Room design criteria');
+      },
+
       updateRoom3DAttributes: (id, updates) => {
         let previousValue: Room3D | null = null;
         let nextValue: Room3D | null = null;
@@ -5263,6 +5280,8 @@ export const useDrawingStore = create<DrawingState>()(
               isExterior: rawRoom.isExterior ?? false,
               properties3D: rawRoom.properties3D ?? { ...DEFAULT_ROOM_3D },
             };
+            const roomCriteria = readDesignCriteria(rawRoom.designCriteria);
+            if (roomCriteria) baseRoom.designCriteria = roomCriteria;
             return bindRoomAttributes(baseRoom, rawRoom.properties3D ?? undefined);
           });
 

@@ -46,7 +46,6 @@ import {
 import { AUTO_DUCT_LAYOUT_LABELS, type AutoDuctLayoutChoice, type AutoDuctRequest, type AutoDuctResult, type AutoDuctShape, type AutoDuctSizingBases } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { sameAutoDuctInputs } from './ductAutoWorkflow';
-import { unitDuctSettings } from './ductDesignCriteria';
 import { formatCost, type DuctCostBreakdown } from './ductEconomics';
 import { parseDuctNumber } from './ductNumericValue';
 import { neckVelocityMs, readUnitAirData, shareAirflow, type FanSpeed } from './ductSizing';
@@ -54,6 +53,7 @@ import { useDuctSizingDraft, useDuctSizingDraftStore, type DuctSizingDraft } fro
 import { basisAirflowM3h, initialSizingBasis, linkSizingBasis, sizingOutcomeLine } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService, type DuctSystemSizing } from './ductTypes';
+import { designSettingsForUnit } from './unitCriteria';
 
 const select = 'rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-xs';
 
@@ -281,8 +281,9 @@ export function DuctAutoCard() {
   }, [unitId]);
   if (!selection) return null;
   const { unit, terminals } = selection;
-  // The unit's own design criteria where it has them (the preview's freshness stays keyed to the project's settings).
-  const designSettings = unitDuctSettings(ductSettings, unit);
+  // The unit's own design criteria, else its rooms' (the preview's freshness stays keyed to the project's settings
+  // and the rooms' criteria).
+  const designSettings = designSettingsForUnit(ductSettings, unit, { scene: hvacElements, rooms, terminalIds: terminals.map((terminal) => terminal.id) });
   const air = readUnitAirData(unit);
   const counts = { supply: 0, return: 0 };
   for (const terminal of terminals) {
@@ -297,7 +298,7 @@ export function DuctAutoCard() {
   const airflowEntry = parseDuctNumber(airflowDraft, 0.01, 50000, true);
   const airflowError = airflowEntry.valid ? null : airflowEntry.message;
   const airflowOverride = airflowEntry.valid ? airflowEntry.value : null;
-  const current = result?.unitId === unit.id && isAutoDuctPreviewCurrent(preview, hvacElements, ductSettings, walls) ? result : null;
+  const current = result?.unitId === unit.id && isAutoDuctPreviewCurrent(preview, hvacElements, ductSettings, walls, rooms) ? result : null;
   // ---- Sizing ----
   const method: SizingMethod = ductSettings.autoSizingMethod;
   const defaultAirflow = basisAirflowM3h(unit, { airflowM3h: null, fanSpeed }).airflowM3h;

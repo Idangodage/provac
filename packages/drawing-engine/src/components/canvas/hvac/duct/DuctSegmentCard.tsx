@@ -40,7 +40,6 @@ import { useHvacUnits, type HvacUnits } from '../units/useHvacUnits';
 
 import { DuctSegmentGlyph } from './DuctSegmentGlyph';
 import { getActiveDuctBuilding } from './ductBuilding';
-import { unitDuctSettings } from './ductDesignCriteria';
 import { commitDuctSegmentEdit } from './ductEditController';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
@@ -66,6 +65,7 @@ import { equivalentDiameterMm } from './ductSizing';
 import { ductSystemRootOfRun } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
 import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec } from './ductTypes';
+import { designSettingsForUnit, type CriteriaRoom } from './unitCriteria';
 
 export type DuctSegmentProvider = SegmentProvider<DuctSegmentOption, DuctOptionEvaluation>;
 type DuctCardModel = SegmentCardModel<DuctSegmentOption, DuctOptionEvaluation>;
@@ -695,20 +695,20 @@ function ductCardModel(scene: HvacElement[], settings: DuctDesignSettings, focus
   return model;
 }
 
-/** The settings a run's card reads: its unit's own criteria where the unit has them, else the project's. */
-function settingsForRun(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string): DuctDesignSettings {
+/** The settings a run's card reads: its unit's own criteria, else the rooms' it serves, else the project's. */
+function settingsForRun(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, rooms: ReadonlyArray<CriteriaRoom>): DuctDesignSettings {
   const root = ductSystemRootOfRun(scene, runId);
   const start = root ? readDuctRunSpec(root)?.start : undefined;
   const unitId = start?.kind === 'unit-port' ? start.unitId : null;
-  return unitDuctSettings(settings, unitId ? scene.find((element) => element.id === unitId) : undefined);
+  return designSettingsForUnit(settings, unitId ? scene.find((element) => element.id === unitId) : undefined, { scene, rooms });
 }
 
-/** The duct runs' segment cards, read with the document's duct settings (a unit's own criteria for its ducts). */
-export function createDuctSegmentProvider(settings: DuctDesignSettings): DuctSegmentProvider {
+/** The duct runs' segment cards, read with the document's duct settings (a unit's own or its rooms' criteria for its ducts). */
+export function createDuctSegmentProvider(settings: DuctDesignSettings, rooms: ReadonlyArray<CriteriaRoom> = []): DuctSegmentProvider {
   return {
     domain: 'duct',
     testIdPrefix: 'duct-segment',
-    model: (scene, focus) => ductCardModel(scene, settingsForRun(scene, settings, focus.runId), focus),
+    model: (scene, focus) => ductCardModel(scene, settingsForRun(scene, settings, focus.runId, rooms), focus),
     rank: rankDuctOptions,
     badges: BADGES,
     recommendedBadge: 'recommended',

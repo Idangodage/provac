@@ -826,7 +826,7 @@ export function DrawingCanvas({
   const segmentProviders = useMemo(() => {
     const unitSystem = ductSettings.unitSystem ?? "si";
     return [
-      createDuctSegmentProvider(ductSettings),
+      createDuctSegmentProvider(ductSettings, rooms),
       createRefrigerantSegmentProvider({ profile: vrfRuleProfile, report: vrfValidationReport, unitSystem }),
       createCondensateSegmentProvider({ settings: condensateSettings, routingSettings: pipeRoutingSettings, walls, rooms, report: condensateValidationReport, unitSystem }),
     ];
@@ -947,7 +947,7 @@ export function DrawingCanvas({
         return airTerminalSchedule(analyseAirSystems(state.hvacElements, state.rooms), state.ductSettings, new Map(state.rooms.map((room) => [room.id, room.name])));
       },
       /** Room outlines (scripted placement of room-mounted equipment). */
-      getRooms: () => useSmartDrawingStore.getState().rooms.map((room) => ({ id: room.id, name: room.name, vertices: room.vertices })),
+      getRooms: () => useSmartDrawingStore.getState().rooms.map((room) => ({ id: room.id, name: room.name, vertices: room.vertices, designCriteria: room.designCriteria ?? null })),
       /** Wall centre lines and thicknesses (scripted auto-layout checks). */
       getWalls: () => useSmartDrawingStore.getState().walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
       /**
@@ -1916,7 +1916,7 @@ export function DrawingCanvas({
   // Terminals the Auto route panel proposes (shown until added or put away).
   const terminalProposal = useTerminalProposalStore((state) => state.proposal);
   // Terminals an Auto duct card preview turns the spigot of show turned in 3D until Apply or Discard.
-  const autoDuctTurned = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, ductSettings, walls) && state.result?.terminalUpdates?.length ? state.result.terminalUpdates : null));
+  const autoDuctTurned = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, ductSettings, walls, rooms) && state.result?.terminalUpdates?.length ? state.result.terminalUpdates : null));
   // An Auto route preview renders in 3D through the same transient path as a
   // pipe edit: new and changed pipes are previews; replaced ones become empty
   // placeholders so their committed meshes are hidden until Apply.
@@ -2268,7 +2268,7 @@ export function DrawingCanvas({
     hybridPipeInteractionRef.current?.setDraftPipes(elements);
   }, []);
   // Auto duct preview in 3D, through the same draft path the duct tool uses.
-  const autoDuctPreview = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, ductSettings, walls) ? state.result : null));
+  const autoDuctPreview = useDuctAutoPreviewStore((state) => (isAutoDuctPreviewCurrent(state, hvacElements, ductSettings, walls, rooms) ? state.result : null));
   useEffect(() => {
     if (!autoDuctPreview?.runs.length) return undefined;
     hybridPipeInteractionRef.current?.setDraftPipes(autoDuctPreview.runs);

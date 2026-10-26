@@ -24,7 +24,7 @@
  *
  * Walls are routing obstacles and are checked again on the finished geometry.
  */
-import type { HvacElement, Point2D } from '../../../../types';
+import type { HvacElement, Point2D, RoomDesignCriteria } from '../../../../types';
 
 import { assignmentOptions, assignmentProblemFromScene, solveAirSystemAssignment } from './airSystemAssignment';
 import { listAirPorts } from './ductAirPorts';
@@ -32,7 +32,6 @@ import { airSystemTags, analyseAirSystems, readAirSystemAssignment, servingUnits
 import type { AutoDuctIssue } from './ductAutoContext';
 import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuctInShape, removalTree, type AutoDuctShape } from './ductAutoLayout';
 import type { DuctWallInput } from './ductBuilding';
-import { unitDuctSettings } from './ductDesignCriteria';
 import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
 import { withInitialSizingRecords } from './ductSizingRecord';
@@ -41,6 +40,7 @@ import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService } from './ductTypes';
 import { terminalShortfall, unitTurnToFaceTerminals } from './ductUnitAdvice';
 import { withReplaced } from './optimizer/designTree';
+import { designSettingsForUnit } from './unitCriteria';
 
 
 export interface AutoRouteDuctServices {
@@ -60,8 +60,8 @@ export interface AutoRouteDuctOptions {
   terminalIds?: readonly string[];
   /** Walls with their height bands and construction: obstacles, or (a unit serving several rooms) passed through by sleeve. */
   walls?: readonly DuctWallInput[];
-  /** Room outlines: which room each unit and terminal is in. */
-  rooms?: ReadonlyArray<{ id: string; vertices: Point2D[] }>;
+  /** Room outlines: which room each unit and terminal is in; and each room's duct design criteria. */
+  rooms?: ReadonlyArray<{ id: string; vertices: Point2D[]; designCriteria?: RoomDesignCriteria | null }>;
 }
 
 export interface AutoRouteDuctServiceSummary {
@@ -316,8 +316,8 @@ export function planAutoRouteDucts(
       onProgress({ stage: `${stage}${label} (${index + 1} of ${order.length})`, completed: index, total: order.length });
       const group = assigned.get(unit.id)!;
       const kinds = new Set(group.map((terminal) => terminalPorts.get(terminal.id)!.kind));
-      // The unit's own design criteria where it has them, else the project's.
-      const settings = unitDuctSettings(options.settings, unit);
+      // The unit's own design criteria, else the strictest of the rooms its terminals are in, else the project's.
+      const settings = designSettingsForUnit(options.settings, unit, { scene: working, rooms: options.rooms ?? [], terminalIds: group.map((terminal) => terminal.id) });
       // The project's sizing method: constant friction at its friction rates and velocity limits, or the life-cycle optimum.
       const constantFriction = settings.autoSizingMethod === 'constant-friction';
       const auto = generateAutoDuctInShape(working, {

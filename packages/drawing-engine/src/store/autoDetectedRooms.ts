@@ -10,9 +10,9 @@ import {
 import { bindRoomGeometryTo3D } from '../attributes';
 import { computeSelectableWallPolygon } from '../components/canvas/wall/WallSelectionGeometry';
 import { computeWallUnionRenderData } from '../components/canvas/wall/WallUnionGeometry';
-import type { Point2D, Room, Room3D, RoomType, Wall } from '../types';
+import type { Point2D, Room, Room3D, RoomDesignCriteria, RoomType, Wall } from '../types';
 import { DEFAULT_ROOM_3D } from '../types/wall';
-import { generateId } from '../utils/geometry';
+import { generateId, isPointInPolygon } from '../utils/geometry';
 import { GeometryEngine } from '../utils/geometry-engine';
 
 import {
@@ -303,6 +303,7 @@ export function createRoomModel(params: {
   validationWarnings?: string[];
   isExterior?: boolean;
   properties3D?: Partial<Room3D>;
+  designCriteria?: RoomDesignCriteria | null;
 }): Room {
   const area = polygonAreaWithHoles(params.vertices, params.holes ?? []);
   const areaM2 = area / 1_000_000;
@@ -326,6 +327,7 @@ export function createRoomModel(params: {
     validationWarnings: params.validationWarnings ?? [],
     isExterior: params.isExterior ?? false,
     properties3D: { ...DEFAULT_ROOM_3D },
+    ...(params.designCriteria ? { designCriteria: { ...params.designCriteria } } : {}),
   };
   return bindRoomAttributes(roomBase, params.properties3D);
 }
@@ -399,6 +401,9 @@ export function buildAutoDetectedRooms(
   };
 
   const nextRooms: Room[] = [];
+  // A room the walls make anew (a room split by a new wall) keeps the duct design criteria of the room it was part of.
+  const criteriaAround = (point: Point2D): RoomDesignCriteria | null => existingRooms
+    .find((room) => room.designCriteria && room.vertices.length >= 3 && isPointInPolygon(point, room.vertices))?.designCriteria ?? null;
 
   detectedRooms.forEach((detectedRoom, index) => {
     const wallSignature = roomSignatureFromWallIds(detectedRoom.wallIds);
@@ -456,6 +461,7 @@ export function buildAutoDetectedRooms(
       validationWarnings,
       isExterior: existing?.isExterior ?? false,
       properties3D: existing?.properties3D,
+      designCriteria: existing ? existing.designCriteria ?? null : criteriaAround(detectedRoom.centroid),
     });
 
     if (existing) {
