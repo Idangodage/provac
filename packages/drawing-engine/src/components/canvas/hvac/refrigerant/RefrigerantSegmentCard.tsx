@@ -593,7 +593,7 @@ function buildAccessoryModel(scene: HvacElement[], focus: SegmentFocus, element:
   const partner = partnerElement && partnerPiece ? { id: partnerElement.id, key: partnerPiece.key } : null;
   const profile = context.profile ?? PROJECT_FALLBACK_RULE_PROFILE;
   const system = context.unitSystem ?? 'si';
-  const options = optionsIn(refrigerantPieceOptions(scene, element, line, piece, null, profile), system);
+  const options = optionsIn(refrigerantPieceOptions(scene, element, line, piece, null, profile, system), system);
   const token: RekeyToken = { kind: 'accessory', ordinal: piece.ordinal, legId: placed.legId };
   return {
     head: {
@@ -713,7 +713,7 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Refriger
   const pairPiece: RefrigerantPartner | null = partnerElement && partnerLine && partnerPiece ? { element: partnerElement, line: partnerLine, piece: partnerPiece } : null;
   const profile = context.profile ?? PROJECT_FALLBACK_RULE_PROFILE;
   const system = context.unitSystem ?? 'si';
-  const options = optionsIn(refrigerantPieceOptions(scene, element, line, piece, pairPiece, profile), system);
+  const options = optionsIn(refrigerantPieceOptions(scene, element, line, piece, pairPiece, profile, system), system);
   const titleBits = piece.kind === 'port' ? `${KIND_TITLES.port}` : `${KIND_TITLES[piece.kind]} ${piece.ordinal}`;
   const detail = figures.bend
     ? `${number(figures.bend.angleDeg)}° ${figures.bend.construction === 'socket-elbow' ? `socket elbow${figures.bend.catalogueModel ? ` ${figures.bend.catalogueModel}` : ''}` : 'formed bend'}`

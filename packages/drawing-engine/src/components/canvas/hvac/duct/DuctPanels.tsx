@@ -21,7 +21,7 @@ import { DuctNumberInput } from './DuctNumberInput';
 import { openUnitPanel } from './DuctSizingSection';
 import { assignTerminalsToUnit, unassignTerminals } from './airSystemController';
 import { analyseAirSystems, readAirSystemAssignment } from './ductAirSystems';
-import { buildDuctBom, buildDuctFabricationSchedule, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
+import { buildDuctBom, buildDuctFabricationSchedule, ductBomRowIn, ductBomToCsv, ductScheduleToCsv, type DuctBomRow } from './ductBom';
 import { findReattachTarget } from './ductBranchTargets';
 import { gaugeLabelForSheet } from './ductCatalog';
 import { commitDuctRunEdit, commitDuctRunSpec, commitDuctSegmentEdit, commitDuctTerminalEdit, commitDuctTerminalRetype, isTerminalConnected, reattachDuctRun } from './ductEditController';
@@ -134,11 +134,12 @@ export function SettingNumber({ settingKey, label, step, min, max, unit = 'mm', 
 }
 
 function BomTable({ rows }: { rows: DuctBomRow[] }) {
+  const units = useHvacUnits();
   if (rows.length === 0) return <p className="text-xs text-slate-500">Nothing to schedule.</p>;
   return (
     <table className="w-full table-fixed text-[11px]">
       <tbody>
-        {rows.map((row, index) => (
+        {rows.map((source) => ductBomRowIn(source, units.system)).map((row, index) => (
           <tr key={index} className={row.category === 'Issues' ? 'text-red-700' : 'text-slate-700'}>
             <td className="break-words py-0.5 pr-2 align-top">{row.description}{row.size !== '—' ? <span className="text-slate-400"> · {row.size}</span> : null}</td>
             <td className="w-20 break-words py-0.5 text-right align-top">{row.quantity} {row.unit}</td>
@@ -732,7 +733,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
         commit(Object.keys(overrides).length ? { ...rest, penetrations: overrides } : rest, fireDamper ? 'Fire damper in the wall' : 'No fire damper in the wall');
       }} />
       <Row label="Joints">{plan.joints.length}</Row>
-      <Row label="Sheet metal">{plan.totals.sheetAreaM2.toFixed(2)} m² · {plan.totals.massKg.toFixed(1)} kg</Row>
+      <Row label="Sheet metal">{units.fmt('area', plan.totals.sheetAreaM2)} · {units.fmt('mass', plan.totals.massKg, 1)}</Row>
       {plan.issues.length > 0 ? (
         <ul className="space-y-0.5 pt-1" data-testid="duct-run-issues">
           {plan.issues.map((issue, index) => (
@@ -745,7 +746,7 @@ export function DuctRunInspector({ element }: { element: HvacElement }) {
       <details className="pt-1">
         <summary className="cursor-pointer text-xs text-slate-600">Run BOM</summary>
         <BomTable rows={bom} />
-        <div className="pt-1"><CopyButton text={ductBomToCsv(bom)} label="Copy CSV" /></div>
+        <div className="pt-1"><CopyButton text={ductBomToCsv(bom, units.system)} label="Copy CSV" /></div>
       </details>
       {plan.practiceRules.length > 0 ? (
         <details>
@@ -1168,8 +1169,8 @@ export function DuctSystemsSection() {
         <summary className="cursor-pointer text-xs font-medium text-slate-700">Project duct BOM ({plans.length} run{plans.length === 1 ? '' : 's'})</summary>
         <BomTable rows={bom} />
         <div className="flex flex-wrap gap-2 pt-1">
-          <CopyButton text={ductBomToCsv(bom)} label="Copy BOM CSV" />
-          <CopyButton text={ductScheduleToCsv(schedule)} label="Copy schedule CSV" />
+          <CopyButton text={ductBomToCsv(bom, units.system)} label="Copy BOM CSV" />
+          <CopyButton text={ductScheduleToCsv(schedule, units.system)} label="Copy schedule CSV" />
         </div>
       </details>
       {penetrationRows.length ? (

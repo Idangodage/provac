@@ -3,6 +3,7 @@
  * (so it reflects field edits, not only what the generator produced).
  */
 import type { HvacElement } from '../../../../types';
+import { toDisplay, toDisplayText, unitLabel, type HvacUnitSystem } from '../units/hvacUnits';
 
 import { getCondensatePipeSystem } from './condensatePipeCatalog';
 import type { CondensateDesignSettings } from './condensateSettings';
@@ -116,13 +117,22 @@ export function buildCondensateBom(
   return rows;
 }
 
-export function condensateBomToCsv(rows: readonly CondensateBomRow[]): string {
+/** A row as the display system reads it: in IP lengths in ft, the description's figures annotated. */
+export function condensateBomRowIn(row: CondensateBomRow, system: HvacUnitSystem): Omit<CondensateBomRow, 'unit'> & { unit: string } {
+  if (system === 'si') return row;
+  const description = toDisplayText(row.description, system);
+  return row.unit === 'm'
+    ? { ...row, description, quantity: Math.round(toDisplay('length', row.quantity, system) * 100) / 100, unit: unitLabel('length', system) }
+    : { ...row, description };
+}
+
+export function condensateBomToCsv(rows: readonly CondensateBomRow[], system: HvacUnitSystem = 'si'): string {
   const escape = (value: string | number) => {
     const text = String(value);
     return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   return [
     ['Category', 'Description', 'Size', 'Quantity', 'Unit'].join(','),
-    ...rows.map((row) => [row.category, row.description, row.size, row.quantity, row.unit].map(escape).join(',')),
+    ...rows.map((source) => condensateBomRowIn(source, system)).map((row) => [row.category, row.description, row.size, row.quantity, row.unit].map(escape).join(',')),
   ].join('\n');
 }

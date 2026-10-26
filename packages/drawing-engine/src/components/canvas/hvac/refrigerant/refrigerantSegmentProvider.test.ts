@@ -75,6 +75,9 @@ describe('the refrigerant segment provider', () => {
     expect(model.head.size).toBe('5/8″ (Ø15.88)');
     expect(titles('size')).toEqual(['1/2″ (Ø12.70)', '5/8″ (Ø15.88)', '3/4″ (Ø19.05)']);
     expect(titles('insulation')).toEqual(['1 in', '1-1/4 in', '1-1/2 in', '2 in']);
+    // The inch thicknesses themselves (not the metric ones named by the nearest eighth).
+    expect(model.options.filter((option) => option.group === 'insulation').map((option) => option.id))
+      .toEqual(['insulation:25.4', 'insulation:31.75', 'insulation:38.1', 'insulation:50.8']);
     expect(model.issues.map((line) => line.message)).toEqual(['Total routed length 92340 mm (303.0 ft) exceeds 90000 mm (295.3 ft).']);
     // SI reads as it did.
     expect(provider.model(scene, focusOn('gas', straight.key))!.options.filter((option) => option.group === 'insulation').map((option) => option.title))

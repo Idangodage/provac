@@ -139,7 +139,7 @@ function BuildInfo({ figures }: { figures: DuctSegmentFigures | null }) {
       {figures ? (
         <div>
           {figures.fabrication.pieces} piece{figures.fabrication.pieces === 1 ? '' : 's'} · {(figures.fabrication.lengthMm / 1000).toFixed(2)} m
-          {figures.fabrication.areaM2 > 0 ? ` · ${figures.fabrication.areaM2.toFixed(2)} m² · ${figures.fabrication.massKg.toFixed(1)} kg` : ''}
+          {figures.fabrication.areaM2 > 0 ? ` · ${units.fmt('area', figures.fabrication.areaM2)} · ${units.fmt('mass', figures.fabrication.massKg, 1)}` : ''}
         </div>
       ) : null}
       {figures?.system ? <div>{figures.system.unitLabel ?? 'unit'} {figures.system.service}{figures.system.airflowM3h ? ` · ${units.fmt('airflow', figures.system.airflowM3h)}` : ''}</div> : null}
@@ -159,7 +159,7 @@ function DeltaChips({ evaluation }: { evaluation: DuctOptionEvaluation }) {
     </span>);
   }
   if (Math.abs(evaluation.deltaMassKg) >= 0.05) {
-    chips.push(<span key="kg" className="rounded bg-slate-100 px-1 tabular-nums text-slate-600" title="Change in galvanised sheet">{signed(evaluation.deltaMassKg, 1)} kg</span>);
+    chips.push(<span key="kg" className="rounded bg-slate-100 px-1 tabular-nums text-slate-600" title="Change in galvanised sheet">{signed(units.toDisplay('mass', evaluation.deltaMassKg), 1)} {units.unit('mass')}</span>);
   }
   const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error');
   if (errors.length) {
@@ -189,7 +189,7 @@ function ResultLine({ evaluation }: { evaluation: DuctOptionEvaluation }) {
   if (pressure !== null && Math.abs(pressure) >= 0.05) {
     parts.push(<span key="p" className={pressure < 0 ? 'text-emerald-700' : 'text-amber-700'}>ΔP {signed(units.toDisplay('pressure', pressure), ip ? 3 : 1)} {units.unit('pressure')}</span>);
   }
-  if (Math.abs(evaluation.deltaMassKg) >= 0.05) parts.push(<span key="m">{signed(evaluation.deltaMassKg, 1)} kg</span>);
+  if (Math.abs(evaluation.deltaMassKg) >= 0.05) parts.push(<span key="m">{signed(units.toDisplay('mass', evaluation.deltaMassKg), 1)} {units.unit('mass')}</span>);
   if (evaluation.deltaOuterHeightMm !== null && Math.abs(evaluation.deltaOuterHeightMm) >= 5) {
     parts.push(<span key="h" className={evaluation.deltaOuterHeightMm < 0 ? 'text-emerald-700' : 'text-amber-700'}>
       {ip ? `${signed(evaluation.deltaOuterHeightMm / 25.4, 1)} in` : `${signed(evaluation.deltaOuterHeightMm)} mm`} high

@@ -20,6 +20,7 @@
  */
 import type { HvacElement, Point2D } from '../../../../types';
 import type { SegmentEvaluationLike, SegmentOptionLike } from '../segments/segmentProvider';
+import type { HvacUnitSystem } from '../units/hvacUnits';
 
 import {
   createCondensateEditSession,
@@ -179,6 +180,13 @@ function solveOption(scene: readonly HvacElement[], option: CondensateSegmentOpt
 
 /** Falls offered for the network (%). */
 export const FALL_STEPS_PERCENT = [1, 1.25, 1.5, 2, 2.5];
+/** In IP, the falls as they are specified there (in/ft); a 1 % fall is 0.12 in/ft. */
+export const FALL_STEPS_IN_PER_FT = [1 / 8, 3 / 16, 1 / 4, 5 / 16];
+
+/** The falls offered in a unit system, in % (in IP: 1/8 in/ft is 1.0417 %, 1:96). */
+export function fallStepsPercent(system: HvacUnitSystem): number[] {
+  return system === 'ip' ? FALL_STEPS_IN_PER_FT.map((inPerFt) => Math.round((inPerFt / 0.12) * 1e4) / 1e4) : FALL_STEPS_PERCENT;
+}
 /** Riser heights offered (mm), up to the pump's head. */
 const LIFT_STEPS_MM = [300, 450, 600, 750, 900];
 
@@ -200,13 +208,18 @@ function storedFittingEdits(element: HvacElement): CondensateFittingEdit[] {
   return Array.isArray(element.properties.fittingEdits) ? (element.properties.fittingEdits as CondensateFittingEdit[]) : [];
 }
 
-/** A piece's options. `routes` are the network's plan routes, as its edit session reads them. */
+/**
+ * A piece's options. `routes` are the network's plan routes, as its edit
+ * session reads them; `unitSystem` picks the falls offered (in IP the named
+ * inch-per-foot ones).
+ */
 export function condensatePieceOptions(
   scene: readonly HvacElement[],
   element: HvacElement,
   run: CondensateRun,
   piece: CondensatePiece,
   context: CondensateEditContext,
+  unitSystem: HvacUnitSystem = 'si',
 ): CondensateSegmentOption[] {
   const networkId = getCondensateOwnership(element)?.networkId;
   if (!networkId) return [];
@@ -246,7 +259,7 @@ export function condensatePieceOptions(
   if (piece.kind === 'leg') {
     const stored = scene.map((candidate) => candidate.properties.condensateNetwork && getCondensateOwnership(candidate)?.networkId === networkId
       ? candidate.properties.designFallPercent : undefined).find(finite);
-    for (const fall of FALL_STEPS_PERCENT) {
+    for (const fall of fallStepsPercent(unitSystem)) {
       const current = finite(stored) ? Math.abs(stored - fall) < 1e-6 : false;
       options.push({
         id: `fall:${fall}`, group: 'fall', glyph: 'fall', title: `${fall} %`,

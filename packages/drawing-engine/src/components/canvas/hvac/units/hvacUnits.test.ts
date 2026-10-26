@@ -29,6 +29,18 @@ describe('HVAC units', () => {
     expect(unitLabel('slope', 'ip')).toBe('in/ft');
   });
 
+  it('converts sheet areas, volumes and prices per kg, m² and m to IP', () => {
+    expect(toDisplay('area', 1, 'ip')).toBeCloseTo(10.7639, 4); // 1 m² = 10.7639 ft²
+    expect(toDisplay('volume', 3.785411784, 'ip')).toBeCloseTo(1, 9); // 1 US gal
+    expect(toDisplay('perMass', 10, 'ip')).toBeCloseTo(4.5359, 4); // 10 a kg = 4.54 a lb
+    expect(toDisplay('perArea', 100, 'ip')).toBeCloseTo(9.2903, 4); // 100 a m² = 9.29 a ft²
+    expect(toDisplay('perLength', 10, 'ip')).toBeCloseTo(3.048, 6); // 10 a m = 3.05 a ft
+    expect(toDisplay('coverage', 8, 'ip')).toBeCloseTo(325.97, 1); // 8 m²/L = 326 ft²/gal
+    expect(formatQuantity('area', 2.5, 'ip')).toBe('26.9 ft²');
+    expect(formatQuantity('mass', 12.34, 'ip', 1)).toBe('27.2 lb');
+    expect(unitLabel('perMass', 'ip')).toBe('/ lb');
+  });
+
   it('names a fall by its sixteenth of an inch per foot, as falls are specified', () => {
     expect([0.5, 1, 1.5, 2, 3, 4].map(slopeFigureText)).toEqual(['1/16', '1/8', '3/16', '1/4', '3/8', '1/2']);
     expect(slopeText(1.04)).toBe('1/8 in/ft');
@@ -40,7 +52,8 @@ describe('HVAC units', () => {
   });
 
   it('leaves SI as it is and comes back from IP exactly', () => {
-    const kinds: HvacQuantity[] = ['airflow', 'velocity', 'friction', 'pressure', 'size', 'length', 'capacity', 'mass', 'slope', 'flow', 'charge'];
+    const kinds: HvacQuantity[] = ['airflow', 'velocity', 'friction', 'pressure', 'size', 'length', 'capacity', 'mass', 'slope', 'flow', 'charge',
+      'area', 'volume', 'perMass', 'perArea', 'perLength', 'coverage'];
     for (const kind of kinds) {
       expect(toDisplay(kind, 123.456, 'si')).toBe(123.456);
       expect(fromDisplay(kind, toDisplay(kind, 123.456, 'ip'), 'ip')).toBeCloseTo(123.456, 9);
@@ -81,8 +94,11 @@ describe('HVAC units', () => {
     expect(toDisplayText('supply 64 + return 48 = 112 Pa of 100', 'ip')).toBe('supply 64 + return 48 = 112 Pa (0.45 in. wg) of 100');
     expect(toDisplayText('Main 700×350 at 0.80 Pa/m, 24 m from the gully', 'ip'))
       .toBe('Main 700×350 (27.6×13.8 in) at 0.80 Pa/m (0.098 in. wg/100 ft), 24 m (78.7 ft) from the gully');
-    // Not a unit: an area, minutes, a count.
-    expect(toDisplayText('12 m² of sheet in 3 min, 2 × Ø300', 'ip')).toBe('12 m² of sheet in 3 min, 2 × Ø300 (Ø11.8 in)');
+    // An area and a mass read in ft² and lb; minutes and a count are not units.
+    expect(toDisplayText('12 m² of sheet in 3 min, 2 × Ø300', 'ip')).toBe('12 m² (129 ft²) of sheet in 3 min, 2 × Ø300 (Ø11.8 in)');
+    expect(toDisplayText('Trapeze 1200 mm carrying 35 kg; 4.2 kg per rod; 1.5 m² of NBR', 'ip'))
+      .toBe('Trapeze 1200 mm (3.9 ft) carrying 35 kg (77 lb); 4.2 kg (9.3 lb) per rod; 1.5 m² (16 ft²) of NBR');
+    expect(toDisplayText('liquid charge 0.050 kg/m', 'ip')).toBe('liquid charge 0.050 kg/m (0.034 lb/ft)');
   });
 
   it('gives a pipe message its lengths in feet from a metre up, a copper size by its inch name, and its falls in in/ft', () => {

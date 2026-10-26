@@ -60,8 +60,11 @@ describe('the condensate segment card', () => {
     const report = { ...EMPTY, issues: [issue('CD_SIZE_CAPACITY', run.id, 'C-1 (ID 20.6 mm) is below the 25.0 mm required for 7.1 kW.', 'warning')] };
     const card = createCondensateSegmentProvider({ settings, routingSettings: DEFAULT_PIPE_ROUTING_SETTINGS, report, unitSystem: 'ip' });
     const leg = card.model(scene, focusOn(run.id, 'leg:1'))!;
-    expect(leg.options.filter((option) => option.group === 'fall' && option.id !== 'fall:auto').map((option) => option.title))
-      .toEqual(['1/8 in/ft', '0.150 in/ft', '3/16 in/ft', '1/4 in/ft', '5/16 in/ft']);
+    // In IP the falls offered are the named ones (1/8 in/ft is 1.0417 %, 1:96), not the metric steps in disguise.
+    const falls = leg.options.filter((option) => option.group === 'fall' && option.id !== 'fall:auto');
+    expect(falls.map((option) => option.title)).toEqual(['1/8 in/ft', '3/16 in/ft', '1/4 in/ft', '5/16 in/ft']);
+    expect(falls.map((option) => option.id)).toEqual(['fall:1.0417', 'fall:1.5625', 'fall:2.0833', 'fall:2.6042']);
+    expect(falls.map((option) => option.detail.split(' ')[0])).toEqual(['1:96', '1:64', '1:48', '1:38']);
     expect(leg.options.find((option) => option.group === 'size' && !option.current)?.detail).toMatch(/^Ø\d\.\d\d in · bore \d\.\d\d in · this run/);
     expect(leg.issues.map((line) => line.message)).toEqual(['C-1 (ID 20.6 mm (0.81 in)) is below the 25.0 mm (0.98 in) required for 7.1 kW (24.2 kBtu/h).']);
     // SI reads as it did.

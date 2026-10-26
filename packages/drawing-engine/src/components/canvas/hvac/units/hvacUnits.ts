@@ -1,8 +1,9 @@
 /**
  * HVAC quantities in the units a designer reads them in: SI (m³/h, m/s, Pa/m,
- * Pa, mm, kW, a fall in %, L/h, kg/m) or IP (CFM, fpm, in. wg per 100 ft,
- * in. wg, in, kBtu/h, in/ft, gph, lb/ft). The model stays SI; a figure is
- * converted only where it is shown or typed.
+ * Pa, mm, kW, a fall in %, L/h, kg/m, m², kg; prices per kg, m² and m) or IP
+ * (CFM, fpm, in. wg per 100 ft, in. wg, in, kBtu/h, in/ft, gph, lb/ft, ft²,
+ * lb; prices per lb, ft² and ft). The model stays SI; a figure is converted
+ * only where it is shown or typed.
  *
  * Factors are exact where the definitions are (1 ft = 0.3048 m, 1 in =
  * 25.4 mm, 1 lb = 0.45359237 kg, 1 US gal = 3.785411784 L, a 1 % fall is
@@ -13,7 +14,8 @@
 export type HvacUnitSystem = 'si' | 'ip';
 
 /** What a number is: each kind has its unit, precision and input step in either system. */
-export type HvacQuantity = 'airflow' | 'velocity' | 'friction' | 'pressure' | 'size' | 'length' | 'capacity' | 'mass' | 'slope' | 'flow' | 'charge';
+export type HvacQuantity = 'airflow' | 'velocity' | 'friction' | 'pressure' | 'size' | 'length' | 'capacity' | 'mass' | 'slope' | 'flow' | 'charge'
+  | 'area' | 'volume' | 'perMass' | 'perArea' | 'perLength' | 'coverage';
 
 interface Display {
   unit: string;
@@ -58,6 +60,14 @@ const QUANTITIES: Record<HvacQuantity, QuantityDef> = {
   slope: { si: { unit: '%', digits: 2, step: 0.1 }, ip: { unit: 'in/ft', digits: 3, step: 0.01 }, perSi: IN_PER_FT_PER_PERCENT },
   flow: { si: { unit: 'L/h', digits: 1, step: 0.5 }, ip: { unit: 'gph', digits: 2, step: 0.1 }, perSi: GAL_PER_L },
   charge: { si: { unit: 'kg/m', digits: 3, step: 0.01 }, ip: { unit: 'lb/ft', digits: 3, step: 0.01 }, perSi: LB_PER_KG * FT },
+  // Sheet and insulation areas; a price per kg, per m² and per m of what it buys (in IP per lb, ft² and ft); how far
+  // a litre of adhesive goes.
+  area: { si: { unit: 'm²', digits: 2, step: 0.1 }, ip: { unit: 'ft²', digits: 1, step: 1 }, perSi: 1 / (FT * FT) },
+  volume: { si: { unit: 'L', digits: 2, step: 0.5 }, ip: { unit: 'gal', digits: 2, step: 0.1 }, perSi: GAL_PER_L },
+  perMass: { si: { unit: '/ kg', digits: 2, step: 0.1 }, ip: { unit: '/ lb', digits: 2, step: 0.05 }, perSi: 1 / LB_PER_KG },
+  perArea: { si: { unit: '/ m²', digits: 2, step: 0.5 }, ip: { unit: '/ ft²', digits: 2, step: 0.05 }, perSi: FT * FT },
+  perLength: { si: { unit: '/ m', digits: 2, step: 0.5 }, ip: { unit: '/ ft', digits: 2, step: 0.1 }, perSi: FT },
+  coverage: { si: { unit: 'm²/L', digits: 1, step: 0.5 }, ip: { unit: 'ft²/gal', digits: 0, step: 10 }, perSi: 1 / (FT * FT) / GAL_PER_L },
 };
 
 /** A figure in the display system (no rounding). */
@@ -168,7 +178,7 @@ export function formatSection(section: { widthMm: number; heightMm: number; diam
  * without one, or a percentage), longest units first so "Pa/m" is not read as
  * "Pa".
  */
-const MESSAGE_FIGURE = /(\d+(?:\.\d+)?) ?(m³\/h|Pa\/m|m\/s|L\/h|Pa|kW|mm|m)(?![\w/²³])|Ø(\d+(?:\.\d+)?)|\b(\d{2,4})×(\d{2,4})\b|(\d+(?:\.\d+)?) ?%/g;
+const MESSAGE_FIGURE = /(\d+(?:\.\d+)?) ?(m³\/h|Pa\/m|m\/s|L\/h|kg\/m|kg|m²|Pa|kW|mm|m)(?![\w/²³])|Ø(\d+(?:\.\d+)?)|\b(\d{2,4})×(\d{2,4})\b|(\d+(?:\.\d+)?) ?%/g;
 
 /** A sentence about a fall: its percentages are falls. */
 const FALL_WORDS = /\b(?:slopes?|falls?|gradient)\b/i;
@@ -186,6 +196,9 @@ const IP_OF_UNIT: Record<string, (value: number, written: string) => string> = {
   'Pa/m': (v) => `${(v * IN_WG_100FT_PER_PA_M).toFixed(3)} in. wg/100 ft`,
   'm/s': (v) => `${Math.round(v * FPM_PER_MS)} fpm`,
   'L/h': (v) => `${(v * GAL_PER_L).toFixed(2)} gph`,
+  'kg/m': (v) => `${(v * LB_PER_KG * FT).toFixed(3)} lb/ft`,
+  kg: (v) => `${(v * LB_PER_KG).toFixed(v * LB_PER_KG < 10 ? 1 : 0)} lb`,
+  'm²': (v) => `${(v / (FT * FT)).toFixed(v / (FT * FT) < 10 ? 1 : 0)} ft²`,
   Pa: (v) => `${(v / IN_WG_PA).toFixed(2)} in. wg`,
   kW: (v) => `${(v * KBTUH_PER_KW).toFixed(1)} kBtu/h`,
   mm: messageLengthText,
@@ -195,8 +208,9 @@ const IP_OF_UNIT: Record<string, (value: number, written: string) => string> = {
 /**
  * An engine message as the display system reads it. In SI it is as written.
  * In IP the sentence keeps its SI wording and every figure that carries a
- * unit (m³/h, Pa/m, m/s, L/h, Pa, kW, mm, m, "Ø300", "700×350", a fall in %)
- * is followed by its IP value in brackets: "500 m³/h (294 CFM)". Messages give
+ * unit (m³/h, Pa/m, m/s, L/h, kg/m, kg, m², Pa, kW, mm, m, "Ø300", "700×350",
+ * a fall in %) is followed by its IP value in brackets: "500 m³/h (294 CFM)",
+ * "35 kg (77 lb)". Messages give
  * some figures without a unit ("supply 64 + return 48 = 112 Pa"), so rewriting
  * them in place would mix the systems; the dual form never changes what a
  * sentence says. A percentage is a fall only in a sentence about one (a share

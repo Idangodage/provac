@@ -14,8 +14,10 @@ import { applyAutoRoutePreview, discardAutoRoutePreview, runAutoRoute } from '..
 import { fromDisplay, slopeText, toDisplay, toDisplayText, unitLabel } from '../units/hvacUnits';
 import { useHvacUnitSystem } from '../units/useHvacUnits';
 
-import { buildCondensateBom, condensateBomToCsv } from './condensateBom';
+import { buildCondensateBom, condensateBomRowIn, condensateBomToCsv } from './condensateBom';
+import { drainNetworksOffSeries, resizeDrainNetworksToSeries } from './condensateEditController';
 import { deriveCondensateEnvelope } from './condensateEnvironment';
+import { CONDENSATE_PIPE_SYSTEMS } from './condensatePipeCatalog';
 import { useCondensatePreviewStore } from './condensatePreviewStore';
 import {
   CONDENSATE_RULE_SOURCES,
@@ -69,6 +71,54 @@ function SettingRow({ label, value, unit, step, modified, source, onCommit }: {
         <span className="min-w-6 text-xs text-slate-500">{unit}</span>
       </span>
     </label>
+  );
+}
+
+/**
+ * The drains' pipe: the series new drains are sized from; with IP, PVC
+ * Schedule 40 (sized by the inch) offered, back in SI the metric series; and
+ * drains of another series re-sized to it (one undo).
+ */
+function DrainPipeSeries() {
+  const { pipeSystem, setSettings, hvacElements } = useSmartDrawingStore((state) => ({
+    pipeSystem: state.condensateSettings.pipeSystem, setSettings: state.setCondensateSettings, hvacElements: state.hvacElements,
+  }), shallow);
+  const system = useHvacUnitSystem();
+  const [declined, setDeclined] = useState<string | null>(null);
+  const wanted = system === 'ip' ? 'astm-sch40' : pipeSystem === 'astm-sch40' ? 'bs-en-1329' : null;
+  const offered = wanted && wanted !== pipeSystem && declined !== `${system}:${pipeSystem}` ? wanted : null;
+  const offSeries = useMemo(() => drainNetworksOffSeries(hvacElements, pipeSystem).length, [hvacElements, pipeSystem]);
+  const label = CONDENSATE_PIPE_SYSTEMS[pipeSystem].label;
+  return (
+    <div className="space-y-1.5" data-testid="condensate-pipe-series">
+      <label className="flex items-center justify-between gap-2 text-xs text-slate-600">Drain pipe
+        <select value={pipeSystem} aria-label="Drain pipe series" data-testid="condensate-pipe-system"
+          onChange={(event) => setSettings({ pipeSystem: event.target.value as typeof pipeSystem })}
+          className="min-w-0 max-w-[60%] rounded-md border border-slate-200 bg-white px-1.5 py-1 text-xs">
+          {Object.values(CONDENSATE_PIPE_SYSTEMS).map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+        </select>
+      </label>
+      {offered ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-sky-50 p-2 text-xs text-sky-900" data-testid="condensate-pipe-series-offer">
+          <span>{offered === 'astm-sch40' ? 'Inch drain pipe too? PVC Schedule 40, sized by the inch.' : 'Metric drain pipe too? uPVC waste (BS EN 1329).'}</span>
+          <span className="flex gap-1.5">
+            <button type="button" onClick={() => setSettings({ pipeSystem: offered })} className="rounded bg-sky-700 px-2 py-0.5 font-medium text-white hover:bg-sky-800">
+              Use {offered === 'astm-sch40' ? 'Schedule 40' : 'metric'}
+            </button>
+            <button type="button" onClick={() => setDeclined(`${system}:${pipeSystem}`)} className="rounded px-1.5 py-0.5 text-sky-800 hover:bg-sky-100">Keep</button>
+          </span>
+        </div>
+      ) : null}
+      {offSeries ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-slate-50 p-2 text-xs text-slate-700" data-testid="condensate-pipe-series-resize">
+          <span>{offSeries} drain network{offSeries === 1 ? ' is' : 's are'} of another pipe.</span>
+          <button type="button" onClick={() => resizeDrainNetworksToSeries(`Drains re-sized to ${label}`)}
+            className="rounded border border-slate-300 bg-white px-2 py-0.5 font-medium text-slate-800 hover:bg-slate-100" title={`Size every drain network again in ${label}: routes and falls kept (one undo)`}>
+            Re-size to {pipeSystem === 'astm-sch40' ? 'Schedule 40' : label}
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -131,6 +181,8 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
         ) : null}
       </div>
       {!gullyCount ? <p className="text-xs text-slate-500">Place a floor gully, stack connection or external discharge from the Condensate Drainage palette first.</p> : null}
+      <DrainPipeSeries />
+
       {message ? <p role="status" className="rounded-md bg-slate-50 p-2 text-xs leading-4 text-slate-700">{toDisplayText(message, system)}</p> : null}
       {applyIssue && !message ? <p role="status" className="rounded-md bg-amber-50 p-2 text-xs text-amber-900">{applyIssue}</p> : null}
 
@@ -223,7 +275,7 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
           <summary className="cursor-pointer py-1 text-xs font-medium text-slate-700">Bill of materials{preview ? ' (preview)' : ''}</summary>
           <table className="w-full text-left text-xs">
             <tbody>
-              {bom.map((row, index) => (
+              {bom.map((source) => condensateBomRowIn(source, system)).map((row, index) => (
                 <tr key={index} className="border-t border-slate-100">
                   <td className="py-1 pr-1 text-slate-700">{row.description}</td>
                   <td className="text-slate-500">{row.size}</td>
@@ -233,7 +285,7 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
             </tbody>
           </table>
           <button type="button" className="mt-1 text-xs text-sky-700 hover:underline" onClick={() => {
-            void navigator.clipboard?.writeText(condensateBomToCsv(bom)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+            void navigator.clipboard?.writeText(condensateBomToCsv(bom, system)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
           }}>{copied ? 'Copied' : 'Copy CSV'}</button>
         </details>
       ) : null}

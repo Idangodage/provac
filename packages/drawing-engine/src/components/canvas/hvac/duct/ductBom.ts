@@ -5,6 +5,7 @@
  * listed under Issues instead of being silently priced.
  */
 import type { HvacElement } from '../../../../types';
+import { toDisplay, toDisplayText, unitLabel, type HvacQuantity, type HvacUnitSystem } from '../units/hvacUnits';
 
 import { gaugeLabelForSheet } from './ductCatalog';
 import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
@@ -449,16 +450,28 @@ function csv(rows: ReadonlyArray<ReadonlyArray<string | number | boolean | null>
   return rows.map((row) => row.map(escape).join(',')).join('\n');
 }
 
-export function ductBomToCsv(rows: readonly DuctBomRow[]): string {
+/** What a BOM unit is, where the display system changes it (counts stay as they are). */
+const BOM_QUANTITIES: Partial<Record<DuctBomRow['unit'], HvacQuantity>> = { 'm²': 'area', kg: 'mass', m: 'length', L: 'volume' };
+
+/** A BOM row as the display system reads it: in IP m² in ft², kg in lb, m in ft and L in US gal, the basis annotated. */
+export function ductBomRowIn(row: DuctBomRow, system: HvacUnitSystem): Omit<DuctBomRow, 'unit'> & { unit: string } {
+  const quantity = BOM_QUANTITIES[row.unit];
+  if (system === 'si' || !quantity) return system === 'si' ? row : { ...row, basis: toDisplayText(row.basis, system) };
+  return { ...row, quantity: round2(toDisplay(quantity, row.quantity, system)), unit: unitLabel(quantity, system), basis: toDisplayText(row.basis, system) };
+}
+
+export function ductBomToCsv(rows: readonly DuctBomRow[], system: HvacUnitSystem = 'si'): string {
   return csv([
     ['Category', 'Description', 'Size', 'Quantity', 'Unit', 'Basis'],
-    ...rows.map((row) => [row.category, row.description, row.size, row.quantity, row.unit, row.basis]),
+    ...rows.map((source) => ductBomRowIn(source, system)).map((row) => [row.category, row.description, row.size, row.quantity, row.unit, row.basis]),
   ]);
 }
 
-export function ductScheduleToCsv(rows: readonly DuctScheduleRow[]): string {
+/** The fabrication schedule; in IP each piece's sheet area in ft² and mass in lb (lengths and sheet stay the drawing's mm). */
+export function ductScheduleToCsv(rows: readonly DuctScheduleRow[], system: HvacUnitSystem = 'si'): string {
   return csv([
-    ['Run', 'Mark', 'Piece', 'Size (clear)', 'Length mm', 'Sheet mm', 'Gauge', 'Joint', 'Class', 'Cross-break', 'Area m²', 'Mass kg'],
-    ...rows.map((row) => [row.run, row.mark, row.kind, row.size, row.lengthMm, row.sheetMm, row.gauge, row.joint, row.requiredClass, row.crossBreak, row.areaM2, row.massKg]),
+    ['Run', 'Mark', 'Piece', 'Size (clear)', 'Length mm', 'Sheet mm', 'Gauge', 'Joint', 'Class', 'Cross-break', `Area ${unitLabel('area', system)}`, `Mass ${unitLabel('mass', system)}`],
+    ...rows.map((row) => [row.run, row.mark, row.kind, row.size, row.lengthMm, row.sheetMm, row.gauge, row.joint, row.requiredClass, row.crossBreak,
+      round2(toDisplay('area', row.areaM2, system)), round2(toDisplay('mass', row.massKg, system))]),
   ]);
 }

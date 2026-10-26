@@ -52,6 +52,7 @@ import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
 import { refrigerantChangeIssues } from '../refrigerantChangeValidation';
 import { resolveRefrigerantPipeBranchKitReconnectionUpdates, resolveRefrigerantPipeSpec } from '../refrigerantPipePairModel';
 import type { SegmentEvaluationLike, SegmentOptionLike } from '../segments/segmentProvider';
+import type { HvacUnitSystem } from '../units/hvacUnits';
 
 import {
   ACCESSORY_LINES,
@@ -127,6 +128,8 @@ const LOCK_KEYS = ['routeLocked', 'routingLocked', 'locked', 'isLocked', 'review
 
 /** Insulation thicknesses offered (mm): the model's minimum (1″) and thicker, for warm and humid ceilings. */
 export const INSULATION_STEPS_MM = [25.4, 32, 38, 50];
+/** In IP: 1, 1-1/4, 1-1/2 and 2 in. */
+export const INSULATION_STEPS_IP_MM = [25.4, 31.75, 38.1, 50.8];
 /** A formed bend's centreline radius as a multiple of the insulated outside. */
 export const RADIUS_FACTORS = [1, 1.5, 2, 3];
 
@@ -650,6 +653,8 @@ export function refrigerantPieceOptions(
   piece: RefrigerantPiece,
   partner: RefrigerantPartner | null,
   profile: ManufacturerRuleProfile = PROJECT_FALLBACK_RULE_PROFILE,
+  /** In IP the insulation offered is the inch series. */
+  unitSystem: HvacUnitSystem = 'si',
 ): RefrigerantSegmentOption[] {
   if (element.type !== 'refrigerant-pipe') return [];
   const options: RefrigerantSegmentOption[] = [];
@@ -688,8 +693,8 @@ export function refrigerantPieceOptions(
     });
   }
 
-  // ---- Insulation: the model's minimum and thicker.
-  for (const thickness of INSULATION_STEPS_MM) {
+  // ---- Insulation: the model's minimum and thicker (in IP the inch thicknesses).
+  for (const thickness of unitSystem === 'ip' ? INSULATION_STEPS_IP_MM : INSULATION_STEPS_MM) {
     options.push({
       id: `insulation:${thickness}`, group: 'insulation', glyph: 'insulation', title: `${thickness === 25.4 ? '25' : thickness} mm`,
       detail: thickness === 25.4 ? 'the minimum (1″)' : 'thicker, for a warm or humid ceiling void',

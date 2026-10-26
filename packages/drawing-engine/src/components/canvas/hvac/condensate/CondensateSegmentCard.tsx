@@ -487,7 +487,7 @@ function buildModel(scene: HvacElement[], focus: SegmentFocus, context: Condensa
   const figures = condensatePieceFigures(scene, element, run, piece, context.settings, baseline);
   const { title, detail } = titleOf(piece, figures, run);
   const system = context.unitSystem ?? 'si';
-  const options = optionsIn(condensatePieceOptions(scene, element, run, piece, context), system);
+  const options = optionsIn(condensatePieceOptions(scene, element, run, piece, context, system), system);
   const route = networkId ? condensateSessionFor(scene, networkId, context)?.model.routes.get(element.id) : undefined;
   const token: RekeyToken = { kind: piece.kind, ordinal: piece.ordinal };
   const issues = condensatePieceIssues(context.report, element, run, piece, figures);
