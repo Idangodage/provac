@@ -15,18 +15,23 @@ interface UnitPanelUiState {
   open: Record<string, boolean>;
   /** The size series offered with a unit system, declined for the session ("Keep metric"). */
   seriesDeclined: Partial<Record<HvacUnitSystem, boolean>>;
+  /** The drains' pipe offered with a unit system, declined for the session. */
+  drainSeriesDeclined: Partial<Record<HvacUnitSystem, boolean>>;
   setTab: (tab: UnitPanelTab) => void;
   setOpen: (key: string, open: boolean) => void;
   declineSeries: (system: HvacUnitSystem) => void;
+  declineDrainSeries: (system: HvacUnitSystem) => void;
 }
 
 export const useUnitPanelUiStore = create<UnitPanelUiState>((set) => ({
   tab: 'sizing',
   open: {},
   seriesDeclined: {},
+  drainSeriesDeclined: {},
   setTab: (tab) => set({ tab }),
   setOpen: (key, open) => set((state) => (state.open[key] === open ? state : { open: { ...state.open, [key]: open } })),
   declineSeries: (system) => set((state) => ({ seriesDeclined: { ...state.seriesDeclined, [system]: true } })),
+  declineDrainSeries: (system) => set((state) => ({ drainSeriesDeclined: { ...state.drainSeriesDeclined, [system]: true } })),
 }));
 
 /** A folded section's state (closed until opened) and its setter. */

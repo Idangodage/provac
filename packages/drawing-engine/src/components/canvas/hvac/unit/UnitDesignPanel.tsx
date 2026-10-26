@@ -28,6 +28,9 @@ import { shallow } from 'zustand/shallow';
 import { unitSpecificationFor, type AcUnitSpecification } from '../../../../data/unitSpecifications';
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement, Room } from '../../../../types';
+import { drainNetworksOffSeries, resizeDrainNetworksToSeries } from '../condensate/condensateEditController';
+import { CONDENSATE_PIPE_SYSTEMS } from '../condensate/condensatePipeCatalog';
+import { isCondensatePipe } from '../condensate/condensateTypes';
 import { DesignCriteriaPicker } from '../duct/DuctDesignCriteriaPicker';
 import { FanSpeedAirflow, FrictionSlider, MethodStrip, TerminalGroupList, VelocityLimits, type TerminalRow } from '../duct/DuctSizingBasis';
 import { ServiceSwitch, SizingMethodSwitch, type ServiceChoice } from '../duct/DuctSizingSection';
@@ -940,6 +943,54 @@ function SizeSeriesOffer({ unitId, unitTag, hasDucts }: { unitId: string; unitTa
   );
 }
 
+/**
+ * After a switch of units, the drains' pipe to go with it, offered once a
+ * session where the drawing has drains: PVC Schedule 40 (sized by the inch)
+ * with IP, back in SI the metric series where they are in Schedule 40; then
+ * re-sizing the drains of another pipe (one undo).
+ */
+function DrainSeriesOffer() {
+  const units = useHvacUnits();
+  const { pipeSystem, setCondensateSettings, hvacElements } = useSmartDrawingStore((state) => ({
+    pipeSystem: state.condensateSettings.pipeSystem, setCondensateSettings: state.setCondensateSettings, hvacElements: state.hvacElements,
+  }), shallow);
+  const declined = useUnitPanelUiStore((state) => state.drainSeriesDeclined[units.system] ?? false);
+  const declineDrainSeries = useUnitPanelUiStore((state) => state.declineDrainSeries);
+  const [resizeOffered, setResizeOffered] = useState(false);
+  const drains = useMemo(() => hvacElements.some(isCondensatePipe), [hvacElements]);
+  const offSeries = useMemo(() => (drains ? drainNetworksOffSeries(hvacElements, pipeSystem).length : 0), [drains, hvacElements, pipeSystem]);
+  const wanted = units.system === 'ip' ? 'astm-sch40' : 'bs-en-1329';
+  const name = wanted === 'astm-sch40' ? 'Schedule 40' : 'metric';
+  if (!drains) return null;
+  if (resizeOffered && pipeSystem === wanted && offSeries) {
+    return (
+      <InlineAlert tone="info" testId="unit-drain-series-resize"
+        actions={<>
+          <PanelButton tone="primary" testId="unit-drain-series-resize-go" title="Size every drain network again in the new pipe: routes and falls kept (one undo)"
+            onClick={() => { resizeDrainNetworksToSeries(`Drains re-sized to ${CONDENSATE_PIPE_SYSTEMS[wanted].label}`); setResizeOffered(false); }}>
+            Re-size the drains
+          </PanelButton>
+          <PanelButton tone="ghost" onClick={() => setResizeOffered(false)}>Later</PanelButton>
+        </>}>
+        New drains use {name} pipe. {offSeries} drain network{offSeries === 1 ? ' keeps its' : 's keep theirs'} until re-sized.
+      </InlineAlert>
+    );
+  }
+  // (In SI only drains in Schedule 40 are offered the metric series: a JIS VP choice stays as it is.)
+  if (pipeSystem === wanted || declined || (units.system === 'si' && pipeSystem !== 'astm-sch40')) return null;
+  return (
+    <InlineAlert tone="info" testId="unit-drain-series-offer"
+      actions={<>
+        <PanelButton tone="primary" testId="unit-drain-series-use" onClick={() => { setCondensateSettings({ pipeSystem: wanted }); setResizeOffered(true); }}>
+          Use {name}
+        </PanelButton>
+        <PanelButton tone="ghost" onClick={() => declineDrainSeries(units.system)}>Keep as is</PanelButton>
+      </>}>
+      {units.system === 'ip' ? 'Inch drain pipe too? PVC Schedule 40, sized by the inch.' : 'Metric drain pipe too? uPVC waste (BS EN 1329).'}
+    </InlineAlert>
+  );
+}
+
 function DuctSizingTab({ unit, unitTag, settings, scene, rooms, airSide, airflowM3h }: {
   unit: HvacElement; unitTag: string; settings: DuctDesignSettings; scene: readonly HvacElement[]; rooms: ReadonlyArray<Pick<Room, 'id' | 'vertices'>>;
   airSide: UnitAirSide; airflowM3h: Readonly<Record<FanSpeed, number>> | null;
@@ -1036,6 +1087,7 @@ export function UnitDesignPanel({ unitId, onShowToolbox, autoOpen, onAutoOpenCha
           <UnitHeader unit={unit} spec={spec} tag={tag}
             roomName={unit.roomId ? rooms.find((room) => room.id === unit.roomId)?.name ?? 'Unassigned room' : 'No room'}
             design={design} esp={airSide?.esp ?? null} onShowToolbox={onShowToolbox} />
+          <DrainSeriesOffer />
           {ducted && airSide ? (
             <>
               <div className="sticky top-0 z-10 -mx-2.5 bg-[#fbf7ee] px-2.5 py-1.5 shadow-[0_6px_8px_-8px_rgba(120,53,15,0.35)]">
