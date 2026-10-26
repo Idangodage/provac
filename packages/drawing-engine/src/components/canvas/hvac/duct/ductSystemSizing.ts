@@ -852,7 +852,8 @@ export function sizeDuctSystem(
       // Off the collar: its transition to the first section must fit before the run's first fixed fitting (an
       // elbow, a wall, its end; take-offs are placed past it). Where it does not, the first section steps back
       // towards the collar's at its own height — the first width whose transition fits, else the collar's own where
-      // that is as tall (so what is taken off it still fits) — and the report says so; else it stays as sized.
+      // that is as tall (so what is taken off it still fits) or nothing is taken off the run (a plenum's neck) — and
+      // the report says so; else it stays as sized.
       if (!node.parent && !node.head && start.kind === 'unit-port' && sections.length && !isRoundLeg(sections[0]!)) {
         const port = findAirPort(scene, start.unitId, start.portId);
         const collar: DuctLeg | null = port ? { widthMm: port.widthMm, heightMm: port.heightMm } : null;
@@ -863,7 +864,7 @@ export function sizeDuctSystem(
         if (collar && !fits(sections[0]!)) {
           const from = sections[0]!;
           const toward = Math.sign(collar.widthMm - from.widthMm);
-          let chosen: DuctLeg | null = collar.heightMm >= from.heightMm - 0.5 ? collar : null;
+          let chosen: DuctLeg | null = collar.heightMm >= from.heightMm - 0.5 || !node.taps.length ? collar : null;
           for (let k = 1; toward !== 0; k += 1) {
             const width = Math.round((from.widthMm + toward * k * STEP_MM) * 1000) / 1000;
             if ((width - collar.widthMm) * toward >= 0) break;
