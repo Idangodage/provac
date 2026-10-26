@@ -111,6 +111,40 @@ export function joinedPenetrations(
   return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * A run drawn on from its open start: `points` in the order they were drawn
+ * (outward from the start, each at its level), `sections` one per leg drawn.
+ * The start stays open (with the gap it remembers) at the last point drawn;
+ * what is on the run keeps its place (`shift` legs on).
+ */
+export function extendDuctRunAtStart(spec: DuctRunSpec, points: readonly DuctPoint3[], sections: readonly DuctLeg[]): { spec: DuctRunSpec; shift: number } {
+  const shift = points.length;
+  if (!shift) return { spec, shift: 0 };
+  const nodeOverrides = Object.fromEntries(Object.entries(spec.nodeOverrides).map(([key, value]) => [String(Number(key) + shift), value]));
+  const inline = (spec.inline ?? []).map((item) => ({ ...item, legIndex: item.legIndex + shift }));
+  const { inline: _inline, ...rest } = spec;
+  const legs = Array.from({ length: shift }, (_, index) => sections[shift - 1 - index] ?? sections[sections.length - 1] ?? spec.legs[0]!);
+  const start = spec.start.kind === 'open' ? { ...spec.start, socket: undefined } : spec.start;
+  return {
+    spec: {
+      ...rest, start, path: [...[...points].reverse().map((point) => ({ ...point })), ...spec.path], legs: [...legs, ...spec.legs], nodeOverrides,
+      ...(inline.length ? { inline } : {}),
+    },
+    shift,
+  };
+}
+
+/**
+ * The corner that brings a drawn run square onto an open start: the run goes
+ * on from `from` and arrives at `to` along `arrive` (the start's first leg
+ * direction). Null when it arrives straight on already.
+ */
+export function joinCorner(from: DuctPoint3, to: DuctPoint3, arrive: { x: number; y: number }): DuctPoint3 | null {
+  const along = (to.x - from.x) * arrive.x + (to.y - from.y) * arrive.y;
+  const corner = { x: to.x - arrive.x * along, y: to.y - arrive.y * along, z: from.z };
+  return Math.hypot(corner.x - from.x, corner.y - from.y) < 1 ? null : corner;
+}
+
 export interface DuctJoin {
   /** The joined run (A's id). */
   spec: DuctRunSpec;

@@ -114,7 +114,7 @@ import { ductOpenEnds } from "./canvas/hvac/duct/ductCut";
 import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
 import { commitDuctRunEdit } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
-import { useDuctGapStore } from "./canvas/hvac/duct/ductGapController";
+import { dismissGap, useDuctGapStore } from "./canvas/hvac/duct/ductGapController";
 import { proposeDuctGap } from "./canvas/hvac/duct/ductGapProposal";
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
@@ -1943,6 +1943,7 @@ export function DrawingCanvas({
     handleKeyDown: handleDuctKeyDown,
     handleKeyUp: handleDuctKeyUp,
     cancelDrawing: cancelDuctDrawing,
+    startFrom: startDuctFrom,
   } = useDuctTool({
     activeTool: tool,
     hvacElements,
@@ -1954,6 +1955,16 @@ export function DrawingCanvas({
     setSelectedIds,
     setProcessingStatus,
   });
+  /** A gap's [Draw]: the duct tool, drawing on from the gap's first open end (finish on the other part's open start). */
+  const drawDuctGap = useCallback((gapId: string) => {
+    const ends = ductOpenEnds(useSmartDrawingStore.getState().hvacElements).filter((end) => end.gap?.id === gapId);
+    const from = ends.find((end) => end.end === "end") ?? ends[0];
+    if (!from) return;
+    dismissGap();
+    setTool("duct");
+    // The tool resets its draft when it becomes active: start once it has.
+    requestAnimationFrame(() => startDuctFrom(from.runId, from.end));
+  }, [setTool, startDuctFrom]);
 
   // The studio overlay renders the live draw preview as its own pair, so the
   // draw tool feeds it the route here (imperatively — only the overlay re-renders).
@@ -3936,7 +3947,7 @@ export function DrawingCanvas({
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />
         <SegmentCardLayer enabled={tool === "select"} hvacElements={hvacElements} providers={segmentProviders}
           selectedIds={selectedIds} resolveAnchor={resolveSegmentAnchor} dragging={Boolean(movingIds)} />
-        <DuctGapChip enabled={tool === "select" && !movingIds} toClient={gapToClient} hostRef={hostRef} />
+        <DuctGapChip enabled={tool === "select" && !movingIds} toClient={gapToClient} hostRef={hostRef} onDraw={drawDuctGap} />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
           showInteriorNodeHandles={projectionViewOnly} cardView={projectionViewOnly ? "3d" : "2d"}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}

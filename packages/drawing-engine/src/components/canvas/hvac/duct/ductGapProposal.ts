@@ -145,6 +145,25 @@ function bridgeClear(points: readonly DuctPoint3[], section: DuctLeg, insulation
   return true;
 }
 
+/**
+ * Branches a cut left without their take-off (they remember a tap on `partIds`)
+ * taken off the joined run again where it now passes square behind their open
+ * start — their take-off exactly as it was when that is back in place. `trial`:
+ * the drawing with the joined run in it.
+ */
+export function reattachOrphans(scene: readonly HvacElement[], trial: readonly HvacElement[], partIds: readonly string[], joinedId: string, settings: DuctDesignSettings): HvacElement[] {
+  const parts = new Set(partIds);
+  return scene.filter(isDuctElement).flatMap((element) => {
+    const spec = readDuctRunSpec(element);
+    const was = spec?.start.kind === 'open' ? spec.start.gap?.was : undefined;
+    if (!spec || was?.kind !== 'tap' || !parts.has(was.parentRunId)) return [];
+    const target = findReattachTarget(element, trial, settings, { style: was.style, vcd: was.vcd, reachMm: 5 });
+    if (!target || target.parent.id !== joinedId) return [];
+    const same = target.legIndex === was.legIndex && target.side === was.side && Math.abs(target.stationMm - was.stationMm) <= 5;
+    return [ductRunElementWithSpec(element, same ? { ...spec, start: was } : target.spec)];
+  });
+}
+
 // ---- A cut: the two parts joined again. ----
 
 function cutCandidates(
@@ -183,13 +202,7 @@ function cutCandidates(
     // Those branches take off the joined run again where it passes square behind their open start.
     const replaced = new Map(joined.updates.map((element) => [element.id, element]));
     const trial = scene.filter((element) => !joined.removeIds.includes(element.id)).map((element) => replaced.get(element.id) ?? element);
-    const reattached = orphans.flatMap((orphan) => {
-      const target = findReattachTarget(orphan.element, trial, settings, { style: orphan.was.style, vcd: orphan.was.vcd, reachMm: 5 });
-      if (!target || target.parent.id !== a.element.id) return [];
-      // Back where it was taken off (the stretch put back as it was): its take-off exactly as it was, its path as it is.
-      const same = target.legIndex === orphan.was.legIndex && target.side === orphan.was.side && Math.abs(target.stationMm - orphan.was.stationMm) <= 5;
-      return [ductRunElementWithSpec(orphan.element, same ? { ...orphan.spec, start: orphan.was } : target.spec)];
-    });
+    const reattached = reattachOrphans(scene, trial, [a.element.id, b.element.id], a.element.id, settings);
     out.push({ key, label, updates: [...joined.updates, ...reattached], removeIds: joined.removeIds, bridge, ...measure(bridge, lastA.direction, firstB.direction) });
   };
 

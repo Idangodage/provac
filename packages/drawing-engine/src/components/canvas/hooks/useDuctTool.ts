@@ -56,6 +56,10 @@ import {
 import { commitDuctRunSpec, reattachDuctRun } from "../hvac/duct/ductEditController";
 import { planDuctRunSpec } from "../hvac/duct/ductFabricationPlanner";
 import { ductRunElementWithSpec } from "../hvac/duct/ductFollow";
+import { reattachOrphans } from "../hvac/duct/ductGapProposal";
+import { ductLegs } from "../hvac/duct/ductGeometry";
+import { extendDuctRunAtStart, joinCorner, joinDuctRuns } from "../hvac/duct/ductJoin";
+import { ductBranchesOf } from "../hvac/duct/ductNetwork";
 import { defaultPlenumSize } from "../hvac/duct/ductPlenum";
 import { roundMainTapGeometry } from "../hvac/duct/ductRoundFittings";
 import type { DuctDesignSettings } from "../hvac/duct/ductSettings";
@@ -70,6 +74,7 @@ import {
   roundLeg,
   splitAngleOf,
   type DuctLeg,
+  type DuctRunSpec,
   type DuctService,
   type DuctSide,
   type DuctSpigotFace,
@@ -98,6 +103,17 @@ export interface UseDuctToolResult {
   handleKeyUp: (event: KeyboardEvent) => void;
   /** Cancel an active draft; true when there was one. */
   cancelDrawing: () => boolean;
+  /** Start drawing on from a run's open end (or open start), as a click there would. */
+  startFrom: (runId: string, end: "start" | "end") => boolean;
+}
+
+/** A run's open end or open start the draft can finish on, joining the two runs (a gap closed by hand). */
+interface DuctJoinTarget {
+  element: HvacElement;
+  spec: DuctRunSpec;
+  /** Which of its ends: its open start (the draft continues a run's end) or its open end (drawn from a start). */
+  end: "start" | "end";
+  point: DuctDraftPoint & { z: number };
 }
 
 /** Where the run being drawn starts. Branch origins are re-derived from the parent on every use. */
@@ -109,8 +125,8 @@ type DuctToolStart =
   | { kind: "spigot"; parentId: string; face: DuctSpigotFace; alongMm: number; acrossMm: number }
   /** Free space: an open start (finishing on a run's side makes it a take-off). */
   | { kind: "free"; point: Point2D }
-  /** Extending an existing run from its open end. */
-  | { kind: "continue"; runId: string };
+  /** Extending an existing run from its open end (`fromStart`: from its open start, drawn backwards). */
+  | { kind: "continue"; runId: string; fromStart?: boolean };
 
 /** Legs shorter than this are ignored. */
 const MIN_LEG_MM = 50;
@@ -259,7 +275,8 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
       if (!isDuctElement(element)) continue;
       const spec = readDuctRunSpec(element);
       const start = spec?.path[0];
-      if (!spec || spec.start.kind !== "open" || !start) continue;
+      // (A gap's second part is drawn back from its open start instead: findGapStart.)
+      if (!spec || spec.start.kind !== "open" || spec.start.gap?.partner || !start) continue;
       if (Math.hypot(point.x - start.x, point.y - start.y) > thresholdMm * 1.5) continue;
       const target = findReattachTarget(element, scene, settings, { style: tapStyleFor(spec.legs[0]), vcd: tool.vcd });
       return target ? { element, target, start: { x: start.x, y: start.y } } : null;
@@ -289,7 +306,10 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     if (start.kind === "port") return custom ?? { widthMm: start.port.widthMm, heightMm: start.port.heightMm };
     if (start.kind === "continue") {
       const run = continuedRun(start);
-      return run ? custom ?? { ...run.spec.legs[run.spec.legs.length - 1]! } : null;
+      if (!run) return null;
+      // Drawn back from an open start: the section that start was fed with (a transition kept there keeps its inlet).
+      if (start.fromStart) return custom ?? { ...(run.spec.start.kind === "open" && run.spec.start.socket ? run.spec.start.socket : run.spec.legs[0]!) };
+      return custom ?? { ...run.spec.legs[run.spec.legs.length - 1]! };
     }
     const branch = tool.branchShape === "round" && start.kind !== "split"
       ? roundLeg(tool.branchDiameterMm)
@@ -356,6 +376,11 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
       const run = continuedRun(start);
       const legSizes = sectionsFor(start, points.length);
       if (!run || !legSizes || points.length === 0) return null;
+      if (start.fromStart) {
+        const anchorZ = run.spec.path[0]!.z;
+        const spec = extendDuctRunAtStart(run.spec, points.map((point) => ({ x: point.x, y: point.y, z: point.z ?? anchorZ })), legSizes).spec;
+        return { element: ductRunElementWithSpec(run.element, spec), changed: [] };
+      }
       const spec = continueDuctRunSpec(run.spec, points, legSizes, end ?? toolEnd(legSizes[legSizes.length - 1]));
       return { element: ductRunElementWithSpec(run.element, spec), changed: [] };
     }
@@ -372,7 +397,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     if (start.kind === "continue") {
       const run = continuedRun(start);
       if (!run) return null;
-      const last = run.spec.path[run.spec.path.length - 1]!;
+      const last = start.fromStart ? run.spec.path[0]! : run.spec.path[run.spec.path.length - 1]!;
       return { anchor: lastClick ?? { x: last.x, y: last.y }, anchorZ: lastClick?.z ?? last.z, firstDirection: directionRef.current };
     }
     const input = draftInput(points);
@@ -525,10 +550,99 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     onDraftElementsRef.current?.([draft.element, ...draft.changed, ...(parent ? [parent] : [])]);
   }, []);
 
+  /** A run's open end under the cursor (it can be continued). */
+  const findOpenEnd = useCallback((point: Point2D): HvacElement | null => {
+    for (const element of sceneRef.current.hvacElements) {
+      if (!isDuctElement(element)) continue;
+      const spec = readDuctRunSpec(element);
+      const last = spec?.path[spec.path.length - 1];
+      if (!spec || spec.legacy || spec.end.kind !== "open" || !last) continue;
+      if (Math.hypot(point.x - last.x, point.y - last.y) <= thresholdMm * 1.5) return element;
+    }
+    return null;
+  }, [thresholdMm]);
+
+  /** The open start of a gap's second part under the cursor: a run can be drawn back from it to the first part. */
+  const findGapStart = useCallback((point: Point2D): HvacElement | null => {
+    for (const element of sceneRef.current.hvacElements) {
+      if (!isDuctElement(element)) continue;
+      const spec = readDuctRunSpec(element);
+      const first = spec?.path[0];
+      if (!spec || spec.legacy || spec.locked || spec.start.kind !== "open" || !spec.start.gap?.partner || !first) continue;
+      if (Math.hypot(point.x - first.x, point.y - first.y) <= thresholdMm * 1.5) return element;
+    }
+    return null;
+  }, [thresholdMm]);
+
+  /** While drawing on from a run: another run's open start under the cursor (drawn back from a start: an open end). */
+  const findJoinTarget = useCallback((point: Point2D): DuctJoinTarget | null => {
+    const start = startRef.current;
+    if (!start || start.kind !== "continue") return null;
+    const run = continuedRun(start);
+    if (!run) return null;
+    const wanted: "start" | "end" = start.fromStart ? "end" : "start";
+    let best: { target: DuctJoinTarget; distance: number } | null = null;
+    for (const element of sceneRef.current.hvacElements) {
+      if (!isDuctElement(element) || element.id === run.element.id) continue;
+      const spec = readDuctRunSpec(element);
+      if (!spec || spec.legacy || spec.locked || spec.service !== run.spec.service) continue;
+      if ((wanted === "start" ? spec.start.kind : spec.end.kind) !== "open") continue;
+      const at = wanted === "start" ? spec.path[0]! : spec.path[spec.path.length - 1]!;
+      const section = spec.legs[wanted === "start" ? 0 : spec.legs.length - 1]!;
+      const distance = Math.hypot(point.x - at.x, point.y - at.y);
+      const reach = Math.max(thresholdMm * 1.5, (section.diameterMm ?? section.widthMm) / 2);
+      if (distance <= reach && (!best || distance < best.distance)) best = { target: { element, spec, end: wanted, point: { x: at.x, y: at.y, z: at.z } }, distance };
+    }
+    return best?.target ?? null;
+  }, [continuedRun, thresholdMm]);
+
+  /**
+   * The draft finished on `target`: the run it continues and the target joined
+   * into one through the clicked points, with a last corner that brings it in
+   * square to the target's end (and a riser on its last leg where the levels
+   * differ). The first of the two along the air keeps its id.
+   */
+  const joinDraft = useCallback((target: DuctJoinTarget) => {
+    const start = startRef.current;
+    if (!start || start.kind !== "continue") return null;
+    const run = continuedRun(start);
+    if (!run) return null;
+    const scene = sceneRef.current.hvacElements;
+    const clicks = pointsRef.current.map((point) => ({ x: point.x, y: point.y, z: point.z }));
+    const anchor = start.fromStart ? run.spec.path[0]! : run.spec.path[run.spec.path.length - 1]!;
+    const from = clicks[clicks.length - 1] ?? { x: anchor.x, y: anchor.y, z: anchor.z };
+    const targetLegs = ductLegs(target.spec);
+    // Into a start: along its first leg; into an end: against its last.
+    const arrive = target.end === "start" ? targetLegs[0]!.direction
+      : { x: -targetLegs[targetLegs.length - 1]!.direction.x, y: -targetLegs[targetLegs.length - 1]!.direction.y };
+    const corner = joinCorner(from, target.point, arrive);
+    const drawn = [...clicks, ...(corner ? [corner] : [])];
+    // A level change on the last leg, straight on (a riser bends the easy way only).
+    if (Math.abs(from.z - target.point.z) > 0.5) {
+      const last = drawn[drawn.length - 1] ?? from;
+      const middle = { x: (last.x + target.point.x) / 2, y: (last.y + target.point.y) / 2 };
+      drawn.push({ ...middle, z: from.z }, { ...middle, z: target.point.z });
+    }
+    const sections = sectionsFor(start, drawn.length + 1) ?? [];
+    if (!start.fromStart) {
+      return joinDuctRuns(scene, run, { element: target.element, spec: target.spec }, drawn, { sections });
+    }
+    // Drawn back from the second part's start onto the first part's end: the same join, the first part first.
+    return joinDuctRuns(scene, { element: target.element, spec: target.spec }, run, [...drawn].reverse(), { sections: [...sections].reverse() });
+  }, [continuedRun, sectionsFor]);
   const renderPreview = useCallback((cursor: Point2D | null) => {
     const overlay = ductOverlayRef.current;
     const start = startRef.current;
     if (!overlay || !start) return;
+    // On another run's open start (or end): the two runs joined, as one.
+    const joinTarget = cursor ? findJoinTarget(cursor) : null;
+    const joined = joinTarget ? joinDraft(joinTarget) : null;
+    if (joinTarget && joined) {
+      const draft = { element: joined.updates[0]!, changed: joined.updates.slice(1) };
+      publishDraft3d(draft);
+      overlay.setDraft({ ...draft, label: { point: { x: joinTarget.point.x, y: joinTarget.point.y }, text: `Join to ${joinTarget.element.label || "this run"}: one run, the gap closed` } });
+      return;
+    }
     const terminal = cursor ? findTerminal(cursor) : null;
     overlay.setHoveredPort(terminal ? portKey(terminal) : start.kind === "port" ? portKey(start.port) : null);
     if (terminal) {
@@ -559,7 +673,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
       ...draft,
       label: live ? { point: leg.point, text: `${rise}${leg.lengthMm} mm${section ? ` · ${section.widthMm}×${section.heightMm}` : ""} · bottom ${Math.round(level?.z ?? 0)}${pending}` } : undefined,
     });
-  }, [buildToolDraft, constrained, ductOverlayRef, findTerminal, nextLevel, publishDraft3d, sectionsFor, terminalLabel, terminalPoints]);
+  }, [buildToolDraft, constrained, ductOverlayRef, findJoinTarget, findTerminal, joinDraft, nextLevel, publishDraft3d, sectionsFor, terminalLabel, terminalPoints]);
 
   const reset = useCallback(() => {
     startRef.current = null;
@@ -602,6 +716,19 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
       return;
     }
     const tool = useDuctToolStore.getState();
+    if (start.kind === "continue" && start.fromStart) {
+      // Drawn back from an open start: the run reaches further, what is on it keeps its place.
+      const run = continuedRun(start)!;
+      const shift = points.length;
+      const branches = ductBranchesOf(run.element.id, sceneRef.current.hvacElements).flatMap((branch) => (branch.start.kind === "tap"
+        ? [ductRunElementWithSpec(branch.element, { ...branch.spec, start: { ...branch.start, legIndex: branch.start.legIndex + shift } })] : []));
+      commitHvacElementCommand("Extend duct run back", {
+        updates: [draft.element, ...branches].map((element) => ({ id: element.id, updates: element })), selectedIds: [run.element.id],
+      });
+      setProcessingStatus(`Run drawn back ${points.length} leg(s); its start is still open.`, false);
+      reset();
+      return;
+    }
     if (start.kind === "continue") {
       const run = continuedRun(start)!;
       commitDuctRunSpec(run.element, readDuctRunSpec(draft.element)!, terminal ? "Connect duct run to terminal" : "Extend duct run");
@@ -651,8 +778,9 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     if (start.kind === "continue") {
       const run = continuedRun(start);
       const path = run?.spec.path ?? [];
-      const a = path[path.length - 2];
-      const b = path[path.length - 1];
+      // On from its end along its last leg; back from its start against its first.
+      const a = start.fromStart ? path[1] : path[path.length - 2];
+      const b = start.fromStart ? path[0] : path[path.length - 1];
       if (a && b) {
         const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
         directionRef.current = { x: (b.x - a.x) / length, y: (b.y - a.y) / length };
@@ -665,17 +793,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     renderPreview(point);
   }, [continuedRun, ductOverlayRef, publishAnchorLevel, renderPreview, setProcessingStatus]);
 
-  /** A run's open end under the cursor (it can be continued). */
-  const findOpenEnd = useCallback((point: Point2D): HvacElement | null => {
-    for (const element of sceneRef.current.hvacElements) {
-      if (!isDuctElement(element)) continue;
-      const spec = readDuctRunSpec(element);
-      const last = spec?.path[spec.path.length - 1];
-      if (!spec || spec.legacy || spec.end.kind !== "open" || !last) continue;
-      if (Math.hypot(point.x - last.x, point.y - last.y) <= thresholdMm * 1.5) return element;
-    }
-    return null;
-  }, [thresholdMm]);
+
 
   const handleMouseMove = useCallback((point: Point2D) => {
     lastCursorRef.current = point;
@@ -700,10 +818,16 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
       overlay?.setBranchTarget({ kind: "split", marker: [{ x: last.x, y: last.y }, { x: last.x, y: last.y }], label: "Continue this run" });
       return;
     }
+    const gapStart = port ? null : findGapStart(point);
+    if (gapStart) {
+      const first = readDuctRunSpec(gapStart)!.path[0]!;
+      overlay?.setBranchTarget({ kind: "split", marker: [{ x: first.x, y: first.y }, { x: first.x, y: first.y }], label: "Draw back from this open start to close the gap" });
+      return;
+    }
     const target = port ? null : findBranchTarget(point, sceneRef.current.hvacElements, sceneRef.current.ductSettings, thresholdMm,
       { branchShape: useDuctToolStore.getState().branchShape });
     overlay?.setBranchTarget(target ? { kind: target.kind, marker: target.marker, label: targetLabel(target) } : null);
-  }, [ductOverlayRef, findOpenEnd, findOrphanStart, findPort, renderPreview, thresholdMm]);
+  }, [ductOverlayRef, findGapStart, findOpenEnd, findOrphanStart, findPort, renderPreview, thresholdMm]);
 
   const handleMouseDown = useCallback((point: Point2D) => {
     const now = performance.now();
@@ -746,6 +870,11 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
         begin({ kind: "continue", runId: openEnd.id }, point, `Continuing ${openEnd.label || "the run"} from its open end`);
         return;
       }
+      const gapStart = findGapStart(point);
+      if (gapStart) {
+        begin({ kind: "continue", runId: gapStart.id, fromStart: true }, point, `Drawing back from the open start of ${gapStart.label || "the run"} (finish on the other part's open end to join them)`);
+        return;
+      }
       const target = findBranchTarget(point, sceneRef.current.hvacElements, sceneRef.current.ductSettings, thresholdMm,
         { branchShape: useDuctToolStore.getState().branchShape });
       if (!target) {
@@ -761,6 +890,26 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
           : { kind: "split", parentId: target.parent.id, side: target.side };
       const section = nextSection(start);
       begin(start, point, `Drawing ${target.spec.service} branch${section ? ` ${section.widthMm}×${section.heightMm}` : ""} (${targetLabel(target).toLowerCase()})`);
+      return;
+    }
+    // On another run's open start (or end): the two runs joined into one (one undo).
+    const joinTarget = findJoinTarget(point);
+    const joined = joinTarget ? joinDraft(joinTarget) : null;
+    if (joinTarget && joined) {
+      const drawn = pointsRef.current.length;
+      // Branches whose take-off was on the deleted stretch: taken off the joined run again where it passes behind them.
+      const scene = sceneRef.current.hvacElements;
+      const joinedId = joined.updates[0]!.id;
+      const replaced = new Map(joined.updates.map((element) => [element.id, element]));
+      const trial = scene.filter((element) => !joined.removeIds.includes(element.id)).map((element) => replaced.get(element.id) ?? element);
+      const reattached = reattachOrphans(scene, trial, [joinedId, ...joined.removeIds], joinedId, sceneRef.current.ductSettings);
+      const ids = commitHvacElementCommand("Join duct runs", {
+        updates: [...joined.updates, ...reattached].map((element) => ({ id: element.id, updates: element })), removeIds: joined.removeIds, selectedIds: [joinedId],
+      });
+      setSelectedIds(ids.length > 0 ? ids : [joined.updates[0]!.id]);
+      setProcessingStatus(`Joined to ${joinTarget.element.label || "the run"}: one run, the gap closed (${drawn} leg${drawn === 1 ? "" : "s"} drawn).`, false);
+      swallowRepeatRef.current = true;
+      reset();
       return;
     }
     const terminal = findTerminal(point);
@@ -779,7 +928,7 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     directionRef.current = leg.direction;
     publishAnchorLevel();
     renderPreview(point);
-  }, [begin, constrained, ductOverlayRef, findOpenEnd, findOrphanStart, findPort, findTerminal, finish, nextLevel, nextSection, occupiedRuns, publishAnchorLevel, pxToMm, renderPreview, setProcessingStatus, setSelectedIds, thresholdMm]);
+  }, [begin, commitHvacElementCommand, constrained, ductOverlayRef, findGapStart, findJoinTarget, findOpenEnd, findOrphanStart, findPort, findTerminal, finish, joinDraft, nextLevel, nextSection, occupiedRuns, publishAnchorLevel, pxToMm, renderPreview, reset, setProcessingStatus, setSelectedIds, thresholdMm]);
 
   const handleDoubleClick = useCallback(() => {
     finish();
@@ -842,6 +991,16 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     return active;
   }, [reset]);
 
+  const startFrom = useCallback((runId: string, end: "start" | "end") => {
+    const element = sceneRef.current.hvacElements.find((candidate) => candidate.id === runId);
+    const spec = element ? readDuctRunSpec(element) : null;
+    if (!element || !spec || spec.legacy || (end === "end" ? spec.end.kind : spec.start.kind) !== "open") return false;
+    const at = end === "end" ? spec.path[spec.path.length - 1]! : spec.path[0]!;
+    begin(end === "end" ? { kind: "continue", runId } : { kind: "continue", runId, fromStart: true }, { x: at.x, y: at.y },
+      end === "end" ? `Continuing ${element.label || "the run"} from its open end` : `Drawing back from the open start of ${element.label || "the run"}`);
+    return true;
+  }, [begin]);
+
   // A size or option changed in the panel mid-draw: the next leg shows it at once.
   useEffect(() => useDuctToolStore.subscribe(() => {
     if (startRef.current) renderPreview(lastCursorRef.current);
@@ -853,5 +1012,5 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
 
   useEffect(() => () => reset(), [reset]);
 
-  return { handleMouseDown, handleMouseMove, handleDoubleClick, handleKeyDown, handleKeyUp, cancelDrawing };
+  return { handleMouseDown, handleMouseMove, handleDoubleClick, handleKeyDown, handleKeyUp, cancelDrawing, startFrom };
 }
