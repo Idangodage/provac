@@ -84,6 +84,7 @@ import {
   isRoundTapStyle,
   readDuctRunSpec,
   roundLeg,
+  type DuctGapRef,
   type DuctInlineAccessory,
   type DuctLeg,
   type DuctPoint3,
@@ -822,6 +823,22 @@ export function planDuctRun(element: HvacElement, options: PlanDuctRunOptions): 
  * point before the terminal. A run that is all runout keeps a short stub off
  * its start (its collar and damper).
  */
+/** What an open end left by deleted pieces says: the stretch deleted, or what it was connected to. */
+function openGapMessage(gap: DuctGapRef, end: 'start' | 'end'): string {
+  const removedMm = gap.removed
+    ? gap.removed.path.slice(1).reduce((total, point, index) => total + Math.hypot(point.x - gap.removed!.path[index]!.x, point.y - gap.removed!.path[index]!.y, point.z - gap.removed!.path[index]!.z), 0)
+    : 0;
+  const stretch = removedMm >= 1 ? ` (${(removedMm / 1000).toFixed(2)} m deleted)` : '';
+  const was = gap.was;
+  const from = !was ? null
+    : was.kind === 'unit-port' ? 'the unit\'s collar'
+      : was.kind === 'tap' || was.kind === 'split-branch' || was.kind === 'spigot' ? 'its parent run'
+        : was.kind === 'terminal' ? 'its terminal'
+          : was.kind === 'split' ? 'its split' : was.kind === 'plenum' ? 'its plenum' : null;
+  const what = gap.partner ? `Open ${end}: pieces were deleted here${stretch}` : `Open ${end}: no longer connected to ${from ?? 'what it was connected to'}${stretch}`;
+  return `${what}; reconnect it (point at the gap) or draw it.`;
+}
+
 function rigidPartOf(spec: DuctRunSpec): DuctRunSpec {
   const path = spec.path.slice(0, -1);
   const legs = spec.legs.slice(0, -1);
@@ -1041,9 +1058,15 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     }
     if (start.vcd) startPieces.push({ kind: 'damper', lengthMm: settings.vcdLengthMm, section: firstLeg });
     practice.add(PRACTICE.takeoff);
-  } else if (spec.start.kind === 'open' && spec.start.orphaned) {
-    issues.push({ code: 'DU_OPEN_END', severity: 'warning', point: spec.path[0],
-      message: 'The run this branch was taken off was deleted; the branch starts open.' });
+  } else if (spec.start.kind === 'open') {
+    // A transition kept at an open start (pieces deleted before it) keeps its inlet.
+    if (spec.start.socket) entrySection = spec.start.socket;
+    if (spec.start.gap) {
+      issues.push({ code: 'DU_OPEN_END', severity: 'warning', point: spec.path[0], message: openGapMessage(spec.start.gap, 'start') });
+    } else if (spec.start.orphaned) {
+      issues.push({ code: 'DU_OPEN_END', severity: 'warning', point: spec.path[0],
+        message: 'The run this branch was taken off was deleted; the branch starts open.' });
+    }
   }
 
   // ---- Transitions: where the section changes along the path. ----
@@ -1633,8 +1656,9 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     issues.push({ code: 'DU_PLENUM_SIZE', severity: 'error', point: spec.path[spec.path.length - 1],
       message: 'A plenum ends a level leg; add a level leg after the riser.' });
   } else if (spec.end.kind === 'open' && !spec.legacy) {
-    issues.push({ code: 'DU_OPEN_END', severity: spec.end.orphaned ? 'warning' : 'info', point: spec.path[spec.path.length - 1],
-      message: spec.end.orphaned ? 'The terminal this run served was deleted; the run ends open.' : 'The run ends open.' });
+    issues.push({ code: 'DU_OPEN_END', severity: spec.end.orphaned || spec.end.gap ? 'warning' : 'info', point: spec.path[spec.path.length - 1],
+      message: spec.end.gap ? openGapMessage(spec.end.gap, 'end')
+        : spec.end.orphaned ? 'The terminal this run served was deleted; the run ends open.' : 'The run ends open.' });
   }
 
   // ---- Constructions actually used, reported once each. ----

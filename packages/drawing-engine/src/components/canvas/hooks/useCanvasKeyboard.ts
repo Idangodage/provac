@@ -16,6 +16,8 @@ export interface UseCanvasKeyboardOptions {
   tool: DrawingTool;
   selectedIds: string[];
   deleteSelected: () => void;
+  /** Delete with pieces of runs picked: deletes those pieces only; false when none are picked. */
+  deletePieces?: () => boolean;
   setIsSpacePressed: (pressed: boolean) => void;
   setTool?: (tool: DrawingTool) => void;
   onEscape?: () => boolean;
@@ -28,6 +30,7 @@ export interface UseCanvasKeyboardOptions {
 export function useCanvasKeyboard({
   selectedIds,
   deleteSelected,
+  deletePieces,
   setIsSpacePressed,
   setTool,
   onEscape,
@@ -74,6 +77,7 @@ export function useCanvasKeyboard({
       if (isEditableElement(event.target)) return;
       if (selectedIds.length === 0) return;
       event.preventDefault();
+      if (deletePieces?.()) return;
       deleteSelected();
     };
 
@@ -81,7 +85,7 @@ export function useCanvasKeyboard({
     return () => {
       window.removeEventListener("keydown", handleDeleteKey);
     };
-  }, [selectedIds, deleteSelected]);
+  }, [selectedIds, deleteSelected, deletePieces]);
 
   // Copy / Paste shortcuts
   useEffect(() => {

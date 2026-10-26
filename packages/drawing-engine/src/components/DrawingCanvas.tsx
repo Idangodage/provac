@@ -109,6 +109,7 @@ import { generateAutoDuctPreview, applyAutoDuctPreview } from "./canvas/hvac/duc
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from "./canvas/hvac/duct/ductAutoPreviewStore";
 import { buildDuctBom, buildDuctFabricationSchedule } from "./canvas/hvac/duct/ductBom";
 import { splitOrigin, tapOrigin } from "./canvas/hvac/duct/ductBranchTargets";
+import { ductOpenEnds } from "./canvas/hvac/duct/ductCut";
 import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
 import { commitDuctRunEdit } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
@@ -153,6 +154,8 @@ import {
   type RefrigerantPipeLineMode,
 } from "./canvas/hvac/refrigerantPipePairModel";
 import { SegmentCardLayer } from "./canvas/hvac/segments/SegmentCardLayer";
+import { deletablePicks, deletePickedPieces } from "./canvas/hvac/segments/pieceDeleteController";
+import { pickWithModifier } from "./canvas/hvac/segments/piecePicking";
 import type { SegmentProvider } from "./canvas/hvac/segments/segmentProvider";
 import { domainOf, useSegmentUiStore, type SegmentFocus } from "./canvas/hvac/segments/segmentUiStore";
 import { applyRefrigerantProposal } from "./canvas/hvac/unifiedAutoRoute";
@@ -1081,6 +1084,11 @@ export function DrawingCanvas({
         return plan ? ductSegments(plan).map((segment) => ({
           key: segment.key, kind: segment.kind, title: segment.title, size: segment.size, detail: segment.detail, marks: segment.marks,
           hotspot: segmentHotspot(plan, segment.key),
+          // Other places on it (along its pieces' centrelines), for a click where its card covers the hotspot.
+          spots: segment.pieceIndices.flatMap((index) => {
+            const piece = plan.pieces[index];
+            return piece ? [0.2, 0.5, 0.8].map((t) => ({ x: piece.start.x + (piece.end.x - piece.start.x) * t, y: piece.start.y + (piece.end.y - piece.start.y) * t })) : [];
+          }),
         })) : null;
       },
       /** The segment card option being previewed: its service, its id and the elements it changes. */
@@ -1128,6 +1136,17 @@ export function DrawingCanvas({
         const state = useSmartDrawingStore.getState();
         return ductSegmentFigures(state.hvacElements, state.ductSettings, runId, key, state.rooms);
       },
+      /** Pick pieces as Ctrl/⌘ (or, `range`, Shift) + click would: [{ runId, key, domain? }]. */
+      pickSegments: (list: Array<{ runId: string; key: string; domain?: SegmentFocus["domain"] }>, range = false) => {
+        for (const item of list) pickWithModifier({ ...item, anchorMark: null, view: "2d" }, range);
+        return useSegmentUiStore.getState().picked.map(({ domain, runId, key }) => ({ domain: domain ?? "duct", runId, key }));
+      },
+      getPicks: () => useSegmentUiStore.getState().picked.map(({ domain, runId, key }) => ({ domain: domain ?? "duct", runId, key })),
+      /** What Delete would take now, then Delete's piece path (true when pieces were deleted). */
+      getDeletablePicks: () => deletablePicks().map(({ domain, runId, key }) => ({ domain: domain ?? "duct", runId, key })),
+      deletePicks: () => deletePickedPieces(),
+      /** Every duct open end: where, which way it faces, and the gap it remembers. */
+      getOpenEnds: () => ductOpenEnds(useSmartDrawingStore.getState().hvacElements),
       /** A model point half way up a segment's first piece (where a pointer rests on it in 3D), or null. */
       getSegmentHotspot3D: (runId: string, key: string) => {
         const state = useSmartDrawingStore.getState();
@@ -3073,6 +3092,7 @@ export function DrawingCanvas({
     tool,
     selectedIds,
     deleteSelected,
+    deletePieces: deletePickedPieces,
     setIsSpacePressed,
     setTool,
     onEscape: handleEscapeShortcut,

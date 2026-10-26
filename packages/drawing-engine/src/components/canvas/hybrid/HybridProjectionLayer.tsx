@@ -84,6 +84,7 @@ import {
 import {
   getVisibleRefrigerantPipeStraightSegmentTargets,
 } from "../hvac/refrigerantPipeRenderState";
+import { pickWithModifier } from "../hvac/segments/piecePicking";
 import { buildSmartDraftingFeedback } from "../hvac/smartDraftingFeedback";
 import { buildHvacElementMesh } from "../hvac/three3d";
 import {
@@ -943,6 +944,8 @@ interface SegmentOutlineFocus {
   settings: DuctDesignSettings;
   hovered: DuctSegmentFocus | null;
   pinned: DuctSegmentFocus | null;
+  /** The pieces picked besides the pinned one (Ctrl/⌘, Shift): washed as it is, without its end rings. */
+  picked?: readonly DuctSegmentFocus[];
   /** An option of the card is being previewed. */
   previewing: boolean;
   /** The stretches the unit panel's network points at (hovered, pinned): their runs need not be selected. */
@@ -1010,6 +1013,17 @@ function refreshOutlineProxies(
   const pinned = focus?.pinned && selectedIds.includes(focus.pinned.runId) && !focus.previewing ? focus.pinned : null;
   const selectionMeshes: THREE.Object3D[] = [];
   const focusMeshes: THREE.Object3D[] = [];
+  // The other picked pieces: the pinned piece's outline and wash.
+  for (const pick of focus?.previewing ? [] : focus?.picked ?? []) {
+    if (!selectedIds.includes(pick.runId) || focusId(pick) === focusId(pinned)) continue;
+    const proxy = segmentProxy(pick);
+    if (!proxy) continue;
+    focusMeshes.push(proxy);
+    const wash = new THREE.Mesh(proxy.geometry, FOCUS_OVERLAY_MATERIAL);
+    wash.name = `${proxy.name}-wash`;
+    wash.renderOrder = 900;
+    layer.add(wash);
+  }
   for (const id of selectedIds) {
     const run = ductRunMeshes(sceneState.root, id);
     if (pinned?.runId === id && (run.length || domainOf(pinned) !== "duct")) {
@@ -1341,10 +1355,10 @@ export function HybridProjectionLayer({
   refreshOutlinesRef.current = () => {
     const sceneState = sceneStateRef.current;
     if (!sceneState) return;
-    const { hovered, pinned, preview } = useDuctSegmentUiStore.getState();
+    const { hovered, pinned, picked, preview } = useDuctSegmentUiStore.getState();
     const network = useDuctNetworkFocusStore.getState();
     refreshOutlineProxies(sceneState, wallsRef.current, selectedIdsRef.current, hoveredRef.current, {
-      scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered, pinned, previewing: Boolean(preview),
+      scene: hvacElementsRef.current, settings: ductSettingsRef.current, hovered, pinned, picked, previewing: Boolean(preview),
       network: { hovered: network.hovered, pinned: network.pinned },
     });
     requestFrameRef.current?.();
@@ -2708,7 +2722,7 @@ export function HybridProjectionLayer({
           const focus = ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, duct.runId, duct.model);
           if (focus) useDuctSegmentUiStore.getState().pin(focus);
         };
-        if (!e.shiftKey && beginHvacMove3D(e, duct.runId, duct.model, pinSegment)) return;
+        if (!e.shiftKey && !e.ctrlKey && !e.metaKey && beginHvacMove3D(e, duct.runId, duct.model, pinSegment)) return;
         pickState.pointerId = e.pointerId;
         pickState.ductPressed = duct;
         interactionElement.setPointerCapture?.(e.pointerId);
@@ -2836,13 +2850,20 @@ export function HybridProjectionLayer({
         const pressed = pickState.ductPressed;
         pickState.ductPressed = null;
         releaseCapture();
-        // A click (not a drag) selects the run and pins the card of the segment under it; with Shift it adds the run to
-        // the selection, or takes it out, and pins nothing.
+        // A click (not a drag) selects the run and pins the card of the segment under it. Ctrl/⌘ puts the piece in or
+        // out of the picks, Shift adds the stretch to it, the run joining the selection (as on the plan).
         if (Math.hypot(e.clientX - pickState.downX, e.clientY - pickState.downY) <= 4) {
-          if (e.shiftKey) selectWall(pressed.runId, true);
-          else {
+          const focus = ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, pressed.runId, pressed.model);
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            if (!focus) selectWall(pressed.runId, true);
+            else {
+              if (!selectedIdsRef.current.includes(pressed.runId)) {
+                useSmartDrawingStore.getState().setSelectedIds([...selectedIdsRef.current, pressed.runId]);
+              }
+              pickWithModifier(focus, e.shiftKey && !(e.ctrlKey || e.metaKey));
+            }
+          } else {
             if (!selectedIdsRef.current.includes(pressed.runId)) selectWall(pressed.runId, false);
-            const focus = ductSegmentFocusAt(hvacElementsRef.current, ductSettingsRef.current, pressed.runId, pressed.model);
             if (focus) useDuctSegmentUiStore.getState().pin(focus);
           }
         }
@@ -3367,9 +3388,10 @@ export function HybridProjectionLayer({
   useEffect(() => {
     refreshOutlinesRef.current();
   }, [selectedIds, hoveredElementId, walls]);
-  // A duct segment hovered or its card pinned, in either view: its outline here.
+  // A duct segment hovered, its card pinned or pieces picked, in either view: their outlines here.
   useEffect(() => useDuctSegmentUiStore.subscribe((state, previous) => {
-    if (state.hovered !== previous.hovered || state.pinned !== previous.pinned || Boolean(state.preview) !== Boolean(previous.preview)) refreshOutlinesRef.current();
+    if (state.hovered !== previous.hovered || state.pinned !== previous.pinned || state.picked !== previous.picked
+      || Boolean(state.preview) !== Boolean(previous.preview)) refreshOutlinesRef.current();
   }), []);
   // A stretch the unit panel's network points at: its wash here.
   useEffect(() => useDuctNetworkFocusStore.subscribe((state, previous) => {

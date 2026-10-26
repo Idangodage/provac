@@ -27,7 +27,7 @@
  * SC 1.4.13: it can be dismissed (Esc), the pointer can move onto it, and it
  * stays while the pointer is on the piece or the card.
  */
-import { ChevronLeft, ChevronRight, Info, Keyboard, TriangleAlert, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Info, Keyboard, Trash2, TriangleAlert, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 import type { HvacElement } from '../../../../types';
@@ -45,6 +45,7 @@ import {
   useOptionEvaluations,
   type HoverInfo,
 } from './SegmentCardKit';
+import { deletePickedPieces } from './pieceDeleteController';
 import type { SegmentEvaluationLike, SegmentOptionLike, SegmentProvider } from './segmentProvider';
 import { domainOf, focusId, sameFocus, useSegmentUiStore, type SegmentDomain, type SegmentFocus, type SegmentPreview } from './segmentUiStore';
 
@@ -333,6 +334,7 @@ export function SegmentCardLayer({ enabled, hvacElements, selectedIds, providers
   const byDomain = useMemo(() => new Map<SegmentDomain, AnySegmentProvider>(providers.map((provider) => [provider.domain, provider])), [providers]);
   const storedHovered = useSegmentUiStore((state) => state.hovered);
   const storedPinned = useSegmentUiStore((state) => state.pinned);
+  const picked = useSegmentUiStore((state) => state.picked);
   const hovered = storedHovered && byDomain.has(domainOf(storedHovered)) ? storedHovered : null;
   const pinned = storedPinned && byDomain.has(domainOf(storedPinned)) ? storedPinned : null;
   const unpin = useSegmentUiStore((state) => state.unpin);
@@ -448,15 +450,39 @@ export function SegmentCardLayer({ enabled, hvacElements, selectedIds, providers
     return () => window.removeEventListener('keydown', onKey, true);
   }, [peek, pinned, unpin, step]);
 
+  // Ctrl/⌘ or Shift held (picking more pieces): the cards fade and let the pointer through to the drawing under them.
+  const [picking, setPicking] = useState(false);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const update = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing = Boolean(target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable));
+      setPicking(!typing && (event.shiftKey || event.ctrlKey || event.metaKey));
+    };
+    const release = () => setPicking(false);
+    window.addEventListener('keydown', update, true);
+    window.addEventListener('keyup', update, true);
+    window.addEventListener('blur', release);
+    return () => {
+      window.removeEventListener('keydown', update, true);
+      window.removeEventListener('keyup', update, true);
+      window.removeEventListener('blur', release);
+    };
+  }, [enabled]);
+
   if (!enabled) return null;
   const pinnedProvider = pinned ? byDomain.get(domainOf(pinned)) : undefined;
   const peekProvider = peek ? byDomain.get(domainOf(peek)) : undefined;
   const showPeek = peek && peekProvider && !(pinned && focusId(pinned) === focusId(peek));
+  // Several pieces picked: a bar saying how many and what can be done, in place of one piece's card.
+  const several = picked.filter((pick) => selectedIds.includes(pick.runId)).length;
   return (
-    <div ref={containerRef} className="pointer-events-none absolute inset-0 z-[28]" data-testid="segment-cards"
+    <>
+    <div ref={containerRef} className={`pointer-events-none absolute inset-0 z-[28] ${picking ? '[&_*]:!pointer-events-none' : ''}`} data-testid="segment-cards"
+      data-picking={picking ? 'true' : undefined}
       // (Opacity, not visibility: a placed card sets its own visibility.)
-      style={{ opacity: dragging ? 0 : 1, transition: 'opacity 120ms ease-out' }}>
-      {pinned && pinnedProvider ? (
+      style={{ opacity: dragging ? 0 : picking ? 0.22 : 1, transition: 'opacity 120ms ease-out' }}>
+      {pinned && pinnedProvider && several < 2 ? (
         <SegmentCard key={`pin|${focusId(pinned)}`} provider={pinnedProvider} variant="pinned" focus={pinned} scene={hvacElements}
           resolveAnchor={resolveAnchor} containerRef={containerRef} onApply={apply} />
       ) : null}
@@ -470,5 +496,23 @@ export function SegmentCardLayer({ enabled, hvacElements, selectedIds, providers
           }} />
       ) : null}
     </div>
+    {several >= 2 && !dragging ? (
+      <div role="toolbar" aria-label="Picked pieces" data-testid="piece-picks-bar"
+        className="pointer-events-auto absolute bottom-4 left-1/2 z-[29] flex -translate-x-1/2 items-center gap-2 rounded-full border border-violet-200 bg-white/95 py-1 pl-3 pr-1 text-xs text-slate-700 shadow-lg backdrop-blur">
+        <span className="h-2 w-2 rounded-full bg-violet-600" aria-hidden="true" />
+        <span className="font-semibold text-violet-800" data-testid="piece-picks-count">{several} pieces picked</span>
+        <span className="hidden text-[11px] text-slate-400 sm:inline">Ctrl+click adds or removes · Shift+click a stretch</span>
+        <button type="button" data-testid="piece-picks-delete" title="Delete these pieces (Delete)"
+          className="inline-flex items-center gap-1 rounded-full bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-700"
+          onClick={() => deletePickedPieces()}>
+          <Trash2 size={12} aria-hidden="true" />Delete
+        </button>
+        <button type="button" data-testid="piece-picks-clear" title="Clear the picks (Esc)" aria-label="Clear the picks"
+          className="rounded-full p-1 text-slate-500 hover:bg-slate-100" onClick={unpin}>
+          <X size={14} aria-hidden="true" />
+        </button>
+      </div>
+    ) : null}
+    </>
   );
 }

@@ -26,6 +26,7 @@ import {
 import { MM_TO_PX } from '../../scale';
 import { useCondensatePreviewStore } from '../condensate/condensatePreviewStore';
 import type { HvacMoveBegin } from '../move/hvacMoveSession';
+import { pickWithModifier } from '../segments/piecePicking';
 import { sizesText, type HvacUnitSystem } from '../units/hvacUnits';
 
 import { AirSystemLayer } from './AirSystemLayer';
@@ -33,6 +34,7 @@ import { listAirPorts } from './ductAirPorts';
 import { analyseAirSystems, isAirSystemUnit, NO_ROOMS } from './ductAirSystems';
 import type { AutoDuctWall } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
+import { ductOpenEnds } from './ductCut';
 import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, type DuctEditResult } from './ductEdits';
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
@@ -49,6 +51,7 @@ import {
   ductSupportMarkup,
   equipmentTagObstacle,
   networkFocusMarkup,
+  openEndsMarkup,
   placedDuctTagMarkup,
   segmentFocusMarkup,
   type DuctMarkupStyle,
@@ -418,13 +421,24 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
 
   /** A press on a selected run: the move session takes it (a drag moves the selection, or the pinned straight; a click pins the piece). */
   const onHitPointerDown = useCallback((event: ReactPointerEvent<SVGPathElement>) => {
-    if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || !onBeginMove) return;
+    if (event.button !== 0) return;
+    const modified = event.shiftKey || event.ctrlKey || event.metaKey;
+    if (!modified && !onBeginMove) return;
     const start = toWorld(event.clientX, event.clientY);
     if (!start) return;
     const hitRun = event.currentTarget.getAttribute('data-duct-hit');
     const piece = pieceAt(start) ?? (hitRun ? { runId: hitRun, mark: event.currentTarget.getAttribute('data-duct-mark') ?? '' } : null);
     if (!piece) return;
     const focus = focusOfPiece(piece.runId, piece.mark);
+    if (modified) {
+      // Ctrl/⌘ picks the piece (in or out), Shift the stretch to it; the run stays selected.
+      if (!focus) return;
+      event.stopPropagation();
+      event.preventDefault();
+      pickWithModifier(focus, event.shiftKey && !(event.ctrlKey || event.metaKey));
+      return;
+    }
+    if (!onBeginMove) return;
     // The pinned straight under the press moves on its own; elsewhere the selection moves.
     const pinned = useDuctSegmentUiStore.getState().pinned;
     const straight = focus && pinned && domainOf(pinned) === 'duct' && pinned.runId === focus.runId && pinned.key === focus.key
@@ -475,6 +489,15 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     if (event.button !== 0) return;
     const start = toWorld(event.clientX, event.clientY);
     if (!start) return;
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      // With a modifier the press picks the piece the handle sits on (Ctrl/⌘ one, Shift the stretch), as on the duct.
+      const piece = pieceAt(start);
+      const focus = piece ? focusOfPiece(piece.runId, piece.mark) : null;
+      event.stopPropagation();
+      event.preventDefault();
+      if (focus) pickWithModifier(focus, event.shiftKey && !(event.ctrlKey || event.metaKey));
+      return;
+    }
     // A leg's or riser's handle moves that straight through the move session: its neighbours stretch, branches
     // follow elastically (their runouts stay on their terminals), with the readout and one undo step.
     if (handle.kind !== 'end' && onBeginMove?.({
@@ -488,7 +511,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     event.preventDefault();
     editRef.current = { handle, elementId, start, result: null };
     (event.target as Element).setPointerCapture?.(event.pointerId);
-  }, [toWorld, onBeginMove]);
+  }, [toWorld, onBeginMove, pieceAt, focusOfPiece]);
 
   const onHandlePointerMove = useCallback((event: ReactPointerEvent<SVGElement>) => {
     const edit = editRef.current;
@@ -614,7 +637,10 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
       return plan ? segmentEnds(plan, focus.key) : [];
     };
     const samePinned = hovered && pinned && hovered.runId === pinned.runId && hovered.key === pinned.key;
-    const markup = (pinned ? segmentFocusMarkup(outlinesOf(pinned), 'pinned', endsOf(pinned), kRef.current) : '')
+    // The other pieces picked (Ctrl/⌘, Shift) in the pinned colour; the pinned one with its brackets.
+    const picked = state.picked.filter((pick) => domainOf(pick) === 'duct' && !(pinned && pick.runId === pinned.runId && pick.key === pinned.key));
+    const markup = picked.map((pick) => segmentFocusMarkup(outlinesOf(pick), 'picked')).join('')
+      + (pinned ? segmentFocusMarkup(outlinesOf(pinned), 'pinned', endsOf(pinned), kRef.current) : '')
       + (hovered && !samePinned ? segmentFocusMarkup(outlinesOf(hovered), 'hovered') : '');
     if (target.innerHTML !== markup) target.innerHTML = markup;
   }, [planOf, paintOptionPreview]);
@@ -651,6 +677,12 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   });
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  // Open ends left by deleted pieces (or by what they hung from going): marked where they are, a gap traced.
+  const openEnds = useMemo(() => ductOpenEnds(hvacElements).filter((end) => end.gap || end.orphaned).map((end) => ({
+    runId: end.runId, end: end.end, point: end.point, outward: end.outward,
+    halfWidthMm: (end.section.diameterMm ?? end.section.widthMm) / 2, gapId: end.gap?.id ?? null, removed: end.gap?.removed?.path ?? null,
+  })), [hvacElements]);
+  const openEndMarkup = useMemo(() => (openEnds.length ? openEndsMarkup(openEnds, k) : ''), [openEnds, k]);
   // Air systems: the selected units' systems, and those of the selected terminals, are in focus.
   const rooms = props.rooms ?? NO_ROOMS;
   // The walls the runs pass through: a moved wall re-plans their sleeves and fire dampers.
@@ -799,6 +831,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
           </g>
           <AirSystemLayer analysis={airSystems} hvacElements={hvacElements} k={k} focusUnitIds={focusUnitIds}
             showAll={settings.showAirSystems} showTags={style.showTags} />
+          {openEndMarkup ? <g data-testid="duct-open-ends" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: openEndMarkup }} /> : null}
           <g data-testid="duct-auto-preview" dangerouslySetInnerHTML={{ __html: previewMarkup + tagMarkup.preview }} />
           <g ref={networkRef} data-testid="duct-network-focus" style={{ pointerEvents: 'none' }} />
           <g ref={optionPreviewRef} data-testid="duct-option-preview" style={{ pointerEvents: 'none' }} />

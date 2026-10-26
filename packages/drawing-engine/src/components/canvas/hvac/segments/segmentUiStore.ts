@@ -57,26 +57,53 @@ export function sameFocus(a: SegmentFocus | null, b: SegmentFocus | null): boole
 interface SegmentUiState {
   hovered: SegmentFocus | null;
   pinned: SegmentFocus | null;
+  /**
+   * The pieces picked for what is done to pieces (Delete): the pinned one, and
+   * those added with Ctrl/⌘ (one) or Shift (a stretch). Any service, any run.
+   */
+  picked: SegmentFocus[];
   preview: SegmentPreview | null;
   /** Hover on a piece (or off every piece); nothing changes when it is the same part. */
   setHovered: (focus: SegmentFocus | null) => void;
+  /** A plain click: this piece, alone (its card opens). */
   pin: (focus: SegmentFocus) => void;
+  /** Ctrl/⌘ + click: the piece in or out of the picks; the card shows it (or the last pick left). */
+  togglePick: (focus: SegmentFocus) => void;
+  /** Shift + click: these pieces added to the picks; the card shows the last. */
+  addPicks: (focuses: readonly SegmentFocus[]) => void;
   unpin: () => void;
   setPreview: (preview: SegmentPreview | null) => void;
 }
 
+const samePiece = (a: SegmentFocus, b: SegmentFocus) => focusId(a) === focusId(b);
+
 export const useSegmentUiStore = create<SegmentUiState>((set, get) => ({
   hovered: null,
   pinned: null,
+  picked: [],
   preview: null,
   setHovered: (focus) => {
     if (!sameFocus(get().hovered, focus)) set({ hovered: focus });
   },
   pin: (focus) => {
-    if (!sameFocus(get().pinned, focus)) set({ pinned: focus, preview: null });
+    const { pinned, picked } = get();
+    if (sameFocus(pinned, focus) && picked.length === 1 && samePiece(picked[0]!, focus)) return;
+    set({ pinned: focus, picked: [focus], preview: null });
+  },
+  togglePick: (focus) => {
+    const picked = get().picked;
+    const without = picked.filter((pick) => !samePiece(pick, focus));
+    const next = without.length < picked.length ? without : [...picked, focus];
+    set({ picked: next, pinned: next.length ? (next.includes(focus) ? focus : next[next.length - 1]!) : null, preview: null });
+  },
+  addPicks: (focuses) => {
+    if (!focuses.length) return;
+    const picked = [...get().picked];
+    for (const focus of focuses) if (!picked.some((pick) => samePiece(pick, focus))) picked.push(focus);
+    set({ picked, pinned: focuses[focuses.length - 1]!, preview: null });
   },
   unpin: () => {
-    if (get().pinned || get().preview) set({ pinned: null, preview: null });
+    if (get().pinned || get().preview || get().picked.length) set({ pinned: null, picked: [], preview: null });
   },
   setPreview: (preview) => {
     const current = get().preview;

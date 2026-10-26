@@ -42,7 +42,53 @@ export const DUCT_3D_COLORS = {
   sleeve: '#78716c',
   accessDoor: '#94a3b8',
   attenuator: '#64748b',
+  /** An open end left by deleted pieces (the plan's amber mark). */
+  openEnd: '#d97706',
 } as const;
+
+/** The band round an open socket: its depth along the duct and its bars' thickness (mm). */
+const OPEN_END_BAND_MM = 40;
+const OPEN_END_BAR_MM = 22;
+
+/**
+ * Open ends left by deleted pieces (or by what they hung from going): an amber
+ * band round each open socket, as the plan marks it, so a gap reads in 3D too.
+ */
+function addOpenEndMeshes(spec: DuctFabricationPlan['spec'], push: MeshPush): void {
+  const amber = material(DUCT_3D_COLORS.openEnd, 0, 0.45);
+  const ends: Array<{ at: DuctPoint3; next: DuctPoint3; section: DuctLeg }> = [];
+  const marked = (end: DuctFabricationPlan['spec']['start']) => end.kind === 'open' && (Boolean(end.gap) || end.orphaned === true);
+  if (marked(spec.start) && spec.path.length >= 2) {
+    const socket = spec.start.kind === 'open' ? spec.start.socket : undefined;
+    ends.push({ at: spec.path[0]!, next: spec.path[1]!, section: socket ?? spec.legs[0]! });
+  }
+  if (marked(spec.end) && spec.path.length >= 2) {
+    ends.push({ at: spec.path[spec.path.length - 1]!, next: spec.path[spec.path.length - 2]!, section: spec.legs[spec.legs.length - 1]! });
+  }
+  for (const { at, next, section } of ends) {
+    const plan = Math.hypot(next.x - at.x, next.y - at.y);
+    if (plan < 1) continue; // a riser's end: its band would stand flat (not drawn)
+    // Along the duct from the open end, so the band sits on the duct's last few centimetres.
+    const axis = { x: (next.x - at.x) / plan, y: (next.y - at.y) / plan };
+    const centre = new THREE.Vector3(at.x + axis.x * (OPEN_END_BAND_MM / 2), at.y + axis.y * (OPEN_END_BAND_MM / 2), at.z + (section.diameterMm ?? section.heightMm) / 2);
+    if (section.diameterMm !== undefined) {
+      const radius = section.diameterMm / 2 + OPEN_END_BAR_MM / 2;
+      push('duct-open-ends', amber, sweepCircularRings([
+        { point: { x: at.x, y: at.y }, z: centre.z, radius },
+        { point: { x: at.x + axis.x * OPEN_END_BAND_MM, y: at.y + axis.y * OPEN_END_BAND_MM }, z: centre.z, radius },
+      ]));
+      continue;
+    }
+    const n = { x: -axis.y, y: axis.x };
+    const halfW = section.widthMm / 2 + OPEN_END_BAR_MM / 2;
+    const halfH = section.heightMm / 2 + OPEN_END_BAR_MM / 2;
+    const offset = (across: number, up: number) => new THREE.Vector3(centre.x + n.x * across, centre.y + n.y * across, centre.z + up);
+    push('duct-open-ends', amber, orientedBox(offset(0, halfH), axis, OPEN_END_BAND_MM, 2 * halfW + OPEN_END_BAR_MM, OPEN_END_BAR_MM));
+    push('duct-open-ends', amber, orientedBox(offset(0, -halfH), axis, OPEN_END_BAND_MM, 2 * halfW + OPEN_END_BAR_MM, OPEN_END_BAR_MM));
+    push('duct-open-ends', amber, orientedBox(offset(halfW, 0), axis, OPEN_END_BAND_MM, OPEN_END_BAR_MM, 2 * halfH - OPEN_END_BAR_MM));
+    push('duct-open-ends', amber, orientedBox(offset(-halfW, 0), axis, OPEN_END_BAND_MM, OPEN_END_BAR_MM, 2 * halfH - OPEN_END_BAR_MM));
+  }
+}
 
 const MATERIALS = new Map<string, THREE.MeshStandardMaterial>();
 
@@ -1281,6 +1327,7 @@ export function addDuctRunMeshes(group: THREE.Group, element: HvacElement, conte
     }
   }
   if (settings.showSupports) addDuctSupportMeshes(getDuctSupportPlan(plan, context.allElements, settings), push);
+  addOpenEndMeshes(plan.spec, push);
   for (const [name, bucket] of buckets) {
     const merged = bucket.parts.length === 1 ? bucket.parts[0]! : mergeGeometries(bucket.parts, false);
     if (bucket.parts.length > 1) bucket.parts.forEach((part) => part.dispose());

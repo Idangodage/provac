@@ -142,7 +142,36 @@ export type DuctEnd =
   | DuctPlenumEnd
   | DuctTerminalEnd
   | { kind: 'end-cap' }
-  | { kind: 'open'; orphaned?: boolean };
+  | DuctOpenEnd;
+
+/**
+ * An end left open. `orphaned`: what it hung from (or served) was deleted;
+ * `gap`: pieces of the run were deleted here (ductCut), and what the gap was;
+ * `socket` (a start): the section it was fed with, so a transition kept at the
+ * start keeps its inlet.
+ */
+export interface DuctOpenEnd {
+  kind: 'open';
+  orphaned?: boolean;
+  gap?: DuctGapRef;
+  socket?: DuctLeg;
+}
+
+/**
+ * A gap where pieces of a run were deleted, kept on each open end it left
+ * until it is reconnected: the other end of the gap (a cut between two parts
+ * of a run), the stretch deleted, and for a lone end (a take-off, a collar's
+ * connector, a runout deleted) what it was connected to.
+ */
+export interface DuctGapRef {
+  id: string;
+  /** The other open end of the gap: its run, and which of that run's ends; null for a lone end. */
+  partner: { runId: string; end: 'start' | 'end' } | null;
+  /** The stretch deleted: its centreline (clear-bottom levels, as `path`) and one section per leg of it. */
+  removed: { path: DuctPoint3[]; legs: DuctLeg[] } | null;
+  /** A lone end: what it was connected to. */
+  was: Exclude<DuctEnd, DuctOpenEnd> | null;
+}
 
 export interface DuctNodeOverride {
   elbowStyle?: 'radius' | 'square-vaned';
@@ -412,7 +441,25 @@ function readEnd(value: unknown): DuctEnd {
     return { kind: 'terminal', terminalId: candidate.terminalId, portId: typeof candidate.portId === 'string' ? candidate.portId : 'spigot', flex: candidate.flex !== false };
   }
   if (candidate.kind === 'end-cap') return { kind: 'end-cap' };
-  return candidate.orphaned === true ? { kind: 'open', orphaned: true } : { kind: 'open' };
+  const gap = readGapRef(candidate.gap);
+  const socket = candidate.socket && typeof candidate.socket === 'object' ? readLeg(candidate.socket, { widthMm: 300, heightMm: 200 }) : null;
+  return { kind: 'open', ...(candidate.orphaned === true ? { orphaned: true } : {}), ...(gap ? { gap } : {}), ...(socket ? { socket } : {}) };
+}
+
+function readGapRef(value: unknown): DuctGapRef | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.id !== 'string' || !raw.id) return null;
+  const partnerRaw = raw.partner as Record<string, unknown> | null | undefined;
+  const partner = partnerRaw && typeof partnerRaw.runId === 'string' && (partnerRaw.end === 'start' || partnerRaw.end === 'end')
+    ? { runId: partnerRaw.runId, end: partnerRaw.end as 'start' | 'end' } : null;
+  const removedRaw = raw.removed as Record<string, unknown> | null | undefined;
+  const removedPath = removedRaw && Array.isArray(removedRaw.path)
+    ? removedRaw.path.map((point) => readPoint3(point, 0)).filter((point): point is DuctPoint3 => point !== null) : [];
+  const removedLegs = removedRaw && Array.isArray(removedRaw.legs) ? removedRaw.legs.map((leg) => readLeg(leg, { widthMm: 300, heightMm: 200 })) : [];
+  const removed = removedPath.length >= 2 && removedLegs.length === removedPath.length - 1 ? { path: removedPath, legs: removedLegs } : null;
+  const wasEnd = raw.was ? readEnd({ ...(raw.was as Record<string, unknown>), gap: undefined }) : null;
+  return { id: raw.id, partner, removed, was: wasEnd && wasEnd.kind !== 'open' ? wasEnd : null };
 }
 
 /** The parent run a branch hangs from, if any. */

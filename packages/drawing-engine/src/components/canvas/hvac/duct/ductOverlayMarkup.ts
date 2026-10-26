@@ -212,6 +212,8 @@ export function networkFocusMarkup(outlines: readonly Point2D[][], tone: 'hovere
 export const SEGMENT_FOCUS_COLORS = {
   hovered: { stroke: '#8b5cf6', fill: 'rgba(139,92,246,0.08)' },
   pinned: { stroke: '#7c3aed', fill: 'rgba(124,58,237,0.26)', glow: 'rgba(124,58,237,0.22)' },
+  /** Pieces picked with Ctrl/⌘ or Shift besides the pinned one: its colour, without its brackets. */
+  picked: { stroke: '#7c3aed', fill: 'rgba(124,58,237,0.2)', glow: 'rgba(124,58,237,0.16)' },
 } as const;
 
 /**
@@ -222,7 +224,7 @@ export const SEGMENT_FOCUS_COLORS = {
  */
 export function segmentFocusMarkup(
   outlines: readonly Point2D[][],
-  tone: 'hovered' | 'pinned',
+  tone: 'hovered' | 'pinned' | 'picked',
   ends: ReadonlyArray<{ point: Point2D; direction: Point2D; halfWidthMm: number }> = [],
   k = 1,
 ): string {
@@ -232,7 +234,8 @@ export function segmentFocusMarkup(
     if (tone === 'hovered') {
       return `<path d="${d}" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="1.6" stroke-dasharray="5 3" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
     }
-    return `<path d="${d}" fill="none" stroke="${SEGMENT_FOCUS_COLORS.pinned.glow}" stroke-width="13" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`
+    const glow = tone === 'picked' ? SEGMENT_FOCUS_COLORS.picked.glow : SEGMENT_FOCUS_COLORS.pinned.glow;
+    return `<path d="${d}" fill="none" stroke="${glow}" stroke-width="13" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`
       + `<path d="${d}" fill="${colors.fill}" stroke="${colors.stroke}" stroke-width="2.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
   }).join('');
   if (tone !== 'pinned') return shapes;
@@ -248,6 +251,43 @@ export function segmentFocusMarkup(
       + `<path d="${pathData(path)}" fill="none" stroke="${colors.stroke}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
   }).join('');
   return shapes + brackets;
+}
+
+/** Open ends left by deleted pieces (or by what they hung from going). */
+export const OPEN_END_COLORS = { stroke: '#d97706', fill: '#fffbeb', trace: 'rgba(217,119,6,0.55)' } as const;
+
+/**
+ * Open ends on the plan: an amber bar across each open socket with a small
+ * "+" badge just past it (a gap to reconnect), and the stretch a cut deleted
+ * as a faint dashed centreline between its two ends.
+ */
+export function openEndsMarkup(
+  ends: ReadonlyArray<{ runId: string; end: 'start' | 'end'; point: Point2D; outward: Point2D; halfWidthMm: number; gapId: string | null; removed: readonly Point2D[] | null }>,
+  k: number,
+): string {
+  const px = (value: number) => value / Math.max(k, 1e-6);
+  const traced = new Set<string>();
+  const traces = ends.flatMap((end) => {
+    if (!end.gapId || !end.removed || end.removed.length < 2 || traced.has(end.gapId)) return [];
+    traced.add(end.gapId);
+    return [`<path data-duct-gap-trace="${end.gapId}" d="${pathData(end.removed)}" fill="none" stroke="${OPEN_END_COLORS.trace}" stroke-width="1.6" stroke-dasharray="7 5" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`];
+  });
+  const marks = ends.map((end) => {
+    const n = { x: -end.outward.y, y: end.outward.x };
+    const reach = end.halfWidthMm + px(4);
+    const a = { x: end.point.x + n.x * reach, y: end.point.y + n.y * reach };
+    const b = { x: end.point.x - n.x * reach, y: end.point.y - n.y * reach };
+    const badge = { x: end.point.x + end.outward.x * px(13), y: end.point.y + end.outward.y * px(13) };
+    const r = px(6.5);
+    const arm = px(3.2);
+    return `<g data-duct-open-end="${end.runId}:${end.end}"${end.gapId ? ` data-duct-gap="${end.gapId}"` : ''}>`
+      + `<path d="${pathData([a, b])}" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`
+      + `<path d="${pathData([a, b])}" fill="none" stroke="${OPEN_END_COLORS.stroke}" stroke-width="3" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`
+      + `<circle cx="${badge.x}" cy="${badge.y}" r="${r}" fill="${OPEN_END_COLORS.fill}" stroke="${OPEN_END_COLORS.stroke}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`
+      + `<path d="${pathData([{ x: badge.x - arm, y: badge.y }, { x: badge.x + arm, y: badge.y }])} ${pathData([{ x: badge.x, y: badge.y - arm }, { x: badge.x, y: badge.y + arm }])}" fill="none" stroke="${OPEN_END_COLORS.stroke}" stroke-width="1.6" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`
+      + '</g>';
+  }).join('');
+  return traces.join('') + marks;
 }
 
 /**

@@ -50,6 +50,7 @@ import {
 import type { HvacPlanRenderer } from "../hvac/HvacPlanRenderer";
 import { useDuctSegmentUiStore } from "../hvac/duct/ductSegmentUiStore";
 import type { HvacMoveBegin } from "../hvac/move/hvacMoveSession";
+import { pickWithModifier } from "../hvac/segments/piecePicking";
 import type { ObjectRenderer } from "../object/ObjectRenderer";
 import { MM_TO_PX } from "../scale";
 import { snapPointToGrid } from "../snapping";
@@ -1119,7 +1120,15 @@ export function useCanvasEventBinding(
         suppressNextFabricSelectionSync();
         setPersistentRoomControlId(null);
         if (addToSelection) {
-          toggleSelectedId(hvacId);
+          // On a duct, Ctrl/⌘ picks the piece under the pointer (Shift: the stretch to it) and keeps its run selected.
+          const piece = wallPoint ? hvacRendererRef.current?.ductSegmentAtWorldPoint(hvacId, wallPoint) ?? null : null;
+          if (piece) {
+            const current = getLiveSelectedSet();
+            if (!current.has(hvacId)) setSelectedIds([...current, hvacId]);
+            pickWithModifier({ runId: hvacId, key: piece.key, anchorMark: piece.mark, view: "2d" }, Boolean(event.e?.shiftKey) && !(event.e?.ctrlKey || event.e?.metaKey));
+          } else {
+            toggleSelectedId(hvacId);
+          }
         } else {
           // A duct: a click also picks the segment under it, its card opening beside it.
           const segment = wallPoint ? hvacRendererRef.current?.ductSegmentAtWorldPoint(hvacId, wallPoint) ?? null : null;
