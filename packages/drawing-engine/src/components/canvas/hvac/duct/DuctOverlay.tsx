@@ -37,6 +37,7 @@ import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPre
 import { ductOpenEnds } from './ductCut';
 import { applyDuctRunEdit, moveDuctLegSideways, moveDuctRiser, moveDuctRunEnd, type DuctEditResult } from './ductEdits';
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
+import { useDuctGapStore } from './ductGapController';
 import { ductLegs } from './ductGeometry';
 import { useDuctNetworkFocusStore, type DuctNetworkFocus } from './ductNetworkFocusStore';
 import {
@@ -98,6 +99,8 @@ export interface DuctOverlayHandle {
    * ducts wait for the release).
    */
   previewMove: (elements: readonly HvacElement[] | null, options?: { committed?: boolean; faded?: readonly string[] }) => void;
+  /** A plan point on screen (client pixels), or null before the overlay is laid out. */
+  clientPointOf: (point: Point2D) => { x: number; y: number } | null;
 }
 
 /** Tag widths on screen (px), measured once per text in the font the plan draws tags in. */
@@ -196,6 +199,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const networkRef = useRef<SVGGElement | null>(null);
   /** A segment option shown before it is applied: the runs it changes, drawn as they would be (dashed). */
   const optionPreviewRef = useRef<SVGGElement | null>(null);
+  const gapWayRef = useRef<SVGGElement | null>(null);
   const previewHiddenRef = useRef<ReadonlySet<string>>(new Set());
   const editRef = useRef<{ handle: DuctEditHandle; elementId: string; start: Point2D; result: DuctEditResult | null } | null>(null);
   /** The pinned segment: its straight's own resize grips take the place of the move and end handles there. */
@@ -594,7 +598,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     const { preview } = useDuctSegmentUiStore.getState();
     const { hvacElements: stored, settings: current } = sceneRef.current;
     const ducts = preview && domainOf(preview) === 'duct' ? preview.updates.filter(isDuctElement) : [];
-    const ids = new Set(ducts.map((element) => element.id));
+    // The runs it changes are drawn as they would be; those it takes away (a gap's second part, joined) are hidden too.
+    const ids = new Set([...ducts.map((element) => element.id), ...(preview && domainOf(preview) === 'duct' ? preview.removeIds ?? [] : [])]);
     let markup = '';
     if (ducts.length) {
       const replaced = new Map(preview!.updates.map((element) => [element.id, element]));
@@ -661,8 +666,30 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   }, [planOf]);
   useEffect(() => useDuctNetworkFocusStore.subscribe(paintNetwork), [paintNetwork]);
 
-  useImperativeHandle(ref, () => ({ syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect, previewMove }),
-    [syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect, previewMove]);
+  const clientPointOf = useCallback((point: Point2D) => {
+    const matrix = gRef.current?.getScreenCTM();
+    if (!matrix) return null;
+    const client = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+    return { x: client.x, y: client.y };
+  }, []);
+
+  /** The new stretch of the reconnection shown for a gap: a teal centreline along it (over its ghost). */
+  const paintGapWay = useCallback(() => {
+    const target = gapWayRef.current;
+    if (!target) return;
+    const { proposals, index } = useDuctGapStore.getState();
+    const bridge = proposals?.candidates[index]?.bridge ?? [];
+    const plan = bridge.filter((point, at) => at === 0 || Math.hypot(point.x - bridge[at - 1]!.x, point.y - bridge[at - 1]!.y) > 0.5);
+    const markup = plan.length >= 2
+      ? `<path d="M${plan.map((point) => `${point.x} ${point.y}`).join(' L')}" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+        + `<path d="M${plan.map((point) => `${point.x} ${point.y}`).join(' L')}" fill="none" stroke="#0d9488" stroke-width="3" stroke-dasharray="9 5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+      : '';
+    if (target.innerHTML !== markup) target.innerHTML = markup;
+  }, []);
+  useEffect(() => useDuctGapStore.subscribe(paintGapWay), [paintGapWay]);
+
+  useImperativeHandle(ref, () => ({ syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect, previewMove, clientPointOf }),
+    [syncViewTransform, setDraft, setHoveredPort, setBranchTarget, segmentClientRect, previewMove, clientPointOf]);
 
   useLayoutEffect(() => {
     // A stored move re-rendered: its preview goes (the runs it drew are the stored ones now).
@@ -835,6 +862,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
           <g data-testid="duct-auto-preview" dangerouslySetInnerHTML={{ __html: previewMarkup + tagMarkup.preview }} />
           <g ref={networkRef} data-testid="duct-network-focus" style={{ pointerEvents: 'none' }} />
           <g ref={optionPreviewRef} data-testid="duct-option-preview" style={{ pointerEvents: 'none' }} />
+          <g ref={gapWayRef} data-testid="duct-gap-way" style={{ pointerEvents: 'none' }} />
           <g ref={segmentRef} data-testid="duct-segment-focus" style={{ pointerEvents: 'none' }} />
           <g ref={portsRef} data-testid="duct-ports" />
           {collarPorts.length ? <g data-testid="duct-collar-marks" dangerouslySetInnerHTML={{ __html: collarMarksMarkup(collarPorts, k) }} /> : null}

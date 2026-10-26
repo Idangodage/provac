@@ -1581,8 +1581,9 @@ export function HybridProjectionLayer({
     };
     const modelToWorldPoint = (p: readonly [number, number, number]): THREE.Vector3 =>
       modelPointToWorld({ x: p[0], y: p[1] }, p[2]);
+    // The pipe editor's own controls, and floating controls over the view (a gap's reconnect chip, the picks bar).
     const isPipeEditorTarget = (target: EventTarget | null): boolean => target instanceof Element
-      && Boolean(target.closest('[data-pipe-edit-gizmo], [data-testid="pipe-editing-tools"]'));
+      && Boolean(target.closest('[data-pipe-edit-gizmo], [data-testid="pipe-editing-tools"], [data-hvac-overlay-ui]'));
     const paintWorkplaneGuide = (): void => {
       const guide = workplaneGuideRef.current;
       const plane = activePipeWorkplaneRef.current;

@@ -98,6 +98,7 @@ import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePr
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
 import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
+import { DuctGapChip } from "./canvas/hvac/duct/DuctGapChip";
 import { DuctLegDimension } from "./canvas/hvac/duct/DuctLegDimension";
 import { DuctOverlay, type DuctOverlayHandle } from "./canvas/hvac/duct/DuctOverlay";
 import { createDuctSegmentProvider } from "./canvas/hvac/duct/DuctSegmentCard";
@@ -113,12 +114,14 @@ import { ductOpenEnds } from "./canvas/hvac/duct/ductCut";
 import { buildDuctRunDraft, buildDuctRunDraftElement, ductRunDraftCommand } from "./canvas/hvac/duct/ductDraft";
 import { commitDuctRunEdit } from "./canvas/hvac/duct/ductEditController";
 import { getDuctRunPlan } from "./canvas/hvac/duct/ductFabricationPlanner";
+import { useDuctGapStore } from "./canvas/hvac/duct/ductGapController";
+import { proposeDuctGap } from "./canvas/hvac/duct/ductGapProposal";
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
 import { getDuctSupportPlan, resolveSoffitZ } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
-import { isDuctElement, readDuctRunSpec, roundLeg } from "./canvas/hvac/duct/ductTypes";
+import { isDuctElement, readDuctRunSpec, roundLeg, type DuctPoint3 } from "./canvas/hvac/duct/ductTypes";
 import { useTerminalProposalStore } from "./canvas/hvac/duct/terminalProposalStore";
 import { useDuctBuilding } from "./canvas/hvac/duct/useDuctBuilding";
 import { DuctResizeGrips } from "./canvas/hvac/move/DuctResizeGrips";
@@ -791,6 +794,18 @@ export function DrawingCanvas({
   // joins the selection or leaves it, as a click on the canvas does.
   // A segment's card sits beside its piece: on the plan, where the plan overlay draws it; in a 3D view, where
   // the camera sees it (read every frame, so the card follows an orbit or a zoom).
+  /** A model point on screen in the view shown (plan or 3D): where a duct gap's reconnect chip goes. */
+  const gapToClient = useCallback((point: DuctPoint3) => {
+    if (!projectionViewOnly) return ductOverlayRef.current?.clientPointOf(point) ?? null;
+    const camera = hybridControllerRef.current?.camera;
+    const host = hostRef.current;
+    if (!camera || !host) return null;
+    const hostRect = host.getBoundingClientRect();
+    const clip = modelPointToWorld({ x: point.x, y: point.y }, point.z).project(camera);
+    if (!Number.isFinite(clip.x) || !Number.isFinite(clip.y) || clip.z < -1 || clip.z > 1) return null;
+    return { x: hostRect.left + ((clip.x + 1) / 2) * hostRect.width, y: hostRect.top + ((1 - clip.y) / 2) * hostRect.height };
+  }, [projectionViewOnly]);
+
   const resolveSegmentAnchor = useCallback((focus: SegmentFocus) => {
     const domain = domainOf(focus);
     if (!projectionViewOnly) {
@@ -1147,6 +1162,20 @@ export function DrawingCanvas({
       deletePicks: () => deletePickedPieces(),
       /** Every duct open end: where, which way it faces, and the gap it remembers. */
       getOpenEnds: () => ductOpenEnds(useSmartDrawingStore.getState().hvacElements),
+      /** The ways to reconnect a gap, best first (what the chip offers). */
+      getGapProposal: (gapId: string) => {
+        const state = useSmartDrawingStore.getState();
+        const result = proposeDuctGap(state.hvacElements, gapId, state.ductSettings);
+        return {
+          reason: result.reason, ends: result.ends,
+          candidates: result.candidates.map(({ key, label, lengthMm, elbows, bridge, updates, removeIds }) => ({ key, label, lengthMm, elbows, bridge, updateIds: updates.map((element) => element.id), removeIds })),
+        };
+      },
+      /** The gap the chip is showing, and the way shown. */
+      getGapChip: () => {
+        const { gapId, proposals, index } = useDuctGapStore.getState();
+        return gapId ? { gapId, index, way: proposals?.candidates[index]?.key ?? null, ways: proposals?.candidates.map((candidate) => candidate.key) ?? [] } : null;
+      },
       /** A model point half way up a segment's first piece (where a pointer rests on it in 3D), or null. */
       getSegmentHotspot3D: (runId: string, key: string) => {
         const state = useSmartDrawingStore.getState();
@@ -3907,6 +3936,7 @@ export function DrawingCanvas({
           settings={condensateSettings} onPreviewChange={handleCondensateEditPreview} />
         <SegmentCardLayer enabled={tool === "select"} hvacElements={hvacElements} providers={segmentProviders}
           selectedIds={selectedIds} resolveAnchor={resolveSegmentAnchor} dragging={Boolean(movingIds)} />
+        <DuctGapChip enabled={tool === "select" && !movingIds} toClient={gapToClient} hostRef={hostRef} />
         <PipeEditingTools elements={hvacElements} selectedIds={selectedIds} enabled={tool === "select"}
           showInteriorNodeHandles={projectionViewOnly} cardView={projectionViewOnly ? "3d" : "2d"}
           drawing={tool === "refrigerant-pipe"} unit={displayUnit} controllerRef={hybridControllerRef}

@@ -240,7 +240,7 @@ export function runClashes(spec: DuctRunSpec, obstacles: readonly PlanObstacle[]
 // ---- The re-route. ----
 
 /** Plan frame with its x along `axis` (a unit vector): a route square to it is cardinal there. */
-function frame(origin: Point2D, axis: Point2D) {
+export function frame(origin: Point2D, axis: Point2D) {
   const v = { x: -axis.y, y: axis.x };
   return {
     toLocal: (p: Point2D): Point2D => ({ x: (p.x - origin.x) * axis.x + (p.y - origin.y) * axis.y, y: (p.x - origin.x) * v.x + (p.y - origin.y) * v.y }),
@@ -250,13 +250,13 @@ function frame(origin: Point2D, axis: Point2D) {
 }
 
 /** The cardinal direction `d` is (within 0.06°), or null. */
-function cardinalOf(d: Point2D): Point2D | null {
+export function cardinalOf(d: Point2D): Point2D | null {
   if (Math.abs(Math.abs(d.x) - 1) < 1e-3 && Math.abs(d.y) < 1e-3) return { x: Math.sign(d.x), y: 0 };
   if (Math.abs(Math.abs(d.y) - 1) < 1e-3 && Math.abs(d.x) < 1e-3) return { x: 0, y: Math.sign(d.y) };
   return null;
 }
 
-function boxOf(points: readonly Point2D[], pad = 0): OrthogonalRouteObstacle {
+export function boxOf(points: readonly Point2D[], pad = 0): OrthogonalRouteObstacle {
   return {
     minX: Math.min(...points.map((point) => point.x)) - pad, minY: Math.min(...points.map((point) => point.y)) - pad,
     maxX: Math.max(...points.map((point) => point.x)) + pad, maxY: Math.max(...points.map((point) => point.y)) + pad,
@@ -264,7 +264,7 @@ function boxOf(points: readonly Point2D[], pad = 0): OrthogonalRouteObstacle {
 }
 
 /** Points with those in the middle of a straight run dropped. */
-function corners(points: readonly Point2D[]): Point2D[] {
+export function corners(points: readonly Point2D[]): Point2D[] {
   const out: Point2D[] = [];
   for (const point of points) {
     if (out.length && Math.hypot(point.x - out[out.length - 1]!.x, point.y - out[out.length - 1]!.y) < 0.01) continue;

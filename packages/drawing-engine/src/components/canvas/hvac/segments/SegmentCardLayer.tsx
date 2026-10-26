@@ -497,7 +497,7 @@ export function SegmentCardLayer({ enabled, hvacElements, selectedIds, providers
       ) : null}
     </div>
     {several >= 2 && !dragging ? (
-      <div role="toolbar" aria-label="Picked pieces" data-testid="piece-picks-bar"
+      <div role="toolbar" aria-label="Picked pieces" data-testid="piece-picks-bar" data-hvac-overlay-ui=""
         className="pointer-events-auto absolute bottom-4 left-1/2 z-[29] flex -translate-x-1/2 items-center gap-2 rounded-full border border-violet-200 bg-white/95 py-1 pl-3 pr-1 text-xs text-slate-700 shadow-lg backdrop-blur">
         <span className="h-2 w-2 rounded-full bg-violet-600" aria-hidden="true" />
         <span className="font-semibold text-violet-800" data-testid="piece-picks-count">{several} pieces picked</span>
