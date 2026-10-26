@@ -91,6 +91,7 @@ import { CondensateEditGizmo3D } from "./canvas/hvac/condensate/CondensateEditGi
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
 import { createCondensateSegmentProvider } from "./canvas/hvac/condensate/CondensateSegmentCard";
 import { condensateOpenEnds } from "./canvas/hvac/condensate/condensateCut";
+import { drainDrawStarts } from "./canvas/hvac/condensate/condensateDrawRoute";
 import { condensateEditContext } from "./canvas/hvac/condensate/condensateEditController";
 import { generateCondensateNetwork } from "./canvas/hvac/condensate/condensateGenerator";
 import { condensatePieceMidpoint, condensateRunOf } from "./canvas/hvac/condensate/condensatePieces";
@@ -98,7 +99,7 @@ import { getIndoorUnitDrainPorts } from "./canvas/hvac/condensate/condensatePort
 import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePreviewStore";
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
-import { startDrainDraw, stopDrainDraw, useDrainDrawStore } from "./canvas/hvac/condensate/drainDrawSession";
+import { armDrainTool, startDrainDraw, stopDrainDraw, useDrainDrawStore } from "./canvas/hvac/condensate/drainDrawSession";
 import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
 import { DuctGapChip } from "./canvas/hvac/duct/DuctGapChip";
 import { DuctLegDimension } from "./canvas/hvac/duct/DuctLegDimension";
@@ -1170,6 +1171,15 @@ export function DrawingCanvas({
       /** Every drain's open end that remembers a gap, and the drain being drawn by hand (if any). */
       getDrainOpenEnds: () => condensateOpenEnds(useSmartDrawingStore.getState().hvacElements),
       getDrainDraw: () => useDrainDrawStore.getState().session,
+      /** The drain tool: armed (waiting for a start), the fall a network it starts takes, and the drain being drawn. */
+      getDrainTool: () => useDrainDrawStore.getState(),
+      /** Takes the drain tool out (as its toolbox tile does). */
+      armDrainTool: (fallPercent?: number | null) => armDrainTool({ fallPercent }),
+      /** Where the drain tool may start: open drain ends, and the outlets (with riser feet) of units that drain nowhere. */
+      getDrainStarts: () => {
+        const state = useSmartDrawingStore.getState();
+        return drainDrawStarts(state.hvacElements, state.condensateSettings);
+      },
       /** What the pipe tool would continue from a plan point: a pair's two ends, or one line's (within `reachMm`). */
       getPipeExtensionTarget: (point: Point2D, reachMm = 5) => {
         const target = findNearestRefrigerantPipeExtensionTarget(useSmartDrawingStore.getState().hvacElements, point, reachMm);
@@ -2001,11 +2011,16 @@ export function DrawingCanvas({
   // A segment card's option on the drawing before it is applied (any service): 3D draws it as a transient preview,
   // runs it adds as well (a drain's network solved again).
   const segmentCardPreview = useSegmentUiStore((state) => state.preview);
-  // A drain gap drawn by hand on the plan: the reconnect chip and the design-check markers keep out of its way, and
-  // it stops when another tool is taken or the view leaves the plan.
-  const drainDrawing = useDrainDrawStore((state) => Boolean(state.session));
+  // The drain tool (a drain drawn by hand on the plan): the reconnect chip and the design-check markers keep out of its
+  // way. Taken out in a 3D view it turns the view back to the plan; it is put down when another tool is taken or the
+  // view leaves the plan.
+  const drainDrawing = useDrainDrawStore((state) => state.armed || Boolean(state.session));
+  const onPlanRef = useRef(!projectionViewOnly);
   useEffect(() => {
-    if (tool !== "select" || projectionViewOnly) stopDrainDraw();
+    // Leaving the plan puts it down, not being out of it (it is taken out in 3D, then the view turns).
+    const leftPlan = onPlanRef.current && projectionViewOnly;
+    onPlanRef.current = !projectionViewOnly;
+    if (tool !== "select" || leftPlan) stopDrainDraw();
   }, [tool, projectionViewOnly]);
   const ductSegmentPreview = useMemo(() => (segmentCardPreview ? [...segmentCardPreview.updates, ...(segmentCardPreview.add ?? [])] : null), [segmentCardPreview]);
   // In plan, a refrigerant card's option (or a pipe gap's reconnection) is drawn by the pipe overlay in place of the
@@ -2074,6 +2089,11 @@ export function DrawingCanvas({
     setInteractionViewMode(CAMERA_TO_INTERACTION_VIEW[view]);
     hybridControllerRef.current?.setCameraView(view, true);
   }, []);
+  // The drain tool draws on the plan: taken out in a 3D view, the view turns back to it (only as it is taken out).
+  const drainToolArmed = useDrainDrawStore((state) => state.armed);
+  useEffect(() => {
+    if (drainToolArmed && projectionViewOnly) setCameraView("plan");
+  }, [drainToolArmed]);
   const fitCameraContent = useCallback(() => {
     hybridControllerRef.current?.fitContent(undefined, true);
   }, []);

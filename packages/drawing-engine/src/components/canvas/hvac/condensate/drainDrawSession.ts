@@ -1,11 +1,14 @@
 /**
- * Drawing a drain gap by hand: from the gap's open end, clicks on the plan
- * where the drain turns, finished on the other part's open end. The run is
- * then joined along the points and its whole network solved again for the
- * fall, as Auto route solves one (one undo). Resting on the other part's open
- * end shows the network as it would be; a network that cannot drain along the
- * points says why and drawing goes on. Backspace takes the last point back,
- * Esc cancels.
+ * The drain tool (condensateDrawRoute): a drain drawn by hand on the plan.
+ * Armed from the toolbox or the bar above the drawing, it waits for a start:
+ * a unit's drain outlet or an open drain end. A gap's [Draw] starts it at the
+ * gap's open end at once. Clicks on the plan then add the points where the
+ * drain turns. Finishing on the other part's open end, on a drain (a wye) or on
+ * a termination solves the network again for the fall, as Auto route does
+ * (one undo). Resting on a finish shows the network as it would be; one that
+ * cannot drain that way says why, and drawing goes on. Backspace takes the
+ * last point back. Esc steps back: from drawing to picking a start (when the
+ * tool is armed), then out of the tool.
  */
 import { create } from 'zustand';
 
@@ -14,19 +17,34 @@ import type { Point2D } from '../../../../types';
 import { useSegmentUiStore } from '../segments/segmentUiStore';
 
 import { condensateOpenEnds } from './condensateCut';
+import { drainDrawStarts, drainDrawTargets, drawDrainAlong, type DrainDrawStart, type DrainDrawTarget, type DrawnDrain } from './condensateDrawRoute';
 import { condensateEditContext } from './condensateEditController';
-import { joinDrainAlong, type DrainJoin } from './condensateGapProposal';
+import { seatedRiserFoot } from './condensateNetworkPlanner';
+import { getCondensateOwnership } from './condensateTypes';
 
 export interface DrainDrawSession {
-  gapId: string;
-  /** The open end it starts from, and the other part's open end it finishes on (plan). */
+  start: DrainDrawStart;
+  /** The gap it closes (its open end's, or the unit connection's); null for a new drain. */
+  gapId: string | null;
+  /** Where the drawing starts: the open end, or the riser foot straight out of the unit's outlet. */
   from: Point2D;
+  /** A unit's outlet (the stub to the riser foot is fixed). */
+  outlet: Point2D | null;
+  /** The other part's open end, when the gap has one: then the only place to finish. */
   to: Point2D | null;
   /** Where it turns, in order. */
   points: Point2D[];
 }
 
-export const useDrainDrawStore = create<{ session: DrainDrawSession | null }>(() => ({ session: null }));
+export interface DrainToolState {
+  /** The drain tool is armed: the plan's clicks pick where a drain starts. */
+  armed: boolean;
+  /** The design fall (%) a network it starts takes (the drain it was armed like); null: the drainage settings'. */
+  fallPercent: number | null;
+  session: DrainDrawSession | null;
+}
+
+export const useDrainDrawStore = create<DrainToolState>(() => ({ armed: false, fallPercent: null, session: null }));
 
 const PREVIEW_ID = 'drain-draw';
 
@@ -39,30 +57,86 @@ function clearPreview(): void {
   if (segments.preview?.optionId === PREVIEW_ID) segments.setPreview(null);
 }
 
-/** Starts drawing the drain gap `gapId` on from its open end; false when it is not open. */
-export function startDrainDraw(gapId: string): boolean {
-  const ends = condensateOpenEnds(useSmartDrawingStore.getState().hvacElements).filter((end) => end.gap.id === gapId);
-  const from = ends.find((end) => end.end === 'end');
-  const to = ends.find((end) => end.end === 'start');
-  if (!from) return false;
-  // The plan's clicks are the drawing's now: nothing stays selected (a selected drain's handles would take them).
+const PICK_HINT = 'Drain tool: click a unit\'s drain outlet or an open drain end to start. Esc stops.';
+
+/**
+ * Arms the drain tool: the select tool's plan, nothing selected (the plan's clicks are the tool's). `fallPercent`: the
+ * fall of a network it starts.
+ */
+export function armDrainTool(options: { fallPercent?: number | null } = {}): void {
+  const store = useSmartDrawingStore.getState();
+  if (store.activeTool !== 'select') store.setTool('select');
+  store.setSelectedIds([]);
+  clearPreview();
+  useDrainDrawStore.setState({ armed: true, fallPercent: options.fallPercent ?? null, session: null });
+  status(PICK_HINT);
+}
+
+/**
+ * Starts drawing from `start` (a unit's outlet or an open end). From an outlet it leaves by the riser foot Auto route
+ * would seat (false, and why, when none is clear).
+ */
+export function startDrainDrawFrom(picked: DrainDrawStart): boolean {
+  const scene = useSmartDrawingStore.getState().hvacElements;
+  let start = picked;
+  if (picked.kind === 'unit') {
+    // Its connection deleted: the network of the run it fed is the one it rejoins.
+    const fed = picked.gapId ? condensateOpenEnds(scene).find((end) => end.gap.id === picked.gapId && end.end === 'start') : undefined;
+    const run = fed ? scene.find((element) => element.id === fed.runId) : undefined;
+    const editNetworkId = run ? getCondensateOwnership(run)?.networkId : undefined;
+    const foot = seatedRiserFoot([...scene], picked.unitId, { ...condensateEditContext(), ...(editNetworkId ? { editNetworkId } : {}) });
+    if (!foot) {
+      status(`${picked.label}: no clear way out of its drain outlet (its riser or connection runs into something). Move what is beside it, or the unit.`);
+      return false;
+    }
+    start = { ...picked, foot };
+  }
+  const targets = drainDrawTargets(scene, start);
   useSmartDrawingStore.getState().setSelectedIds([]);
-  useDrainDrawStore.setState({ session: { gapId, from: { x: from.point.x, y: from.point.y }, to: to ? { x: to.point.x, y: to.point.y } : null, points: [] } });
-  status('Drawing the drain on from its open end: click where it turns, finish on the other part\'s open end. Backspace takes a point back, Esc cancels.');
+  useDrainDrawStore.setState({
+    session: {
+      start,
+      gapId: start.gapId,
+      from: start.kind === 'unit' ? { ...start.foot } : { ...start.point },
+      outlet: start.kind === 'unit' ? { ...start.outlet } : null,
+      to: targets.partner,
+      points: [],
+    },
+  });
+  status(targets.partner
+    ? 'Drawing the drain: click where it turns, finish on the other part\'s open end. Backspace takes a point back, Esc steps back.'
+    : `Drawing the drain: click where it turns, finish on a drain (a wye) or a termination.${targets.reason ? ` ${targets.reason}` : ''} Backspace takes a point back, Esc steps back.`);
   return true;
 }
 
-export function cancelDrainDraw(): void {
-  if (!useDrainDrawStore.getState().session) return;
-  useDrainDrawStore.setState({ session: null });
-  clearPreview();
-  status('Drawing the drain cancelled: the gap is still open.');
+/** Starts drawing the drain gap `gapId` from its open end (or its unit's outlet); false when it is not open. */
+export function startDrainDraw(gapId: string): boolean {
+  const state = useSmartDrawingStore.getState();
+  const start = drainDrawStarts(state.hvacElements, state.condensateSettings).find((candidate) => candidate.gapId === gapId);
+  return start ? startDrainDrawFrom(start) : false;
 }
 
-/** Stops drawing without a word (the gap closed or gone, the view or tool changed). */
+/** Esc: drawing goes back to picking a start while the tool is armed, else it ends; an armed tool with no drawing is put down. */
+export function cancelDrainDraw(): void {
+  const { armed, session } = useDrainDrawStore.getState();
+  clearPreview();
+  if (session) {
+    useDrainDrawStore.setState({ session: null });
+    if (armed) status(PICK_HINT);
+    else status(session.gapId ? 'Drawing the drain cancelled: the gap is still open.' : 'Drawing the drain cancelled.');
+    return;
+  }
+  if (armed) {
+    useDrainDrawStore.setState({ armed: false });
+    status('Drain tool put down.');
+  }
+}
+
+/** Stops drawing and puts the tool down without a word (the gap closed or gone, the view or tool changed). */
 export function stopDrainDraw(): void {
-  if (!useDrainDrawStore.getState().session) return;
-  useDrainDrawStore.setState({ session: null });
+  const { armed, session } = useDrainDrawStore.getState();
+  if (!armed && !session) return;
+  useDrainDrawStore.setState({ armed: false, session: null });
   clearPreview();
 }
 
@@ -80,39 +154,46 @@ export function undoDrainDrawPoint(): void {
   useDrainDrawStore.setState({ session: { ...session, points: session.points.slice(0, -1) } });
 }
 
-/** The network as it would be, joined along the points drawn (shown while the pointer rests on the other part's open end). */
-export function previewDrainDraw(): DrainJoin | null {
-  const session = useDrainDrawStore.getState().session;
+function drawn(target: DrainDrawTarget): DrawnDrain | null {
+  const { session, fallPercent } = useDrainDrawStore.getState();
   if (!session) return null;
-  const joined = joinDrainAlong(useSmartDrawingStore.getState().hvacElements, session.gapId, session.points, condensateEditContext());
-  if (joined.ok) useSegmentUiStore.getState().setPreview({ domain: 'condensate', optionId: PREVIEW_ID, updates: joined.updates, add: joined.add, removeIds: joined.removeIds });
+  return drawDrainAlong(useSmartDrawingStore.getState().hvacElements, session.start, session.points, target, condensateEditContext(), { fallPercent });
+}
+
+/** The network as it would be, finished on `target` (shown while the pointer rests there). */
+export function previewDrainDraw(target: DrainDrawTarget): DrawnDrain | null {
+  const result = drawn(target);
+  if (result?.ok) useSegmentUiStore.getState().setPreview({ domain: 'condensate', optionId: PREVIEW_ID, updates: result.updates, add: result.add, removeIds: result.removeIds });
   else clearPreview();
-  return joined;
+  return result;
 }
 
 export function clearDrainDrawPreview(): void {
   clearPreview();
 }
 
-/** Finishes on the other part's open end: joined and solved (one undo). False, and why, when it cannot drain so. */
-export function finishDrainDraw(): boolean {
-  const session = useDrainDrawStore.getState().session;
-  if (!session) return false;
-  const state = useSmartDrawingStore.getState();
-  const joined = joinDrainAlong(state.hvacElements, session.gapId, session.points, condensateEditContext());
-  if (!joined.ok) {
-    status(`${joined.message} Draw on, or Esc to cancel.`);
+/** Finishes on `target`: drawn and solved (one undo). False, and why, when it cannot drain so. */
+export function finishDrainDraw(target: DrainDrawTarget): boolean {
+  const { session, armed } = useDrainDrawStore.getState();
+  const result = drawn(target);
+  if (!session || !result) return false;
+  if (!result.ok) {
+    status(`${result.message} Draw on, or Esc to step back.`);
     return false;
   }
-  const runId = joined.updates[0]?.id;
+  const state = useSmartDrawingStore.getState();
   state.commitHvacElementCommand('Draw drain', {
-    updates: joined.updates.map((element) => ({ id: element.id, updates: element })),
-    add: joined.add,
-    removeIds: joined.removeIds,
-    ...(runId ? { selectedIds: [runId] } : {}),
+    updates: result.updates.map((element) => ({ id: element.id, updates: element })),
+    add: result.add,
+    removeIds: result.removeIds,
+    // The tool stays armed for the next drain; drawn from a gap's [Draw], the drain is selected.
+    ...(result.runId && !armed ? { selectedIds: [result.runId] } : {}),
   });
   useDrainDrawStore.setState({ session: null });
   clearPreview();
-  status(`Joined: the drain drawn, the gap closed; ${joined.note}.`);
+  const onto = target.kind === 'partner' ? null : state.hvacElements.find((element) => element.id === (target.kind === 'pipe' ? target.pipeId : target.gullyId));
+  const what = target.kind === 'partner' ? 'Joined: the drain drawn, the gap closed'
+    : target.kind === 'pipe' ? `Drain drawn, joined to ${onto?.label || 'the drain'} with a wye` : `Drain drawn into ${onto?.label || 'the termination'}`;
+  status(`${what}; ${result.note}.${armed ? ' Click the next outlet or open end, or Esc to stop.' : ''}`);
   return true;
 }

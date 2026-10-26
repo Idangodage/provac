@@ -86,6 +86,8 @@ const FALL_TAG_MIN_SCREEN_PX = 90;
 export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateOverlayProps>(function CondensateOverlay(props, ref) {
   const { enabled, width, height, viewportZoom, panOffset, hvacElements, selectedIds, settings, interactive = false, onEditPreviewChange } = props;
   const gRef = useRef<SVGGElement | null>(null);
+  // The drain tool's own layer (above the other overlays' hit targets), in the same frame.
+  const toolGRef = useRef<SVGGElement | null>(null);
   const liveViewportRef = useRef<FabricViewportMatrix | null>(null);
   const preview = useCondensatePreviewStore((state) => state.result);
   const highlightUnitId = useCondensatePreviewStore((state) => state.highlightUnitId);
@@ -96,7 +98,9 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
     if (!live.every(Number.isFinite)) return;
     liveViewportRef.current = live;
     const value = affineMatrixToSvg(fabricViewportToWorldSvgMatrix(live));
-    if (gRef.current && gRef.current.getAttribute('transform') !== value) gRef.current.setAttribute('transform', value);
+    for (const target of [gRef.current, toolGRef.current]) {
+      if (target && target.getAttribute('transform') !== value) target.setAttribute('transform', value);
+    }
   }, []);
   useLayoutEffect(() => {
     if (liveViewportRef.current) syncViewTransform(liveViewportRef.current);
@@ -186,8 +190,8 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
     .filter((entry): entry is CondensatePlanPresentation => entry !== null), [preview]);
   const replaced = useMemo(() => new Set(preview?.removeElementIds ?? []), [preview]);
   // The selected drain run (one at a time) is editable while no Auto route preview is open.
-  // (Not while a drain gap is drawn by hand: the plan's clicks are the drawing's.)
-  const drawing = useDrainDrawStore((state) => Boolean(state.session));
+  // (Not while the drain tool is out: the plan's clicks are the drawing's.)
+  const drawing = useDrainDrawStore((state) => state.armed || Boolean(state.session));
   const editPipe = useMemo(() => {
     if (!enabled || !interactive || preview || drawing || selectedIds.length !== 1) return null;
     const element = hvacElements.find((candidate) => candidate.id === selectedIds[0]);
@@ -256,117 +260,129 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
   }, []);
   useEffect(() => useDuctGapStore.subscribe(paintGapWay), [paintGapWay]);
 
-  if (!enabled || (!committed.length && !gullies.length && !preview)) return null;
+  if (!enabled || (!committed.length && !gullies.length && !preview && !drawing)) return null;
   const showDetail = k > 0.05;
   const matrix = liveViewportRef.current
     ? affineMatrixToSvg(fabricViewportToWorldSvgMatrix(liveViewportRef.current))
     : canvasTransformToSvgMatrix(view);
 
   return (
-    <div className="absolute left-0 top-0 z-[7]" style={{ width, height, pointerEvents: 'none' }} data-testid="condensate-overlay">
-      <svg width={width} height={height} style={{ display: 'block', pointerEvents: 'none' }}>
-        <g ref={gRef} transform={matrix}>
-          {committed.map((entry) => {
-            if (editIds.has(entry.id)) return null;
-            if (preview && replaced.has(entry.id)) {
-              return <PipeTube key={entry.id} view={entry} hpx={hpx} k={k} selected={false} opacity={0.18} showArrows={false} />;
-            }
-            const selected = selectedSet.has(entry.id);
-            return (
-              <g key={entry.id}>
-                <PipeTube view={entry} hpx={hpx} k={k} selected={selected} showArrows={showDetail} />
-                {showDetail ? entry.fittings.map((fitting) => <FittingGlyph key={fitting.id} fitting={fitting} hpx={hpx} />) : null}
-                {settings.showHangers && showDetail
-                  ? layoutCondensateSupports(entry.element, settings)
-                    .filter((support) => support.orientation === 'horizontal')
-                    .map((support, index) => (
-                      <circle key={`h${index}`} cx={support.point.x} cy={support.point.y} r={hpx(2)} fill="#334155" />
-                    ))
-                  : null}
-                {settings.showFallTags && entry.fallTag && entry.fallTag.runLengthMm * k > FALL_TAG_MIN_SCREEN_PX
-                  ? <Tag x={entry.fallTag.point.x} y={entry.fallTag.point.y} angle={entry.fallTag.angleDeg} text={entry.fallTag.text} hpx={hpx} />
-                  : null}
-                {settings.showLevelTags && (selected || k > 0.22)
-                  ? entry.levelTags.map((tag, index) => (
-                    <Tag key={index} x={tag.point.x + hpx(28)} y={tag.point.y - hpx(14)} text={tag.text} hpx={hpx} />
-                  ))
-                  : null}
-              </g>
-            );
-          })}
-
-          {editViews.map((entry) => (
-            <g key={`edit-${entry.id}`} data-testid={dragResult ? 'condensate-edit-ghost' : 'condensate-card-preview'}>
-              <PipeTube view={entry} hpx={hpx} k={k} selected={entry.id === editPipe?.id} showArrows={showDetail} />
-              {showDetail ? entry.fittings.map((fitting) => <FittingGlyph key={fitting.id} fitting={fitting} hpx={hpx} />) : null}
-              {settings.showFallTags && entry.fallTag && entry.fallTag.runLengthMm * k > FALL_TAG_MIN_SCREEN_PX
-                ? <Tag x={entry.fallTag.point.x} y={entry.fallTag.point.y} angle={entry.fallTag.angleDeg} text={entry.fallTag.text} hpx={hpx} />
-                : null}
-            </g>
-          ))}
-
-          {gullies.map((gully) => {
-            const spec = readCondensateGullySpec(gully);
-            if (!showDetail) return null;
-            const label = spec.terminationKind === 'floor-gully' ? `${gully.label} · rim ${Math.round(spec.inletElevationMm)}`
-              : spec.terminationKind === 'stack-connection' ? `${gully.label} · stack @ ${Math.round(spec.inletElevationMm)}`
-                : `${gully.label} · outlet @ ${Math.round(spec.inletElevationMm)}`;
-            return <Tag key={gully.id} x={spec.connectionPoint.x} y={spec.connectionPoint.y + Math.max(gully.depth / 2, hpx(10)) + hpx(14)} text={label} hpx={hpx} />;
-          })}
-
-          {preview ? (
-            <g data-testid="condensate-preview">
-              {previewViews.map((entry) => (
+    <>
+      <div className="absolute left-0 top-0 z-[7]" style={{ width, height, pointerEvents: 'none' }} data-testid="condensate-overlay">
+        <svg width={width} height={height} style={{ display: 'block', pointerEvents: 'none' }}>
+          <g ref={gRef} transform={matrix}>
+            {committed.map((entry) => {
+              if (editIds.has(entry.id)) return null;
+              if (preview && replaced.has(entry.id)) {
+                return <PipeTube key={entry.id} view={entry} hpx={hpx} k={k} selected={false} opacity={0.18} showArrows={false} />;
+              }
+              const selected = selectedSet.has(entry.id);
+              return (
                 <g key={entry.id}>
-                  <PipeTube view={entry} hpx={hpx} k={k} selected={false} opacity={0.92} showArrows={showDetail}
-                    colorFor={(run) => headMarginColor(slackLookup.get(`${Math.round(run.a.x)},${Math.round(run.a.y)}`) ?? 200)} />
+                  <PipeTube view={entry} hpx={hpx} k={k} selected={selected} showArrows={showDetail} />
                   {showDetail ? entry.fittings.map((fitting) => <FittingGlyph key={fitting.id} fitting={fitting} hpx={hpx} />) : null}
+                  {settings.showHangers && showDetail
+                    ? layoutCondensateSupports(entry.element, settings)
+                      .filter((support) => support.orientation === 'horizontal')
+                      .map((support, index) => (
+                        <circle key={`h${index}`} cx={support.point.x} cy={support.point.y} r={hpx(2)} fill="#334155" />
+                      ))
+                    : null}
                   {settings.showFallTags && entry.fallTag && entry.fallTag.runLengthMm * k > FALL_TAG_MIN_SCREEN_PX
                     ? <Tag x={entry.fallTag.point.x} y={entry.fallTag.point.y} angle={entry.fallTag.angleDeg} text={entry.fallTag.text} hpx={hpx} />
                     : null}
+                  {settings.showLevelTags && (selected || k > 0.22)
+                    ? entry.levelTags.map((tag, index) => (
+                      <Tag key={index} x={tag.point.x + hpx(28)} y={tag.point.y - hpx(14)} text={tag.text} hpx={hpx} />
+                    ))
+                    : null}
                 </g>
-              ))}
-              {preview.unresolvedPaths.map((path) => (
-                <path key={path.unitId} d={pathData(path.points)} fill="none" stroke="#dc2626" strokeWidth={hpx(2.2)} strokeDasharray={`${hpx(8)} ${hpx(6)}`} />
-              ))}
-              {preview.crossings.map((crossing, index) => (
-                <g key={`${crossing.key}#${index}`} transform={`translate(${crossing.point.x} ${crossing.point.y})`}>
-                  <circle r={hpx(7)} fill={crossing.relation === 'hop' ? '#fdf4ff' : '#fff'} stroke={crossing.relation === 'hop' ? '#a21caf' : '#0369a1'} strokeWidth={hpx(1.4)} />
-                  <text y={hpx(3.5)} textAnchor="middle" fontSize={hpx(9)} fontFamily="system-ui, sans-serif" fill={crossing.relation === 'hop' ? '#a21caf' : '#0369a1'}>
-                    {crossing.relation === 'below' ? '↓' : crossing.relation === 'above' ? '↑' : crossing.relation === 'hop' ? 'H' : '!'}
-                  </text>
-                </g>
-              ))}
-              {preview.perUnit.map((unit) => {
-                const start = preview.elementsToAdd
-                  .map((element) => element.properties.drainStart as { unitId?: string; point?: Point2D } | undefined)
-                  .find((connection) => connection?.unitId === unit.unitId)?.point
-                  ?? preview.unresolvedPaths.find((path) => path.unitId === unit.unitId)?.points[0];
-                if (!start) return null;
-                const tone = unit.status === 'gravity' ? 'ok' : unit.status === 'pumped' ? 'pump' : 'bad';
-                const text = unit.status === 'gravity' ? `${unit.label} · gravity`
-                  : unit.status === 'pumped' ? `${unit.label} · pump +${Math.round(unit.liftMm)}`
-                    : unit.status === 'infeasible' ? `${unit.label} · short ${unit.shortfallMm ?? '?'} mm` : `${unit.label} · skipped`;
-                return (
-                  <g key={unit.unitId} opacity={highlightUnitId && highlightUnitId !== unit.unitId ? 0.45 : 1}>
-                    <Tag x={start.x} y={start.y - hpx(22)} text={text} hpx={hpx} tone={tone} />
+              );
+            })}
+
+            {editViews.map((entry) => (
+              <g key={`edit-${entry.id}`} data-testid={dragResult ? 'condensate-edit-ghost' : 'condensate-card-preview'}>
+                <PipeTube view={entry} hpx={hpx} k={k} selected={entry.id === editPipe?.id} showArrows={showDetail} />
+                {showDetail ? entry.fittings.map((fitting) => <FittingGlyph key={fitting.id} fitting={fitting} hpx={hpx} />) : null}
+                {settings.showFallTags && entry.fallTag && entry.fallTag.runLengthMm * k > FALL_TAG_MIN_SCREEN_PX
+                  ? <Tag x={entry.fallTag.point.x} y={entry.fallTag.point.y} angle={entry.fallTag.angleDeg} text={entry.fallTag.text} hpx={hpx} />
+                  : null}
+              </g>
+            ))}
+
+            {gullies.map((gully) => {
+              const spec = readCondensateGullySpec(gully);
+              if (!showDetail) return null;
+              const label = spec.terminationKind === 'floor-gully' ? `${gully.label} · rim ${Math.round(spec.inletElevationMm)}`
+                : spec.terminationKind === 'stack-connection' ? `${gully.label} · stack @ ${Math.round(spec.inletElevationMm)}`
+                  : `${gully.label} · outlet @ ${Math.round(spec.inletElevationMm)}`;
+              return <Tag key={gully.id} x={spec.connectionPoint.x} y={spec.connectionPoint.y + Math.max(gully.depth / 2, hpx(10)) + hpx(14)} text={label} hpx={hpx} />;
+            })}
+
+            {preview ? (
+              <g data-testid="condensate-preview">
+                {previewViews.map((entry) => (
+                  <g key={entry.id}>
+                    <PipeTube view={entry} hpx={hpx} k={k} selected={false} opacity={0.92} showArrows={showDetail}
+                      colorFor={(run) => headMarginColor(slackLookup.get(`${Math.round(run.a.x)},${Math.round(run.a.y)}`) ?? 200)} />
+                    {showDetail ? entry.fittings.map((fitting) => <FittingGlyph key={fitting.id} fitting={fitting} hpx={hpx} />) : null}
+                    {settings.showFallTags && entry.fallTag && entry.fallTag.runLengthMm * k > FALL_TAG_MIN_SCREEN_PX
+                      ? <Tag x={entry.fallTag.point.x} y={entry.fallTag.point.y} angle={entry.fallTag.angleDeg} text={entry.fallTag.text} hpx={hpx} />
+                      : null}
                   </g>
-                );
-              })}
+                ))}
+                {preview.unresolvedPaths.map((path) => (
+                  <path key={path.unitId} d={pathData(path.points)} fill="none" stroke="#dc2626" strokeWidth={hpx(2.2)} strokeDasharray={`${hpx(8)} ${hpx(6)}`} />
+                ))}
+                {preview.crossings.map((crossing, index) => (
+                  <g key={`${crossing.key}#${index}`} transform={`translate(${crossing.point.x} ${crossing.point.y})`}>
+                    <circle r={hpx(7)} fill={crossing.relation === 'hop' ? '#fdf4ff' : '#fff'} stroke={crossing.relation === 'hop' ? '#a21caf' : '#0369a1'} strokeWidth={hpx(1.4)} />
+                    <text y={hpx(3.5)} textAnchor="middle" fontSize={hpx(9)} fontFamily="system-ui, sans-serif" fill={crossing.relation === 'hop' ? '#a21caf' : '#0369a1'}>
+                      {crossing.relation === 'below' ? '↓' : crossing.relation === 'above' ? '↑' : crossing.relation === 'hop' ? 'H' : '!'}
+                    </text>
+                  </g>
+                ))}
+                {preview.perUnit.map((unit) => {
+                  const start = preview.elementsToAdd
+                    .map((element) => element.properties.drainStart as { unitId?: string; point?: Point2D } | undefined)
+                    .find((connection) => connection?.unitId === unit.unitId)?.point
+                    ?? preview.unresolvedPaths.find((path) => path.unitId === unit.unitId)?.points[0];
+                  if (!start) return null;
+                  const tone = unit.status === 'gravity' ? 'ok' : unit.status === 'pumped' ? 'pump' : 'bad';
+                  const text = unit.status === 'gravity' ? `${unit.label} · gravity`
+                    : unit.status === 'pumped' ? `${unit.label} · pump +${Math.round(unit.liftMm)}`
+                      : unit.status === 'infeasible' ? `${unit.label} · short ${unit.shortfallMm ?? '?'} mm` : `${unit.label} · skipped`;
+                  return (
+                    <g key={unit.unitId} opacity={highlightUnitId && highlightUnitId !== unit.unitId ? 0.45 : 1}>
+                      <Tag x={start.x} y={start.y - hpx(22)} text={text} hpx={hpx} tone={tone} />
+                    </g>
+                  );
+                })}
+              </g>
+            ) : null}
+            <g ref={focusRef} data-testid="condensate-segment-focus" style={{ pointerEvents: 'none' }} />
+            {openEndMarkup ? <g data-testid="drain-open-ends" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: openEndMarkup }} /> : null}
+            <g ref={gapWayRef} data-testid="drain-gap-way" style={{ pointerEvents: 'none' }} />
+            {editPipe && edit.model ? (
+              <g onPointerMove={hoverPiece} onPointerLeave={leavePiece}>
+                <CondensateEditHandles api={edit} pipe={editPipe} hpx={hpx} settings={settings} />
+              </g>
+            ) : null}
+          </g>
+        </svg>
+        {editPipe && edit.model ? <CondensateEditBar pipe={editPipe} api={edit} /> : null}
+      </div>
+      {drawing ? (
+        // The drain tool owns the pointer: above every plan overlay's hit targets (pipes, ducts, grips, design markers),
+        // below the cards and chips.
+        <div className="absolute left-0 top-0 z-[16]" style={{ width, height, pointerEvents: 'none' }} data-testid="drain-tool-overlay">
+          <svg width={width} height={height} style={{ display: 'block', pointerEvents: 'none' }}>
+            <g ref={toolGRef} transform={matrix}>
+              <DrainDrawLayer gRef={toolGRef} hpx={hpx} hvacElements={hvacElements} settings={settings} />
             </g>
-          ) : null}
-          <g ref={focusRef} data-testid="condensate-segment-focus" style={{ pointerEvents: 'none' }} />
-          {openEndMarkup ? <g data-testid="drain-open-ends" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: openEndMarkup }} /> : null}
-          <g ref={gapWayRef} data-testid="drain-gap-way" style={{ pointerEvents: 'none' }} />
-          {editPipe && edit.model ? (
-            <g onPointerMove={hoverPiece} onPointerLeave={leavePiece}>
-              <CondensateEditHandles api={edit} pipe={editPipe} hpx={hpx} settings={settings} />
-            </g>
-          ) : null}
-          <DrainDrawLayer gRef={gRef} hpx={hpx} hvacElements={hvacElements} />
-        </g>
-      </svg>
-      {editPipe && edit.model ? <CondensateEditBar pipe={editPipe} api={edit} /> : null}
-    </div>
+          </svg>
+        </div>
+      ) : null}
+    </>
   );
 });

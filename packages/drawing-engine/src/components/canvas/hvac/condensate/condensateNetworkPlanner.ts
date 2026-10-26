@@ -505,6 +505,37 @@ function departureIsClear(source: IndoorDrainPort, foot: Point2D, environment: C
 }
 
 /**
+ * A unit's riser foot as Auto route seats it (the nearest one its connection reaches clear, its riser climbing clear of
+ * what is above), for a drain drawn from its outlet by hand; null when none is clear. `editNetworkId`: the network the
+ * drain will be part of (its runs are not in the way, and a hand-edited one does not hold the unit back).
+ */
+export function seatedRiserFoot(
+  scene: HvacElement[],
+  unitId: string,
+  options: Pick<CondensatePlanOptions, 'settings' | 'routingSettings' | 'walls' | 'rooms' | 'editNetworkId'>,
+): Point2D | null {
+  const routing = resolvePipeRoutingSettings({ ...getActivePipeRoutingSettings(), ...(options.routingSettings ?? {}) });
+  const previousRouting = getActivePipeRoutingSettings();
+  // Refrigerant lane geometry reads the active routing singleton.
+  setActivePipeRoutingSettings(routing);
+  try {
+    const environment = buildCondensateEnvironment(scene, { ...options, routingSettings: routing, unitIds: [unitId] });
+    const source = environment.sources.find((candidate) => candidate.unitId === unitId);
+    if (!source) return null;
+    const plan = makeUnitPlan(source, environment, radiusOf(DEFAULT_NOMINAL, options.settings));
+    return plan.failureReason ? null : { ...plan.stubEnd };
+  } finally {
+    setActivePipeRoutingSettings(previousRouting);
+  }
+}
+
+/** A unit's riser foot / stub end when none is searched for: straight out of its outlet, on the router's 0.5 mm grid. */
+export function gravityRiserFoot(source: Pick<IndoorDrainPort, 'point' | 'direction'>, settings: Pick<CondensateDesignSettings, 'liftMaxHorizontalMm'>): Point2D {
+  const end = add(source.point, scale(source.direction, Math.min(STUB_LENGTH_MM, settings.liftMaxHorizontalMm)));
+  return { x: Math.round(end.x * 2) / 2, y: Math.round(end.y * 2) / 2 };
+}
+
+/**
  * `blocked`: riser feet to pass over as well (the drains a network already
  * has there); none passing gives the plan a failure reason.
  */
@@ -521,7 +552,7 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
     const end = add(add(source.point, scale(source.direction, along)), scale(side, across));
     return { x: Math.round(end.x * 2) / 2, y: Math.round(end.y * 2) / 2 };
   };
-  const gravityFoot = footAt(Math.min(STUB_LENGTH_MM, settings.liftMaxHorizontalMm), 0);
+  const gravityFoot = gravityRiserFoot(source, settings);
   // Site practice: the drain rises plumb beside the unit to its high point —
   // the pump head or the soffit, and below any service over the riser.
   const headLimit = Math.max(source.z, Math.min(source.z + source.pumpMaxLiftMm, voidUpper));

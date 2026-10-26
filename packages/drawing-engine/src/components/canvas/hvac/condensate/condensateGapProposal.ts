@@ -19,6 +19,8 @@ import { findObstacleAwareOrthogonalRoute } from '../obstacleAwareOrthogonalRout
 
 import { condensateOpenEnds, DRAIN_GAP_PROPERTY, drainGapRecord, readDrainGaps } from './condensateCut';
 import { createCondensateEditSession, type CondensateEditContext } from './condensateEditing';
+import type { CondensateGenerationResult } from './condensateGenerator';
+import { pointToSegmentDistance } from './condensateGeometry';
 import { condensateRunOf } from './condensatePieces';
 import { fixedPrefixLength, tidyRoute } from './condensateRouteOps';
 import { formatFallRatio } from './condensateSettings';
@@ -106,6 +108,21 @@ export type DrainJoin =
   | { ok: false; message: string };
 
 /**
+ * Why a stretch drawn (or routed) on the plan cannot stand: a refrigerant run it crosses where the drain would need a
+ * hop or has no room to pass; null when clear. The network tried holds the stretch in its own baseline, so the edit
+ * session's check for new conflicts cannot see it.
+ */
+export function stretchConflict(scene: readonly HvacElement[], generation: CondensateGenerationResult | null, stretch: readonly Point2D[]): string | null {
+  for (const crossing of generation?.crossings ?? []) {
+    if (crossing.relation !== 'hop' && crossing.relation !== 'unresolved') continue;
+    if (!stretch.some((point, index) => index > 0 && pointToSegmentDistance(crossing.point, stretch[index - 1]!, point) <= 5)) continue;
+    const service = scene.find((element) => element.id === crossing.serviceElementId);
+    return `Crosses ${service?.label || 'a refrigerant run'} with no room to pass: draw it another way.`;
+  }
+  return null;
+}
+
+/**
  * A drain gap closed along `via` (plan points between its two open ends, in the direction of flow): the run joined
  * on the plan, then its whole network solved again along every run, this one included (falls, risers, sizes, wyes).
  * Refused, saying why, when the gap is no longer there, another gap of the network is open (it would not drain), or
@@ -134,6 +151,8 @@ export function joinDrainAlong(scene: readonly HvacElement[], gapId: string, via
   const solved = createCondensateEditSession([...trial], networkId, context)?.solve({ routes: new Map([[a.id, routePoints]]) });
   if (!solved) return { ok: false, message: 'This drain network could not be read.' };
   if (!solved.ok) return { ok: false, message: solved.message };
+  const conflict = stretchConflict(scene, solved.generation, [upstream!.point, ...via, downstream!.point]);
+  if (conflict) return { ok: false, message: conflict };
   const network = solved.generation?.networks[0];
   // The solve makes its runs afresh: the joined run's closed gap is cleared outright (the store merges properties).
   const updates = solved.updates.map((element) => (element.id === a.id

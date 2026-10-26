@@ -128,7 +128,8 @@ export function readCondensateNetworkModel(scene: readonly HvacElement[], networ
     routes.set(pipe.id, tidyRoute(spec.routePoints, fixedPrefixLength(branch)));
     if (branch) unitBranchOf.set(spec.drainStart!.unitId!, pipe.id);
   }
-  return { networkId, gullyId: owner.gullyId, pipes, specs, routes, unitBranchOf, unitIds: [...owner.unitIds] };
+  // A unit drawn into the network by hand has its branch here before the ownership lists it.
+  return { networkId, gullyId: owner.gullyId, pipes, specs, routes, unitBranchOf, unitIds: [...new Set([...owner.unitIds, ...unitBranchOf.keys()])] };
 }
 
 function onPolyline(point: Point2D, points: readonly Point2D[]): boolean {
@@ -180,6 +181,8 @@ export function unitRoutesFromPipes(
       const end = spec(current).drainEnd;
       if (!end) break;
       if (end.kind === 'gully') { target = 'sink'; through = true; break; }
+      // Drawn by hand onto another run: it joins whatever run passes through its last point.
+      if (end.kind === 'junction' && !end.nodeId) { target = { junction: { ...points[points.length - 1]! } }; break; }
       const next = end.nodeId ? startByNode.get(end.nodeId) : undefined;
       if (!next) break;
       const role = spec(next).segmentRole;
