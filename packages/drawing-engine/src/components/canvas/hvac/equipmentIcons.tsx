@@ -13,7 +13,8 @@ export type EquipmentIconKind =
   | 'branch-kit' | 'floor-gully' | 'stack' | 'wall-discharge' | 'drop'
   | 'diffuser-square' | 'diffuser-round' | 'diffuser-linear' | 'return-grille'
   | 'grille-louvred' | 'diffuser-perforated' | 'grille-filter'
-  | 'controller' | 'remote' | 'filter' | 'generic';
+  | 'controller' | 'remote' | 'filter' | 'generic'
+  | 'duct-supply' | 'duct-return' | 'pipe-pair' | 'pipe-gas' | 'pipe-liquid' | 'drain-pipe';
 
 const PATHS: Record<EquipmentIconKind, ReactElement> = {
   cassette: (
@@ -169,6 +170,37 @@ const PATHS: Record<EquipmentIconKind, ReactElement> = {
     <>
       <rect x="4" y="6" width="16" height="12" rx="2" />
       <path d="M8 10h8M8 14h5" />
+    </>
+  ),
+  // Drawn by hand (the toolbox's Ducts & pipes): a duct with its flow, a pair, a gas and a liquid line, a drain's fall.
+  'duct-supply': (
+    <>
+      <rect x="2.5" y="7" width="19" height="10" rx="1" />
+      <path d="M6.25 7v10M17.75 7v10" strokeWidth="0.9" />
+      <path d="M9 12h6M12.75 9.75 15 12l-2.25 2.25" />
+    </>
+  ),
+  'duct-return': (
+    <>
+      <rect x="2.5" y="7" width="19" height="10" rx="1" />
+      <path d="M6.25 7v10M17.75 7v10" strokeWidth="0.9" />
+      <path d="M15 12H9M11.25 9.75 9 12l2.25 2.25" />
+    </>
+  ),
+  'pipe-pair': (
+    <>
+      <path d="M2.5 6.5h9.5a6.5 6.5 0 0 1 6.5 6.5v8.5" strokeWidth="2" />
+      <path d="M2.5 11.5h8a3.5 3.5 0 0 1 3.5 3.5v6.5" strokeWidth="1.1" />
+    </>
+  ),
+  'pipe-gas': <path d="M2.5 8h9.5a6.5 6.5 0 0 1 6.5 6.5v7" strokeWidth="2.4" />,
+  'pipe-liquid': <path d="M2.5 8h9.5a6.5 6.5 0 0 1 6.5 6.5v7" strokeWidth="1.1" />,
+  'drain-pipe': (
+    <>
+      <path d="M2.5 5.5 15 8.5v8" />
+      <path d="M11 20.5h8" />
+      <path d="M15 16.5v2" strokeWidth="1" strokeDasharray="1 1.25" />
+      <path d="M6.5 11.75c.95 1.25 1.7 2.1 1.7 3.05a1.7 1.7 0 0 1-3.4 0c0-.95.75-1.8 1.7-3.05z" strokeWidth="1.1" />
     </>
   ),
 };

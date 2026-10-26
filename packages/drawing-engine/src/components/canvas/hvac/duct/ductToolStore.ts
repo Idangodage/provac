@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 
 import type { DuctAngleMode } from './ductDraft';
-import { isRoundLeg, type DuctLeg, type DuctRoundMainTapStyle, type DuctSplitAngle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
+import { isRoundLeg, type DuctConstruction, type DuctLeg, type DuctRoundMainTapStyle, type DuctSplitAngle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
 
 export interface DuctToolState {
   angleMode: DuctAngleMode;
@@ -45,6 +45,11 @@ export interface DuctToolState {
   terminalFlex: boolean;
   /** Plenum box for a run ending in a plenum; null = sized from the run's last section (practice). */
   plenumSize: { widthMm: number; heightMm: number; lengthMm: number } | null;
+  /**
+   * The tool armed like a run ("Draw like this"): what a run started from a collar or in free space is made of;
+   * null = the project's construction (a branch always takes its parent's).
+   */
+  like: { construction: DuctConstruction; insulationMm: number } | null;
   setAngleMode: (mode: DuctAngleMode) => void;
   setSize: (update: Partial<Pick<DuctToolState, 'sizeMode' | 'widthMm' | 'heightMm'>>) => void;
   setBranchSize: (update: Partial<Pick<DuctToolState, 'branchWidthMm' | 'branchHeightMm'>>) => void;
@@ -53,6 +58,7 @@ export interface DuctToolState {
   setLevel: (levelMm: number | null) => void;
   setAnchorLevel: (levelMm: number | null) => void;
   setPlenumSize: (size: DuctToolState['plenumSize']) => void;
+  setLike: (like: DuctToolState['like']) => void;
 }
 
 const clampSize = (value: number) => Math.max(100, Math.min(3000, Number.isFinite(value) ? value : 100));
@@ -79,6 +85,7 @@ export const useDuctToolStore = create<DuctToolState>((set) => ({
   endKind: 'end-cap',
   terminalFlex: true,
   plenumSize: null,
+  like: null,
   setAngleMode: (angleMode) => set({ angleMode }),
   setSize: (update) => set((state) => ({
     sizeMode: update.sizeMode ?? state.sizeMode,
@@ -94,6 +101,7 @@ export const useDuctToolStore = create<DuctToolState>((set) => ({
   setLevel: (levelMm) => set({ levelMm: levelMm === null || !Number.isFinite(levelMm) ? null : Math.round(Math.max(0, Math.min(30000, levelMm))) }),
   setAnchorLevel: (anchorLevelMm) => set({ anchorLevelMm }),
   setPlenumSize: (plenumSize) => set({ plenumSize }),
+  setLike: (like) => set({ like }),
 }));
 
 /**

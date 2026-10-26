@@ -360,10 +360,13 @@ export function useDuctTool(options: UseDuctToolOptions): UseDuctToolResult {
     if (!origin) return null;
     const settings = sceneRef.current.ductSettings;
     const parentSpec = parentOf(start)?.spec;
-    const construction = parentSpec ? (parentSpec.construction === 'gi-nbr' ? 'gi-nbr' : 'gi-bare') : settings.defaultConstruction;
+    // A branch takes its parent's construction; a run from a collar or free space the project's, or the run the tool
+    // was armed like.
+    const like = useDuctToolStore.getState().like;
+    const construction = parentSpec ? (parentSpec.construction === 'gi-nbr' ? 'gi-nbr' : 'gi-bare') : like?.construction ?? settings.defaultConstruction;
     const service = origin.kind === 'port' ? origin.port.kind : origin.service;
     const insulationThicknessMm = construction === 'gi-nbr'
-      ? parentSpec?.insulationThicknessMm || (service === 'return' ? settings.nbrReturnThicknessMm : settings.nbrSupplyThicknessMm)
+      ? parentSpec?.insulationThicknessMm || like?.insulationMm || (service === 'return' ? settings.nbrReturnThicknessMm : settings.nbrSupplyThicknessMm)
       : 0;
     return { origin, points, legSizes, construction, insulationThicknessMm, end: end ?? toolEnd(legSizes[legSizes.length - 1]) };
   }, [originFor, parentOf, sectionsFor]);

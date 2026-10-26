@@ -19,6 +19,7 @@ import {
 import { unitSpecificationFor } from '../data/unitSpecifications';
 import { useSmartDrawingStore } from '../store';
 
+import { DrawToolsSection } from './canvas/hvac/DrawToolsSection';
 import { useAirSystemUiStore } from './canvas/hvac/duct/airSystemUiStore';
 import { airSystemTags } from './canvas/hvac/duct/ductAirSystems';
 import { EQUIPMENT_CATEGORY_ICONS, EquipmentIcon, equipmentIconKind } from './canvas/hvac/equipmentIcons';
@@ -308,6 +309,8 @@ export function AcEquipmentPanel({
             ) : null}
           </div>
         ) : null}
+
+        <DrawToolsSection onKeyDown={onGridKeyDown} />
 
         {(Object.entries(grouped) as Array<[AcEquipmentLibraryCategory, AcEquipmentDefinition[]]>).map(([category, definitions]) => {
           if (definitions.length === 0) return null;

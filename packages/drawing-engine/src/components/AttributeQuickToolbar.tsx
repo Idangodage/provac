@@ -1,5 +1,6 @@
 /**
- * Quick-edit toolbar for architectural 3D wall attributes.
+ * Quick-edit toolbar above the drawing: wall attributes for a wall or the wall
+ * tool; for ducts, refrigerant lines and drains, the HVAC draw bar.
  */
 
 'use client';
@@ -14,6 +15,8 @@ import {
 } from '../attributes';
 import { useSmartDrawingStore } from '../store';
 import { MAX_WALL_THICKNESS, MIN_WALL_THICKNESS } from '../types/wall';
+
+import { HvacDrawBar } from './canvas/hvac/HvacDrawBar';
 
 const HEIGHT_PRESETS = [2400, 2700, 3000, 3300];
 const THICKNESS_PRESETS = [100, 150, 200, 250];
@@ -80,7 +83,8 @@ export function AttributeQuickToolbar({
   }, [selectedElementIds, walls]);
 
   const visible = activeTool === 'wall' || activeTool === 'partition-wall' || Boolean(selectedWall);
-  if (!visible && !keepSpaceWhenHidden) return null;
+  // Not walls: the strip is the HVAC draw bar's (ducts, pipes, drains), which keeps the space when it has nothing.
+  if (!visible) return <HvacDrawBar className={className} keepSpaceWhenHidden={keepSpaceWhenHidden} />;
 
   const partitionToolActive = activeTool === 'partition-wall';
 
@@ -129,10 +133,6 @@ export function AttributeQuickToolbar({
       setWallPreviewMaterial(resolveWallMaterialFromLibrary(materialId));
     }
   };
-
-  if (!visible) {
-    return <div className={`h-full ${className}`} aria-hidden="true" />;
-  }
 
   return (
     <div className={`h-full px-2 ${className}`}>

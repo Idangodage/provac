@@ -32,6 +32,8 @@ import {
 
 /** How near a start or a finish the pointer snaps to it (screen px). */
 const SNAP_PX = 16;
+/** How long the pointer rests on a finish before the network is solved for it (ms). */
+const PREVIEW_REST_MS = 180;
 const COLOR = '#0d9488';
 const OPEN_COLOR = '#d97706';
 
@@ -123,17 +125,22 @@ export function DrainDrawLayer({ gRef, hpx, hvacElements, settings }: {
     return { point: horizontal ? { x: raw.x, y: last.y } : { x: last.x, y: raw.y }, target: null, label: null };
   }, [session, targets, hpx]);
 
-  // Resting on a finish: the network as it would be (solved once per set of points and finish).
+  // Resting on a finish: the network as it would be (solved once per set of points and finish, once the pointer rests:
+  // on a drain the finish slides with it).
   useEffect(() => {
     if (!session || !cursor?.target) {
       if (previewedRef.current) { clearDrainDrawPreview(); previewedRef.current = null; setMessage(null); }
-      return;
+      return undefined;
     }
-    const key = JSON.stringify([session.points, cursor.target]);
-    if (previewedRef.current === key) return;
-    previewedRef.current = key;
-    const result = previewDrainDraw(cursor.target);
-    setMessage(result && !result.ok ? result.message : null);
+    const target = cursor.target;
+    const key = JSON.stringify([session.points, target]);
+    if (previewedRef.current === key) return undefined;
+    const timer = window.setTimeout(() => {
+      previewedRef.current = key;
+      const result = previewDrainDraw(target);
+      setMessage(result && !result.ok ? result.message : null);
+    }, PREVIEW_REST_MS);
+    return () => window.clearTimeout(timer);
   }, [session, cursor]);
 
   useEffect(() => {
