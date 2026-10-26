@@ -37,6 +37,7 @@ import { IMPERIAL_RECT_STEP_MM, ductRoundSizesMm, nearestStep, onStep } from '..
 import { getDuctSupportPlan, resolveSoffitZ } from '../duct/ductSupports';
 import { isDuctElement, isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec } from '../duct/ductTypes';
 import { findDuctClashes } from '../duct/ductVolumes';
+import type { CriteriaRoom } from '../duct/unitCriteria';
 import { listNetworkPipeLanes } from '../networkPipeClearance';
 
 import { ZERO3, type Vec3 } from './ductElasticMove';
@@ -436,7 +437,7 @@ export class DuctResizeSolver {
     private readonly scene: readonly HvacElement[],
     private readonly settings: DuctDesignSettings,
     readonly grip: DuctResizeGrip,
-    private readonly options: { soffitMm?: number | null } = {},
+    private readonly options: { soffitMm?: number | null; rooms?: ReadonlyArray<CriteriaRoom> } = {},
   ) {
     const element = scene.find((candidate) => candidate.id === grip.runId);
     const spec = element ? readDuctRunSpec(element) : null;
@@ -447,7 +448,7 @@ export class DuctResizeSolver {
       : grip.kind === 'runout'
         ? `The runout to ${terminal?.label || 'its terminal'}`
         : `${geometry?.vertical ? 'Riser' : 'Straight'} ${grip.legIndex + 1}`;
-    this.figuresFrom = grip.slide ? null : ductSegmentFigures(scene, settings, grip.runId, grip.key)?.system?.indexPa ?? null;
+    this.figuresFrom = grip.slide ? null : ductSegmentFigures(scene, settings, grip.runId, grip.key, options.rooms)?.system?.indexPa ?? null;
   }
 
   /** The plan for a value asked: made as asked, or stopped at the nearest value the rules allow (`fine`: on a 1 mm grid). */
@@ -648,7 +649,7 @@ export class DuctResizeSolver {
   private figuresAt(next: readonly HvacElement[], made: number): DuctResizeFigures | null {
     if (this.figureCache.has(made)) return this.figureCache.get(made)!;
     const { grip, settings } = this;
-    const found = ductSegmentFigures(next, settings, grip.runId, grip.key);
+    const found = ductSegmentFigures(next, settings, grip.runId, grip.key, this.options.rooms);
     const element = next.find((candidate) => candidate.id === grip.runId);
     const leg = element ? readDuctRunSpec(element)?.legs[grip.legIndex] : undefined;
     const figures: DuctResizeFigures | null = found?.flow ? {

@@ -35,6 +35,7 @@ import { getCondensateOwnership, isCondensatePipe } from '../condensate/condensa
 import type { DuctDesignSettings } from '../duct/ductSettings';
 import { isDuctTerminalElement, readDuctTerminalSpec, SQUARE_BOX_TERMINAL_KINDS, type DuctTerminalSpigotSide } from '../duct/ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctLeg, type DuctRunSpec } from '../duct/ductTypes';
+import type { CriteriaRoom } from '../duct/unitCriteria';
 import { readPipeRouteNodes3d } from '../pipeRoute3d';
 import {
   buildRefrigerantPipePairVisual,
@@ -105,6 +106,8 @@ export interface HvacMoveContext {
   condensate?: CondensateEditContext;
   /** Absent: no level limits. */
   ceilingVoid?: HvacCeilingVoid | null;
+  /** The drawing's rooms (a resize's figures judge a system by the criteria of the rooms it serves). */
+  rooms?: ReadonlyArray<CriteriaRoom>;
   /**
    * A drag's preview of a turn: the ducts of a unit turned without its whole
    * system wait for the release (they are designed then): they are left as

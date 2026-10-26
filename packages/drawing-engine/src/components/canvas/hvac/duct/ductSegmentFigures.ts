@@ -13,7 +13,6 @@ import type { HvacElement } from '../../../../types';
 
 import { getActiveDuctBuilding } from './ductBuilding';
 import { gaugeLabelForSheet } from './ductCatalog';
-import { unitDuctSettings } from './ductDesignCriteria';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { describeJoint } from './ductGauge';
 import { ductBranchesOf } from './ductNetwork';
@@ -38,6 +37,7 @@ import {
 } from './ductSystemSizing';
 import { readDuctTerminalSpec, terminalDropLookup } from './ductTerminals';
 import { readDuctRunSpec, type DuctLeg, type DuctService, type DuctSystemSizing } from './ductTypes';
+import { designSettingsForUnit, type CriteriaRoom } from './unitCriteria';
 
 export type DuctFigureStatus = 'ok' | 'near' | 'over';
 
@@ -104,9 +104,9 @@ interface SystemFlowModel {
   indexReach: Map<string, number>;
 }
 
-const MODEL_CACHE = new WeakMap<readonly HvacElement[], Map<string, { settings: DuctDesignSettings; building: unknown; model: SystemFlowModel | null }>>();
+const MODEL_CACHE = new WeakMap<readonly HvacElement[], Map<string, { settings: DuctDesignSettings; building: unknown; rooms: unknown; model: SystemFlowModel | null }>>();
 
-function buildSystemModel(scene: readonly HvacElement[], settings: DuctDesignSettings, root: HvacElement): SystemFlowModel | null {
+function buildSystemModel(scene: readonly HvacElement[], settings: DuctDesignSettings, root: HvacElement, rooms?: ReadonlyArray<CriteriaRoom>): SystemFlowModel | null {
   const rootSpec = readDuctRunSpec(root);
   if (!rootSpec || rootSpec.legacy) return null;
   const plans = new Map<string, DuctFabricationPlan>();
@@ -128,9 +128,9 @@ function buildSystemModel(scene: readonly HvacElement[], settings: DuctDesignSet
     const spec = element ? readDuctTerminalSpec(element) : null;
     return spec ? [{ id: end.terminalId, spec: { designAirflowM3h: spec.designAirflowM3h ?? null, neckDiameterMm: spec.neckDiameterMm } }] : [];
   });
-  // A system without a stored basis is judged by its unit's criteria: its own here; the cards pass the settings of
-  // the rooms it serves (`designSettingsForUnit`).
-  const requested = rootSpec.sizing ?? defaultSizingBasis(unitDuctSettings(settings, unit), rootSpec.service, null);
+  // A system without a stored basis is judged by its unit's criteria: its own, else the rooms' it serves (with
+  // `rooms`), else the project's.
+  const requested = rootSpec.sizing ?? defaultSizingBasis(designSettingsForUnit(settings, unit, rooms ? { scene, rooms } : undefined), rootSpec.service, null);
   const { systemAirflowM3h, shares } = systemTerminalAirflows(unit ?? undefined, requested, terminals);
   const basis = linkSizingBasis(requested, systemAirflowM3h);
   const airflow = new Map(shares.map((share) => [share.terminalId, share.airflowM3h]));
@@ -177,17 +177,17 @@ export function splitAirflowShare(scene: readonly HvacElement[], settings: DuctD
   return plus > 0 && minus > 0 ? plus / (plus + minus) : null;
 }
 
-/** The flow model of the system a run belongs to (cached per drawing, settings and building), or null off any system. */
-function systemModelOf(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string): SystemFlowModel | null {
+/** The flow model of the system a run belongs to (cached per drawing, settings, building and rooms), or null off any system. */
+function systemModelOf(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, rooms?: ReadonlyArray<CriteriaRoom>): SystemFlowModel | null {
   const root = ductSystemRootOfRun(scene, runId);
   if (!root) return null;
   let byRoot = MODEL_CACHE.get(scene);
   if (!byRoot) MODEL_CACHE.set(scene, (byRoot = new Map()));
   const building = getActiveDuctBuilding();
   const hit = byRoot.get(root.id);
-  if (hit && hit.settings === settings && hit.building === building) return hit.model;
-  const model = buildSystemModel(scene, settings, root);
-  byRoot.set(root.id, { settings, building, model });
+  if (hit && hit.settings === settings && hit.building === building && hit.rooms === rooms) return hit.model;
+  const model = buildSystemModel(scene, settings, root, rooms);
+  byRoot.set(root.id, { settings, building, rooms, model });
   return model;
 }
 
@@ -205,11 +205,15 @@ function sectionAtStart(plan: DuctFabricationPlan, index: number): DuctLeg {
     : { widthMm: piece.widthMm, heightMm: piece.heightMm };
 }
 
-/** The figures of one segment of a run, or null when the run or the segment is gone. */
-export function ductSegmentFigures(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, key: string): DuctSegmentFigures | null {
+/**
+ * The figures of one segment of a run, or null when the run or the segment is
+ * gone. `rooms`: the drawing's, so that a system without a stored basis is
+ * judged by the criteria of the rooms its unit serves.
+ */
+export function ductSegmentFigures(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, key: string, rooms?: ReadonlyArray<CriteriaRoom>): DuctSegmentFigures | null {
   const element = scene.find((candidate) => candidate.id === runId);
   if (!element) return null;
-  const model = systemModelOf(scene, settings, runId);
+  const model = systemModelOf(scene, settings, runId, rooms);
   const plan = model?.plans.get(runId) ?? getDuctRunPlan(element, scene, settings);
   if (!plan) return null;
   const segment = ductSegmentOf(plan, key);

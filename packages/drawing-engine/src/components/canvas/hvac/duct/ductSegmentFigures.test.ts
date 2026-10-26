@@ -4,6 +4,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 
 import { resolveUnitAirPorts } from './ductAirPorts';
 import { tapOrigin } from './ductBranchTargets';
+import { designCriteriaLimits } from './ductDesignCriteria';
 import { buildDuctRunDraftElement } from './ductDraft';
 import { getDuctRunPlan } from './ductFabricationPlanner';
 import { ductRunElementWithSpec } from './ductFollow';
@@ -127,5 +128,23 @@ describe('the figures of a duct segment', () => {
     // A new drawing revision (a new scene array) is measured afresh.
     const next = [...scene];
     expect(ductSegmentFigures(next, settings, rootId, 'leg:0')).toEqual(first);
+  });
+});
+
+describe('the figures of a system without a stored basis', () => {
+  it('judge it by the criteria of the rooms its unit serves, given the rooms', () => {
+    const { scene, rootId } = fourTapSystem();
+    // Drawn by hand: no sizing basis on the run off the collar.
+    const bare = scene.map((element) => {
+      if (element.id !== rootId) return element;
+      const { sizing: _sizing, ...spec } = readDuctRunSpec(element)!;
+      return ductRunElementWithSpec(element, spec as DuctRunSpec);
+    });
+    const conference = { room: 'conference', location: 'suspended' } as const;
+    const rooms = [{ id: 'r', vertices: [{ x: -5000, y: -15000 }, { x: 8000, y: -15000 }, { x: 8000, y: 3000 }, { x: -5000, y: 3000 }], designCriteria: conference }];
+    const project = ductSegmentFigures(bare, settings, rootId, 'leg:0')!;
+    const room = ductSegmentFigures(bare, settings, rootId, 'leg:0', rooms)!;
+    expect(project.flow!.limits.velocityMs).toBe(settings.autoMaxVelocityTrunkMs);
+    expect(room.flow!.limits.velocityMs).toBe(designCriteriaLimits(conference).mainMs);
   });
 });

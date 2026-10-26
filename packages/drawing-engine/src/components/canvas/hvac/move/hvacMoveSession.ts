@@ -337,7 +337,7 @@ export class HvacMoveSession {
       delta: { x: 0, y: 0, z: 0 }, frame: null, snapHeld: null, zHeld: null, magnets: false, rotate: null,
       resize: {
         grip: request.grip, settings: context.ductSettings, planned: null, stopHeld: null,
-        solver: new DuctResizeSolver(scene, context.ductSettings, request.grip, { soffitMm: context.ceilingVoid?.soffitMm ?? null }),
+        solver: new DuctResizeSolver(scene, context.ductSettings, request.grip, { soffitMm: context.ceilingVoid?.soffitMm ?? null, ...(context.rooms ? { rooms: context.rooms } : {}) }),
       },
     };
     this.listen();

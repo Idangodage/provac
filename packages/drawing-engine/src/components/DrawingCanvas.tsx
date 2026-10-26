@@ -1126,7 +1126,7 @@ export function DrawingCanvas({
       },
       getSegmentFigures: (runId: string, key: string) => {
         const state = useSmartDrawingStore.getState();
-        return ductSegmentFigures(state.hvacElements, state.ductSettings, runId, key);
+        return ductSegmentFigures(state.hvacElements, state.ductSettings, runId, key, state.rooms);
       },
       /** A model point half way up a segment's first piece (where a pointer rests on it in 3D), or null. */
       getSegmentHotspot3D: (runId: string, key: string) => {
@@ -2444,6 +2444,7 @@ export function DrawingCanvas({
         // for the release too (they are designed then), so its turn is not a duct re-route each frame.
         ...(preview ? { deferTurnedDucts: true } : { condensate: condensateEditContext() }),
         ceilingVoid: resolveHvacCeilingVoid(state.hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)),
+        rooms: state.rooms,
       };
     },
     preview: (plan) => {
@@ -2622,7 +2623,7 @@ export function DrawingCanvas({
   const stepDuctResize = useCallback((grip: DuctResizeGrip, value: number) => {
     const state = useSmartDrawingStore.getState();
     const voidMm = resolveHvacCeilingVoid(state.hvacElements, state.rooms, resolveSoffitZ(state.ductSettings)).soffitMm;
-    const plan = new DuctResizeSolver(state.hvacElements, state.ductSettings, grip, { soffitMm: voidMm }).plan(value);
+    const plan = new DuctResizeSolver(state.hvacElements, state.ductSettings, grip, { soffitMm: voidMm, rooms: state.rooms }).plan(value);
     setProcessingStatus([`${plan.label}.`, ...(plan.limitedBy ? [`${plan.limitedBy.reason}.`] : []), ...plan.messages.map((message) => `${message}.`)].join(" "), false);
     if (!hvacMoveChanges(plan)) return;
     commitHvacElementCommand(plan.label, hvacMoveCommand(plan));
