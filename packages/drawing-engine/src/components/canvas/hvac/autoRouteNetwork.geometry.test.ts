@@ -58,7 +58,8 @@ describe('automatic network physical geometry', () => {
     expect(result.connectedIndoorIds).toHaveLength(4);
     expect(result.metrics?.branchPairCount).toBe(3);
     expect(result.metrics?.elevationReversalCount).toBe(0);
-  }, 60000);
+    // (About 24 s alone; past 60 s under the full suite's load.)
+  }, 120000);
 
   it('resolves equipment field spacing from the requested document settings and restores the previous settings', async () => {
     const equipment = [unit('outdoor', 7500, 4500, true), unit('cassette', 500, 500)];
