@@ -14,7 +14,7 @@ import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
-import { pressureClassText, type HvacQuantity } from '../units/hvacUnits';
+import { pressureClassText, sizesText, type HvacQuantity } from '../units/hvacUnits';
 import { useHvacUnits } from '../units/useHvacUnits';
 
 import { DuctNumberInput } from './DuctNumberInput';
@@ -124,7 +124,7 @@ export function SettingNumber({ settingKey, label, step, min, max, unit = 'mm', 
   const units = useHvacUnits();
   const { value, setDuctSettings } = useSmartDrawingStore((state) => ({ value: state.ductSettings[settingKey], setDuctSettings: state.setDuctSettings }), shallow);
   return (
-    <Row label={label}>
+    <Row label={sizesText(label, units.system)}>
       <DuctNumberInput label={label} value={value} step={step} min={min} max={max} quantity={quantity} unitSystem={units.system}
         onChange={(next) => { if (next !== null) setDuctSettings({ [settingKey]: next }); }} />
       {quantity ? <span className="ml-0.5 text-[10px] text-slate-400">{units.unit(quantity)}</span> : unit ? <span className="ml-0.5 text-[10px] text-slate-400">{unit}</span> : null}
@@ -1017,10 +1017,10 @@ export function DuctSystemsSection() {
       <SettingNumber quantity="velocity" settingKey="autoMaxVelocityRunoutMs" label="Max velocity, runout" step={0.5} min={1} max={8} unit="m/s" />
       <SettingNumber quantity="velocity" settingKey="autoMaxNeckVelocitySupplyMs" label="Max neck velocity, diffuser" step={0.5} min={1} max={8} unit="m/s" />
       <SettingNumber quantity="velocity" settingKey="autoMaxNeckVelocityReturnMs" label="Max neck velocity, grille" step={0.5} min={1} max={8} unit="m/s" />
-      <SettingNumber settingKey="autoDiffuserDropPa" label="Supply terminal pressure drop" step={1} min={0} max={150} unit="Pa" />
-      <SettingNumber settingKey="autoGrilleDropPa" label="Return terminal pressure drop" step={1} min={0} max={150} unit="Pa" />
-      <SettingNumber settingKey="filterG4RatedDropPa" label="G4 filter, clean drop" step={1} min={0} max={500} unit="Pa" />
-      <SettingNumber settingKey="filterM5RatedDropPa" label="M5 filter, clean drop" step={1} min={0} max={500} unit="Pa" />
+      <SettingNumber quantity="pressure" settingKey="autoDiffuserDropPa" label="Supply terminal pressure drop" step={1} min={0} max={150} unit="Pa" />
+      <SettingNumber quantity="pressure" settingKey="autoGrilleDropPa" label="Return terminal pressure drop" step={1} min={0} max={150} unit="Pa" />
+      <SettingNumber quantity="pressure" settingKey="filterG4RatedDropPa" label="G4 filter, clean drop" step={1} min={0} max={500} unit="Pa" />
+      <SettingNumber quantity="pressure" settingKey="filterM5RatedDropPa" label="M5 filter, clean drop" step={1} min={0} max={500} unit="Pa" />
       <SettingNumber quantity="velocity" settingKey="filterRatedVelocityMs" label="… at face velocity" step={0.1} min={0.5} max={5} unit="m/s" />
       <SettingNumber settingKey="filterDesignFactor" label="Filter mid-life factor" step={0.1} min={1} max={3} unit="×" />
       <SettingNumber settingKey="autoReducerStepMm" label="Reduce the trunk from" step={50} min={0} max={500} />
@@ -1077,13 +1077,13 @@ export function DuctSystemsSection() {
           className="w-14 rounded border border-slate-200 px-1 text-xs uppercase" />
         <SourceBadge settingKey="econCurrency" />
       </Row>
-      <SettingNumber settingKey="econSheetPerKg" label="Galvanised sheet" step={0.1} min={0} max={10000} unit="/ kg" />
-      <SettingNumber settingKey="econFabricationRectPerM2" label="Fabrication, rectangular" step={0.5} min={0} max={100000} unit="/ m²" />
-      <SettingNumber settingKey="econFabricationSpiralPerM2" label="Fabrication, spiral round" step={0.5} min={0} max={100000} unit="/ m²" />
+      <SettingNumber quantity="perMass" settingKey="econSheetPerKg" label="Galvanised sheet" step={0.1} min={0} max={10000} unit="/ kg" />
+      <SettingNumber quantity="perArea" settingKey="econFabricationRectPerM2" label="Fabrication, rectangular" step={0.5} min={0} max={100000} unit="/ m²" />
+      <SettingNumber quantity="perArea" settingKey="econFabricationSpiralPerM2" label="Fabrication, spiral round" step={0.5} min={0} max={100000} unit="/ m²" />
       <SettingNumber settingKey="econFittingFactor" label="Fittings, × a straight" step={0.1} min={1} max={10} unit="×" />
-      <SettingNumber settingKey="econInstallPerM2" label="Installation" step={0.5} min={0} max={100000} unit="/ m²" />
-      <SettingNumber settingKey="econInsulationPerM2" label="NBR insulation" step={0.5} min={0} max={100000} unit="/ m²" />
-      <SettingNumber settingKey="econFlexPerM" label="Flexible duct, Ø200" step={0.5} min={0} max={100000} unit="/ m" />
+      <SettingNumber quantity="perArea" settingKey="econInstallPerM2" label="Installation" step={0.5} min={0} max={100000} unit="/ m²" />
+      <SettingNumber quantity="perArea" settingKey="econInsulationPerM2" label="NBR insulation" step={0.5} min={0} max={100000} unit="/ m²" />
+      <SettingNumber quantity="perLength" settingKey="econFlexPerM" label="Flexible duct, Ø200" step={0.5} min={0} max={100000} unit="/ m" />
       <SettingNumber settingKey="econDamperEach" label="Damper, Ø200" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econPenetrationEach" label="Wall sleeve, Ø200" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econFireDamperEach" label="Fire damper, Ø200" step={1} min={0} max={1000000} unit="each" />
@@ -1091,7 +1091,7 @@ export function DuctSystemsSection() {
       <SettingNumber settingKey="econAttenuatorEach" label="Sound attenuator (900 mm)" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econFilterEach" label="Filter panel (return grille)" step={1} min={0} max={1000000} unit="each" />
       <SettingNumber settingKey="econHangerEach" label="Hanger" step={1} min={0} max={1000000} unit="each" />
-      <SettingNumber settingKey="econJointPerM" label="Joint" step={0.5} min={0} max={100000} unit="/ m of perimeter" />
+      <SettingNumber quantity="perLength" settingKey="econJointPerM" label="Joint, per perimeter" step={0.5} min={0} max={100000} />
       <SettingNumber settingKey="econElectricityPerKWh" label="Electricity" step={0.01} min={0} max={1000} unit="/ kWh" />
       <SettingNumber settingKey="econHoursPerYear" label="Fan hours" step={100} min={0} max={8760} unit="h / year" />
       <SettingNumber settingKey="econFanEfficiency" label="Fan + motor efficiency" step={0.05} min={0.05} max={0.95} unit="" />
@@ -1122,7 +1122,7 @@ export function DuctSystemsSection() {
       </Row>
       <SettingNumber settingKey="nbrSupplyThicknessMm" label="NBR on supply" step={1} min={6} max={50} />
       <SettingNumber settingKey="nbrReturnThicknessMm" label="NBR on return" step={1} min={6} max={50} />
-      <SettingNumber settingKey="nbrAdhesiveM2PerL" label="Adhesive coverage" step={0.5} min={7} max={9} unit="m²/L" />
+      <SettingNumber quantity="coverage" settingKey="nbrAdhesiveM2PerL" label="Adhesive coverage" step={0.5} min={7} max={9} unit="m²/L" />
       <SettingNumber settingKey="nbrWastePercent" label="Insulation waste" step={1} min={0} max={50} unit="%" />
       <div className="pt-1 text-xs font-medium text-slate-700">Supports (SMACNA chapter 4)</div>
       <SettingNumber settingKey="hangerSpacingMm" label="Hanger spacing" step={100} min={600} max={3050} />

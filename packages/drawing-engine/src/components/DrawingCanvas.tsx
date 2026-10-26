@@ -156,6 +156,7 @@ import { SegmentCardLayer } from "./canvas/hvac/segments/SegmentCardLayer";
 import type { SegmentProvider } from "./canvas/hvac/segments/segmentProvider";
 import { domainOf, useSegmentUiStore, type SegmentFocus } from "./canvas/hvac/segments/segmentUiStore";
 import { applyRefrigerantProposal } from "./canvas/hvac/unifiedAutoRoute";
+import { formatNumberIn, formatQuantity, sizesText } from "./canvas/hvac/units/hvacUnits";
 import {
   buildVrfValidationFixCommand,
   resolveVrfValidationIssueElement,
@@ -2485,21 +2486,23 @@ export function DrawingCanvas({
           : kind === "width" ? (resize.grip.round ? "diameter" : "width") : kind === "depth" ? (resize.grip.round ? "diameter" : "depth") : "length";
         const mm = (value: number) => Math.round(value).toLocaleString("en-GB");
         const figures = resize.figures;
+        // The air-side figures in the document's unit system (lengths stay the drawing's mm).
+        const system = useSmartDrawingStore.getState().ductSettings.unitSystem ?? "si";
         const index = figures && figures.indexPa.from !== null && figures.indexPa.to !== null
-          ? ` · fan ${Math.round(figures.indexPa.from)} → ${Math.round(figures.indexPa.to)} Pa` : "";
+          ? ` · fan ${formatNumberIn("pressure", figures.indexPa.from, system)} → ${formatQuantity("pressure", figures.indexPa.to, system)}` : "";
         const sectional = kind === "width" || kind === "depth";
         hud.show({
           client: state.client,
           title: `${resize.subject} · ${what}`,
           readout: state.typed !== null ? `${state.typed} mm`
-            : resize.sections ? `${resize.sections.from} → ${resize.sections.to}` : `${mm(resize.from)} → ${mm(resize.made)} mm`,
+            : resize.sections ? sizesText(`${resize.sections.from} → ${resize.sections.to}`, system) : `${mm(resize.from)} → ${mm(resize.made)} mm`,
           typing: state.typed !== null,
           typingHint: "Enter sets it · Esc cancels",
           limitedBy: state.limitedBy,
           notes: state.notes,
           infos: [
-            ...(figures ? [`${figures.velocityMs.toFixed(1)} m/s · ${figures.frictionPaPerM.toFixed(2)} Pa/m${index}`] : []),
-            ...(sectional && resize.sections ? [resize.scope === "size" ? `Every ${resize.sections.from} straight of the run` : `Shift: every ${resize.sections.from} straight of the run`] : []),
+            ...(figures ? [`${formatQuantity("velocity", figures.velocityMs, system)} · ${formatQuantity("friction", figures.frictionPaPerM, system)}${index}`] : []),
+            ...(sectional && resize.sections ? [sizesText(resize.scope === "size" ? `Every ${resize.sections.from} straight of the run` : `Shift: every ${resize.sections.from} straight of the run`, system)] : []),
             ...(state.infos ?? []),
           ],
           guides: [],

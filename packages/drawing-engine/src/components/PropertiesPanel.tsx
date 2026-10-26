@@ -84,7 +84,7 @@ import {
   type RefrigerantPipeMaterial,
 } from "./canvas/hvac/refrigerantPipePairModel";
 import { SegmentPieceList } from "./canvas/hvac/segments/SegmentPieceList";
-import { slopeText } from "./canvas/hvac/units/hvacUnits";
+import { fromDisplay, slopeText, toDisplay, toDisplayText, unitLabel, type HvacQuantity, type HvacUnitSystem } from "./canvas/hvac/units/hvacUnits";
 import { useHvacUnitSystem } from "./canvas/hvac/units/useHvacUnits";
 import { getProtectedPipeNodeIndexes } from "./canvas/hybrid/hybridPipeEditing";
 import {
@@ -173,6 +173,40 @@ function PropertyRow({
       <span className="text-xs text-slate-600">{label}</span>
       <div className="ml-auto flex max-w-full min-w-0 flex-wrap items-center justify-end gap-2 [&_input]:max-w-full [&_select]:max-w-full [&_textarea]:max-w-full">{children}</div>
     </div>
+  );
+}
+
+/**
+ * A stored SI figure typed in the display system (kW or kBtu/h, Pa or
+ * in. wg; `scale` takes the stored unit to the quantity's SI one, L/s to
+ * m³/h). Each change commits; what is typed stays as typed while the field
+ * has focus (not re-formatted under the cursor). Empty commits null.
+ */
+function SystemNumberInput({ value, quantity, system, digits, scale = 1, placeholder, title, ariaLabel, onCommit }: {
+  value: number | null; quantity: HvacQuantity; system: HvacUnitSystem; digits: number; scale?: number;
+  placeholder?: string; title?: string; ariaLabel: string; onCommit: (next: number | null) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = value === null ? "" : String(Number((system === "ip" ? toDisplay(quantity, value * scale, "ip") : value).toFixed(digits)));
+  return (
+    <input
+      type="number"
+      step={digits > 0 ? 1 / 10 ** Math.min(digits, 2) : 1}
+      value={draft ?? shown}
+      placeholder={placeholder}
+      title={title}
+      aria-label={ariaLabel}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        const text = event.target.value.trim();
+        if (text === "") { onCommit(null); return; }
+        const parsed = Number.parseFloat(text);
+        if (!Number.isFinite(parsed)) return;
+        onCommit(system === "ip" ? fromDisplay(quantity, parsed, "ip") / scale : parsed);
+      }}
+      onBlur={() => setDraft(null)}
+      className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
+    />
   );
 }
 
@@ -1926,18 +1960,9 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         </span>
       </PropertyRow>
       <PropertyRow label="Capacity">
-        <input
-          type="number"
-          step={0.1}
-          value={capacityKw.toFixed(1)}
-          onChange={(e) => {
-            const parsed = Number.parseFloat(e.target.value);
-            if (!Number.isFinite(parsed)) return;
-            updateProperties({ capacityKw: parsed });
-          }}
-          className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
-        />
-        <span className="text-xs text-slate-500">kW</span>
+        <SystemNumberInput value={capacityKw} quantity="capacity" system={unitSystem} digits={1} ariaLabel="Capacity"
+          onCommit={(next) => { if (next !== null) updateProperties({ capacityKw: next }); }} />
+        <span className="text-xs text-slate-500">{unitLabel("capacity", unitSystem)}</span>
       </PropertyRow>
       {isVrfCapacityEquipment && (
         <PropertyRow label="Capacity index">
@@ -1962,63 +1987,25 @@ function AcEquipmentSection({ propertyUnit }: { propertyUnit: PropertyUnit }) {
         </PropertyRow>
       )}
       <PropertyRow label="Airflow">
-        <input
-          type="number"
-          step={1}
-          value={airflowLps > 0 ? airflowLps.toFixed(0) : ""}
-          placeholder={makerAirflowLps ? `${makerAirflowLps} (Hi)` : undefined}
+        {/* Stored in L/s (SI reads it so); in IP in CFM (through m³/h). */}
+        <SystemNumberInput value={airflowLps > 0 ? airflowLps : null} quantity="airflow" scale={3.6} system={unitSystem} digits={0} ariaLabel="Airflow"
+          placeholder={makerAirflowLps ? `${unitSystem === "ip" ? Math.round(toDisplay("airflow", makerAirflowLps * 3.6, "ip")) : makerAirflowLps} (Hi)` : undefined}
           title={makerAirflowLps ? "Empty: the maker's airflow at the fan speed. A value here overrides it in duct sizing." : undefined}
-          onChange={(e) => {
-            if (e.target.value.trim() === "") {
-              updateProperties({ airflowLps: undefined });
-              return;
-            }
-            const parsed = Number.parseFloat(e.target.value);
-            if (!Number.isFinite(parsed)) return;
-            updateProperties({ airflowLps: parsed });
-          }}
-          className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
-        />
-        <span className="text-xs text-slate-500">L/s</span>
+          onCommit={(next) => updateProperties({ airflowLps: next ?? undefined })} />
+        <span className="text-xs text-slate-500">{unitSystem === "ip" ? unitLabel("airflow", "ip") : "L/s"}</span>
       </PropertyRow>
       <PropertyRow label="Heating">
-        <input
-          type="number"
-          step={0.1}
-          value={heatingCapacityKw > 0 ? heatingCapacityKw.toFixed(1) : ""}
-          placeholder={makerSpec?.heatingKw ? String(makerSpec.heatingKw) : undefined}
-          onChange={(e) => {
-            if (e.target.value.trim() === "") {
-              updateProperties({ heatingCapacityKw: undefined });
-              return;
-            }
-            const parsed = Number.parseFloat(e.target.value);
-            if (!Number.isFinite(parsed)) return;
-            updateProperties({ heatingCapacityKw: parsed });
-          }}
-          className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
-        />
-        <span className="text-xs text-slate-500">kW</span>
+        <SystemNumberInput value={heatingCapacityKw > 0 ? heatingCapacityKw : null} quantity="capacity" system={unitSystem} digits={1} ariaLabel="Heating capacity"
+          placeholder={makerSpec?.heatingKw ? toDisplay("capacity", makerSpec.heatingKw, unitSystem).toFixed(1) : undefined}
+          onCommit={(next) => updateProperties({ heatingCapacityKw: next ?? undefined })} />
+        <span className="text-xs text-slate-500">{unitLabel("capacity", unitSystem)}</span>
       </PropertyRow>
       <PropertyRow label="External Static Pressure">
-        <input
-          type="number"
-          step={1}
-          value={staticPressurePa > 0 ? staticPressurePa.toFixed(0) : ""}
-          placeholder={makerSpec?.esp ? `max ${makerSpec.esp.maxPa}` : undefined}
-          title={makerSpec?.esp ? `The maker's fan gives up to ${makerSpec.esp.maxPa} Pa; the unit panel (left) checks the ducts against it.` : undefined}
-          onChange={(e) => {
-            if (e.target.value.trim() === "") {
-              updateProperties({ staticPressurePa: undefined, espPa: undefined });
-              return;
-            }
-            const parsed = Number.parseFloat(e.target.value);
-            if (!Number.isFinite(parsed)) return;
-            updateProperties({ staticPressurePa: parsed, espPa: parsed });
-          }}
-          className="w-24 rounded border border-amber-200/80 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
-        />
-        <span className="text-xs text-slate-500">Pa</span>
+        <SystemNumberInput value={staticPressurePa > 0 ? staticPressurePa : null} quantity="pressure" system={unitSystem} digits={unitSystem === "ip" ? 2 : 0} ariaLabel="External static pressure"
+          placeholder={makerSpec?.esp ? `max ${unitSystem === "ip" ? toDisplay("pressure", makerSpec.esp.maxPa, "ip").toFixed(2) : makerSpec.esp.maxPa}` : undefined}
+          title={makerSpec?.esp ? toDisplayText(`The maker's fan gives up to ${makerSpec.esp.maxPa} Pa; the unit panel (left) checks the ducts against it.`, unitSystem) : undefined}
+          onCommit={(next) => updateProperties({ staticPressurePa: next ?? undefined, espPa: next ?? undefined })} />
+        <span className="text-xs text-slate-500">{unitLabel("pressure", unitSystem)}</span>
       </PropertyRow>
       <PropertyRow label="Voltage">
         <input

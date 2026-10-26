@@ -28,6 +28,24 @@ import { AUTO_DUCT_SHAPE_OPTIONS } from './duct/DuctAutoCard';
 import type { AutoDuctShape } from './duct/ductAutoLayout';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, type FanSpeed } from './duct/ductSizing';
 import { wantsDucts, type AutoRouteServices } from './unifiedAutoRoute';
+import { fromDisplay, toDisplay } from './units/hvacUnits';
+import { useHvacUnits } from './units/useHvacUnits';
+
+/** A fall typed in % (SI) or in/ft (IP), kept as typed while it has focus; the settings take %. */
+function FallInput({ percent, ip, label, onCommit }: { percent: number; ip: boolean; label: string; onCommit: (percent: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = ip ? String(Number(toDisplay('slope', percent, 'ip').toFixed(3))) : String(percent);
+  return (
+    <input type="number" step={ip ? 0.01 : 0.1} min={ip ? 0.03 : 0.25} aria-label={label} value={draft ?? shown}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        const value = Number.parseFloat(event.target.value);
+        if (Number.isFinite(value)) onCommit(ip ? Math.round(fromDisplay('slope', value, 'ip') * 1e4) / 1e4 : value);
+      }}
+      onBlur={() => setDraft(null)}
+      className="w-full rounded-md border border-slate-200 p-1.5" />
+  );
+}
 
 const RATE_FIELDS = [
   ['gasPipePerMetre', 'Gas pipe + insulation / m'],
@@ -91,6 +109,8 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
   const [rateDraft, setRateDraft] = useState<RateDraft>(EMPTY_RATES);
   const [showOptions, setShowOptions] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const units = useHvacUnits();
+  const ip = units.system === 'ip';
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [panelLeft, setPanelLeft] = useState(0);
@@ -129,9 +149,11 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
         setShowOptions(true);
         return;
       }
+      // (In IP the pipe rates are typed per foot; the routing compares them per metre.)
       rates = {
         currency: rateDraft.currency.trim().toUpperCase(),
-        gasPipePerMetre: values[0]!, liquidPipePerMetre: values[1]!, elbowEach: values[2]!, branchPairEach: values[3]!, riserEach: values[4]!,
+        gasPipePerMetre: units.fromDisplay('perLength', values[0]!), liquidPipePerMetre: units.fromDisplay('perLength', values[1]!),
+        elbowEach: values[2]!, branchPairEach: values[3]!, riserEach: values[4]!,
       };
     }
     setShowOptions(false);
@@ -268,7 +290,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
                     className="rounded-md border border-slate-200 p-1.5"
                     title="Constant friction sizes at the project's friction rates and velocity limits (Duct Systems settings); the Auto duct card sets them per unit">
                     <option value="life-cycle">Life-cycle optimum</option>
-                    <option value="constant-friction">Constant friction · {ductSettings.autoFrictionSupplyPaPerM.toFixed(2)} Pa/m</option>
+                    <option value="constant-friction">Constant friction · {units.fmt('friction', ductSettings.autoFrictionSupplyPaPerM)}</option>
                   </select>
                 </label>
                 <label className="flex items-center justify-between gap-3 text-slate-600">
@@ -309,7 +331,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
                         className="w-24 rounded border border-slate-200 px-2 py-1" />
                     </label>
                     {RATE_FIELDS.map(([key, label]) => (
-                      <label key={key} className="flex items-center justify-between gap-3 text-slate-600">{label}
+                      <label key={key} className="flex items-center justify-between gap-3 text-slate-600">{ip ? label.replace(' / m', ` ${units.unit('perLength')}`) : label}
                         <input aria-label={label} type="number" min={0} step="any" value={rateDraft[key]}
                           onChange={(event) => setRateDraft({ ...rateDraft, [key]: event.target.value })}
                           className="w-24 rounded border border-slate-200 px-2 py-1 text-right" />
@@ -330,18 +352,14 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
                   </select>
                 </label>
                 <div className="grid grid-cols-2 gap-2">
-                  <label className="space-y-1 text-slate-600">
-                    <span>Minimum fall %</span>
-                    <input type="number" step={0.1} min={0.25} value={condensateSettings.minSlopePercent}
-                      onChange={(event) => { const value = Number.parseFloat(event.target.value); if (Number.isFinite(value)) setCondensateSettings({ minSlopePercent: value }); }}
-                      className="w-full rounded-md border border-slate-200 p-1.5" />
-                  </label>
-                  <label className="space-y-1 text-slate-600">
-                    <span>Preferred fall %</span>
-                    <input type="number" step={0.1} min={0.25} value={condensateSettings.preferredSlopePercent}
-                      onChange={(event) => { const value = Number.parseFloat(event.target.value); if (Number.isFinite(value)) setCondensateSettings({ preferredSlopePercent: value }); }}
-                      className="w-full rounded-md border border-slate-200 p-1.5" />
-                  </label>
+                  {/* In IP a fall is typed in in/ft (1/8 in/ft is 0.125); the settings keep %. */}
+                  {(['minSlopePercent', 'preferredSlopePercent'] as const).map((key) => (
+                    <label key={key} className="space-y-1 text-slate-600">
+                      <span>{key === 'minSlopePercent' ? 'Minimum' : 'Preferred'} fall {units.unit('slope')}</span>
+                      <FallInput percent={condensateSettings[key]} ip={ip} label={`${key === 'minSlopePercent' ? 'Minimum' : 'Preferred'} fall`}
+                        onCommit={(value) => setCondensateSettings({ [key]: value })} />
+                    </label>
+                  ))}
                 </div>
                 <label className="block space-y-1 text-slate-600">
                   <span>Pipe system</span>

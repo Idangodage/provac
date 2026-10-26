@@ -142,6 +142,10 @@ describe('air systems: assigned, connected, mismatched', () => {
     const csv = airTerminalScheduleToCsv(rows).split('\n');
     expect(csv[0]).toBe('Tag,System,Service,Type,Face (mm),Neck (mm),Airflow (m3/h),Airflow basis,Neck velocity (m/s),Pressure drop (Pa),Filter,Room,Status');
     expect(csv).toHaveLength(6);
+    // In IP: faces and necks in inches, CFM, fpm, in. wg.
+    const ip = airTerminalScheduleToCsv(rows, 'ip').split('\n');
+    expect(ip[0]).toBe('Tag,System,Service,Type,Face (in),Neck (in),Airflow (CFM),Airflow basis,Neck velocity (fpm),Pressure drop (in. wg),Filter,Room,Status');
+    expect(ip[1]!.split(',').slice(4, 10)).toEqual(['23.4×23.4', '7.9', '177', 'share', String(Math.round(rows[0]!.neckVelocityMs / 0.00508)), (15 / 248.84).toFixed(3)]);
   });
 });
 

@@ -10,15 +10,17 @@ import { generateId } from '../../../utils/geometry';
 import { applyAutoRoutePreview } from './autoRouteController';
 import { autoRouteDuctFeedback } from './autoRouteDuctFeedback';
 import { buildAutoRouteReview, ductUnitReview } from './autoRouteReview';
+import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import { farAssignments } from './duct/airSystemAssignment';
 import { assignmentWallsOf, reassignToNearestUnits } from './duct/airSystemController';
 import type { AutoRouteDuctAdvice, AutoRouteDuctUnit } from './duct/ductAutoRoute';
 import { formatCost } from './duct/ductEconomics';
 import { proposeTerminals } from './duct/ductUnitAdvice';
 import { useTerminalProposalStore } from './duct/terminalProposalStore';
-import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import { requestHvacRotate } from './move/hvacMoveBus';
 import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
+import { sizesText } from './units/hvacUnits';
+import { useHvacUnits } from './units/useHvacUnits';
 
 function inspect(ids: readonly string[]): void {
   const state = useSmartDrawingStore.getState();
@@ -110,7 +112,9 @@ function turnUnit(unitId: string, angleDeg: number, onRouteAgain?: () => void): 
  */
 function UnitAdvice({ unit, onRouteAgain }: { unit: AutoRouteDuctUnit; onRouteAgain?: () => void }) {
   const proposal = useTerminalProposalStore(state => state.proposal);
+  const units = useHvacUnits();
   if (!unit.advice?.length) return null;
+  const neck = (mm: number) => sizesText(`Ø${mm}`, units.system);
   const propose = (advice: Extract<AutoRouteDuctAdvice, { kind: 'add-terminals' }>) => {
     const state = useSmartDrawingStore.getState();
     const next = proposeTerminals(state.hvacElements, state.rooms, unit.unitId, unit.terminalIds ?? [], advice.service, advice.airflowM3h, state.ductSettings, generateId);
@@ -134,7 +138,7 @@ function UnitAdvice({ unit, onRouteAgain }: { unit: AutoRouteDuctUnit; onRouteAg
     {unit.advice.map(advice => {
       const open = advice.kind === 'add-terminals' && proposal?.unitId === unit.unitId && proposal.service === advice.service ? proposal : null;
       return <div key={advice.kind === 'turn-unit' ? 'turn' : advice.service} className="rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900">
-        <p className="break-words">{advice.message}</p>
+        <p className="break-words">{units.text(advice.message)}</p>
         {advice.kind === 'turn-unit'
           ? <button type="button" onClick={() => turnUnit(unit.unitId, advice.angleDeg, onRouteAgain)} data-testid="auto-route-turn-unit"
             title="Turn the unit about its centre (its ducts, pipes and drains follow; one undo), then run Auto route again"
@@ -144,10 +148,10 @@ function UnitAdvice({ unit, onRouteAgain }: { unit: AutoRouteDuctUnit; onRouteAg
               <button type="button" onClick={add} data-testid="auto-route-add-terminals"
                 title="Add the terminals shown dashed on the drawing (and re-neck the ones there) as one undo step, then run Auto route again"
                 className={`${adviceButton} bg-amber-600 text-white hover:bg-amber-700`}><Check size={12} aria-hidden="true" />
-                {open.add.length ? `Add ${open.add.length} terminal${open.add.length === 1 ? '' : 's'}` : `Make them Ø${open.neckMm}`} and route again</button>
+                {open.add.length ? `Add ${open.add.length} terminal${open.add.length === 1 ? '' : 's'}` : `Make them ${neck(open.neckMm)}`} and route again</button>
               <button type="button" onClick={() => useTerminalProposalStore.getState().setProposal(null)}
                 className={`${adviceButton} border border-amber-300 bg-white text-amber-900 hover:bg-amber-100`}><X size={12} aria-hidden="true" /> Cancel</button>
-              <p className="w-full text-[10px] text-amber-800">{open.total} × Ø{open.neckMm} in all: {open.add.length} new (dashed on the drawing){open.updates.length ? `, ${open.updates.length} there ${open.updates.length === 1 ? 'joins' : 'join'} the unit's air system at Ø${open.neckMm}` : ''}.</p>
+              <p className="w-full text-[10px] text-amber-800">{open.total} × {neck(open.neckMm)} in all: {open.add.length} new (dashed on the drawing){open.updates.length ? `, ${open.updates.length} there ${open.updates.length === 1 ? 'joins' : 'join'} the unit's air system at ${neck(open.neckMm)}` : ''}.</p>
             </div>
             : <button type="button" onClick={() => propose(advice)} data-testid="auto-route-propose-terminals"
               title="Show where the terminals would go: spread over the free ceiling of the unit's room, clear of walls, units and the other service"
@@ -169,6 +173,8 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
   const equipmentToReview = refrigerant?.connectedIndoorIds.find(id => existingIds.has(id));
   const feedback = autoRouteDuctFeedback(ducts);
   const activeCount = [ducts, refrigerant, condensate].filter(Boolean).length;
+  // Engine sentences in the display system (their SI figures with the IP ones beside them in IP).
+  const units = useHvacUnits();
   const StatusIcon = review.state === 'blocked' ? AlertTriangle : review.state === 'ready' ? CheckCircle2 : Circle;
   return <div className="space-y-3 leading-4 text-slate-600" data-testid="auto-route-review">
     <div className={`rounded-lg border p-2.5 ${review.state === 'blocked'
@@ -186,7 +192,7 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
     {review.capacityWarnings.map(message => <div key={message} role="note" data-testid="auto-route-capacity"
       className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900">
       <p className="font-semibold"><AlertTriangle size={12} className="mr-1 inline" aria-hidden="true" />Outdoor unit capacity</p>
-      <p className="mt-0.5 break-words">{message}</p>
+      <p className="mt-0.5 break-words">{units.text(message)}</p>
     </div>)}
 
     {ducts && <FarTerminalsBanner result={result} onRouteAgain={onRouteAgain} />}
@@ -205,7 +211,7 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
       <p className="flex items-center justify-between font-semibold text-slate-800">Routing constraints <span className="rounded-full bg-amber-100 px-2 text-[11px] text-amber-900">{review.issues.length}</span></p>
       {review.issues.map(issue => <details key={issue.key} open={issue.action ? true : undefined} className="rounded-lg border border-amber-200 bg-amber-50/40 p-2">
         <summary className="cursor-pointer font-medium text-amber-900">{issue.title}</summary>
-        <p className="mt-1.5 break-words">{issue.message}</p>
+        <p className="mt-1.5 break-words">{units.text(issue.message)}</p>
         {issue.action?.kind === 'fit-pump' ? <button type="button" onClick={() => fitPump(issue.action!.unitId, onRouteAgain)} data-testid="auto-route-fit-pump"
           title="Give the unit a condensate pump (its Drain pump setting; one undo), then run Auto route again"
           className={`${adviceButton} mr-1.5 bg-amber-600 text-white hover:bg-amber-700`}><Droplets size={12} aria-hidden="true" /> Fit a condensate pump and route again</button> : null}
@@ -216,7 +222,7 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
     </section>}
 
     {ducts && <section data-testid="auto-route-ducts" className="space-y-1.5" aria-label="Duct layout review">
-      {feedback?.additionalIssues.length ? <div className="rounded-md bg-amber-50 p-2 text-amber-900">{feedback.additionalIssues.map(message => <p key={message}>{message}</p>)}</div> : null}
+      {feedback?.additionalIssues.length ? <div className="rounded-md bg-amber-50 p-2 text-amber-900">{feedback.additionalIssues.map(message => <p key={message}>{units.text(message)}</p>)}</div> : null}
       {ducts.units.map(unit => {
         const designed = unit.status === 'designed';
         const details = ductUnitReview(unit);
@@ -228,16 +234,16 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
             <UnitAdvice unit={unit} onRouteAgain={onRouteAgain} />
             {designed && unit.services.map(service => <div key={service.service} className="flex items-start gap-2 text-[11px]">
               <span className={`mt-1 h-2 w-3 shrink-0 rounded-sm border ${service.service === 'supply' ? 'border-blue-600 bg-blue-50' : 'border-teal-600 bg-teal-50'}`} aria-hidden="true" />
-              <span><span className="font-medium capitalize">{service.service}</span> · {service.trunk} · {service.terminals} terminals<br /><span className="text-slate-500">{service.layout}</span></span>
+              <span><span className="font-medium capitalize">{service.service}</span> · {sizesText(service.trunk, units.system)} · {service.terminals} terminals<br /><span className="text-slate-500">{service.layout}</span></span>
             </div>)}
             {!designed && <p className="text-[11px] text-amber-900">No valid layout found for {unit.terminalIds?.length ?? 'the selected'} terminals. Existing ducts are retained.</p>}
             {details.details.map(issue => <details key={issue.key} className="rounded-md bg-amber-50 p-2">
-              <summary className="cursor-pointer font-medium text-amber-900">{issue.title}</summary><p className="mt-1.5 break-words">{issue.message}</p>
+              <summary className="cursor-pointer font-medium text-amber-900">{issue.title}</summary><p className="mt-1.5 break-words">{units.text(issue.message)}</p>
             </details>)}
             {details.notes.length > 0 && <details className="text-[11px]"><summary className="cursor-pointer text-slate-600">{designed ? 'Design notes' : 'Layout guidance'} ({details.notes.length})</summary>
-              {details.notes.map(note => <p key={note} className="mt-1.5 break-words">{note}</p>)}</details>}
+              {details.notes.map(note => <p key={note} className="mt-1.5 break-words">{units.text(note)}</p>)}</details>}
             {designed && (unit.requiredEspPa !== null || unit.firstCost !== null) && <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] tabular-nums text-slate-500">
-              {unit.requiredEspPa !== null && <span>Pressure {Math.round(unit.requiredEspPa)}{unit.maxEspPa !== null ? ` / ${unit.maxEspPa}` : ''} Pa</span>}
+              {unit.requiredEspPa !== null && <span>Pressure {units.num('pressure', unit.requiredEspPa)}{unit.maxEspPa !== null ? ` / ${units.num('pressure', unit.maxEspPa)}` : ''} {units.unit('pressure')}</span>}
               {unit.firstCost !== null && <span>Installed {formatCost(unit.firstCost, unit.currency)}</span>}
               {unit.lifeCycleCost !== null && <span>Life cycle {formatCost(unit.lifeCycleCost, unit.currency)}</span>}
             </div>}
@@ -264,7 +270,7 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
     {review.manufacturerNotes.length > 0 && <details className="rounded-lg border border-sky-100 bg-sky-50/50 p-2">
       <summary className="cursor-pointer font-medium text-sky-900"><Info size={13} className="mr-1 inline" aria-hidden="true" /> Manufacturer verification ({review.manufacturerNotes.length})</summary>
       <p className="mt-1.5 text-[11px] font-medium">Preliminary sizing — model data is still required.</p>
-      {review.manufacturerNotes.map(note => <p key={note} className="mt-1.5 break-words text-[11px]">{note}</p>)}
+      {review.manufacturerNotes.map(note => <p key={note} className="mt-1.5 break-words text-[11px]">{units.text(note)}</p>)}
       {equipmentToReview && <button type="button" onClick={() => inspect([equipmentToReview])} className="mt-2 inline-flex items-center gap-1 rounded border border-sky-200 bg-white px-2 py-1 text-teal-800">
         <Focus size={12} aria-hidden="true" /> Review equipment data</button>}
     </details>}

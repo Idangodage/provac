@@ -150,6 +150,11 @@ describe('duct tag layout', () => {
     const tag = airTerminalTag(terminal, spec, 0.5);
     expect(tag.text).toBe('SAD-1 · 595 · Ø200');
     expect(airTerminalMarkup(terminal, spec, 0.5, true)).toContain(`<text x="${Math.round(tag.point.x * 100) / 100}" y="${Math.round(tag.point.y * 100) / 100}"`);
+    // In IP its face and neck read in inches, beside the runout's own tag in inches.
+    expect(airTerminalTag(terminal, spec, 0.5, 'ip').text).toBe('SAD-1 · 23.4 in · Ø7.9 in');
+    expect(airTerminalMarkup(terminal, spec, 0.5, true, 'ip')).toContain('SAD-1 · 23.4 in · Ø7.9 in');
+    const inchNeck = { ...spec, neckDiameterMm: 254 };
+    expect(airTerminalTag(terminal, inchNeck, 0.5, 'ip').text).toBe('SAD-1 · 23.4 in · Ø10 in');
   });
 
   it("lays a runout's tag along the runout, and keeps every tag off the run's own pieces and labels", () => {

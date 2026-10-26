@@ -5,6 +5,7 @@
  * Strokes are non-scaling so line weights stay constant at every zoom.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { inchesText, sizesText, type HvacUnitSystem } from '../units/hvacUnits';
 
 import type { DuctAirPort } from './ductAirPorts';
 import type { DuctPlanPresentation } from './ductPlanPresentation';
@@ -306,6 +307,7 @@ export function airTerminalMarkup(
   spec: DuctTerminalSpec,
   k: number,
   showTags: boolean,
+  system: HvacUnitSystem = 'si',
 ): string {
   const px = (value: number) => value / Math.max(k, 1e-6);
   const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 };
@@ -383,26 +385,28 @@ export function airTerminalMarkup(
     parts.push(`<path d="${pathData([side(from, r), side(to, r), side(to, -r), side(from, -r)], true)}" fill="none" stroke="${color.stroke}" stroke-width="0.9" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" data-terminal-collar="side"/>`);
   }
   if (showTags) {
-    const tag = airTerminalTag(element, spec, k);
+    const tag = airTerminalTag(element, spec, k, system);
     parts.push(textMarkup(tag.point, tag.text, px(TAG_FONT_PX), color.stroke));
   }
   parts.push('</g>');
   return parts.join('');
 }
 
-/** A terminal's plan tag, under its face: "RAG-2 · 595 · Ø250 · G4". */
+/** A terminal's plan tag, under its face: "RAG-2 · 595 · Ø250 · G4" (in IP its face and neck in inches: "RAG-2 · 23.4 in · Ø9.8 in · G4"). */
 export function airTerminalTag(
   element: Pick<HvacElement, 'position' | 'width' | 'depth'> & Partial<Pick<HvacElement, 'label'>>,
   spec: DuctTerminalSpec,
   k: number,
+  system: HvacUnitSystem = 'si',
 ): { point: Point2D; text: string } {
-  const size = spec.kind === 'round' ? `Ø${Math.round(spec.faceWidthMm)}`
-    : spec.kind === 'linear-slot' ? `${Math.round(spec.faceWidthMm)}×${spec.slots ?? 2} slots` : `${Math.round(spec.faceWidthMm)}`;
+  const length = (mm: number) => (system === 'ip' ? `${inchesText(mm)} in` : `${Math.round(mm)}`);
+  const size = spec.kind === 'round' ? `Ø${length(spec.faceWidthMm)}`
+    : spec.kind === 'linear-slot' ? `${length(spec.faceWidthMm)}×${spec.slots ?? 2} slots` : length(spec.faceWidthMm);
   const reach = Math.max(spec.faceWidthMm, spec.faceDepthMm) / 2;
   const filter = spec.filter ? ` · ${spec.filter}` : '';
   return {
     point: { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 + reach + 12 / Math.max(k, 1e-6) },
-    text: `${terminalDisplayTag(element, spec)} · ${size} · Ø${Math.round(spec.neckDiameterMm)}${filter}`,
+    text: `${terminalDisplayTag(element, spec)} · ${size} · Ø${length(spec.neckDiameterMm)}${filter}`,
   };
 }
 
@@ -413,6 +417,7 @@ export function airTerminalTagObstacles(
   k: number,
   showTags: boolean,
   measure: TextMeasure,
+  system: HvacUnitSystem = 'si',
 ): TagBox[] {
   const angle = ((element.rotation ?? 0) * Math.PI) / 180;
   const face: TagBox = {
@@ -420,12 +425,12 @@ export function airTerminalTagObstacles(
     axis: { x: Math.cos(angle), y: Math.sin(angle) }, halfAlong: spec.faceWidthMm / 2, halfAcross: spec.faceDepthMm / 2,
   };
   if (!showTags) return [face];
-  const tag = airTerminalTag(element, spec, k);
+  const tag = airTerminalTag(element, spec, k, system);
   return [face, tagTextBox(tag.point, 0, measure(tag.text), k)];
 }
 
 /** Collar and terminal-spigot markers shown while the duct tool is active. */
-export function airPortMarkup(ports: readonly DuctAirPort[], k: number, hoveredKey: string | null, occupiedKeys: ReadonlySet<string>): string {
+export function airPortMarkup(ports: readonly DuctAirPort[], k: number, hoveredKey: string | null, occupiedKeys: ReadonlySet<string>, system: HvacUnitSystem = 'si'): string {
   const px = (value: number) => value / Math.max(k, 1e-6);
   return ports.map((port) => {
     const key = `${port.unitId}:${port.portId}`;
@@ -435,7 +440,7 @@ export function airPortMarkup(ports: readonly DuctAirPort[], k: number, hoveredK
     const width = hovered ? 6 : 3.5;
     const out = { x: port.lip.x + port.normal.x * px(18), y: port.lip.y + port.normal.y * px(18) };
     const size = port.diameterMm !== undefined ? `spigot Ø${Math.round(port.diameterMm)}` : `${port.widthMm}×${port.heightMm}`;
-    const label = `${port.kind === 'supply' ? 'SUPPLY' : 'RETURN'} ${size}${port.source === 'procedural' ? ' (approx.)' : ''}${occupied ? ' · connected' : ''}`;
+    const label = `${port.kind === 'supply' ? 'SUPPLY' : 'RETURN'} ${sizesText(size, system)}${port.source === 'procedural' ? ' (approx.)' : ''}${occupied ? ' · connected' : ''}`;
     return [
       `<path d="${pathData([port.edgeA, port.edgeB])}" stroke="${color}" stroke-width="${width}" stroke-linecap="round" vector-effect="non-scaling-stroke" opacity="${occupied && !hovered ? 0.45 : 1}"/>`,
       hovered ? textMarkup(out, label, px(11), color) : '',

@@ -252,8 +252,8 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     return keys;
   }, [hvacElements]);
   const paintPorts = useCallback(() => {
-    if (portsRef.current) portsRef.current.innerHTML = airPortMarkup(ports, kRef.current, hoveredPortRef.current, occupied);
-  }, [ports, occupied]);
+    if (portsRef.current) portsRef.current.innerHTML = airPortMarkup(ports, kRef.current, hoveredPortRef.current, occupied, sceneRef.current.settings.unitSystem ?? 'si');
+  }, [ports, occupied, settings.unitSystem]);
 
   const setHoveredPort = useCallback((key: string | null) => {
     if (hoveredPortRef.current === key) return;
@@ -405,7 +405,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     });
     const style = markupStyle(kRef.current, current);
     const hidden = new Set(moved.map(({ presentation }) => presentation.id));
-    target.innerHTML = terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, kRef.current, style.showTags)).join('')
+    target.innerHTML = terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, kRef.current, style.showTags, current.unitSystem ?? 'si')).join('')
       + moved.map(({ presentation, selected: isSelected }) => ductRunMarkup(presentation, { ...style, sectionTags: false, selected: isSelected })).join('')
       + transientTags(moved, hidden);
     hiddenRunsRef.current = hidden;
@@ -704,7 +704,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
   const proposal = useTerminalProposalStore((state) => state.proposal);
   const proposalMarkup = useMemo(() => (proposal?.add ?? []).flatMap((element) => {
     const spec = readDuctTerminalSpec(element);
-    return spec ? [airTerminalMarkup(element, spec, k, markupStyle(k, settings).showTags)] : [];
+    return spec ? [airTerminalMarkup(element, spec, k, markupStyle(k, settings).showTags, settings.unitSystem ?? 'si')] : [];
   }).join(''), [proposal, k, settings]);
   const runs = useMemo(() => hvacElements
     .filter(isDuctElement)
@@ -723,7 +723,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
     ];
     const obstacles: TagObstacle[] = [
       ...hvacElements.filter(isAirSystemUnit).map((unit) => equipmentTagObstacle(unit)),
-      ...terminals.flatMap(({ element, spec }) => airTerminalTagObstacles(element, spec, k, style.showTags, measureTagText)),
+      ...terminals.flatMap(({ element, spec }) => airTerminalTagObstacles(element, spec, k, style.showTags, measureTagText, settings.unitSystem ?? 'si')),
       ...drawn.flatMap(({ presentation }) => ductRunTagObstacles(presentation, style, measureTagText)),
     ];
     const sources: DuctTagSource[] = drawn.map(({ presentation, selected, draft }) => ({
@@ -782,7 +782,7 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
           <g
             ref={terminalsRef}
             data-testid="duct-terminals"
-            dangerouslySetInnerHTML={{ __html: terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, k, style.showTags)).join('') }}
+            dangerouslySetInnerHTML={{ __html: terminals.map(({ element, spec }) => airTerminalMarkup(element, spec, k, style.showTags, settings.unitSystem ?? 'si')).join('') }}
           />
           {proposalMarkup ? <g data-testid="duct-terminal-proposal" opacity={0.7} style={{ strokeDasharray: '5 3' }} dangerouslySetInnerHTML={{ __html: proposalMarkup }} /> : null}
           <g ref={runsRef}>

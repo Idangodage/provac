@@ -11,6 +11,8 @@ import { useMemo } from 'react';
 import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
+import { sizesText } from '../units/hvacUnits';
+import { useHvacUnits } from '../units/useHvacUnits';
 
 import { CopyButton, SettingNumber } from './DuctPanels';
 import { autoAssignTerminals } from './airSystemController';
@@ -20,12 +22,13 @@ import { readDuctTerminalSpec } from './ductTerminals';
 
 function SystemSummary({ system, roomNames }: { system: AirSystem; roomNames: ReadonlyMap<string, string> }) {
   const selectElement = useSmartDrawingStore((state) => state.selectElement);
+  const units = useHvacUnits();
   const line = (group: AirSystem['supply']) => {
     const airflow = system.airflowM3h;
     const ok = !airflow || !group.members.length || Math.abs(group.totalM3h - airflow) <= airflow * AIR_BALANCE_TOLERANCE;
     return (
       <span className={ok ? 'text-slate-600' : 'text-amber-700'}>
-        {group.members.length} · {group.connected} ducted{group.members.length ? ` · ${Math.round(group.totalM3h)} m³/h` : ''}
+        {group.members.length} · {group.connected} ducted{group.members.length ? ` · ${units.fmt('airflow', group.totalM3h)}` : ''}
       </span>
     );
   };
@@ -56,6 +59,7 @@ export function AirSystemsSection() {
   const analysis = useMemo(() => analyseAirSystems(hvacElements, rooms), [hvacElements, rooms]);
   const roomNames = useMemo(() => new Map(rooms.map((room) => [room.id, room.name])), [rooms]);
   const schedule = useMemo(() => airTerminalSchedule(analysis, ductSettings, roomNames), [analysis, ductSettings, roomNames]);
+  const units = useHvacUnits();
   const unassignedTags = analysis.unassigned.map((terminal) => {
     const spec = readDuctTerminalSpec(terminal);
     return spec ? terminalTagOf(terminal, spec) : terminal.label;
@@ -92,7 +96,7 @@ export function AirSystemsSection() {
       <SettingNumber settingKey="farAssignmentRatio" label="Far unit: and own farther by over" step={0.5} min={1} max={10} unit="×" />
       <div className="flex items-center justify-between pt-1">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Air terminal schedule</span>
-        <CopyButton text={airTerminalScheduleToCsv(schedule)} label="Copy CSV" />
+        <CopyButton text={airTerminalScheduleToCsv(schedule, units.system)} label="Copy CSV" />
       </div>
       {schedule.length ? (
         <ul className="space-y-0.5 text-[10px] text-slate-600" data-testid="air-terminal-schedule">
@@ -100,9 +104,9 @@ export function AirSystemsSection() {
             <li key={`${row.system}:${row.tag}`} className="rounded px-1 py-0.5 odd:bg-slate-50">
               <span className="font-medium text-slate-800">{row.tag}</span>
               <span className={row.service === 'supply' ? 'text-blue-800' : 'text-teal-800'}> · {row.system || 'no system'} {row.service}</span>
-              <span> · {row.type} {row.face} · Ø{row.neckMm}</span>
+              <span> · {row.type} {sizesText(`${row.face} · Ø${row.neckMm}`, units.system)}</span>
               <span className="block">
-                {row.airflowM3h} m³/h{row.fixed ? '' : ' (share)'} · {row.neckVelocityMs} m/s · {row.pressureDropPa} Pa{row.filter ? ` · ${row.filter}` : ''}{row.room ? ` · ${row.room}` : ''} · {row.status}
+                {units.fmt('airflow', row.airflowM3h)}{row.fixed ? '' : ' (share)'} · {units.fmt('velocity', row.neckVelocityMs)} · {units.fmt('pressure', row.pressureDropPa, units.system === 'ip' ? 3 : 1)}{row.filter ? ` · ${row.filter}` : ''}{row.room ? ` · ${row.room}` : ''} · {row.status}
               </span>
             </li>
           ))}

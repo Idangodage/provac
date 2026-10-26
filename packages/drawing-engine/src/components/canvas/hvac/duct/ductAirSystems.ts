@@ -11,6 +11,7 @@
  */
 import type { HvacElement, Point2D, Room } from '../../../../types';
 import { isPointInPolygon } from '../../../../utils/geometry';
+import { inchesText, toDisplay, type HvacUnitSystem } from '../units/hvacUnits';
 
 import { listAirPorts, type DuctAirPort } from './ductAirPorts';
 import { ductParentOf } from './ductNetwork';
@@ -349,10 +350,16 @@ function csvCell(value: string | number | boolean): string {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-export function airTerminalScheduleToCsv(rows: readonly AirTerminalScheduleRow[]): string {
-  const header = ['Tag', 'System', 'Service', 'Type', 'Face (mm)', 'Neck (mm)', 'Airflow (m3/h)', 'Airflow basis', 'Neck velocity (m/s)', 'Pressure drop (Pa)', 'Filter', 'Room', 'Status'];
-  return [header, ...rows.map((row) => [row.tag, row.system, row.service, row.type, row.face, row.neckMm, row.airflowM3h, row.fixed ? 'design' : 'share',
-    row.neckVelocityMs, row.pressureDropPa, row.filter, row.room, row.status])].map((line) => line.map(csvCell).join(',')).join('\n');
+/** The schedule as CSV, in the display system (IP: faces and necks in inches, CFM, fpm, in. wg). */
+export function airTerminalScheduleToCsv(rows: readonly AirTerminalScheduleRow[], system: HvacUnitSystem = 'si'): string {
+  const ip = system === 'ip';
+  const header = ['Tag', 'System', 'Service', 'Type', ip ? 'Face (in)' : 'Face (mm)', ip ? 'Neck (in)' : 'Neck (mm)', ip ? 'Airflow (CFM)' : 'Airflow (m3/h)', 'Airflow basis',
+    ip ? 'Neck velocity (fpm)' : 'Neck velocity (m/s)', ip ? 'Pressure drop (in. wg)' : 'Pressure drop (Pa)', 'Filter', 'Room', 'Status'];
+  const inches = (text: string) => text.replace(/\d+(?:\.\d+)?/g, (mm) => inchesText(Number(mm)));
+  return [header, ...rows.map((row) => [row.tag, row.system, row.service, row.type,
+    ip ? inches(row.face) : row.face, ip ? inchesText(row.neckMm) : row.neckMm, ip ? Math.round(toDisplay('airflow', row.airflowM3h, 'ip')) : row.airflowM3h,
+    row.fixed ? 'design' : 'share', ip ? Math.round(toDisplay('velocity', row.neckVelocityMs, 'ip')) : row.neckVelocityMs,
+    ip ? toDisplay('pressure', row.pressureDropPa, 'ip').toFixed(3) : row.pressureDropPa, row.filter, row.room, row.status])].map((line) => line.map(csvCell).join(',')).join('\n');
 }
 
 /**
