@@ -16,8 +16,8 @@ export interface UseCanvasKeyboardOptions {
   tool: DrawingTool;
   selectedIds: string[];
   deleteSelected: () => void;
-  /** Delete with pieces of runs picked: deletes those pieces only; false when none are picked. */
-  deletePieces?: () => boolean;
+  /** Delete with pieces of runs picked: deletes those pieces only (Alt: a pair's picked line only); false when none are picked. */
+  deletePieces?: (options: { alt: boolean }) => boolean;
   setIsSpacePressed: (pressed: boolean) => void;
   setTool?: (tool: DrawingTool) => void;
   onEscape?: () => boolean;
@@ -77,7 +77,7 @@ export function useCanvasKeyboard({
       if (isEditableElement(event.target)) return;
       if (selectedIds.length === 0) return;
       event.preventDefault();
-      if (deletePieces?.()) return;
+      if (deletePieces?.({ alt: event.altKey })) return;
       deleteSelected();
     };
 

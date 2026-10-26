@@ -56,7 +56,7 @@ import {
 import { branchKitSpriteTransform } from './branchKitSpriteTransform';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import type { CopperSocketElbowPlacement } from './copperSocketElbowRoute';
-import { segmentFocusMarkup } from './duct/ductOverlayMarkup';
+import { openEndsMarkup, segmentFocusMarkup } from './duct/ductOverlayMarkup';
 import type { ScreenRect } from './duct/popoverPlacement';
 import type { PipeSnapIndicator } from './pipeDraftingPolicy';
 import {
@@ -72,6 +72,7 @@ import { createPipePresentationCache } from './pipePresentationCache';
 import { withCanonicalPipeRoute, type PipeRouteNode3D } from './pipeRoute3d';
 import { getActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { refrigerantAccessoryGlyphs, type AccessoryGlyph, type AccessoryGlyphFill } from './refrigerant/refrigerantAccessoryGlyphs';
+import { refrigerantOpenEnds } from './refrigerant/refrigerantCut';
 import { KIT_KEY, refrigerantKitOf } from './refrigerant/refrigerantKits';
 import {
   pieceMidpoint,
@@ -97,6 +98,7 @@ import {
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeLineMode,
 } from './refrigerantPipePairModel';
+import { pickWithModifier } from './segments/piecePicking';
 import { domainOf, focusId, useSegmentUiStore, type SegmentFocus } from './segments/segmentUiStore';
 
 const PIPE_SELECTION_HIT_PADDING_PX = 12;
@@ -837,6 +839,11 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const view = getCanvasTransform(viewportZoom, panOffset);
   const k = MM_TO_PX * view.zoom;
   kRef.current = k;
+  const pipeOpenEnds = useMemo(() => refrigerantOpenEnds(hvacElements).map((end) => ({
+    runId: end.runId, end: end.end, point: end.point, outward: end.outward, halfWidthMm: end.outerDiameterMm / 2,
+    gapId: end.gap.partner ? `${end.gap.id}:${end.lineKind}` : null, removed: end.gap.partner ? end.gap.removed : null,
+  })), [hvacElements]);
+  const pipeOpenEndMarkup = useMemo(() => (pipeOpenEnds.length ? openEndsMarkup(pipeOpenEnds, k) : ''), [pipeOpenEnds, k]);
   const matrix = canvasTransformToSvgMatrix(view);
   const hpx = (n: number) => n / Math.max(k, 1e-6); // screen px -> g-space (mm) units
 
@@ -1102,8 +1109,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const paintPieceFocus = useCallback(() => {
     const target = focusRef.current;
     if (!target) return;
-    const { hovered, pinned, preview } = useSegmentUiStore.getState();
-    const shapes = (focus: SegmentFocus | null, tone: 'hovered' | 'pinned') => {
+    const { hovered, pinned, picked, preview } = useSegmentUiStore.getState();
+    const shapes = (focus: SegmentFocus | null, tone: 'hovered' | 'pinned' | 'picked') => {
       if (!focus || domainOf(focus) !== 'refrigerant') return '';
       if (focus.key === KIT_KEY) {
         const kit = kitFor(focus.runId);
@@ -1126,8 +1133,10 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
         return line ? line.pieces.map((piece) => refrigerantPieceOutline(line, piece)) : [];
       })
       : null;
+    // The other pieces picked (Ctrl/⌘, Shift) in the pinned colour; the pinned one with its brackets.
+    const others = picked.filter((pick) => focusId(pick) !== focusId(pinned)).map((pick) => shapes(pick, 'picked')).join('');
     const markup = previewed ? segmentFocusMarkup(previewed, 'hovered')
-      : shapes(pinned, 'pinned') + (hovered && focusId(hovered) !== focusId(pinned) ? shapes(hovered, 'hovered') : '');
+      : others + shapes(pinned, 'pinned') + (hovered && focusId(hovered) !== focusId(pinned) ? shapes(hovered, 'hovered') : '');
     if (target.innerHTML !== markup) target.innerHTML = markup;
   }, [lineFor, kitFor]);
   useEffect(() => useSegmentUiStore.subscribe(paintPieceFocus), [paintPieceFocus]);
@@ -1458,6 +1467,14 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       e.stopPropagation();
       pieceClickRef.current = null;
       const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+      // On a line: Ctrl/⌘ picks the piece under the pointer (in or out), Shift the stretch to it; the line stays selected.
+      const pickedAt = additive && pipes.some((pipe) => pipe.id === pressedId) ? toWorld(e.clientX, e.clientY) : null;
+      const picked = pickedAt ? pieceFocusAt(pressedId, pickedAt) : null;
+      if (picked) {
+        if (!selectedIds.includes(pressedId)) setSelectedIds([...selectedIds, pressedId]);
+        pickWithModifier(picked, e.shiftKey && !(e.ctrlKey || e.metaKey));
+        return;
+      }
       if (additive) {
         const current = new Set(selectedIds);
         if (current.has(pressedId)) {
@@ -1524,7 +1541,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       moveDragRef.current = { startWorld: w, baseline: hvacElements, moved: false, items };
       (e.target as Element).setPointerCapture?.(e.pointerId);
     },
-    [selectedIds, selectedSet, setSelectedIds, toWorld, pipes, hvacElements, clearMovePreview, directSegmentEditing],
+    [selectedIds, selectedSet, setSelectedIds, toWorld, pipes, hvacElements, clearMovePreview, directSegmentEditing, pieceFocusAt],
   );
 
   /**
@@ -2566,6 +2583,8 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
             : null}
           {/* The refrigerant piece under the pointer and the one whose card is pinned (painted from the segment store). */}
           <g ref={focusRef} data-testid="refrigerant-segment-focus" style={{ pointerEvents: 'none' }} />
+          {/* Open ends left by deleted pieces: an amber bar and a "+" at each, the stretch deleted traced. */}
+          {pipeOpenEndMarkup ? <g data-testid="pipe-open-ends" style={{ pointerEvents: 'none' }} dangerouslySetInnerHTML={{ __html: pipeOpenEndMarkup }} /> : null}
           {/* Snap-hover indicator (pushed by the draw tool): the SAME
               endpoint-handle bullseye a committed pipe shows — white disc, teal
               ring, solid teal dot — so every snap affordance is one component. */}

@@ -1569,7 +1569,7 @@ function buildInvalidProposal(
 // buildBranchKitInsertion
 // ---------------------------------------------------------------------------
 
-function readRoutePoints(element: HvacElement): Point2D[] {
+export function readRoutePoints(element: HvacElement): Point2D[] {
   const raw = (element.properties as { routePoints?: unknown }).routePoints;
   if (!Array.isArray(raw)) {
     return [];
@@ -1661,7 +1661,7 @@ function nearestRouteSegmentIndex(route: readonly Point2D[], point: Point2D): nu
   return bestIndex;
 }
 
-function materialsForSubroute(
+export function materialsForSubroute(
   originalRoute: readonly Point2D[],
   materials: readonly RefrigerantPipeMaterial[],
   subroute: readonly Point2D[],
@@ -1687,7 +1687,7 @@ function routeStationMm(route: Point2D[], point: Point2D): number | null {
   return split ? polylineLength(split.before) : null;
 }
 
-function bypassesForStationRange(
+export function bypassesForStationRange(
   value: unknown,
   route: Point2D[],
   minimumMm: number,
@@ -1711,7 +1711,7 @@ function bypassesForStationRange(
 /** A split service lane owns only its matching logical guide interval. The
  * fitting faces lie on the offset physical lane, so project them onto the
  * original guide without moving the remaining orthogonal guide vertices. */
-function authoredGuideForHalf(value: unknown, physicalHalf: Point2D[], keepStart: boolean, keepEnd: boolean): Point2D[] {
+export function authoredGuideForHalf(value: unknown, physicalHalf: Point2D[], keepStart: boolean, keepEnd: boolean): Point2D[] {
   const fallback = () => physicalHalf.map(point => ({ ...point }));
   if (!Array.isArray(value) || value.length < 2 || !value.every(point => point && typeof point === 'object'
     && isFiniteNumber(point.x) && isFiniteNumber(point.y))) return fallback();

@@ -3127,6 +3127,21 @@ export function DrawingCanvas({
     wallRenderer,
   ]);
 
+  // A press on the drawing takes keyboard focus back from a button clicked before it (Undo, a view, a panel's), so the
+  // drawing's keys (Delete, Esc, R, …) reach it: the overlays prevent the press's default, which would otherwise have.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return undefined;
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest?.('button, input, textarea, select, [contenteditable], [data-hvac-overlay-ui], [role="dialog"], [role="toolbar"], [role="menu"]')) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active && active !== document.body && active.matches('button, [role="button"], a')) active.blur();
+    };
+    host.addEventListener("pointerdown", onDown, true);
+    return () => host.removeEventListener("pointerdown", onDown, true);
+  }, []);
+
   // Keyboard handling
   useCanvasKeyboard({
     tool,

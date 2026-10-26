@@ -1,12 +1,16 @@
 /**
  * Delete with pieces picked: only those pieces go, not their runs (ductCut for
- * ducts). One undo step; the status bar says what went and what was left
- * open. Picks count only on runs still selected. With no piece picked Delete
- * deletes the selection whole, as before.
+ * ducts, refrigerantCut for refrigerant lines; a coordinated pair loses the
+ * same stretch on both lines unless Alt is held). One undo step for all of
+ * them; the status bar says what went and what was left open. Picks count only
+ * on runs still selected. With no piece picked Delete deletes the selection
+ * whole, as before.
  */
 import { useSmartDrawingStore } from '../../../../store';
+import type { HvacElement } from '../../../../types';
 import { getActiveDuctBuilding } from '../duct/ductBuilding';
 import { cutDuctPieces } from '../duct/ductCut';
+import { cutRefrigerantPieces } from '../refrigerant/refrigerantCut';
 
 import { domainOf, useSegmentUiStore } from './segmentUiStore';
 
@@ -18,34 +22,40 @@ export function deletablePicks() {
   return picks.filter((pick) => selected.has(pick.runId));
 }
 
-/** Deletes the picked pieces; false when there are none (the caller deletes the selection whole). */
-export function deletePickedPieces(): boolean {
+/** Deletes the picked pieces; false when there are none (the caller deletes the selection whole). `alt`: a pair's picked line only. */
+export function deletePickedPieces(options: { alt?: boolean } = {}): boolean {
   const picks = deletablePicks();
   const ductPicks = picks.filter((pick) => domainOf(pick) === 'duct');
-  if (!ductPicks.length) return false;
+  const pipePicks = picks.filter((pick) => domainOf(pick) === 'refrigerant');
+  if (!ductPicks.length && !pipePicks.length) return false;
   const state = useSmartDrawingStore.getState();
-  const result = cutDuctPieces(state.hvacElements, ductPicks.map(({ runId, key }) => ({ runId, key })), {
-    settings: state.ductSettings, building: getActiveDuctBuilding(),
-  });
-  if (!result.pieces) {
-    state.setProcessingStatus(result.refused.length ? `${result.refused.map((refusal) => refusal.reason).join('; ')}.` : 'Nothing there to delete.', false);
+  const ducts = ductPicks.length
+    ? cutDuctPieces(state.hvacElements, ductPicks.map(({ runId, key }) => ({ runId, key })), { settings: state.ductSettings, building: getActiveDuctBuilding() })
+    : null;
+  const pipes = pipePicks.length ? cutRefrigerantPieces(state.hvacElements, pipePicks.map(({ runId, key }) => ({ runId, key })), { pairs: !options.alt }) : null;
+  const pieces = (ducts?.pieces ?? 0) + (pipes?.pieces ?? 0);
+  const refused = [...(ducts?.refused ?? []), ...(pipes?.refused ?? [])];
+  if (!pieces) {
+    state.setProcessingStatus(refused.length ? `${refused.map((refusal) => refusal.reason).join('; ')}.` : 'Nothing there to delete.', false);
     return true;
   }
+  const updates: HvacElement[] = [...(ducts?.updates ?? []), ...(pipes?.updates ?? [])];
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
-  const action = `Delete ${plural(result.pieces, 'piece')}`;
-  state.commitHvacElementCommand(action, {
-    add: result.add,
-    updates: result.updates.map((element) => ({ id: element.id, updates: element })),
-    removeIds: result.removeIds,
+  state.commitHvacElementCommand(`Delete ${plural(pieces, 'piece')}`, {
+    add: [...(ducts?.add ?? []), ...(pipes?.add ?? [])],
+    updates: updates.map((element) => ({ id: element.id, updates: element })),
+    removeIds: [...(ducts?.removeIds ?? []), ...(pipes?.removeIds ?? [])],
     selectedIds: [],
   });
   useSegmentUiStore.getState().unpin();
+  const gaps = (ducts?.gaps ?? 0) + (pipes?.gaps ?? 0);
+  const orphaned = ducts?.orphaned ?? 0;
   const left = [
-    ...(result.gaps ? [`${plural(result.gaps, 'gap')} left open`] : []),
-    ...(result.orphaned === 1 ? ['1 branch without its take-off'] : result.orphaned > 1 ? [`${result.orphaned} branches without their take-off`] : []),
+    ...(gaps ? [`${plural(gaps, 'gap')} left open`] : []),
+    ...(orphaned === 1 ? ['1 branch without its take-off'] : orphaned > 1 ? [`${orphaned} branches without their take-off`] : []),
   ];
   const open = left.length ? ` ${left.join(', and ')}: point at a gap to reconnect it, or draw it.` : '';
-  const refused = result.refused.length ? ` ${result.refused.map((refusal) => refusal.reason).join('; ')}.` : '';
-  state.setProcessingStatus(`${plural(result.pieces, 'piece')} deleted.${open}${refused}`, false);
+  const refusedText = refused.length ? ` ${refused.map((refusal) => refusal.reason).join('; ')}.` : '';
+  state.setProcessingStatus(`${plural(pieces, 'piece')} deleted.${open}${refusedText}`, false);
   return true;
 }

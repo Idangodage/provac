@@ -2829,9 +2829,18 @@ export function HybridProjectionLayer({
         // duct's; with Shift it adds the pipe to the selection, or takes it out, and pins nothing.
         const element = hvacElementsRef.current.find((candidate) => candidate.id === pipeId);
         const click = Math.hypot(e.clientX - pickState.downX, e.clientY - pickState.downY) <= 4;
-        const focus = !click || e.shiftKey || !model || !element ? null
+        const modified = e.shiftKey || e.ctrlKey || e.metaKey;
+        const pieceAt = !click || !model || !element ? null
           : isRefrigerantPipeElementType(element.type) ? refrigerantFocusAt(hvacElementsRef.current, pipeId, model)
             : element.type === "condensate-pipe" ? condensateFocusAt(hvacElementsRef.current, pipeId, model) : null;
+        // A refrigerant line's piece with Ctrl/⌘ (one, in or out) or Shift (the stretch to it), as on the plan.
+        if (modified && pieceAt && domainOf(pieceAt) === "refrigerant") {
+          if (!selectedIdsRef.current.includes(pipeId)) useSmartDrawingStore.getState().setSelectedIds([...selectedIdsRef.current, pipeId]);
+          pickWithModifier(pieceAt, e.shiftKey && !(e.ctrlKey || e.metaKey));
+          request();
+          return;
+        }
+        const focus = modified ? null : pieceAt;
         if (focus) {
           if (!selectedIdsRef.current.includes(pipeId)) selectWall(pipeId, false);
           useDuctSegmentUiStore.getState().pin(focus);

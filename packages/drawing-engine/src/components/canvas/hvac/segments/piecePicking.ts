@@ -7,6 +7,7 @@
 import { useSmartDrawingStore } from '../../../../store';
 import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
 import { ductSegments } from '../duct/ductSegments';
+import { refrigerantLineOf } from '../refrigerant/refrigerantPieces';
 
 import { domainOf, useSegmentUiStore, type SegmentFocus } from './segmentUiStore';
 
@@ -19,6 +20,7 @@ function orderedKeys(focus: SegmentFocus): string[] | null {
     const plan = getDuctRunPlan(element, state.hvacElements, state.ductSettings);
     return plan ? ductSegments(plan).map((segment) => segment.key) : null;
   }
+  if (domainOf(focus) === 'refrigerant') return refrigerantLineOf(element, state.hvacElements)?.pieces.map((piece) => piece.key) ?? null;
   return null;
 }
 

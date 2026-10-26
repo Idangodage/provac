@@ -19,6 +19,7 @@ import type { PipeBypass } from "../pipeBypass";
 import { liftPipePlanRouteTo3d, readPipeRouteNodes3d } from "../pipeRoute3d";
 import { computeFittingRunMm } from "../pipeRoutingRules";
 import { getActivePipeRoutingSettings } from "../pipeRoutingSettings";
+import { readPipeGaps } from "../refrigerant/refrigerantCut";
 import {
   buildRefrigerantBranchKitViewModel,
   isRefrigerantBranchKitElement,
@@ -619,6 +620,29 @@ function addSocketElbowPipeAssembly(group: THREE.Group, points: THREE.Vector3[],
   group.userData.copperElbowCounts = { ninety: prior.ninety + route.fittings.filter(fitting => fitting.spec.angleDeg === 90).length,
     fortyFive: prior.fortyFive + route.fittings.filter(fitting => fitting.spec.angleDeg === 45).length };
   return true;
+}
+
+/**
+ * Open ends left by deleted pieces (a gap the line remembers): an amber band
+ * round the insulation at each, as the plan marks it.
+ */
+const PIPE_OPEN_END_BAND = new THREE.MeshStandardMaterial({ color: "#d97706", metalness: 0, roughness: 0.45 });
+function addPipeOpenEndBands(parent: THREE.Group, element: HvacElement, points: readonly THREE.Vector3[], outerRadius: number): void {
+  const gaps = readPipeGaps(element);
+  if (points.length < 2 || (!gaps.start && !gaps.end)) return;
+  const band = (at: THREE.Vector3, toward: THREE.Vector3) => {
+    const axis = toward.clone().sub(at);
+    if (axis.lengthSq() < 1e-6) return;
+    axis.normalize();
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(outerRadius + 6, outerRadius + 6, 36, 24, 1, true), PIPE_OPEN_END_BAND);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+    mesh.position.copy(at.clone().addScaledVector(axis, 18));
+    mesh.name = "pipe-open-end";
+    mesh.renderOrder = 19;
+    parent.add(mesh);
+  };
+  if (gaps.start) band(points[0]!, points[1]!);
+  if (gaps.end) band(points[points.length - 1]!, points[points.length - 2]!);
 }
 
 /**
@@ -2474,6 +2498,7 @@ export function buildHvacElementMesh(
             start: !startConnection && !openStart, end: !endConnection && !openEnd,
           });
         addRefrigerantAccessoryMeshes(group, effectiveElement, context.allElements);
+        addPipeOpenEndBands(group, effectiveElement, points, outerRadius);
         break;
       }
       const insulation = createTubeAlongPoints(points, outerRadius, REFRIGERANT_PIPE_3D_COLORS[lineKind], {
@@ -2495,6 +2520,7 @@ export function buildHvacElementMesh(
         });
       // The line's inline accessories (valves, strainers, sight glasses, unions) on its straights.
       addRefrigerantAccessoryMeshes(group, effectiveElement, context.allElements);
+      addPipeOpenEndBands(group, effectiveElement, points, outerRadius);
       break;
     }
     case "duct": {
