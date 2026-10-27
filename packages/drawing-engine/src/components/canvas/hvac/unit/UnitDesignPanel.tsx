@@ -55,6 +55,7 @@ import {
 } from '../duct/unitAirSide';
 import { designSettingsForUnit } from '../duct/unitCriteria';
 import { EquipmentIcon, equipmentIconKind } from '../equipmentIcons';
+import { unitHasDrainPump } from '../unitDrainPump';
 import { UnitSystemSwitch } from '../units/UnitSystemSwitch';
 import { inchFractionText, inchesText, tonsOf } from '../units/hvacUnits';
 import { useHvacUnits, type HvacUnits } from '../units/useHvacUnits';
@@ -314,7 +315,7 @@ function SpecificationTab({ unit, spec, designSpeed }: { unit: HvacElement; spec
     );
   }
   const esp = spec.esp;
-  const pumpDrawnAsGravity = spec.drain.pump && unit.properties.hasDrainPump !== true;
+  const pumped = unitHasDrainPump(unit);
   const [source] = spec.sources;
   const collar = (size: readonly [number, number]) => `${units.section({ widthMm: size[0], heightMm: size[1] })} ${units.unit('size')}`;
   return (
@@ -359,8 +360,10 @@ function SpecificationTab({ unit, spec, designSpeed }: { unit: HvacElement; spec
             label: 'Drain',
             value: (
               <span className="flex flex-wrap items-center gap-1">
-                {spec.drain.connection} · {spec.drain.pump ? 'pump built in' : 'no pump'}
-                {pumpDrawnAsGravity ? <Chip tone="amber" title="This drawing treats it as gravity (its Drain pump setting)">drawn as gravity</Chip> : null}
+                {spec.drain.connection} · {pumped ? 'pump built in' : 'gravity'}
+                {pumped && !spec.drain.pump ? <Chip tone="sky" testId="unit-spec-pump-rule"
+                  title={`The maker's data shows a gravity drain (${source?.reference ?? spec.modelCode}); every ducted unit is drawn with a built-in pump (project rule; its Drain pump setting can say otherwise).`}>project rule</Chip> : null}
+                {!pumped && spec.drain.pump ? <Chip tone="amber" title="This drawing treats it as gravity (its Drain pump setting)">drawn as gravity</Chip> : null}
               </span>
             ),
           },

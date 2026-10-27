@@ -95,7 +95,7 @@ function fitPump(unitId: string, onRouteAgain?: () => void): void {
   const state = useSmartDrawingStore.getState();
   const unit = state.hvacElements.find(element => element.id === unitId);
   if (!unit) return;
-  state.commitHvacElementCommand('Fit condensate pump', { updates: [{ id: unitId, updates: { properties: { ...unit.properties, hasDrainPump: true } } }] });
+  state.commitHvacElementCommand('Fit condensate pump', { updates: [{ id: unitId, updates: { properties: { ...unit.properties, hasDrainPump: true, drainPumpSetBy: 'user' } } }] });
   onRouteAgain?.();
 }
 

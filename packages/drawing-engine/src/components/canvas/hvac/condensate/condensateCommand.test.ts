@@ -93,7 +93,9 @@ describe('buildRefrigerantHop', () => {
         pipeDiameterMm: 9.52, insulationThicknessMm: 25.4, lineKind: 'liquid', fieldBendConstruction: 'formed-tube',
       },
     };
-    const scene = [unit('d-1', 'ducted-ac', 0, 0), gully('fg-1', 8000, 400), refrigerant];
+    // A gravity unit (its Drain pump set so): a pumped one would rise over the run.
+    const gravityUnit = { ...unit('d-1', 'ducted-ac', 0, 0), properties: { capacityKw: 4, hasDrainPump: false, drainPumpSetBy: 'user' } };
+    const scene = [gravityUnit, gully('fg-1', 8000, 400), refrigerant];
     const result = generateCondensateNetwork(scene, { settings });
     expect(result.hopProposals).toHaveLength(1);
     const hop = buildRefrigerantHop(scene, result.hopProposals[0]!, DEFAULT_PIPE_ROUTING_SETTINGS);

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 
+import { unitHasDrainPump } from "../components/canvas/hvac/unitDrainPump";
+
 import {
   DEFAULT_AC_EQUIPMENT_LIBRARY,
   groupAcEquipmentByCategory,
@@ -91,8 +93,12 @@ describe("AC equipment library — real MACO VRF models, and units drawn to a ma
     const fdum160 = DEFAULT_AC_EQUIPMENT_LIBRARY.find((d) => d.id === "vrf-fdum160kxe6f")!;
     expect(fdum160.defaultProperties?.modelUrl).toBe(fdum140.defaultProperties?.modelUrl);
     expect((fdum160.defaultProperties?.airflowM3min as Record<string, number>).hi).toBe(35);
-    expect(fdum140.defaultProperties?.hasDrainPump).toBe(true);
-    expect(DEFAULT_AC_EQUIPMENT_LIBRARY.find((d) => d.id === "vrf-fdu280kxze1")!.defaultProperties?.hasDrainPump).toBe(false);
+    // No stored pump flag: every ducted unit is pumped (the FDU too, although its drawing shows a gravity drain).
+    const fdu280 = DEFAULT_AC_EQUIPMENT_LIBRARY.find((d) => d.id === "vrf-fdu280kxze1")!;
+    expect(fdum140.defaultProperties?.hasDrainPump).toBeUndefined();
+    expect(unitHasDrainPump({ type: fdum140.type, properties: fdum140.defaultProperties ?? {} })).toBe(true);
+    expect(unitHasDrainPump({ type: fdu280.type, properties: fdu280.defaultProperties ?? {} })).toBe(true);
+    expect(fdu.drain.pump).toBe(false);
   });
 
   it("drops every old placeholder id", () => {

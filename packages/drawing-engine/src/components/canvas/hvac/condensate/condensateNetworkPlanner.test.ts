@@ -25,6 +25,9 @@ function unit(id: string, x: number, y: number, overrides: Partial<HvacElement> 
   };
 }
 
+/** A ducted unit set to gravity in its Drain pump field (every ducted unit is pumped unless set otherwise). */
+const GRAVITY = { hasDrainPump: false, drainPumpSetBy: 'user' };
+
 function ducted(id: string, x: number, y: number, properties: Record<string, unknown> = {}): HvacElement {
   return unit(id, x, y, { type: 'ducted-ac', width: 1084, depth: 697, height: 300, properties: { capacityKw: 5.6, ...properties } });
 }
@@ -169,7 +172,7 @@ describe('generateCondensateNetwork — fall budget', () => {
   it('lifts a pumped cassette only as much as it needs, and reports gravity units that cannot reach', () => {
     const scene = [
       unit('far-cassette', 0, 0),
-      ducted('far-ducted', 0, 4000),
+      ducted('far-ducted', 0, 4000, GRAVITY),
       gully('fg-1', 30000, 2000),
     ];
     const result = run(scene);
@@ -247,7 +250,7 @@ describe('generateCondensateNetwork — refrigerant coordination', () => {
   it('proposes a refrigerant hop when the drain can pass neither below nor above', () => {
     // A refrigerant run sitting just above the ceiling tiles blocks the void.
     const scene = [
-      ducted('d-1', 0, 0),
+      ducted('d-1', 0, 0, GRAVITY),
       gully('fg-1', 8000, 400),
       refrigerant('liq-1', [{ x: 4000, y: -3000 }, { x: 4000, y: 4000 }], 2475),
     ];

@@ -1,5 +1,6 @@
-// The FDU224 of the user's building (23 October 2026): a gravity drain (no pump built in, MHI KX-T-222) about 24 m
-// from the only floor gully. The drain cannot fall that far in the void: Auto route says by how much, and offers a pump.
+// The FDU224 of the user's building (23 October 2026), set to gravity (MHI KX-T-222 shows a gravity drain; the project
+// draws a built-in pump unless the unit's Drain pump setting says otherwise) about 24 m from the only floor gully. The
+// drain cannot fall that far in the void: Auto route says by how much, and offers a pump.
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../../data/ac-equipment-library';
@@ -33,7 +34,7 @@ describe('a gravity drain too far from its termination', () => {
   const gully = place('condensate-floor-gully', 'gully', { x: 24000, y: 0 });
 
   it('says how far, how much fall it needs and what the void gives, and that a pump would carry it', () => {
-    const result = run([place('vrf-fdu224kxze1', 'FDU224', { x: 0, y: 0 }), gully]);
+    const result = run([place('vrf-fdu224kxze1', 'FDU224', { x: 0, y: 0 }, { hasDrainPump: false, drainPumpSetBy: 'user' }), gully]);
     const unit = result.perUnit.find((entry) => entry.unitId === 'FDU224')!;
     expect(unit.status).toBe('infeasible');
     expect(unit.pumpWouldHelp).toBe(true);
@@ -47,6 +48,11 @@ describe('a gravity drain too far from its termination', () => {
 
   it('with a pump fitted it drains, pumped', () => {
     const result = run([place('vrf-fdu224kxze1', 'FDU224', { x: 0, y: 0 }, { hasDrainPump: true }), gully]);
+    expect(result.perUnit.find((entry) => entry.unitId === 'FDU224')?.status).toBe('pumped');
+  });
+
+  it('is pumped as placed: every ducted unit has a built-in pump', () => {
+    const result = run([place('vrf-fdu224kxze1', 'FDU224', { x: 0, y: 0 }), gully]);
     expect(result.perUnit.find((entry) => entry.unitId === 'FDU224')?.status).toBe('pumped');
   });
 });

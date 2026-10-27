@@ -9,6 +9,7 @@ import type React from 'react';
 
 import type { HvacElement } from '../../../../types';
 import { SegmentPieceList } from '../segments/SegmentPieceList';
+import { drainPumpChoice, pumpedByType } from '../unitDrainPump';
 import { formatQuantity, fromDisplay, inchFractionText, slopeText, toDisplay, unitLabel, type HvacUnitSystem } from '../units/hvacUnits';
 import { useHvacUnitSystem } from '../units/useHvacUnits';
 
@@ -86,7 +87,7 @@ export function UnitDrainageRows({ element, settings, onUpdateProperties }: {
   const system = useHvacUnitSystem();
   const port = getIndoorUnitDrainPort(element, settings);
   if (!port) return null;
-  const pumpSetting = element.properties.hasDrainPump;
+  const pumpSetting = drainPumpChoice(element);
   const negativeSetting = element.properties.drainNegativePressure;
   return (
     <>
@@ -99,13 +100,13 @@ export function UnitDrainageRows({ element, settings, onUpdateProperties }: {
       <Row label="Drain pump">
         <select
           aria-label="Drain pump"
-          value={typeof pumpSetting === 'boolean' ? (pumpSetting ? 'yes' : 'no') : 'auto'}
-          onChange={(event) => onUpdateProperties({
-            hasDrainPump: event.target.value === 'auto' ? undefined : event.target.value === 'yes',
-          })}
+          value={pumpSetting === null ? 'auto' : pumpSetting ? 'yes' : 'no'}
+          onChange={(event) => onUpdateProperties(event.target.value === 'auto'
+            ? { hasDrainPump: undefined, drainPumpSetBy: undefined }
+            : { hasDrainPump: event.target.value === 'yes', drainPumpSetBy: 'user' })}
           className={SELECT}
         >
-          <option value="auto">Type default ({element.type === 'ceiling-cassette-ac' ? 'pump' : 'gravity'})</option>
+          <option value="auto">{element.type === 'ducted-ac' ? 'Built-in (every ducted unit)' : pumpedByType(element.type) ? 'Built-in (type default)' : 'Type default (gravity)'}</option>
           <option value="yes">Built-in pump</option>
           <option value="no">Gravity only</option>
         </select>

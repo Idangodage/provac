@@ -120,7 +120,8 @@ function airTerminal(
 /**
  * A ducted unit's properties from its specification (data/unitSpecifications.ts):
  * the air data duct design reads (airflow per fan speed, the fan's maximum
- * ESP), the capacity and refrigerant connections, and the drain pump.
+ * ESP), the capacity and refrigerant connections. No drain pump flag: every
+ * ducted unit has a built-in pump unless its own setting says otherwise.
  */
 function ductedUnitProperties(modelCode: string, extra: Record<string, unknown>): Record<string, unknown> {
   const spec = UNIT_SPECIFICATIONS[modelCode]!;
@@ -137,7 +138,6 @@ function ductedUnitProperties(modelCode: string, extra: Record<string, unknown>)
     refrigerantType: spec.refrigerant,
     refrigerantGasPipeDiameterMm: spec.gasMm,
     refrigerantLiquidPipeDiameterMm: spec.liquidMm,
-    hasDrainPump: spec.drain.pump,
     ...extra,
   };
 }

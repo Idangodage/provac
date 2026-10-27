@@ -71,7 +71,9 @@ function hopScene(): HvacElement[] {
       routeNodes3d: [{ x: 4000, y: -3000, z: 2475 }, { x: 4000, y: 4000, z: 2475 }],
       pipeDiameterMm: 9.52, insulationThicknessMm: 25.4, lineKind: 'liquid', fieldBendConstruction: 'formed-tube' },
   };
-  return [unit('source', true), gully(), pipe];
+  // A gravity unit (its Drain pump set so): a pumped one would rise over the run instead of asking for a hop.
+  const source = { ...unit('source', true), properties: { capacityKw: 4, hasDrainPump: false, drainPumpSetBy: 'user' } };
+  return [source, gully(), pipe];
 }
 
 beforeEach(() => {

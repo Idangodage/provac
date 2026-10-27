@@ -11,6 +11,7 @@
 import type { HvacElement, Point2D } from '../../../../types';
 import { buildCeilingCassetteModel, getCeilingCassettePipePortEndpointLocal } from '../ceilingCassetteModel';
 import { buildDuctedIndoorUnitModel } from '../ductedIndoorUnitModel';
+import { unitHasDrainPump } from '../unitDrainPump';
 
 import type { CondensateDesignSettings } from './condensateSettings';
 
@@ -157,11 +158,6 @@ function localDrainPort(element: HvacElement): LocalDrainPort | null {
   }
 }
 
-/** True when the unit type ships with an integral drain pump by default. */
-function defaultHasDrainPump(type: HvacElement['type']): boolean {
-  return type === 'ceiling-cassette-ac';
-}
-
 export function getIndoorUnitDrainPort(
   element: HvacElement,
   settings?: Pick<CondensateDesignSettings, 'defaultPumpMaxLiftMm'>,
@@ -174,7 +170,7 @@ export function getIndoorUnitDrainPort(
   const center = unitCenter(element);
   const tipOffset = rotate(local.tip, rotation);
   const direction = rotate({ x: 1, y: 0 }, rotation);
-  const hasDrainPump = readBoolean(properties, 'hasDrainPump') ?? defaultHasDrainPump(element.type);
+  const hasDrainPump = unitHasDrainPump(element);
   const esp = readFlexibleNumber(properties, ['externalStaticPressurePa', 'staticPressurePa', 'espPa', 'External Static Pressure (Pa)']);
   const negativePressure = readBoolean(properties, 'drainNegativePressure')
     ?? (element.type === 'ducted-ac' && !hasDrainPump);

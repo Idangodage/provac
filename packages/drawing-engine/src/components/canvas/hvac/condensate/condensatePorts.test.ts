@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { HvacElement } from '../../../../types';
 import { buildCeilingCassetteModel, getCeilingCassettePipePortEndpointLocal } from '../ceilingCassetteModel';
 import { buildDuctedIndoorUnitModel } from '../ductedIndoorUnitModel';
+import { drainPumpChoice, unitHasDrainPump } from '../unitDrainPump';
 
 import { getIndoorUnitDrainPort } from './condensatePorts';
 
@@ -53,15 +54,34 @@ describe('getIndoorUnitDrainPort', () => {
     expect(rotated.z).toBeCloseTo(base.z, 9);
   });
 
-  it('handles ducted units: gravity by default, negative-pressure pan', () => {
+  it('handles ducted units: a built-in pump by default, no negative-pressure trap', () => {
     const ducted = unit('ducted-ac', { width: 1084, depth: 697, height: 300 });
     const drain = buildDuctedIndoorUnitModel(ducted).pipePorts.find((port) => port.kind === 'drain')!;
     const port = getIndoorUnitDrainPort(ducted)!;
     expect(port.point.x).toBeCloseTo(1000 + 542 + drain.x + drain.collarLength + drain.length - drain.flangeThickness * 0.15, 6);
     expect(port.z).toBeCloseTo(2400 + drain.z, 6);
+    expect(port.hasDrainPump).toBe(true);
+    expect(port.pumpMaxLiftMm).toBe(600);
+    expect(port.negativePressure).toBe(false);
+  });
+
+  it('keeps a ducted unit set to gravity: no pump, negative-pressure pan', () => {
+    const port = getIndoorUnitDrainPort(unit('ducted-ac', { properties: { hasDrainPump: false, drainPumpSetBy: 'user' } }))!;
     expect(port.hasDrainPump).toBe(false);
     expect(port.pumpMaxLiftMm).toBe(0);
     expect(port.negativePressure).toBe(true);
+  });
+
+  it('reads an older stored setting: the maker sheet value gives way to the rule, any other value was a choice', () => {
+    const fdu = { type: 'ducted-ac' as const, properties: { modelCode: 'FDU224KXZE1', hasDrainPump: false } };
+    expect(drainPumpChoice(fdu)).toBeNull();
+    expect(unitHasDrainPump(fdu)).toBe(true);
+    // A generic ducted unit or a cassette stored as gravity was set so by someone.
+    expect(unitHasDrainPump({ type: 'ducted-ac', properties: { hasDrainPump: false } })).toBe(false);
+    expect(unitHasDrainPump({ type: 'ceiling-cassette-ac', properties: { hasDrainPump: false } })).toBe(false);
+    // Wall units have no pump unless set.
+    expect(unitHasDrainPump({ type: 'wall-mounted-ac', properties: {} })).toBe(false);
+    expect(unitHasDrainPump({ type: 'wall-mounted-ac', properties: { hasDrainPump: true } })).toBe(true);
   });
 
   it('honours per-unit drain overrides', () => {

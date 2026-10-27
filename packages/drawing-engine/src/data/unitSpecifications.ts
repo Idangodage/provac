@@ -129,7 +129,8 @@ const FDU = {
   refrigerant: 'R410A',
   liquidMm: 9.52,
   joint: 'brazing' as const,
-  drain: { connection: 'VP25 (O.D. 32), gravity', pump: false },
+  // The maker's drawing shows a gravity drain; the project still draws a built-in pump (condensatePorts unitHasDrainPump).
+  drain: { connection: 'VP25 (O.D. 32)', pump: false },
   power: { supply: '1 phase 220–240 V 50 Hz / 220 V 60 Hz', inputKw: '1.16–1.20' },
   soundDbA: { 'p-hi': 52, hi: 50, me: 47, lo: 45 },
   fan: 'Centrifugal × 3, 130 + 350 W',

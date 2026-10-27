@@ -18,12 +18,12 @@ const ducts = resolveDuctSettings({ soffitMm: 3300 });
 const routing = { ...DEFAULT_PIPE_ROUTING_SETTINGS, ceilingLimitMm: 3300 };
 const condensate = resolveCondensateSettings({ soffitMm: 3300 });
 
-/** A constrained unit connection area: gravity reserves its corridor before refrigerant. */
+/** A constrained unit connection area: gravity reserves its corridor before refrigerant (the unit set to gravity). */
 function mixedServiceScene(): HvacElement[] {
   const indoor: HvacElement = {
     id: 'indoor', type: 'ducted-ac', category: 'indoor-unit', position: { x: 3000, y: 2800 },
     rotation: 0, width: 1084, depth: 697, height: 300, elevation: 2400, mountType: 'ceiling',
-    label: 'Ducted indoor', supplyZoneRatio: 0.5, roomId: 'room', properties: { modelCode: 'FDUM22KXE6F-W', capacityKw: 2.2 },
+    label: 'Ducted indoor', supplyZoneRatio: 0.5, roomId: 'room', properties: { modelCode: 'FDUM22KXE6F-W', capacityKw: 2.2, hasDrainPump: false, drainPumpSetBy: 'user' },
   };
   const outdoor: HvacElement = {
     id: 'outdoor', type: 'outdoor-unit', category: 'outdoor-unit', position: { x: 8800, y: 4500 },
