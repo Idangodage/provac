@@ -2748,6 +2748,42 @@ function resolveBundleGuideReference(
   return gasDistance <= liquidDistance ? 'gas' : 'liquid';
 }
 
+/**
+ * True when a pair whose ends hold gas and liquid on opposite sides (it must
+ * swap them somewhere) should swap at its start: its end's two stubs stand
+ * clear of each other (a maker's stubs) but too close in height for the lines
+ * to pass each other there, while its start's are clear in height (an outdoor
+ * unit's stubs, or a branch kit's corridor levels). Stubs drawn closer than
+ * their insulation (a generic unit's) are one connection adapter, which the
+ * clash check already treats as such: those keep their swap at the end.
+ */
+function pairSwapsAtStart(
+  start: RefrigerantPipeBundleConnection | null,
+  end: RefrigerantPipeBundleConnection | null,
+  gasOuterDiameterMm: number,
+  liquidOuterDiameterMm: number,
+): boolean {
+  if (!start || !end) return false;
+  const side = (bundle: RefrigerantPipeBundleConnection, travel: Point2D) => {
+    const across = subtract(bundle.liquidPoint, bundle.gasPoint);
+    return Math.sign(travel.x * across.y - travel.y * across.x);
+  };
+  const startSide = side(start, normalizeDirection(start.direction));
+  const endSide = side(end, scale(normalizeDirection(end.direction), -1));
+  if (!startSide || !endSide || startSide === endSide) return false;
+  const required = (gasOuterDiameterMm + liquidOuterDiameterMm) / 2;
+  const heightApart = (bundle: RefrigerantPipeBundleConnection) =>
+    isFiniteNumber(bundle.gasElevationMm) && isFiniteNumber(bundle.liquidElevationMm)
+      ? Math.abs(bundle.gasElevationMm - bundle.liquidElevationMm)
+      : 0;
+  const endStubsClear = Math.hypot(
+    end.liquidPoint.x - end.gasPoint.x,
+    end.liquidPoint.y - end.gasPoint.y,
+    heightApart(end),
+  ) >= required;
+  return endStubsClear && heightApart(end) < required && heightApart(start) >= required;
+}
+
 function buildBundleGuideRoutes(
   routePoints: Point2D[],
   startBundleConnection: RefrigerantPipeBundleConnection | null,
@@ -4477,10 +4513,21 @@ export function buildRefrigerantPipeElements(
     ),
   );
   const maxOuterDiameterMm = Math.max(gasOuterDiameterMm, liquidOuterDiameterMm);
+  // The lines keep the start's side order and swap at the end when the ends
+  // disagree; a swap at an end whose lines sit too close in height to pass
+  // each other is built from the other end instead, so it lands there.
+  const swapAtStart = pairSwapsAtStart(
+    options?.startBundleConnection ?? null,
+    options?.endBundleConnection ?? null,
+    gasOuterDiameterMm,
+    liquidOuterDiameterMm,
+  );
+  const first = (swapAtStart ? options?.endBundleConnection : options?.startBundleConnection) ?? null;
+  const last = (swapAtStart ? options?.startBundleConnection : options?.endBundleConnection) ?? null;
   const startTakeoffLengthMm = computeStartTakeoffLength(
     centerSpacingMm,
     maxOuterDiameterMm,
-    options?.startBundleConnection?.connectionKind === 'unit-port'
+    first?.connectionKind === 'unit-port'
       ? getActivePipeRoutingSettings().minimumPortStubMm
       : 0,
     bendRadiusMm,
@@ -4490,27 +4537,30 @@ export function buildRefrigerantPipeElements(
     liquidGuidePoints,
     bundleGuidePoints,
   } = buildBundleGuideRoutes(
-    routePoints,
-    options?.startBundleConnection ?? null,
-    options?.endBundleConnection ?? null,
+    swapAtStart ? [...routePoints].reverse() : routePoints,
+    first,
+    last,
     centerSpacingMm,
     startTakeoffLengthMm,
     bendRadiusMm,
   );
-  const { gasRoutePoints, liquidRoutePoints } = reserveUnitPortBundleStubs(
+  const built = reserveUnitPortBundleStubs(
     buildResolvedPipeRoutePoints({
       gasGuidePoints,
       liquidGuidePoints,
       bundleGuidePoints,
-      startBundleConnection: options?.startBundleConnection ?? null,
-      endBundleConnection: options?.endBundleConnection ?? null,
+      startBundleConnection: first,
+      endBundleConnection: last,
       centerSpacingMm,
       bendRadiusMm,
     }),
-    options?.startBundleConnection ?? null,
-    options?.endBundleConnection ?? null,
+    first,
+    last,
     explicitBendRadiusFactor(options?.bendRadiusFactor) === undefined ? undefined : bendRadiusMm,
   );
+  // Built from the far end, each line runs back the way the route was drawn.
+  const gasRoutePoints = swapAtStart ? [...built.gasRoutePoints].reverse() : built.gasRoutePoints;
+  const liquidRoutePoints = swapAtStart ? [...built.liquidRoutePoints].reverse() : built.liquidRoutePoints;
   if (options?.startBundleConnection?.connectionKind === 'field-pipe') {
     const expectedGasStart = options.startBundleConnection.gasFieldPoint;
     const expectedLiquidStart = options.startBundleConnection.liquidFieldPoint;

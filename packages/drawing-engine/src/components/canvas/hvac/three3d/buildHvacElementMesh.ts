@@ -51,6 +51,14 @@ import {
   unionGeometries,
 } from "./pipeJointGeometry";
 import { addRefrigerantAccessoryMeshes } from "./refrigerantAccessoryMeshes";
+import {
+  addRefrigerantUnitJoint,
+  leadingPolyline,
+  trimPolylineStart,
+  unitJointAt,
+  unitJointBareLengthMm,
+  type UnitJoint,
+} from "./refrigerantUnitJointMeshes";
 
 const EPSILON = 0.001;
 
@@ -570,7 +578,9 @@ function createTubeAlongPoints(
  * surfaces. Internal tube ends reach the insertion stops and have no end disks. */
 function addSocketElbowPipeAssembly(group: THREE.Group, points: THREE.Vector3[], outerRadius: number,
   coreRadius: number, options: { lineKind: 'gas' | 'liquid'; bendRadiusMm: number;
-    openStart?: boolean; openEnd?: boolean; startStraightMm?: number; endStraightMm?: number; minimumBendRadiusMm?: number }): boolean {
+    openStart?: boolean; openEnd?: boolean; startStraightMm?: number; endStraightMm?: number; minimumBendRadiusMm?: number;
+    /** Bare copper left at a maker joint before the insulation starts. */
+    startBareMm?: number; endBareMm?: number }): boolean {
   const route = compileCopperSocketElbowRoute(points.map(point => ({ x: point.x, y: point.y, z: point.z })),
     coreRadius * 2, { startStraightMm: options.startStraightMm, endStraightMm: options.endStraightMm,
       minimumBendRadiusMm: options.minimumBendRadiusMm });
@@ -579,7 +589,9 @@ function addSocketElbowPipeAssembly(group: THREE.Group, points: THREE.Vector3[],
   const serviceColor = REFRIGERANT_PIPE_3D_COLORS[options.lineKind];
   const copperColor = '#c78363';
   route.insulationRuns.forEach((run, index) => {
-    const insulation = createTubeAlongPoints(vectors(run), outerRadius, serviceColor, {
+    const insulated = trimRunEnds(vectors(run), index === 0 ? options.startBareMm ?? 0 : 0,
+      index === route.insulationRuns.length - 1 ? options.endBareMm ?? 0 : 0);
+    const insulation = createTubeAlongPoints(insulated, outerRadius, serviceColor, {
       renderOrder: 18, lineKind: options.lineKind, surfaceRole: 'insulation',
       bendRadiusMm: options.bendRadiusMm, preservePlanGeometry: true,
       openStart: index === 0 && options.openStart,
@@ -620,6 +632,28 @@ function addSocketElbowPipeAssembly(group: THREE.Group, points: THREE.Vector3[],
   group.userData.copperElbowCounts = { ninety: prior.ninety + route.fittings.filter(fitting => fitting.spec.angleDeg === 90).length,
     fortyFive: prior.fortyFive + route.fittings.filter(fitting => fitting.spec.angleDeg === 45).length };
   return true;
+}
+
+/** A run with `startMm` and `endMm` of its length taken off either end. */
+function trimRunEnds(points: THREE.Vector3[], startMm: number, endMm: number): THREE.Vector3[] {
+  const fromStart = trimPolylineStart(points, startMm);
+  return endMm > 0 ? trimPolylineStart([...fromStart].reverse(), endMm).reverse() : fromStart;
+}
+
+/** The maker joints at a line's two ends: what they leave bare, and the joint itself drawn on. */
+function addRefrigerantUnitJoints(group: THREE.Group, points: THREE.Vector3[],
+  joints: { start: UnitJoint | null; end: UnitJoint | null; startBareMm: number; endBareMm: number },
+  options: { coreRadiusMm: number; outerRadiusMm: number; insulatedFittings: boolean }): void {
+  if (points.length < 2) return;
+  const last = points.length - 1;
+  if (joints.start) {
+    addRefrigerantUnitJoint(group, points[0]!, points[1]!.clone().sub(points[0]!), joints.start,
+      { ...options, bareMm: joints.startBareMm });
+  }
+  if (joints.end) {
+    addRefrigerantUnitJoint(group, points[last]!, points[last - 1]!.clone().sub(points[last]!), joints.end,
+      { ...options, bareMm: joints.endBareMm });
+  }
 }
 
 /**
@@ -2521,12 +2555,24 @@ export function buildHvacElementMesh(
         ?? startConnection?.connectionKind === "field-pipe");
       const openEnd = !endConnection?.terminalRole && (endpointState?.openEnd
         ?? endConnection?.connectionKind === "field-pipe");
+      // At a maker's stub the joint shows: bare copper to the nut or socket, the insulation taped short of it.
+      const insulatedFittings = getActivePipeRoutingSettings().fittingDisplay === 'insulated';
+      const startJoint = unitJointAt(startConnection, lineKind, context.allElements);
+      const endJoint = unitJointAt(endConnection, lineKind, context.allElements);
+      const joints = {
+        start: startJoint, end: endJoint,
+        startBareMm: startJoint && !insulatedFittings ? unitJointBareLengthMm(startJoint, coreRadius) : 0,
+        endBareMm: endJoint && !insulatedFittings ? unitJointBareLengthMm(endJoint, coreRadius) : 0,
+      };
+      const jointOptions = { coreRadiusMm: coreRadius, outerRadiusMm: outerRadius, insulatedFittings };
       if (usesCopperSocketElbows(effectiveElement.properties) && addSocketElbowPipeAssembly(group, points, outerRadius, coreRadius, {
         lineKind, bendRadiusMm, openStart, openEnd,
         minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(effectiveElement.properties),
         startStraightMm: startConnection?.connectionKind === 'unit-port' ? getActivePipeRoutingSettings().minimumPortStubMm : 0,
         endStraightMm: endConnection?.connectionKind === 'unit-port' ? getActivePipeRoutingSettings().minimumPortStubMm : 0,
+        startBareMm: joints.startBareMm, endBareMm: joints.endBareMm,
       })) {
+        addRefrigerantUnitJoints(group, points, joints, jointOptions);
         addExposedCoreEndCaps(group, points, coreRadius,
           lineKind === 'gas' ? REFRIGERANT_PIPE_3D_COLORS.gasCopper : REFRIGERANT_PIPE_3D_COLORS.liquidCopper, {
             start: !startConnection && !openStart, end: !endConnection && !openEnd,
@@ -2535,16 +2581,27 @@ export function buildHvacElementMesh(
         addPipeOpenEndBands(group, effectiveElement, points, outerRadius);
         break;
       }
-      const insulation = createTubeAlongPoints(points, outerRadius, REFRIGERANT_PIPE_3D_COLORS[lineKind], {
-        renderOrder: 18,
-        openStart,
-        openEnd,
-        bendRadiusMm,
-        surfaceRole: "insulation",
-        lineKind,
-        preservePlanGeometry: true,
-      });
+      const insulation = createTubeAlongPoints(trimRunEnds(points, joints.startBareMm, joints.endBareMm), outerRadius,
+        REFRIGERANT_PIPE_3D_COLORS[lineKind], {
+          renderOrder: 18,
+          openStart,
+          openEnd,
+          bendRadiusMm,
+          surfaceRole: "insulation",
+          lineKind,
+          preservePlanGeometry: true,
+        });
       if (insulation) group.add(insulation);
+      // The bare copper the joints leave before the insulation starts.
+      for (const [bareMm, run] of [[joints.startBareMm, points], [joints.endBareMm, [...points].reverse()]] as const) {
+        if (bareMm <= 0) continue;
+        const copper = createTubeAlongPoints(leadingPolyline(run, bareMm), coreRadius,
+          lineKind === "gas" ? REFRIGERANT_PIPE_3D_COLORS.gasCopper : REFRIGERANT_PIPE_3D_COLORS.liquidCopper, {
+            renderOrder: 18, bendRadiusMm, surfaceRole: "core", lineKind, preservePlanGeometry: true,
+          });
+        if (copper) group.add(copper);
+      }
+      addRefrigerantUnitJoints(group, points, joints, jointOptions);
       // A closed insulation shell hides the copper along the run. Only loose
       // ends need a copper cross-section, including legacy plan-only pipes.
       addExposedCoreEndCaps(group, points, coreRadius,
