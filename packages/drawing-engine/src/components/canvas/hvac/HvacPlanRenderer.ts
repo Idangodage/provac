@@ -74,6 +74,7 @@ import {
   type RefrigerantPipeRenderChainState,
   type VisibleRefrigerantPipeSegmentTarget,
 } from "./refrigerantPipeRenderState";
+import { makerConnectionTags } from "./unitConnectionTags";
 import { unitConnectionsFor } from "./unitConnections";
 import {
   getUnitPipePortRenderMetrics,
@@ -1194,7 +1195,12 @@ export class HvacPlanRenderer {
       | "category"
       | "properties"
     >,
-    options: { valid: boolean; includeInteractionHalos: boolean },
+    options: {
+      valid: boolean;
+      includeInteractionHalos: boolean;
+      /** The unit's turn: text that should read upright on the sheet turns back by it. */
+      rotationDeg?: number;
+    },
   ): fabric.FabricObject[] {
     if (element.type === "accessory" && isRefrigerantBranchKitElement(element)) {
       return this.createBaseObjects(
@@ -4063,6 +4069,29 @@ export class HvacPlanRenderer {
     if (interactionUnderlays.length > 0) {
       objects.unshift(...interactionUnderlays);
     }
+    // A selected unit with maker data names its connections at their stubs: G / L / D, size and joint.
+    if (options.includeInteractionHalos) {
+      for (const tag of makerConnectionTags(element)) {
+        const text = new fabric.Text(tag.text, {
+          left: toPx(tag.at.x),
+          top: toPx(tag.at.y),
+          originX: tag.axis > 0 ? "left" : "right",
+          originY: "center",
+          // Upright on the sheet whatever the unit's turn.
+          angle: -(options.rotationDeg ?? 0),
+          fontSize: Math.max(6, toPx(26)),
+          fontFamily: "monospace",
+          fontWeight: "600",
+          fill: tag.colour,
+          visible: false,
+          selectable: false,
+          evented: false,
+        });
+        this.annotate(text, element.id, "hvac-selection");
+        interactionOverlays.push(text);
+      }
+    }
+
     if (interactionOverlays.length > 0) {
       objects.push(...interactionOverlays);
     }
@@ -4201,6 +4230,7 @@ export class HvacPlanRenderer {
     const objects = this.createBaseObjects(element, {
       valid: options.valid ?? true,
       includeInteractionHalos: options.includeInteractionHalos ?? true,
+      rotationDeg: element.rotation ?? 0,
     });
 
     const group = new fabric.Group(objects, {

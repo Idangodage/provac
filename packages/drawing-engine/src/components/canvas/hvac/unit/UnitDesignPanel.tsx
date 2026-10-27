@@ -55,6 +55,7 @@ import {
 } from '../duct/unitAirSide';
 import { designSettingsForUnit } from '../duct/unitCriteria';
 import { EquipmentIcon, equipmentIconKind } from '../equipmentIcons';
+import { unitConnectionsFor } from '../unitConnections';
 import { unitHasDrainPump } from '../unitDrainPump';
 import { UnitSystemSwitch } from '../units/UnitSystemSwitch';
 import { inchFractionText, inchesText, tonsOf } from '../units/hvacUnits';
@@ -62,6 +63,7 @@ import { useHvacUnits, type HvacUnits } from '../units/useHvacUnits';
 
 import { FrictionChart } from './FrictionChart';
 import { NetworkTree } from './NetworkTree';
+import { UnitConnectionsFigure } from './UnitConnectionsFigure';
 import {
   CardSection, Caption, Chip, Disclosure, InfoIcon, InfoTip, InlineAlert, KpiTile, PanelButton, PanelCard, Segmented, SpecRows, StatusDot, Switch,
   type DotKind, type MeterSegment,
@@ -309,6 +311,12 @@ function SpecificationTab({ unit, spec, designSpeed }: { unit: HvacElement; spec
             { label: 'Size', value: <>{dimensions(units, [unit.height, unit.width, unit.depth])} <span className="text-[10px] text-slate-400">as placed</span></> },
             unit.properties.source === 'ifc-glb' ? { label: '3D model', value: <Chip>Maker&apos;s 3D model</Chip> } : null,
           ]} />
+          {unitConnectionsFor(unit) ? (
+            <div className="mt-2">
+              <Caption>Connections</Caption>
+              <UnitConnectionsFigure unit={unit} />
+            </div>
+          ) : null}
           <p className="mt-2 text-[10.5px] text-slate-400">No maker sheet in the catalogue for this model yet.</p>
         </CardSection>
       </PanelCard>
@@ -351,6 +359,7 @@ function SpecificationTab({ unit, spec, designSpeed }: { unit: HvacElement; spec
       ) : null}
       <CardSection>
         <Caption>Connections</Caption>
+        <UnitConnectionsFigure unit={unit} />
         <SpecRows rows={[
           spec.collars ? { label: 'Supply collar', value: <span className="flex items-center gap-1.5"><StatusDot kind="supply" />{collar(spec.collars.supply)}</span> } : null,
           spec.collars ? { label: 'Return collar', value: <span className="flex items-center gap-1.5"><StatusDot kind="return" />{collar(spec.collars.return)}</span> } : null,
