@@ -23,6 +23,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import type { VrfValidationIssue, VrfValidationReport } from '../../../../vrf/rules';
 import { listNetworkPipeLanes } from '../networkPipeClearance';
 import type { PipeRoutingSettings } from '../pipeRoutingSettings';
+import { unitConnectionsFor } from '../unitConnections';
 
 import { readDrainGaps } from './condensateCut';
 import { condensateNetworkSourceSignature } from './condensateElements';
@@ -290,7 +291,8 @@ export function validateCondensateNetwork(scene: readonly HvacElement[], options
  * Condensate ↔ refrigerant contacts (insulated surfaces touching), one entry
  * per drain/refrigerant pair. A unit's drain and its own refrigerant
  * stubs share the manufacturer's connection zone around the drain outlet —
- * the same exemption the generator applies.
+ * the same exemption the generator applies — unless the unit has maker data:
+ * its stubs then stand where the maker puts them, and contact there is real.
  */
 export function findCondensateRefrigerantClashes(scene: readonly HvacElement[]): Array<{ condensateId: string; refrigerantId: string }> {
   const pipes = scene.filter(isCondensatePipe);
@@ -305,7 +307,9 @@ export function findCondensateRefrigerantClashes(scene: readonly HvacElement[]):
     const ownUnit = spec.drainStart?.kind === 'unit-drain' ? spec.drainStart : null;
     for (const lane of lanes) {
       let clash = false;
-      const sharesZone = ownUnit?.unitId ? connectedUnitIdsOf(byId.get(lane.elementId)).includes(ownUnit.unitId) : false;
+      const ownElement = ownUnit?.unitId ? byId.get(ownUnit.unitId) : undefined;
+      const sharesZone = ownUnit?.unitId && !(ownElement && unitConnectionsFor(ownElement))
+        ? connectedUnitIdsOf(byId.get(lane.elementId)).includes(ownUnit.unitId) : false;
       for (const segment of lane.segments) {
         for (let index = 1; index < spec.routeNodes3d.length && !clash; index += 1) {
           let a = spec.routeNodes3d[index - 1]!;

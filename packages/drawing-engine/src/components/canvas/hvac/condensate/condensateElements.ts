@@ -229,6 +229,8 @@ export function buildCondensateNetworkElements(
   const allUnitIds = network.units.map((unit) => unit.source.unitId).sort();
   const elements: HvacElement[] = [];
   const pumpedIds = new Set(network.units.filter((unit) => unit.pumped).map((unit) => unit.source.unitId));
+  // A unit whose maker model shows its supplied drain hose drains from the hose's end: no second hose is drawn.
+  const hoseInModelIds = new Set(network.units.filter((unit) => unit.source.hoseInModel).map((unit) => unit.source.unitId));
 
   // Heads of collective mains: junctions fed only by unit branches.
   const inflow = new Map<string, NetNode[]>();
@@ -365,6 +367,7 @@ export function buildCondensateNetworkElements(
     const slopes = chain.nodes.map((node) => network.slopes.get(node.id)).filter((value): value is number => value !== undefined);
     const designSlope = slopes.length ? Math.min(...slopes) : network.mainSlopePercent;
     const pumped = first.kind === 'port' && first.unitId ? pumpedIds.has(first.unitId) : false;
+    const hoseInModel = first.kind === 'port' && first.unitId ? hoseInModelIds.has(first.unitId) : false;
     const radius = size.outerDiameterMm / 2 + settings.insulationThicknessMm;
     const ownership: CondensateNetworkOwnership = {
       version: 1,
@@ -401,7 +404,7 @@ export function buildCondensateNetworkElements(
         upstreamCapacityKw: Math.round(capacity * 100) / 100,
         fittings,
         pumped,
-        drainHoseLengthMm: Math.round(drainHoseLength(points, pumped) * 10) / 10,
+        drainHoseLengthMm: hoseInModel ? 0 : Math.round(drainHoseLength(points, pumped) * 10) / 10,
         ...(options.soffitMm !== undefined ? {
           hangers: {
             topZ: options.soffitMm,
