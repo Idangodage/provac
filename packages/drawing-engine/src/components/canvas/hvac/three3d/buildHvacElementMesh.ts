@@ -1405,17 +1405,22 @@ function addCeilingCassetteVisibleModel(
     const portGroup = new THREE.Group();
     portGroup.name = `ceiling-cassette-${port.kind}-port`;
     portGroup.userData.hvacEquipmentVisibilityOverlay = true;
-    addHvacPipePort(portGroup, {
-      anchor: new THREE.Vector3(port.x, port.y, port.z),
-      radius: port.radius,
-      length: port.length,
-      color: port.color,
-      collarColor: port.collarColor,
-      collarRadius: port.collarRadius,
-      collarLength: port.collarLength,
-      flangeColor: port.flangeColor,
-      flangeThickness: port.flangeThickness,
-    });
+    const axis = port.axis ?? 1;
+    // A stub the maker's model already shows is not drawn again: only its band marks the service.
+    if (!(hasCatalogModel && port.inModel)) {
+      addHvacPipePort(portGroup, {
+        anchor: new THREE.Vector3(port.x, port.y, port.z),
+        radius: port.radius,
+        length: port.length,
+        color: port.color,
+        direction: axis,
+        collarColor: port.collarColor,
+        collarRadius: port.collarRadius,
+        collarLength: port.collarLength,
+        flangeColor: port.flangeColor,
+        flangeThickness: port.flangeThickness,
+      });
+    }
     addNamedCassettePart(
       portGroup,
       `ceiling-cassette-${port.kind}-port-band`,
@@ -1424,7 +1429,7 @@ function addCeilingCassetteVisibleModel(
         port.bandRadius,
         3,
         port.bandColor,
-        new THREE.Vector3(port.x + port.bandOffsetX, port.y, port.z),
+        new THREE.Vector3(port.x + axis * port.bandOffsetX, port.y, port.z),
         {
           rotation: new THREE.Euler(0, 0, Math.PI / 2),
           radialSegments: 16,
@@ -1434,6 +1439,32 @@ function addCeilingCassetteVisibleModel(
     );
     group.add(portGroup);
   });
+}
+
+/**
+ * A maker's model may mark a connection on the casing without drawing its
+ * stub (the FDUM140's flare connections): those stubs are drawn from the
+ * maker's data, so the field pipe meets copper, not the casing face.
+ */
+function addMakerStubsMissingFromModel(group: THREE.Group, element: HvacElement): void {
+  for (const port of buildDuctedIndoorUnitModel(element).pipePorts) {
+    if (port.inModel !== false) continue;
+    const stub = new THREE.Group();
+    stub.name = `ducted-maker-${port.kind}-stub`;
+    addHvacPipePort(stub, {
+      anchor: new THREE.Vector3(port.x, port.y, port.z),
+      radius: port.radius,
+      length: port.length,
+      color: port.color,
+      direction: port.axis ?? 1,
+      collarColor: port.collarColor,
+      collarRadius: port.collarRadius,
+      collarLength: port.collarLength,
+      flangeColor: port.flangeColor,
+      flangeThickness: port.flangeThickness,
+    });
+    group.add(stub);
+  }
 }
 
 function addGenericUnitPipePorts(
@@ -1451,6 +1482,7 @@ function addGenericUnitPipePorts(
       radius: port.radius,
       length: port.length,
       color: port.color,
+      direction: port.axis ?? 1,
       collarColor: "#1f2937",
       collarRadius: port.collarRadius,
       collarLength: port.collarLength,
@@ -1992,6 +2024,8 @@ export function buildHvacElementMesh(
         addCeilingCassetteVisibleModel(group, element, {
           catalogModelLoaded: true,
         });
+      } else if (element.type === "ducted-ac") {
+        addMakerStubsMissingFromModel(group, element);
       }
       return group;
     }
@@ -2603,6 +2637,7 @@ export function buildHvacElementMesh(
           radius: port.radius,
           length: port.length,
           color: port.color,
+          direction: port.axis ?? 1,
           collarColor: port.collarColor,
           collarRadius: port.collarRadius,
           collarLength: port.collarLength,

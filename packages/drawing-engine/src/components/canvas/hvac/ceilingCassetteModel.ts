@@ -6,6 +6,8 @@ import {
   DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
 } from './refrigerantPipeDimensions';
+import { drainConnectionOf, makerPortGeometry, unitConnectionOf, unitConnectionsFor, type UnitConnection } from './unitConnections';
+import { drainPumpChoice } from './unitDrainPump';
 
 export interface CeilingCassetteBoxSpec {
   x: number;
@@ -36,7 +38,14 @@ export interface CeilingCassettePipePortSpec {
   collarColor?: string;
   flangeColor?: string;
   bandColor: string;
+  /** Along the port's axis from x. */
   bandOffsetX: number;
+  /** Outward along local x: +1 (default) or −1 (a maker's stub on the −x side). */
+  axis?: 1 | -1;
+  /** The maker's 3D model already shows this stub or hose: the 3D draws nothing over it. */
+  inModel?: boolean;
+  /** How the field pipe joins it, where the maker says. */
+  joint?: UnitConnection['joint'];
 }
 
 export interface CeilingCassetteGrilleSpec {
@@ -81,13 +90,15 @@ export interface CeilingCassetteModelSpec {
   serviceTab: CeilingCassetteBoxSpec;
   connectionPod: CeilingCassetteBoxSpec;
   pipePorts: CeilingCassettePipePortSpec[];
+  /** The panel's centre in the unit frame: off 0,0 when a maker cassette's footprint also spans its connections. */
+  panelCentre: { x: number; y: number };
 }
 
 export function getCeilingCassettePipePortEndpointLocal(
   port: CeilingCassettePipePortSpec,
 ): { x: number; y: number } {
   return {
-    x: port.x + port.collarLength + port.length - port.flangeThickness * 0.15,
+    x: port.x + (port.axis ?? 1) * (port.collarLength + port.length - port.flangeThickness * 0.15),
     y: port.y,
   };
 }
@@ -96,7 +107,7 @@ export function getCeilingCassettePipePortConnectionLocal(
   port: CeilingCassettePipePortSpec,
 ): { x: number; y: number } {
   return {
-    x: port.x + port.collarLength - port.flangeThickness * 0.15,
+    x: port.x + (port.axis ?? 1) * (port.collarLength - port.flangeThickness * 0.15),
     y: port.y,
   };
 }
@@ -131,9 +142,71 @@ function buildPipePortSpec(
   };
 }
 
-export function buildCeilingCassetteModel(
-  element: Pick<HvacElement, 'width' | 'depth' | 'height' | 'properties'>,
-): CeilingCassetteModelSpec {
+type CassetteElement = Pick<HvacElement, 'width' | 'depth' | 'height' | 'properties'>;
+
+/**
+ * The cassette as drawn: from its maker's data where the catalogue has it
+ * (the panel at its true centre, the stubs where the maker's model has them),
+ * else proportioned from its size.
+ */
+export function buildCeilingCassetteModel(element: CassetteElement): CeilingCassetteModelSpec {
+  const maker = unitConnectionsFor(element);
+  if (!maker) return buildProportionedCassetteModel(element);
+  const model = maker.panel
+    ? shiftCassetteModel(buildProportionedCassetteModel({ ...element, width: maker.panel.sizeMm, depth: maker.panel.sizeMm }), maker.panel.centre)
+    : buildProportionedCassetteModel(element);
+  const styleOf = (kind: CeilingCassettePipePortSpec['kind']) => model.pipePorts.find((port) => port.kind === kind)!;
+  const ports: CeilingCassettePipePortSpec[] = [];
+  const add = (kind: CeilingCassettePipePortSpec['kind'], connection: UnitConnection | null) => {
+    if (!connection) return;
+    const geometry = makerPortGeometry(connection);
+    const style = styleOf(kind);
+    ports.push({
+      ...style,
+      ...geometry,
+      kind,
+      x: connection.rootX,
+      y: connection.y,
+      z: connection.z,
+      axis: connection.axis,
+      inModel: connection.inModel,
+      joint: connection.joint,
+      bandRadius: geometry.radius + 1.5,
+      bandOffsetX: (geometry.collarLength + geometry.length) * 0.7,
+    });
+  };
+  add('gas', unitConnectionOf(maker, 'gas'));
+  add('liquid', unitConnectionOf(maker, 'liquid'));
+  // A cassette drains through its pump unless set to gravity.
+  add('drain', drainConnectionOf(maker, drainPumpChoice(element) ?? true));
+  return { ...model, baseWidth: element.width, baseDepth: element.depth, pipePorts: ports };
+}
+
+function shiftBox<T extends { x: number; y: number }>(box: T, by: { x: number; y: number }): T {
+  return { ...box, x: box.x + by.x, y: box.y + by.y };
+}
+
+/** The whole cassette moved in its own plane (its pipe ports are the caller's). */
+function shiftCassetteModel(model: CeilingCassetteModelSpec, by: { x: number; y: number }): CeilingCassetteModelSpec {
+  return {
+    ...model,
+    hiddenBody: shiftBox(model.hiddenBody, by),
+    topCap: shiftBox(model.topCap, by),
+    drainPumpHousing: shiftBox(model.drainPumpHousing, by),
+    facePanel: shiftBox(model.facePanel, by),
+    innerPanel: shiftBox(model.innerPanel, by),
+    slots: model.slots.map((slot) => shiftBox(slot, by)),
+    vanes: model.vanes.map((vane) => shiftBox(vane, by)),
+    grille: shiftBox(model.grille, by),
+    accentBar: shiftBox(model.accentBar, by),
+    serviceTab: shiftBox(model.serviceTab, by),
+    connectionPod: shiftBox(model.connectionPod, by),
+    pipePorts: model.pipePorts.map((port) => shiftBox(port, by)),
+    panelCentre: { x: model.panelCentre.x + by.x, y: model.panelCentre.y + by.y },
+  };
+}
+
+function buildProportionedCassetteModel(element: CassetteElement): CeilingCassetteModelSpec {
   const gasPipeDiameterMm = readFlexibleNumberProperty(element.properties, 'refrigerantGasPipeDiameterMm')
     ?? readFlexibleNumberProperty(element.properties, 'Refrigerant Gas Pipe Diameter (mm)')
     ?? DEFAULT_REFRIGERANT_GAS_PIPE_DIAMETER_MM;
@@ -440,5 +513,6 @@ export function buildCeilingCassetteModel(
     serviceTab,
     connectionPod,
     pipePorts,
+    panelCentre: { x: 0, y: 0 },
   };
 }

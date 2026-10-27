@@ -286,7 +286,7 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
     obstaclesFor: (unitId, gullyId) => {
       const source = environment.sources.find((candidate) => candidate.unitId === unitId);
       const voidFloor = environment.envelope.voidFloorMm + defaultRadius;
-      const exposed = source !== undefined && source.z < voidFloor - 1;
+      const exposed = source !== undefined && runsExposed(source, voidFloor);
       const lower = exposed ? getActivePipeRoutingSettings().floorLimitMm + defaultRadius : voidFloor;
       const pumpLift = source?.hasDrainPump && !exposed && settings.pumpPolicy !== 'never' ? source.pumpMaxLiftMm : 0;
       const upper = source ? Math.min(environment.envelope.voidTopMm - defaultRadius, source.z + pumpLift) : environment.envelope.voidTopMm;
@@ -529,6 +529,24 @@ export function seatedRiserFoot(
   }
 }
 
+/** Units hidden above the ceiling: their drains stay in the void (a pump lifts from an outlet below it). */
+const CONCEALED_UNIT_TYPES: ReadonlySet<HvacElement['type']> = new Set<HvacElement['type']>(['ducted-ac', 'ceiling-cassette-ac']);
+
+/**
+ * A drain that runs exposed in the room, below the ceiling void: a wall,
+ * split or suspended unit's whose outlet is below it. A concealed unit's
+ * drain never does; with its outlet below the void, its pump lifts it into
+ * the void, or (on gravity) it cannot drain until the unit is raised.
+ */
+function runsExposed(source: Pick<IndoorDrainPort, 'unitType' | 'z'>, voidLowerZ: number): boolean {
+  return !CONCEALED_UNIT_TYPES.has(source.unitType) && source.z < voidLowerZ - 1;
+}
+
+/** A concealed gravity unit's outlet below the ceiling void: no fall to drain by gravity. */
+function outletBelowVoid(source: Pick<IndoorDrainPort, 'unitType' | 'z'>, voidLowerZ: number): boolean {
+  return CONCEALED_UNIT_TYPES.has(source.unitType) && source.z < voidLowerZ - 1;
+}
+
 /** A unit's riser foot / stub end when none is searched for: straight out of its outlet, on the router's 0.5 mm grid. */
 export function gravityRiserFoot(source: Pick<IndoorDrainPort, 'point' | 'direction'>, settings: Pick<CondensateDesignSettings, 'liftMaxHorizontalMm'>): Point2D {
   const end = add(source.point, scale(source.direction, Math.min(STUB_LENGTH_MM, settings.liftMaxHorizontalMm)));
@@ -544,7 +562,7 @@ function makeUnitPlan(source: IndoorDrainPort, environment: CondensateEnvironmen
   const { settings, envelope } = environment;
   const voidLower = envelope.voidFloorMm + defaultRadius;
   const voidUpper = envelope.voidTopMm - defaultRadius;
-  const exposed = source.z < voidLower - 1;
+  const exposed = runsExposed(source, voidLower);
   const pumped = source.hasDrainPump && settings.pumpPolicy !== 'never' && source.pumpMaxLiftMm > 0 && !exposed;
   // Snapped to the router's 0.5 mm grid so the riser and the first run share one vertical.
   const footAt = (along: number, across: number): Point2D => {
@@ -1336,7 +1354,10 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
           ? unitPlan.failureReason ?? 'no plan route to any termination'
           : !fall
             ? 'termination capacity limit reached'
-            : `about ${Math.round(best.lengthMm / 1000)} m of drain to ${best.sink.label} needs about ${Math.round(fall.needed / 10) * 10} mm of fall; `
+            : !unitPlan.pumped && outletBelowVoid(unitPlan.source, environment.envelope.voidFloorMm + defaultRadius)
+              ? `its drain outlet is ${Math.round(environment.envelope.voidFloorMm + defaultRadius - unitPlan.source.z)} mm below the ceiling void, `
+                + `so a gravity drain cannot fall from it (about ${Math.round(best.shortfallMm / 10) * 10} mm short)`
+              : `about ${Math.round(best.lengthMm / 1000)} m of drain to ${best.sink.label} needs about ${Math.round(fall.needed / 10) * 10} mm of fall; `
               + `the void gives about ${Math.round(fall.available / 10) * 10} mm${unitPlan.pumped ? ' even with the drain pump' : unitPlan.source.hasDrainPump ? '' : ' (no drain pump)'}`
               + ` — ${Math.round(best.shortfallMm)} mm short`,
       });

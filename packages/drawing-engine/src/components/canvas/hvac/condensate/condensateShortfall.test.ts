@@ -1,6 +1,7 @@
 // The FDU224 of the user's building (23 October 2026), set to gravity (MHI KX-T-222 shows a gravity drain; the project
-// draws a built-in pump unless the unit's Drain pump setting says otherwise) about 24 m from the only floor gully. The
-// drain cannot fall that far in the void: Auto route says by how much, and offers a pump.
+// draws a built-in pump unless the unit's Drain pump setting says otherwise) about 24 m from the only floor gully. Its
+// drain socket sits 30 mm above its underside (PJG000Z287), below the ceiling void: no gravity fall at all. Auto route
+// says so and by how much, and offers a pump.
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../../data/ac-equipment-library';
@@ -33,12 +34,12 @@ describe('a gravity drain too far from its termination', () => {
   beforeEach(() => setActivePipeRoutingSettings(DEFAULT_PIPE_ROUTING_SETTINGS));
   const gully = place('condensate-floor-gully', 'gully', { x: 24000, y: 0 });
 
-  it('says how far, how much fall it needs and what the void gives, and that a pump would carry it', () => {
+  it('says its outlet is below the void and by how much, and that a pump would carry it', () => {
     const result = run([place('vrf-fdu224kxze1', 'FDU224', { x: 0, y: 0 }, { hasDrainPump: false, drainPumpSetBy: 'user' }), gully]);
     const unit = result.perUnit.find((entry) => entry.unitId === 'FDU224')!;
     expect(unit.status).toBe('infeasible');
     expect(unit.pumpWouldHelp).toBe(true);
-    expect(unit.reason).toMatch(/^about 2\d m of drain to .+ needs about 2\d0 mm of fall; the void gives about 1\d0 mm \(no drain pump\) — \d+ mm short$/);
+    expect(unit.reason).toMatch(/^its drain outlet is \d+ mm below the ceiling void, so a gravity drain cannot fall from it \(about \d+ mm short\)$/);
     const review = buildAutoRouteReview({ services: { gas: false, liquid: false, condensate: true }, ducts: null, refrigerant: null,
       condensate: result, clashes: [], issues: [] } as unknown as UnifiedAutoRouteResult, []);
     const issue = review.issues.find((entry) => entry.key === 'drain:FDU224')!;

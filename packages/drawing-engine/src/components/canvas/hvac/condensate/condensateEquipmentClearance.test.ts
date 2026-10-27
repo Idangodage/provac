@@ -16,6 +16,10 @@ function cassette(id: string, x: number, y: number, rotation = 0): HvacElement {
     height: catalog.heightMm, elevation: catalog.elevationMm, rotation, mountType: catalog.mountType,
     supplyZoneRatio: catalog.supplyZoneRatio ?? 0.5, properties: { ...catalog.defaultProperties } };
 }
+/** The plan x of a box `width` wide starting `gap` out along a drain outlet's (±x) direction. */
+function outAlong(port: { point: { x: number }; direction: { x: number } }, gap: number, width: number): number {
+  return port.direction.x > 0 ? port.point.x + gap : port.point.x - gap - width;
+}
 function sink(x: number, y: number): HvacElement {
   return { ...cassette('sink', x - 100, y - 100), type: 'condensate-gully', label: 'Drain sink', width: 200, depth: 200,
     height: 60, elevation: 0, properties: { terminationKind: 'floor-gully' } };
@@ -63,8 +67,9 @@ describe('catalog cassette drain coordination', () => {
   it('moves the hose and riser together around a solid near the real outlet', () => {
     const unit = cassette('cassette', 0, 0);
     const port = getIndoorUnitDrainPort(unit)!;
+    // 110–130 mm out along the outlet (the FDT28's leaves its −x side).
     const obstruction: HvacElement = { ...unit, id: 'bracket', type: 'accessory', label: 'Bracket',
-      position: { x: port.point.x + 110, y: port.point.y - 10 }, width: 20, depth: 20,
+      position: { x: outAlong(port, 110, 20), y: port.point.y - 10 }, width: 20, depth: 20,
       elevation: port.z - 30, height: 60, properties: {} };
     const scene = [unit, obstruction, sink(6000, 400)];
     // Check physical solids separately from the project's optional access gap.
@@ -80,7 +85,7 @@ describe('catalog cassette drain coordination', () => {
     const unit = cassette('cassette', 0, 0);
     const port = getIndoorUnitDrainPort(unit)!;
     const obstruction: HvacElement = { ...unit, id: 'panel', type: 'control-panel', label: 'Panel',
-      position: { x: port.point.x + 45, y: port.point.y - 300 }, width: 20, depth: 600,
+      position: { x: outAlong(port, 45, 20), y: port.point.y - 300 }, width: 20, depth: 600,
       elevation: port.z - 150, height: 300, properties: {} };
     const scene = [unit, obstruction, sink(6000, 400)];
     const result = generateCondensateNetwork(scene, { settings: resolveCondensateSettings({}) });
@@ -97,12 +102,14 @@ describe('catalog cassette drain coordination', () => {
     const result = generateCondensateNetwork(scene, { settings: resolveCondensateSettings({ pumpPolicy: 'never' }) });
     const branch = result.elementsToAdd.find(element => readCondensatePipeSpec(element).drainStart?.unitId === unit.id)!;
     const start = { ...port.point, z: port.z };
+    // `inward` runs from the outlet back towards the casing (the FDT28's outlet leaves its −x side).
+    const inward = (distance: number) => start.x - port.direction.x * distance;
     const routes: Point3[][] = [
-      [start, { ...start, z: start.z + 200 }, { ...start, x: start.x + 500, z: start.z + 200 }],
-      [start, { ...start, y: start.y - 300 }, { ...start, x: start.x + 500, y: start.y - 300 }],
-      [start, { ...start, x: start.x + 500, z: start.z - 10 },
-        { ...start, x: start.x + 500, y: start.y - 300, z: start.z - 20 },
-        { ...start, x: start.x - 200, y: start.y - 300, z: start.z - 30 }],
+      [start, { ...start, x: inward(250) }, { ...start, x: inward(250), z: start.z + 200 }],
+      [start, { ...start, y: start.y - 300 }, { ...start, x: inward(500), y: start.y - 300 }],
+      [start, { ...start, x: inward(-500), z: start.z - 10 },
+        { ...start, x: inward(-500), y: start.y - 300, z: start.z - 20 },
+        { ...start, x: inward(250), y: start.y - 300, z: start.z - 30 }],
     ];
     for (const nodes of routes) {
       const changed = { ...branch, properties: { ...branch.properties, routeNodes3d: nodes } };

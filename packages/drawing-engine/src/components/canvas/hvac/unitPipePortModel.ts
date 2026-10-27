@@ -39,6 +39,8 @@ export interface UnitPipePort {
   flangeThickness?: number;
   /** Core pipe color */
   color: string;
+  /** Outward along local x: +1 (default) or −1 (a maker's stub on the −x side). */
+  axis?: 1 | -1;
 }
 
 export interface UnitPipePortSpec {
@@ -68,12 +70,14 @@ export function getUnitPipePortRenderMetrics(
   const flangeThickness =
     port.flangeThickness ?? Math.max(4, collarLength * 0.24);
   const collarRadius = port.collarRadius ?? port.radius * 1.24;
+  // Offsets run outward along the port's axis (a −x stub mirrors them).
+  const axis = port.axis ?? 1;
   const flangeStartX = port.localX;
-  const flangeEndX = port.localX + flangeThickness;
-  const collarStartX = port.localX + flangeThickness * 0.35;
-  const collarEndX = collarStartX + collarLength;
-  const pipeStartX = port.localX + collarLength - flangeThickness * 0.15;
-  const pipeEndX = pipeStartX + port.length;
+  const flangeEndX = port.localX + axis * flangeThickness;
+  const collarStartX = port.localX + axis * flangeThickness * 0.35;
+  const collarEndX = collarStartX + axis * collarLength;
+  const pipeStartX = port.localX + axis * (collarLength - flangeThickness * 0.15);
+  const pipeEndX = pipeStartX + axis * port.length;
 
   return {
     collarRadius,
@@ -262,7 +266,7 @@ export function getUnitPipePortSpec(
         return null;
       }
       return {
-        localDirection: { x: 1, y: 0 },
+        localDirection: { x: gasPort.axis ?? 1, y: 0 },
         gasPipeDiameterMm: ducted.gasPipeDiameterMm,
         liquidPipeDiameterMm: ducted.liquidPipeDiameterMm,
         ports: [
@@ -277,6 +281,7 @@ export function getUnitPipePortSpec(
             collarLength: gasPort.collarLength,
             flangeThickness: gasPort.flangeThickness,
             color: gasPort.color,
+            axis: gasPort.axis,
           },
           {
             kind: "liquid",
@@ -289,6 +294,7 @@ export function getUnitPipePortSpec(
             collarLength: liquidPort.collarLength,
             flangeThickness: liquidPort.flangeThickness,
             color: liquidPort.color,
+            axis: liquidPort.axis,
           },
         ],
       };

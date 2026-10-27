@@ -45,6 +45,11 @@ export interface UnitConnectionSet {
   footprintMm: { width: number; depth: number; height: number };
   /** A cassette's panel, when the footprint also spans its connections: its size and centre in the unit frame. */
   panel?: { sizeMm: number; centre: Point2D };
+  /**
+   * The unit's solid body in plan (unit frame), when the footprint also spans
+   * its stubs, hose, hanger plates or panel rim: what field pipes keep out of.
+   */
+  casing?: { centre: Point2D; width: number; depth: number };
   connections: readonly UnitConnection[];
 }
 
@@ -53,6 +58,8 @@ const FDT28: UnitConnectionSet = {
   reference: 'MEPcontent MACO VRF model FDT28KXZE1 (measured)',
   footprintMm: { width: 1043, depth: 950, height: 272 },
   panel: { sizeMm: 950, centre: { x: 47, y: 0 } },
+  // The 840 body above the panel; the stubs end on its −x face.
+  casing: { centre: { x: 47, y: 0 }, width: 840, depth: 840 },
   connections: [
     { kind: 'gas', y: -303, z: 208.9, axis: -1, rootX: -360.1, tipX: -373.5, outerDiameterMm: 13.2, joint: 'flare', inModel: true },
     { kind: 'liquid', y: -245, z: 166.9, axis: -1, rootX: -362.4, tipX: -373.5, outerDiameterMm: 15, joint: 'flare', inModel: true },
@@ -65,6 +72,8 @@ const FDUM22: UnitConnectionSet = {
   source: 'maker-3d',
   reference: 'MEPcontent MACO VRF model FDUM22KXE6F-W (measured)',
   footprintMm: { width: 1084, depth: 697, height: 300 },
+  // 750 × 635 (MHI KX-DB-175) from x −492.5 to its connection face at 258; hanger plates either side.
+  casing: { centre: { x: -117.25, y: 0 }, width: 750, depth: 635 },
   connections: [
     { kind: 'gas', y: -152.5, z: 175, axis: 1, rootX: 288, tipX: 316, outerDiameterMm: 26, joint: 'flare', inModel: true },
     { kind: 'liquid', y: -191.5, z: 105, axis: 1, rootX: 288, tipX: 325, outerDiameterMm: 9.6, joint: 'flare', inModel: true },
@@ -78,6 +87,8 @@ const FDUM140: UnitConnectionSet = {
   source: 'maker-3d',
   reference: 'MEPcontent MACO VRF model and IFC connectors FDUM140KXE6F (measured)',
   footprintMm: { width: 1684, depth: 802, height: 300 },
+  // 1370 × 740 (MHI KX-DB-175) ending at its connection face, x 627.
+  casing: { centre: { x: -58, y: 0 }, width: 1370, depth: 740 },
   connections: [
     // The model marks the flare connections on the casing face (x 627); the IFC connectors stand 69 and 59 mm out.
     { kind: 'gas', y: -97, z: 145.5, axis: 1, rootX: 627, tipX: 696, outerDiameterMm: 15.88, joint: 'flare', inModel: false },
@@ -138,7 +149,59 @@ export function drainConnectionOf(set: UnitConnectionSet, pumped: boolean): Unit
   return pumped ? pump ?? gravity : gravity ?? pump;
 }
 
+/**
+ * The unit's solid body in plan, as a world AABB: its casing where the
+ * maker's data has one, else its whole footprint.
+ */
+export function unitBodyBoundsMm(
+  element: Pick<HvacElement, 'position' | 'width' | 'depth' | 'height' | 'rotation' | 'properties'>,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const casing = unitConnectionsFor(element)?.casing;
+  const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2 };
+  const local = casing ?? { centre: { x: 0, y: 0 }, width: element.width, depth: element.depth };
+  const angle = ((element.rotation ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => {
+    const x = local.centre.x + (sx! * local.width) / 2;
+    const y = local.centre.y + (sy! * local.depth) / 2;
+    return { x: centre.x + x * cos - y * sin, y: centre.y + x * sin + y * cos };
+  });
+  return {
+    minX: Math.min(...corners.map((corner) => corner.x)),
+    minY: Math.min(...corners.map((corner) => corner.y)),
+    maxX: Math.max(...corners.map((corner) => corner.x)),
+    maxY: Math.max(...corners.map((corner) => corner.y)),
+  };
+}
+
 /** The plan point (unit frame) where the field pipe joins. */
 export function unitConnectionTipLocal(connection: UnitConnection): Point2D {
   return { x: connection.tipX, y: connection.y };
+}
+
+/** The field drain at a maker's hose: VP25 through the socket supplied with it (O.D. 32). */
+export const MAKER_DRAIN_FIELD_OUTER_DIAMETER_MM = 32;
+
+export interface MakerPortGeometry {
+  radius: number;
+  collarRadius: number;
+  collarLength: number;
+  flangeThickness: number;
+  /** The stub after the collar; the port's tip, x + axis·(collarLength + length − 0.15·flange), is the connection's tip. */
+  length: number;
+}
+
+/**
+ * A port's drawn parts (flange, collar, stub) laid along a maker connection
+ * so the stub ends exactly on its tip. A drain hose is drawn at the field
+ * pipe's size: the hose itself is the maker model's.
+ */
+export function makerPortGeometry(connection: UnitConnection): MakerPortGeometry {
+  const total = Math.abs(connection.tipX - connection.rootX);
+  const flangeThickness = 3;
+  const collarLength = Math.min(12, Math.max(4, total * 0.2));
+  const diameter = connection.joint === 'hose' ? MAKER_DRAIN_FIELD_OUTER_DIAMETER_MM : connection.outerDiameterMm;
+  const radius = Math.max(3, diameter / 2);
+  return { radius, collarRadius: radius * 1.2, collarLength, flangeThickness, length: total - collarLength + flangeThickness * 0.15 };
 }

@@ -9,6 +9,7 @@
  * Air terminals add their plenum box above the ceiling face.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { unitConnectionsFor } from '../unitConnections';
 
 import { getDuctRunPlan, type DuctFabricationPlan, type DuctPiece } from './ductFabricationPlanner';
 import { frameToWorld, sampleArc } from './ductGeometry';
@@ -162,7 +163,9 @@ export function terminalBoxesOf(element: HvacElement): DuctBox[] {
 
 /** Equipment casing envelope in world mm, rotated about its footprint centre.
  * Port fittings, service-access zones and branch-kit fittings need their own
- * geometry; a branch kit's nominal placement box is not its physical body. */
+ * geometry; a branch kit's nominal placement box is not its physical body.
+ * A unit with maker data is its casing (unitConnections.ts): its catalogue
+ * footprint also spans the stubs, hose and hanger plates its pipes leave by. */
 export function equipmentBoxOf(element: HvacElement): DuctBox | null {
   if (['duct', 'diffuser', 'return-grille', 'refrigerant-pipe', 'refrigerant-pipe-pair',
     'condensate-pipe', 'condensate-gully', 'refrigerant-branch-kit'].includes(element.type)) return null;
@@ -171,10 +174,14 @@ export function equipmentBoxOf(element: HvacElement): DuctBox | null {
   const angle = (element.rotation ?? 0) * Math.PI / 180;
   const along = { x: Math.cos(angle), y: Math.sin(angle), z: 0 };
   const across = { x: -along.y, y: along.x };
-  const centre = { x: element.position.x + element.width / 2, y: element.position.y + element.depth / 2,
-    z: element.elevation + element.height / 2 };
-  return box(element.id, 'equipment casing', add(centre, scale(along, -element.width / 2)),
-    add(centre, scale(along, element.width / 2)), element.depth / 2, element.height / 2, across);
+  const casing = unitConnectionsFor(element)?.casing ?? { centre: { x: 0, y: 0 }, width: element.width, depth: element.depth };
+  const centre = {
+    x: element.position.x + element.width / 2 + casing.centre.x * along.x + casing.centre.y * across.x,
+    y: element.position.y + element.depth / 2 + casing.centre.x * along.y + casing.centre.y * across.y,
+    z: element.elevation + element.height / 2,
+  };
+  return box(element.id, 'equipment casing', add(centre, scale(along, -casing.width / 2)),
+    add(centre, scale(along, casing.width / 2)), casing.depth / 2, element.height / 2, across);
 }
 
 export function equipmentBoxesInScene(elements: readonly HvacElement[]): DuctBox[] {

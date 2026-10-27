@@ -3,14 +3,17 @@
  *
  * Cassette and ducted units draw a real drain port; the world tip uses exactly
  * the endpoint formula the plan and 3D renderers use for that port
- * (x + collarLength + length − 0.15·flange), rotated about the unit centre, so
- * the generated pipe starts on the visible stub. Wall-mounted, split and
- * ceiling-suspended units have no drawn drain port — theirs is synthesised
- * from typical manufacturer positions and marked `synthesized`.
+ * (x + axis·(collarLength + length − 0.15·flange)), rotated about the unit
+ * centre, so the generated pipe starts on the visible stub. A unit with maker
+ * data drains from the maker's outlet (unitConnections.ts): its pump's, with
+ * the supplied hose its model shows, or its gravity outlet. Wall-mounted,
+ * split and ceiling-suspended units have no drawn drain port — theirs is
+ * synthesised from typical manufacturer positions and marked `synthesized`.
  */
 import type { HvacElement, Point2D } from '../../../../types';
 import { buildCeilingCassetteModel, getCeilingCassettePipePortEndpointLocal } from '../ceilingCassetteModel';
-import { buildDuctedIndoorUnitModel } from '../ductedIndoorUnitModel';
+import { buildDuctedIndoorUnitModel, getDuctedIndoorUnitPipePortEndpointLocal } from '../ductedIndoorUnitModel';
+import { unitBodyBoundsMm } from '../unitConnections';
 import { unitHasDrainPump } from '../unitDrainPump';
 
 import type { CondensateDesignSettings } from './condensateSettings';
@@ -40,11 +43,13 @@ export interface IndoorDrainPort {
   negativePressure: boolean;
   externalStaticPressurePa: number | null;
   capacityKw: number;
-  /** Plan AABB of the unit body. */
+  /** Plan AABB of the unit body: its casing where the maker's data has one, else its footprint. */
   boundsMm: { minX: number; minY: number; maxX: number; maxY: number };
   bodyBottomZ: number;
   bodyTopZ: number;
   synthesized: boolean;
+  /** The point is the end of the maker's supplied drain hose, which the maker's model shows: no hose is drawn over it. */
+  hoseInModel: boolean;
 }
 
 function finite(value: unknown): value is number {
@@ -107,6 +112,9 @@ interface LocalDrainPort {
   localZ: number;
   outletOuterDiameterMm: number;
   synthesized: boolean;
+  /** Outward along local x. */
+  axis: 1 | -1;
+  hoseInModel: boolean;
 }
 
 function localDrainPort(element: HvacElement): LocalDrainPort | null {
@@ -121,16 +129,20 @@ function localDrainPort(element: HvacElement): LocalDrainPort | null {
         localZ: port.z,
         outletOuterDiameterMm: outletOverride ?? port.radius * 2,
         synthesized: false,
+        axis: port.axis ?? 1,
+        hoseInModel: port.inModel === true && port.joint === 'hose',
       };
     }
     case 'ducted-ac': {
       const port = buildDuctedIndoorUnitModel(element).pipePorts.find((candidate) => candidate.kind === 'drain');
       if (!port) return null;
       return {
-        tip: { x: port.x + port.collarLength + port.length - port.flangeThickness * 0.15, y: port.y },
+        tip: getDuctedIndoorUnitPipePortEndpointLocal(port),
         localZ: port.z,
         outletOuterDiameterMm: outletOverride ?? port.radius * 2,
         synthesized: false,
+        axis: port.axis ?? 1,
+        hoseInModel: port.inModel === true && port.joint === 'hose',
       };
     }
     case 'wall-mounted-ac':
@@ -142,6 +154,8 @@ function localDrainPort(element: HvacElement): LocalDrainPort | null {
         localZ: height * 0.1,
         outletOuterDiameterMm: outletOverride ?? 21.5,
         synthesized: true,
+        axis: 1,
+        hoseInModel: false,
       };
     }
     case 'ceiling-suspended-ac': {
@@ -151,6 +165,8 @@ function localDrainPort(element: HvacElement): LocalDrainPort | null {
         localZ: height * 0.35,
         outletOuterDiameterMm: outletOverride ?? 26,
         synthesized: true,
+        axis: 1,
+        hoseInModel: false,
       };
     }
     default:
@@ -169,7 +185,7 @@ export function getIndoorUnitDrainPort(
   const rotation = element.rotation ?? 0;
   const center = unitCenter(element);
   const tipOffset = rotate(local.tip, rotation);
-  const direction = rotate({ x: 1, y: 0 }, rotation);
+  const direction = rotate({ x: local.axis, y: 0 }, rotation);
   const hasDrainPump = unitHasDrainPump(element);
   const esp = readFlexibleNumber(properties, ['externalStaticPressurePa', 'staticPressurePa', 'espPa', 'External Static Pressure (Pa)']);
   const negativePressure = readBoolean(properties, 'drainNegativePressure')
@@ -190,10 +206,11 @@ export function getIndoorUnitDrainPort(
     negativePressure,
     externalStaticPressurePa: esp,
     capacityKw: Math.max(0, readFlexibleNumber(properties, ['capacityKw', 'coolingCapacityKw', 'Cooling Capacity (kW)']) ?? 0),
-    boundsMm: unitFootprintBoundsMm(element),
+    boundsMm: unitBodyBoundsMm(element),
     bodyBottomZ: elevation,
     bodyTopZ: elevation + (finite(element.height) ? element.height : 0),
     synthesized: local.synthesized,
+    hoseInModel: local.hoseInModel,
   };
 }
 

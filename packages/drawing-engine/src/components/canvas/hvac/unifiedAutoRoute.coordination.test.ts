@@ -16,7 +16,8 @@ const originalRouting = getActivePipeRoutingSettings();
 const originalDucts = getActiveDuctSettings();
 const ducts = resolveDuctSettings({ soffitMm: 3300 });
 const routing = { ...DEFAULT_PIPE_ROUTING_SETTINGS, ceilingLimitMm: 3300 };
-const condensate = resolveCondensateSettings({ soffitMm: 3300 });
+// The unit hangs 100 mm above the ceiling tiles: its gravity outlet (30 mm above its underside) falls in the void.
+const condensate = resolveCondensateSettings({ soffitMm: 3300, ceilingPlaneMm: 2300 });
 
 /** A constrained unit connection area: gravity reserves its corridor before refrigerant (the unit set to gravity). */
 function mixedServiceScene(): HvacElement[] {

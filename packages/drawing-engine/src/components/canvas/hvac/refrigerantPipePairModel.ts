@@ -38,6 +38,7 @@ import {
   INCH_MM,
 } from './refrigerantPipeDimensions';
 import { createSceneDerivedCache } from './sceneDerivedCache';
+import { unitBodyBoundsMm } from './unitConnections';
 import {
   getUnitPipePortEndpointLocal,
   getUnitPipePortSpec,
@@ -2039,27 +2040,6 @@ function buildUnitPortBundleConnection(options: {
   };
 }
 
-function elementFootprintBoundsMm(
-  element: HvacPipeSnapSource,
-): { minX: number; minY: number; maxX: number; maxY: number } {
-  const center = absoluteCenter(element);
-  const halfWidth = element.width / 2;
-  const halfDepth = element.depth / 2;
-  const rotation = element.rotation ?? 0;
-  const corners = [
-    { x: -halfWidth, y: -halfDepth },
-    { x: halfWidth, y: -halfDepth },
-    { x: halfWidth, y: halfDepth },
-    { x: -halfWidth, y: halfDepth },
-  ].map((corner) => add(center, rotateLocalPoint(corner, rotation)));
-  return {
-    minX: Math.min(...corners.map((corner) => corner.x)),
-    minY: Math.min(...corners.map((corner) => corner.y)),
-    maxX: Math.max(...corners.map((corner) => corner.x)),
-    maxY: Math.max(...corners.map((corner) => corner.y)),
-  };
-}
-
 function resolveUnitPortBundleConnectionForElement(
   element: HvacPipeSnapSource,
 ): RefrigerantPipeBundleConnection | null {
@@ -2073,7 +2053,8 @@ function resolveUnitPortBundleConnectionForElement(
 
     const center = absoluteCenter(element);
     const rotation = element.rotation ?? 0;
-    const direction = normalizeDirection(rotateLocalPoint({ x: 1, y: 0 }, rotation));
+    // Out along the stubs (a maker cassette's leave its −x side).
+    const direction = normalizeDirection(rotateLocalPoint({ x: gasPort.axis ?? 1, y: 0 }, rotation));
     const gasPoint = localToWorld(
       center,
       getCeilingCassettePipePortEndpointLocal(gasPort),
@@ -2094,7 +2075,7 @@ function resolveUnitPortBundleConnectionForElement(
       gasElevationMm: element.elevation + gasPort.z,
       liquidElevationMm: element.elevation + liquidPort.z,
       sourceElementId: element.id,
-      sourceBoundsMm: elementFootprintBoundsMm(element),
+      sourceBoundsMm: unitBodyBoundsMm(element),
     });
   }
 
@@ -2137,7 +2118,7 @@ function resolveUnitPortBundleConnectionForElement(
     gasElevationMm: element.elevation + gasPort.localZ,
     liquidElevationMm: element.elevation + liquidPort.localZ,
     sourceElementId: element.id,
-    sourceBoundsMm: elementFootprintBoundsMm(element),
+    sourceBoundsMm: unitBodyBoundsMm(element),
   });
 }
 
@@ -2154,7 +2135,7 @@ function resolveUnitPortPipeConnectionForElement(
 
     const center = absoluteCenter(element);
     const rotation = element.rotation ?? 0;
-    const direction = normalizeDirection(rotateLocalPoint({ x: 1, y: 0 }, rotation));
+    const direction = normalizeDirection(rotateLocalPoint({ x: port.axis ?? 1, y: 0 }, rotation));
     const portPoint = localToWorld(
       center,
       getCeilingCassettePipePortEndpointLocal(port),

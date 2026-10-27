@@ -8,6 +8,14 @@ import {
   DEFAULT_REFRIGERANT_LIQUID_PIPE_DIAMETER_MM,
   DEFAULT_REFRIGERANT_PIPE_GAP_MM,
 } from "./refrigerantPipeDimensions";
+import {
+  drainConnectionOf,
+  makerPortGeometry,
+  unitConnectionOf,
+  unitConnectionsFor,
+  type UnitConnection,
+} from "./unitConnections";
+import { drainPumpChoice } from "./unitDrainPump";
 
 export interface DuctedIndoorUnitBoxSpec {
   x: number;
@@ -81,7 +89,71 @@ export interface DuctedIndoorUnitPipePortSpec {
   collarColor?: string;
   flangeColor?: string;
   bandColor: string;
+  /** Along the port's axis from x. */
   bandOffsetX: number;
+  /** Outward along local x: +1 (default) or −1. */
+  axis?: 1 | -1;
+  /** The maker's 3D model already shows this stub or hose: the 3D draws nothing over it. */
+  inModel?: boolean;
+  /** How the field pipe joins it, where the maker says. */
+  joint?: UnitConnection["joint"];
+}
+
+/** Where the field pipe joins a port: the end of its stub (unit frame). */
+export function getDuctedIndoorUnitPipePortEndpointLocal(
+  port: Pick<
+    DuctedIndoorUnitPipePortSpec,
+    "x" | "y" | "collarLength" | "length" | "flangeThickness" | "axis"
+  >,
+): { x: number; y: number } {
+  return {
+    x:
+      port.x +
+      (port.axis ?? 1) *
+        (port.collarLength + port.length - port.flangeThickness * 0.15),
+    y: port.y,
+  };
+}
+
+/**
+ * The maker's stubs, where the catalogue has them: each port laid from where
+ * the stub leaves the casing to the tip the field pipe joins, in the drawn
+ * port's colours. A pumped unit drains from its pump's outlet.
+ */
+function makerPipePorts(
+  element: DuctedElement,
+  drawn: DuctedIndoorUnitPipePortSpec[],
+): DuctedIndoorUnitPipePortSpec[] | null {
+  const maker = unitConnectionsFor(element);
+  if (!maker) return null;
+  const ports: DuctedIndoorUnitPipePortSpec[] = [];
+  const add = (
+    kind: DuctedIndoorUnitPipePortSpec["kind"],
+    connection: UnitConnection | null,
+  ) => {
+    const style = drawn.find((port) => port.kind === kind);
+    if (!connection || !style) return;
+    const geometry = makerPortGeometry(connection);
+    ports.push({
+      ...style,
+      ...geometry,
+      kind,
+      x: connection.rootX,
+      y: connection.y,
+      z: connection.z,
+      bootLength: geometry.collarLength,
+      bandRadius: geometry.radius + 1.4,
+      bandOffsetX: (geometry.collarLength + geometry.length) * 0.5,
+      axis: connection.axis,
+      inModel: connection.inModel,
+      joint: connection.joint,
+    });
+  };
+  add("gas", unitConnectionOf(maker, "gas"));
+  add("liquid", unitConnectionOf(maker, "liquid"));
+  // Every ducted unit drains through its pump unless set to gravity.
+  add("drain", drainConnectionOf(maker, drainPumpChoice(element) ?? true));
+  return ports;
 }
 
 export interface DuctedIndoorUnitModelSpec {
@@ -227,8 +299,91 @@ function buildPipePortSpec(
   };
 }
 
+type DuctedElement = Pick<
+  HvacElement,
+  "width" | "depth" | "height" | "properties"
+>;
+
+/**
+ * The ducted unit as drawn: proportioned from its size, or, where the
+ * catalogue has its maker's data, fitted to the maker's casing (its footprint
+ * also spans hoses and hanger plates) with the maker's stubs.
+ */
 export function buildDuctedIndoorUnitModel(
-  element: Pick<HvacElement, "width" | "depth" | "height" | "properties">,
+  element: DuctedElement,
+): DuctedIndoorUnitModelSpec {
+  const casing = unitConnectionsFor(element)?.casing;
+  const model = casing
+    ? {
+        ...shiftDuctedModel(
+          buildProportionedDuctedModel({
+            ...element,
+            width: casing.width / CASING_WIDTH_SHARE,
+            depth: casing.depth / CASING_DEPTH_SHARE,
+          }),
+          casing.centre,
+        ),
+        baseWidth: element.width,
+        baseDepth: element.depth,
+      }
+    : buildProportionedDuctedModel(element);
+  return {
+    ...model,
+    pipePorts: makerPipePorts(element, model.pipePorts) ?? model.pipePorts,
+  };
+}
+
+/** The drawn casing's share of the unit's width and depth. */
+const CASING_WIDTH_SHARE = 0.9;
+const CASING_DEPTH_SHARE = 0.8;
+
+function shiftBox<T extends { x: number; y: number }>(
+  box: T,
+  by: { x: number; y: number },
+): T {
+  return { ...box, x: box.x + by.x, y: box.y + by.y };
+}
+
+function shiftLine(
+  line: DuctedIndoorUnitLineSpec,
+  by: { x: number; y: number },
+): DuctedIndoorUnitLineSpec {
+  return {
+    ...line,
+    x1: line.x1 + by.x,
+    y1: line.y1 + by.y,
+    x2: line.x2 + by.x,
+    y2: line.y2 + by.y,
+  };
+}
+
+/** The whole drawn unit moved in its own plane. */
+function shiftDuctedModel(
+  model: DuctedIndoorUnitModelSpec,
+  by: { x: number; y: number },
+): DuctedIndoorUnitModelSpec {
+  return {
+    ...model,
+    casingInset: shiftBox(model.casingInset, by),
+    returnSection: shiftBox(model.returnSection, by),
+    fanSection: shiftBox(model.fanSection, by),
+    dischargeSection: shiftBox(model.dischargeSection, by),
+    dischargeOpening: shiftBox(model.dischargeOpening, by),
+    serviceBox: shiftBox(model.serviceBox, by),
+    electricalCover: shiftBox(model.electricalCover, by),
+    hangerBrackets: model.hangerBrackets.map((bracket) => shiftBox(bracket, by)),
+    filterRails: model.filterRails.map((line) => shiftLine(line, by)),
+    fanRibs: model.fanRibs.map((line) => shiftLine(line, by)),
+    sectionDividers: model.sectionDividers.map((line) => shiftLine(line, by)),
+    airOpenings: model.airOpenings.map((opening) => ({ ...opening, x: opening.x + by.x })),
+    giDucts: model.giDucts.map((duct) => ({ ...duct, x: duct.x + by.x })),
+    pipePorts: model.pipePorts.map((port) => shiftBox(port, by)),
+    controlBox: model.controlBox ? shiftBox(model.controlBox, by) : null,
+  };
+}
+
+function buildProportionedDuctedModel(
+  element: DuctedElement,
 ): DuctedIndoorUnitModelSpec {
   const gasPipeDiameterMm =
     readFlexibleNumberProperty(
@@ -276,8 +431,8 @@ export function buildDuctedIndoorUnitModel(
     x: 0,
     y: 0,
     z: unitHeight * 0.48,
-    width: baseWidth * 0.9,
-    depth: baseDepth * 0.8,
+    width: baseWidth * CASING_WIDTH_SHARE,
+    depth: baseDepth * CASING_DEPTH_SHARE,
     height: unitHeight * 0.86,
     cornerRadius: minBaseDimension * 0.028,
   };

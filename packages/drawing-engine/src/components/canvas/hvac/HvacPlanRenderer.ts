@@ -74,6 +74,7 @@ import {
   type RefrigerantPipeRenderChainState,
   type VisibleRefrigerantPipeSegmentTarget,
 } from "./refrigerantPipeRenderState";
+import { unitConnectionsFor } from "./unitConnections";
 import {
   getUnitPipePortRenderMetrics,
   getUnitPipePortSpec,
@@ -3162,6 +3163,8 @@ export class HvacPlanRenderer {
           : "rgba(255,255,255,0.38)";
 
         background.set({
+          left: toPx(cassette.panelCentre.x),
+          top: toPx(cassette.panelCentre.y),
           width: panelSizePx,
           height: panelSizePx,
           fill: panelFill,
@@ -3177,8 +3180,8 @@ export class HvacPlanRenderer {
           const panelRxPx = Math.max(8, minDimension * 0.085);
           createRectOutlineHalo(
             {
-              leftMm: 0,
-              topMm: 0,
+              leftMm: cassette.panelCentre.x,
+              topMm: cassette.panelCentre.y,
               widthMm: cassette.panelSize + haloPaddingMm,
               heightMm: cassette.panelSize + haloPaddingMm,
               rxPx: panelRxPx + 2,
@@ -3191,8 +3194,8 @@ export class HvacPlanRenderer {
           );
           createRectOutlineHalo(
             {
-              leftMm: 0,
-              topMm: 0,
+              leftMm: cassette.panelCentre.x,
+              topMm: cassette.panelCentre.y,
               widthMm: cassette.panelSize + haloPaddingMm,
               heightMm: cassette.panelSize + haloPaddingMm,
               rxPx: panelRxPx + 1,
@@ -3265,22 +3268,26 @@ export class HvacPlanRenderer {
         this.annotate(topCapHighlight, element.id, "hvac-detail");
         objects.push(topCapHighlight);
 
-        const visiblePortStartX = cassette.topCap.x + cassette.topCap.width / 2;
+        // A stub shows in plan only beyond the top cap's edge it leaves from (+x, or −x for a maker's −x stub).
+        const capMinX = cassette.topCap.x - cassette.topCap.width / 2;
+        const capMaxX = cassette.topCap.x + cassette.topCap.width / 2;
         const renderProjectedPortSegment = (
-          startMm: number,
-          endMm: number,
+          fromMm: number,
+          toMm: number,
+          axis: 1 | -1,
           centerYMm: number,
           radiusMm: number,
           fill: string,
           name: string,
         ): void => {
-          const visibleStartMm = Math.max(startMm, visiblePortStartX);
-          const visibleLengthMm = endMm - visibleStartMm;
+          const visibleStartMm = axis > 0 ? Math.max(Math.min(fromMm, toMm), capMaxX) : Math.min(fromMm, toMm);
+          const visibleEndMm = axis > 0 ? Math.max(fromMm, toMm) : Math.min(Math.max(fromMm, toMm), capMinX);
+          const visibleLengthMm = visibleEndMm - visibleStartMm;
           if (visibleLengthMm <= 0.2) {
             return;
           }
           const projectionRect = new fabric.Rect({
-            left: toPx((visibleStartMm + endMm) / 2),
+            left: toPx((visibleStartMm + visibleEndMm) / 2),
             top: toPx(centerYMm),
             width: Math.max(toPx(visibleLengthMm), 1),
             height: Math.max(toPx(radiusMm * 2), 2),
@@ -3295,17 +3302,20 @@ export class HvacPlanRenderer {
         };
 
         cassette.pipePorts.forEach((port) => {
-          const flangeStartMm = port.x;
-          const flangeEndMm = port.x + port.flangeThickness;
-          const collarStartMm = port.x + port.flangeThickness * 0.35;
-          const collarEndMm = collarStartMm + port.collarLength;
-          const pipeStartMm =
-            port.x + port.collarLength - port.flangeThickness * 0.15;
-          const pipeEndMm = pipeStartMm + port.length;
+          const axis = port.axis ?? 1;
+          const at = (offsetMm: number): number => port.x + axis * offsetMm;
+          const flangeStartMm = at(0);
+          const flangeEndMm = at(port.flangeThickness);
+          const collarStartMm = at(port.flangeThickness * 0.35);
+          const collarEndMm = at(port.flangeThickness * 0.35 + port.collarLength);
+          const pipeStartOffsetMm = port.collarLength - port.flangeThickness * 0.15;
+          const pipeStartMm = at(pipeStartOffsetMm);
+          const pipeEndMm = at(pipeStartOffsetMm + port.length);
 
           renderProjectedPortSegment(
             flangeStartMm,
             flangeEndMm,
+            axis,
             port.y,
             port.collarRadius * 1.12,
             port.flangeColor ?? "#d7dde2",
@@ -3314,6 +3324,7 @@ export class HvacPlanRenderer {
           renderProjectedPortSegment(
             collarStartMm,
             collarEndMm,
+            axis,
             port.y,
             port.collarRadius,
             port.collarColor ?? "#1f2937",
@@ -3322,14 +3333,15 @@ export class HvacPlanRenderer {
           renderProjectedPortSegment(
             pipeStartMm,
             pipeEndMm,
+            axis,
             port.y,
             port.radius,
             port.color,
             `hvac-port-${port.kind}-pipe`,
           );
 
-          const bandX = port.x + port.bandOffsetX;
-          if (bandX >= visiblePortStartX) {
+          const bandX = at(port.bandOffsetX);
+          if (axis > 0 ? bandX >= capMaxX : bandX <= capMinX) {
             const bandMarker = new fabric.Line(
               [
                 toPx(bandX),
@@ -3451,6 +3463,16 @@ export class HvacPlanRenderer {
           ry: Math.max(6, toPx(ducted.casingInset.cornerRadius * 1.4)),
         });
         background.set("strokeDashArray", null);
+        // A unit with maker data: the shell is its casing and hanger plates; its stubs and hose stand out of it.
+        const makerCasing = unitConnectionsFor(element)?.casing;
+        if (makerCasing) {
+          background.set({
+            left: toPx(makerCasing.centre.x),
+            top: toPx(makerCasing.centre.y),
+            width: toPx(makerCasing.width + 24),
+            height: depthPx,
+          });
+        }
 
         const renderRect = (
           spec: {
@@ -3789,24 +3811,26 @@ export class HvacPlanRenderer {
           0.9,
         );
 
-        const casingFaceX = ducted.casingInset.x + ducted.casingInset.width / 2;
         ducted.pipePorts.forEach((port) => {
-          const pipeEndMm =
-            port.x + port.collarLength + port.length - port.flangeThickness * 0.15;
+          // Offsets run outward along the port's axis from where it leaves the casing (port.x).
+          const axis = port.axis ?? 1;
+          const at = (offsetMm: number): number => port.x + axis * offsetMm;
+          const pipeEndOffsetMm =
+            port.collarLength + port.length - port.flangeThickness * 0.15;
           const minVisiblePipeMm = port.kind === "drain" ? 18 : 14;
-          const bootStartMm = casingFaceX;
-          const bootEndMm = Math.min(
-            port.x + port.collarLength,
-            pipeEndMm - minVisiblePipeMm,
+          const bootEndOffsetMm = Math.min(
+            port.collarLength,
+            pipeEndOffsetMm - minVisiblePipeMm,
           );
-          const pipeStartMm = Math.max(
-            port.x + port.collarLength - port.flangeThickness * 0.15,
-            casingFaceX,
+          const pipeStartOffsetMm = Math.max(
+            port.collarLength - port.flangeThickness * 0.15,
+            0,
           );
+          const pipeEndMm = at(pipeEndOffsetMm);
 
           const renderPortSegment = (
-            startMm: number,
-            endMm: number,
+            fromMm: number,
+            toMm: number,
             centerYMm: number,
             radiusMm: number,
             fill: string,
@@ -3817,6 +3841,8 @@ export class HvacPlanRenderer {
               square?: boolean;
             },
           ): void => {
+            const startMm = Math.min(fromMm, toMm);
+            const endMm = Math.max(fromMm, toMm);
             const segment = new fabric.Rect({
               left: toPx((startMm + endMm) / 2),
               top: toPx(centerYMm),
@@ -3837,8 +3863,8 @@ export class HvacPlanRenderer {
           };
 
           renderPortSegment(
-            bootStartMm,
-            bootEndMm,
+            at(0),
+            at(bootEndOffsetMm),
             port.y,
             port.collarRadius * 1.1,
             port.flangeColor ?? "#252b33",
@@ -3848,7 +3874,7 @@ export class HvacPlanRenderer {
             },
           );
           renderPortSegment(
-            pipeStartMm,
+            at(pipeStartOffsetMm),
             pipeEndMm,
             port.y,
             port.radius,
@@ -3870,11 +3896,13 @@ export class HvacPlanRenderer {
             );
           }
 
-          const bandX = Math.min(
-            pipeEndMm - 4,
-            Math.max(
-              pipeStartMm + 4,
-              pipeStartMm + (pipeEndMm - pipeStartMm) * 0.36,
+          const bandX = at(
+            Math.min(
+              pipeEndOffsetMm - 4,
+              Math.max(
+                pipeStartOffsetMm + 4,
+                pipeStartOffsetMm + (pipeEndOffsetMm - pipeStartOffsetMm) * 0.36,
+              ),
             ),
           );
           if (port.kind === "liquid") {
@@ -3980,7 +4008,7 @@ export class HvacPlanRenderer {
           const pipeRun = new fabric.Rect({
             left: toPx((metrics.pipeStartX + metrics.pipeEndX) / 2),
             top: toPx(port.localY),
-            width: Math.max(toPx(metrics.pipeEndX - metrics.pipeStartX), 2),
+            width: Math.max(toPx(Math.abs(metrics.pipeEndX - metrics.pipeStartX)), 2),
             height: Math.max(toPx(port.radius * 2), 1.5),
             rx: Math.max(toPx(port.radius), 1),
             ry: Math.max(toPx(port.radius), 1),
