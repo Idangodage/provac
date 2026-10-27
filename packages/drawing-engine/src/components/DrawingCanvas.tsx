@@ -100,6 +100,7 @@ import { useCondensatePreviewStore } from "./canvas/hvac/condensate/condensatePr
 import { isCondensatePipe, readCondensatePipeSpec } from "./canvas/hvac/condensate/condensateTypes";
 import { mergeValidationReports } from "./canvas/hvac/condensate/condensateValidation";
 import { armDrainTool, startDrainDraw, stopDrainDraw, useDrainDrawStore } from "./canvas/hvac/condensate/drainDrawSession";
+import { migrateUnitConnectionsAfterOpen } from "./canvas/hvac/connectionMigrationController";
 import { AirSystemPickChip } from "./canvas/hvac/duct/AirSystemLayer";
 import { DuctGapChip } from "./canvas/hvac/duct/DuctGapChip";
 import { DuctLegDimension } from "./canvas/hvac/duct/DuctLegDimension";
@@ -533,6 +534,11 @@ export function DrawingCanvas({
   const cycleViewStyle = useCallback(() => {
     setViewStyle((prev) => (prev === "solid" ? "xray" : prev === "xray" ? "wire" : "solid"));
   }, []);
+  // Once per opened drawing: pipes and drains still on their units' old drawn ports move onto the maker's stubs (one undo).
+  const drawingImportSerial = useSmartDrawingStore((state) => state.drawingImportSerial);
+  useEffect(() => {
+    if (drawingImportSerial > 0) migrateUnitConnectionsAfterOpen();
+  }, [drawingImportSerial]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== "x" || event.ctrlKey || event.metaKey || event.altKey) {

@@ -577,3 +577,50 @@ export function followCondensateDrains(
   }
   return result;
 }
+
+/**
+ * Drains of units whose outlet moved while the unit stayed (the outlet its
+ * maker data gives replaced the drawn one): each unit's branch restarts at
+ * the outlet, leaving along it as far as its old first run went, and its
+ * network re-solves, as a moved unit's drains follow.
+ */
+export function reattachCondensateDrains(
+  scene: HvacElement[],
+  unitIds: readonly string[],
+  context: CondensateEditContext,
+): CondensateFollowResult {
+  const result: CondensateFollowResult = { add: [], updates: [], removeIds: [], messages: [] };
+  const byId = new Map(scene.map((element) => [element.id, element]));
+  for (const networkId of condensateNetworkIdsTouching(scene, unitIds)) {
+    const model = readCondensateNetworkModel(scene, networkId);
+    if (!model) continue;
+    const locked = model.pipes.find((pipe) => pipe.properties.locked === true);
+    if (locked) {
+      result.messages.push(`Drains of network ${networkId.slice(-6)} kept their old outlet: ${locked.label || 'a run'} is locked.`);
+      continue;
+    }
+    const routes = new Map<string, PlanRoute>();
+    for (const unitId of model.unitIds.filter((id) => unitIds.includes(id))) {
+      const branchId = model.unitBranchOf.get(unitId);
+      const unit = byId.get(unitId);
+      const route = branchId ? model.routes.get(branchId) : undefined;
+      const port = unit ? getIndoorUnitDrainPort(unit, context.settings) : null;
+      if (!branchId || !route || route.length < 2 || !port) continue;
+      const stub = Math.max(150, Math.hypot(route[1]!.x - route[0]!.x, route[1]!.y - route[0]!.y));
+      routes.set(branchId, restartRoute(route, port.point,
+        { x: port.point.x + port.direction.x * stub, y: port.point.y + port.direction.y * stub }));
+    }
+    if (!routes.size) continue;
+    const session = createCondensateEditSession(scene, networkId, context);
+    if (!session) continue;
+    const solved = session.solve({ routes }, { markEdited: false });
+    if (!solved.ok) {
+      result.messages.push(`Drains could not move to the maker's outlet: ${solved.message} They are marked stale — use Re-fit or Regenerate.`);
+      continue;
+    }
+    result.add.push(...solved.add);
+    result.updates.push(...solved.updates);
+    result.removeIds.push(...solved.removeIds);
+  }
+  return result;
+}

@@ -1875,6 +1875,8 @@ export interface DrawingState {
   importProgress: number;
   isProcessing: boolean;
   processingStatus: string;
+  /** Counts drawings opened (importFromJSON): what runs once per opened drawing watches it. */
+  drawingImportSerial: number;
   detectedElements: DetectedElement[];
 
   // Tool State
@@ -2332,6 +2334,7 @@ export const useDrawingStore = create<DrawingState>()(
       importProgress: 0,
       isProcessing: false,
       processingStatus: '',
+      drawingImportSerial: 0,
       detectedElements: [],
       activeTool: 'select',
       refrigerantPipeDrawMode: 'flexible',
@@ -5452,6 +5455,7 @@ export const useDrawingStore = create<DrawingState>()(
             guides: Array.isArray(data.guides) ? data.guides : [],
             symbols: Array.isArray(data.symbols) ? data.symbols : [],
             hvacElements: importedHvacElements,
+            drawingImportSerial: get().drawingImportSerial + 1,
             // Normalize through the wall-graph mirror: stamps graph identity
             // (one-time endpoint-weld migration for legacy docs, wall ids kept)
             // and solver-mitred interior/exterior lines, so the plan renders
