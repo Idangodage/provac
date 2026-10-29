@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../data/ac-equipment-library';
 import { useDrawingStore } from '../../../store';
-import type { HvacElement } from '../../../types';
+import type { HvacElement, Point2D, Room, Wall } from '../../../types';
 
+import boxedCassette from './__fixtures__/boxed-cassette-scene.json';
 import { generateCondensateNetwork } from './condensate/condensateGenerator';
 import { resolveCondensateSettings } from './condensate/condensateSettings';
 import { planConnectionMigration, unitsWithStaleConnections } from './connectionMigration';
@@ -112,6 +113,37 @@ describe('re-attaching an old drawing to the maker stubs', () => {
     const drains = generateCondensateNetwork([...after, sink], { settings });
     const drain = drains.perUnit.find((entry) => entry.unitId === 'cassette')!;
     expect(drain.status, drain.reason).not.toBe('infeasible');
+  });
+
+  it("re-attaches the project's own cassette, drawn before its route was stored, and keeps its drawn run", () => {
+    // Its pair left the old +x ports, ran down past the unit and east along y 8038/8127, and came up into the
+    // outdoor unit's east-facing ports, crossing over just before them.
+    const project = boxedCassette as unknown as { hvacElements: HvacElement[]; walls: Wall[]; rooms: Room[] };
+    const scene = project.hvacElements;
+    const cassette = scene.find((element) => element.type === 'ceiling-cassette-ac')!;
+    expect(unitsWithStaleConnections(scene, context)).toEqual([cassette.id]);
+    const plan = planConnectionMigration(scene, { ...context, walls: project.walls, rooms: project.rooms })!;
+    expect(plan.keptUnitIds).toEqual([]);
+    expect(plan.unitIds).toEqual([cassette.id]);
+    const byId = new Map(plan.updates.map((entry) => [entry.id, entry.updates]));
+    const after = scene.map((element) => {
+      const update = byId.get(element.id);
+      return update ? { ...element, ...update, properties: { ...element.properties, ...(update.properties ?? {}) } } as HvacElement : element;
+    });
+    expect(unitsWithStaleConnections(after, context)).toEqual([]);
+    const lines = after.flatMap((element) => {
+      const line = insulatedLineFromUnit(element, cassette.id, after);
+      return line ? [{ kind: element.properties.lineKind, line }] : [];
+    });
+    expect(insulationGapNearUnit(lines.find((entry) => entry.kind === 'gas')!.line, lines.find((entry) => entry.kind === 'liquid')!.line)
+      .gapMm).toBeGreaterThanOrEqual(2);
+    // Its drawn run along the south is kept (half way between where its gas and liquid ran), not swapped for a new way.
+    const route = after.find((element) => element.properties.lineKind === 'gas')!.properties.authoredCenterlineRoute as Point2D[];
+    expect(route.slice(1).some((point, index) => Math.abs(point.y - 8082.3) < 1 && Math.abs(route[index]!.y - 8082.3) < 1
+      && Math.abs(point.x - route[index]!.x) > 5000)).toBe(true);
+    // It still drains.
+    const drains = generateCondensateNetwork(after, { settings, walls: project.walls, rooms: project.rooms });
+    expect(drains.perUnit.map((entry) => entry.status)).toEqual(['pumped']);
   });
 
   it('leaves a drawing already on the maker stubs alone', () => {

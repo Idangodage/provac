@@ -389,9 +389,26 @@ Generic stubs drawn closer than their insulation keep their swap (the clash chec
 FDUM140's bare stubs) or to the FDU's brazed socket and fillet, and the insulation starts short of it behind a tape band;
 with fittings shown insulated, a taped joint sleeve covers it. Nothing is drawn over a nut the model shows.
 
-**Old drawings (977d9a4).** When a drawing opens (`drawingImportSerial`), units whose lines or drains start more than
-1 mm off their ports now are re-attached as a moved unit's are, in one undoable change; the status bar says what moved
-("Undo puts them back") and what kept its old connections because moving it would add a design error.
+**Old drawings (977d9a4; 84aabbf and 29 October).** When a drawing opens (`drawingImportSerial`), units whose lines or
+drains start more than 1 mm off their ports now are re-attached as a moved unit's are, in one undoable change; the
+status bar says what moved ("Undo puts them back") and what kept its old connections because moving it would add a
+design error or a pipe clash (its own gas and liquid may press their insulation together by up to 5 mm where an old
+route climbs back to its levels; foam gives that much on site).
+- *Stubs now on the other side* (the FDT28's: drawn on +x, the maker's on −x). The head of the drawn route is planned
+  again (`replanFlippedHeads`, `connectionMigration.ts`): out along the new stubs, round the unit's casing and clear of
+  its drain outlet and riser, to the drawn point where the whole route costs least (pipe plus 1000 mm an elbow). The
+  first point clear of the unit can be where the old stubs were, on the far side, and rejoining there would wrap the
+  pair round the unit and back along itself. It runs all the way to the far unit, round that unit's body and in along
+  its stubs, only when it can rejoin the drawn route nowhere. Either end of a pair may be the unit's.
+- *Pairs drawn before the drawn route was stored* get one derived from the gas line (`deriveLegacyPairCenterline`):
+  the bend arcs collapsed to corners, half a spacing to the side the liquid runs on, the last stretch planned again
+  where it crowds the far unit's ports. Two faults showed on the project's own pair: each straight's line came from its
+  first segment, often the tilted tail of the arc before it, so the corners landed 138 and 187 mm off the old pipes
+  (now its longest segment, which also serves an older pair's unit move); and the side was judged at the far end,
+  where the old pair crossed over to meet the outdoor unit's ports, so the route ran 89 mm off on the wrong side (now
+  judged along the whole liquid line).
+- *An end at a unit port* gets an approach long enough for the port's own straight on the inner line of its last turn
+  (`computeEndApproachLength`, 84aabbf); before, both lines of a pair ending there could run up one column.
 
 **Seeing it (f8cf1d9, e062bc5).** The unit panel's Connections card draws the connection end to scale, seen from
 outside, with one line per connection (size, joint, height; the drain's "pump outlet"). A selected unit's plan symbol

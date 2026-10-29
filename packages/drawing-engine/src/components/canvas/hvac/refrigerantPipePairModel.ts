@@ -1,4 +1,5 @@
 import type { HvacElement, Point2D } from '../../../types';
+import { distancePointToSegment } from '../geometry';
 
 import {
   buildCeilingCassetteModel,
@@ -1068,31 +1069,46 @@ function sharpenPipeRouteCorners(routePoints: Point2D[]): Point2D[] {
   // Above arc-chord-run scale: heading-grouped bend-arc fragments come in runs
   // of up to ~100mm, while authored legs at reflow scale are longer.
   const MIN_LEG_MM = 120;
-  type Run = { start: Point2D; end: Point2D; lengthMm: number; direction: Point2D };
+  // A run's line is its longest segment (the drawn leg), not its first: that is
+  // often the tail of the bend arc before it, a degree or two off, which over a
+  // long leg would put the corner a hundred millimetres off the route.
+  type Run = { start: Point2D; end: Point2D; lengthMm: number; direction: Point2D; lineFrom: Point2D };
   const runs: Run[] = [];
   let runStart = cleaned[0]!;
   let runEnd = cleaned[1]!;
   let runDirection = normalizeDirection(subtract(runEnd, runStart));
   let runLength = Math.hypot(runEnd.x - runStart.x, runEnd.y - runStart.y);
+  let lineFrom = runStart;
+  let lineDirection = runDirection;
+  let longestMm = runLength;
   for (let index = 1; index < cleaned.length - 1; index += 1) {
     const from = cleaned[index]!;
     const to = cleaned[index + 1]!;
     const segmentDirection = normalizeDirection(subtract(to, from));
+    const segmentLength = Math.hypot(to.x - from.x, to.y - from.y);
     const headingDelta = Math.acos(
       Math.max(-1, Math.min(1, dot(runDirection, segmentDirection))),
     );
     if (headingDelta < HEADING_TOLERANCE_RAD) {
       runEnd = to;
-      runLength += Math.hypot(to.x - from.x, to.y - from.y);
+      runLength += segmentLength;
+      if (segmentLength > longestMm) {
+        longestMm = segmentLength;
+        lineFrom = from;
+        lineDirection = segmentDirection;
+      }
     } else {
-      runs.push({ start: runStart, end: runEnd, lengthMm: runLength, direction: runDirection });
+      runs.push({ start: runStart, end: runEnd, lengthMm: runLength, direction: lineDirection, lineFrom });
       runStart = from;
       runEnd = to;
       runDirection = segmentDirection;
-      runLength = Math.hypot(to.x - from.x, to.y - from.y);
+      runLength = segmentLength;
+      lineFrom = from;
+      lineDirection = segmentDirection;
+      longestMm = segmentLength;
     }
   }
-  runs.push({ start: runStart, end: runEnd, lengthMm: runLength, direction: runDirection });
+  runs.push({ start: runStart, end: runEnd, lengthMm: runLength, direction: lineDirection, lineFrom });
 
   const legs = runs.filter((run) => run.lengthMm >= MIN_LEG_MM);
   if (legs.length < 2) return cleaned;
@@ -1102,9 +1118,9 @@ function sharpenPipeRouteCorners(routePoints: Point2D[]): Point2D[] {
     const exit = legs[index]!.end;
     const entry = legs[index + 1]!.start;
     const corner = lineIntersection(
-      legs[index]!.start,
+      legs[index]!.lineFrom,
       legs[index]!.direction,
-      entry,
+      legs[index + 1]!.lineFrom,
       legs[index + 1]!.direction,
     );
     // Miter limit: a near-parallel pair intersects far away — keep the arc's
@@ -6462,6 +6478,38 @@ function rebuildCoordinatedPairReflow(options: {
       },
     },
   }));
+}
+
+/**
+ * The drawn centreline of a pair drawn before it was stored, in the pipes'
+ * own direction: the gas line with its bend arcs collapsed to corners, half a
+ * spacing towards the liquid line (the side it runs on, judged at every corner:
+ * an old pair can cross over near a far unit to meet its ports, so its far end
+ * alone can point to the wrong side). The reflow above derives the same from
+ * the route's tail. `ports`: the unit ports at its ends, whose axis its end
+ * legs are brought onto (the offset leaves them half a field spacing off it,
+ * where the stubs sit closer).
+ */
+export function deriveLegacyPairCenterline(
+  gas: HvacElement,
+  liquid: HvacElement,
+  spacingMm: number,
+  ports: { start?: Pick<RefrigerantPipeBundleConnection, 'point' | 'direction'> | null;
+    end?: Pick<RefrigerantPipeBundleConnection, 'point' | 'direction'> | null } = {},
+): Point2D[] | null {
+  const gasRoute = sharpenPipeRouteCorners([...resolveRefrigerantPipeSpec(gas.properties).routePoints]);
+  if (gasRoute.length < 2) return null;
+  const liquidRoute = resolveRefrigerantPipeSpec(liquid.properties).routePoints;
+  const towards = offsetPolyline(gasRoute, spacingMm / 2);
+  const away = offsetPolyline(gasRoute, -spacingMm / 2);
+  const offLiquid = (candidate: Point2D[]) => candidate.reduce((sum, point) => sum + liquidRoute.slice(1).reduce(
+    (nearest, end, index) => Math.min(nearest, distancePointToSegment(point, liquidRoute[index]!, end)), Number.POSITIVE_INFINITY), 0);
+  let centerline = liquidRoute.length < 2 || offLiquid(towards) <= offLiquid(away) ? towards : away;
+  if (ports.start) centerline = alignReflowRouteToPortAxis(centerline, ports.start.point, ports.start.direction);
+  if (ports.end) {
+    centerline = [...alignReflowRouteToPortAxis([...centerline].reverse(), ports.end.point, ports.end.direction)].reverse();
+  }
+  return centerline;
 }
 
 export function resolveRefrigerantPipeUnitPortReconnectionUpdates(
