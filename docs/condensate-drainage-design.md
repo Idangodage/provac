@@ -253,6 +253,14 @@ The user's rule: **every ducted unit has a built-in drain pump**, as every casse
   check runs in full.
 - **Old drawings** re-attach their drains to the new outlets when opened (`reattachCondensateDrains`, beside
   `followCondensateDrains`; see `hvac-pipe-segment-cards.md`, "Maker connections at the indoor units").
+- **Two branches into one drop (29 October 2026).** With the FDT28 draining from its maker outlet, two cassettes Auto
+  routed to one floor gully were refused: "CD 32 intersects CD 32". The first branch reaches the drop at the level the
+  second branch's wye sets, here 9 mm lower than its fall, so it ends in a 9 mm 45° step into the drop's top bend. The
+  clash check's joint allowance took each arm's direction from its last piece only, so the 90° turn read as nearly
+  straight: the allowance shrank to 27 mm and the branch's own bend touched the drop (43.2 mm against 50). It now takes
+  every direction an arm runs in over the first (r1 + r2) of it, the most nearly parallel pair governing, still capped
+  so a branch laid along the drop stays a clash (`networkPipeClearance.ts`; tests in `networkPipeClearance.test.ts`,
+  "drain joints").
 - **Tests:** `condensatePorts.test.ts` (the rule, kept choices, older values), `condensateMakerOutlet.test.ts` (hose
   ends, no second hose, the FDU224 lifted from its low socket, no dip before a pumped rise at four turns, the drain
   clear of its own unit's pair), `condensateShortfall.test.ts` (the low gravity outlet's message).

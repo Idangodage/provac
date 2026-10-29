@@ -840,16 +840,27 @@ function findNetworkPipeClashes(scene: HvacElement[], proposed: HvacElement[], r
         if (!boundTogether(a, endA, b, endB)) continue;
         let jointReach = required;
         if (a.service === 'drain' && b.service === 'drain') {
-          const heading = (lane: PipeLane, end: 'start' | 'end') => {
-            const segment = end === 'start' ? lane.segments[0]! : lane.segments.at(-1)!;
-            const delta = end === 'start' ? subtract(segment.b, segment.a) : subtract(segment.a, segment.b);
-            const magnitude = Math.sqrt(dot(delta, delta));
-            return { x: delta.x / magnitude, y: delta.y / magnitude, z: delta.z / magnitude };
+          // An arm's directions away from the joint over the first `required` of it: a run that turns into a drop
+          // through a short 45° step still meets the drop square on.
+          const headings = (lane: PipeLane, end: 'start' | 'end') => {
+            const out: Vec3[] = [];
+            let travelled = 0;
+            for (const segment of end === 'start' ? lane.segments : [...lane.segments].reverse()) {
+              const delta = end === 'start' ? subtract(segment.b, segment.a) : subtract(segment.a, segment.b);
+              const magnitude = Math.sqrt(dot(delta, delta));
+              if (magnitude > EPS) out.push({ x: delta.x / magnitude, y: delta.y / magnitude, z: delta.z / magnitude });
+              travelled += magnitude;
+              if (travelled >= required) break;
+            }
+            return out;
           };
           // Two declared wye arms diverging by theta cease touching at
-          // station (r1+r2)/(2*sin(theta/2)); cap the allowance for a malformed
+          // station (r1+r2)/(2*sin(theta/2)), the most nearly parallel of
+          // their directions governing; cap the allowance for a malformed
           // parallel junction so a long duplicated run is still a clash.
-          jointReach = required / Math.max(0.25, Math.sqrt(Math.max(0, 2 - 2 * dot(heading(a, endA), heading(b, endB)))));
+          const reach = (u: Vec3, v: Vec3) => required / Math.max(0.25, Math.sqrt(Math.max(0, 2 - 2 * dot(u, v))));
+          const armB = headings(b, endB);
+          jointReach = Math.max(required / 2, ...headings(a, endA).flatMap(u => armB.map(v => reach(u, v))));
         }
         trimA[endA] = endA === 'start' ? jointReach : a.total - jointReach;
         trimB[endB] = endB === 'start' ? jointReach : b.total - jointReach;

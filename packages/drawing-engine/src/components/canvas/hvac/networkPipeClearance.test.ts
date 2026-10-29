@@ -174,6 +174,42 @@ describe('physical endpoint exceptions', () => {
   });
 });
 
+/** An insulated 32 mm condensate drain (25 mm outside radius). */
+function drain(id: string, nodes: PipeRouteNode3D[], properties: Record<string, unknown> = {}): HvacElement {
+  const xs = nodes.map(p => p.x); const ys = nodes.map(p => p.y); const zs = nodes.map(p => p.z);
+  return { id, type: 'condensate-pipe', category: 'accessory', position: { x: Math.min(...xs) - 25, y: Math.min(...ys) - 25 },
+    width: Math.max(...xs) - Math.min(...xs) + 50, depth: Math.max(...ys) - Math.min(...ys) + 50,
+    height: Math.max(...zs) - Math.min(...zs) + 50, elevation: Math.min(...zs) - 25,
+    mountType: 'ceiling', label: 'CD 32', rotation: 0, supplyZoneRatio: 0.5,
+    properties: { routePoints: nodes.map(({ x, y }) => ({ x, y })), routeNodes3d: nodes, outerDiameterMm: 32,
+      insulationThicknessMm: 9, nominalSize: '32', fittings: [], ...properties } } as HvacElement;
+}
+
+describe('drain joints', () => {
+  // Two cassettes drained into one gully (ip-pipes, 29 Oct 2026): the first branch turns down into the drop with a
+  // 9 mm 45° step just before it, the second enters the drop's top from above through a wye.
+  const at = { x: 8321.145833333332, y: 5569.479166666666 };
+  const top = 2779.99;
+  const junction = (z: number) => ({ kind: 'junction', nodeId: 'net:n1', point: at, z });
+  const drop = drain('drop', [{ ...at, z: top }, { ...at, z: 185 }], {
+    segmentRole: 'drop', drainStart: junction(top), drainEnd: { kind: 'gully', gullyId: 'gully', point: at, z: 185 } });
+  const first = drain('first', [node(8321, 3810, 2824.1), node(8321.145, 5560.428, 2789.04), { ...at, z: top }], {
+    segmentRole: 'unit-branch', drainEnd: junction(top) });
+  const second = drain('second', [node(7648.5, 5569.479, 2845.4), node(8284.414, 5569.48, 2832.72), { ...at, z: top + 16 }], {
+    segmentRole: 'unit-branch', drainEnd: junction(top + 16),
+    fittings: [{ id: 'wye', kind: 'wye', nominalSize: '32', outerDiameterMm: 32, point: { ...at, z: top }, axis: { x: 0, y: 0, z: -1 } }] });
+
+  it('reads a branch turning into the drop through a short 45° step as one bend, not a clash', () => {
+    expect(findNewNetworkPipeClashes([], [drop, first, second])).toEqual([]);
+  });
+
+  it('still finds a branch laid along the drop', () => {
+    const alongside = drain('alongside', [{ x: at.x + 30, y: at.y, z: top - 600 }, { ...at, z: top }], {
+      segmentRole: 'unit-branch', drainEnd: junction(top) });
+    expect(findNewNetworkPipeClashes([], [drop, alongside]).map(clash => clash.elementIds)).toEqual([['alongside', 'drop']]);
+  });
+});
+
 describe('legacy physical elevation profiles', () => {
   it('honors an existing stored bypass when an unrelated new pipe passes below it', () => {
     const raised = pipe('raised', [node(0, 0, 2400), node(1000, 0, 2400)]);
