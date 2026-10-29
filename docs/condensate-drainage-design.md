@@ -227,6 +227,36 @@ From the user's building (see `hvac-duct-fabrication-design.md`, "What Auto rout
   outlets on one line, the gully south-west and due south: no drain through the other), `condensateShortfall.test.ts`
   (the FDU224's message, the pump offer, pumped with a pump).
 
+## Built-in pumps and the maker's outlets (27 October 2026)
+
+The user's rule: **every ducted unit has a built-in drain pump**, as every cassette already had.
+
+- **One reader, `unitHasDrainPump` (`hvac/unitDrainPump.ts`, e1669c6).** A choice made in the unit's Drain pump field
+  is recorded with `drainPumpSetBy: 'user'` and always wins ("Gravity only" stays gravity). A value stored before
+  choices were recorded counts only where it differs from the maker sheet's: the catalogue stored the FDU224/280's
+  "gravity" (MHI drawing PJG000Z287), which now gives way to the rule, while an earlier hand-set value is kept. A pumped
+  unit gets no negative-pressure trap by default. The unit panel marks the FDU's pump "project rule".
+- **The drain leaves the maker's outlet (b142c6d, 47ecf7c).** Where the catalogue has the maker's connection data
+  (`hvac/unitConnections.ts`), a pumped unit drains from its pump's outlet and a gravity one from its base outlet.
+  The FDUM's and FDT28's pump outlets carry the hose the maker supplies, which their models already show: the field
+  drain starts at the hose's end and no hose of ours is drawn over it (`drainHoseLengthMm` 0; the port says
+  `hoseInModel`). The FDU224/280's VP25 socket sits 30 mm above the underside; its hose is still drawn.
+- **A concealed unit's drain stays in the void.** An outlet below the void floor used to make the drain "exposed"
+  (allowed down through the room) and switched its pump off. Exposed runs remain only for wall, split and suspended
+  units; a ducted unit or cassette is lifted by its pump from such an outlet, and on gravity the planner says so:
+  "its drain outlet is 20 mm below the ceiling void, so a gravity drain cannot fall from it (about 260 mm short)",
+  with the review's pump offer.
+- **The unit's solid body is its casing.** A maker footprint also spans the stubs, the hose and the hanger plates, so
+  the drain and clash checks take the casing (`unitBodyBoundsMm`, `equipmentBoxOf`) as the unit's body.
+- **The connection zone, checked at maker units.** The validator's blanket 550 mm exemption round a unit's outlet stays
+  for generic units (their drawn stubs only stand for the maker's); at a maker unit the drain-to-own-refrigerant contact
+  check runs in full.
+- **Old drawings** re-attach their drains to the new outlets when opened (`reattachCondensateDrains`, beside
+  `followCondensateDrains`; see `hvac-pipe-segment-cards.md`, "Maker connections at the indoor units").
+- **Tests:** `condensatePorts.test.ts` (the rule, kept choices, older values), `condensateMakerOutlet.test.ts` (hose
+  ends, no second hose, the FDU224 lifted from its low socket, no dip before a pumped rise at four turns, the drain
+  clear of its own unit's pair), `condensateShortfall.test.ts` (the low gravity outlet's message).
+
 ## Verification
 
 - Vitest: `src/components/canvas/hvac/condensate/*.test.ts` (catalogue, ports, solver incl.

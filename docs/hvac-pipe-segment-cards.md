@@ -346,6 +346,78 @@ Delete); the gaps are reconnected from a chip (as it was, shortest, fewest bends
 the drain tool, and the toolbox and the bar above the drawing offer "Draw like this". See
 [Pieces deleted, gaps reconnected or drawn by hand, Draw like this, Auto-turn](hvac-duct-fabrication-design.md#pieces-deleted-gaps-reconnected-or-drawn-by-hand-draw-like-this-auto-turn-26-october-2026).
 
+## Maker connections at the indoor units (27 October 2026)
+
+Request: "fine tune the more realistic pipe connection with each indoor unit pipe port and field pipes considering ref
+pipes and drain pipes". Field pipes used to start at fractions of the unit box: on the FDT28 at its +x side while the
+maker's model has its stubs on −x, on the FDUM140/160 130 mm out from the model's stubs and 90 mm higher, and with gas
+and liquid 42–45 mm apart, so their insulation (88.9 mm apart in the field) ran into itself next to the unit.
+
+**The maker connection map (`hvac/unitConnections.ts`, 1f16938).** Per model code, in the unit frame the maker's 3D model
+is placed in (footprint centre 0,0, z above the underside): each connection's axis (±x), where it leaves the casing,
+the tip the field pipe joins, its size, its joint and whether the model already shows it; the casing (the unit's solid
+body) and, for the cassette, its panel. A unit drawn at another size keeps its drawn ports.
+
+| Unit | Line | y, z (mm) | Field joins at x | Joint | Source |
+|---|---|---|---|---|---|
+| FDT28KXZE1 | Gas / liquid | −303, 209 / −245, 167 | −373.5 (axis −x) | flare (nuts in model) | MACO model, measured |
+| | Drain (pump) | +333, 224 | −521.5 (hose in model) | hose end | |
+| FDUM22KXE6F-W | Gas / liquid | −152.5, 175 / −191.5, 105 | 316 / 325 | flare (in model) | MACO model, measured |
+| | Drain (pump) / gravity | −94.5, 204 / −148.5, 30 | 542 (hose) / 283 | hose end / socket | |
+| FDUM140/160KXE6F | Gas / liquid | −97, 145.5 / −35, 95.5 | 696 / 686 (face 627) | flare (drawn by us) | model + IFC connectors |
+| | Drain (pump) / gravity | −263.5, 188 / −96, 30 | 842 (hose) / 583 | hose end / socket | |
+| FDU224/280KXZE1 | Gas / liquid | +39.5, 214 / +132.5, 246 | 880 (end + 80) | brazed | MHI PJG000Z287 |
+| | Drain | +92.5, 30 | ≈ 837 | VP25 socket | |
+
+**Ports from the map (b142c6d).** Ports carry an `axis`, and every reader follows the stub: the cassette and ducted
+endpoints, the generic port metrics, the refrigerant bundle and line connections, the drain port, the plan glyphs and
+the 3D stubs. The FDT28's drawn panel sits at the maker's panel centre (+47 mm) and its overlay no longer draws a second
+set of stubs over the model's; the FDUM's drawn body is fitted to its casing; the FDUM140's flare stubs, which its model
+only marks on the casing, are drawn.
+
+**The pair at the stubs (89c80d6).** Measured on every maker unit drawn straight, left, right and back, and laid by Auto
+route at four turns, gas and liquid start on their stubs, leave along them and keep ≥ 2 mm between their insulation
+(`refrigerantInsulationClearance.ts`; after Auto route in the tests 3.8 mm FDT28, 11.5 FDUM22, 14.6 FDUM140, 25.4
+FDU224, and on the canvas 8.0 FDT28, 14.6 FDUM160, 25.4 FDU224). Where
+the two ends hold gas and liquid on opposite sides, the builder used to swap them at the end — at the indoor stubs, 32–50
+mm apart in height against the 65 mm their insulation needs — and Auto route left the FDUM140/160 and FDU224/280
+unconnected ("no complete replacement with clear ports"). `pairSwapsAtStart` builds the pair from the far end when that
+end's lines are clear in height (an outdoor unit's 118 mm, a branch kit's corridor levels), so the swap lands there.
+Generic stubs drawn closer than their insulation keep their swap (the clash check's connection adapter).
+
+**Joints in 3D.** At a maker joint the field copper runs bare to a hex flare nut (17–36 mm across flats by size; on the
+FDUM140's bare stubs) or to the FDU's brazed socket and fillet, and the insulation starts short of it behind a tape band;
+with fittings shown insulated, a taped joint sleeve covers it. Nothing is drawn over a nut the model shows.
+
+**Old drawings (977d9a4).** When a drawing opens (`drawingImportSerial`), units whose lines or drains start more than
+1 mm off their ports now are re-attached as a moved unit's are, in one undoable change; the status bar says what moved
+("Undo puts them back") and what kept its old connections because moving it would add a design error.
+
+**Seeing it (f8cf1d9, e062bc5).** The unit panel's Connections card draws the connection end to scale, seen from
+outside, with one line per connection (size, joint, height; the drain's "pump outlet"). A selected unit's plan symbol
+tags its stubs ("G 5/8″ flare", "L 3/8″ flare", "D VP25 pump"): a column about 2 mm high on a 1:50 sheet, just beyond
+the stubs, a leader to each tip, ordered down the sheet as the stubs come, upright at any turn of the unit.
+
+**Verified on the canvas (28 October 2026).** `unit-connections.mjs` (18/18, restored exactly): an FDC280 with an
+FDUM160, an FDU224 and an FDT28, Auto route of gas, liquid and drains — all three drained, pumped (the FDUM160's drain
+was "unavailable" before); every field line 0 mm from its maker stub; every drain 0 mm from its outlet, no hose drawn
+over the FDUM160's and FDT28's, the FDU224's drawn; the panel's rows. `unit-tags-look.mjs`: the tags on an FDUM160,
+an FDU224 turned 90° and an FDT28. The report behind the checks is the dev handle's `getUnitConnections(unitId)`.
+Opening the project ran the re-attach on its own FDT28: "Connections moved to the maker's stubs on 1 unit".
+
+**Limits.**
+- Only the five catalogue units with maker data have maker connections. Generic units keep their drawn ports, whose gas
+  and liquid stubs stand closer than their insulation; the clash check treats them as one connection adapter.
+- Outdoor units keep their drawn ports: the FDC models have no separate valve stubs to measure.
+- The FDT28's catalogue entry gives no pipe sizes, so its tags read "G flare" and "L flare".
+- The FDU224/280 are drawn pumped by the project's rule although MHI's drawing shows a gravity drain. Their pump is
+  taken to lift from the VP25 socket, 30 mm above the underside.
+- A gravity FDUM drains from its base socket, which the model sets back inside the casing face (FDUM140: x 583
+  against 627).
+- Interpenetrating insulation is reported by the existing pipe clash check. There is no separate VRF check for it.
+- A unit's plan selection halo is drawn in canvas pixels and is too thin to see at plan zoom (older behaviour). The
+  connection tags are sized for the sheet.
+
 ## Known limits and open items
 
 **Limits of what was built:**
