@@ -4,7 +4,7 @@ import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../data/ac-equipment-library
 import type { HvacElement } from '../../../types';
 
 import { connectionFaceLayout } from './unit/UnitConnectionsFigure';
-import { makerConnectionTags } from './unitConnectionTags';
+import { layoutConnectionTags, makerConnectionTags } from './unitConnectionTags';
 
 function placed(definitionId: string, properties: Record<string, unknown> = {}): HvacElement {
   const definition = DEFAULT_AC_EQUIPMENT_LIBRARY.find((entry) => entry.id === definitionId)!;
@@ -17,11 +17,11 @@ function placed(definitionId: string, properties: Record<string, unknown> = {}):
 }
 
 describe('plan tags at the maker stubs', () => {
-  it('names each connection with its field size and joint, just beyond its tip', () => {
+  it('names each connection with its field size and joint, at its stub tip', () => {
     const tags = makerConnectionTags(placed('vrf-fdum140kxe6f'));
     expect(tags.map((tag) => tag.text)).toEqual(['G 5/8″ flare', 'L 3/8″ flare', 'D VP25 pump']);
-    expect(tags[0]!.at).toEqual({ x: 696 + 30, y: -97 });
-    expect(tags[2]!.at.x).toBe(842 + 30);
+    expect(tags[0]!.tip).toEqual({ x: 696, y: -97 });
+    expect(tags[2]!.tip.x).toBe(842);
   });
 
   it('says brazed for the FDU and gravity when it is set so', () => {
@@ -32,11 +32,34 @@ describe('plan tags at the maker stubs', () => {
   it('tags the FDT28 on its −x side, without a size its catalogue entry does not give', () => {
     const tags = makerConnectionTags(placed('vrf-fdt28kxze1'));
     expect(tags.map((tag) => tag.text)).toEqual(['G flare', 'L flare', 'D VP25 pump']);
-    expect(tags.every((tag) => tag.axis === -1 && tag.at.x < -373)).toBe(true);
+    expect(tags.every((tag) => tag.axis === -1 && tag.tip.x <= -373.5)).toBe(true);
   });
 
   it('tags nothing on a unit without maker data', () => {
     expect(makerConnectionTags(placed('vrf-fdum140kxe6f', { modelCode: undefined, model: undefined }))).toEqual([]);
+  });
+});
+
+describe('the tag column', () => {
+  const options = { pitchMm: 145, gapMm: 160 };
+  const tags = makerConnectionTags(placed('vrf-fdum140kxe6f'));
+
+  it('stands beyond the stubs, one under another down the sheet in the order of the stubs, text running away', () => {
+    const laid = layoutConnectionTags(tags, 0, options);
+    // Down the sheet: the drain (y −263.5), then the gas (−97), then the liquid (−35).
+    expect(laid.map((tag) => tag.text[0])).toEqual(['D', 'G', 'L']);
+    expect(laid.every((tag) => tag.at.x === 842 + 160 && tag.anchor === 'left')).toBe(true);
+    expect(laid[1]!.at.y - laid[0]!.at.y).toBeCloseTo(145, 6);
+    // Each leader runs from its stub's tip to its tag.
+    for (const tag of laid) expect(tag.leader).toEqual([tag.tip, tag.at]);
+  });
+
+  it('still stands clear beyond the stubs on a unit turned a quarter, and runs its text away on a half turn', () => {
+    const quarter = layoutConnectionTags(tags, 90, options);
+    expect(Math.min(...quarter.map((tag) => tag.at.x))).toBeGreaterThanOrEqual(842 + 160 - 1e-9);
+    // Down the sheet is the unit's +x when it is turned a quarter: the tags step along it.
+    expect(quarter[1]!.at.x - quarter[0]!.at.x).toBeCloseTo(145, 6);
+    expect(layoutConnectionTags(tags, 180, options)[0]!.anchor).toBe('right');
   });
 });
 

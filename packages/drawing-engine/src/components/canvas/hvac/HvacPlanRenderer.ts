@@ -74,7 +74,7 @@ import {
   type RefrigerantPipeRenderChainState,
   type VisibleRefrigerantPipeSegmentTarget,
 } from "./refrigerantPipeRenderState";
-import { makerConnectionTags } from "./unitConnectionTags";
+import { layoutConnectionTags, makerConnectionTags } from "./unitConnectionTags";
 import { unitConnectionsFor } from "./unitConnections";
 import {
   getUnitPipePortRenderMetrics,
@@ -319,6 +319,9 @@ function trimPolylineEndLocal(
 
   return trimmed;
 }
+
+/** Connection tag text height in the model (mm): about 2 mm on a 1:50 sheet. */
+const CONNECTION_TAG_TEXT_MM = 100;
 
 function clampFontSize(widthPx: number): number {
   return Math.max(8, Math.min(11, widthPx * 0.08));
@@ -4069,26 +4072,35 @@ export class HvacPlanRenderer {
     if (interactionUnderlays.length > 0) {
       objects.unshift(...interactionUnderlays);
     }
-    // A selected unit with maker data names its connections at their stubs: G / L / D, size and joint.
+    // A selected unit with maker data names its connections: a column of tags beyond its stubs (G / L / D, size,
+    // joint), each with a leader to its stub's tip, sized for the sheet (about 2 mm at 1:50).
     if (options.includeInteractionHalos) {
-      for (const tag of makerConnectionTags(element)) {
-        const text = new fabric.Text(tag.text, {
+      const placed = layoutConnectionTags(makerConnectionTags(element), options.rotationDeg ?? 0,
+        { pitchMm: CONNECTION_TAG_TEXT_MM * 1.45, gapMm: 160 });
+      for (const tag of placed) {
+        const leader = new fabric.Line(
+          [toPx(tag.leader[0].x), toPx(tag.leader[0].y), toPx(tag.leader[1].x), toPx(tag.leader[1].y)],
+          { stroke: tag.colour, strokeWidth: toPx(7), visible: false, selectable: false, evented: false },
+        );
+        this.annotate(leader, element.id, "hvac-selection");
+        const text = new fabric.Text(` ${tag.text} `, {
           left: toPx(tag.at.x),
           top: toPx(tag.at.y),
-          originX: tag.axis > 0 ? "left" : "right",
+          originX: tag.anchor,
           originY: "center",
           // Upright on the sheet whatever the unit's turn.
           angle: -(options.rotationDeg ?? 0),
-          fontSize: Math.max(6, toPx(26)),
+          fontSize: toPx(CONNECTION_TAG_TEXT_MM),
           fontFamily: "monospace",
           fontWeight: "600",
           fill: tag.colour,
+          backgroundColor: "rgba(255,255,255,0.88)",
           visible: false,
           selectable: false,
           evented: false,
         });
         this.annotate(text, element.id, "hvac-selection");
-        interactionOverlays.push(text);
+        interactionOverlays.push(leader, text);
       }
     }
 

@@ -167,6 +167,7 @@ import { pickWithModifier } from "./canvas/hvac/segments/piecePicking";
 import type { SegmentProvider } from "./canvas/hvac/segments/segmentProvider";
 import { domainOf, useSegmentUiStore, type SegmentFocus } from "./canvas/hvac/segments/segmentUiStore";
 import { applyRefrigerantProposal } from "./canvas/hvac/unifiedAutoRoute";
+import { unitConnectionReport } from "./canvas/hvac/unitConnectionReport";
 import { formatNumberIn, formatQuantity, sizesText } from "./canvas/hvac/units/hvacUnits";
 import {
   buildVrfValidationFixCommand,
@@ -888,6 +889,8 @@ export function DrawingCanvas({
         const target = hvacElements.find((candidate) => candidate.id === elementId);
         return target ? buildRefrigerantPipeVisual(target, hvacElements) : null;
       },
+      /** A unit's maker stubs in world coordinates, and how its field lines and drain meet them. */
+      getUnitConnections: (unitId: string) => unitConnectionReport(hvacElements, unitId),
       /** What the pipe is welded to, and what each of its corners is made of. */
       getPipeEnvironment: (elementId: string) => {
         const target = hvacElements.find((candidate) => candidate.id === elementId);

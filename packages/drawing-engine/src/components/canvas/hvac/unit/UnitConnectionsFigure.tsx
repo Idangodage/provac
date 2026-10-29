@@ -20,6 +20,7 @@ const H = 112;
 const PAD_X = 24;
 const PAD_TOP = 10;
 const PAD_BOTTOM = 16;
+const MARK_MIN_RADIUS = 7.5;
 
 export const CONNECTION_COLOURS = { gas: '#4088b3', liquid: '#bc863f', drain: '#0f8a6a' } as const;
 
@@ -76,7 +77,8 @@ export function connectionFaceLayout(
     baseY,
     marks: shown.map(({ service, letter, connection }) => ({
       service, letter, cx: sx(across(connection.y)), cy: sy(connection.z),
-      r: Math.max(4.5, (diameter(service, connection) / 2) * scale),
+      // Big enough to carry its letter; the true size where that is larger.
+      r: Math.max(MARK_MIN_RADIUS, (diameter(service, connection) / 2) * scale),
     })),
     rows: shown.map(({ service, connection }) => ({
       service,
@@ -103,7 +105,7 @@ export function UnitConnectionsFigure({ unit }: { unit: HvacElement }) {
           <g key={mark.service}>
             <line x1={mark.cx} x2={mark.cx} y1={mark.cy + mark.r} y2={baseY} stroke={CONNECTION_COLOURS[mark.service]} strokeOpacity={0.35} strokeDasharray="2 2" />
             <circle cx={mark.cx} cy={mark.cy} r={mark.r} fill={CONNECTION_COLOURS[mark.service]} fillOpacity={0.9} stroke="#fff" strokeWidth={1} />
-            <text x={mark.cx} y={mark.cy + 3} textAnchor="middle" fontSize={7.5} fontWeight={600} fill="#fff">{mark.letter}</text>
+            <text x={mark.cx} y={mark.cy + 3.2} textAnchor="middle" fontSize={9} fontWeight={700} fill="#fff">{mark.letter}</text>
           </g>
         ))}
       </svg>
