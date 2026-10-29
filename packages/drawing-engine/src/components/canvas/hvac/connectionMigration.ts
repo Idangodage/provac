@@ -4,14 +4,23 @@
  * each unit whose connected pipes or drains start away from its ports now is
  * re-attached the way a moved unit's are: its refrigerant pairs rebuilt from
  * their drawn route onto the new stubs, its drains re-solved from the new
- * outlet. A unit whose re-attachment would add a design error keeps its
- * connections as they were, and is reported.
+ * outlet. Where the maker's stubs leave the other side of the unit (the
+ * FDT28's, drawn on +x, are on −x), the head of the drawn route is planned
+ * again first: out along the new stubs and round the unit's body to the
+ * first drawn point clear of it. A unit whose re-attachment would add a design error or a new pipe
+ * clash keeps its connections as they were, and is reported. Its own gas and
+ * liquid may press their insulation together a little where an old route
+ * climbs back to its levels (foam gives that much on site); more than that is
+ * a clash.
  */
-import type { HvacElement } from '../../../types';
+import type { HvacElement, Point2D } from '../../../types';
 
 import { reattachCondensateDrains, type CondensateEditContext } from './condensate/condensateEditing';
 import { getIndoorUnitDrainPort } from './condensate/condensatePorts';
 import { isCondensatePipe, readCondensatePipeSpec } from './condensate/condensateTypes';
+import { findNewNetworkPipeClashes } from './networkPipeClearance';
+import { findObstacleAwareOrthogonalRoute } from './obstacleAwareOrthogonalRoute';
+import { getActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { refrigerantChangeIssues } from './refrigerantChangeValidation';
 import {
   getRefrigerantPipeBundleSnapTargets,
@@ -22,6 +31,8 @@ import { unitConnectionsFor } from './unitConnections';
 
 /** A connection this far off its port has to move (mm). */
 const MOVED_MM = 1;
+/** How far a unit's own gas and liquid insulation may press together after a re-attachment (mm). */
+const OWN_PAIR_SQUEEZE_MM = 5;
 
 export interface ConnectionMigrationPlan {
   /** Units whose pipes and drains moved onto the maker's stubs. */
@@ -69,6 +80,93 @@ export function unitsWithStaleConnections(scene: readonly HvacElement[], context
   return [...stale].sort();
 }
 
+/** How far out from a drain outlet, and how wide either side, its hose and pumped riser need the space (mm). */
+const DRAIN_KEEP_OUT_REACH_MM = 450;
+const DRAIN_KEEP_OUT_HALF_WIDTH_MM = 150;
+
+/** The space a unit's drain leaves its outlet by (its hose and pumped riser), kept for it. */
+function drainKeepOut(unit: HvacElement): Array<{ id: string; minX: number; minY: number; maxX: number; maxY: number }> {
+  const drain = getIndoorUnitDrainPort(unit);
+  if (!drain) return [];
+  const far = {
+    x: drain.point.x + drain.direction.x * DRAIN_KEEP_OUT_REACH_MM,
+    y: drain.point.y + drain.direction.y * DRAIN_KEEP_OUT_REACH_MM,
+  };
+  return [{
+    id: `${unit.id}:drain`,
+    minX: Math.min(drain.point.x, far.x) - DRAIN_KEEP_OUT_HALF_WIDTH_MM,
+    minY: Math.min(drain.point.y, far.y) - DRAIN_KEEP_OUT_HALF_WIDTH_MM,
+    maxX: Math.max(drain.point.x, far.x) + DRAIN_KEEP_OUT_HALF_WIDTH_MM,
+    maxY: Math.max(drain.point.y, far.y) + DRAIN_KEEP_OUT_HALF_WIDTH_MM,
+  }];
+}
+
+/** The cardinal direction nearest a plan vector. */
+function cardinal(vector: Point2D): Point2D {
+  return Math.abs(vector.x) >= Math.abs(vector.y)
+    ? { x: Math.sign(vector.x) || 1, y: 0 }
+    : { x: 0, y: Math.sign(vector.y) || 1 };
+}
+
+/**
+ * The unit's pairs whose drawn route left its old stubs on the side its maker
+ * stubs no longer face: each pair's drawn route with its head planned again,
+ * out along the new stubs and round the unit's body to the first drawn point
+ * clear of it (both lines carry the same drawn route). Pairs that need no new
+ * head, or for which no way round is found, are left as they are.
+ */
+export function replanFlippedHeads(scene: readonly HvacElement[], unit: HvacElement): HvacElement[] {
+  const bundle = getRefrigerantPipeBundleSnapTargets([unit]).find((target) => target.connectionKind === 'unit-port');
+  if (!bundle?.sourceBoundsMm) return [...scene];
+  const settings = getActivePipeRoutingSettings();
+  const replanned = new Map<string, Point2D[]>();
+  const byBundle = new Map<string, HvacElement[]>();
+  for (const element of scene) {
+    if (element.type !== 'refrigerant-pipe') continue;
+    const spec = resolveRefrigerantPipeSpec(element.properties);
+    if (!spec.bundleId || spec.startConnection?.sourceElementId !== unit.id || spec.startConnection.connectionKind !== 'unit-port') continue;
+    byBundle.set(spec.bundleId, [...(byBundle.get(spec.bundleId) ?? []), element]);
+  }
+  for (const pair of byBundle.values()) {
+    const spec = resolveRefrigerantPipeSpec(pair[0]!.properties);
+    const authored = pair[0]!.properties.authoredCenterlineRoute as Point2D[] | undefined;
+    const oldDirection = spec.startConnection!.direction;
+    if (!Array.isArray(authored) || authored.length < 2 || !oldDirection
+      || oldDirection.x * bundle.direction.x + oldDirection.y * bundle.direction.y > 0) continue;
+    const spacing = Number(pair[0]!.properties.pairCenterSpacingMm) || 90;
+    const bendRadius = Math.max(spacing, 80);
+    const margin = spacing / 2 + settings.defaultPipeGapMm + bendRadius;
+    const body = bundle.sourceBoundsMm;
+    const clear = (point: Point2D) => point.x < body.minX - margin || point.x > body.maxX + margin
+      || point.y < body.minY - margin || point.y > body.maxY + margin;
+    const index = authored.findIndex((point, at) => at > 0 && clear(point));
+    if (index < 0) continue;
+    const next = authored[index + 1];
+    const arrive = next ? cardinal({ x: next.x - authored[index]!.x, y: next.y - authored[index]!.y })
+      : cardinal({ x: authored[index]!.x - bundle.point.x, y: authored[index]!.y - bundle.point.y });
+    // From the end of the stubs' straight (their tips sit on the casing face), round the body.
+    const stubEnd = {
+      x: bundle.point.x + bundle.direction.x * (settings.minimumPortStubMm + bendRadius),
+      y: bundle.point.y + bundle.direction.y * (settings.minimumPortStubMm + bendRadius),
+    };
+    const route = findObstacleAwareOrthogonalRoute({
+      start: stubEnd, startDirection: bundle.direction, end: authored[index]!,
+      endDirection: { x: -arrive.x, y: -arrive.y },
+      startStraightMm: 0, endStraightMm: 0, bendRadiusMm: bendRadius,
+      clearanceMm: spacing / 2 + settings.defaultPipeGapMm,
+      obstacles: [{ id: unit.id, ...body }, ...drainKeepOut(unit)],
+    });
+    if (!route) continue;
+    const head = [{ ...bundle.point }, ...route.points];
+    for (const element of pair) replanned.set(element.id, [...head, ...authored.slice(index + 1)]);
+  }
+  if (!replanned.size) return [...scene];
+  return scene.map((element) => {
+    const route = replanned.get(element.id);
+    return route ? { ...element, properties: { ...element.properties, authoredCenterlineRoute: route } } as HvacElement : element;
+  });
+}
+
 function applied(scene: readonly HvacElement[], updates: ReadonlyArray<{ id: string; updates: Partial<HvacElement> }>): HvacElement[] {
   const byId = new Map(updates.map((entry) => [entry.id, entry.updates]));
   return scene.map((element) => {
@@ -87,10 +185,17 @@ export function planConnectionMigration(scene: readonly HvacElement[], context: 
   for (const unitId of staleIds) {
     const unit = working.find((element) => element.id === unitId);
     if (!unit) continue;
-    // The unit's refrigerant lines re-attach as a moved unit's do.
-    const pipeUpdates = resolveRefrigerantPipeUnitPortReconnectionUpdates(working, unit);
+    // The unit's refrigerant lines re-attach as a moved unit's do (a head that left the other side planned again).
+    const pipeUpdates = resolveRefrigerantPipeUnitPortReconnectionUpdates(replanFlippedHeads(working, unit), unit);
     const next = applied(working, pipeUpdates);
-    if (pipeUpdates.length && refrigerantChangeIssues(working, next, pipeUpdates.map((entry) => entry.id), { walls: context.walls }).length) {
+    const changedIds = pipeUpdates.map((entry) => entry.id);
+    const changed = next.filter((element) => changedIds.includes(element.id));
+    const clashes = pipeUpdates.length ? findNewNetworkPipeClashes(working, changed, changedIds) : [];
+    const ownPair = (ids: readonly string[]) => ids.every((id) => changedIds.includes(id));
+    const disqualifying = clashes.filter((clash) => !ownPair(clash.elementIds)
+      || clash.distanceMm < clash.requiredMm - OWN_PAIR_SQUEEZE_MM);
+    if (pipeUpdates.length && (refrigerantChangeIssues(working, next, changedIds, { walls: context.walls }).length
+      || disqualifying.length)) {
       plan.keptUnitIds.push(unitId);
       continue;
     }

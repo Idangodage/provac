@@ -9,6 +9,7 @@ import { resolveCondensateSettings } from './condensate/condensateSettings';
 import { planConnectionMigration, unitsWithStaleConnections } from './connectionMigration';
 import { migrateUnitConnectionsAfterOpen } from './connectionMigrationController';
 import { DEFAULT_PIPE_ROUTING_SETTINGS, getActivePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
+import { insulatedLineFromUnit, insulationGapNearUnit } from './refrigerantInsulationClearance';
 import { buildRefrigerantPipeElements, getRefrigerantPipeBundleSnapTargets } from './refrigerantPipePairModel';
 
 const routing = { ...DEFAULT_PIPE_ROUTING_SETTINGS, ceilingLimitMm: 3300 };
@@ -73,6 +74,44 @@ describe('re-attaching an old drawing to the maker stubs', () => {
       ...plan.add,
     ];
     expect(unitsWithStaleConnections(after, context)).toEqual([]);
+  });
+
+  it("re-attaches a cassette whose stubs moved to the other side without its insulation running into itself", () => {
+    // The project's FDT28: drawn on its old +x ports, its pair run down past the unit and east to the outdoor unit.
+    const definition = DEFAULT_AC_EQUIPMENT_LIBRARY.find((entry) => entry.id === 'vrf-fdt28kxze1')!;
+    const cassette = (maker: boolean): HvacElement => ({
+      id: 'cassette', type: definition.type, category: 'indoor-unit', rotation: 0,
+      position: { x: 5000 - definition.widthMm / 2, y: 3000 - definition.depthMm / 2 },
+      width: definition.widthMm, depth: definition.depthMm, height: definition.heightMm, elevation: 2400,
+      mountType: 'ceiling', label: 'FDT28', supplyZoneRatio: 0.5,
+      properties: maker ? { ...(definition.defaultProperties ?? {}) } : { capacityKw: 2.8 },
+    } as HvacElement);
+    const port = getRefrigerantPipeBundleSnapTargets([cassette(false)]).find((target) => target.connectionKind === 'unit-port')!;
+    expect(port.direction.x).toBe(1);
+    const pipes = buildRefrigerantPipeElements([port.point, { x: 5914, y: 7387 }, { x: 11448, y: 7568 }], { startBundleConnection: port, bundleId: 'pair-1' })
+      .map((element, index) => ({ ...element, id: `pipe-${index}`, rotation: 0 }) as HvacElement);
+    const scene = [cassette(true), ...pipes];
+    expect(unitsWithStaleConnections(scene, context)).toEqual(['cassette']);
+    const plan = planConnectionMigration(scene, context)!;
+    expect(plan.unitIds).toEqual(['cassette']);
+    const byId = new Map(plan.updates.map((entry) => [entry.id, entry.updates]));
+    const after = scene.map((element) => {
+      const update = byId.get(element.id);
+      return update ? { ...element, ...update, properties: { ...element.properties, ...(update.properties ?? {}) } } as HvacElement : element;
+    });
+    expect(unitsWithStaleConnections(after, context)).toEqual([]);
+    const lines = after.flatMap((element) => {
+      const line = insulatedLineFromUnit(element, 'cassette', after);
+      return line ? [{ kind: element.properties.lineKind, line }] : [];
+    });
+    const gas = lines.find((entry) => entry.kind === 'gas')!.line;
+    const liquid = lines.find((entry) => entry.kind === 'liquid')!.line;
+    expect(insulationGapNearUnit(gas, liquid).gapMm).toBeGreaterThanOrEqual(2);
+    // The new head keeps clear of the cassette's drain outlet: its drain can still be laid.
+    const sink = { ...gully, id: 'sink', position: { x: 2900, y: 7400 } };
+    const drains = generateCondensateNetwork([...after, sink], { settings });
+    const drain = drains.perUnit.find((entry) => entry.unitId === 'cassette')!;
+    expect(drain.status, drain.reason).not.toBe('infeasible');
   });
 
   it('leaves a drawing already on the maker stubs alone', () => {

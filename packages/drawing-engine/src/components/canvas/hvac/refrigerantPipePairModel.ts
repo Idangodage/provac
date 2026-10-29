@@ -2784,6 +2784,27 @@ function pairSwapsAtStart(
   return endStubsClear && heightApart(end) < required && heightApart(start) >= required;
 }
 
+/**
+ * The approach tail at a unit port END: the port's own straight-before-bend,
+ * held on the inner line of the last turn too (half the pair spacing in from
+ * the centreline), so the stub reserve never pushes that line's corner onto
+ * the outer line's and runs the two up one column.
+ */
+function computeEndApproachLength(
+  endBundleConnection: RefrigerantPipeBundleConnection | null,
+  centerSpacingMm: number,
+  maxOuterDiameterMm: number,
+  bendRadiusMm: number,
+  startTakeoffLengthMm: number,
+): number {
+  if (endBundleConnection?.connectionKind !== 'unit-port') return startTakeoffLengthMm;
+  return Math.max(
+    startTakeoffLengthMm,
+    computeStartTakeoffLength(centerSpacingMm, maxOuterDiameterMm, getActivePipeRoutingSettings().minimumPortStubMm, bendRadiusMm)
+      + centerSpacingMm / 2,
+  );
+}
+
 function buildBundleGuideRoutes(
   routePoints: Point2D[],
   startBundleConnection: RefrigerantPipeBundleConnection | null,
@@ -2791,6 +2812,7 @@ function buildBundleGuideRoutes(
   centerSpacingMm: number,
   startTakeoffLengthMm: number,
   bendRadiusMm: number,
+  endTakeoffLengthMm: number = startTakeoffLengthMm,
 ): {
   gasGuidePoints: Point2D[];
   liquidGuidePoints: Point2D[];
@@ -2800,7 +2822,7 @@ function buildBundleGuideRoutes(
   // Append an end approach tail so the last segment is aligned with the end
   // unit's port direction. offsetPolyline then naturally offsets the endpoint
   // perpendicular to the port direction; no endpoint-snapping hack needed.
-  const endTailLength = startTakeoffLengthMm;
+  const endTailLength = endTakeoffLengthMm;
   const rawNormalized = isFieldPipeConnection
     ? dedupeConsecutivePoints(routePoints)
     : normalizeBundleGuideRoutePoints(routePoints, startBundleConnection);
@@ -4076,6 +4098,8 @@ export function buildRefrigerantPipePairVisual(
     centerSpacingMm,
     startTakeoffLengthMm,
     bendRadiusMm,
+    computeEndApproachLength(spec.endBundleConnection, centerSpacingMm,
+      Math.max(gasOuterDiameterMm, liquidOuterDiameterMm), bendRadiusMm, startTakeoffLengthMm),
   );
   const { gasRoutePoints, liquidRoutePoints } = reserveUnitPortBundleStubs(
     buildResolvedPipeRoutePoints({
@@ -4543,6 +4567,7 @@ export function buildRefrigerantPipeElements(
     centerSpacingMm,
     startTakeoffLengthMm,
     bendRadiusMm,
+    computeEndApproachLength(last, centerSpacingMm, maxOuterDiameterMm, bendRadiusMm, startTakeoffLengthMm),
   );
   const built = reserveUnitPortBundleStubs(
     buildResolvedPipeRoutePoints({
