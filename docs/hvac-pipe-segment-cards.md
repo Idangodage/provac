@@ -452,6 +452,10 @@ refused option on the legs ("Runs into Liquid Pipe with no room to pass").
 - Interpenetrating insulation is reported by the existing pipe clash check. There is no separate VRF check for it.
 - A unit's plan selection halo is drawn in canvas pixels and is too thin to see at plan zoom (older behaviour). The
   connection tags are sized for the sheet.
+- An older pair (no stored drawn route) whose unit moves without its stubs changing side is still reflowed from a tail
+  of its gas line placed by the FAR end alone (`rebuildCoordinatedPairReflow`); where the old pair crossed over there,
+  the rebuilt pair can sit a spacing off its old run. The re-attach of flipped stubs uses `deriveLegacyPairCenterline`,
+  which judges the side along the whole liquid line.
 - Plan picking goes by layer, not by distance (older behaviour): a refrigerant line's click zone reaches 12 px past its
   insulation and lies over the drains, so where a line passes within about that of a drain piece at the current zoom,
   a click on the piece takes the line. Zooming in separates them. Found when the project's re-attached pair passed
