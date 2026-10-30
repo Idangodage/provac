@@ -29,6 +29,7 @@
  */
 import type { HvacElement, Room, Wall } from '../../../types';
 
+
 import { incompleteAutoRouteRefusal } from './autoRouteCommand';
 import { incompleteDuctRouteRefusal, incompleteServiceRouteRefusal } from './autoRouteCompleteness';
 import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork } from './autoRouteEvaluation';
@@ -41,11 +42,15 @@ import { isCondensatePipe } from './condensate/condensateTypes';
 import { findCondensateRefrigerantClashes } from './condensate/condensateValidation';
 import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
 import { terminalSpigotUpdates } from './duct/ductAutoLayout';
-import { applyDuctProposal, planAutoRouteDucts, type AutoRouteDuctOptions, type AutoRouteDuctResult } from './duct/ductAutoRoute';
+import { applyDuctProposal, planAutoRouteDuctsSteps, type AutoRouteDuctOptions, type AutoRouteDuctResult } from './duct/ductAutoRoute';
 import { setActiveDuctSettings } from './duct/ductSettings';
 import { isDuctElement, readDuctRunSpec } from './duct/ductTypes';
 import { findDuctClashes } from './duct/ductVolumes';
 import { findNewNetworkPipeClashes, listNetworkPipeLanes } from './networkPipeClearance';
+import { sizeTreesOn } from './parallel/autoRouteTasks';
+import { runStepsAsync } from './parallel/steps';
+import { activeTaskRunner } from './parallel/taskRunner';
+import type { PoolReport } from './parallel/workerPool';
 import { getAutoRouteOwnership, retainGeneratedPipeEdit } from './pipeEditRetention';
 import { getActivePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { isRefrigerantBranchKitElement, resolveRefrigerantBranchKitLineSelection } from './refrigerantBranchKitModel';
@@ -83,6 +88,8 @@ export type AutoRouteStep = 'turns' | 'ducts' | 'refrigerant' | 'condensate' | '
 export interface AutoRouteTimings {
   totalMs: number;
   steps: Array<{ step: AutoRouteStep; ms: number }>;
+  /** What the run's worker pool did (absent: no pool). */
+  pool?: PoolReport;
 }
 
 const clockMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -431,8 +438,10 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
   let ducts: AutoRouteDuctResult | null = null;
   if (routeDucts) {
     progress({ stage: 'Designing ducts', completed: 0, total: 0 });
-    ducts = planAutoRouteDucts(ductScene, { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) }, options.duct!,
-      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total }));
+    // (The units are designed here, one after another; each tree's sizing goes to the workers.)
+    ducts = await runStepsAsync(planAutoRouteDuctsSteps(ductScene, { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) }, options.duct!,
+      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total })),
+    (request) => sizeTreesOn(activeTaskRunner(), request));
     issues.push(...ducts.issues);
     lap('ducts');
   }

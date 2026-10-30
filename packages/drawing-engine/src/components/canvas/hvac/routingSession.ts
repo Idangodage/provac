@@ -164,6 +164,21 @@ export async function inRoutingSession<T>(plan: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Runs `plan` in a session of its own, the caller's set aside until it ends:
+ * a task handed off by Auto route runs like this whether it runs in a worker
+ * (which has no other session) or here.
+ */
+export async function inFreshRoutingSession<T>(plan: () => Promise<T>): Promise<T> {
+  const outer = active;
+  active = null;
+  try {
+    return await inRoutingSession(plan);
+  } finally {
+    active = outer;
+  }
+}
+
 /** `inRoutingSession` for a synchronous step. */
 export function inRoutingSessionSync<T>(plan: () => T): T {
   if (active) return plan();

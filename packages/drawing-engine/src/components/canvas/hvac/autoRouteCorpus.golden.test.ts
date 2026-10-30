@@ -4,8 +4,9 @@
  * pipe, drain and fitting, every size, connection, cost, score, warning and
  * clash. The recorded fingerprints are in __fixtures__/auto-route-golden.json.
  *
- * The clock is frozen and Math.random fixed (see autoRouteFingerprint.ts): the
- * search never reads either, so a run is reproducible; a frozen clock is also
+ * The clock is frozen and Math.random fixed (see below and
+ * autoRouteFingerprint.ts): the search never reads either, so a run is
+ * reproducible; a frozen clock is also
  * how the duct optimiser runs on a fast enough computer (no budget reached).
  *
  * Minutes of routing, so only on request:
@@ -24,14 +25,53 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { runCorpusCase, selectCorpusCases } from './__fixtures__/autoRouteCorpus';
+import { runCorpusCase, selectCorpusCases, type AutoRouteCorpusCase } from './__fixtures__/autoRouteCorpus';
 import { autoRouteFingerprint, fingerprintDifferences, FROZEN_NOW, type AutoRouteFingerprint } from './__fixtures__/autoRouteFingerprint';
+import { inlineTaskRunner, withTaskRunner, type TaskRunner } from './parallel/taskRunner';
 import { lastRoutingSessionReport } from './routingSession';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 const MODE = env.AUTO_ROUTE_GOLDEN === 'record' ? 'record' : env.AUTO_ROUTE_GOLDEN === 'verify' ? 'verify' : null;
 const GOLDEN_FILE = fileURLToPath(new URL('./__fixtures__/auto-route-golden.json', import.meta.url));
 const OUT_DIR = env.AUTO_ROUTE_GOLDEN_DIR ?? join(tmpdir(), 'provacx-auto-route-golden');
+
+/**
+ * AUTO_ROUTE_RUNNER=pool-like: tasks are split and taken as for a pool of six
+ * workers (trees in runs, spare workers' speculative starts), still run here,
+ * one by one and through the worker boundary, so the answers can be compared.
+ */
+const POOL_LIKE: TaskRunner = {
+  concurrency: 6,
+  all: (tasks, onProgress) => inlineTaskRunner.all(tasks, onProgress),
+  speculate: (task) => ({ want: () => inlineTaskRunner.all([task]).then(([output]) => output!), cancel: () => undefined }),
+};
+const RUNNER = env.AUTO_ROUTE_RUNNER === 'pool-like' ? POOL_LIKE : inlineTaskRunner;
+
+/**
+ * Math.random in these runs: fixed, except while a scene is drawn, when it is a
+ * fixed sequence restarted for each case, so that the drawing's walls and rooms
+ * get ids as distinct as they are in a real drawing.
+ */
+let drawing = false;
+let drawn = 0;
+const goldenRandom = () => {
+  if (!drawing) return 0.5;
+  // The fractions of the golden ratio: never the same twice, and far apart.
+  drawn += 1;
+  return (drawn * 0.6180339887498949) % 1;
+};
+const drawnDistinctly = (entry: AutoRouteCorpusCase): AutoRouteCorpusCase => ({
+  ...entry,
+  draw: () => {
+    drawing = true;
+    drawn = 0;
+    try {
+      entry.draw();
+    } finally {
+      drawing = false;
+    }
+  },
+});
 
 interface GoldenFile { note: string; cases: Record<string, AutoRouteFingerprint> }
 
@@ -43,7 +83,7 @@ describe.runIf(MODE)('Auto route golden master', () => {
   const golden = readGolden();
   beforeAll(() => {
     vi.spyOn(Date, 'now').mockReturnValue(FROZEN_NOW);
-    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(Math, 'random').mockImplementation(goldenRandom);
     mkdirSync(OUT_DIR, { recursive: true });
   });
   afterAll(() => {
@@ -53,7 +93,7 @@ describe.runIf(MODE)('Auto route golden master', () => {
 
   for (const entry of selectCorpusCases(env.AUTO_ROUTE_CASES)) {
     it(`${entry.name}: ${entry.description}`, async () => {
-      const { fingerprint, canonical } = autoRouteFingerprint(await runCorpusCase(entry));
+      const { fingerprint, canonical } = autoRouteFingerprint(await withTaskRunner(RUNNER, () => runCorpusCase(drawnDistinctly(entry))));
       // What the run's session reused (and whether every reuse was checked against a fresh value).
       writeFileSync(join(OUT_DIR, `${entry.name}.session.json`), JSON.stringify(lastRoutingSessionReport(), null, 1));
       if (MODE === 'record') {

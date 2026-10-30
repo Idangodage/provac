@@ -22,6 +22,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 import { isCondensatePipe } from '../condensate/condensateTypes';
 import { listNetworkPipeLanes } from '../networkPipeClearance';
 import { findObstacleAwareOrthogonalRoute } from '../obstacleAwareOrthogonalRoute';
+import { runSteps, scopedSteps } from '../parallel/steps';
 import { isRefrigerantPipeElementType } from '../refrigerantPipePairModel';
 
 import { listAirPorts, type DuctAirPort } from './ductAirPorts';
@@ -59,7 +60,7 @@ import {
 import { windingIssues } from './ductAutoWinding';
 import { spigotOrigin, splitOrigin, tapOrigin } from './ductBranchTargets';
 import { legNormal } from './ductBranches';
-import { ductWallsFromInputs, withActiveDuctBuilding, type DuctRoomOutline, type DuctWall, type DuctWallInput } from './ductBuilding';
+import { ductWallsFromInputs, makeDuctBuilding, withActiveDuctBuilding, withDuctBuilding, type DuctRoomOutline, type DuctWall, type DuctWallInput } from './ductBuilding';
 import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from './ductDraft';
 import { EMPTY_COST, energyPricePerPa, formatCost, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
 import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
@@ -102,7 +103,7 @@ import {
 } from './ductTypes';
 import { boxesOverlap, ductBoxesOf, findDuctClashes, terminalBoxOf } from './ductVolumes';
 import { allRuns, designFromRuns, withReplaced, type ServiceDesign } from './optimizer/designTree';
-import { optimiseService, verifyRuns, type ServiceOption, type TreeFailure } from './optimizer/ductOptimizer';
+import { optimiseServiceSteps, sizeTreesHere, verifyRuns, type ServiceOption, type SizedTreeAnswer, type SizeTreesRequest, type TreeFailure } from './optimizer/ductOptimizer';
 import { explainBlockedCollar, explainNoCleanDesign, explainNoLayout } from './optimizer/failureMessages';
 import { cutsFromErrors, cutsFromFailures } from './optimizer/routerCuts';
 import { buildRoutingGraph } from './optimizer/routingGraph';
@@ -1434,6 +1435,13 @@ export function generateAutoDuctInShape(scene: readonly HvacElement[], request: 
   return chooseRectangularDesign(result, generateAutoDuct(scene, { ...request, shape: 'rect' }, settings));
 }
 
+/** generateAutoDuctInShape as steps: its trees' sizing is handed off (Auto route sizes them on its workers). */
+export function* generateAutoDuctInShapeSteps(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings): Generator<SizeTreesRequest, AutoDuctResult, SizedTreeAnswer[]> {
+  const result = yield* generateAutoDuctSteps(scene, request, settings);
+  if (request.shape !== 'rectangular') return result;
+  return chooseRectangularDesign(result, yield* generateAutoDuctSteps(scene, { ...request, shape: 'rect' }, settings));
+}
+
 /** The result with some designs replaced (by index), its picks found again and the shown one kept. */
 export function withAutoDuctDesigns(result: AutoDuctResult, replaced: ReadonlyMap<number, AutoDuctDesign>, sizing: AutoDuctSizingBases, terminalAirflowUpdates: HvacElement[]): AutoDuctResult {
   const designs = result.designs.map((design, index) => replaced.get(index) ?? design);
@@ -1484,10 +1492,22 @@ const ROUTER_GROUP_SIZE = 4;
 export function generateAutoDuct(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings): AutoDuctResult {
   const walls = ductWallsFromInputs(request.walls ?? []);
   const rooms: readonly DuctRoomOutline[] = request.rooms ?? [];
-  return withActiveDuctBuilding(walls, rooms, () => designUnitDucts(scene, request, settings, walls, rooms));
+  return withActiveDuctBuilding(walls, rooms, () => runSteps(designUnitDucts(scene, request, settings, walls, rooms), sizeTreesHere));
 }
 
-function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings, walls: readonly DuctWall[], rooms: readonly DuctRoomOutline[]): AutoDuctResult {
+/**
+ * generateAutoDuct as steps: the trees' sizing is handed off between them.
+ * The design's own stretches run in its building (one building throughout,
+ * as in generateAutoDuct); the work handed off brings its own.
+ */
+export function generateAutoDuctSteps(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings): Generator<SizeTreesRequest, AutoDuctResult, SizedTreeAnswer[]> {
+  const walls = ductWallsFromInputs(request.walls ?? []);
+  const rooms: readonly DuctRoomOutline[] = request.rooms ?? [];
+  const building = makeDuctBuilding(walls, rooms);
+  return scopedSteps((run) => withDuctBuilding(building, run), designUnitDucts(scene, request, settings, walls, rooms));
+}
+
+function* designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings, walls: readonly DuctWall[], rooms: readonly DuctRoomOutline[]): Generator<SizeTreesRequest, AutoDuctResult, SizedTreeAnswer[]> {
   const started = Date.now();
   const unit = scene.find((element) => element.id === request.unitId);
   let counter = 0;
@@ -1773,7 +1793,9 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
     // Size, build and verify: Optimal with the mixed catalogue and each shape's own, keeping every verified option.
     let options: ServiceOption[] = [];
     const failures: TreeFailure[] = [];
-    const sizeTrees = (designs: readonly ServiceDesign[], shapes: readonly ShapeMode[]): { options: ServiceOption[]; failures: TreeFailure[]; failuresByShape: Map<ShapeMode, TreeFailure[]> } => {
+    // (Steps: each shape's sizing of the trees is handed off; see optimiseServiceSteps.)
+    const sizeTrees = function* (designs: readonly ServiceDesign[], shapes: readonly ShapeMode[]): Generator<SizeTreesRequest,
+      { options: ServiceOption[]; failures: TreeFailure[]; failuresByShape: Map<ShapeMode, TreeFailure[]> }, SizedTreeAnswer[]> {
       const sizingStarted = Date.now();
       const round = { options: [] as ServiceOption[], failures: [] as TreeFailure[], failuresByShape: new Map<ShapeMode, TreeFailure[]>() };
       for (const sizeShape of shapes) {
@@ -1786,7 +1808,7 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
         // Rectangular throughout: every terminal on its rectangular branch, so no tree with an all-flex stub (a round
         // collar off the main) is sized in that shape.
         const pool = sizeShape === 'rectangular' ? shaped.filter((design) => !allRuns(design.root).some((run) => run.allFlex)) : shaped;
-        const optimised = optimiseService(ctx, pool, sizeShape, airflow, result.maxEspPa ?? 150);
+        const optimised = yield* optimiseServiceSteps(ctx, pool, sizeShape, airflow, result.maxEspPa ?? 150);
         trees += optimised.frontiers;
         realised += optimised.realised;
         round.options.push(...optimised.options);
@@ -1816,7 +1838,7 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
       searchedTrees.push(...initial);
       // (Every tree of a system rectangular throughout is sized rectangular, whichever router laid it.)
       const sizeShape: ShapeMode = shape === 'rectangular' ? 'rectangular' : router.shape;
-      let round = sizeTrees([...seeds, ...initial], [sizeShape]);
+      let round = yield* sizeTrees([...seeds, ...initial], [sizeShape]);
       for (let pass = 1; pass <= FEASIBILITY_ROUNDS; pass += 1) {
         const own = (option: ServiceOption) => option.source === 'steiner' && option.design?.router === router.shape && option.shape === sizeShape;
         const bestClean = Math.min(...options.filter((option) => own(option) && option.errors === 0).map((option) => routerCost(option.design)));
@@ -1833,7 +1855,7 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
         const routed = routeRound([1], only, deadline);
         if (!routed.length) { if (Date.now() > deadline) timeLimited = true; break; }
         searchedTrees.push(...routed);
-        round = sizeTrees(routed, [sizeShape]);
+        round = yield* sizeTrees(routed, [sizeShape]);
       }
       // The pressure-price variants: always (they used to run only when the
       // session had taken under a quarter of the budget, which a slower
@@ -1841,12 +1863,12 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
       if (Date.now() < deadline) {
         const varied = routeRound([0.5, 2], only, deadline);
         searchedTrees.push(...varied);
-        if (varied.length) sizeTrees(varied, [sizeShape]);
+        if (varied.length) yield* sizeTrees(varied, [sizeShape]);
       }
     }
     if (routers.length && !firstTrees.length) exact = false;
-    if (!routers.length) sizeTrees(seeds, allShapes);
-    else if (shape === 'optimal') sizeTrees([...seeds, ...searchedTrees], ['optimal']);
+    if (!routers.length) yield* sizeTrees(seeds, allShapes);
+    else if (shape === 'optimal') yield* sizeTrees([...seeds, ...searchedTrees], ['optimal']);
     if (shape !== 'round' && shape !== 'rectangular' && candidates.length) {
       // The reference: the v1 layout as it sizes it (equal friction, a rectangular main with round branches). A
       // verified option like any other, so the optimiser's choice is never worse than it.

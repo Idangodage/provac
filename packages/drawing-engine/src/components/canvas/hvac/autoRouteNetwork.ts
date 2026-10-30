@@ -4,14 +4,17 @@ import { PROJECT_FALLBACK_RULE_PROFILE, type ManufacturerRuleProfile } from '../
 
 import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork, type AutoRouteCostRates } from './autoRouteEvaluation';
 import { directBranchApproachStations } from './branchApproachStations';
-import { connectionRatioMessage, connectionRatioProblems, type ConnectionRatio } from './connectionRatio';
 import { buildBranchKitInsertion, getBranchKitApproachRouteOptions, proposeBranchKit, type BranchKitProposal } from './branchKitProposal';
+import { connectionRatioMessage, connectionRatioProblems, type ConnectionRatio } from './connectionRatio';
 import { coordinatedBranchApproachStations } from './coordinatedBranchStations';
+import { getActiveDuctSettings, setActiveDuctSettings, type DuctDesignSettings } from './duct/ductSettings';
 import { hasNewNetworkPipeClash } from './networkPipeClearance';
 import { applyNetworkPipeLevels, hasNetworkCornerRiser, planNetworkPipeLevels } from './networkPipeLevels';
 import { buildNetworkRiserRefinements } from './networkRiserRefinement';
 import { findObstacleAwareOrthogonalRoute, type ObstacleAwareOrthogonalRoute,
   type ObstacleAwareOrthogonalRouteOptions, type OrthogonalRouteObstacle } from './obstacleAwareOrthogonalRoute';
+import { reportTaskProgress, type TaskProgress } from './parallel/taskProgress';
+import { activeTaskRunner, type ParallelTask, type SpeculativeTask } from './parallel/taskRunner';
 import { autoRouteElementSignature, getAutoRouteOwnership as ownership, protectedPipeNetworkElementIds } from './pipeEditRetention';
 import { normalizePipeRouteNodes3d } from './pipeRoute3d';
 import { getActivePipeRoutingSettings, setActivePipeRoutingSettings, type PipeRoutingSettings } from './pipeRoutingSettings';
@@ -336,7 +339,7 @@ function reportPreservedNetwork(scene: HvacElement[], system: System, options: A
   result.issues.push(...preserved.hardIssues, ...preserved.advisoryIssues);
   return connected.length;
 }
-function better(left: Candidate, right: Candidate | null): boolean {
+function better(left: Pick<Candidate, 'connected' | 'evaluation'>, right: Pick<Candidate, 'connected' | 'evaluation'> | null): boolean {
   return !right || left.connected.length > right.connected.length
     || (left.connected.length === right.connected.length && left.evaluation.score < right.evaluation.score);
 }
@@ -743,9 +746,8 @@ function attachUnitWithCoordination(candidate: Candidate, baselineIds: Set<strin
   }
   return best;
 }
-function finalizeGenerated(scene: HvacElement[], baselineIds: Set<string>, system: System, connected: string[],
+function finalizeGenerated(generated: readonly HvacElement[], system: System, connected: string[],
   options: AutoRouteNetworkOptions, score: number): HvacElement[] {
-  const generated = scene.filter(element => !baselineIds.has(element.id));
   const networkId = `auto-network-${system.outdoor.element.id}`;
   const replacements = new Map(generated.map((element, index) => [element.id, `${networkId}-${index + 1}`]));
   // Terminal/node/bundle strings contain component IDs. Replace their exact substrings, longest first.
@@ -776,6 +778,90 @@ function finalizeGenerated(scene: HvacElement[], baselineIds: Set<string>, syste
       rebuildExisting: options.rebuildExisting === true, score };
     return next;
   });
+}
+
+/** One start of the network search: everything it reads, so a worker runs it as it would run here. */
+export interface GrowNetworkTask {
+  /** What the network grows on and may not change. */
+  baseline: HvacElement[];
+  system: System;
+  allUnits: Unit[];
+  /** The units to connect, farthest from the outdoor unit first. */
+  ordered: Unit[];
+  seedId: string;
+  seedIndex: number;
+  nearestFirst: boolean;
+  options: Omit<AutoRouteNetworkOptions, 'onProgress'>;
+  /** The duct settings the clash check plans duct bodies with (the run's). */
+  ductSettings: DuctDesignSettings;
+}
+
+/** What a start grew (null: nothing feasible): the elements it added in scene order, and what its search rejected. */
+export interface GrownNetwork {
+  network: { generated: HvacElement[]; connected: string[]; evaluation: Evaluation } | null;
+  stats: SearchStats;
+}
+
+/**
+ * The network grown from one start: the seed's own run from the outdoor unit,
+ * then every other unit inserted. A pure function of the task (the routing and
+ * duct settings are set here and put back), whether a worker runs it or not.
+ */
+export function growNetwork(task: GrowNetworkTask): GrownNetwork {
+  const { baseline, system, allUnits, ordered, options } = task;
+  const previousRouting = getActivePipeRoutingSettings();
+  const previousDucts = getActiveDuctSettings();
+  setActivePipeRoutingSettings(options.settings);
+  setActiveDuctSettings(task.ductSettings);
+  const stats: SearchStats = { evaluatedCandidates: 0, rejectedReasons: [], unitRejections: new Map() };
+  const baselineIds = new Set(baseline.map(element => element.id));
+  const grow = (): Candidate | null => {
+    const seed = ordered.find(unit => unit.element.id === task.seedId)!;
+    const seeded = seedNetwork(baseline, system, seed, allUnits, options, task.seedIndex, stats);
+    if (!seeded) return null;
+    const seedEvaluation = evaluation(seeded, system, [seed.element.id], options);
+    stats.evaluatedCandidates += 1;
+    if (!seedEvaluation.feasible) { recordRejections(stats, seedEvaluation.hardIssues); return null; }
+    let candidate: Candidate = { scene: seeded, connected: [seed.element.id], evaluation: seedEvaluation };
+    // Farthest-first and nearest-first insertion orders explore different shared-trunk trees.
+    // A unit that cannot use the current tree may become feasible after a later
+    // insertion creates or splits a nearby straight. Defer it, then retry only
+    // after the topology has grown. This reaches a fixed point without looping
+    // on an unchanged network or weakening any fitting/clearance rule.
+    let pending = ordered.filter(unit => unit.element.id !== seed.element.id);
+    if (task.nearestFirst) pending.reverse();
+    while (pending.length) {
+      const deferred: Unit[] = [];
+      let topologyGrew = false;
+      for (const unit of pending) {
+        reportTaskProgress({ completed: candidate.connected.length, total: ordered.length });
+        const attached = attachUnitWithCoordination(candidate, baselineIds, system, unit, allUnits, options, stats);
+        if (attached) { candidate = attached; topologyGrew = true; }
+        else deferred.push(unit);
+      }
+      if (!topologyGrew) break;
+      pending = deferred;
+    }
+    return refineCandidateRisers(candidate, baselineIds, system, allUnits, options, stats);
+  };
+  try {
+    const grown = grow();
+    return { stats, network: grown && { generated: grown.scene.filter(element => !baselineIds.has(element.id)), connected: grown.connected, evaluation: grown.evaluation } };
+  } finally {
+    setActivePipeRoutingSettings(previousRouting);
+    setActiveDuctSettings(previousDucts);
+  }
+}
+
+/** A start's search statistics added to the run's, as if it had run after those before it. */
+function mergeSearchStats(into: SearchStats, from: SearchStats): void {
+  into.evaluatedCandidates += from.evaluatedCandidates;
+  recordRejections(into, from.rejectedReasons);
+  for (const [unitId, counts] of from.unitRejections) {
+    const total = into.unitRejections.get(unitId) ?? new Map<UnitRejection, number>();
+    for (const [why, count] of counts) total.set(why, (total.get(why) ?? 0) + count);
+    into.unitRejections.set(unitId, total);
+  }
 }
 
 /**
@@ -828,50 +914,44 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
       if (!available.length) continue;
       const ordered = [...available].sort((a, b) => distance(b.port.point, system.outdoor.port.point) - distance(a.port.point, system.outdoor.port.point) || a.element.id.localeCompare(b.element.id));
       const seeds = [...new Map([ordered[0]!, ordered[1] ?? ordered[0]!, ordered.at(-1)!].map(unit => [unit.element.id, unit])).values()];
-      const baselineIds = new Set(baseline.map(element => element.id));
-      /** The network grown from one start: the seed's own run from the outdoor unit, then every other unit inserted. */
-      const growFrom = (seed: Unit, seedIndex: number, nearestFirst: boolean, stage: string): Candidate | null => {
-        options.onProgress?.({ completed: result.connectedIndoorIds.length, total: requested.length, stage });
-        const seeded = seedNetwork(baseline, system, seed, allUnits, options, seedIndex, searchStats);
-        if (!seeded) return null;
-        const seedEvaluation = evaluation(seeded, system, [seed.element.id], options);
-        searchStats.evaluatedCandidates += 1;
-        if (!seedEvaluation.feasible) { recordRejections(searchStats, seedEvaluation.hardIssues); return null; }
-        let candidate: Candidate = { scene: seeded, connected: [seed.element.id], evaluation: seedEvaluation };
-        // Farthest-first and nearest-first insertion orders explore different shared-trunk trees.
-        // A unit that cannot use the current tree may become feasible after a later
-        // insertion creates or splits a nearby straight. Defer it, then retry only
-        // after the topology has grown. This reaches a fixed point without looping
-        // on an unchanged network or weakening any fitting/clearance rule.
-        let pending = ordered.filter(unit => unit.element.id !== seed.element.id);
-        if (nearestFirst) pending.reverse();
-        while (pending.length) {
-          const deferred: Unit[] = [];
-          let topologyGrew = false;
-          for (const unit of pending) {
-            options.onProgress?.({ completed: result.connectedIndoorIds.length + candidate.connected.length,
-              total: requested.length, stage: `Connecting ${unit.element.label || unit.element.id}` });
-            const attached = attachUnitWithCoordination(candidate, baselineIds, system, unit, allUnits, options, searchStats);
-            if (attached) { candidate = attached; topologyGrew = true; }
-            else deferred.push(unit);
-          }
-          if (!topologyGrew) break;
-          pending = deferred;
-        }
-        return refineCandidateRisers(candidate, baselineIds, system, allUnits, options, searchStats);
+      const { onProgress, ...startOptions } = options;
+      const startTask = (seed: Unit, seedIndex: number, nearestFirst: boolean): ParallelTask<'grow-network'> => ({ kind: 'grow-network',
+        input: { baseline, system, allUnits, ordered, seedId: seed.element.id, seedIndex, nearestFirst, options: startOptions, ductSettings: getActiveDuctSettings() } });
+      /** Shows the furthest any running start has got. */
+      const reporter = (count: number, stage: string) => {
+        const reached = new Array<number>(count).fill(0);
+        onProgress?.({ completed: result.connectedIndoorIds.length, total: requested.length, stage });
+        return (index: number, progress: TaskProgress) => {
+          reached[index] = progress.completed;
+          onProgress?.({ completed: result.connectedIndoorIds.length + Math.max(...reached), total: requested.length, stage });
+        };
       };
-      let best: Candidate | null = null;
-      for (const [seedIndex, seed] of seeds.entries()) {
-        const grown = growFrom(seed, seedIndex, seedIndex % 2 === 1,
-          `Comparing network ${seedIndex + 1}/${seeds.length} for ${system.outdoor.element.label || 'outdoor unit'}`);
-        if (grown && better(grown, best)) best = grown;
+      const runner = activeTaskRunner();
+      // The starts run at once; the answers are taken in their order, so ties are broken as one after another.
+      const started = runner.all(seeds.map((seed, seedIndex) => startTask(seed, seedIndex, seedIndex % 2 === 1)),
+        reporter(seeds.length, `Comparing ${seeds.length === 1 ? 'a network' : `${seeds.length} networks`} for ${system.outdoor.element.label || 'outdoor unit'}`));
+      // A spare worker meanwhile starts from the unit most often left out below (the furthest not started from), so
+      // that start is already under way. Its answer is used only if the logic below asks for that very start; more
+      // of them would only slow the others on the cores they share.
+      const likely = runner.speculate ? ordered.find(unit => !seeds.includes(unit)) : undefined;
+      const ahead: SpeculativeTask<'grow-network'> | undefined = likely && runner.speculate?.(startTask(likely, seeds.length, false));
+      let best: GrownNetwork['network'] = null;
+      for (const grown of await started) {
+        mergeSearchStats(searchStats, grown.stats);
+        if (grown.network && better(grown.network, best)) best = grown.network;
       }
       // A unit the bounded starts leave out (ducts or other units shaping the main past it) is often reached when the
       // main is laid out from it: one more start from each such unit, at most two. Nothing more runs when all are in.
-      const leftOut = ordered.filter(unit => !best?.connected.includes(unit.element.id) && !seeds.includes(unit)).slice(0, 2);
-      for (const [index, seed] of leftOut.entries()) {
-        const grown = growFrom(seed, seeds.length + index, false, `Starting a network from ${seed.element.label || seed.element.id}`);
-        if (grown && better(grown, best)) best = grown;
+      const chosen = best;
+      const leftOut = ordered.filter(unit => !chosen?.connected.includes(unit.element.id) && !seeds.includes(unit)).slice(0, 2);
+      if (leftOut[0] !== likely) ahead?.cancel();
+      const again = leftOut.map((seed, index) => (index === 0 && ahead && seed === likely
+        ? ahead.want() : runner.all([startTask(seed, seeds.length + index, false)]).then(([grown]) => grown!)));
+      if (leftOut.length) onProgress?.({ completed: result.connectedIndoorIds.length, total: requested.length,
+        stage: `Starting a network from ${leftOut.map(seed => seed.element.label || seed.element.id).join(' and ')}` });
+      for (const grown of await Promise.all(again)) {
+        mergeSearchStats(searchStats, grown.stats);
+        if (grown.network && better(grown.network, best)) best = grown.network;
       }
       const previousIndoorIds = new Set([...existingCircuit.indoorIds,
         ...workingScene.filter(element => removableSet.has(element.id)).flatMap(element => ownership(element)?.indoorUnitIds ?? [])]);
@@ -895,7 +975,7 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
         issues.push(`${system.outdoor.element.label || system.outdoor.element.id}: no complete replacement with clear ports and buildable branch approaches was found${missingLabels.length ? ` for ${missingLabels.join(', ')}` : ''}; existing elements were preserved.`);
         continue;
       }
-      const added = finalizeGenerated(best.scene, baselineIds, system, best.connected, options, best.evaluation.score);
+      const added = finalizeGenerated(best.generated, system, best.connected, options, best.evaluation.score);
       const evaluationIndoorIds = missingIndoorIds.length ? best.connected : requiredIndoorIds;
       const committedEvaluation = evaluation([...baseline, ...added], system, evaluationIndoorIds, options);
       if (!committedEvaluation.feasible || hasNewNetworkPipeClash(baseline, added)) {

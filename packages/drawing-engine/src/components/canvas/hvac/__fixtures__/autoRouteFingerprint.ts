@@ -3,11 +3,11 @@
  *
  * The golden-master run freezes the clock (`FROZEN_NOW`) and fixes
  * `Math.random`, so a run is reproducible: the search itself never reads
- * either. Ids made from the clock (`<prefix>-<time in base 36>-<counter>`)
- * still carry module-level counters that depend on what ran before in the
- * process; every token containing the frozen time is renamed by its first
- * appearance (`#1`, `#2`, …), consistently across the whole result, so a
- * reference between elements still has to match. Nothing else is normalised:
+ * either. Ids made from the clock (`<prefix>-<time in base 36>-<counter>`, and
+ * a drawing's `<time>-<random>`) still carry module-level counters that depend
+ * on what ran before in the process; every token containing the frozen time is
+ * renamed by its first appearance (`#1`, `#2`, …), consistently across the whole
+ * result, so a reference between elements still has to match. Nothing else is normalised:
  * every number is compared exactly (as JSON prints it: the shortest exact
  * decimal), every array in order, every object with its keys sorted.
  */
@@ -19,7 +19,8 @@ import type { UnifiedAutoRouteResult } from '../unifiedAutoRoute';
 
 /** The frozen clock of the golden-master runs (any fixed instant; its base-36 form marks clock-made ids). */
 export const FROZEN_NOW = 1_790_000_000_000;
-const FROZEN_TOKEN = FROZEN_NOW.toString(36);
+const FROZEN_TOKENS = [FROZEN_NOW.toString(36), String(FROZEN_NOW)];
+const isClockMade = (text: string) => FROZEN_TOKENS.some((token) => text.includes(token));
 /** A token: a run of id characters. */
 const TOKEN = /[A-Za-z0-9_.:-]+/g;
 
@@ -50,9 +51,9 @@ function toPlain(value: unknown, renames: Map<string, string>): Plain {
 }
 
 function renameTokens(text: string, renames: Map<string, string>): string {
-  if (!text.includes(FROZEN_TOKEN)) return text;
+  if (!isClockMade(text)) return text;
   return text.replace(TOKEN, (token) => {
-    if (!token.includes(FROZEN_TOKEN)) return token;
+    if (!isClockMade(token)) return token;
     let name = renames.get(token);
     if (!name) {
       name = `#${renames.size + 1}`;

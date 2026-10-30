@@ -42,6 +42,8 @@ export interface AutoRouteRunOptions {
   rebuildExisting?: boolean;
   /** Duct design: trunk shape, the units' fan speed, and whether ducts already on a collar are replaced. */
   duct?: { shape: AutoDuctShape; fanSpeed: FanSpeed; rebuildExisting: boolean };
+  /** Scripted checks: no worker pool, every task in the run's own worker (the same answers, more slowly). */
+  inlineTasks?: boolean;
 }
 
 let activeWorker: Worker | null = null;
@@ -108,6 +110,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
   const request: UnifiedAutoRouteRequest = {
     type: 'route',
     scene: [...state.hvacElements],
+    ...(options.inlineTasks ? { inlineTasks: true } : {}),
     options: {
       services,
       refrigerant: {

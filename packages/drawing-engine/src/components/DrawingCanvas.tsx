@@ -908,9 +908,15 @@ export function DrawingCanvas({
       generateCondensate: (scope: 'drawing' | 'selection' = 'drawing') => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope, profile: vrfRuleProfile }),
       /** One Auto route for the ticked services (preview; apply with applyAutoRoute). */
       autoRoute: (services: { gas: boolean; liquid: boolean; condensate: boolean; supplyDuct?: boolean; returnDuct?: boolean }, scope: 'drawing' | 'selection' = 'drawing',
-        duct?: { shape: 'rect' | 'round' | 'optimal'; fanSpeed: 'p-hi' | 'hi' | 'me' | 'lo'; rebuildExisting: boolean }) =>
-        runAutoRoute({ services, scope, profile: vrfRuleProfile, duct }),
+        duct?: { shape: 'rect' | 'round' | 'optimal'; fanSpeed: 'p-hi' | 'hi' | 'me' | 'lo'; rebuildExisting: boolean }, inlineTasks = false) =>
+        runAutoRoute({ services, scope, profile: vrfRuleProfile, duct, inlineTasks }),
       getAutoRoutePreview: () => useCondensatePreviewStore.getState().unified,
+      /** Speed checks: a scene and its settings as saved, put in as they are (not undoable: a driver puts back what it read). */
+      readScene: () => {
+        const { hvacElements: elements, walls, rooms, pipeRoutingSettings, ductSettings, condensateSettings } = useSmartDrawingStore.getState();
+        return { hvacElements: elements, walls, rooms, pipeRoutingSettings, ductSettings, condensateSettings };
+      },
+      loadScene: (scene: Record<string, unknown>) => useSmartDrawingStore.setState(scene as never),
       approveAllHops: () => {
         const store = useCondensatePreviewStore.getState();
         for (const hop of store.unified?.condensate?.hopProposals ?? []) if (!store.approvedHopKeys.includes(hop.key)) store.toggleHop(hop.key);
