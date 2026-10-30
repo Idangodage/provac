@@ -409,6 +409,12 @@ route climbs back to its levels; foam gives that much on site).
   judged along the whole liquid line).
 - *An end at a unit port* gets an approach long enough for the port's own straight on the inner line of its last turn
   (`computeEndApproachLength`, 84aabbf); before, both lines of a pair ending there could run up one column.
+- *Editing a line rebuilt in plan.* A re-attached pair (like a moved unit's reflow) is stored in plan only, its levels
+  following its connections, risers included. The card's property edits (size, insulation, bends, accessories) used to
+  store such a line flat at one level, so it ran on at ceiling level to above the FDC280's ports, 1.2 m lower, and met
+  them straight down: every insulation option read "1 new error" ("end port straight stub 0 mm"). A property edit now
+  leaves a plan-only line plan-only and grows only its envelope (`withProperties`, `refrigerantSegmentOptions.ts`). The
+  older drawing hid the fault: its start already failed the same check on the same line.
 
 **Seeing it (f8cf1d9, e062bc5).** The unit panel's Connections card draws the connection end to scale, seen from
 outside, with one line per connection (size, joint, height; the drain's "pump outlet"). A selected unit's plan symbol
@@ -422,6 +428,18 @@ over the FDUM160's and FDT28's, the FDU224's drawn; the panel's rows. `unit-tags
 an FDU224 turned 90° and an FDT28. The report behind the checks is the dev handle's `getUnitConnections(unitId)`.
 Opening the project ran the re-attach on its own FDT28: "Connections moved to the maker's stubs on 1 unit".
 
+**Again after the fixes (29–30 October 2026).** `fdt28-reattach-look.mjs` 5/5: opening the project re-attaches its
+FDT28, its lines 0 mm off the stubs, their insulation clear, no port stub error. Regression drivers, each restoring the
+project exactly: unit-connections 18/18, condensate, move-p1 24/24, unit-v2 54/54, ip-pipes 30/30 (two cassettes into
+one gully apply; no insulation option reads "new error"), auto-turn 15/15, drain-tool 29/29, pipe-seg-options 16/16,
+pipe-seg-refrigerant 17/17, pipe-seg-accessories 22/22, pipe-seg-inspector 8/8, pipe-seg-kit 5/5, pipe-seg-kit-options
+11/11, cd-seg-options 12/12, cd-seg-pieces 14/14; rotate-p1 37/41 (its four known duct failures). Four drivers were
+fitted to the project's new pair, which runs down its cassette's west side: auto-turn's hand-turned outlet now faces it
+from 125 mm, so the drains preview is blocked and opens its review itself (the driver no longer clicks it shut);
+drain-tool zooms in where the pair passes 168 mm from an outlet (see the picking limit below); pipe-seg-accessories
+clicks the liquid straight clear of the valve both lines now carry on the same run; cd-seg-options also looks for its
+refused option on the legs ("Runs into Liquid Pipe with no room to pass").
+
 **Limits.**
 - Only the five catalogue units with maker data have maker connections. Generic units keep their drawn ports, whose gas
   and liquid stubs stand closer than their insulation; the clash check treats them as one connection adapter.
@@ -434,6 +452,10 @@ Opening the project ran the re-attach on its own FDT28: "Connections moved to th
 - Interpenetrating insulation is reported by the existing pipe clash check. There is no separate VRF check for it.
 - A unit's plan selection halo is drawn in canvas pixels and is too thin to see at plan zoom (older behaviour). The
   connection tags are sized for the sheet.
+- Plan picking goes by layer, not by distance (older behaviour): a refrigerant line's click zone reaches 12 px past its
+  insulation and lies over the drains, so where a line passes within about that of a drain piece at the current zoom,
+  a click on the piece takes the line. Zooming in separates them. Found when the project's re-attached pair passed
+  168 mm from a test cassette's drain outlet.
 
 ## Known limits and open items
 

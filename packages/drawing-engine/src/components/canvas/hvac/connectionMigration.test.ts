@@ -9,7 +9,9 @@ import { generateCondensateNetwork } from './condensate/condensateGenerator';
 import { resolveCondensateSettings } from './condensate/condensateSettings';
 import { planConnectionMigration, unitsWithStaleConnections } from './connectionMigration';
 import { migrateUnitConnectionsAfterOpen } from './connectionMigrationController';
+import { readPipeRouteNodes3d } from './pipeRoute3d';
 import { DEFAULT_PIPE_ROUTING_SETTINGS, getActivePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
+import { evaluateRefrigerantOption, type RefrigerantSegmentOption } from './refrigerant/refrigerantSegmentOptions';
 import { insulatedLineFromUnit, insulationGapNearUnit } from './refrigerantInsulationClearance';
 import { buildRefrigerantPipeElements, getRefrigerantPipeBundleSnapTargets } from './refrigerantPipePairModel';
 
@@ -144,6 +146,14 @@ describe('re-attaching an old drawing to the maker stubs', () => {
     // It still drains.
     const drains = generateCondensateNetwork(after, { settings, walls: project.walls, rooms: project.rooms });
     expect(drains.perUnit.map((entry) => entry.status)).toEqual(['pumped']);
+    // Its lines, rebuilt in plan only, can be edited: a thicker insulation keeps the gas line's riser down to the
+    // outdoor unit's ports 1.2 m lower (it used to be stored flat, meeting them straight down: "end port straight
+    // stub 0 mm").
+    const gas = after.find((element) => element.properties.lineKind === 'gas')!;
+    const thicker = evaluateRefrigerantOption(after, { id: 'insulation:38', group: 'insulation', glyph: 'insulation', title: '38 mm',
+      edit: { kind: 'insulation', elementId: gas.id, thicknessMm: 38 } } as unknown as RefrigerantSegmentOption);
+    expect(thicker.newIssues).toEqual([]);
+    expect(readPipeRouteNodes3d(thicker.updates[0]!)).toEqual([]);
   });
 
   it('leaves a drawing already on the maker stubs alone', () => {

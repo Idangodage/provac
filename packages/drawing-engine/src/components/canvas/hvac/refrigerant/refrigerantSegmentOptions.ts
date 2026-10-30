@@ -48,9 +48,14 @@ import {
   validatePipeBendSpace,
 } from '../pipeEditModel';
 import type { Vec3 } from '../pipePortFrame';
+import { readPipeRouteNodes3d } from '../pipeRoute3d';
 import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
 import { refrigerantChangeIssues } from '../refrigerantChangeValidation';
-import { resolveRefrigerantPipeBranchKitReconnectionUpdates, resolveRefrigerantPipeSpec } from '../refrigerantPipePairModel';
+import {
+  buildRefrigerantPipePhysicalPath,
+  resolveRefrigerantPipeBranchKitReconnectionUpdates,
+  resolveRefrigerantPipeSpec,
+} from '../refrigerantPipePairModel';
 import type { SegmentEvaluationLike, SegmentOptionLike } from '../segments/segmentProvider';
 import type { HvacUnitSystem } from '../units/hvacUnits';
 
@@ -137,10 +142,21 @@ export const RADIUS_FACTORS = [1, 1.5, 2, 3];
 
 type EditResult = { ok: true; elements: HvacElement[]; action: string; notes: string[] } | { ok: false; message: string };
 
-/** The element with new properties, its bounds and level re-derived (its route unchanged). */
+/**
+ * The element with new properties, its bounds and level re-derived (its route unchanged). A line drawn in plan only
+ * keeps no stored 3D route: its levels follow its connections, risers included. Stored flat at one level here, it
+ * would lose its riser to a port at another height (an outdoor unit's) and meet that port straight down; only its
+ * envelope follows the new outside.
+ */
 function withProperties(element: HvacElement, properties: Record<string, unknown>): HvacElement {
   const next = { ...element, properties: { ...element.properties, ...properties } };
-  return pipeWithEditedNodes(next, editablePipeNodes(next));
+  if (element.type !== 'refrigerant-pipe' || readPipeRouteNodes3d(element).length >= 2) {
+    return pipeWithEditedNodes(next, editablePipeNodes(next));
+  }
+  const grownMm = resolveRefrigerantPipeSpec(next.properties).outerDiameterMm - resolveRefrigerantPipeSpec(element.properties).outerDiameterMm;
+  const bounds = buildRefrigerantPipePhysicalPath(next).bounds;
+  return { ...next, elevation: element.elevation - grownMm / 2, height: Math.max(0, element.height + grownMm),
+    position: { x: bounds.minX, y: bounds.minY }, width: bounds.width, depth: bounds.height };
 }
 
 /** The skeleton leg the design leg is, by its two ends (the adaptive engine works on skeleton indices). */
