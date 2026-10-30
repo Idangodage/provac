@@ -11,6 +11,7 @@ import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 import { autoRouteSourceSignature, prepareAutoRouteCommand } from './autoRouteCommand';
 import { incompleteServiceRouteRefusal, leftOutParts, partialApplyRefusal } from './autoRouteCompleteness';
 import { effectiveAutoRouteSettings, type AutoRouteCostRates } from './autoRouteEvaluation';
+import { autoRouteEstimator } from './autoRouteProgress';
 import { condensateSourceSignature, prepareCondensateCommand, type CondensateCommandSource } from './condensate/condensateCommand';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
@@ -28,6 +29,7 @@ import {
   unitTurnCommandUpdates,
   wantsDucts,
   type AutoRouteServices,
+  type AutoRouteStepMemo,
   type HvacElementUpdate,
 } from './unifiedAutoRoute';
 import type { UnifiedAutoRouteRequest, UnifiedAutoRouteResponse } from './unifiedAutoRouteProtocol';
@@ -47,6 +49,8 @@ export interface AutoRouteRunOptions {
 }
 
 let activeWorker: Worker | null = null;
+/** The last run's steps: the next run takes from them whatever has not changed. */
+let lastSteps: AutoRouteStepMemo | null = null;
 /** The rule profile the open preview was calculated with (needed again at apply). */
 let previewProfile: ManufacturerRuleProfile | undefined;
 
@@ -74,6 +78,8 @@ export function cancelAutoRoute(): void {
   activeWorker?.terminate();
   activeWorker = null;
   const preview = useCondensatePreviewStore.getState();
+  // (With whatever part of a proposal it had shown.)
+  preview.setUnified(null, null);
   preview.setRunning(null);
   preview.setMessage('Auto route cancelled.');
 }
@@ -133,6 +139,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
       },
       // Auto-turn: 4-way cassettes turned for shorter runs first (Route defaults).
       orientation: autoTurnSettingsOf(state.pipeRoutingSettings),
+      ...(lastSteps ? { previous: lastSteps } : {}),
       // Always passed: every step plans duct bodies with the document's duct settings.
       duct: {
         settings: state.ductSettings,
@@ -154,16 +161,23 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
   preview.setMessage(null);
   preview.setUnified(null, null);
   preview.setRunning({ stage: 'Preparing equipment, drains and routing rules', completed: 0, total: 0 });
+  const estimate = autoRouteEstimator(services, {
+    terminals: request.scene.filter(isDuctTerminalElement).length,
+    units: request.scene.filter((element) => element.type === 'ducted-ac' || element.type === 'ceiling-cassette-ac').length,
+  });
   const finish = (response: UnifiedAutoRouteResponse) => {
     const store = useCondensatePreviewStore.getState();
-    if (response.type === 'progress') { store.setRunning(response.progress); return; }
+    if (response.type === 'progress') { store.setRunning({ ...response.progress, ...estimate(response.progress) }); return; }
+    if (response.type === 'partial') { store.setPartial(response.result); return; }
     activeWorker?.terminate();
     activeWorker = null;
     if (response.type === 'error') {
+      store.setUnified(null, null);
       store.setRunning(null);
       store.setMessage(response.message);
       return;
     }
+    lastSteps = response.memo ?? null;
     store.setUnified(response.result, signatures);
     store.setMessage(null);
   };

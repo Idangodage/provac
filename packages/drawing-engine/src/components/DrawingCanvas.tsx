@@ -910,7 +910,18 @@ export function DrawingCanvas({
       autoRoute: (services: { gas: boolean; liquid: boolean; condensate: boolean; supplyDuct?: boolean; returnDuct?: boolean }, scope: 'drawing' | 'selection' = 'drawing',
         duct?: { shape: 'rect' | 'round' | 'optimal'; fanSpeed: 'p-hi' | 'hi' | 'me' | 'lo'; rebuildExisting: boolean }, inlineTasks = false) =>
         runAutoRoute({ services, scope, profile: vrfRuleProfile, duct, inlineTasks }),
-      getAutoRoutePreview: () => useCondensatePreviewStore.getState().unified,
+      /** The finished proposal (null while a run is under way, though the overlays show what has finished). */
+      getAutoRoutePreview: () => {
+        const { running, unified } = useCondensatePreviewStore.getState();
+        return running ? null : unified;
+      },
+      /** Where a run has got: its stage, and how many elements of each service the overlays show so far. */
+      getAutoRouteState: () => {
+        const { running, unified, progress } = useCondensatePreviewStore.getState();
+        return { running, stage: progress?.stage ?? null, fraction: progress?.fraction ?? null, shown: {
+          ducts: unified?.ducts?.elementsToAdd.length ?? 0, refrigerant: unified?.refrigerant?.elementsToAdd.length ?? 0, condensate: unified?.condensate?.elementsToAdd.length ?? 0,
+        } };
+      },
       /** Speed checks: a scene and its settings as saved, put in as they are (not undoable: a driver puts back what it read). */
       readScene: () => {
         const { hvacElements: elements, walls, rooms, pipeRoutingSettings, ductSettings, condensateSettings } = useSmartDrawingStore.getState();

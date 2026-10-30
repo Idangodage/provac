@@ -14,6 +14,10 @@ export interface CondensateProgress {
   stage: string;
   completed: number;
   total: number;
+  /** For the progress bar (autoRouteProgress.ts). */
+  fraction?: number;
+  timeLeftMs?: number | null;
+  estimatedAt?: number;
 }
 
 export interface AutoRouteSignatures {
@@ -39,6 +43,8 @@ export interface CondensatePreviewState {
   highlightUnitId: string | null;
   setRunning: (progress: CondensateProgress | null) => void;
   setUnified: (unified: UnifiedAutoRouteResult | null, signatures: AutoRouteSignatures | null) => void;
+  /** The proposal so far, while the run goes on: the overlays show it; Apply waits for setUnified. */
+  setPartial: (unified: UnifiedAutoRouteResult) => void;
   setMessage: (message: string | null) => void;
   toggleHop: (key: string) => void;
   setHighlightUnit: (unitId: string | null) => void;
@@ -63,6 +69,7 @@ export const useCondensatePreviewStore = create<CondensatePreviewState>((set) =>
     progress: null,
     approvedHopKeys: [],
   }),
+  setPartial: (unified) => set({ unified, result: unified.condensate, signatures: null }),
   setMessage: (message) => set({ message }),
   toggleHop: (key) => set((state) => ({
     approvedHopKeys: state.approvedHopKeys.includes(key)

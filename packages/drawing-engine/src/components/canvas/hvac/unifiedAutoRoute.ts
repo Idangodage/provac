@@ -79,6 +79,8 @@ export interface UnifiedAutoRouteProgress {
   stage: string;
   completed: number;
   total: number;
+  /** The step it belongs to, for the progress bar. */
+  step?: AutoRouteStep;
 }
 
 /** A step of the run, as timed: the turns, each service, the audit, and the alternatives compared. */
@@ -93,6 +95,19 @@ export interface AutoRouteTimings {
 }
 
 const clockMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+/**
+ * What a run remembers for the next: each service step's answer and what went
+ * into it. A step's answer depends only on that, so where it has not changed
+ * the next run takes the answer from here instead of working it out again.
+ */
+export interface AutoRouteStepMemo {
+  ducts?: { key: string; value: AutoRouteDuctResult };
+  refrigerant?: { key: string; value: AutoRouteNetworkResult };
+  condensate?: { key: string; value: CondensateGenerationResult };
+  alternateCondensate?: { key: string; value: CondensateGenerationResult };
+  alternateRefrigerant?: { key: string; value: AutoRouteNetworkResult };
+}
 
 export interface UnifiedAutoRouteOptions {
   services: AutoRouteServices;
@@ -109,6 +124,12 @@ export interface UnifiedAutoRouteOptions {
   /** Auto-turn: 4-way cassettes turned for shorter runs before anything is routed (absent: none). */
   orientation?: AutoTurnSettings;
   onProgress?: (progress: UnifiedAutoRouteProgress) => void;
+  /** Hears the proposal so far as each service finishes: to look at (only the run's final answer can be applied). */
+  onPartial?: (result: UnifiedAutoRouteResult) => void;
+  /** The last run's steps (onMemo): what has not changed is not worked out again. */
+  previous?: AutoRouteStepMemo;
+  /** Hears this run's steps at its end, to give the next as `previous`. */
+  onMemo?: (memo: AutoRouteStepMemo) => void;
 }
 
 export interface ServiceClash {
@@ -396,12 +417,22 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
     steps.push({ step, ms: now - stepStarted });
     stepStarted = now;
   };
+  const memo: AutoRouteStepMemo = {};
+  /** A service step: its answer from the last run when `inputs` (everything it reads) are what they were. */
+  const remembered = async <K extends keyof AutoRouteStepMemo, T extends NonNullable<AutoRouteStepMemo[K]>['value']>(name: K, inputs: unknown, work: () => T | Promise<T>): Promise<T> => {
+    if (!options.onMemo) return work();
+    const key = contentKey(inputs);
+    const earlier = options.previous?.[name];
+    const value = earlier?.key === key ? earlier.value as T : await work();
+    (memo as Record<string, { key: string; value: unknown }>)[name] = { key, value };
+    return value;
+  };
 
   // First, the turns (see the module comment): every step below sees the cassettes turned.
   let originalScene = drawnScene;
   let orientation: UnifiedAutoRouteResult['orientation'];
   if (options.orientation?.enabled && (wantsRefrigerant || services.condensate)) {
-    progress({ stage: 'Turning cassettes for shorter runs', completed: 0, total: 0 });
+    progress({ stage: 'Turning cassettes for shorter runs', completed: 0, total: 0, step: 'turns' });
     const replaceable = new Set([
       ...(services.condensate ? replaceableCondensatePipeIds(drawnScene, options.condensate.settings, options.condensate) : []),
       ...(services.gas && services.liquid ? replaceableGeneratedRefrigerantIds(drawnScene, options.refrigerant) : []),
@@ -437,25 +468,27 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
 
   let ducts: AutoRouteDuctResult | null = null;
   if (routeDucts) {
-    progress({ stage: 'Designing ducts', completed: 0, total: 0 });
+    progress({ stage: 'Designing ducts', completed: 0, total: 0, step: 'ducts' });
+    const wanted = { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) };
     // (The units are designed here, one after another; each tree's sizing goes to the workers.)
-    ducts = await runStepsAsync(planAutoRouteDuctsSteps(ductScene, { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) }, options.duct!,
-      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total })),
-    (request) => sizeTreesOn(activeTaskRunner(), request));
+    ducts = await remembered('ducts', [ductScene, wanted, options.duct], () => runStepsAsync(planAutoRouteDuctsSteps(ductScene, wanted, options.duct!,
+      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total, step: 'ducts' })),
+    (request) => sizeTreesOn(activeTaskRunner(), request)));
     issues.push(...ducts.issues);
     lap('ducts');
+    if (wantsRefrigerant || services.condensate) options.onPartial?.({ services, ducts, refrigerant: null, condensate: null, clashes: [], issues: [...issues], ...(orientation ? { orientation } : {}) });
   }
   // Every later step sees the new ducts as part of the drawing.
   const scene = applyDuctProposal(originalScene, ducts);
 
   let refrigerant: AutoRouteNetworkResult | null = null;
   if (wantsRefrigerant) {
-    progress({ stage: 'Routing refrigerant', completed: 0, total: 0 });
+    progress({ stage: 'Routing refrigerant', completed: 0, total: 0, step: 'refrigerant' });
     const refrigerantScene = scene.filter((element) => !replacedDrains.has(element.id));
-    const paired = await planAutoRouteNetwork(refrigerantScene, {
+    const paired = await remembered('refrigerant', [refrigerantScene, options.refrigerant, options.duct?.settings], () => planAutoRouteNetwork(refrigerantScene, {
       ...options.refrigerant,
-      onProgress: (step) => progress({ stage: `Refrigerant: ${step.stage}`, completed: step.completed, total: step.total }),
-    });
+      onProgress: (step) => progress({ stage: `Refrigerant: ${step.stage}`, completed: step.completed, total: step.total, step: 'refrigerant' }),
+    }));
     refrigerant = services.gas && services.liquid
       ? paired
       : reduceRefrigerantResultToLine(paired, scene, services.gas ? 'gas' : 'liquid');
@@ -480,25 +513,27 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
     }
     issues.push(...refrigerant.issues);
     lap('refrigerant');
+    if (services.condensate) options.onPartial?.({ services, ducts, refrigerant, condensate: null, clashes: [], issues: [...issues], ...(orientation ? { orientation } : {}) });
   }
 
   let condensate: CondensateGenerationResult | null = null;
   if (services.condensate) {
-    progress({ stage: 'Routing condensate around the refrigerant', completed: 0, total: 0 });
-    condensate = generateCondensateNetwork(applyRefrigerantProposal(scene, refrigerant), {
+    progress({ stage: 'Routing condensate around the refrigerant', completed: 0, total: 0, step: 'condensate' });
+    const drainScene = applyRefrigerantProposal(scene, refrigerant);
+    condensate = await remembered('condensate', [drainScene, options.condensate, options.refrigerant.settings, options.duct?.settings], () => generateCondensateNetwork(drainScene, {
       settings: options.condensate.settings,
       routingSettings: options.refrigerant.settings,
       walls: options.condensate.walls,
       rooms: options.condensate.rooms,
       unitIds: options.condensate.unitIds,
       gullyIds: options.condensate.gullyIds,
-      onProgress: (step) => progress({ stage: `Condensate: ${step.stage}`, completed: step.completed, total: step.total }),
-    });
+      onProgress: (step) => progress({ stage: `Condensate: ${step.stage}`, completed: step.completed, total: step.total, step: 'condensate' }),
+    }));
     issues.push(...condensate.issues);
     lap('condensate');
   }
 
-  progress({ stage: 'Checking clashes between services', completed: 0, total: 0 });
+  progress({ stage: 'Checking clashes between services', completed: 0, total: 0, step: 'audit' });
   const baseline = auditUnifiedCandidate(originalScene, { services, ducts, refrigerant, condensate, clashes: [], issues }, options);
   lap('audit');
   const candidates = [{ key: 'refrigerant-first', result: baseline }];
@@ -514,21 +549,23 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
     || condensate.hopProposals.length || condensate.metrics.unitsConnected < condensate.metrics.unitsTotal
     || (refrigerant && !refrigerant.complete) || options.refrigerant.objective === 'cost');
   if (retry) {
-    progress({ stage: 'Comparing a drainage-first layout', completed: 0, total: 1 });
+    // (What is found so far can be looked at while the alternative is worked out.)
+    options.onPartial?.({ ...baseline, ...(orientation ? { orientation } : {}) });
+    progress({ stage: 'Comparing a drainage-first layout', completed: 0, total: 1, step: 'drainage-first' });
     const replacedRefrigerant = new Set([...replaceableRefrigerant, ...(refrigerant?.removeElementIds ?? [])]);
     const drainBase = scene.filter((element) => !replacedDrains.has(element.id) && !replacedRefrigerant.has(element.id));
-    const alternateDrains = generateCondensateNetwork(drainBase, {
+    const alternateDrains = await remembered('alternateCondensate', [drainBase, options.condensate, options.refrigerant.settings, options.duct?.settings], () => generateCondensateNetwork(drainBase, {
       ...options.condensate, routingSettings: options.refrigerant.settings,
-      onProgress: (step) => progress({ ...step, stage: `Drainage-first: ${step.stage}` }),
-    });
+      onProgress: (step) => progress({ ...step, stage: `Drainage-first: ${step.stage}`, step: 'drainage-first' }),
+    }));
     // Preserve the original drain removal scope even though replaced drains
     // were excluded from the routing scene above.
     alternateDrains.removeElementIds = [...replacedDrains];
     const reservedScene = [...scene.filter((element) => !replacedDrains.has(element.id)), ...alternateDrains.elementsToAdd];
-    const paired = await planAutoRouteNetwork(reservedScene, {
+    const paired = await remembered('alternateRefrigerant', [reservedScene, options.refrigerant, options.duct?.settings], () => planAutoRouteNetwork(reservedScene, {
       ...options.refrigerant,
-      onProgress: (step) => progress({ ...step, stage: `Drainage-first refrigerant: ${step.stage}` }),
-    });
+      onProgress: (step) => progress({ ...step, stage: `Drainage-first refrigerant: ${step.stage}`, step: 'drainage-first' }),
+    }));
     const alternateRefrigerant = services.gas && services.liquid ? paired
       : reduceRefrigerantResultToLine(paired, reservedScene, services.gas ? 'gas' : 'liquid');
     // Incomplete destructive rebuilds remain diagnostics; they cannot win or
@@ -553,7 +590,23 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
     return { ...unturned, issues: [...unturned.issues, 'Cassettes were not turned: a run they keep would no longer reach them.'],
       timings: { totalMs: clockMs() - runStarted, steps } };
   }
+  options.onMemo?.(memo);
   return { ...result, timings: { totalMs: clockMs() - runStarted, steps } };
+}
+
+/** What identifies a step's inputs: two hashes of their content, 106 bits together (never the same for different inputs in practice). */
+function contentKey(inputs: unknown): string {
+  const text = JSON.stringify(inputs, (_key, value: unknown) => (typeof value === 'number' && !Number.isFinite(value) ? String(value) : value));
+  let a = 0xdeadbeef;
+  let b = 0x41c6ce57;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    a = Math.imul(a ^ code, 2654435761);
+    b = Math.imul(b ^ code, 1597334677);
+  }
+  a = Math.imul(a ^ (a >>> 16), 2246822507) ^ Math.imul(b ^ (b >>> 13), 3266489909);
+  b = Math.imul(b ^ (b >>> 16), 2246822507) ^ Math.imul(a ^ (a >>> 13), 3266489909);
+  return `${text.length.toString(36)}-${(4294967296 * (2097151 & b) + (a >>> 0)).toString(36)}-${(4294967296 * (2097151 & a) + (b >>> 0)).toString(36)}`;
 }
 
 /**

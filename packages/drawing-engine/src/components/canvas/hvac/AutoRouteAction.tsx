@@ -17,11 +17,13 @@ import { AutoRouteResultPanel } from './AutoRouteResultPanel';
 import { applyAutoRoutePreview, cancelAutoRoute, discardAutoRoutePreview, runAutoRoute } from './autoRouteController';
 import { autoRouteDuctFeedback } from './autoRouteDuctFeedback';
 import type { AutoRouteCostRates } from './autoRouteEvaluation';
+import { formatAutoRouteTimeLeft } from './autoRouteProgress';
 import { buildAutoRouteReview } from './autoRouteReview';
 import {
   readStoredAutoRouteServices,
   storeAutoRouteServices,
   useCondensatePreviewStore,
+  type CondensateProgress,
 } from './condensate/condensatePreviewStore';
 import { formatFallRatio } from './condensate/condensateSettings';
 import { AUTO_DUCT_SHAPE_OPTIONS } from './duct/DuctAutoCard';
@@ -86,9 +88,32 @@ function ServiceChip({ tick, checked, disabled, onToggle, duct }: { tick: Servic
   );
 }
 
+/** How far the run has got and, once it can tell, about how long it still takes. */
+function AutoRouteProgressBar({ progress }: { progress: CondensateProgress }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const percent = Math.round((progress.fraction ?? 0) * 100);
+  const timeLeft = progress.timeLeftMs === null || progress.timeLeftMs === undefined ? null
+    : Math.max(0, progress.timeLeftMs - Math.max(0, now - (progress.estimatedAt ?? now)));
+  return (
+    <span className="flex shrink-0 items-center gap-1.5" data-testid="auto-route-progress">
+      <span role="progressbar" aria-label="Auto route progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
+        className="block h-1.5 w-20 overflow-hidden rounded-full bg-slate-200">
+        <span className="block h-full rounded-full bg-teal-600 transition-[width] duration-300" style={{ width: `${percent}%` }} />
+      </span>
+      {timeLeft !== null ? <span className="whitespace-nowrap text-[11px] tabular-nums text-slate-500">{formatAutoRouteTimeLeft(timeLeft)}</span> : null}
+    </span>
+  );
+}
+
 export function AutoRouteAction({ profile, disabled = false }: { profile?: ManufacturerRuleProfile; disabled?: boolean }) {
-  const unified = useCondensatePreviewStore((state) => state.unified);
+  const shown = useCondensatePreviewStore((state) => state.unified);
   const running = useCondensatePreviewStore((state) => state.running);
+  // While it runs the overlays show what has finished; the review, the details and Apply wait for the whole answer.
+  const unified = running ? null : shown;
   const progress = useCondensatePreviewStore((state) => state.progress);
   const message = useCondensatePreviewStore((state) => state.message);
   const setMessage = useCondensatePreviewStore((state) => state.setMessage);
@@ -237,6 +262,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
         onClick={() => { setShowOptions(!showOptions); setShowDetails(false); }} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 disabled:opacity-40">
         <SlidersHorizontal size={14} />
       </button>
+      {running && progress ? <AutoRouteProgressBar progress={progress} /> : null}
       {status ? (
         <span role="status" aria-live="polite" className="min-w-0">
           <button type="button" onClick={() => { if (unified) { setShowOptions(false); setShowDetails(!showDetails); } }} aria-expanded={showDetails}
