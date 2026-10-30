@@ -11,6 +11,7 @@ import {
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeConnection,
 } from './refrigerantPipePairModel';
+import { activeRoutingSession, memoTable } from './routingSession';
 
 type Service = 'gas' | 'liquid';
 const EPS = 0.5;
@@ -62,8 +63,23 @@ interface PipeEntry {
   routePoints: Point2D[];
 }
 
+// In an Auto route run what is worked out from one element is kept: nothing edits an element in place there
+// (routingSession.ts). Each table says what else its value reads.
+const SOURCE_SIGNATURES = memoTable<HvacElement, string>('level-plan fingerprints');
+const PIPE_ENTRIES = memoTable<HvacElement, PipeEntry>('level-plan pipe entries');
+/** A pipe at a level plan's levels (or why it cannot be): the pipe, the plan's levels, ends and riser rules. */
+const LEVELLED_PIPES = memoTable<HvacElement, { element?: HvacElement; issue?: string }>('pipes at planned levels');
+/** A branch kit at its service's level. */
+const LEVELLED_KITS = memoTable<HvacElement, HvacElement>('kits at planned levels');
+/** A pipe's centreline as the change summary compares it (the plan's settings). */
+const GEOMETRY_NODES = memoTable<HvacElement, PipeRouteNode3D[]>('level-plan centrelines');
+
+/** A number in a memo variant, -0 kept apart from 0. */
+const num = (value: number | undefined) => (value === undefined ? '-' : Object.is(value, -0) ? '-0' : String(value));
+
 export function networkLevelSourceSignature(element: HvacElement): string {
-  return JSON.stringify(element);
+  const session = activeRoutingSession();
+  return session ? session.memo(SOURCE_SIGNATURES, element, '', () => JSON.stringify(element)) : JSON.stringify(element);
 }
 
 /** Explicit network identities only: proximity and plan crossings never join systems. */
@@ -112,22 +128,28 @@ function connectedScope(scene: HvacElement[], seeds: string[]): HvacElement[] {
 }
 
 function pipeEntries(scope: HvacElement[]): PipeEntry[] {
-  return scope.filter(element => element.type === 'refrigerant-pipe').map(element => {
-    const spec = resolveRefrigerantPipeSpec(element.properties);
-    const nodes = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
-    const managed = record(element.properties.networkLevelPlan).generated === true;
-    const varying = nodes.length > 1 && Math.max(...nodes.map(node => node.z)) - Math.min(...nodes.map(node => node.z)) > EPS;
-    const level = finite(record(element.properties.networkLevelPlan).corridorElevationMm)
-      ? record(element.properties.networkLevelPlan).corridorElevationMm as number
-      : nodes[Math.floor(nodes.length / 2)]?.z ?? spec.startConnection?.elevationMm ?? spec.endConnection?.elevationMm ?? element.elevation + spec.outerDiameterMm / 2;
-    return { element, service: spec.lineKind, radius: spec.outerDiameterMm / 2, level, nodes,
-      socketPipeDiameterMm: usesCopperSocketElbows(element.properties) ? spec.pipeDiameterMm : undefined,
-      minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(element.properties),
-      start: spec.startConnection, end: spec.endConnection, routePoints: spec.routePoints,
-      locked: element.properties.networkLevelLocked === true || (!managed && varying)
-        || (Array.isArray(element.properties.bypasses) && element.properties.bypasses.length > 0),
-    };
-  });
+  const session = activeRoutingSession();
+  const settings = session?.contentKey(getActivePipeRoutingSettings()) ?? '';
+  return scope.filter(element => element.type === 'refrigerant-pipe')
+    .map(element => (session ? session.memo(PIPE_ENTRIES, element, settings, () => pipeEntry(element)) : pipeEntry(element)));
+}
+
+/** A pipe as level planning reads it: the pipe and the active settings (its smallest bend radius reads them). */
+function pipeEntry(element: HvacElement): PipeEntry {
+  const spec = resolveRefrigerantPipeSpec(element.properties);
+  const nodes = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
+  const managed = record(element.properties.networkLevelPlan).generated === true;
+  const varying = nodes.length > 1 && Math.max(...nodes.map(node => node.z)) - Math.min(...nodes.map(node => node.z)) > EPS;
+  const level = finite(record(element.properties.networkLevelPlan).corridorElevationMm)
+    ? record(element.properties.networkLevelPlan).corridorElevationMm as number
+    : nodes[Math.floor(nodes.length / 2)]?.z ?? spec.startConnection?.elevationMm ?? spec.endConnection?.elevationMm ?? element.elevation + spec.outerDiameterMm / 2;
+  return { element, service: spec.lineKind, radius: spec.outerDiameterMm / 2, level, nodes,
+    socketPipeDiameterMm: usesCopperSocketElbows(element.properties) ? spec.pipeDiameterMm : undefined,
+    minimumBendRadiusMm: resolveCopperSocketElbowMinimumRadius(element.properties),
+    start: spec.startConnection, end: spec.endConnection, routePoints: spec.routePoints,
+    locked: element.properties.networkLevelLocked === true || (!managed && varying)
+      || (Array.isArray(element.properties.bypasses) && element.properties.bypasses.length > 0),
+  };
 }
 
 interface Terminal { service: Service; level: number; outdoor: boolean; id: string }
@@ -204,6 +226,12 @@ export interface NetworkPipeLevelOptions {
 }
 
 const levelPlanCache = new WeakMap<HvacElement[], Map<string, NetworkPipeLevelPlan>>();
+/**
+ * Plans kept per scene. One unit's insertion in Auto route asks for more
+ * (hosts × corridors already refused) than the old 32, which emptied the
+ * whole cache and started over; the oldest plan now goes first.
+ */
+const LEVEL_PLANS_PER_SCENE = 256;
 
 /** Pointer movement changes the fitting station much more often than network
  * inputs. Reuse the level analysis within the immutable scene snapshot. */
@@ -213,12 +241,14 @@ export function planNetworkPipeLevels(scene: HvacElement[], options: NetworkPipe
   let cache = levelPlanCache.get(scene);
   if (!cache) { cache = new Map(); levelPlanCache.set(scene, cache); }
   let plan = cache.get(key);
+  // Most recently used last.
+  if (plan) cache.delete(key);
   if (plan && !isNetworkLevelPlanCurrent(plan, scene)) plan = undefined;
   if (!plan) {
     plan = computeNetworkPipeLevels(scene, resolved);
-    if (cache.size >= 32) cache.clear();
-    cache.set(key, plan);
+    if (cache.size >= LEVEL_PLANS_PER_SCENE) cache.delete(cache.keys().next().value!);
   }
+  cache.set(key, plan);
   // Proposal-specific clearance findings must not mutate the cached analysis.
   return { ...plan, issues: [...plan.issues], notes: [...plan.notes] };
 }
@@ -389,10 +419,15 @@ function computeNetworkPipeLevels(scene: HvacElement[], options: NetworkPipeLeve
 
 function summarizeNetworkLevelChanges(plan: NetworkPipeLevelPlan, scope: HvacElement[]): NetworkPipeLevelPlan {
   const settings = plan.settings;
+  const session = activeRoutingSession();
+  // (Also the active settings: the smallest bend radius and the lift's defaults read them.)
+  const settingsKey = session ? `${session.contentKey(settings)}|${session.contentKey(getActivePipeRoutingSettings())}` : '';
   // Compare the physical centreline, ignoring redundant sample points and
   // metadata-only adoption. A change to a remote branch must be disclosed even
   // when the tapped mains keep their existing levels.
-  const geometryNodes = (element: HvacElement): PipeRouteNode3D[] => {
+  const geometryNodes = (element: HvacElement): PipeRouteNode3D[] => (session
+    ? session.memo(GEOMETRY_NODES, element, settingsKey, () => centreline(element)) : centreline(element));
+  const centreline = (element: HvacElement): PipeRouteNode3D[] => {
     const spec = resolveRefrigerantPipeSpec(element.properties);
     const authored = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
     const baseline = spec.startConnection?.elevationMm ?? spec.endConnection?.elevationMm ?? element.elevation + spec.outerDiameterMm / 2;
@@ -667,6 +702,10 @@ export function applyNetworkPipeLevels(elements: HvacElement[], plan: NetworkPip
 function applyPreparedNetworkPipeLevels(elements: HvacElement[], plan: NetworkPipeLevelPlan, entries: Map<string, PipeEntry>): { elements: HvacElement[]; issues: string[] } {
   const result: HvacElement[] = [];
   const issues: string[] = [];
+  // In an Auto route run the same pipe at the same levels is the same element: built once, so what is kept for it
+  // later (its envelope in the clash check) is reused too. The variant holds everything the levelled pipe reads.
+  const session = activeRoutingSession();
+  const settingsKey = session ? `${session.contentKey(plan.settings)}|${session.contentKey(getActivePipeRoutingSettings())}` : '';
   for (const element of elements) {
     const entry = entries.get(element.id);
     if (entry?.locked) continue;
@@ -677,24 +716,31 @@ function applyPreparedNetworkPipeLevels(elements: HvacElement[], plan: NetworkPi
       const start = resolveConnection(entry.start); const end = resolveConnection(entry.end);
       const preferCornerRisers = plan.cornerRisersByService?.[entry.service]
         ?? plan.preferCornerRisers ?? record(element.properties.networkLevelPlan).preferCornerRisers !== false;
-      const built = buildNetworkLevelRoute(entry.routePoints, corridor, { start, end, radiusMm: entry.radius, settings: plan.settings,
-        pipeDiameterMm: entry.socketPipeDiameterMm, minimumBendRadiusMm: entry.minimumBendRadiusMm, preferCornerRisers,
-        deferRiserTurnOptimization: plan.deferRiserTurnOptimization });
-      if (built.issue) { issues.push(`${element.label || entry.service}: ${built.issue}`); continue; }
-      const min = Math.min(...built.nodes.map(node => node.z)); const max = Math.max(...built.nodes.map(node => node.z));
-      result.push({ ...element, elevation: min - entry.radius, height: max - min + entry.radius * 2,
-        properties: { ...element.properties, startConnection: start, endConnection: end, routeNodes3d: built.nodes,
-          networkLevelPlan: { version: 2, generated: true, transitionStyle: 'vertical-riser', preferCornerRisers, id: plan.id, corridorElevationMm: corridor,
-            ...(plan.deferRiserTurnOptimization ? { deferRiserTurnOptimization: true } : {}),
-            gasElevationMm: plan.gasElevationMm, liquidElevationMm: plan.liquidElevationMm,
-            clearGapMm: plan.clearGapMm, arrangement: plan.gasElevationMm >= plan.liquidElevationMm ? 'gas-above' : 'liquid-above' },
-        } });
+      const level = (): { element?: HvacElement; issue?: string } => {
+        const built = buildNetworkLevelRoute(entry.routePoints, corridor, { start, end, radiusMm: entry.radius, settings: plan.settings,
+          pipeDiameterMm: entry.socketPipeDiameterMm, minimumBendRadiusMm: entry.minimumBendRadiusMm, preferCornerRisers,
+          deferRiserTurnOptimization: plan.deferRiserTurnOptimization });
+        if (built.issue) return { issue: `${element.label || entry.service}: ${built.issue}` };
+        const min = Math.min(...built.nodes.map(node => node.z)); const max = Math.max(...built.nodes.map(node => node.z));
+        return { element: { ...element, elevation: min - entry.radius, height: max - min + entry.radius * 2,
+          properties: { ...element.properties, startConnection: start, endConnection: end, routeNodes3d: built.nodes,
+            networkLevelPlan: { version: 2, generated: true, transitionStyle: 'vertical-riser', preferCornerRisers, id: plan.id, corridorElevationMm: corridor,
+              ...(plan.deferRiserTurnOptimization ? { deferRiserTurnOptimization: true } : {}),
+              gasElevationMm: plan.gasElevationMm, liquidElevationMm: plan.liquidElevationMm,
+              clearGapMm: plan.clearGapMm, arrangement: plan.gasElevationMm >= plan.liquidElevationMm ? 'gas-above' : 'liquid-above' },
+          } } };
+      };
+      const levelled = session ? session.memo(LEVELLED_PIPES, element, [session.identity(entry), plan.id, num(corridor),
+        num(plan.gasElevationMm), num(plan.liquidElevationMm), num(plan.clearGapMm), num(start?.elevationMm), num(end?.elevationMm),
+        String(preferCornerRisers), plan.deferRiserTurnOptimization ? 'defer' : '', settingsKey].join('|'), level) : level();
+      if (levelled.issue) { issues.push(levelled.issue); continue; }
+      result.push(levelled.element!);
     } else if (element.type === 'refrigerant-branch-kit' && element.properties.networkLevelLocked !== true) {
       const kind = element.properties.branchKitLineKind;
       if (kind !== 'gas' && kind !== 'liquid') { issues.push('A combined or unclassified branch fitting needs separate service-level placement.'); continue; }
-      const model = buildRefrigerantBranchKitViewModel(element);
       const corridor = kind === 'gas' ? plan.gasElevationMm : plan.liquidElevationMm;
-      result.push({ ...element, elevation: corridor - model[kind].centerlineZMm });
+      const level = () => ({ ...element, elevation: corridor - buildRefrigerantBranchKitViewModel(element)[kind].centerlineZMm });
+      result.push(session ? session.memo(LEVELLED_KITS, element, num(corridor), level) : level());
     }
   }
   return { elements: result, issues };

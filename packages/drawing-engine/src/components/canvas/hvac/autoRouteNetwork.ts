@@ -21,6 +21,7 @@ import {
   getRefrigerantPipeBundleSnapTargets, getUnitPortApproachStraightMm, resolveRefrigerantPipeSpec,
   type RefrigerantPipeBundleConnection,
 } from './refrigerantPipePairModel';
+import { inRoutingSession } from './routingSession';
 import { ALL_PIPE_PORT_TYPES } from './unitPipePortModel';
 
 export interface AutoRouteNetworkProgress { completed: number; total: number; stage: string }
@@ -777,8 +778,16 @@ function finalizeGenerated(scene: HvacElement[], baselineIds: Set<string>, syste
   });
 }
 
-/** Bounded multi-start insertion search. Every accepted state is a complete rooted service tree. */
+/**
+ * Bounded multi-start insertion search. Every accepted state is a complete
+ * rooted service tree. Runs in a routing session (routingSession.ts): the
+ * Auto route run's, or its own when called alone.
+ */
 export async function planAutoRouteNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNetworkOptions): Promise<AutoRouteNetworkResult> {
+  return inRoutingSession(() => planNetwork(inputScene, inputOptions));
+}
+
+async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNetworkOptions): Promise<AutoRouteNetworkResult> {
   const options = { ...inputOptions, settings: effectiveAutoRouteSettings(inputOptions.profile, inputOptions.settings, inputScene) };
   const previousSettings = getActivePipeRoutingSettings();
   setActivePipeRoutingSettings(options.settings);

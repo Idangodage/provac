@@ -5,6 +5,7 @@ import {
   DEFAULT_REFRIGERANT_PIPE_GAP_MM,
   INCH_MM,
 } from "./refrigerantPipeDimensions";
+import { activeRoutingSession, memoTable } from "./routingSession";
 
 export type RefrigerantBranchKitSubtype = "dis-22-1g";
 export type RefrigerantBranchLineKind = "gas" | "liquid";
@@ -1361,7 +1362,19 @@ export function buildRefrigerantBranchKitModel(
   };
 }
 
+/** In an Auto route run a kit's model is kept: it is a function of the kit alone (routingSession.ts). */
+const KIT_VIEW_MODELS = memoTable<object, RefrigerantBranchKitModelSpec>("branch-kit models");
+
 export function buildRefrigerantBranchKitViewModel(
+  element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties">,
+): RefrigerantBranchKitModelSpec {
+  const session = activeRoutingSession();
+  return session
+    ? session.memo(KIT_VIEW_MODELS, element, "", () => buildBranchKitViewModel(element))
+    : buildBranchKitViewModel(element);
+}
+
+function buildBranchKitViewModel(
   element: Pick<HvacElement, "type" | "subtype" | "modelLabel" | "properties">,
 ): RefrigerantBranchKitModelSpec {
   const model = buildRefrigerantBranchKitModel(element);

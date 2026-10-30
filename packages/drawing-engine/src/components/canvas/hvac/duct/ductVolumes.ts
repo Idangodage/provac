@@ -9,6 +9,7 @@
  * Air terminals add their plenum box above the ceiling face.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { activeRoutingSession, memoTable } from '../routingSession';
 import { unitConnectionsFor } from '../unitConnections';
 
 import { getDuctRunPlan, type DuctFabricationPlan, type DuctPiece } from './ductFabricationPlanner';
@@ -184,16 +185,25 @@ export function equipmentBoxOf(element: HvacElement): DuctBox | null {
     add(centre, scale(along, casing.width / 2)), casing.depth / 2, element.height / 2, across);
 }
 
+// In an Auto route run an element's bodies are kept: each is a function of the element alone (routingSession.ts).
+const TERMINAL_BOXES = memoTable<HvacElement, DuctBox[]>('terminal boxes');
+const EQUIPMENT_BOXES = memoTable<HvacElement, DuctBox | null>('equipment boxes');
+
 export function equipmentBoxesInScene(elements: readonly HvacElement[]): DuctBox[] {
-  return elements.flatMap(element => { const body = equipmentBoxOf(element); return body ? [body] : []; });
+  const session = activeRoutingSession();
+  return elements.flatMap(element => {
+    const body = session ? session.memo(EQUIPMENT_BOXES, element, '', () => equipmentBoxOf(element)) : equipmentBoxOf(element);
+    return body ? [body] : [];
+  });
 }
 
 /** Every duct body and air-terminal box in the scene (the pipe engine's obstacles). */
 export function ductBoxesInScene(elements: readonly HvacElement[], settings: DuctDesignSettings): DuctBox[] {
   const boxes: DuctBox[] = [];
+  const session = activeRoutingSession();
   for (const element of elements) {
     if (isDuctTerminalElement(element)) {
-      boxes.push(...terminalBoxesOf(element));
+      boxes.push(...(session ? session.memo(TERMINAL_BOXES, element, '', () => terminalBoxesOf(element)) : terminalBoxesOf(element)));
       continue;
     }
     if (!isDuctElement(element)) continue;

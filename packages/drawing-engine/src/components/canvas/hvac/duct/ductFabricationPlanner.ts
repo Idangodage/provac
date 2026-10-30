@@ -16,6 +16,7 @@
  */
 import type { HvacElement, Point2D } from '../../../../types';
 import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
+import { activeRoutingSession } from '../routingSession';
 
 import { findAirPort, portEntryDirection, type DuctAirPort } from './ductAirPorts';
 import {
@@ -1869,14 +1870,15 @@ function plenumSpigots(branches: readonly DuctBranchRef[], spec: DuctRunSpec, sh
 function planDependencies(element: HvacElement, spec: DuctRunSpec | null, scene: readonly HvacElement[]): unknown[] {
   if (!spec) return [];
   const dependencies: unknown[] = [];
+  // In an Auto route run the scene is indexed once (the same element Array.find returns).
+  const session = activeRoutingSession();
+  const find = (id: string) => (session ? session.firstById(scene).get(id) : scene.find((candidate) => candidate.id === id));
   if (spec.start.kind === 'unit-port') {
-    const unitId = spec.start.unitId;
-    dependencies.push(scene.find((candidate) => candidate.id === unitId));
+    dependencies.push(find(spec.start.unitId));
   }
   // What it ends on: a terminal's spigot (its side, its neck) or a unit's collar shapes the runout and the end.
   if (spec.end.kind === 'terminal' || spec.end.kind === 'unit-port') {
-    const endId = spec.end.kind === 'terminal' ? spec.end.terminalId : spec.end.unitId;
-    dependencies.push(scene.find((candidate) => candidate.id === endId));
+    dependencies.push(find(spec.end.kind === 'terminal' ? spec.end.terminalId : spec.end.unitId));
   }
   const parent = ductParentOf(spec, scene);
   if (parent) dependencies.push(parent);

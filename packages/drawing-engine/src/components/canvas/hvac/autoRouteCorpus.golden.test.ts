@@ -26,6 +26,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { runCorpusCase, selectCorpusCases } from './__fixtures__/autoRouteCorpus';
 import { autoRouteFingerprint, fingerprintDifferences, FROZEN_NOW, type AutoRouteFingerprint } from './__fixtures__/autoRouteFingerprint';
+import { lastRoutingSessionReport } from './routingSession';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 const MODE = env.AUTO_ROUTE_GOLDEN === 'record' ? 'record' : env.AUTO_ROUTE_GOLDEN === 'verify' ? 'verify' : null;
@@ -53,6 +54,8 @@ describe.runIf(MODE)('Auto route golden master', () => {
   for (const entry of selectCorpusCases(env.AUTO_ROUTE_CASES)) {
     it(`${entry.name}: ${entry.description}`, async () => {
       const { fingerprint, canonical } = autoRouteFingerprint(await runCorpusCase(entry));
+      // What the run's session reused (and whether every reuse was checked against a fresh value).
+      writeFileSync(join(OUT_DIR, `${entry.name}.session.json`), JSON.stringify(lastRoutingSessionReport(), null, 1));
       if (MODE === 'record') {
         writeFileSync(join(OUT_DIR, `${entry.name}.json`), JSON.stringify(canonical, null, 1));
         golden.cases[entry.name] = fingerprint;

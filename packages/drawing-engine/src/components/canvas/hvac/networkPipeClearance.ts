@@ -20,6 +20,7 @@ import {
   type RefrigerantPipeBundleConnection,
   type RefrigerantPipeConnection,
 } from './refrigerantPipePairModel';
+import { activeRoutingSession, memoTable, type RoutingSession } from './routingSession';
 
 type Vec3 = PipeRouteNode3D;
 type Service = 'gas' | 'liquid' | 'drain';
@@ -348,14 +349,6 @@ function singlePhysicalLane(element: HvacElement, elements: HvacElement[], autho
 }
 
 /**
- * Lanes for one element.
- *
- * Not safely cacheable on element identity plus connection sources: the context
- * also reaches `buildRefrigerantPipePhysicalPath`, which an inline branch kit
- * resolves against nearby runs. That memo was tried and reverted — it broke 20
- * cases in `networkPipeClearanceReuse.test.ts`.
- */
-/**
  * A condensate drain is coordinated like any other service: its sloped
  * `routeNodes3d` centreline with the insulated radius. Its unit outlet reads as
  * a unit port so the drain stub and the refrigerant stubs leaving the SAME unit
@@ -387,8 +380,48 @@ function condensateLane(element: HvacElement, nodes: Vec3[]): PipeLane[] {
   return lane ? [lane] : [];
 }
 
-function elementLanes(element: HvacElement, elements: HvacElement[]): PipeLane[] {
+const LANES = memoTable<HvacElement, PipeLane[]>('pipe envelopes');
+const UNHEALED_SPECS = memoTable<HvacElement, ReturnType<typeof resolveRefrigerantPipeSpec>>('pipe specs, ends as saved');
+const BASELINES = memoTable<HvacElement[], PipeLane[]>('clash baselines');
+const SOLID_KEYS = memoTable<DuctBox, string>('solid geometry keys');
 
+/**
+ * What a pipe's envelope reads besides the pipe itself: the routing settings,
+ * and, for a refrigerant pipe, the unit each unit-port end heals against (the
+ * first element with that id in the scene, as resolveRefrigerantPipeSpec
+ * finds it). Nothing else of the scene is read: field-pipe ends are not
+ * healed, so the fittings and runs a pipe meets do not change its envelope.
+ */
+function laneVariant(session: RoutingSession, element: HvacElement, elements: HvacElement[]): string {
+  const settings = session.contentKey(getActivePipeRoutingSettings());
+  if (element.type !== 'refrigerant-pipe') return settings;
+  const spec = session.memo(UNHEALED_SPECS, element, '', () => resolveRefrigerantPipeSpec(element.properties));
+  const byId = session.firstById(elements);
+  const source = (connection: RefrigerantPipeConnection | null) => (!connection || connection.connectionKind !== 'unit-port'
+    || !connection.sourceElementId || elements.length === 0 ? '-' : String(session.identity(byId.get(connection.sourceElementId))));
+  return `${settings}|${source(spec.startConnection)}|${source(spec.endConnection)}`;
+}
+
+/**
+ * Lanes for one element.
+ *
+ * Outside an Auto route run they are built afresh on every call: a caller may
+ * edit an element in place (Object.assign) and expect it classified again —
+ * a memo on element identity plus connection sources was tried there and
+ * reverted (20 cases in `networkPipeClearanceReuse.test.ts`). Inside a run
+ * nothing is edited in place (routingSession.ts), so a pipe's envelope is kept
+ * while what it reads is unchanged (laneVariant). A legacy pair resolves
+ * against more of the scene and is always built.
+ */
+function elementLanes(element: HvacElement, elements: HvacElement[]): PipeLane[] {
+  const session = activeRoutingSession();
+  if (session && (element.type === 'refrigerant-pipe' || element.type === 'condensate-pipe')) {
+    return session.memo(LANES, element, laneVariant(session, element, elements), () => buildElementLanes(element, elements));
+  }
+  return buildElementLanes(element, elements);
+}
+
+function buildElementLanes(element: HvacElement, elements: HvacElement[]): PipeLane[] {
     const authored = normalizePipeRouteNodes3d(element.properties.routeNodes3d);
     if (element.type === 'condensate-pipe') return condensateLane(element, authored);
     if (element.type === 'refrigerant-pipe') {
@@ -444,6 +477,9 @@ export function listNetworkPipeLanes(scene: HvacElement[]): NetworkPipeLaneView[
 
 const baselineCache = new WeakMap<HvacElement[], { signature: string; lanes: PipeLane[] }>();
 function baselineLanes(scene: HvacElement[]): PipeLane[] {
+  // In an Auto route run nothing edits a scene in place (routingSession.ts): its identity is its signature.
+  const session = activeRoutingSession();
+  if (session) return session.memo(BASELINES, scene, session.contentKey(getActivePipeRoutingSettings()), () => physicalLanes(scene));
   // Keep one baseline per scene array. The signature also detects legacy
   // in-place mutations and equipment/profile changes that affect healed ports;
   // reference equality alone is insufficient at the public API boundary.
@@ -574,8 +610,10 @@ function unpreservedSegments(segment: Segment, lane: PipeLane, predecessors: rea
 }
 
 function solidGeometryKey(body: DuctBox): string {
-  return JSON.stringify([body.elementId, body.mark, body.centre, body.axisT, body.axisN, body.axisU,
+  const key = () => JSON.stringify([body.elementId, body.mark, body.centre, body.axisT, body.axisN, body.axisU,
     body.halfLength, body.halfWidth, body.halfHeight]);
+  const session = activeRoutingSession();
+  return session ? session.memo(SOLID_KEYS, body, '', key) : key();
 }
 
 interface AdapterRegion { aEnd: 'start' | 'end'; bEnd: 'start' | 'end'; aLength: number; bLength: number }

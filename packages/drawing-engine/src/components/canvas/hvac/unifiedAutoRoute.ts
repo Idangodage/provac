@@ -50,6 +50,7 @@ import { getAutoRouteOwnership, retainGeneratedPipeEdit } from './pipeEditRetent
 import { getActivePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { isRefrigerantBranchKitElement, resolveRefrigerantBranchKitLineSelection } from './refrigerantBranchKitModel';
 import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
+import { inRoutingSession } from './routingSession';
 import { rankServiceRouteCandidates, type ServiceRouteCandidate, type ServiceRouteObjective } from './serviceRouteObjective';
 import { applyServiceRouteCommand, serviceRouteCommitDiagnostics, type ServiceRouteCommand, type ServiceRouteIssue } from './serviceRouteValidation';
 import { applyUnitTurns, planUnitOrientations, unitRuns, type AutoTurnSettings, type UnitKept, type UnitTurn } from './unitOrientation';
@@ -366,7 +367,12 @@ function auditCandidateWithSettings(originalScene: HvacElement[], result: Unifie
   return { ...result, refrigerant, clashes, blockingIssues, blockingDetails, issues: [...new Set([...result.issues, ...blockingIssues])] };
 }
 
+/** One Auto route run, in a routing session (routingSession.ts): what each step works out is reused by the next. */
 export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: UnifiedAutoRouteOptions): Promise<UnifiedAutoRouteResult> {
+  return inRoutingSession(() => planUnified(drawnScene, options));
+}
+
+async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteOptions): Promise<UnifiedAutoRouteResult> {
   const { services } = options;
   const progress = options.onProgress ?? (() => undefined);
   const issues: string[] = [];
