@@ -388,14 +388,15 @@ type Candidate = (frontier: Frontier, cost: number, shift: number, code: number)
 /**
  * Which candidate a frontier's value at this point came from: the first, in the
  * order the frontier was built, to reach the least value there (-1: none does).
- * Only the few points built are ever asked about, so none are recorded.
+ * Only the few points built are ever asked about, so none are recorded. (A
+ * candidate whose loss is NaN never reached any point: the test below fails on it.)
  */
 function chosen(index: number, solver: Solver, candidates: (visit: Candidate) => void): number {
   const { store } = solver;
   let best = INF;
   let code = -1;
   candidates((frontier, cost, shift, candidate) => {
-    if (!Number.isFinite(cost) || index < shift) return;
+    if (!Number.isFinite(cost) || !(index >= shift)) return;
     const value = store.valueAt(frontier, index - shift) + cost;
     if (value < best) {
       best = value;
@@ -688,7 +689,7 @@ function reconstructEnd(state: RunState, x: number, i: number, solver: Solver, o
     const flow = state.segments.at(-1)!.flowOut;
     const room = [firstEventMm(plus.run, plus.children, model), firstEventMm(minus.run, minus.children, model)];
     // As the end's frontier was built: per style the first best second outlet, and the first to reach the least overall.
-    const valueOf = (entry: ReturnType<typeof splitOutlets>[number]) => (!Number.isFinite(entry.cost) || i < entry.shift
+    const valueOf = (entry: ReturnType<typeof splitOutlets>[number]) => (!Number.isFinite(entry.cost) || !(i >= entry.shift)
       ? INF : solver.store.valueAt(entry.frontier, i - entry.shift) + entry.cost);
     let least = INF;
     let pick: { style: DuctSplitStyle; ia: number; ib: number } | null = null;

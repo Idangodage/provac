@@ -10,6 +10,11 @@
  * same order, on the same numbers, so every value is exactly the one the loop
  * over the grid gives. That holds because rounding is monotonic: adding to or
  * taking the minimum of functions that never rise gives one that never rises.
+ *
+ * A loss can be NaN (a unit with no airflow data), and with it a shift. A loop
+ * over the grid from a NaN shift does not run, so such a frontier adds nothing
+ * here too: the tests below are written so that NaN fails them, and they must
+ * come first, because nothing past them can tell where a NaN index ends.
  */
 const INF = Number.POSITIVE_INFINITY;
 
@@ -53,7 +58,7 @@ export class Envelope implements StepArrays {
 
   /** E[i] = min(E[i], F[i − shift] + raise), F being `count` steps from `start` in `from`. */
   lower(from: StepArrays, start: number, count: number, raise: number, shift: number): void {
-    if (!Number.isFinite(raise) || !count) return;
+    if (!Number.isFinite(raise) || !count || !(shift < this.size)) return;
     const { size, at, cost } = this;
     const held = this.count;
     const fromAt = from.at;
@@ -96,7 +101,7 @@ export class Envelope implements StepArrays {
   /** E[i] = (F[i − shift] + raise) + other[i] + base. */
   setSum(from: StepArrays, start: number, count: number, raise: number, shift: number, other: Envelope, base: number): void {
     this.count = 0;
-    if (!Number.isFinite(raise) || !count || !other.count) return;
+    if (!Number.isFinite(raise) || !count || !other.count || !(shift < this.size)) return;
     const { size, at, cost } = this;
     const fromAt = from.at;
     const fromCost = from.cost;
@@ -160,7 +165,7 @@ export class FrontierStore implements StepArrays {
 
   /** `value` from grid point `from` on (never, when that is off the grid or the value is not finite). */
   step(from: number, value: number): Frontier {
-    if (from >= this.size || !Number.isFinite(value)) return { start: this.top, count: 0 };
+    if (!(from < this.size) || !Number.isFinite(value)) return { start: this.top, count: 0 };
     this.reserve(1);
     this.at[this.top] = from;
     this.cost[this.top] = value;
@@ -181,7 +186,7 @@ export class FrontierStore implements StepArrays {
   /** F[i] = E[i − shift] + raise. */
   keepRaised(envelope: Envelope, raise: number, shift: number): Frontier {
     const start = this.top;
-    if (!Number.isFinite(raise)) return { start, count: 0 };
+    if (!Number.isFinite(raise) || !(shift < this.size)) return { start, count: 0 };
     this.reserve(envelope.count);
     const { size, at, cost } = this;
     const fromAt = envelope.at;
@@ -206,7 +211,7 @@ export class FrontierStore implements StepArrays {
   /** F[i] = (A[i − shift] + B[i − shift]) + raise. */
   keepSum(a: Envelope, b: Envelope, raise: number, shift: number): Frontier {
     const start = this.top;
-    if (!Number.isFinite(raise) || !a.count || !b.count) return { start, count: 0 };
+    if (!Number.isFinite(raise) || !a.count || !b.count || !(shift < this.size)) return { start, count: 0 };
     this.reserve(a.count + b.count);
     const { size, at, cost } = this;
     const aAt = a.at;

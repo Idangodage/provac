@@ -38,11 +38,12 @@ const number = fc.oneof(
   fc.constantFrom(0, 0.1, 0.2, 0.30000000000000004, 1e-9, 1234.5678, 1e15, 1e16, 2e16 + 2),
   fc.double({ min: 0, max: 5000, noNaN: true }),
 );
-const shift = fc.integer({ min: 0, max: SIZE + 4 });
+/** (A loss can be NaN, or too large to be finite; a loop over the grid then does not run.) */
+const shift = fc.oneof({ weight: 12, arbitrary: fc.integer({ min: 0, max: SIZE + 4 }) }, { weight: 1, arbitrary: fc.constantFrom(Number.NaN, Number.POSITIVE_INFINITY) });
 const raise = fc.oneof(number, fc.double({ min: -500, max: 0, noNaN: true }));
 
 /** Least of several flat-from-a-point frontiers: a frontier as the DP's ends and fittings make them. */
-const pieces = fc.array(fc.tuple(fc.integer({ min: 0, max: SIZE + 4 }), number), { maxLength: 9 });
+const pieces = fc.array(fc.tuple(shift, number), { maxLength: 9 });
 
 function build(store: FrontierStore, list: ReadonlyArray<readonly [number, number]>): { envelope: Envelope; dense: Float64Array } {
   const envelope = new Envelope(SIZE);
@@ -134,6 +135,22 @@ describe('frontier steps', () => {
     expect(store.keepRaised(envelope, 1, SIZE).count).toBe(0);
     expect(store.keepSum(envelope, envelope, 1, SIZE).count).toBe(0);
     expect(store.valueAt({ start: 0, count: 0 }, 5)).toBe(INF);
+  });
+
+  it('a loss that is not a number adds nothing, and ends: a loop over the grid from there does not run', () => {
+    const store = new FrontierStore(SIZE);
+    const { envelope, dense } = build(store, [[3, 10], [9, 4]]);
+    const kept = store.keep(envelope);
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      store.lowerInto(envelope, kept, 1, bad);
+      expectSame(denseOf(envelope), dense);
+      expect(store.keepRaised(envelope, 1, bad).count).toBe(0);
+      expect(store.keepSum(envelope, envelope, 1, bad).count).toBe(0);
+      const sum = new Envelope(SIZE);
+      sum.setSum(store, kept.start, kept.count, 1, bad, envelope, 0);
+      expect(sum.count).toBe(0);
+      expect(store.step(bad, 1).count).toBe(0);
+    }
   });
 
   it('the store grows as it must, and what it kept stays', () => {
