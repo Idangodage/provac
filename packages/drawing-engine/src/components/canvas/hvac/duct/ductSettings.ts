@@ -424,7 +424,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   rectStepMm: practice('Rectangular duct is fabricated to round sizes: 50 mm steps are usual (25 for a fine fit, 100 for a short list of sizes).'),
   sizeSeries: practice('Metric: the fabricator\'s step and the EN 1506 round series. Inch: rectangular sides in even inches and the usual stocked round sizes (4–10 in by the inch, then by 2 in).'),
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
-  autoTimeBudgetMs: practice('The optimiser stops learning (routing again after a failed check) past this time and keeps the best verified design; the result says so.'),
+  autoTimeBudgetMs: practice('A safety net: the optimiser stops learning (routing again after a failed check) past this time and keeps the best verified design; the result says so. A normal design finishes well within it, and then the same drawing always gets the same design.'),
   autoChooseSpigotSide: practice('A symmetric face throws the same pattern whichever side its plenum box is fed from; the optimiser picks the side the duct reaches best. Linear slots keep theirs.'),
   defaultCollarEntry: practice('A side collar suits a shallow void; a top collar takes its runout from above (the flexible duct bending at a diameter or more, SMACNA S3.24) and needs room over the box.'),
   autoRoundMainStyles: { sourceId: 'smacna-1995', reference: 'Fig. 3-4 (p.3.11), Fig. 3-5 (p.3.12)', verified: true, note: 'Which of the SMACNA round-main fittings the optimiser may choose; it picks per branch by cost and loss.' },

@@ -1799,15 +1799,15 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
       return round;
     };
     // Retain each pure catalogue's own bounded search before mixed sizing.
-    // Its cuts and repair eligibility use its own node IDs and failures;
-    // optional pressure-price variants use session time within the shared
-    // overall unit deadline.
+    // Its cuts and repair eligibility use its own node IDs and failures.
+    // Every step is bounded by counts (rounds, repairs); the unit's time
+    // budget is only a safety net (reported as time-limited), so which designs
+    // are compared never depends on how fast the computer is.
     const allShapes: readonly ShapeMode[] = shape === 'optimal' ? ['optimal', 'rect', 'round'] : [shape];
     const firstTrees: ServiceDesign[] = [];
     const searchedTrees: ServiceDesign[] = [];
     const routerCost = (design: ServiceDesign | undefined) => design?.modelCost ?? Number.POSITIVE_INFINITY;
     for (const router of routers) {
-      const sessionStarted = Date.now();
       const deadline = started + settings.autoTimeBudgetMs;
       const only = new Set([router.shape]);
       const initial = routeRound([1], only, deadline);
@@ -1835,7 +1835,10 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
         searchedTrees.push(...routed);
         round = sizeTrees(routed, [sizeShape]);
       }
-      if (Date.now() < deadline && Date.now() - sessionStarted < settings.autoTimeBudgetMs / 4) {
+      // The pressure-price variants: always (they used to run only when the
+      // session had taken under a quarter of the budget, which a slower
+      // computer did not, so the same drawing could get another design).
+      if (Date.now() < deadline) {
         const varied = routeRound([0.5, 2], only, deadline);
         searchedTrees.push(...varied);
         if (varied.length) sizeTrees(varied, [sizeShape]);
