@@ -129,6 +129,32 @@ describe('WorkerPool', () => {
     instance.terminate();
   });
 
+  it('a speculative task that loses its worker waits, unless its answer has been asked for', async () => {
+    const { instance, workers } = pool(2);
+    const speculative = instance.speculate(task());
+    const asked = instance.speculate(task());
+    workers[0]!.onerror?.({ message: 'could not load' });
+    workers[1]!.onerror?.({ message: 'could not load' });
+    // No worker is left, and nothing here runs a task nobody asked for: asking for it is what runs it.
+    let answered = false;
+    const answer = asked.want().then((output) => { answered = true; return output; });
+    await flush();
+    expect(answered).toBe(true);
+    await expect(answer).resolves.toEqual([]);
+    expect(instance.report().tasks.filter((entry) => entry.ranMs !== undefined && entry.worker === 0)).toHaveLength(1);
+    speculative.cancel();
+    instance.terminate();
+  });
+
+  it('a task asked for while its worker fails is run again here', async () => {
+    const { instance, workers } = pool(1);
+    const speculative = instance.speculate(task());
+    const answer = speculative.want();
+    workers[0]!.onerror?.({ message: 'could not load' });
+    await expect(answer).resolves.toEqual([]);
+    instance.terminate();
+  });
+
   it('with no worker left, runs a failed worker’s task here', async () => {
     const { instance, workers } = pool(1);
     const only = instance.run('size-trees', emptyTask());

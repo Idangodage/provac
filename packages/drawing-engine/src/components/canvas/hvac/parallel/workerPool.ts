@@ -23,6 +23,8 @@ interface Job {
   reject: (error: Error) => void;
   onProgress?: (progress: TaskProgress) => void;
   speculative?: boolean;
+  /** A speculative task whose answer has been asked for. */
+  wanted?: boolean;
   /** Given to the pool, and to a worker (performance.now()). */
   queuedAt: number;
   startedAt?: number;
@@ -113,6 +115,7 @@ export class WorkerPool implements TaskRunner {
     }
     return {
       want: () => {
+        job!.wanted = true;
         // Still waiting for a free worker: now it goes first.
         const waiting = this.background.indexOf(job!);
         if (waiting >= 0) {
@@ -242,7 +245,8 @@ export class WorkerPool implements TaskRunner {
       if (idleAt >= 0) this.idle.splice(idleAt, 1);
       worker.terminate();
       this.workersFailed = true;
-      if (job) this.queue.unshift(job);
+      // (A speculative task nobody has asked for goes back to wait for a spare worker, if there ever is one.)
+      if (job) (job.speculative && !job.wanted ? this.background : this.queue).unshift(job);
       this.pump();
     };
     this.workers.push(worker);

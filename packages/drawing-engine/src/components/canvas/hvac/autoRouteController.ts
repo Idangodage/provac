@@ -44,7 +44,7 @@ export interface AutoRouteRunOptions {
   rebuildExisting?: boolean;
   /** Duct design: trunk shape, the units' fan speed, and whether ducts already on a collar are replaced. */
   duct?: { shape: AutoDuctShape; fanSpeed: FanSpeed; rebuildExisting: boolean };
-  /** Scripted checks: no worker pool, every task in the run's own worker (the same answers, more slowly). */
+  /** Scripted checks: no worker pool, every task in the run's own worker, and nothing taken from the last run (the same answers, more slowly). */
   inlineTasks?: boolean;
 }
 
@@ -139,7 +139,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
       },
       // Auto-turn: 4-way cassettes turned for shorter runs first (Route defaults).
       orientation: autoTurnSettingsOf(state.pipeRoutingSettings),
-      ...(lastSteps ? { previous: lastSteps } : {}),
+      ...(lastSteps && !options.inlineTasks ? { previous: lastSteps } : {}),
       // Always passed: every step plans duct bodies with the document's duct settings.
       duct: {
         settings: state.ductSettings,
