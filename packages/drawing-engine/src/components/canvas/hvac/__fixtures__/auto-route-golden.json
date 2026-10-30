@@ -867,6 +867,97 @@
     "blocking": 0,
     "coordination": "refrigerant-first"
    }
+  },
+  "ducted-1x11": {
+   "digest": "6f3527beb4b872261d712ceb",
+   "sections": {
+    "blockingDetails": "4f53cda18c2baa0c0354bb5f",
+    "blockingIssues": "4f53cda18c2baa0c0354bb5f",
+    "clashes": "4f53cda18c2baa0c0354bb5f",
+    "condensate": "74234e98afe7498fb5daf1f3",
+    "coordination": "7781ba77357f822540c0ef60",
+    "ducts": "93d66ca241908a62b9c419a7",
+    "issues": "3ff6eb3052594afe73eef9db",
+    "refrigerant": "74234e98afe7498fb5daf1f3",
+    "services": "a09e4a132647766fcdcef0e3"
+   },
+   "elements": {
+    "ducts": [
+     "72344fb3b906411df8a57aa2",
+     "cc40421be9c9298b9fba0931",
+     "71a4447fb8fdf426b30080f2",
+     "8a4869632b39ac96f496f9ac",
+     "68209488d6676c10f26f4c60",
+     "b55bd2fd7bd8ea0c000c79dd",
+     "6240980c7c242935d0bb14b7",
+     "ae5035f9a08060bcea1d7e5a",
+     "73762c3b753496169244ee70",
+     "a74ab16ea95af12c0b41e0e8",
+     "cc7d170901905f8e25d3e646",
+     "89aeb59f06625c0fb094fcd4",
+     "b68849e0dedeb66486856a42",
+     "777794040bd623938bc2474a",
+     "7a70bc9e28384008e56ea3bb",
+     "9dd014ad02121e90d6222ffe",
+     "b96a211c80e87041c2656459",
+     "8c93c38ea13f8e239310dea3",
+     "0add25e6c69048a7dbbcb48d",
+     "43658f0fd2077cdec4f0fcbd",
+     "6573af8d7339bdc52bf19e6b",
+     "abaf5c60c3ab9e00558ffd97",
+     "931832d562a9abc3fdc74c10",
+     "0478b9e6c570060218c8ae2c",
+     "decad320e024196d34bb56f0",
+     "0766f2b97f8a67737dc80b6c",
+     "0238cca1fe24ac85c9a3db08",
+     "7fd5ccb65a9e080caf7f1367"
+    ],
+    "ductUnits": [
+     "051476384c684475548baa8c"
+    ],
+    "terminalUpdates": [
+     "f82c36f9e032597bfe4aa094",
+     "5a517b756e2ecb5bb3313a6f",
+     "899b33c5888143d192d1f5ad",
+     "6e54b00574ff07cb29fc9f4d",
+     "fef94e20aaaec7c7c0634ef5",
+     "d56b072d527d173c703c007f",
+     "6a4ac0fb0b33a61e3d08fc45",
+     "0e200d30d683d77ead69fc38",
+     "5c190c27d8b1cca45f433e36",
+     "4608636c4e5297bcff4485d5",
+     "4dff87d1c7e77f53ccd2faa8",
+     "a5a75ce948b6f1d843eddab0",
+     "3465846be30654a8b15d75e8",
+     "dfcd53c86e31c7fbafa0e83d",
+     "bb9639b908133877ab1b3b2d",
+     "81632850a8ebf0cf8be97adc",
+     "e659db243353c4940a6ca58e",
+     "874094ed04c442344334c97a",
+     "94138174fd1389e2f8fcb3a0",
+     "686cf5a7ed0b115ad236997d",
+     "8f0b7f23d299e839d87f63b6",
+     "3d0767194e482fb9f4cbce90"
+    ],
+    "refrigerant": [],
+    "refrigerantUpdates": [],
+    "condensate": []
+   },
+   "summary": {
+    "ducts": [
+     "DU-1:designed:5487.52"
+    ],
+    "ductRuns": 28,
+    "refrigerantElements": null,
+    "refrigerantConnected": null,
+    "refrigerantScores": null,
+    "refrigerantCandidates": null,
+    "drains": null,
+    "drainElements": null,
+    "clashes": 0,
+    "blocking": 0,
+    "coordination": "refrigerant-first"
+   }
   }
  }
 }

@@ -137,6 +137,9 @@ export const AUTO_ROUTE_CORPUS: readonly AutoRouteCorpusCase[] = [
   synthetic('cassettes-6', { ducted: 0, terminals: 0, cassettes: 6 }, PIPES, 'Six cassettes: refrigerant and drains'),
   synthetic('ducted-1x5', { ducted: 1, terminals: 5, cassettes: 0 }, DUCTS, 'One FDUM140, 5 + 5 terminals: ducts'),
   synthetic('ducted-3x3', { ducted: 3, terminals: 3, cassettes: 0 }, DUCTS, 'Three FDUM140, 3 + 3 terminals each: ducts'),
+  // Past the exact limit: the terminals are routed in groups, and a share of a third or an eleventh of the air leaves
+  // a run a residue of airflow after its last take-off (a loss that is not a number).
+  synthetic('ducted-1x11', { ducted: 1, terminals: 11, cassettes: 0 }, DUCTS, 'One FDUM140, 11 + 11 terminals: ducts, routed in groups'),
   synthetic('mixed-2x3-c4', { ducted: 2, terminals: 3, cassettes: 4 }, EVERYTHING, 'Two FDUM140 (3 + 3) and four cassettes: everything'),
   synthetic('mixed-3x3-c6', { ducted: 3, terminals: 3, cassettes: 6 }, EVERYTHING, 'Three FDUM140 (3 + 3) and six cassettes: everything'),
 ];
