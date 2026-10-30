@@ -40,7 +40,9 @@ import {
   footprintCorners,
   newBuild,
   obstaclesFor,
+  polylineHits,
   roundUp,
+  segmentBlocked,
   segmentHitsBox,
   simplifyCollinear,
   spigotVariants,
@@ -800,12 +802,7 @@ function sizeTrunk(
 }
 
 function trunkObstacleHits(ctx: ServiceCtx, vertices: readonly Point2D[], widthMm: number, heightMm: number): number {
-  const boxes = obstaclesFor(ctx, widthMm / 2 + 50, ctx.bottomZ, ctx.bottomZ + heightMm, new Set([ctx.unitId]));
-  let hits = 0;
-  for (let index = 1; index < vertices.length; index += 1) {
-    for (const box of boxes) if (segmentHitsBox(vertices[index - 1]!, vertices[index]!, box)) hits += 1;
-  }
-  return hits;
+  return polylineHits(ctx, vertices, widthMm / 2 + 50, ctx.bottomZ, ctx.bottomZ + heightMm, new Set([ctx.unitId]));
 }
 
 function trunkHeight(ctx: ServiceCtx, terminals: readonly TerminalCtx[]): number {
@@ -846,21 +843,27 @@ function buildTrunkRun(
       && flexOk(flexFit(ctx, stubEnd, out, bottomZ, terminal), terminal, ctx.settings)) return false;
     const radius = (SMACNA_TABLE_3_1[ctx.settings.roundVelocityBand]?.ratio ?? 1.5) * terminal.branch + ctx.settings.elbowNeckMm;
     const routeStart = { x: stubEnd.x + out.x * radius, y: stubEnd.y + out.y * radius };
-    return obstaclesFor(ctx, terminal.branch / 2 + 50 + radius, bottomZ, bottomZ + terminal.branch, ignored)
-      .some(body => segmentHitsBox(stubEnd, routeStart, body));
+    return segmentBlocked(ctx, stubEnd, routeStart, terminal.branch / 2 + 50 + radius, bottomZ, bottomZ + terminal.branch, ignored);
   };
   // Takeoff stations are visibility events at solid boundaries. A terminal's
   // own plenum must remain an obstacle: a short stub aimed at its centre can
   // otherwise pierce the box before the route has room for its first elbow.
+  // The same leg and terminal are asked again while take-offs are spread: work them out once.
+  const stationsOf = new Map<string, number[]>();
   const alternateStations = (start: Point2D, direction: Point2D, terminal: TerminalCtx) => {
+    const key = `${start.x},${start.y},${direction.x},${direction.y},${terminal.branch}`;
+    const known = stationsOf.get(key);
+    if (known) return known;
     const radius = (SMACNA_TABLE_3_1[ctx.settings.roundVelocityBand]?.ratio ?? 1.5) * terminal.branch + ctx.settings.elbowNeckMm;
     const pad = terminal.branch / 2 + 51 + radius;
-    return ctx.obstacles.filter(body => body.id !== ctx.unitId && body.zMax > bottomZ && body.zMin < bottomZ + terminal.branch)
+    const stations = ctx.obstacles.filter(body => body.id !== ctx.unitId && body.zMax > bottomZ && body.zMin < bottomZ + terminal.branch)
       .flatMap(body => {
-        const stations = [{ x: body.minX, y: body.minY }, { x: body.minX, y: body.maxY },
+        const corners = [{ x: body.minX, y: body.minY }, { x: body.minX, y: body.maxY },
           { x: body.maxX, y: body.minY }, { x: body.maxX, y: body.maxY }].map(point => dot(sub(point, start), direction));
-        return [Math.min(...stations) - pad, Math.max(...stations) + pad];
+        return [Math.min(...corners) - pad, Math.max(...corners) + pad];
       });
+    stationsOf.set(key, stations);
+    return stations;
   };
   const placed = end !== 'end-cap' ? { taps: [] as TapPlan[], vertices: plan.vertices } : placeTaps(plan, sizeRectangular(airflow, heightMm, sizingLimits(ctx.settings, ctx.service, 'trunk'), { stepMm: ductRectStepMm(ctx.settings), minWidthMm: heightMm, maxHeightMm: heightMm }).widthMm, ctx.settings, stubBlocked, ctx.tapStations === 'at-terminals' ? undefined : alternateStations);
   if (!placed) return null;

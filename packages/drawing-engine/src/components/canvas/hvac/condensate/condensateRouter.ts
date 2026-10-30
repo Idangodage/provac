@@ -16,6 +16,7 @@
  * and the search is bounded by grid and expansion caps.
  */
 import type { Point2D } from '../../../../types';
+import { BoxIndex, type PlanBox } from '../spatial/boxIndex';
 
 import { distance, EPS, pointToSegmentDistance as pointToSegmentPlanDistance, segmentIntersection, simplifyPolyline } from './condensateGeometry';
 
@@ -205,6 +206,14 @@ function projectStation(point: Point2D, a: Point2D, b: Point2D): { station: numb
   return { station: dx * ux + dy * uy, offset: Math.abs(-dx * uy + dy * ux) };
 }
 
+/** A segment's plan box, padded. */
+function paddedBox(a: Point2D, b: Point2D, padMm: number): PlanBox {
+  return { minX: Math.min(a.x, b.x) - padMm, minY: Math.min(a.y, b.y) - padMm, maxX: Math.max(a.x, b.x) + padMm, maxY: Math.max(a.y, b.y) + padMm };
+}
+
+/** Slack on the padded boxes below the tests' own tolerances (0.6 mm on the network, 1 mm for parallel runs). */
+const INDEX_SLACK_MM = 2;
+
 function manhattanToSegment(point: Point2D, a: Point2D, b: Point2D): number {
   const minX = Math.min(a.x, b.x);
   const maxX = Math.max(a.x, b.x);
@@ -342,15 +351,23 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
   const rowBoxes = gridY.map((y) => square.filter((box) => y > box.minY + EPS && y < box.maxY - EPS));
   const columnBoxes = gridX.map((x) => square.filter((box) => x > box.minX + EPS && x < box.maxX - EPS));
 
+  // Each test below passes only within a segment's plan box padded by its tolerance (a service's half-width, the
+  // network's 0.6 mm): the indexes hand over just the segments a point or an edge can meet, in the lists' order, so
+  // every first find, crossing list and running sum is the one a scan of every segment gives.
+  const serviceIndex = new BoxIndex(services, (service) => paddedBox(service.a, service.b, service.halfWidthMm + INDEX_SLACK_MM));
+  const treeIndex = new BoxIndex(tree, (segment) => paddedBox(segment.a, segment.b, INDEX_SLACK_MM));
+
   // --- Tree targets ------------------------------------------------------
   const targetCache = new Map<number, RouteTarget | null>();
   const onTree = (point: Point2D): { segment: RouterTreeSegment; station: number } | null => {
-    for (const segment of tree) {
-      const { station, offset } = projectStation(point, segment.a, segment.b);
-      const length = distance(segment.a, segment.b);
-      if (offset <= 0.6 && station >= -0.6 && station <= length + 0.6) return { segment, station };
-    }
-    return null;
+    let station = 0;
+    const segment = treeIndex.find(point.x, point.y, point.x, point.y, (candidate) => {
+      const projected = projectStation(point, candidate.a, candidate.b);
+      const length = distance(candidate.a, candidate.b);
+      station = projected.station;
+      return projected.offset <= 0.6 && projected.station >= -0.6 && projected.station <= length + 0.6;
+    });
+    return segment ? { segment, station } : null;
   };
   const treeTargetAt = (node: number): RouteTarget | null => {
     if (targetCache.has(node)) return targetCache.get(node)!;
@@ -358,7 +375,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     const hit = onTree(point);
     // A branch drops vertically into the crown of the main at the junction, so a
     // junction inside another service's plan footprint would pass through it.
-    const underService = services.some((service) => distance(service.a, service.b) > EPS
+    const underService = serviceIndex.some(point.x, point.y, point.x, point.y, (service) => distance(service.a, service.b) > EPS
       && pointToSegmentPlanDistance(point, service.a, service.b) < service.halfWidthMm);
     const target = hit && !underService && hit.station >= hit.segment.minStation - 0.6 && hit.station <= hit.segment.maxStation + 0.6
       ? { kind: 'tree' as const, edgeId: hit.segment.edgeId, point, station: hit.station }
@@ -382,9 +399,12 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     const high = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
     let blocked = along.some((box) => (horizontal ? high > box.minX + EPS && low < box.maxX - EPS : high > box.minY + EPS && low < box.maxY - EPS))
       || rotated.some((box) => segmentHitsBox(a, b, box));
+    const edgeMinX = Math.min(a.x, b.x); const edgeMaxX = Math.max(a.x, b.x);
+    const edgeMinY = Math.min(a.y, b.y); const edgeMaxY = Math.max(a.y, b.y);
     // Never run along or through the network already built (only arrive on it).
     if (!blocked) {
-      for (const segment of tree) {
+      for (const treeAt of treeIndex.candidates(edgeMinX, edgeMinY, edgeMaxX, edgeMaxY)) {
+        const segment = tree[treeAt]!;
         const segHorizontal = Math.abs(segment.a.y - segment.b.y) <= 0.6;
         const segVertical = Math.abs(segment.a.x - segment.b.x) <= 0.6;
         if (horizontal && segHorizontal && Math.abs(a.y - segment.a.y) <= 0.6) {
@@ -410,7 +430,8 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
         if (hit) walls.push({ wallId: wall.id, point: hit.point });
       }
       let overlap = 0;
-      for (const service of services) {
+      for (const serviceAt of serviceIndex.candidates(edgeMinX, edgeMinY, edgeMaxX, edgeMaxY)) {
+        const service = services[serviceAt]!;
         const hit = segmentIntersection(a, b, service.a, service.b, false);
         const serviceLength = distance(service.a, service.b);
         if (hit && serviceLength > EPS) {

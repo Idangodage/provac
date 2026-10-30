@@ -6,6 +6,7 @@
  */
 import type { HvacElement, Point2D } from '../../../../types';
 import type { OrthogonalRouteObstacle } from '../obstacleAwareOrthogonalRoute';
+import { lazyBoxIndex } from '../spatial/boxIndex';
 
 import { portEntryDirection, type DuctAirPort } from './ductAirPorts';
 import type { DuctRoomOutline, DuctWall } from './ductBuilding';
@@ -310,16 +311,26 @@ export function runoutStaysOut(ctx: ServiceCtx, mainPoint: Point2D, out: Point2D
   return path.points.every((point) => (point.x - mainPoint.x) * out.x + (point.y - mainPoint.y) * out.y >= mainHalfMm + path.radiusMm);
 }
 
+/**
+ * The service's obstacles indexed by their plan boxes. Every test below pads
+ * a box by some clearance and passes only on a point inside it, so only boxes
+ * meeting the tested point or stretch padded alike (and 1 mm more, for
+ * rounding) can pass: the index hands over exactly those, in list order.
+ */
+const obstacleIndex = lazyBoxIndex<ServiceCtx['obstacles'][number]>((box) => box);
+const QUERY_SLACK_MM = 1;
+
 export function flexClear(ctx: ServiceCtx, stubEnd: Point2D, out: Point2D, stubBottomZ: number, terminal: TerminalCtx): boolean {
   const curve = runoutCurve(ctx, stubEnd, out, stubBottomZ, terminal);
   const radius = terminal.neck / 2 + FLEX_SKIN_MM;
   const own = terminal.element.id;
+  const index = obstacleIndex(ctx.obstacles);
+  const reach = radius + QUERY_SLACK_MM;
   for (const point of curve.points) {
     const local = toLocal(ctx.frame, point);
-    for (const box of ctx.obstacles) {
-      if (box.id === own || box.zMax <= point.z - radius || box.zMin >= point.z + radius) continue;
-      if (local.x > box.minX - radius && local.x < box.maxX + radius && local.y > box.minY - radius && local.y < box.maxY + radius) return false;
-    }
+    if (index.some(local.x - reach, local.y - reach, local.x + reach, local.y + reach, (box) => box.id !== own
+      && !(box.zMax <= point.z - radius || box.zMin >= point.z + radius)
+      && local.x > box.minX - radius && local.x < box.maxX + radius && local.y > box.minY - radius && local.y < box.maxY + radius)) return false;
   }
   return true;
 }
@@ -330,10 +341,47 @@ export function obstaclesFor(ctx: ServiceCtx, padMm: number, zMin: number, zMax:
     .map((box) => ({ ...(box.id ? { id: box.id } : {}), minX: box.minX - padMm, minY: box.minY - padMm, maxX: box.maxX + padMm, maxY: box.maxY + padMm }));
 }
 
+const NO_IDS: ReadonlySet<string> = new Set();
+
+/**
+ * Whether the straight a–b (local frame, axis-aligned) runs into an obstacle
+ * of the height band (zMin, zMax), each padded by `padMm`: exactly
+ * `obstaclesFor(ctx, padMm, zMin, zMax, exclude, build).some((box) => segmentHitsBox(a, b, box))`
+ * with `skipId` passed over too, without copying every obstacle for each test.
+ */
+export function segmentBlocked(ctx: ServiceCtx, a: Point2D, b: Point2D, padMm: number, zMin: number, zMax: number,
+  exclude: ReadonlySet<string> = NO_IDS, build?: Build, skipId?: string): boolean {
+  const hits = (box: ServiceCtx['obstacles'][number]) => !(box.id && exclude.has(box.id)) && (skipId === undefined || box.id !== skipId)
+    && box.zMax > zMin && box.zMin < zMax
+    && segmentHitsBox(a, b, { minX: box.minX - padMm, minY: box.minY - padMm, maxX: box.maxX + padMm, maxY: box.maxY + padMm });
+  const reach = padMm + QUERY_SLACK_MM;
+  if (obstacleIndex(ctx.obstacles).some(Math.min(a.x, b.x) - reach, Math.min(a.y, b.y) - reach, Math.max(a.x, b.x) + reach, Math.max(a.y, b.y) + reach, hits)) return true;
+  return build ? build.extra.some(hits) : false;
+}
+
 /** Whether a straight stretch of round duct (local frame, at `bottomZ`) runs into an obstacle. */
 export function stretchBlocked(ctx: ServiceCtx, a: Point2D, b: Point2D, diameterMm: number, bottomZ: number, exclude: ReadonlySet<string>): boolean {
-  const boxes = obstaclesFor(ctx, diameterMm / 2 + 50, bottomZ, bottomZ + diameterMm, exclude);
-  return boxes.some((box) => segmentHitsBox(a, b, box));
+  return segmentBlocked(ctx, a, b, diameterMm / 2 + 50, bottomZ, bottomZ + diameterMm, exclude);
+}
+
+/**
+ * How many obstacles of the height band, padded by `padMm`, each straight of
+ * the polyline runs into (a box counted once per straight it meets): exactly
+ * counting `segmentHitsBox` over `obstaclesFor(ctx, padMm, zMin, zMax, exclude)`.
+ */
+export function polylineHits(ctx: ServiceCtx, vertices: readonly Point2D[], padMm: number, zMin: number, zMax: number, exclude: ReadonlySet<string>): number {
+  const index = obstacleIndex(ctx.obstacles);
+  const reach = padMm + QUERY_SLACK_MM;
+  let hits = 0;
+  for (let i = 1; i < vertices.length; i += 1) {
+    const a = vertices[i - 1]!; const b = vertices[i]!;
+    for (const k of index.candidates(Math.min(a.x, b.x) - reach, Math.min(a.y, b.y) - reach, Math.max(a.x, b.x) + reach, Math.max(a.y, b.y) + reach)) {
+      const box = ctx.obstacles[k]!;
+      if (!(box.id && exclude.has(box.id)) && box.zMax > zMin && box.zMin < zMax
+        && segmentHitsBox(a, b, { minX: box.minX - padMm, minY: box.minY - padMm, maxX: box.maxX + padMm, maxY: box.maxY + padMm })) hits += 1;
+    }
+  }
+  return hits;
 }
 
 /** Drops vertices where the path goes straight on. */
