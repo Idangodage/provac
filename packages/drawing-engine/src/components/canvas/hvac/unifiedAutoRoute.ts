@@ -75,6 +75,17 @@ export interface UnifiedAutoRouteProgress {
   total: number;
 }
 
+/** A step of the run, as timed: the turns, each service, the audit, and the alternatives compared. */
+export type AutoRouteStep = 'turns' | 'ducts' | 'refrigerant' | 'condensate' | 'audit' | 'drainage-first' | 'unturned';
+
+/** How long the run and each of its steps took (ms). It measures the run, not its answer. */
+export interface AutoRouteTimings {
+  totalMs: number;
+  steps: Array<{ step: AutoRouteStep; ms: number }>;
+}
+
+const clockMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
 export interface UnifiedAutoRouteOptions {
   services: AutoRouteServices;
   refrigerant: Omit<AutoRouteNetworkOptions, 'onProgress'>;
@@ -118,6 +129,7 @@ export interface UnifiedAutoRouteResult {
   coordination?: { strategy: 'refrigerant-first' | 'drainage-first'; candidatesEvaluated: number };
   /** The cassettes turned before routing (as they will be), and those kept as placed (why). */
   orientation?: { turns: UnitTurn[]; kept: UnitKept[]; units: HvacElement[] };
+  timings?: AutoRouteTimings;
 }
 
 export function routedServiceOf(element: HvacElement | undefined): RoutedService {
@@ -363,6 +375,14 @@ export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: U
   if (!wantsRefrigerant && !services.condensate && !routeDucts) {
     return { services, ducts: null, refrigerant: null, condensate: null, clashes: [], issues: ['Tick at least one service to route.'] };
   }
+  const runStarted = clockMs();
+  const steps: AutoRouteTimings['steps'] = [];
+  let stepStarted = runStarted;
+  const lap = (step: AutoRouteStep) => {
+    const now = clockMs();
+    steps.push({ step, ms: now - stepStarted });
+    stepStarted = now;
+  };
 
   // First, the turns (see the module comment): every step below sees the cassettes turned.
   let originalScene = drawnScene;
@@ -385,6 +405,7 @@ export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: U
       const turned = new Set(planned.turns.map((turn) => turn.unitId));
       orientation = { ...planned, units: originalScene.filter((element) => turned.has(element.id)) };
     } else if (planned.kept.length) orientation = { turns: [], kept: planned.kept, units: [] };
+    lap('turns');
   }
   // Pipes are clash-checked against duct bodies planned with the document's duct settings (also in the worker).
   if (options.duct) setActiveDuctSettings(options.duct.settings);
@@ -407,6 +428,7 @@ export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: U
     ducts = planAutoRouteDucts(ductScene, { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) }, options.duct!,
       (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total }));
     issues.push(...ducts.issues);
+    lap('ducts');
   }
   // Every later step sees the new ducts as part of the drawing.
   const scene = applyDuctProposal(originalScene, ducts);
@@ -442,6 +464,7 @@ export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: U
       };
     }
     issues.push(...refrigerant.issues);
+    lap('refrigerant');
   }
 
   let condensate: CondensateGenerationResult | null = null;
@@ -457,10 +480,12 @@ export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: U
       onProgress: (step) => progress({ stage: `Condensate: ${step.stage}`, completed: step.completed, total: step.total }),
     });
     issues.push(...condensate.issues);
+    lap('condensate');
   }
 
   progress({ stage: 'Checking clashes between services', completed: 0, total: 0 });
   const baseline = auditUnifiedCandidate(originalScene, { services, ducts, refrigerant, condensate, clashes: [], issues }, options);
+  lap('audit');
   const candidates = [{ key: 'refrigerant-first', result: baseline }];
   // Ducts are the same in every candidate, so a unit with no duct layout blocks them all alike: it stays in each
   // result (Apply refuses on it), but the candidates are compared, and the retry decided, on everything else.
@@ -499,6 +524,7 @@ export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: U
         issues: [...(ducts?.issues ?? []), ...alternateRefrigerant.issues, ...alternateDrains.issues],
       }, options) });
     }
+    lap('drainage-first');
   }
   const selected = selectServiceRouteCandidate(candidates, options.refrigerant.objective);
   const result: UnifiedAutoRouteResult = {
@@ -508,9 +534,11 @@ export async function planUnifiedAutoRoute(drawnScene: HvacElement[], options: U
   // A turned cassette must lose every run it had: where a run of it is kept (its network kept as it is), route unturned.
   if (orientation?.turns.length && !turnsHold(drawnScene, result, orientation.turns)) {
     const unturned = await planUnifiedAutoRoute(drawnScene, { ...options, orientation: { ...options.orientation!, enabled: false } });
-    return { ...unturned, issues: [...unturned.issues, 'Cassettes were not turned: a run they keep would no longer reach them.'] };
+    steps.push({ step: 'unturned', ms: unturned.timings?.totalMs ?? 0 });
+    return { ...unturned, issues: [...unturned.issues, 'Cassettes were not turned: a run they keep would no longer reach them.'],
+      timings: { totalMs: clockMs() - runStarted, steps } };
   }
-  return result;
+  return { ...result, timings: { totalMs: clockMs() - runStarted, steps } };
 }
 
 /**
