@@ -7,8 +7,8 @@
  *
  * Frontiers. For a subtree, F[i] is the least first cost of a design in which
  * every terminal path from the subtree's start needs at most p_i = i·δ Pa (a
- * non-increasing step function of the pressure budget). Three operations
- * build every frontier exactly, each O(N) on the grid:
+ * non-increasing step function of the pressure budget, kept as its steps:
+ * frontierSteps.ts). Three operations build every frontier exactly:
  *  - a fitting or duct in series: shift by its cost and (rounded up) its loss;
  *  - two subtrees in parallel (a take-off and the main beyond it): the paths
  *    must each stay within the same budget, so the costs add pointwise;
@@ -32,6 +32,7 @@ import { velocityMs, velocityPressurePa } from '../ductSizing';
 import { isRoundLeg, type DuctLeg, type DuctSplitStyle, type DuctTapStyle } from '../ductTypes';
 
 import { pointAlong, runBends, runLengthMm, type DesignSpigot, type RunDesign, type ServiceDesign } from './designTree';
+import { Envelope, FrontierStore, type Frontier } from './frontierSteps';
 import { ROUTE_CLEARANCE_MM } from './routingGraph';
 import { areaOf, sameLeg, type SizingModel } from './sizingModel';
 
@@ -90,7 +91,6 @@ export interface DesignFrontier {
 }
 
 const TAP_STYLES: readonly DuctTapStyle[] = ['spin-in', 'conical', 'shoe-45', 'round-tee', 'round-conical', 'round-lateral', 'straight'];
-const SPLIT_STYLES: readonly DuctSplitStyle[] = ['y', 'bullhead', 'wye'];
 const SPIGOT_STYLES = ['spin-in', 'conical'] as const;
 
 interface RunState {
@@ -99,37 +99,20 @@ interface RunState {
   boundaries: number[];
   options: DuctLeg[][];
   /** G[k][x]: frontier of everything from segment k's start with section x there. */
-  G: Float64Array[][];
+  G: Frontier[][];
   /** Per segment and section: whether the run can carry on from it, and whether its take-off can be made on it (for explanations). */
   alive: Array<Array<{ main: boolean; branch: boolean }>>;
-  argTap: Array<Array<Int32Array | null>>;
-  argNext: Int32Array[][];
-  /** Last segment: the end's frontier and choices per section. */
-  end: Array<Float64Array | null>;
-  argEnd: Array<Int32Array | null>;
+  /** Last segment: the end's frontier per section. */
+  end: Array<Frontier | null>;
   children: RunState[];
+  /** Whether an all-flex take-off's runout fits from this main with this fitting (a curve against the obstacles; asked once). */
+  stubFits: (stub: NonNullable<ReturnType<typeof stubAt>>, leg: DuctLeg, style: DuctTapStyle) => boolean;
 }
 
 // ---- Frontier operations ----
 
 function steps(pressurePa: number, grid: DpGrid): number {
   return Math.max(0, Math.ceil(pressurePa / grid.stepPa - 1e-9));
-}
-
-function filled(grid: DpGrid, value: number): Float64Array {
-  return new Float64Array(grid.size).fill(value);
-}
-
-/** out[i] = min(out[i], F[i − k] + cost), recording `code` where it wins. */
-function minShiftedInto(out: Float64Array, arg: Int32Array | null, F: Float64Array, cost: number, k: number, code: number): void {
-  if (!Number.isFinite(cost)) return;
-  for (let i = k; i < out.length; i += 1) {
-    const value = F[i - k]! + cost;
-    if (value < out[i]!) {
-      out[i] = value;
-      if (arg) arg[i] = code;
-    }
-  }
 }
 
 // ---- Segments ----
@@ -281,7 +264,7 @@ function segmentOptions(run: RunDesign, segment: RunSegment, index: number, chil
   if (segment.tap !== null) {
     const child = children[segment.tap]!;
     // The smallest branch that can be sized at all (a branch with take-offs of its own may need a tall one).
-    const live = child.options[0]!.filter((_, iy) => child.G[0]?.[iy]?.some(Number.isFinite) ?? true);
+    const live = child.options[0]!.filter((_, iy) => (child.G[0]?.[iy]?.count ?? 1) > 0);
     const smallest = Math.min(...(live.length ? live : child.options[0]!).map((leg) => leg.diameterMm ?? leg.heightMm));
     const cap = model.settings.autoMaxVelocityTrunkMs;
     const extra: DuctLeg[] = [];
@@ -361,10 +344,65 @@ function splitOutletOk(style: DuctSplitStyle, main: DuctLeg, outlet: DuctLeg): b
 
 // ---- The DP ----
 
+/** Frontiers while they are built. Nothing outlives its use, so the next solve on the same grid takes them over. */
+class Scratch {
+  readonly main: Envelope;
+  readonly branch: Envelope;
+  readonly end: Envelope;
+  readonly best: Envelope;
+  readonly total: Envelope;
+  readonly sum: Envelope;
+
+  constructor(readonly size: number) {
+    this.main = new Envelope(size);
+    this.branch = new Envelope(size);
+    this.end = new Envelope(size);
+    this.best = new Envelope(size);
+    this.total = new Envelope(size);
+    this.sum = new Envelope(size);
+  }
+}
+
+let lastScratch: Scratch | null = null;
+
+function scratchFor(size: number): Scratch {
+  if (lastScratch?.size !== size) lastScratch = new Scratch(size);
+  return lastScratch;
+}
+
 interface Solver {
   model: SizingModel;
   grid: DpGrid;
   states: Map<string, RunState>;
+  store: FrontierStore;
+  scratch: Scratch;
+}
+
+/**
+ * Everything one point of a frontier may be built from: a frontier, raised by a
+ * cost and moved along by a loss. The frontier is built from them in this
+ * order, and a choice is recovered from them in the same order (chosen).
+ */
+type Candidate = (frontier: Frontier, cost: number, shift: number, code: number) => void;
+
+/**
+ * Which candidate a frontier's value at this point came from: the first, in the
+ * order the frontier was built, to reach the least value there (-1: none does).
+ * Only the few points built are ever asked about, so none are recorded.
+ */
+function chosen(index: number, solver: Solver, candidates: (visit: Candidate) => void): number {
+  const { store } = solver;
+  let best = INF;
+  let code = -1;
+  candidates((frontier, cost, shift, candidate) => {
+    if (!Number.isFinite(cost) || index < shift) return;
+    const value = store.valueAt(frontier, index - shift) + cost;
+    if (value < best) {
+      best = value;
+      code = candidate;
+    }
+  });
+  return code;
 }
 
 /** Loss in the part of segment k before its take-off (friction and bends at the flow in). */
@@ -402,8 +440,33 @@ function plenumEntryLossPa(leg: DuctLeg, airflowM3h: number): number {
   return FITTING_LOSS_COEFFICIENTS.plenumEntry * velocityPressurePa(velocityMs(leg, airflowM3h));
 }
 
-function endFrontiers(state: RunState, solver: Solver): void {
+/** What one outlet of a split of `style` on `leg` can be: each section of its branch that fits, with its loss and share of the fitting. */
+function splitOutlets(child: RunState, roomMm: number, style: DuctSplitStyle, leg: DuctLeg, flow: number, solver: Solver) {
   const { model, grid } = solver;
+  return child.options[0]!.flatMap((y, index) => {
+    if (!splitOutletOk(style, leg, y)) return [];
+    // A divided-flow Y gives each outlet its share of the main: a leg too narrow is a bullhead's job.
+    if (style === 'y' && !model.dividedFlowShareOk(leg, flow > 0 ? child.run.airflowM3h / flow : 0.5)) return [];
+    if (style === 'wye' && roomMm < model.diagonalRoomMm(leg.diameterMm!, y, true)) return [];
+    const part = model.splitOutlet(style, leg, flow, y, child.run.airflowM3h);
+    return [{ index, frontier: child.G[0]![index]!, cost: part.cost, shift: steps(part.loss, grid) }];
+  });
+}
+
+/** The fittings a plenum's spigot can have: each section of its branch that fits the box, spun in or conical. */
+function forEachSpigotFitting(spigot: DesignSpigot, child: RunState, plenumHeightMm: number, solver: Solver, visit: Candidate): void {
+  const { model, grid } = solver;
+  child.options[0]!.forEach((y, iy) => {
+    if ((y.diameterMm ?? y.widthMm) > plenumHeightMm - 100 + 0.5) return;
+    SPIGOT_STYLES.forEach((style, s) => {
+      const part = model.spigot(style, y, spigot.child.airflowM3h);
+      visit(child.G[0]![iy]!, part.cost, steps(part.loss, grid), (iy << 4) | s);
+    });
+  });
+}
+
+function endFrontiers(state: RunState, solver: Solver): void {
+  const { model, grid, store } = solver;
   const run = state.run;
   const lastIndex = state.segments.length - 1;
   const last = state.segments[lastIndex]!;
@@ -411,7 +474,6 @@ function endFrontiers(state: RunState, solver: Solver): void {
   const flow = last.flowOut;
   const fit = runoutFit(run, model, flow);
   state.end = options.map(() => null);
-  state.argEnd = options.map(() => null);
   options.forEach((leg, x) => {
     if (run.end.kind === 'terminal') {
       const terminal = run.end.terminal;
@@ -425,80 +487,48 @@ function endFrontiers(state: RunState, solver: Solver): void {
         transition = model.transition(leg, neck, flow);
       }
       const runout = model.flex(terminal.neck, flow, fit!.lengthMm, fit!.bendLossPa);
-      const frontier = filled(grid, INF);
-      minShiftedInto(frontier, null, filled(grid, 0), transition.cost + runout.cost, steps(transition.loss + runout.loss + model.terminalDrop(terminal), grid), 0);
-      state.end[x] = frontier;
+      state.end[x] = store.step(steps(transition.loss + runout.loss + model.terminalDrop(terminal), grid), transition.cost + runout.cost);
     } else if (run.end.kind === 'cap') {
-      state.end[x] = filled(grid, model.capCost(leg));
+      state.end[x] = store.step(0, model.capCost(leg));
     } else if (run.end.kind === 'split') {
       const [plus, minus] = state.children.slice(run.taps.length) as [RunState, RunState];
-      const frontier = filled(grid, INF);
-      const arg = new Int32Array(grid.size).fill(-1);
+      const { end, best, sum } = solver.scratch;
+      end.clear();
       const room = [firstEventMm(plus.run, plus.children, model), firstEventMm(minus.run, minus.children, model)];
       for (const style of splitStylesFor(leg, model)) {
-        const styleIndex = SPLIT_STYLES.indexOf(style);
-        // Each outlet on its own (its section fits the split, its loss and share of the fitting), shifted by that.
-        const side = (child: RunState, which: 0 | 1) => child.options[0]!.flatMap((y, index) => {
-          if (!splitOutletOk(style, leg, y)) return [];
-          // A divided-flow Y gives each outlet its share of the main: a leg too narrow is a bullhead's job.
-          if (style === 'y' && !model.dividedFlowShareOk(leg, flow > 0 ? child.run.airflowM3h / flow : 0.5)) return [];
-          if (style === 'wye' && room[which]! < model.diagonalRoomMm(leg.diameterMm!, y, true)) return [];
-          const part = model.splitOutlet(style, leg, flow, y, child.run.airflowM3h);
-          const shifted = filled(grid, INF);
-          minShiftedInto(shifted, null, child.G[0]![index]!, part.cost, steps(part.loss, grid), 0);
-          return [{ index, leg: y, shifted }];
-        });
-        const as = side(plus, 0);
-        const bs = side(minus, 1);
+        const as = splitOutlets(plus, room[0]!, style, leg, flow, solver);
+        const bs = splitOutlets(minus, room[1]!, style, leg, flow, solver);
         if (!as.length || !bs.length) continue;
         // Each outlet takes its own leg — a divided-flow Y's share of the main (its transition takes it to the outlet's
         // size), a bullhead's or a wye's within the main — so the best second outlet at each step goes with any first.
-        const best = filled(grid, INF);
-        const which = new Int32Array(grid.size).fill(-1);
-        for (const entry of bs) {
-          for (let i = 0; i < grid.size; i += 1) if (entry.shifted[i]! < best[i]!) { best[i] = entry.shifted[i]!; which[i] = entry.index; }
-        }
+        best.clear();
+        for (const entry of bs) store.lowerInto(best, entry.frontier, entry.cost, entry.shift);
         const base = model.splitBaseCost(style, leg, flow);
         for (const a of as) {
-          for (let i = 0; i < grid.size; i += 1) {
-            const value = a.shifted[i]! + best[i]! + base;
-            if (value < frontier[i]!) { frontier[i] = value; arg[i] = styleIndex * 1_000_000 + a.index * 1000 + which[i]!; }
-          }
+          sum.setSum(store, a.frontier.start, a.frontier.count, a.cost, a.shift, best, base);
+          end.lower(sum, 0, sum.count, 0, 0);
         }
       }
-      state.end[x] = frontier;
-      state.argEnd[x] = arg;
+      state.end[x] = store.keep(end);
     } else {
       // Plenum: every spigot's branch in parallel, the box, and the entry loss.
       const plenum = run.end;
       const children = state.children.slice(run.taps.length);
-      let total = filled(grid, 0);
-      const args: Int32Array[] = [];
+      const { best } = solver.scratch;
+      let total = solver.scratch.total;
+      let spare = solver.scratch.sum;
+      total.setFlat(0);
       plenum.spigots.forEach((spigot: DesignSpigot, c) => {
-        const child = children[c]!;
-        const best = filled(grid, INF);
-        const arg = new Int32Array(grid.size).fill(-1);
-        child.options[0]!.forEach((y, iy) => {
-          if ((y.diameterMm ?? y.widthMm) > plenum.heightMm - 100 + 0.5) return;
-          SPIGOT_STYLES.forEach((style, s) => {
-            const part = model.spigot(style, y, spigot.child.airflowM3h);
-            minShiftedInto(best, arg, child.G[0]![iy]!, part.cost, steps(part.loss, grid), (iy << 4) | s);
-          });
-        });
-        args.push(arg);
-        const next = new Float64Array(grid.size);
-        for (let i = 0; i < grid.size; i += 1) next[i] = total[i]! + best[i]!;
-        total = next;
+        best.clear();
+        forEachSpigotFitting(spigot, children[c]!, plenum.heightMm, solver, (frontier, cost, shift) => store.lowerInto(best, frontier, cost, shift));
+        spare.setSum(total, 0, total.count, 0, 0, best, 0);
+        [total, spare] = [spare, total];
       });
       // The box: its sides and two faces, fabricated at the fitting rate.
       const box = { widthMm: plenum.widthMm, heightMm: plenum.heightMm };
       const boxCost = model.plenumCost(box, plenum.lengthMm);
       const entry = plenumEntryLossPa(leg, flow);
-      const frontier = filled(grid, INF);
-      minShiftedInto(frontier, null, total, boxCost, steps(entry, grid), 0);
-      state.end[x] = frontier;
-      // One arg array per spigot, stored after the end marker.
-      (state as RunState & { argSpigots?: Int32Array[] }).argSpigots = args;
+      state.end[x] = store.keepRaised(total, boxCost, steps(entry, grid));
     }
   });
 }
@@ -515,11 +545,41 @@ function stubAt(run: RunDesign, tap: number, child: RunDesign): { centre: Point2
   };
 }
 
-function solveRun(run: RunDesign, solver: Solver): RunState {
+/** The main side of segment k (not the last) on section `leg`: the next segment on each section, through a reducer where it fits. */
+function forEachNextSection(state: RunState, k: number, leg: DuctLeg, afterPa: number, solver: Solver, visit: Candidate): void {
   const { model, grid } = solver;
-  /** Runout checks, per take-off, main section and fitting (each is a curve against the obstacles). */
+  const segment = state.segments[k]!;
+  state.options[k + 1]!.forEach((nextLeg, xn) => {
+    if (!mayFollow(leg, nextLeg, model)) return;
+    let reducer = { cost: 0, loss: 0, lengthMm: 0 };
+    if (!sameLeg(leg, nextLeg)) {
+      reducer = model.transition(leg, nextLeg, state.segments[k + 1]!.flowIn);
+      if (reducer.lengthMm > segment.reducerRoomMm + 1e-6) return;
+    }
+    visit(state.G[k + 1]![xn]!, reducer.cost, steps(afterPa + reducer.loss, grid), xn);
+  });
+}
+
+/** The branch side of a segment's take-off on section `leg`: each section and fitting its branch may use. */
+function forEachTakeOff(state: RunState, segment: RunSegment, leg: DuctLeg, solver: Solver, visit: Candidate): void {
+  const { model, grid } = solver;
+  const child = state.children[segment.tap!]!;
+  const stub = stubAt(state.run, segment.tap!, child.run);
+  child.options[0]!.forEach((y, iy) => {
+    for (const style of tapStyles(leg, y, child, model)) {
+      // An all-flex branch: its runout must still fit from this main's wall with this fitting.
+      if (stub && !state.stubFits(stub, leg, style)) continue;
+      const tee = model.tee(style, y, child.run.airflowM3h, leg, segment.flowIn);
+      visit(child.G[0]![iy]!, tee.cost, steps(tee.loss, grid), (iy << 4) | TAP_STYLES.indexOf(style));
+    }
+  });
+}
+
+function solveRun(run: RunDesign, solver: Solver): RunState {
+  const { model, grid, store } = solver;
+  const { main, branch } = solver.scratch;
   const stubCache = new Map<string, boolean>();
-  const stubFits = (stub: NonNullable<ReturnType<typeof stubAt>>, leg: DuctLeg, style: DuctTapStyle): boolean => {
+  const stubFits: RunState['stubFits'] = (stub, leg, style) => {
     const key = `${stub.centre.x},${stub.centre.y},${leg.diameterMm ?? leg.widthMm},${style}`;
     let fits = stubCache.get(key);
     if (fits === undefined) {
@@ -535,7 +595,7 @@ function solveRun(run: RunDesign, solver: Solver): RunState {
   ];
   const { segments, boundaries } = planSegments(run, children, model);
   const state: RunState = {
-    run, segments, boundaries, options: [], G: [], alive: [], argTap: [], argNext: [], end: [], argEnd: [], children,
+    run, segments, boundaries, options: [], G: [], alive: [], end: [], children, stubFits,
   };
   state.options = segments.map((segment, index) => segmentOptions(run, segment, index, children, model));
   // A section may always carry on past a take-off (a velocity under the economy band is no rule), so each
@@ -549,61 +609,33 @@ function solveRun(run: RunDesign, solver: Solver): RunState {
   for (let k = segments.length - 1; k >= 0; k -= 1) {
     const segment = segments[k]!;
     const options = state.options[k]!;
-    const G: Float64Array[] = [];
-    const argTap: Array<Int32Array | null> = [];
-    const argNext: Int32Array[] = [];
+    const G: Frontier[] = [];
     const alive: Array<{ main: boolean; branch: boolean }> = [];
     options.forEach((leg, x) => {
       // Main side: the end, or the next segment through a reducer where it fits.
-      const main = filled(grid, INF);
-      const next = new Int32Array(grid.size).fill(-1);
+      main.clear();
       const after = lossAfter(segment, leg, model);
       if (k === segments.length - 1) {
         const end = state.end[x];
-        if (end) minShiftedInto(main, next, end, 0, steps(after, grid), -2);
+        if (end) store.lowerInto(main, end, 0, steps(after, grid));
       } else {
-        state.options[k + 1]!.forEach((nextLeg, xn) => {
-          if (!mayFollow(leg, nextLeg, model)) return;
-          let reducer = { cost: 0, loss: 0, lengthMm: 0 };
-          if (!sameLeg(leg, nextLeg)) {
-            reducer = model.transition(leg, nextLeg, segments[k + 1]!.flowIn);
-            if (reducer.lengthMm > segment.reducerRoomMm + 1e-6) return;
-          }
-          minShiftedInto(main, next, state.G[k + 1]![xn]!, reducer.cost, steps(after + reducer.loss, grid), xn);
-        });
+        forEachNextSection(state, k, leg, after, solver, (frontier, cost, shift) => store.lowerInto(main, frontier, cost, shift));
       }
-      // Branch side: the take-off to the child, each section and fitting it may use.
-      let combined = main;
-      let tapArg: Int32Array | null = null;
+      const cost = segmentCost(segment, leg, model);
+      const shift = steps(lossBefore(segment, leg, model), grid);
+      // Branch side: the take-off to the child, in parallel with the main.
       if (segment.tap !== null) {
-        const child = children[segment.tap]!;
-        const branch = filled(grid, INF);
-        tapArg = new Int32Array(grid.size).fill(-1);
-        const stub = stubAt(run, segment.tap, child.run);
-        child.options[0]!.forEach((y, iy) => {
-          for (const style of tapStyles(leg, y, child, model)) {
-            // An all-flex branch: its runout must still fit from this main's wall with this fitting.
-            if (stub && !stubFits(stub, leg, style)) continue;
-            const tee = model.tee(style, y, child.run.airflowM3h, leg, segment.flowIn);
-            minShiftedInto(branch, tapArg, child.G[0]![iy]!, tee.cost, steps(tee.loss, grid), (iy << 4) | TAP_STYLES.indexOf(style));
-          }
-        });
-        combined = new Float64Array(grid.size);
-        for (let i = 0; i < grid.size; i += 1) combined[i] = branch[i]! + main[i]!;
-        alive.push({ main: main.some(Number.isFinite), branch: branch.some(Number.isFinite) });
+        branch.clear();
+        forEachTakeOff(state, segment, leg, solver, (frontier, fittingCost, fittingShift) => store.lowerInto(branch, frontier, fittingCost, fittingShift));
+        alive.push({ main: main.count > 0, branch: branch.count > 0 });
+        G[x] = store.keepSum(branch, main, cost, shift);
       } else {
-        alive.push({ main: main.some(Number.isFinite), branch: true });
+        alive.push({ main: main.count > 0, branch: true });
+        G[x] = store.keepRaised(main, cost, shift);
       }
-      const frontier = filled(grid, INF);
-      minShiftedInto(frontier, null, combined, segmentCost(segment, leg, model), steps(lossBefore(segment, leg, model), grid), 0);
-      G[x] = frontier;
-      argTap[x] = tapArg;
-      argNext[x] = next;
     });
     state.G[k] = G;
     state.alive[k] = alive;
-    state.argTap[k] = argTap;
-    state.argNext[k] = argNext;
   }
   solver.states.set(run.key, state);
   return state;
@@ -622,7 +654,7 @@ function reconstructRun(state: RunState, option: number, budget: number, solver:
     i -= steps(lossBefore(segment, leg, model), grid);
     if (i < 0) return false;
     if (segment.tap !== null) {
-      const code = state.argTap[k]![x]![i]!;
+      const code = chosen(i, solver, (visit) => forEachTakeOff(state, segment, leg, solver, visit));
       if (code < 0) return false;
       const child = state.children[segment.tap]!;
       const iy = code >> 4;
@@ -631,12 +663,12 @@ function reconstructRun(state: RunState, option: number, budget: number, solver:
       const tee = model.tee(style, child.options[0]![iy]!, child.run.airflowM3h, leg, segment.flowIn);
       if (!reconstructRun(child, iy, i - steps(tee.loss, grid), solver, out)) return false;
     }
-    const next = state.argNext[k]![x]![i]!;
     const after = lossAfter(segment, leg, model);
-    if (next === -2 || k === state.segments.length - 1) {
+    if (k === state.segments.length - 1) {
       i -= steps(after, grid);
       return reconstructEnd(state, x, i, solver, out, sizing);
     }
+    const next = chosen(i, solver, (visit) => forEachNextSection(state, k, leg, after, solver, visit));
     if (next < 0) return false;
     const nextLeg = state.options[k + 1]![next]!;
     const reducer = sameLeg(leg, nextLeg) ? { loss: 0 } : model.transition(leg, nextLeg, state.segments[k + 1]!.flowIn);
@@ -651,35 +683,60 @@ function reconstructEnd(state: RunState, x: number, i: number, solver: Solver, o
   const run = state.run;
   if (i < 0) return false;
   if (run.end.kind === 'split') {
-    const code = state.argEnd[x]?.[i] ?? -1;
-    if (code < 0) return false;
-    const style = SPLIT_STYLES[Math.floor(code / 1_000_000)]!;
-    const ia = Math.floor(code / 1000) % 1000;
-    const ib = code % 1000;
-    sizing.splitStyle = style;
     const [plus, minus] = state.children.slice(run.taps.length) as [RunState, RunState];
     const leg = state.options[state.segments.length - 1]![x]!;
     const flow = state.segments.at(-1)!.flowOut;
-    const a = model.splitOutlet(style, leg, flow, plus.options[0]![ia]!, plus.run.airflowM3h);
-    const b = model.splitOutlet(style, leg, flow, minus.options[0]![ib]!, minus.run.airflowM3h);
-    return reconstructRun(plus, ia, i - steps(a.loss, grid), solver, out)
-      && reconstructRun(minus, ib, i - steps(b.loss, grid), solver, out);
+    const room = [firstEventMm(plus.run, plus.children, model), firstEventMm(minus.run, minus.children, model)];
+    // As the end's frontier was built: per style the first best second outlet, and the first to reach the least overall.
+    const valueOf = (entry: ReturnType<typeof splitOutlets>[number]) => (!Number.isFinite(entry.cost) || i < entry.shift
+      ? INF : solver.store.valueAt(entry.frontier, i - entry.shift) + entry.cost);
+    let least = INF;
+    let pick: { style: DuctSplitStyle; ia: number; ib: number } | null = null;
+    for (const style of splitStylesFor(leg, model)) {
+      const as = splitOutlets(plus, room[0]!, style, leg, flow, solver);
+      const bs = splitOutlets(minus, room[1]!, style, leg, flow, solver);
+      if (!as.length || !bs.length) continue;
+      let second = INF;
+      let ib = -1;
+      for (const entry of bs) {
+        const value = valueOf(entry);
+        if (value < second) {
+          second = value;
+          ib = entry.index;
+        }
+      }
+      const base = model.splitBaseCost(style, leg, flow);
+      for (const entry of as) {
+        const value = valueOf(entry) + second + base;
+        if (value < least) {
+          least = value;
+          pick = { style, ia: entry.index, ib };
+        }
+      }
+    }
+    if (!pick) return false;
+    sizing.splitStyle = pick.style;
+    const a = model.splitOutlet(pick.style, leg, flow, plus.options[0]![pick.ia]!, plus.run.airflowM3h);
+    const b = model.splitOutlet(pick.style, leg, flow, minus.options[0]![pick.ib]!, minus.run.airflowM3h);
+    return reconstructRun(plus, pick.ia, i - steps(a.loss, grid), solver, out)
+      && reconstructRun(minus, pick.ib, i - steps(b.loss, grid), solver, out);
   }
   if (run.end.kind === 'plenum') {
-    const args = (state as RunState & { argSpigots?: Int32Array[] }).argSpigots ?? [];
+    const plenum = run.end;
     const leg = state.options[state.segments.length - 1]![x]!;
     const flow = state.segments.at(-1)!.flowOut;
     const budget = i - steps(plenumEntryLossPa(leg, flow), grid);
     sizing.spigotStyles = [];
     const children = state.children.slice(run.taps.length);
     for (let c = 0; c < children.length; c += 1) {
-      const code = args[c]?.[budget] ?? -1;
+      const child = children[c]!;
+      const code = chosen(budget, solver, (visit) => forEachSpigotFitting(plenum.spigots[c]!, child, plenum.heightMm, solver, visit));
       if (code < 0) return false;
       const iy = code >> 4;
       const style = SPIGOT_STYLES[code & 15]!;
       sizing.spigotStyles.push(style);
-      const part = model.spigot(style, children[c]!.options[0]![iy]!, children[c]!.run.airflowM3h);
-      if (!reconstructRun(children[c]!, iy, budget - steps(part.loss, grid), solver, out)) return false;
+      const part = model.spigot(style, child.options[0]![iy]!, child.run.airflowM3h);
+      if (!reconstructRun(child, iy, budget - steps(part.loss, grid), solver, out)) return false;
     }
   }
   return true;
@@ -694,14 +751,14 @@ export interface SizingFailure {
   detail: string;
 }
 
-const alive = (state: RunState) => state.G[0]?.some((frontier) => frontier.some(Number.isFinite)) ?? false;
+const alive = (state: RunState) => state.G[0]?.some((frontier) => frontier.count > 0) ?? false;
 
 /** The deepest run with no size set, and why (the child is explained before its parent). */
 function explainInfeasible(state: RunState, model: SizingModel): SizingFailure {
   for (const child of state.children) if (!alive(child)) return explainInfeasible(child, model);
   const run = state.run;
   const lastIndex = state.segments.length - 1;
-  const endAlive = state.end.some((frontier) => frontier?.some(Number.isFinite));
+  const endAlive = state.end.some((frontier) => (frontier?.count ?? 0) > 0);
   if (!endAlive) {
     if (run.end.kind === 'terminal') {
       const last = run.vertices.length > 1 ? Math.hypot(run.vertices.at(-1)!.x - run.vertices.at(-2)!.x, run.vertices.at(-1)!.y - run.vertices.at(-2)!.y) : 0;
@@ -718,7 +775,7 @@ function explainInfeasible(state: RunState, model: SizingModel): SizingFailure {
     if (run.end.kind === 'plenum') return { runKey: run.key, reason: 'end-plenum', detail: 'no spigot fits the plenum' };
   }
   for (let k = lastIndex; k >= 0; k -= 1) {
-    if (state.G[k]!.some((frontier) => frontier.some(Number.isFinite))) continue;
+    if (state.G[k]!.some((frontier) => frontier.count > 0)) continue;
     const segment = state.segments[k]!;
     const corridorMm = segmentCorridorMm(run, segment);
     const corridor = Number.isFinite(corridorMm) ? `; corridor ${Math.round(corridorMm)} mm` : '';
@@ -751,12 +808,17 @@ function explainInfeasible(state: RunState, model: SizingModel): SizingFailure {
  * point on it. When there is none, `onFailure` hears why.
  */
 export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGrid, onFailure?: (failure: SizingFailure) => void): DesignFrontier | null {
-  const solver: Solver = { model, grid, states: new Map() };
+  const solver: Solver = { model, grid, states: new Map(), store: new FrontierStore(grid.size), scratch: scratchFor(grid.size) };
   const root = solveRun(design.root, solver);
   const collar: DuctLeg = { widthMm: model.ctx.port.widthMm, heightMm: model.ctx.port.heightMm };
   const connector = FITTING_LOSS_COEFFICIENTS.connector * velocityPressurePa(velocityMs(collar, model.ctx.airflowM3h));
-  const cost = filled(grid, INF);
-  const arg = new Int32Array(grid.size).fill(-1);
+  const rootFrontier = solver.scratch.end;
+  rootFrontier.clear();
+  const rootEntries: Array<{ x: number; cost: number; shift: number }> = [];
+  const enter = (x: number, entryCost: number, shift: number) => {
+    solver.store.lowerInto(rootFrontier, root.G[0]![x]!, entryCost, shift);
+    rootEntries.push({ x, cost: entryCost, shift });
+  };
   // The connector and the collar transition must fit on the root's first leg with the take-off windows
   // the leg carries (the realiser spreads them downstream), before its first elbow.
   const connectorMm = model.settings.flexibleConnectorAtUnit ? model.settings.connectorFabricMm + 2 * model.settings.connectorMetalMm : 0;
@@ -794,7 +856,7 @@ export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGr
     const transition = model.transition(collar, leg, flow);
     const bendSetback = Number.isFinite(firstBend) ? model.elbowSetbackMm(leg) + neck : 0;
     if (connectorMm + transition.lengthMm + windows <= legEnd - bendSetback + 1e-6 && tapsClearOf(connectorMm + transition.lengthMm + 50)) {
-      minShiftedInto(cost, arg, root.G[0]![x]!, transition.cost + design.penalty, steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0), grid), x);
+      enter(x, transition.cost + design.penalty, steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0), grid));
       return;
     }
     if (!collarElbow) return;
@@ -807,20 +869,23 @@ export function sizeDesign(design: ServiceDesign, model: SizingModel, grid: DpGr
     const extraCost = collarElbow.cost - trunkElbow.cost + (model.costPerMetre(collar) - model.costPerMetre(leg)) * stretch;
     turned[x] = 1;
     extraLoss[x] = Math.max(0, collarElbow.loss - trunkElbow.loss);
-    minShiftedInto(cost, arg, root.G[0]![x]!, transition.cost + design.penalty + extraCost,
-      steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0) + extraLoss[x]!, grid), x);
+    enter(x, transition.cost + design.penalty + extraCost, steps(transition.loss + connector + (design.pressurePenaltyPa ?? 0) + extraLoss[x]!, grid));
   });
-  if (!cost.some(Number.isFinite)) {
+  if (!rootFrontier.count) {
     onFailure?.(alive(root) ? {
       runKey: root.run.key, reason: 'collar',
       detail: `the connector, collar transition and ${Math.round(windows)} mm of take-off windows do not fit before the first elbow (${Math.round(legEnd)} mm)`,
     } : explainInfeasible(root, model));
     return null;
   }
+  const cost = new Float64Array(grid.size);
+  rootFrontier.writeDense(cost);
   return {
     design, grid, cost,
     reconstruct(index: number): SizedDesign | null {
-      const x = arg[index] ?? -1;
+      const x = chosen(index, solver, (visit) => {
+        for (const entry of rootEntries) visit(root.G[0]![entry.x]!, entry.cost, entry.shift, entry.x);
+      });
       if (x < 0 || !Number.isFinite(cost[index]!)) return null;
       const leg = root.options[0]![x]!;
       const transition = model.transition(collar, leg, root.segments[0]!.flowIn);
