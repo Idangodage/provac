@@ -385,9 +385,10 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
   };
 
   // --- Edge evaluation ---------------------------------------------------
-  const edgeCache = new Map<string, EdgeInfo>();
+  const edgeCache = new Map<number, EdgeInfo>();
+  const nodeCount = nx * ny;
   const evaluateEdge = (from: number, to: number): EdgeInfo => {
-    const key = from < to ? `${from}:${to}` : `${to}:${from}`;
+    const key = from < to ? from * nodeCount + to : to * nodeCount + from;
     const cached = edgeCache.get(key);
     if (cached) return cached;
     const a = nodePoint(from);
@@ -512,7 +513,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
       if (edge.blocked) continue;
       const turned = state.parent !== null || heading !== startHeading ? heading !== state.heading : false;
       const g = state.g + edge.cost + (turned ? costs.bendPenaltyMm : 0);
-      const length = state.length + distance(nodePoint(state.node), nodePoint(next));
+      const length = state.length + Math.hypot(gridX[ix]! - gridX[jx]!, gridY[iy]! - gridY[jy]!);
       const nextState: State = { node: next, heading, g, length, bends: state.bends + (turned ? 1 : 0), parent: state, terminal: null };
       if (next === sinkNode) {
         tryTerminal(nextState, { kind: 'sink', point: sink! }, 0);

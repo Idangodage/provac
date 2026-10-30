@@ -50,14 +50,21 @@ function sameDirection(a: Point2D, b: Point2D): boolean {
  */
 export function findSampledQuarterTurns(points: readonly Point2D[]): SampledQuarterTurn[] {
   const result: SampledQuarterTurn[] = [];
+  // Each chord's direction is asked for by every start within reach of it: worked out once.
+  const chords = new Array<Point2D | null | undefined>(points.length);
+  const chordFrom = (index: number): Point2D | null => {
+    let known = chords[index];
+    if (known === undefined) known = chords[index] = direction(points[index]!, points[index + 1]!);
+    return known;
+  };
   for (let startIndex = 1; startIndex < points.length - 3; startIndex += 1) {
     const start = points[startIndex]!;
-    const incoming = direction(points[startIndex - 1]!, start);
+    const incoming = chordFrom(startIndex - 1);
     if (!incoming) continue;
     const maxEndIndex = Math.min(points.length - 2, startIndex + MAX_ARC_CHORDS);
     for (let endIndex = startIndex + 2; endIndex <= maxEndIndex; endIndex += 1) {
       const end = points[endIndex]!;
-      const outgoing = direction(end, points[endIndex + 1]!);
+      const outgoing = chordFrom(endIndex);
       if (!outgoing || Math.abs(dot(incoming, outgoing)) > DIRECTION_EPSILON) continue;
       const chord = subtract(end, start);
       const incomingSetback = dot(chord, incoming);
@@ -88,8 +95,8 @@ export function findSampledQuarterTurns(points: readonly Point2D[]): SampledQuar
         startIndex,
         endIndex,
         corner: { x: start.x + incoming.x * radiusMm, y: start.y + incoming.y * radiusMm },
-        incoming,
-        outgoing,
+        incoming: { ...incoming },
+        outgoing: { ...outgoing },
         radiusMm,
       });
       startIndex = endIndex;
