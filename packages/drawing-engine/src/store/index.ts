@@ -40,6 +40,7 @@ import { expandDuctDeletion } from '../components/canvas/hvac/duct/ductNetwork';
 import {
   DEFAULT_DUCT_SETTINGS,
   resolveDuctSettings,
+  savedDuctSettings,
   type DuctDesignSettings,
 } from '../components/canvas/hvac/duct/ductSettings';
 import {
@@ -5382,11 +5383,9 @@ export const useDrawingStore = create<DrawingState>()(
           );
           // A document that has never had duct settings (a new one) starts from the recommended design criteria
           // (ASHRAE ch. 49); a saved document keeps its own.
-          const nextDuctSettings = resolveDuctSettings(
-            typeof data.ductSettings === 'object' && data.ductSettings
-              ? (data.ductSettings as Partial<DuctDesignSettings>)
-              : designCriteriaSettings(RECOMMENDED_DESIGN_CRITERIA),
-          );
+          const nextDuctSettings = typeof data.ductSettings === 'object' && data.ductSettings
+            ? savedDuctSettings(data.ductSettings as Partial<DuctDesignSettings>)
+            : resolveDuctSettings(designCriteriaSettings(RECOMMENDED_DESIGN_CRITERIA));
 
           // Board/sheet context travels with the document so a drawing reopens
           // at the unit, page and scale it was authored with.

@@ -227,6 +227,10 @@ export interface DuctDesignSettings {
 /** Provisional commercial stock (Finland) — replace with the fabricator's list. */
 export const DEFAULT_SHEET_STOCK_MM: readonly number[] = [0.5, 0.6, 0.7, 0.75, 1.0, 1.25, 1.5];
 
+/** The optimiser's safety net per unit: far above what a design takes, even on a slow computer (ms). */
+const DEFAULT_TIME_BUDGET_MS = 300_000;
+const MAX_TIME_BUDGET_MS = 600_000;
+
 export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   gaugeMode: 'smacna',
   supplyPressureClassPa: 500,
@@ -301,7 +305,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   rectStepMm: 50,
   sizeSeries: 'metric',
   autoExactTerminals: 8,
-  autoTimeBudgetMs: 20000,
+  autoTimeBudgetMs: DEFAULT_TIME_BUDGET_MS,
   autoChooseSpigotSide: true,
   defaultCollarEntry: 'side',
   autoRoundMainStyles: ['round-conical', 'round-tee', 'round-lateral'],
@@ -424,7 +428,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   rectStepMm: practice('Rectangular duct is fabricated to round sizes: 50 mm steps are usual (25 for a fine fit, 100 for a short list of sizes).'),
   sizeSeries: practice('Metric: the fabricator\'s step and the EN 1506 round series. Inch: rectangular sides in even inches and the usual stocked round sizes (4–10 in by the inch, then by 2 in).'),
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
-  autoTimeBudgetMs: practice('A safety net: the optimiser stops learning (routing again after a failed check) past this time and keeps the best verified design; the result says so. A normal design finishes well within it, and then the same drawing always gets the same design.'),
+  autoTimeBudgetMs: practice('A safety net far above what a design takes: past this time the optimiser stops searching and keeps the best verified design, and the result says so. Below it the same drawing gets the same design on any computer, however slow; set it lower only to have a quick answer that may differ.'),
   autoChooseSpigotSide: practice('A symmetric face throws the same pattern whichever side its plenum box is fed from; the optimiser picks the side the duct reaches best. Linear slots keep theirs.'),
   defaultCollarEntry: practice('A side collar suits a shallow void; a top collar takes its runout from above (the flexible duct bending at a diameter or more, SMACNA S3.24) and needs room over the box.'),
   autoRoundMainStyles: { sourceId: 'smacna-1995', reference: 'Fig. 3-4 (p.3.11), Fig. 3-5 (p.3.12)', verified: true, note: 'Which of the SMACNA round-main fittings the optimiser may choose; it picks per branch by cost and loss.' },
@@ -522,6 +526,17 @@ function resolveSheetStock(value: unknown): number[] {
  * planner. Pressure classes are kept as entered (the planner refuses the
  * unsupported ones explicitly rather than silently clamping them).
  */
+/**
+ * A saved document's duct settings. 20 s was the default time per unit until it
+ * decided designs on a slow computer (a laptop on battery reached it): a document
+ * saved with it did not choose it, and takes today's default.
+ */
+export function savedDuctSettings(saved: Partial<DuctDesignSettings>): DuctDesignSettings {
+  if (saved.autoTimeBudgetMs !== 20000) return resolveDuctSettings(saved);
+  const { autoTimeBudgetMs: _former, ...rest } = saved;
+  return resolveDuctSettings(rest);
+}
+
 export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null): DuctDesignSettings {
   const raw = (input ?? {}) as Partial<Record<keyof DuctDesignSettings, unknown>>;
   const d = DEFAULT_DUCT_SETTINGS;
@@ -603,7 +618,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     rectStepMm: raw.rectStepMm === 25 || raw.rectStepMm === 50 || raw.rectStepMm === 100 ? raw.rectStepMm : d.rectStepMm,
     sizeSeries: oneOf(raw.sizeSeries, ['metric', 'imperial'] as const, d.sizeSeries),
     autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 10)),
-    autoTimeBudgetMs: Math.round(clampNumber(raw.autoTimeBudgetMs, d.autoTimeBudgetMs, 1000, 60000)),
+    autoTimeBudgetMs: Math.round(clampNumber(raw.autoTimeBudgetMs, d.autoTimeBudgetMs, 1000, MAX_TIME_BUDGET_MS)),
     autoChooseSpigotSide: bool(raw.autoChooseSpigotSide, d.autoChooseSpigotSide),
     defaultCollarEntry: oneOf(raw.defaultCollarEntry, ['side', 'top'] as const, d.defaultCollarEntry),
     autoRoundMainStyles: Array.isArray(raw.autoRoundMainStyles)

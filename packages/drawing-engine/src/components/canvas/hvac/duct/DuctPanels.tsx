@@ -1034,7 +1034,7 @@ export function DuctSystemsSection() {
       </Row>
       <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Optimiser</div>
       <SettingNumber settingKey="autoExactTerminals" label="Exact tree search up to" step={1} min={1} max={10} unit="terminals" />
-      <SettingNumber settingKey="autoTimeBudgetMs" label="Time per unit" step={1000} min={1000} max={60000} unit="ms" />
+      <SettingNumber settingKey="autoTimeBudgetMs" label="Time per unit" step={1000} min={1000} max={600000} unit="ms" />
       <Row label="New terminals' collar">
         <select value={ductSettings.defaultCollarEntry} aria-label="New terminals' collar" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
           onChange={(event) => setDuctSettings({ defaultCollarEntry: event.target.value as 'side' | 'top' })}>

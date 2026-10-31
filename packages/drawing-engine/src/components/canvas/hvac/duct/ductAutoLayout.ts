@@ -1479,8 +1479,6 @@ export function terminalSpigotUpdates(elements: readonly HvacElement[]): Array<{
 let generation = 0;
 /** Routing rounds the feasibility loop may add to the first (each learns from what failed). */
 const FEASIBILITY_ROUNDS = 10;
-/** Time one router call may spend repairing conflicts between its runs (ms). */
-const ROUTER_REPAIR_MS = 6000;
 /** Terminals per group when there are more than the exact search takes (a row, or a run of one). */
 const ROUTER_GROUP_SIZE = 4;
 
@@ -1780,8 +1778,8 @@ function* designUnitDucts(scene: readonly HvacElement[], request: AutoDuctReques
             lambda: factor * router.model.pricePerPa, label: AUTO_DUCT_LAYOUT_LABELS.tree, fanOutletMm: exitLengthMm(port),
             shortOutletPenaltyPa: fanOutletSystemEffectPa(port, total), maxTerminals: settings.autoExactTerminals,
             rootTurnMinMm: router.turnOutletMm, cuts: cutsByRouter.get(router.shape)!, ...(memos.has(memoKey) ? { memo: memos.get(memoKey)! } : {}), ...(groups ? { groups } : {}),
-            // Conflict repairs stop at the time budget, and after a few seconds in any one call.
-            deadline: Math.min(deadline, Date.now() + ROUTER_REPAIR_MS),
+            // Conflict repairs are bounded by their count; the unit's time budget is only the safety net.
+            deadline,
           });
           routingInspector?.({ ctx, shape: router.shape, factor, graph: router.graph, solution, ms: solution ? Math.round(solution.seconds * 1000) : -1 });
           if (solution) out.push(...solution.designs.map((design) => ({ ...design, router: router.shape })));
@@ -1864,6 +1862,8 @@ function* designUnitDucts(scene: readonly HvacElement[], request: AutoDuctReques
         const varied = routeRound([0.5, 2], only, deadline);
         searchedTrees.push(...varied);
         if (varied.length) yield* sizeTrees(varied, [sizeShape]);
+      } else {
+        timeLimited = true;
       }
     }
     if (routers.length && !firstTrees.length) exact = false;
