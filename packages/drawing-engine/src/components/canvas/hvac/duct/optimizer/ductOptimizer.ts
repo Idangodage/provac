@@ -7,7 +7,6 @@
  */
 import type { HvacElement } from '../../../../../types';
 import { listNetworkPipeLanes } from '../../networkPipeClearance';
-import { runSteps } from '../../parallel/steps';
 import type { AutoDuctIssue, ServiceCtx } from '../ductAutoContext';
 import { priceDuctPlans, type DuctCostBreakdown } from '../ductEconomics';
 import { planDuctRunSpec, type DuctFabricationPlan } from '../ductFabricationPlanner';
@@ -21,7 +20,7 @@ import { clashMessage, findDuctClashes } from '../ductVolumes';
 
 import { withReplaced, type ServiceDesign } from './designTree';
 import { realiseDesign, type RealiseFailure } from './realiseDesign';
-import { frontierPoints, sizeDesign, type DesignFrontier, type DpGrid, type SizedDesign, type SizingFailure } from './sizingDp';
+import { frontierPoints, sizeDesign, type DesignFrontier, type DpGrid, type SizingFailure } from './sizingDp';
 import { SizingModel, type ShapeMode } from './sizingModel';
 
 export interface VerifiedRuns {
@@ -175,119 +174,59 @@ const TREES_TRIED = 12;
  * router's and the layout seeds' — a seed that looks cheap on the model must
  * not crowd out the router's trees), then the rest by promise.
  */
-function buildOrder<T extends { design: ServiceDesign; best: number }>(sized: readonly T[]): T[] {
+function buildOrder<T extends { frontier: DesignFrontier; best: number }>(sized: readonly T[]): T[] {
   const sorted = [...sized].sort((a, b) => a.best - b.best);
-  const leaders = ['steiner', 'seed'].flatMap((source) => sorted.filter((entry) => entry.design.source === source).slice(0, 1));
+  const leaders = ['steiner', 'seed'].flatMap((source) => sorted.filter((entry) => entry.frontier.design.source === source).slice(0, 1));
   return [...leaders.sort((a, b) => a.best - b.best), ...sorted.filter((entry) => !leaders.includes(entry))];
 }
 
-/** One tree sized: what ranks it, the points worth building from it and its sizes at each. */
-export interface SizedTree {
-  /** Least life-cycle cost within the budget: the trees are built in this order. */
-  best: number;
-  /** The frontier's picks (frontierPicks) … */
-  picks: number[];
-  /** … and the tree's sizes at each (null: none reconstructs). */
-  points: Array<Omit<SizedDesign, 'design'> | null>;
-}
-
-/**
- * Sizes one tree for optimiseService: a pure function of the tree, the sizing
- * model and the budget, so a worker sizes it exactly as here.
- */
-export function sizeTree(design: ServiceDesign, model: SizingModel, grid: DpGrid, budgetPa: number, onFailure: (failure: SizingFailure) => void): SizedTree | null {
-  const frontier = sizeDesign(design, model, grid, onFailure);
-  if (!frontier) return null;
-  let best = Number.POSITIVE_INFINITY;
-  frontier.cost.forEach((cost, index) => {
-    if (index * grid.stepPa <= budgetPa + 1e-9) best = Math.min(best, cost + model.pricePerPa * index * grid.stepPa);
-  });
-  const picks = frontierPicks(frontier, model.pricePerPa, budgetPa);
-  return {
-    best, picks, points: picks.map((index) => {
-      const point = frontier.reconstruct(index);
-      return point ? { sizing: point.sizing, modelCost: point.modelCost, modelPressurePa: point.modelPressurePa } : null;
-    }),
-  };
-}
-
-/**
- * The work optimiseService hands off: size these trees. The model and grid it
- * made are here for sizing on the spot; a worker makes its own from the rest.
- */
-export interface SizeTreesRequest {
-  ctx: ServiceCtx;
-  designs: readonly ServiceDesign[];
-  shape: ShapeMode;
-  unitAirflowM3h: number;
-  budgetPa: number;
-  model: SizingModel;
-  grid: DpGrid;
-}
-
-/** A tree's sizing (null: it cannot be sized) and why it failed, in the order found. */
-export interface SizedTreeAnswer { tree: SizedTree | null; failures: SizingFailure[] }
-
-/** Sizes the trees here, one after another. */
-export function sizeTreesHere(request: SizeTreesRequest): SizedTreeAnswer[] {
-  return request.designs.map((design) => {
-    const failures: SizingFailure[] = [];
-    const tree = sizeTree(design, request.model, request.grid, request.budgetPa, (failure) => failures.push(failure));
-    return { tree, failures };
-  });
-}
-
-/**
- * optimiseService as steps: the trees' sizing (most of its time) is handed
- * off, then the sized trees are built and verified here, in order of promise.
- * The answers come back in the trees' order, so the sizing failures, the
- * ranking and the build order are exactly those of sizing them one by one.
- */
-export function* optimiseServiceSteps(
+export function optimiseService(
   ctx: ServiceCtx,
   designs: readonly ServiceDesign[],
   shape: ShapeMode,
   unitAirflowM3h: number,
   budgetPa: number,
-): Generator<SizeTreesRequest, ServiceOptimisation, SizedTreeAnswer[]> {
+): ServiceOptimisation {
   const model = new SizingModel(ctx, shape, unitAirflowM3h);
   const grid = frontierGrid(budgetPa);
-  const answers: SizedTreeAnswer[] = yield { ctx, designs, shape, unitAirflowM3h, budgetPa, model, grid };
-  const sized: Array<{ design: ServiceDesign; tree: SizedTree; best: number }> = [];
+  const sized: Array<{ frontier: DesignFrontier; best: number }> = [];
   const failures: TreeFailure[] = [];
-  designs.forEach((design, index) => {
-    const answer = answers[index]!;
-    for (const failure of answer.failures) failures.push({ design, stage: 'sizing', failure });
-    if (answer.tree) sized.push({ design, tree: answer.tree, best: answer.tree.best });
-  });
+  for (const design of designs) {
+    const frontier = sizeDesign(design, model, grid, (failure) => failures.push({ design, stage: 'sizing', failure }));
+    if (!frontier) continue;
+    let best = Number.POSITIVE_INFINITY;
+    frontier.cost.forEach((cost, index) => {
+      if (index * grid.stepPa <= budgetPa + 1e-9) best = Math.min(best, cost + model.pricePerPa * index * grid.stepPa);
+    });
+    sized.push({ frontier, best });
+  }
   const options: ServiceOption[] = [];
   let realised = 0;
   let clean = 0;
   let tried = 0;
-  for (const { design, tree } of buildOrder(sized)) {
+  for (const { frontier } of buildOrder(sized)) {
     if (clean >= CLEAN_WANTED || tried >= TREES_TRIED) break;
     tried += 1;
     // The life-cycle pick first. When it fails, the tree's other sizes mostly fail the same way: only the
     // cheapest (its smaller sections take less room) is still tried.
-    const picks = tree.picks;
+    const picks = frontierPicks(frontier, model.pricePerPa, budgetPa);
     // The cheapest pick is the one at the highest pressure (least first cost).
     const cheapest = Math.max(...picks);
     let leadFailed = false;
     for (const [order, index] of picks.entries()) {
       if (leadFailed && index !== cheapest) continue;
-      const sizes = tree.points[order];
-      if (!sizes) continue;
-      const point: SizedDesign = { design, ...sizes };
-      const built = realiseDesign(ctx, model, point, (failure) => failures.push({ design, stage: 'realise', failure }));
+      const point = frontier.reconstruct(index);
+      if (!point) continue;
+      const built = realiseDesign(ctx, model, point, (failure) => failures.push({ design: frontier.design, stage: 'realise', failure }));
       realised += 1;
       if (!built) { if (order === 0) leadFailed = true; continue; }
-      const verified = verifyRuns(ctx, built.runs, [...design.notes, ...built.notes], built.terminalUpdates);
+      const verified = verifyRuns(ctx, built.runs, [...frontier.design.notes, ...built.notes], built.terminalUpdates);
       const cost = priceDuctPlans(verified.plans, ctx.settings, verified.hangers, verified.straps, verified.filterPanels);
-      cost.total += design.penalty;
+      cost.total += frontier.design.penalty;
       options.push({
-        key: `${design.label}#${index}`,
-        label: design.label,
-        source: design.source,
+        key: `${frontier.design.label}#${index}`,
+        label: frontier.design.label,
+        source: frontier.design.source,
         shape,
         runs: built.runs,
         plans: verified.plans,
@@ -301,8 +240,8 @@ export function* optimiseServiceSteps(
         issues: verified.issues,
         modelCost: point.modelCost,
         modelPressurePa: point.modelPressurePa,
-        exact: design.exact ?? false,
-        design,
+        exact: frontier.design.exact ?? false,
+        design: frontier.design,
         runKeys: built.runKeys,
         terminalUpdates: built.terminalUpdates,
       });
@@ -311,14 +250,4 @@ export function* optimiseServiceSteps(
     }
   }
   return { options, frontiers: sized.length, realised, pricePerPa: model.pricePerPa, failures };
-}
-
-export function optimiseService(
-  ctx: ServiceCtx,
-  designs: readonly ServiceDesign[],
-  shape: ShapeMode,
-  unitAirflowM3h: number,
-  budgetPa: number,
-): ServiceOptimisation {
-  return runSteps(optimiseServiceSteps(ctx, designs, shape, unitAirflowM3h, budgetPa), sizeTreesHere);
 }

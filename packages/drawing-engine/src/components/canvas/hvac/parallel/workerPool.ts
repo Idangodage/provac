@@ -59,10 +59,10 @@ export interface PoolReport {
 
 /**
  * Workers for a machine: all its cores but two (the page and the run's own
- * worker), at most four. More gain nothing: a step's searches rarely use more
- * (three starts and a speculative one), and on a laptop's shared power and
- * memory each extra busy worker slows the others (measured on 8 cores, 16
- * threads: the same sizing took 2.1 times the CPU on six workers).
+ * worker), at most four. More gain nothing: the searches use no more (three
+ * starts and a speculative one), and on a laptop's shared power and memory each
+ * extra busy worker slows the others (measured on 8 cores, 16 threads: the same
+ * work took 2.1 times the CPU on six workers).
  */
 export function poolSizeFor(hardwareConcurrency: number | undefined): number {
   return Math.max(1, Math.min(4, (hardwareConcurrency || 4) - 2));

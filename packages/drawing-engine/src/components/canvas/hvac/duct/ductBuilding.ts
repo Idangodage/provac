@@ -116,24 +116,10 @@ export function syncActiveDuctBuilding(walls: readonly WallSource[], rooms: Read
 
 /** Runs `work` with `building` active, then restores the one before (the auto layout, worker-safe). */
 export function withActiveDuctBuilding<T>(walls: readonly DuctWall[], rooms: readonly DuctRoomOutline[], work: () => T): T {
-  return withDuctBuilding(makeDuctBuilding(walls, rooms), work);
-}
-
-/** A building for plans to read while a design runs (a new revision). */
-export function makeDuctBuilding(walls: readonly DuctWall[], rooms: readonly DuctRoomOutline[]): DuctBuilding {
-  return { walls, rooms, revision: (revisions += 1) };
-}
-
-/**
- * Runs `work` with `building` active. A design that runs in stretches (its
- * sizing handed to workers in between) enters the same building each time, so
- * the plans cached on it stay cached, as in one stretch.
- */
-export function withDuctBuilding<T>(building: DuctBuilding, work: () => T): T {
   const before = active;
   const beforeSource = lastSource;
-  active = building;
-  lastSource = { walls: building.walls, rooms: building.rooms };
+  active = { walls, rooms, revision: (revisions += 1) };
+  lastSource = { walls, rooms };
   try {
     return work();
   } finally {

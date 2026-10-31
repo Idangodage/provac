@@ -25,13 +25,12 @@
  * Walls are routing obstacles and are checked again on the finished geometry.
  */
 import type { HvacElement, Point2D, RoomDesignCriteria } from '../../../../types';
-import { runSteps } from '../parallel/steps';
 
 import { assignmentOptions, assignmentProblemFromScene, solveAirSystemAssignment } from './airSystemAssignment';
 import { listAirPorts } from './ductAirPorts';
 import { airSystemTags, analyseAirSystems, readAirSystemAssignment, servingUnits, withSystemAssignments } from './ductAirSystems';
 import type { AutoDuctIssue } from './ductAutoContext';
-import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuctInShapeSteps, removalTree, type AutoDuctShape } from './ductAutoLayout';
+import { AUTO_DUCT_LAYOUT_LABELS, generateAutoDuctInShape, removalTree, type AutoDuctShape } from './ductAutoLayout';
 import type { DuctWallInput } from './ductBuilding';
 import { ductDesignSettingsKey, type DuctDesignSettings } from './ductSettings';
 import type { FanSpeed } from './ductSizing';
@@ -41,7 +40,6 @@ import { isDuctTerminalElement, listTerminalPorts } from './ductTerminals';
 import { isDuctElement, readDuctRunSpec, type DuctService } from './ductTypes';
 import { terminalShortfall, unitTurnToFaceTerminals } from './ductUnitAdvice';
 import { withReplaced } from './optimizer/designTree';
-import { sizeTreesHere, type SizedTreeAnswer, type SizeTreesRequest } from './optimizer/ductOptimizer';
 import { designSettingsForUnit } from './unitCriteria';
 
 
@@ -212,16 +210,6 @@ export function planAutoRouteDucts(
   options: AutoRouteDuctOptions,
   onProgress: (progress: AutoRouteDuctProgress) => void = () => undefined,
 ): AutoRouteDuctResult {
-  return runSteps(planAutoRouteDuctsSteps(scene, services, options, onProgress), sizeTreesHere);
-}
-
-/** planAutoRouteDucts as steps: the units are designed in order here, their trees' sizing handed off (optimiseServiceSteps). */
-export function* planAutoRouteDuctsSteps(
-  scene: readonly HvacElement[],
-  services: AutoRouteDuctServices,
-  options: AutoRouteDuctOptions,
-  onProgress: (progress: AutoRouteDuctProgress) => void = () => undefined,
-): Generator<SizeTreesRequest, AutoRouteDuctResult, SizedTreeAnswer[]> {
   const result: AutoRouteDuctResult = { elementsToAdd: [], removeElementIds: [], terminalUpdates: [], units: [], issues: [] };
   const wanted = (['supply', 'return'] as const).filter((service) => services[service]);
   if (!wanted.length) return result;
@@ -320,10 +308,10 @@ export function* planAutoRouteDuctsSteps(
   const queue = units.filter((unit) => assigned.has(unit.id))
     .sort((a, b) => airflowOf(b) - airflowOf(a) || assigned.get(b.id)!.length - assigned.get(a.id)!.length || a.id.localeCompare(b.id));
   /** Designs the units one after another in `order`, each around the ducts proposed before it. */
-  const designPass = function* (order: readonly HvacElement[], stage: string): Generator<SizeTreesRequest, DuctPass, SizedTreeAnswer[]> {
+  const designPass = (order: readonly HvacElement[], stage: string): DuctPass => {
     const pass: DuctPass = { units: [], elementsToAdd: [], removeElementIds: [], terminalUpdates: [] };
     let working: HvacElement[] = [...scene];
-    for (const [index, unit] of order.entries()) {
+    order.forEach((unit, index) => {
       const label = unit.label || unit.modelLabel || 'Unit';
       onProgress({ stage: `${stage}${label} (${index + 1} of ${order.length})`, completed: index, total: order.length });
       const group = assigned.get(unit.id)!;
@@ -332,7 +320,7 @@ export function* planAutoRouteDuctsSteps(
       const settings = designSettingsForUnit(options.settings, unit, { scene: working, rooms: options.rooms ?? [], terminalIds: group.map((terminal) => terminal.id) });
       // The project's sizing method: constant friction at its friction rates and velocity limits, or the life-cycle optimum.
       const constantFriction = settings.autoSizingMethod === 'constant-friction';
-      const auto = yield* generateAutoDuctInShapeSteps(working, {
+      const auto = generateAutoDuctInShape(working, {
         unitId: unit.id, terminalIds: group.map((terminal) => terminal.id), fanSpeed: options.fanSpeed, layout: 'auto',
         services: { supply: kinds.has('supply'), return: kinds.has('return') }, rebuildExisting: options.rebuildExisting, shape: options.shape,
         ...(options.walls ? { walls: options.walls } : {}),
@@ -410,16 +398,16 @@ export function* planAutoRouteDuctsSteps(
         unitResult.notes = [...advice.map((entry) => entry.message), ...unitResult.notes.filter((note) => !advice.some((entry) => entry.message === note))];
       }
       pass.units.push(unitResult);
-    }
+    });
     return pass;
   };
-  let chosen = yield* designPass(queue, '');
+  let chosen = designPass(queue, '');
   // A unit boxed in by the ducts proposed before it: once more, with such units first; the better pass is kept.
   const boxed = boxedInUnits(chosen.units);
   if (boxed.length) {
     const byId = new Map(queue.map((unit) => [unit.id, unit]));
     const order = [...boxed, ...queue.map((unit) => unit.id).filter((id) => !boxed.includes(id))].map((id) => byId.get(id)!);
-    const second = yield* designPass(order, 'Second pass, boxed-in units first: ');
+    const second = designPass(order, 'Second pass, boxed-in units first: ');
     if (betterDuctPass(second, chosen)) {
       for (const unit of second.units) {
         if (boxed.includes(unit.unitId)) unit.notes.unshift('Designed before the other units, on a second pass: on the first, the ducts proposed for units designed before it boxed it in.');

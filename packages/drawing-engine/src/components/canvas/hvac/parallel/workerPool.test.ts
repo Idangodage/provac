@@ -1,12 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { resolveDuctSettings } from '../duct/ductSettings';
-import type { SizeTreesRequest } from '../duct/optimizer/ductOptimizer';
+import type { GrowNetworkTask } from '../autoRouteNetwork';
 
-import { sizeTreesOn, type SizeTreesTask } from './autoRouteTasks';
-import { runSteps, runStepsAsync, scopedSteps } from './steps';
-import { inlineTaskRunner, type TaskRunner } from './taskRunner';
+import { inlineTaskRunner } from './taskRunner';
 import { poolSizeFor, WorkerPool, type PoolReply, type PoolRequest } from './workerPool';
+
+// The pool and the inline runner are what is tested, not the search a task runs.
+vi.mock('./autoRouteTasks', () => ({ runAutoRouteTask: async () => [] }));
 
 class FakeWorker {
   onmessage: ((event: { data: PoolReply }) => void) | null = null;
@@ -31,12 +31,8 @@ function pool(size: number) {
   return { instance, workers };
 }
 
-const settings = resolveDuctSettings({});
-const emptyTask = (): SizeTreesTask => ({
-  ctx: { service: 'supply', construction: 'gi-nbr', settings, maxHeightMm: 500 } as unknown as SizeTreesTask['ctx'],
-  designs: [], shape: 'optimal', unitAirflowM3h: 1000, budgetPa: 150,
-});
-const task = () => ({ kind: 'size-trees' as const, input: emptyTask() });
+const emptyTask = (): GrowNetworkTask => ({}) as GrowNetworkTask;
+const task = () => ({ kind: 'grow-network' as const, input: emptyTask() });
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('WorkerPool', () => {
@@ -70,11 +66,11 @@ describe('WorkerPool', () => {
     const { instance, workers } = pool(2);
     const speculative = instance.speculate(task());
     expect(workers).toHaveLength(1);
-    const normal = instance.run('size-trees', emptyTask());
+    const normal = instance.run('grow-network', emptyTask());
     const later = instance.speculate(task());
     expect(workers).toHaveLength(2);
     // Both workers are busy: the later speculative task waits, and a normal task goes before it.
-    const next = instance.run('size-trees', emptyTask());
+    const next = instance.run('grow-network', emptyTask());
     workers[1]!.answer('normal');
     await expect(normal).resolves.toBe('normal');
     expect(workers[1]!.posted).toHaveLength(2);
@@ -115,8 +111,8 @@ describe('WorkerPool', () => {
 
   it('runs a task again elsewhere when its worker fails, and does not use that worker again', async () => {
     const { instance, workers } = pool(2);
-    const first = instance.run('size-trees', emptyTask());
-    const second = instance.run('size-trees', emptyTask());
+    const first = instance.run('grow-network', emptyTask());
+    const second = instance.run('grow-network', emptyTask());
     workers[0]!.onerror?.({ message: 'out of memory' });
     expect(workers[0]!.terminated).toBe(true);
     expect(workers).toHaveLength(2);
@@ -157,7 +153,7 @@ describe('WorkerPool', () => {
 
   it('with no worker left, runs a failed worker’s task here', async () => {
     const { instance, workers } = pool(1);
-    const only = instance.run('size-trees', emptyTask());
+    const only = instance.run('grow-network', emptyTask());
     workers[0]!.onerror?.({ message: 'could not load' });
     await expect(only).resolves.toEqual([]);
     expect(workers).toHaveLength(1);
@@ -166,14 +162,14 @@ describe('WorkerPool', () => {
 
   it('stops every worker and fails what is pending when terminated; a speculative task’s failure bothers nobody', async () => {
     const { instance, workers } = pool(1);
-    const running = instance.run('size-trees', emptyTask());
-    const queued = instance.run('size-trees', emptyTask());
+    const running = instance.run('grow-network', emptyTask());
+    const queued = instance.run('grow-network', emptyTask());
     instance.speculate(task());
     instance.terminate();
     await expect(running).rejects.toThrow(/stopped/);
     await expect(queued).rejects.toThrow(/stopped/);
     expect(workers[0]!.terminated).toBe(true);
-    await expect(instance.run('size-trees', emptyTask())).rejects.toThrow(/stopped/);
+    await expect(instance.run('grow-network', emptyTask())).rejects.toThrow(/stopped/);
     await flush();
   });
 
@@ -190,81 +186,7 @@ describe('the inline runner', () => {
     const [a, b] = await Promise.all([inlineTaskRunner.all([task()]), inlineTaskRunner.all([task(), task()])]);
     expect(a).toEqual([[]]);
     expect(b).toEqual([[], []]);
-    const notCloneable = { kind: 'size-trees' as const, input: { ...emptyTask(), ids: () => 'x' } as unknown as SizeTreesTask };
+    const notCloneable = { kind: 'grow-network' as const, input: { ...emptyTask(), ids: () => 'x' } as unknown as GrowNetworkTask };
     await expect(inlineTaskRunner.all([notCloneable])).rejects.toThrow();
-  });
-});
-
-describe('sizeTreesOn', () => {
-  const request = (count: number): SizeTreesRequest => ({
-    ctx: { ...emptyTask().ctx, baseScene: [{ id: 'scene' }], ids: () => 'x', crossing: { allows: () => true } },
-    designs: Array.from({ length: count }, (_, index) => ({ label: `tree ${index}` })),
-    shape: 'optimal', unitAirflowM3h: 1000, budgetPa: 150, model: {}, grid: { stepPa: 0.2, size: 10 },
-  } as unknown as SizeTreesRequest);
-  const runner = (concurrency: number) => {
-    const sizes: number[] = [];
-    const seen: SizeTreesTask[] = [];
-    const fake: TaskRunner = {
-      concurrency,
-      all: (tasks) => {
-        const inputs = tasks.map((entry) => entry.input as SizeTreesTask);
-        seen.push(...inputs);
-        sizes.push(...inputs.map((input) => input.designs.length));
-        return Promise.resolve(inputs.map((input) => input.designs.map((design) => ({ tree: null, failures: [{ runKey: (design as unknown as { label: string }).label }] })))) as never;
-      },
-    };
-    return { fake, sizes, seen };
-  };
-
-  it('sends one run where there is one worker, about two per worker otherwise, and puts the answers back in the trees’ order', async () => {
-    const one = runner(1);
-    const answers = await sizeTreesOn(one.fake, request(7));
-    expect(one.sizes).toEqual([7]);
-    expect(answers.map((answer) => (answer.failures[0] as unknown as { runKey: string }).runKey)).toEqual(Array.from({ length: 7 }, (_, index) => `tree ${index}`));
-    const three = runner(3);
-    const threeAnswers = await sizeTreesOn(three.fake, request(13));
-    expect(three.sizes).toEqual([3, 3, 3, 3, 1]);
-    expect(threeAnswers.map((answer) => (answer.failures[0] as unknown as { runKey: string }).runKey)).toEqual(Array.from({ length: 13 }, (_, index) => `tree ${index}`));
-    expect(await sizeTreesOn(three.fake, request(0))).toEqual([]);
-  });
-
-  it('leaves out of a task what a worker cannot be sent and sizing never reads', async () => {
-    const { fake, seen } = runner(2);
-    await sizeTreesOn(fake, request(1));
-    expect(Object.keys(seen[0]!.ctx)).not.toEqual(expect.arrayContaining(['ids']));
-    expect(seen[0]!.ctx).not.toHaveProperty('crossing');
-    expect(seen[0]!.ctx).not.toHaveProperty('baseScene');
-  });
-});
-
-describe('steps', () => {
-  function* doubling(values: number[]): Generator<number, number, number> {
-    let total = 0;
-    for (const value of values) total += yield value;
-    return total;
-  }
-
-  it('run here or asynchronously, with the same answer', async () => {
-    expect(runSteps(doubling([1, 2, 3]), (value) => value * 2)).toBe(12);
-    await expect(runStepsAsync(doubling([1, 2, 3]), (value) => Promise.resolve(value * 2))).resolves.toBe(12);
-  });
-
-  it('keep a scope only around their own stretches, not the work handed off', () => {
-    let inScope = false;
-    const seen: boolean[] = [];
-    function* inner(): Generator<string, string, string> {
-      seen.push(inScope);
-      const answer = yield 'request';
-      seen.push(inScope);
-      return answer;
-    }
-    const scope = <T>(run: () => T): T => {
-      const before = inScope;
-      inScope = true;
-      try { return run(); } finally { inScope = before; }
-    };
-    const result = runSteps(scopedSteps(scope, inner()), (request) => { seen.push(inScope); return `${request} answered`; });
-    expect(result).toBe('request answered');
-    expect(seen).toEqual([true, false, true]);
   });
 });

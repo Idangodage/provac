@@ -42,14 +42,11 @@ import { isCondensatePipe } from './condensate/condensateTypes';
 import { findCondensateRefrigerantClashes } from './condensate/condensateValidation';
 import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
 import { terminalSpigotUpdates } from './duct/ductAutoLayout';
-import { applyDuctProposal, planAutoRouteDuctsSteps, type AutoRouteDuctOptions, type AutoRouteDuctResult } from './duct/ductAutoRoute';
+import { applyDuctProposal, planAutoRouteDucts, type AutoRouteDuctOptions, type AutoRouteDuctResult } from './duct/ductAutoRoute';
 import { setActiveDuctSettings } from './duct/ductSettings';
 import { isDuctElement, readDuctRunSpec } from './duct/ductTypes';
 import { findDuctClashes } from './duct/ductVolumes';
 import { findNewNetworkPipeClashes, listNetworkPipeLanes } from './networkPipeClearance';
-import { sizeTreesOn } from './parallel/autoRouteTasks';
-import { runStepsAsync } from './parallel/steps';
-import { activeTaskRunner } from './parallel/taskRunner';
 import type { PoolReport } from './parallel/workerPool';
 import { getAutoRouteOwnership, retainGeneratedPipeEdit } from './pipeEditRetention';
 import { getActivePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
@@ -470,10 +467,8 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
   if (routeDucts) {
     progress({ stage: 'Designing ducts', completed: 0, total: 0, step: 'ducts' });
     const wanted = { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) };
-    // (The units are designed here, one after another; each tree's sizing goes to the workers.)
-    ducts = await remembered('ducts', [ductScene, wanted, options.duct], () => runStepsAsync(planAutoRouteDuctsSteps(ductScene, wanted, options.duct!,
-      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total, step: 'ducts' })),
-    (request) => sizeTreesOn(activeTaskRunner(), request)));
+    ducts = await remembered('ducts', [ductScene, wanted, options.duct], () => planAutoRouteDucts(ductScene, wanted, options.duct!,
+      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total, step: 'ducts' })));
     issues.push(...ducts.issues);
     lap('ducts');
     if (wantsRefrigerant || services.condensate) options.onPartial?.({ services, ducts, refrigerant: null, condensate: null, clashes: [], issues: [...issues], ...(orientation ? { orientation } : {}) });

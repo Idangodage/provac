@@ -36,9 +36,9 @@ const GOLDEN_FILE = fileURLToPath(new URL('./__fixtures__/auto-route-golden.json
 const OUT_DIR = env.AUTO_ROUTE_GOLDEN_DIR ?? join(tmpdir(), 'provacx-auto-route-golden');
 
 /**
- * AUTO_ROUTE_RUNNER=pool-like: tasks are split and taken as for a pool of six
- * workers (trees in runs, spare workers' speculative starts), still run here,
- * one by one and through the worker boundary, so the answers can be compared.
+ * AUTO_ROUTE_RUNNER=pool-like: tasks are taken as for a pool of workers (with a
+ * spare worker's speculative start), still run here, one by one and through the
+ * worker boundary, so the answers can be compared.
  */
 const POOL_LIKE: TaskRunner = {
   concurrency: 6,
