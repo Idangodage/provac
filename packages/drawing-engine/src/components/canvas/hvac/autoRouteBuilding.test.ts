@@ -43,11 +43,13 @@ async function autoRouteEverything(): Promise<UnifiedAutoRouteResult> {
   return preview.unified!;
 }
 
-/** New pipe clashes in the preview, against the drawing with the proposal's terminal turns. */
+/** New pipe clashes in the preview, against the drawing with the proposal's terminal turns and its cassettes as turned. */
 function previewClashes(result: UnifiedAutoRouteResult) {
-  const scene = result.ducts
+  const drawn = result.ducts
     ? applyDuctProposal(useSmartDrawingStore.getState().hvacElements, { ...result.ducts, elementsToAdd: [], removeElementIds: [] })
     : useSmartDrawingStore.getState().hvacElements;
+  const turned = new Map((result.orientation?.units ?? []).map((unit) => [unit.id, unit]));
+  const scene = drawn.map((element) => turned.get(element.id) ?? element);
   const proposed = [...(result.ducts?.elementsToAdd ?? []), ...(result.refrigerant?.elementsToAdd ?? []), ...(result.condensate?.elementsToAdd ?? [])];
   return findNewNetworkPipeClashes([...scene], proposed);
 }
