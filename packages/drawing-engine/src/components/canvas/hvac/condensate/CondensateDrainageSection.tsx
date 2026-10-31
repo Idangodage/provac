@@ -145,7 +145,8 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
   const committedBom = useMemo(() => buildCondensateBom(hvacElements.filter(isCondensateElement), settings), [hvacElements, settings]);
   const bom = preview?.bom ?? committedBom;
   const gullyCount = hvacElements.filter((element) => element.type === 'condensate-gully').length;
-  const applyIssue = blockingIssue ?? (preview?.hopProposals.some((hop) => !approved.includes(hop.key))
+  // (While a run goes on, what it shows is only to look at: Apply and Discard wait for its answer.)
+  const applyIssue = running ? undefined : blockingIssue ?? (preview?.hopProposals.some((hop) => !approved.includes(hop.key))
     ? 'Review and approve the required refrigerant hops before applying.' : undefined);
 
   return (
@@ -172,7 +173,7 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
           className="rounded-lg bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-800 disabled:opacity-40">
           {running ? 'Calculating…' : preview ? 'Regenerate' : 'Generate network'}
         </button>
-        {preview ? (
+        {preview && !running ? (
           <>
             <button type="button" onClick={() => applyAutoRoutePreview()} disabled={Boolean(applyIssue)} title={applyIssue}
               className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-800 disabled:opacity-40">Apply</button>
