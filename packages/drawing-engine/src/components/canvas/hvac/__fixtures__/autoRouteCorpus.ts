@@ -116,7 +116,7 @@ export interface AutoRouteCorpusCase {
   description: string;
   draw: () => void;
   services: AutoRouteServices;
-  /** The benchmark fails a run slower than this (ms, this laptop with headroom); unset: timed only. */
+  /** The benchmark fails a run slower than this (ms; 1.6 times what it took under Vitest on the laptop it was tuned on, on its charger). */
   budgetMs?: number;
 }
 
@@ -124,24 +124,23 @@ const EVERYTHING: AutoRouteServices = { gas: true, liquid: true, condensate: tru
 const PIPES: AutoRouteServices = { gas: true, liquid: true, condensate: true, supplyDuct: false, returnDuct: false };
 const DUCTS: AutoRouteServices = { gas: false, liquid: false, condensate: false, supplyDuct: true, returnDuct: true };
 
-const synthetic = (name: string, spec: SyntheticBuildingSpec, services: AutoRouteServices, description: string): AutoRouteCorpusCase =>
-  ({ name, description, services, draw: () => drawSyntheticBuilding(spec) });
+const synthetic = (name: string, spec: SyntheticBuildingSpec, services: AutoRouteServices, description: string, budgetMs: number): AutoRouteCorpusCase =>
+  ({ name, description, services, budgetMs, draw: () => drawSyntheticBuilding(spec) });
 
 /** Every case, smallest first within each kind. */
 export const AUTO_ROUTE_CORPUS: readonly AutoRouteCorpusCase[] = [
   { name: 'building-put-right', description: "The user's building put right: FDU224 (6 + 5), two FDUM140 (3 + 3), four cassettes", services: EVERYTHING,
-    draw: () => drawUsersBuilding('put-right') },
+    budgetMs: 115_000, draw: () => drawUsersBuilding('put-right') },
   { name: 'building-as-drawn', description: "The user's building as drawn: a unit turned away, too few terminals, a drain that cannot fall", services: EVERYTHING,
-    draw: () => drawUsersBuilding('as-drawn') },
-  synthetic('cassettes-4', { ducted: 0, terminals: 0, cassettes: 4 }, PIPES, 'Four cassettes: refrigerant and drains'),
-  synthetic('cassettes-6', { ducted: 0, terminals: 0, cassettes: 6 }, PIPES, 'Six cassettes: refrigerant and drains'),
-  synthetic('ducted-1x5', { ducted: 1, terminals: 5, cassettes: 0 }, DUCTS, 'One FDUM140, 5 + 5 terminals: ducts'),
-  synthetic('ducted-3x3', { ducted: 3, terminals: 3, cassettes: 0 }, DUCTS, 'Three FDUM140, 3 + 3 terminals each: ducts'),
-  // Past the exact limit: the terminals are routed in groups, and a share of a third or an eleventh of the air leaves
-  // a run a residue of airflow after its last take-off (a loss that is not a number).
-  synthetic('ducted-1x11', { ducted: 1, terminals: 11, cassettes: 0 }, DUCTS, 'One FDUM140, 11 + 11 terminals: ducts, routed in groups'),
-  synthetic('mixed-2x3-c4', { ducted: 2, terminals: 3, cassettes: 4 }, EVERYTHING, 'Two FDUM140 (3 + 3) and four cassettes: everything'),
-  synthetic('mixed-3x3-c6', { ducted: 3, terminals: 3, cassettes: 6 }, EVERYTHING, 'Three FDUM140 (3 + 3) and six cassettes: everything'),
+    budgetMs: 180_000, draw: () => drawUsersBuilding('as-drawn') },
+  synthetic('cassettes-4', { ducted: 0, terminals: 0, cassettes: 4 }, PIPES, 'Four cassettes: refrigerant and drains', 25_000),
+  synthetic('cassettes-6', { ducted: 0, terminals: 0, cassettes: 6 }, PIPES, 'Six cassettes: refrigerant and drains', 130_000),
+  synthetic('ducted-1x5', { ducted: 1, terminals: 5, cassettes: 0 }, DUCTS, 'One FDUM140, 5 + 5 terminals: ducts', 15_000),
+  synthetic('ducted-3x3', { ducted: 3, terminals: 3, cassettes: 0 }, DUCTS, 'Three FDUM140, 3 + 3 terminals each: ducts', 45_000),
+  // Past the exact limit: the terminals are routed in groups.
+  synthetic('ducted-1x11', { ducted: 1, terminals: 11, cassettes: 0 }, DUCTS, 'One FDUM140, 11 + 11 terminals: ducts, routed in groups', 50_000),
+  synthetic('mixed-2x3-c4', { ducted: 2, terminals: 3, cassettes: 4 }, EVERYTHING, 'Two FDUM140 (3 + 3) and four cassettes: everything', 65_000),
+  synthetic('mixed-3x3-c6', { ducted: 3, terminals: 3, cassettes: 6 }, EVERYTHING, 'Three FDUM140 (3 + 3) and six cassettes: everything', 190_000),
 ];
 
 /**
