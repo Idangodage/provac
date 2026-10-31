@@ -1,11 +1,24 @@
 # Auto route performance
 
-## October 2026: the same answers in about a third of the time
+## October 2026: the same answers, two to three times as fast on large drawings
 
 Auto route took longer the more units and terminals a drawing had. On the user's building it now
-takes about a third of the time and gives exactly the same preview. It shows its progress and each
-service as it finishes, reuses what has not changed, and no longer gives another design on a slower
+takes a little over a third of the time and gives exactly the same preview. It shows its progress and
+each service as it finishes, reuses what has not changed, and no longer gives another design on a slower
 computer.
+
+In the real app, both versions built with `next build` and served with `next start`, in the real page,
+taking turns, the median of three rounds:
+
+| Drawing | Original | Now | Speed-up |
+| --- | ---: | ---: | ---: |
+| The user's building, put right (7 units, 23 terminals) | 81.2 s | 30.2 s | 2.7× |
+| 3 ducted units (3 + 3 terminals each) and 6 cassettes | 108.7 s | 51.2 s | 2.1× |
+| 4 cassettes | 9.8 s | 7.4 s | 1.3× |
+
+The rest was measured on bundles of the same code on a bare page, a more repeatable bench that covers more
+drawings. A run there is quicker than in the real page, and these runs were in a cooler hour of the same laptop,
+so compare within a table, not across the two:
 
 | Drawing | Original | Now | Speed-up |
 | --- | ---: | ---: | ---: |
@@ -23,7 +36,11 @@ computer.
 
 Real Chrome on a Ryzen 7 7730U (15 W, 8 cores, 16 threads) on its charger, production-style bundles,
 the exact requests the app sends, the median of three rounds run back and forth (the two largest:
-one round). On the dev server a run takes about the same (22 s for the put-right building).
+one round).
+
+The dev server is as quick as a production build (28.8 s against 30.0 s on the building, in one rotation
+with the bare page's 23.9 s). Why the real page is slower than the bare page was not traced. It is not the page's
+own thread, busy for about a tenth of a run (3.4 s of 30 s), and not the build's browser targets (below).
 
 ### Measuring this
 
@@ -63,6 +80,11 @@ reference between elements still has to match.
   sessions, a project in the app, 10 requests captured while the canvas drivers worked in the real app, and
   the 2 larger buildings. No differences.
 - **The real app** (`speed-check.mjs`): on the dev server, exactly the original's answer.
+- **A real production build**, the page and the pool's workers as webpack emits them: all 9 cases equal the
+  original's answer, and the original built the same way gives its bundle's answer on the 3 cases run on it, so the
+  bundles speak for the app. The canvas driver (`auto-route-live.mjs`: progress, services as they finish, Route again, Apply, Undo,
+  Cancel) passes 20 of 20 on it. The debug handle is compiled out of a production build, so these copies kept it in
+  with a scratch webpack loader.
 - **A computer 30 times slower** (a bundle whose clock runs 30 times fast): all 9 cases, exactly the
   same answer. The original changes at 3 times: it gives another design on the building as drawn.
 - **Golden master** (`autoRouteCorpus.golden.test.ts`), recorded on the original code (2ff5969): 9 cases,
@@ -90,6 +112,10 @@ Left out of the plan, with the reason:
   repeat it (over a second each), for about 2 s gained on the building.
 - **The rectangular and round duct router sessions in parallel.** They build and verify whole options, ids
   included, in the middle: much to move between workers, for about 2 s gained on the building.
+- **A build for modern browsers only.** Next's default targets rewrite newer syntax for old browsers, in the workers
+  too. Targeting Chrome and Edge 120, Firefox 121 and Safari 17 made the drawing page 50 kB smaller but Auto route no
+  quicker: 32.0, 31.9 and 29.0 s on the building against 29.6 and 31.7 s, taking turns. (Measured on that one drawing;
+  the rotation was stopped early when the machine ran short of memory.)
 - **Speculating on more than one left-out unit.** In all three benchmark cases with a unit left out, the
   start needed first was the first spare unit; the others only slowed the rest. More than four workers gain
   nothing on this kind of laptop: with six, the same work took 2.1 times the CPU.
@@ -101,7 +127,12 @@ Left out of the plan, with the reason:
   stubs): 7 of 7 before it, 5 of 7 now.
 - **A flow residue drops designs.** A run's airflow less its terminals' can round to just below zero
   (−7×10⁻¹⁴ m³/h with 54.54 m³/h shares), `velocityMs` gives NaN, and a design ending in a cap just past its
-  last take-off is silently discarded, depending on rounding.
+  last take-off is silently discarded, depending on rounding. Of ten common airflows split equally, 11 terminals
+  round below zero on seven, 9 terminals on three, 7 terminals on one. Clamping the flow at zero (one line in
+  `planSegments`), tried on a copy: the 9 benchmark cases stay exactly as they are and the two duct test files with
+  larger units pass. A ducted unit with 9 + 9 terminals in a test drawing gets the better supply design it had been
+  losing (first cost 4,583 to 4,386, life-cycle cost 4,839 to 4,600, supply index path 27.7 to 20.7 Pa); with 3, 4, 6, 7,
+  11 and 12 terminals its cost, layouts and index path do not change.
 
 ### Repeating the measurements
 
@@ -112,7 +143,12 @@ node D:/claude-perf/browser/bundle.mjs <drawing-engine root> current     # produ
 MODES=original:plain,current:pool CASES=building-put-right node bench-browser.mjs
 MODES=current-dev:warm PROFILE=name node bench-browser.mjs               # a CPU profile taken in Chrome (unminified bundle)
 node auto-route-live.mjs                                                 # what the user sees, on the real canvas
+sh D:/claude-perf/prod-compare.sh                                        # old against new as real production builds, in the real page
 ```
+
+`prod-compare.sh` needs the two builds on ports 3100 and 3101, in copies of the repo: `git archive`, `prod-links.ps1`
+for `node_modules`, a copy of `.env.local`, `open-handle-loader.js` as a webpack rule to keep the debug handle, and for the
+original `patch-prod-original.mjs` (a copy's `node_modules` links back to the repo's engine, so the original needs its alias).
 
 In the repo:
 
