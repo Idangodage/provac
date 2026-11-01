@@ -150,6 +150,8 @@ export interface DuctDesignSettings {
   autoRoundSizesMm: number[];
   /** Auto layout: a trunk reduces only when its width drops by at least this much (mm). */
   autoReducerStepMm: number;
+  /** Room a trunk leaves under the soffit for what crosses it, where the void allows at a tenth more cost at most (mm). */
+  autoCrossingRoomMm: number;
   /** Rectangular ducts are sized in steps of this much on each side (mm): the fabricator's sizes. */
   rectStepMm: 25 | 50 | 100;
   /**
@@ -236,7 +238,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   supplyPressureClassPa: 500,
   returnPressureClassPa: 250,
   sectionLengthMm: 1200,
-  minMakeUpPieceMm: 200,
+  minMakeUpPieceMm: 300,
   availableSheetThicknessesMm: [...DEFAULT_SHEET_STOCK_MM],
   jointSystem: 'auto',
   washersPerBolt: 2,
@@ -302,6 +304,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   fireDamperSleeveExtensionMm: 100,
   autoRoundSizesMm: [100, 125, 150, 160, 200, 250, 300, 315, 355, 400, 450, 500, 560, 630, 710, 800, 900, 1000],
   autoReducerStepMm: 100,
+  autoCrossingRoomMm: 100,
   rectStepMm: 50,
   sizeSeries: 'metric',
   autoExactTerminals: 8,
@@ -425,6 +428,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   fireDamperSleeveExtensionMm: practice('Fire damper sleeve beyond each wall face for its breakaway connection; UL 555 installation instructions commonly allow up to 152 mm (6 in).'),
   autoRoundSizesMm: { sourceId: 'project-configuration', verified: false, note: 'Round sizes the fabricator stocks (spiral and flex); Ø560–Ø1000 follow the EN 1506 series for the mains of large units.' },
   autoReducerStepMm: practice('A trunk is reduced only for a worthwhile width change, not at every take-off.'),
+  autoCrossingRoomMm: practice('A pipe pair or drain needs about this much over a duct to cross it.'),
   rectStepMm: practice('Rectangular duct is fabricated to round sizes: 50 mm steps are usual (25 for a fine fit, 100 for a short list of sizes).'),
   sizeSeries: practice('Metric: the fabricator\'s step and the EN 1506 round series. Inch: rectangular sides in even inches and the usual stocked round sizes (4–10 in by the inch, then by 2 in).'),
   autoExactTerminals: practice('The exact tree search grows as 3^k in time and 2^k in memory; above this many terminals only the layout candidates are sized (labelled, not exact).'),
@@ -527,18 +531,20 @@ function resolveSheetStock(value: unknown): number[] {
  * unsupported ones explicitly rather than silently clamping them).
  */
 /**
- * A saved document's duct settings. Two former defaults a document saved with
+ * A saved document's duct settings. Three former defaults a document saved with
  * them did not choose, and take today's: 20 s, the time per unit until it decided
- * designs on a slow computer (a laptop on battery reached it); and a 14° design
+ * designs on a slow computer (a laptop on battery reached it); a 14° design
  * taper, until it made every collar's transition 1.7 to 1.9 m long, and left
- * units with no layout their collar had the room for.
+ * units with no layout their collar had the room for; a 200 mm shortest make-up
+ * piece, until the audit counted the joints stacked at each step.
  */
 export function savedDuctSettings(saved: Partial<DuctDesignSettings>): DuctDesignSettings {
-  const { autoTimeBudgetMs, transitionTaperDeg, ...rest } = saved;
+  const { autoTimeBudgetMs, transitionTaperDeg, minMakeUpPieceMm, ...rest } = saved;
   return resolveDuctSettings({
     ...rest,
     ...(autoTimeBudgetMs !== undefined && autoTimeBudgetMs !== 20000 ? { autoTimeBudgetMs } : {}),
     ...(transitionTaperDeg !== undefined && transitionTaperDeg !== 14 ? { transitionTaperDeg } : {}),
+    ...(minMakeUpPieceMm !== undefined && minMakeUpPieceMm !== 200 ? { minMakeUpPieceMm } : {}),
   });
 }
 
@@ -620,6 +626,7 @@ export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null):
     fireDamperSleeveExtensionMm: clampNumber(raw.fireDamperSleeveExtensionMm, d.fireDamperSleeveExtensionMm, 50, 152),
     autoRoundSizesMm: resolveRoundStock(raw.autoRoundSizesMm, d.autoRoundSizesMm),
     autoReducerStepMm: clampNumber(raw.autoReducerStepMm, d.autoReducerStepMm, 0, 500),
+    autoCrossingRoomMm: clampNumber(raw.autoCrossingRoomMm, d.autoCrossingRoomMm, 0, 500),
     rectStepMm: raw.rectStepMm === 25 || raw.rectStepMm === 50 || raw.rectStepMm === 100 ? raw.rectStepMm : d.rectStepMm,
     sizeSeries: oneOf(raw.sizeSeries, ['metric', 'imperial'] as const, d.sizeSeries),
     autoExactTerminals: Math.round(clampNumber(raw.autoExactTerminals, d.autoExactTerminals, 1, 10)),

@@ -1205,6 +1205,8 @@ function trunkSectionsOf(report: DuctSystemSizingReport): AutoDuctServiceResult[
 const TRUNK_HEIGHTS_PRICED = 8;
 /** The cheapest options (by their own first cost) whose trunk height is priced. */
 const TRUNK_HEIGHT_OPTIONS = 3;
+/** How much more a trunk may cost for leaving what crosses it its room. */
+const CROSSING_ROOM_PREMIUM = 1.1;
 
 /**
  * The width a run's first section needs for the transition off its collar to keep within the SMACNA limits in the
@@ -1236,6 +1238,8 @@ function firstSectionWidthToFit(plan: DuctFabricationPlan | undefined, settings:
  * A height whose sizes come out as those of one already priced (the take-offs
  * raising a low trunk to the same sections) is not verified again. A size whose
  * collar transition does not fit its leg is tried wider (firstSectionWidthToFit).
+ * A trunk that leaves the void's crossing room over it beats one that does not,
+ * at up to a tenth more cost: pipes and drains then pass over it.
  */
 function constantFrictionOption(
   ctx: ServiceCtx, option: ServiceOption, basis: DuctSystemSizing, terminalAirflows: AutoDuctRequest['terminalAirflows'], trunkHeights = false,
@@ -1288,8 +1292,12 @@ function constantFrictionOption(
         if (priced.has(sizes)) continue;
         priced.add(sizes);
         const trial = verifyFitted(sized, height);
+        const leavesRoom = (entry: typeof chosen) => (entry.sized.report.sections.find((section) => section.runId === root.id && section.part === 'trunk' && !isRoundLeg(section.section))?.section.heightMm ?? 0)
+          <= ctx.maxHeightMm - ctx.settings.autoCrossingRoomMm + 0.5;
+        const roomy = leavesRoom(trial);
         const better = trial.verified.errors !== chosen.verified.errors ? trial.verified.errors < chosen.verified.errors
-          : Math.abs(trial.cost.total - chosen.cost.total) > 1e-6 ? trial.cost.total < chosen.cost.total : trial.pieces < chosen.pieces;
+          : roomy !== leavesRoom(chosen) ? (roomy ? trial.cost.total <= chosen.cost.total * CROSSING_ROOM_PREMIUM : trial.cost.total * CROSSING_ROOM_PREMIUM < chosen.cost.total)
+            : Math.abs(trial.cost.total - chosen.cost.total) > 1e-6 ? trial.cost.total < chosen.cost.total : trial.pieces < chosen.pieces;
         if (better) chosen = trial;
       }
     }

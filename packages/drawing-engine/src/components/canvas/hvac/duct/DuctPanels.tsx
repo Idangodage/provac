@@ -1032,6 +1032,7 @@ export function DuctSystemsSection() {
       <SettingNumber quantity="velocity" settingKey="filterRatedVelocityMs" label="… at face velocity" step={0.1} min={0.5} max={5} unit="m/s" />
       <SettingNumber settingKey="filterDesignFactor" label="Filter mid-life factor" step={0.1} min={1} max={3} unit="×" />
       <SettingNumber settingKey="autoReducerStepMm" label="Reduce the trunk from" step={50} min={0} max={500} />
+      <SettingNumber settingKey="autoCrossingRoomMm" label="Room over a trunk for what crosses it" step={25} min={0} max={500} />
       <Row label="Rectangular sizes in">
         <select value={ductSettings.rectStepMm} aria-label="Rectangular sizes in" className="rounded border border-slate-200 px-1 py-0.5 text-xs"
           onChange={(event) => setDuctSettings({ rectStepMm: Number(event.target.value) as DuctDesignSettings['rectStepMm'] })}>

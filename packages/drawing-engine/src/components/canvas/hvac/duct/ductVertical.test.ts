@@ -14,7 +14,8 @@ import { buildDuctPlanPresentation } from './ductPlanPresentation';
 import { resolveDuctSettings } from './ductSettings';
 import { readDuctRunSpec, type DuctLeg } from './ductTypes';
 
-const settings = resolveDuctSettings({});
+// (A short riser stays a section of its own: what these tests measure.)
+const settings = resolveDuctSettings({ minMakeUpPieceMm: 200 });
 const unit: HvacElement = {
   id: 'fdum', type: 'ducted-ac', position: { x: 0, y: 0 }, rotation: 0, width: 1084, depth: 697, height: 300,
   elevation: 2600, mountType: 'ceiling', label: 'FDUM22', supplyZoneRatio: 0.5,

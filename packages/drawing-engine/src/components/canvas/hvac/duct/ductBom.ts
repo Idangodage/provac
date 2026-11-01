@@ -423,22 +423,26 @@ export function buildDuctBom(
 }
 
 export function buildDuctFabricationSchedule(plans: readonly DuctFabricationPlan[]): DuctScheduleRow[] {
-  return plans.flatMap((plan) => plan.pieces.map((piece): DuctScheduleRow => {
+  return plans.flatMap((plan) => plan.pieces.flatMap((piece, index): DuctScheduleRow[] => {
+    const previous = plan.pieces[index - 1];
+    // A take-off and its damper are one assembly: one row (the take-off's), the damper's figures with it.
+    if (piece.kind === 'damper' && previous?.kind === 'takeoff') return [];
+    const damper = piece.kind === 'takeoff' && plan.pieces[index + 1]?.kind === 'damper' ? plan.pieces[index + 1]! : null;
     const construction = plan.constructionByLeg[piece.legIndex];
-    return {
+    return [{
       run: plan.elementId,
-      mark: piece.mark,
-      kind: pieceDescription(piece, plan),
+      mark: damper ? `${piece.mark}+${damper.mark}` : piece.mark,
+      kind: damper ? `${pieceDescription(piece, plan)}, with ${pieceDescription(damper, plan).replace(/^./, (first) => first.toLowerCase())}` : pieceDescription(piece, plan),
       size: sizeLabel(piece),
-      lengthMm: Math.round(piece.lengthMm),
+      lengthMm: Math.round(piece.lengthMm + (damper?.lengthMm ?? 0)),
       sheetMm: piece.sheetThicknessMm,
       gauge: piece.sheetThicknessMm === null ? '—' : gaugeLabelForSheet(piece.sheetThicknessMm),
       joint: describeJoint(construction?.joint ?? null),
       requiredClass: construction?.requiredClass ?? '—',
       crossBreak: Boolean(construction && piece.kind === 'straight' && (construction.crossBreak.width || construction.crossBreak.height)),
-      areaM2: round2(piece.sheetAreaM2),
-      massKg: round2(piece.massKg),
-    };
+      areaM2: round2(piece.sheetAreaM2 + (damper?.sheetAreaM2 ?? 0)),
+      massKg: round2(piece.massKg + (damper?.massKg ?? 0)),
+    }];
   }));
 }
 

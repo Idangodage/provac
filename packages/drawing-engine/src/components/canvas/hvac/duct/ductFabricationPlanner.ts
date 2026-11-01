@@ -1212,8 +1212,12 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       const available = leg.lengthMm - cursor - endReserve;
       const wanted = transitionLength(transition);
       const compressed = available + STATION_EPSILON_MM < wanted;
-      const slope = compressed ? Math.max(0, available - 2 * transition.neckMm) : transition.slopeMm;
-      const total = Math.max(0, Math.min(wanted, available));
+      // What is left of the leg, too short to be a piece of its own, the transition takes up: gentler, one joint fewer.
+      const leftOver = available - wanted;
+      const takesUp = leftOver > STATION_EPSILON_MM && leftOver < settings.minMakeUpPieceMm - STATION_EPSILON_MM
+        && !windowsByLeg.get(legIndex)?.length && !legCrossings.length && !legInline.length;
+      const slope = compressed ? Math.max(0, available - 2 * transition.neckMm) : takesUp ? transition.slopeMm + leftOver : transition.slopeMm;
+      const total = Math.max(0, takesUp ? available : Math.min(wanted, available));
       const riseW = Math.abs(transition.to.widthMm - transition.from.widthMm) / 2;
       const riseH = Math.abs(transition.to.heightMm - transition.from.heightMm) / (leg.vertical ? 2 : 1);
       const angle = (rise: number) => (rise <= 0 ? 0 : slope <= 0 ? 90 : (Math.atan(rise / slope) * 180) / Math.PI);
@@ -1741,6 +1745,8 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     const previous = pieces[index - 1]!;
     const next = pieces[index]!;
     const section = pieceSection(previous, 'end');
+    // A take-off and its damper come as one assembly: no joint between them.
+    if (previous.kind === 'takeoff' && next.kind === 'damper') continue;
     // A runout slips over the rigid end and is held by draw bands (counted with the runout).
     if (next.kind === 'flex') {
       pushJoint('flex-connection', next.stationStartMm, next, section, [previous.mark, next.mark], null);
