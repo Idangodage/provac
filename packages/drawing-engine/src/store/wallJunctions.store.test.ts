@@ -9,6 +9,7 @@ import { computeWallUnionRenderData } from '../components/canvas/wall/WallUnionG
 import { DEFAULT_DIMENSION_SETTINGS } from '../types';
 
 import { buildMergedAutoManagedDimensions } from './autoManagedDimensions';
+
 import { useDrawingStore } from './index';
 
 const store = () => useDrawingStore.getState();

@@ -9,11 +9,11 @@
  * before anything can ask for a union. Should it ever be unavailable the
  * functions still answer, with `exact: false`.
  */
+import type { IntPoint } from 'js-angusj-clipper/web/IntPoint';
+import type { PolyNode } from 'js-angusj-clipper/web/PolyNode';
 import { clipToPolyTree } from 'js-angusj-clipper/web/clipFunctions.js';
 import { ClipType, PolyFillType } from 'js-angusj-clipper/web/enums.js';
-import type { IntPoint } from 'js-angusj-clipper/web/IntPoint';
 import type { NativeClipperLibInstance } from 'js-angusj-clipper/web/native/NativeClipperLibInstance';
-import type { PolyNode } from 'js-angusj-clipper/web/PolyNode';
 import createClipperModule from 'js-angusj-clipper/web/wasm/clipper.js';
 
 import { CLIP_GRID_PER_MM, MIN_CLIP_RING_WIDTH_MM } from './tolerances';
