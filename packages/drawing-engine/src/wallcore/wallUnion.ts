@@ -9,6 +9,9 @@
  * before anything can ask for a union. Should it ever be unavailable the
  * functions still answer, with `exact: false`.
  */
+// (The web app's type check reads only what is imported, so the declaration has to be named here.)
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference
+/// <reference path="./clipperWebBuild.d.ts" />
 import type { IntPoint } from 'js-angusj-clipper/web/IntPoint';
 import type { PolyNode } from 'js-angusj-clipper/web/PolyNode';
 import { clipToPolyTree } from 'js-angusj-clipper/web/clipFunctions.js';
