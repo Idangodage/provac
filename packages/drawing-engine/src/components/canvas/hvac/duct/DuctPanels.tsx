@@ -31,6 +31,7 @@ import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
 import { describeJoint } from './ductGauge';
 import { ductLegs } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
+import { layoutRefrigerantSupports, refrigerantSupportBomRows } from '../refrigerantSupports';
 import { refrigerantPenetrationBomRows, servicePenetrations, servicePenetrationScheduleRows } from '../servicePenetrations';
 import { ductPenetrationSchedule, ductPenetrationScheduleToCsv } from './ductPenetrationSchedule';
 import { penetrationHasFireDamper } from './ductPenetrations';
@@ -912,7 +913,9 @@ export function DuctSystemsSection() {
     plans,
     plans.map((plan) => getDuctSupportPlan(plan, hvacElements, ductSettings)),
     hvacElements.filter(isDuctTerminalElement),
-  ), ...refrigerantPenetrationBomRows(pipePenetrations)], [plans, hvacElements, ductSettings, pipePenetrations]);
+  ), ...refrigerantPenetrationBomRows(pipePenetrations),
+    ...refrigerantSupportBomRows(hvacElements.flatMap((element) => layoutRefrigerantSupports(element, resolveSoffitZ(ductSettings))))],
+  [plans, hvacElements, ductSettings, pipePenetrations]);
   const schedule = useMemo(() => buildDuctFabricationSchedule(plans), [plans]);
   const penetrationRows = useMemo(() => {
     const labels = new Map(hvacElements.map((element) => [element.id, element.label || element.id]));

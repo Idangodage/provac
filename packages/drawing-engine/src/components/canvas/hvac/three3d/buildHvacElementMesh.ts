@@ -51,7 +51,9 @@ import {
   buildSweptTubeGeometry,
   unionGeometries,
 } from "./pipeJointGeometry";
+import { buildingSoffitMm } from "../buildingSection";
 import { addPipeWallSleeves } from "./pipeWallSleeves";
+import { addRefrigerantSupportMeshes } from "./refrigerantSupportMeshes";
 import { addRefrigerantAccessoryMeshes } from "./refrigerantAccessoryMeshes";
 import {
   addRefrigerantUnitJoint,
@@ -2594,6 +2596,7 @@ export function buildHvacElementMesh(
         addRefrigerantAccessoryMeshes(group, effectiveElement, context.allElements);
         addPipeOpenEndBands(group, effectiveElement, points, outerRadius);
         addPipeWallSleeves(group, points, outerRadius);
+        if (context.ductSettings?.showSupports !== false) addRefrigerantSupportMeshes(group, effectiveElement, buildingSoffitMm(getActivePipeRoutingSettings(), context.ductSettings?.soffitMm));
         break;
       }
       const insulation = createTubeAlongPoints(trimRunEnds(points, joints.startBareMm, joints.endBareMm), outerRadius,
@@ -2628,6 +2631,7 @@ export function buildHvacElementMesh(
       addRefrigerantAccessoryMeshes(group, effectiveElement, context.allElements);
       addPipeOpenEndBands(group, effectiveElement, points, outerRadius);
       addPipeWallSleeves(group, points, outerRadius);
+      if (context.ductSettings?.showSupports !== false) addRefrigerantSupportMeshes(group, effectiveElement, buildingSoffitMm(getActivePipeRoutingSettings(), context.ductSettings?.soffitMm));
       break;
     }
     case "duct": {

@@ -112,6 +112,8 @@ export interface PipeRoutingSettings {
   connectionRatioMaxPercent: number;
   /** Auto route may turn 4-way cassettes (quarter turns on their centre) for shorter pipe and drain runs. */
   autoTurnCassettes: boolean;
+  /** How Auto route lays a gas and liquid pair: side by side on one level (stacked where that cannot reach every unit), or stacked. */
+  pairArrangement: 'side-by-side' | 'stacked';
   /** Clear space kept in front of a cassette's connection side when Auto route turns it (practice). */
   cassetteConnectionClearanceMm: number;
   /** Auto route turns a cassette only when that saves at least this much approach … */
@@ -149,6 +151,7 @@ export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
   connectionRatioMinPercent: 50,
   connectionRatioMaxPercent: 130,
   autoTurnCassettes: true,
+  pairArrangement: 'side-by-side',
   cassetteConnectionClearanceMm: 300, // practice
   autoTurnMinGainMm: 300, // practice
   autoTurnMinGainPercent: 5, // practice
@@ -196,6 +199,10 @@ export function resolvePipeRoutingSettings(
         if (typeof value === "boolean") {
           merged.enableRealTeeTopology = value;
         }
+        return;
+      }
+      if (key === "pairArrangement") {
+        if (value === 'side-by-side' || value === 'stacked') merged.pairArrangement = value;
         return;
       }
       if (key === "autoTurnCassettes") {

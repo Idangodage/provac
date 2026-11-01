@@ -114,6 +114,33 @@ When the usual starts still leave a unit out and the drawing has duct or air-ter
 
 Known limits. On the user's building these mains run at gas 2340 and liquid 2197 mm, below a 2400 mm ceiling line, as the put-right layout already did (2355 and 2215 mm). Staying above the ceiling needs each pipe to hop each duct locally, which this one-corridor engine does not do. The corridor goes under the ducts, never over them, even where there is height above: with the outdoor unit's connections above the corridor it would be a low pocket, the evaluation refuses it, and the unit stays left out with its reason.
 
+## Side by side, in the void (2026-11-01)
+
+The user's screenshots of 1 November showed the result: mains in the rooms below the ceiling, and gas and liquid
+stepping at different stations at every connection (the separation rule kept them 143 mm or more apart in height,
+and a step smaller than two full bends was refused). The user chose the pair side by side on one level, stepping
+together, mains above the ceiling, stacked as the fallback, below the ceiling only as a last resort with a warning.
+
+- `pairArrangement` (Route defaults, default `side-by-side`). Auto route first lays the pair on one level
+  (`sideBySideCorridor`, `autoRouteNetwork.ts`): in the void, over what it can clear under the soffit, at least two
+  full bends above every unit's stub; a body too tall to pass over is gone round (its plan box an obstacle). Both lines
+  step at one station (each takes the larger line's bend room).
+- While the network grows the plan's levels are `flatPending`: the gas/liquid contact of a side-by-side pair is not a
+  clash yet. Once the tree stands, `settleSideBySide` dips the liquid under the gas wherever their insulation would
+  meet (a tee, a kit's branch tube on the neighbouring lane), on plumb steps deep enough for two full bends
+  (`pairDips.ts`, 125 mm for Ø9.52): every level change stays plumb or level. Every liquid kit sits at the dipped
+  level. The gas never dips (an oil trap). The whole network is then checked as built.
+- Side by side leaving a unit out: the pair stacked (the levels from the units', as before), and said so; then the
+  main under the ducts. A layout with mains in the rooms below the ceiling ranks after any without
+  (`serviceRouteObjective.ts`), is said in the preview and flagged on each run (`refrigerantCeilingCheck.ts`).
+- Checks. A liquid line is not judged for low points or rises and falls (the oil comes back in the gas line); a path
+  that only rises to the main and falls to a unit is the arrangement, not a needless reversal.
+
+On the user's drawing all six units connect at 2840 mm and the drains route under the pair where they cross it (the
+drain search knows how far it is held down after passing under a line). Known limit: the high main leaves the drains
+only the room under it. With a 500 mm straight off each kit the pair wraps DU-2's drain outlet, and that drain can then
+no longer clear the ducts beyond: Auto route falls back to the stacked mains, with the warning.
+
 ## Verification completed
 
 - Drawing engine: **594 tests across 81 files passed**, including both service orders, locked boundaries, mixed terminal heights, actual rotated port geometry, branch socket approaches, repeated insertions, neighboring-station recovery on the same physical hosts, neighboring connection rebinding, new pipe interference, stale settings and repeated rejected commits.

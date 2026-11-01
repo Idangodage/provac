@@ -73,6 +73,23 @@ describe('connected equipment elevation profiles', () => {
     expect(report.commitBlocked).toBe(false);
   });
 
+  const validate = (paths: ReturnType<typeof buildNetworkElevationPaths>, lineKind: 'gas' | 'liquid' = 'gas') => validateVrfNetwork({
+    ports: [], branches: [], pairs: [], runs: [],
+    elevationPaths: paths.map((path) => ({ ...path, lineKind })),
+  }, PROJECT_FALLBACK_RULE_PROFILE).issues.map((issue) => issue.code);
+
+  it('a liquid line is not judged for low points: it carries liquid, the oil comes back in the gas line', () => {
+    expect(validate(buildNetworkElevationPaths(network()), 'liquid')).toEqual([]);
+  });
+
+  it('a main above the units is the arrangement: up from the outdoor unit, along, down to the unit; a rise and fall elsewhere is still said', () => {
+    const [path] = buildNetworkElevationPaths(network());
+    const at = (zs: number[]) => [{ ...path!, nodePositions: zs.map((z, index) => ({ x: index * 1000, y: 0, z })) }];
+    expect(validate(at([1200, 2800, 2800, 2550]))).toEqual([]);
+    expect(validate(at([1200, 2800, 2600, 2800, 2550]))).toEqual(['NETWORK_ELEVATION_LOW_POCKET']);
+    expect(validate(at([1200, 2800, 2600, 2600, 2700]))).toEqual(['NETWORK_ELEVATION_LOW_POCKET']);
+  });
+
   it('does not join disconnected or different-service lines by visual proximity', () => {
     const document = network();
     document.routeNodes.disconnected = { ...document.routeNodes.n1!, id: 'disconnected' };

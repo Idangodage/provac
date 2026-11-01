@@ -3,14 +3,15 @@ import { buildVrfDocumentFromHvacElements } from '../../../vrf/domain';
 import { PROJECT_FALLBACK_RULE_PROFILE, type ManufacturerRuleProfile } from '../../../vrf/rules';
 
 import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork, type AutoRouteCostRates } from './autoRouteEvaluation';
+import { buildingCeiling } from './buildingSection';
 import { directBranchApproachStations } from './branchApproachStations';
 import { buildBranchKitInsertion, getBranchKitApproachRouteOptions, proposeBranchKit, type BranchKitProposal } from './branchKitProposal';
 import { connectionRatioMessage, connectionRatioProblems, type ConnectionRatio } from './connectionRatio';
 import { coordinatedBranchApproachStations } from './coordinatedBranchStations';
 import { getActiveDuctSettings, setActiveDuctSettings, type DuctDesignSettings } from './duct/ductSettings';
-import { ductBoxesInScene } from './duct/ductVolumes';
+import { ductBoxesInScene, solidBoxesInScene } from './duct/ductVolumes';
 import { hasNewNetworkPipeClash } from './networkPipeClearance';
-import { applyNetworkPipeLevels, corridorUnder, hasNetworkCornerRiser, planNetworkPipeLevels } from './networkPipeLevels';
+import { applyNetworkPipeLevels, corridorUnder, hasNetworkCornerRiser, pairDipMm, planNetworkPipeLevels, riserBendExtentMm, settleSideBySide } from './networkPipeLevels';
 import { buildNetworkRiserRefinements } from './networkRiserRefinement';
 import { findObstacleAwareOrthogonalRoute, type ObstacleAwareOrthogonalRoute,
   type ObstacleAwareOrthogonalRouteOptions, type OrthogonalRouteObstacle } from './obstacleAwareOrthogonalRoute';
@@ -512,6 +513,32 @@ function seedNetwork(scene: HvacElement[], system: System, indoor: Unit, allUnit
   const seed = acceptedSeeds.get(JSON.stringify(route.points)) ?? buildSeed(route.points);
   return seed ? [...scene, ...seed] : null;
 }
+/**
+ * Where a side-by-side pair runs: in the void, over what it can clear, under the soffit. Low enough for no more
+ * vertical pipe than that takes, at least two full bends above every unit's stub. A body too tall to pass over is
+ * gone round: its plan box comes back with the level.
+ */
+function sideBySideCorridor(baseline: HvacElement[], system: System, indoors: readonly Unit[], settings: PipeRoutingSettings):
+  { level: number; tall: OrthogonalRouteObstacle[] } {
+  const ports = [system.outdoor.port, ...indoors.map(unit => unit.port)];
+  const gasPipe = Math.max(...ports.map(port => port.gasOuterDiameterMm ?? 15.875));
+  const radius = (gasPipe + 50.8) / 2;
+  const gap = Math.max(0, settings.defaultPipeGapMm);
+  const highest = settings.ceilingLimitMm - radius - gap;
+  const solids = solidBoxesInScene(baseline, getActiveDuctSettings());
+  const over = solids.map(solid => solid.bounds.maxZ + radius + gap).filter(level => level <= highest + 1e-6);
+  const rise = 2 * riserBendExtentMm(radius, settings, gasPipe);
+  // A liquid riser rising only to the dipped level (at a kit) still takes its two bends.
+  const liquidRadius = (Math.max(...ports.map(port => port.liquidOuterDiameterMm ?? 9.525)) + 50.8) / 2;
+  const { dipMm, bendMm } = pairDipMm(radius, liquidRadius, settings);
+  const wanted = Math.max(buildingCeiling(baseline).ceilingMm + radius + gap, ...over,
+    ...indoors.map(unit => unit.port.gasElevationMm + rise), ...indoors.map(unit => unit.port.liquidElevationMm + 2 * bendMm + dipMm));
+  const level = Math.min(highest, Math.ceil(wanted / 5) * 5);
+  const tall = solids.filter(solid => solid.bounds.maxZ + radius + gap > level + 1e-6 && solid.bounds.minZ - radius - gap < level - 1e-6)
+    .filter(solid => solid.mark !== 'equipment casing')
+    .map(solid => ({ minX: solid.bounds.minX, minY: solid.bounds.minY, maxX: solid.bounds.maxX, maxY: solid.bounds.maxY }));
+  return { level, tall };
+}
 interface BranchStation {
   point: Point2D;
   target: ReturnType<typeof getRefrigerantPipeBundleSegmentTargets>[number];
@@ -845,7 +872,19 @@ export function growNetwork(task: GrowNetworkTask): GrownNetwork {
       if (!topologyGrew) break;
       pending = deferred;
     }
-    return refineCandidateRisers(candidate, baselineIds, system, allUnits, options, stats);
+    const refined = refineCandidateRisers(candidate, baselineIds, system, allUnits, options, stats);
+    if (!task.corridor || Math.abs(task.corridor.gas - task.corridor.liquid) > 0.5) return refined;
+    // Side by side: now the tree stands, the liquid dips under the gas where they meet, and all of it is judged as built.
+    const settled = settleSideBySide(refined.scene.filter(element => !baselineIds.has(element.id)), options.settings, task.corridor.gas);
+    if (crossesEquipment(settled, allUnits) || hasNewNetworkPipeClash(baseline, settled)) {
+      stats.rejectedReasons.push('The side-by-side pair could not dip clear of itself and what is round it.');
+      return null;
+    }
+    const scene = [...baseline, ...settled];
+    const rated = evaluation(scene, system, refined.connected, options);
+    stats.evaluatedCandidates += 1;
+    if (!rated.feasible) { recordRejections(stats, rated.hardIssues); return null; }
+    return { ...refined, scene, evaluation: rated };
   };
   try {
     const grown = grow();
@@ -918,8 +957,13 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
       const ordered = [...available].sort((a, b) => distance(b.port.point, system.outdoor.port.point) - distance(a.port.point, system.outdoor.port.point) || a.element.id.localeCompare(b.element.id));
       const seeds = [...new Map([ordered[0]!, ordered[1] ?? ordered[0]!, ordered.at(-1)!].map(unit => [unit.element.id, unit])).values()];
       const { onProgress, ...startOptions } = options;
-      const startTask = (seed: Unit, seedIndex: number, nearestFirst: boolean, corridor?: GrowNetworkTask['corridor']): ParallelTask<'grow-network'> => ({ kind: 'grow-network',
-        input: { baseline, system, allUnits, ordered, seedId: seed.element.id, seedIndex, nearestFirst, options: startOptions, ductSettings: getActiveDuctSettings(), ...(corridor ? { corridor } : {}) } });
+      const startTask = (seed: Unit, seedIndex: number, nearestFirst: boolean, corridor?: GrowNetworkTask['corridor'], taskOptions = startOptions): ParallelTask<'grow-network'> => ({ kind: 'grow-network',
+        input: { baseline, system, allUnits, ordered, seedId: seed.element.id, seedIndex, nearestFirst, options: taskOptions, ductSettings: getActiveDuctSettings(), ...(corridor ? { corridor } : {}) } });
+      // First both services side by side, in the void, going round what is too tall to pass over.
+      const flat = options.settings.pairArrangement === 'side-by-side' ? sideBySideCorridor(baseline, system, ordered, options.settings) : null;
+      const flatOptions = flat?.tall.length ? { ...startOptions, obstacles: [...(startOptions.obstacles ?? []), ...flat.tall] } : startOptions;
+      const firstTask = (seed: Unit, seedIndex: number, nearestFirst: boolean) => (flat
+        ? startTask(seed, seedIndex, nearestFirst, { gas: flat.level, liquid: flat.level }, flatOptions) : startTask(seed, seedIndex, nearestFirst));
       /** Shows the furthest any running start has got. */
       const reporter = (count: number, stage: string) => {
         const reached = new Array<number>(count).fill(0);
@@ -931,13 +975,13 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
       };
       const runner = activeTaskRunner();
       // The starts run at once; the answers are taken in their order, so ties are broken as one after another.
-      const started = runner.all(seeds.map((seed, seedIndex) => startTask(seed, seedIndex, seedIndex % 2 === 1)),
+      const started = runner.all(seeds.map((seed, seedIndex) => firstTask(seed, seedIndex, seedIndex % 2 === 1)),
         reporter(seeds.length, `Comparing ${seeds.length === 1 ? 'a network' : `${seeds.length} networks`} for ${system.outdoor.element.label || 'outdoor unit'}`));
       // A spare worker meanwhile starts from the unit most often left out below (the furthest not started from), so
       // that start is already under way. Its answer is used only if the logic below asks for that very start; more
       // of them would only slow the others on the cores they share.
       const likely = runner.speculate ? ordered.find(unit => !seeds.includes(unit)) : undefined;
-      const ahead: SpeculativeTask<'grow-network'> | undefined = likely && runner.speculate?.(startTask(likely, seeds.length, false));
+      const ahead: SpeculativeTask<'grow-network'> | undefined = likely && runner.speculate?.(firstTask(likely, seeds.length, false));
       let best: GrownNetwork['network'] = null;
       for (const grown of await started) {
         mergeSearchStats(searchStats, grown.stats);
@@ -949,12 +993,24 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
       const leftOut = ordered.filter(unit => !chosen?.connected.includes(unit.element.id) && !seeds.includes(unit)).slice(0, 2);
       if (leftOut[0] !== likely) ahead?.cancel();
       const again = leftOut.map((seed, index) => (index === 0 && ahead && seed === likely
-        ? ahead.want() : runner.all([startTask(seed, seeds.length + index, false)]).then(([grown]) => grown!)));
+        ? ahead.want() : runner.all([firstTask(seed, seeds.length + index, false)]).then(([grown]) => grown!)));
       if (leftOut.length) onProgress?.({ completed: result.connectedIndoorIds.length, total: requested.length,
         stage: `Starting a network from ${leftOut.map(seed => seed.element.label || seed.element.id).join(' and ')}` });
       for (const grown of await Promise.all(again)) {
         mergeSearchStats(searchStats, grown.stats);
         if (grown.network && better(grown.network, best)) best = grown.network;
+      }
+      // A unit still left out, side by side: the pair stacked instead, gas over liquid, at levels chosen from the units'.
+      const flatReached = best;
+      let stacked = false;
+      if (flat && ordered.some(unit => !flatReached?.connected.includes(unit.element.id))) {
+        stacked = true;
+        const stackedStarts = await runner.all(seeds.map((seed, seedIndex) => startTask(seed, seeds.length + 4 + seedIndex, seedIndex % 2 === 1)),
+          reporter(seeds.length, 'Comparing the pair stacked'));
+        for (const grown of stackedStarts) {
+          mergeSearchStats(searchStats, grown.stats);
+          if (grown.network && better(grown.network, best)) best = grown.network;
+        }
       }
       // The starts above choose the main's height from the units' without looking at the ducts, so it can stop at the
       // first duct across its way. With a unit still left out, two more starts lay it under them, at one height throughout.
@@ -970,6 +1026,7 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
           if (grown.network && better(grown.network, best)) best = grown.network;
         }
       }
+      if (stacked && best) issues.push(`${system.outdoor.element.label || system.outdoor.element.id}: side by side the pair could not reach every unit, so it is stacked, gas over liquid.`);
       const previousIndoorIds = new Set([...existingCircuit.indoorIds,
         ...workingScene.filter(element => removableSet.has(element.id)).flatMap(element => ownership(element)?.indoorUnitIds ?? [])]);
       const incumbentMembers = workingScene.filter(element => removableSet.has(element.id));

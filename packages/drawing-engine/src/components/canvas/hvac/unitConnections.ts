@@ -33,6 +33,8 @@ export interface UnitConnection {
   tipX: number;
   /** Outside diameter of the stub, nut or hose as the maker draws it (mm). */
   outerDiameterMm: number;
+  /** The refrigerant line the maker specifies for it, where the drawn stub is not that size (copper OD, mm). */
+  pipeDiameterMm?: number;
   joint: 'flare' | 'brazed' | 'hose' | 'socket';
   /** The maker's 3D model already shows it, so nothing is drawn over it in 3D. */
   inModel: boolean;
@@ -61,8 +63,9 @@ const FDT28: UnitConnectionSet = {
   // The 840 body above the panel; the stubs end on its −x face.
   casing: { centre: { x: 47, y: 0 }, width: 840, depth: 840 },
   connections: [
-    { kind: 'gas', y: -303, z: 208.9, axis: -1, rootX: -360.1, tipX: -373.5, outerDiameterMm: 13.2, joint: 'flare', inModel: true },
-    { kind: 'liquid', y: -245, z: 166.9, axis: -1, rootX: -362.4, tipX: -373.5, outerDiameterMm: 15, joint: 'flare', inModel: true },
+    // The drawn flare stubs; the lines are the maker's Ø9.52 gas and Ø6.35 liquid (MHI KXZ indoor unit data, 2.8 kW).
+    { kind: 'gas', y: -303, z: 208.9, axis: -1, rootX: -360.1, tipX: -373.5, outerDiameterMm: 13.2, pipeDiameterMm: 9.52, joint: 'flare', inModel: true },
+    { kind: 'liquid', y: -245, z: 166.9, axis: -1, rootX: -362.4, tipX: -373.5, outerDiameterMm: 15, pipeDiameterMm: 6.35, joint: 'flare', inModel: true },
     // The drain pump's outlet, with the supplied hose out past the panel.
     { kind: 'drain', y: 333, z: 223.9, axis: -1, rootX: -203, tipX: -521.5, outerDiameterMm: 32, joint: 'hose', inModel: true },
   ],

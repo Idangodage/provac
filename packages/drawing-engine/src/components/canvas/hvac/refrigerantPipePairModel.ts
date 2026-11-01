@@ -2086,8 +2086,9 @@ function resolveUnitPortBundleConnectionForElement(
       gasPoint,
       liquidPoint,
       direction,
-      gasOuterDiameterMm: gasPort.radius * 2,
-      liquidOuterDiameterMm: liquidPort.radius * 2,
+      // The maker's line sizes where they are not the drawn stubs'.
+      gasOuterDiameterMm: gasPort.pipeDiameterMm ?? gasPort.radius * 2,
+      liquidOuterDiameterMm: liquidPort.pipeDiameterMm ?? liquidPort.radius * 2,
       gasElevationMm: element.elevation + gasPort.z,
       liquidElevationMm: element.elevation + liquidPort.z,
       sourceElementId: element.id,

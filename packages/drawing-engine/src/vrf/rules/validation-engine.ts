@@ -27,6 +27,21 @@ export type VrfValidationFix =
   /** Walls that stop under the soffit: raise them to it (one undo). */
   | { kind: 'raise-walls-to-soffit'; wallIds: string[]; soffitMm: number };
 
+/**
+ * A path that only rises and then falls: up from one unit to the main, along it, down to the other. A main run
+ * above the units is the arrangement, not a needless rise and fall (a low point is judged on its own).
+ */
+export function mainAboveTheUnit(points: ReadonlyArray<{ z: number }>): boolean {
+  const signs: number[] = [];
+  for (let index = 1; index < points.length; index += 1) {
+    const dz = points[index]!.z - points[index - 1]!.z;
+    if (Math.abs(dz) < 1) continue;
+    const sign = Math.sign(dz);
+    if (signs.at(-1) !== sign) signs.push(sign);
+  }
+  return signs.length === 2 && signs[0] === 1 && signs[1] === -1;
+}
+
 export interface VrfValidationIssue {
   id: string;
   level: ValidationLevel;
@@ -283,7 +298,10 @@ function validateRun(run: ValidationRunInput, profile: ManufacturerRuleProfile):
   // Geometry is a review signal, not proof that a manufacturer-required trap
   // is invalid. Never offer a one-click deletion of an intentional rise/drop.
   const elevation = analyzeRouteElevation(run.nodePositions);
-  if (lineKind !== 'drain' && !run.hasSagPocket && elevation.lowPockets.length > 0) {
+  // The oil comes back in the gas line: a low point or a dip in a liquid line holds liquid, which it carries anyway
+  // (a side-by-side pair's liquid dips under the gas on purpose).
+  const carriesOil = lineKind !== 'drain' && lineKind !== 'liquid';
+  if (carriesOil && !run.hasSagPocket && elevation.lowPockets.length > 0) {
     const deepest = Math.max(...elevation.lowPockets.map((pocket) => pocket.depthMm));
     issues.push(makeIssue(
       'ELEVATION_LOW_POCKET',
@@ -292,7 +310,7 @@ function validateRun(run: ValidationRunInput, profile: ManufacturerRuleProfile):
       run.id,
       'Review the complete outdoor-to-indoor elevation profile and selected manufacturer oil-return requirements. Geometry alone does not establish oil retention; retain any required trap.',
     ));
-  } else if (lineKind !== 'drain' && !run.hasSagPocket && elevation.elevationReversals > 0) {
+  } else if (carriesOil && !run.hasSagPocket && elevation.elevationReversals > 0) {
     issues.push(makeIssue(
       'ELEVATION_REVERSAL',
       'advisory',
@@ -562,6 +580,7 @@ export function validateVrfNetwork(
     run.id, analyzeRouteElevation(run.nodePositions),
   ]));
   for (const path of snapshot.elevationPaths ?? []) {
+    if (path.lineKind === 'liquid') continue;
     const elevation = analyzeRouteElevation(path.nodePositions);
     const knownLowPockets = path.runIds.reduce(
       (sum, id) => sum + (runElevations.get(id)?.lowPockets.length ?? 0), 0,
@@ -577,7 +596,7 @@ export function validateVrfNetwork(
         path.indoorEntityId,
         'Review the complete outdoor-to-indoor level profile, including both sides of each branch. Confirm oil-return requirements for the selected equipment before changing required traps.',
       ));
-    } else if (elevation.elevationReversals > knownReversals) {
+    } else if (elevation.elevationReversals > knownReversals && !mainAboveTheUnit(path.nodePositions)) {
       issues.push(makeIssue(
         'NETWORK_ELEVATION_REVERSAL',
         'advisory',

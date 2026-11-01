@@ -92,7 +92,8 @@ describe('a duct across the main\'s way', () => {
   const near = equipment('near-cassette', 6500, 1500);
   const duct = (elevationMm: number) => ({ id: 'duct', rotation: 0, supplyZoneRatio: 0,
     ...buildStraightGiDuctElement([{ x: 4000, y: -60000 }, { x: 4000, y: 60000 }], { ductKind: 'supply', outerWidthMm: 800, outerHeightMm: 700, elevationMm }) }) as HvacElement;
-  const options = { settings: DEFAULT_PIPE_ROUTING_SETTINGS, objective: 'balanced' as const };
+  // The stacked arrangement's fallback under a duct (side by side passes over this one).
+  const options = { settings: { ...DEFAULT_PIPE_ROUTING_SETTINGS, pairArrangement: 'stacked' as const }, objective: 'balanced' as const };
   const levels = (element: HvacElement | undefined) => {
     const plan = element?.properties.networkLevelPlan as { gasElevationMm?: number; liquidElevationMm?: number } | undefined;
     return { gas: plan?.gasElevationMm ?? Number.NaN, liquid: plan?.liquidElevationMm ?? Number.NaN };

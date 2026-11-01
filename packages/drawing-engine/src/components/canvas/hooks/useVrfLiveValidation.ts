@@ -4,6 +4,7 @@ import type { HvacElement } from '../../../types';
 import { buildVrfDocumentFromHvacElements } from '../../../vrf/domain';
 import {
   buildVrfValidationSnapshot,
+  isVerifiedManufacturerValue,
   PROJECT_FALLBACK_RULE_PROFILE,
   validateVrfNetwork,
   type ManufacturerRuleProfile,
@@ -21,7 +22,25 @@ export const EMPTY_VRF_VALIDATION_REPORT: VrfValidationReport = {
   counts: { error: 0, warning: 0, advisory: 0, information: 0 },
 };
 
-type RatioRange = Pick<PipeRoutingSettings, 'connectionRatioMinPercent' | 'connectionRatioMaxPercent'>;
+/** The project's routing settings the checks read: the connection ratio's range, and the straight kept off a branch kit. */
+type RatioRange = Pick<PipeRoutingSettings, 'connectionRatioMinPercent' | 'connectionRatioMaxPercent'> & Partial<Pick<PipeRoutingSettings, 'defaultBranchKitClearanceMm'>>;
+
+/**
+ * Until the maker's figure for the straight off a branch kit is loaded, the
+ * project's (Route defaults) is the one Auto route keeps and this check asks
+ * for: the router and the check read one figure.
+ */
+function withProjectKitClearance(profile: ManufacturerRuleProfile, clearanceMm: number | undefined): ManufacturerRuleProfile {
+  const own = profile.installation?.minimumBranchElbowClearanceMm;
+  if (clearanceMm === undefined || !Number.isFinite(clearanceMm) || (own && isVerifiedManufacturerValue(own))) return profile;
+  return {
+    ...profile,
+    installation: {
+      ...profile.installation,
+      minimumBranchElbowClearanceMm: { value: clearanceMm, source: 'project-default', verified: false, note: 'Route defaults: the straight Auto route keeps off a branch kit, until the figure of the maker is loaded.' },
+    },
+  };
+}
 const DEFAULT_RATIO_RANGE: RatioRange = {
   connectionRatioMinPercent: DEFAULT_PIPE_ROUTING_SETTINGS.connectionRatioMinPercent,
   connectionRatioMaxPercent: DEFAULT_PIPE_ROUTING_SETTINGS.connectionRatioMaxPercent,
@@ -33,6 +52,7 @@ export function validateHvacElementsAsVrf(
   profile: ManufacturerRuleProfile = PROJECT_FALLBACK_RULE_PROFILE,
   ratioRange: RatioRange = DEFAULT_RATIO_RANGE,
 ): VrfValidationReport {
+  profile = withProjectKitClearance(profile, ratioRange.defaultBranchKitClearanceMm);
   const document = buildVrfDocumentFromHvacElements(elements, {
     activeRuleProfileId: profile.id,
     defaultManufacturer: profile.manufacturer,

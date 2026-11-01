@@ -176,6 +176,17 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
             </select>
           </label>
           <p className="max-w-80 text-[11px] leading-4 text-slate-400">90° and 45° turns use C×C socket elbows where they fit. Copper detail hides fitting covers for inspection. Planning profiles still need project part selection.</p>
+          <DefaultDistance label="Straight off a branch kit" value={settings.defaultBranchKitClearanceMm} min={0} max={2000} onCommit={update('defaultBranchKitClearanceMm')}
+            badge="Auto route keeps it and the checks ask for it, until the maker's figure is loaded." />
+          <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
+            Auto route lays the pair
+            <select aria-label="Pair arrangement" value={settings.pairArrangement}
+              onChange={event => setSettings({ pairArrangement: event.target.value as 'side-by-side' | 'stacked' })}
+              className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-800">
+              <option value="side-by-side">Side by side, in the void</option>
+              <option value="stacked">Stacked, gas over liquid</option>
+            </select>
+          </label>
           <div className="space-y-2 border-t border-slate-100 pt-2.5" data-testid="auto-turn-settings">
             <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
               Auto route turns units: 4-way cassettes for shorter runs, ducted units to face their terminals

@@ -22,7 +22,8 @@ const along = (mm: number): Point2D => ({ x: supply.lip.x + supply.normal.x * mm
 describe('a take-off and its damper', () => {
   const main = buildDuctRunDraftElement({ origin: { kind: 'port', port: supply }, points: [along(6000)], end: 'end-cap' }, 'main');
   const origin = tapOrigin(main, settings, { legIndex: 0, stationMm: 3000, side: 1, style: 'spin-in', vcd: true }, { widthMm: 300, heightMm: 150 })!;
-  const branch = buildDuctRunDraftElement({ origin, points: [{ x: origin.point.x + 2000, y: origin.point.y }], end: 'end-cap' }, 'branch');
+  const from = (origin as unknown as { point: Point2D }).point;
+  const branch = buildDuctRunDraftElement({ origin, points: [{ x: from.x + 2000, y: from.y }], end: 'end-cap' }, 'branch');
   const scene = [unit, main, branch];
   const plan = planDuctRun(branch, { settings, scene })!;
 

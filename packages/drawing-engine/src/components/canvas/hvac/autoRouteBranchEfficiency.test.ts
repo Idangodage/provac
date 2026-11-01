@@ -9,7 +9,8 @@ import { findNewNetworkPipeClashes } from './networkPipeClearance';
 import { DEFAULT_PIPE_ROUTING_SETTINGS, setActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { getRefrigerantPipeBundleSnapTargets } from './refrigerantPipePairModel';
 
-const settings = DEFAULT_PIPE_ROUTING_SETTINGS;
+// The stacked arrangement: the witnesses are built in it (side by side runs higher, on purpose, for more pipe).
+const settings = { ...DEFAULT_PIPE_ROUTING_SETTINGS, pairArrangement: 'stacked' as const };
 function unit(id: string, x: number, y: number, outdoor = false): HvacElement {
   return { id, type: outdoor ? 'outdoor-unit' : 'ceiling-cassette-ac', category: outdoor ? 'outdoor-unit' : 'indoor-unit',
     label: id, position: { x, y }, rotation: outdoor ? 180 : 0, width: outdoor ? 900 : 600,

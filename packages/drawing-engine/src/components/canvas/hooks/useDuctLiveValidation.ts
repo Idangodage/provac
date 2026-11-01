@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { HvacElement, Room } from '../../../types';
 import type { VrfValidationReport } from '../../../vrf/rules';
 import { checkWallsReachSoffit } from '../hvac/buildingSection';
+import { checkRefrigerantAboveCeiling } from '../hvac/refrigerantCeilingCheck';
 import { isCondensatePipe } from '../hvac/condensate/condensateTypes';
 import { checkAirSystems } from '../hvac/duct/ductAirSystemChecks';
 import type { DuctBuilding } from '../hvac/duct/ductBuilding';
@@ -39,6 +40,7 @@ export function useDuctLiveValidation(
       try {
         setReport(validateDuctRuns(elements, settings, [
           ...checkAirSystems(elements, settings, rooms, building?.walls), ...checkWallsReachSoffit(building?.walls ?? [], resolveSoffitZ(settings)),
+          ...checkRefrigerantAboveCeiling(elements, rooms),
         ]));
       } catch (error) {
         setReport({

@@ -56,6 +56,8 @@ import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
 import { inRoutingSession } from './routingSession';
 import { rankServiceRouteCandidates, type ServiceRouteCandidate, type ServiceRouteObjective } from './serviceRouteObjective';
 import { applyServiceRouteCommand, serviceRouteCommitDiagnostics, type ServiceRouteCommand, type ServiceRouteIssue } from './serviceRouteValidation';
+import { buildingCeiling } from './buildingSection';
+import { refrigerantBelowCeiling } from './refrigerantCeilingCheck';
 import { applyUnitTurns, planDuctedUnitTurns, planUnitOrientations, unitRuns, type AutoTurnSettings, type UnitKept, type UnitTurn } from './unitOrientation';
 
 export interface AutoRouteServices {
@@ -142,6 +144,8 @@ export interface ServiceClash {
 
 export interface UnifiedAutoRouteResult {
   services: AutoRouteServices;
+  /** How much of the proposed refrigerant runs level below the ceiling, in the rooms (mm; refrigerantCeilingCheck.ts). */
+  refrigerantBelowCeilingMm?: number;
   /** Duct proposal (every unit's best life-cycle design). */
   ducts: AutoRouteDuctResult | null;
   /** Refrigerant proposal, already reduced to the ticked line(s). */
@@ -413,7 +417,16 @@ function auditCandidateWithSettings(originalScene: HvacElement[], result: Unifie
     });
     refrigerant = { ...refrigerant, evaluations, metrics: aggregateAutoRouteMetrics(evaluations) };
   }
-  return { ...result, refrigerant, clashes, blockingIssues, blockingDetails, issues: [...new Set([...result.issues, ...blockingIssues])] };
+  // Mains belong above the ceiling: where this candidate lays any below it, in the rooms, it says so (and ranks after one that does not).
+  const proposed = new Set([...(result.refrigerant?.elementsToAdd ?? []), ...(result.refrigerant?.updates ?? [])].map((element) => element.id));
+  const rooms = options.condensate.rooms ?? [];
+  const { ceilingMm } = buildingCeiling(originalScene, rooms);
+  const below = proposed.size ? refrigerantBelowCeiling(hoppedScene.filter((element) => proposed.has(element.id)), rooms, ceilingMm).lengthMm : 0;
+  const belowNote = below >= 500
+    ? [`Refrigerant mains run ${(below / 1000).toFixed(1)} m below the ${Math.round(ceilingMm)} mm ceiling, in the rooms: the ceiling void had no way for them that reaches every unit. They are flagged on the drawing: raise them where the void allows, or box them in.`]
+    : [];
+  return { ...result, refrigerant, clashes, blockingIssues, blockingDetails, refrigerantBelowCeilingMm: below,
+    issues: [...new Set([...belowNote, ...result.issues, ...blockingIssues])] };
 }
 
 /** One Auto route run, in a routing session (routingSession.ts): what each step works out is reused by the next. */

@@ -4,6 +4,7 @@ import { resolveCopperSocketElbow, resolveCopperSocketElbowMinimumRadius, usesCo
 import { findSampledQuarterTurns } from './pipeRiserCornerProjection';
 import { generateRiserTurnAlternatives } from './pipeRiserOptimization';
 import { liftPipePlanRouteTo3d, normalizePipeRouteNodes3d, type PipeRouteNode3D } from './pipeRoute3d';
+import { withPairDips } from './pairDips';
 import { getActivePipeRoutingSettings, type PipeRoutingSettings } from './pipeRoutingSettings';
 import { buildRefrigerantBranchKitViewModel } from './refrigerantBranchKitModel';
 import {
@@ -46,6 +47,8 @@ export interface NetworkPipeLevelPlan extends NetworkLevelSummary {
   cornerRisersByService?: Partial<Record<Service, boolean>>;
   /** Auto route reserves the main until all takeoffs have physical sockets. */
   deferRiserTurnOptimization?: boolean;
+  /** Gas and liquid at one level (side by side), Auto route still growing the network: the liquid's dips come when it is grown. */
+  flatPending?: boolean;
   lockedRoutes: Array<{ sourceIds: string[]; service: Service; nodes: PipeRouteNode3D[] }>;
 }
 
@@ -158,7 +161,7 @@ const INSULATION_BOTH_SIDES_MM = 50.8;
 
 /** Both vertical elbows and protected straights must fit the complete cup
  * mouths. An uninsulated pipe's small envelope is not a fitting takeoff. */
-function riserBendExtentMm(radius: number, settings: PipeRoutingSettings,
+export function riserBendExtentMm(radius: number, settings: PipeRoutingSettings,
   pipeDiameterMm?: number, minimumBendRadiusMm = 0): number {
   const socket = finite(pipeDiameterMm) ? resolveCopperSocketElbow(pipeDiameterMm, 90) : null;
   return Math.max(1, radius * 2 * settings.bendRadiusFactor, settings.minimumFieldBendRadiusMm,
@@ -245,7 +248,7 @@ export interface NetworkPipeLevelOptions {
   /** Layouts whose new branch approach failed; try the next feasible corridor. */
   excludedLevels?: Array<{ gas: number; liquid: number }>;
   deferRiserTurnOptimization?: boolean;
-  /** The corridor to use instead of searching for one (see corridorUnder); it must still fit. */
+  /** The corridor to use instead of searching for one (see corridorUnder); it must still fit. Both at one level: side by side (pairDips.ts). */
   corridor?: { gas: number; liquid: number };
 }
 
@@ -367,8 +370,8 @@ function computeNetworkPipeLevels(scene: HvacElement[], options: NetworkPipeLeve
       ) : 0)
     || compareCost(a.cost.slice(2), b.cost.slice(2))
     || a.gas - b.gas || a.liquid - b.liquid);
-  const preferExisting = (gas: number, liquid: number) => {
-    if (excluded(gas, liquid) || !admissible(gas, 'gas') || !admissible(liquid, 'liquid') || Math.abs(gas - liquid) < separation - EPS) return;
+  const preferExisting = (gas: number, liquid: number, sideBySide = false) => {
+    if (excluded(gas, liquid) || !admissible(gas, 'gas') || !admissible(liquid, 'liquid') || (!sideBySide && Math.abs(gas - liquid) < separation - EPS)) return;
     const existingIndex = candidates.findIndex(candidate => Math.abs(candidate.gas - gas) <= EPS && Math.abs(candidate.liquid - liquid) <= EPS);
     if (existingIndex >= 0) candidates.splice(existingIndex, 1);
     candidates.unshift({ gas, liquid, cost: levelCost(gas, liquid, terminalServices, entries) });
@@ -388,9 +391,19 @@ function computeNetworkPipeLevels(scene: HvacElement[], options: NetworkPipeLeve
     const gas = metadata.gasElevationMm; const liquid = metadata.liquidElevationMm;
     if (finite(gas) && finite(liquid)) preferExisting(gas, liquid);
   }
+  // Side by side: both services on the one level this network has, or is given. It is not searched.
+  const asked = options.corridor && Math.abs(options.corridor.gas - options.corridor.liquid) <= EPS ? options.corridor.gas : null;
+  const establishedFlat = !options.corridor && finite(metadata.gasElevationMm) && finite(metadata.liquidElevationMm)
+    && Math.abs(metadata.gasElevationMm - metadata.liquidElevationMm) <= EPS ? metadata.gasElevationMm : null;
+  // (An established one that cannot take this unit at its level is levelled again from the usual, stacked, candidates.)
+  const flatLevel = asked ?? (establishedFlat !== null && !excluded(establishedFlat, establishedFlat)
+    && admissible(establishedFlat, 'gas') && admissible(establishedFlat, 'liquid') ? establishedFlat : null);
   if (options.corridor) {
     candidates.length = 0;
-    preferExisting(options.corridor.gas, options.corridor.liquid);
+    preferExisting(options.corridor.gas, options.corridor.liquid, flatLevel !== null);
+  } else if (flatLevel !== null) {
+    candidates.length = 0;
+    preferExisting(flatLevel, flatLevel, true);
   }
   let best = candidates[0] ?? null;
   if (!best) issues.push('The required insulated service separation does not fit the available levels and authored/locked routes. Review the network corridor instead of adding local offsets.');
@@ -401,6 +414,7 @@ function computeNetworkPipeLevels(scene: HvacElement[], options: NetworkPipeLeve
     feasible: issues.length === 0, issues, notes, settings,
     deferRiserTurnOptimization: options.deferRiserTurnOptimization
       ?? scope.some(element => record(element.properties.networkLevelPlan).deferRiserTurnOptimization === true),
+    ...(asked !== null || (flatLevel !== null && scope.some(element => record(element.properties.networkLevelPlan).flatPending === true)) ? { flatPending: true } : {}),
     gasElevationMm: best?.gas ?? options.gasHostElevationMm,
     liquidElevationMm: best?.liquid ?? options.liquidHostElevationMm,
     clearGapMm: best ? Math.abs(best.gas - best.liquid) - gasRadius - liquidRadius : 0,
@@ -542,6 +556,8 @@ export function buildNetworkLevelRoute(inputRoute: Point2D[], corridor: number, 
   deferRiserTurnOptimization?: boolean;
   /** Final complete-network checks may compare every independent riser move. */
   includeRiserAlternatives?: boolean;
+  /** The bend room both lines of a side-by-side pair take, so they step at one station (else this line's own). */
+  riserExtentMm?: number;
   settings: PipeRoutingSettings;
 }): { nodes: PipeRouteNode3D[]; issue?: string; alternativeNodes?: PipeRouteNode3D[][] } {
   // Paired physical lanes already contain sampled circular elbows. Recover
@@ -582,7 +598,7 @@ export function buildNetworkLevelRoute(inputRoute: Point2D[], corridor: number, 
   const total = lengths.at(-1)!;
   const z0 = options.start?.elevationMm ?? corridor;
   const z1 = options.end?.elevationMm ?? corridor;
-  const radius = riserBendExtentMm(options.radiusMm, options.settings, options.pipeDiameterMm, options.minimumBendRadiusMm);
+  const radius = options.riserExtentMm ?? riserBendExtentMm(options.radiusMm, options.settings, options.pipeDiameterMm, options.minimumBendRadiusMm);
   const straight = (connection?: RefrigerantPipeConnection | null) => Math.max(radius * 2, !connection ? 0 :
     (connection.connectionKind === 'unit-port' ? options.settings.minimumPortStubMm : options.settings.defaultBranchKitClearanceMm) + radius);
   const startProtected = straight(options.start);
@@ -734,6 +750,9 @@ function applyPreparedNetworkPipeLevels(elements: HvacElement[], plan: NetworkPi
   // later (its envelope in the clash check) is reused too. The variant holds everything the levelled pipe reads.
   const session = activeRoutingSession();
   const settingsKey = session ? `${session.contentKey(plan.settings)}|${session.contentKey(getActivePipeRoutingSettings())}` : '';
+  const sideBySide = Math.abs(plan.gasElevationMm - plan.liquidElevationMm) <= EPS;
+  // Side by side, both lines step at one station: each takes the larger line's bend room.
+  const pairExtent = sideBySide ? Math.max(1, ...[...entries.values()].map(entry => riserBendExtentMm(entry.radius, plan.settings, entry.socketPipeDiameterMm, entry.minimumBendRadiusMm))) : undefined;
   for (const element of elements) {
     const entry = entries.get(element.id);
     if (entry?.locked) continue;
@@ -747,20 +766,21 @@ function applyPreparedNetworkPipeLevels(elements: HvacElement[], plan: NetworkPi
       const level = (): { element?: HvacElement; issue?: string } => {
         const built = buildNetworkLevelRoute(entry.routePoints, corridor, { start, end, radiusMm: entry.radius, settings: plan.settings,
           pipeDiameterMm: entry.socketPipeDiameterMm, minimumBendRadiusMm: entry.minimumBendRadiusMm, preferCornerRisers,
-          deferRiserTurnOptimization: plan.deferRiserTurnOptimization });
+          deferRiserTurnOptimization: plan.deferRiserTurnOptimization, ...(pairExtent !== undefined ? { riserExtentMm: pairExtent } : {}) });
         if (built.issue) return { issue: `${element.label || entry.service}: ${built.issue}` };
         const min = Math.min(...built.nodes.map(node => node.z)); const max = Math.max(...built.nodes.map(node => node.z));
         return { element: { ...element, elevation: min - entry.radius, height: max - min + entry.radius * 2,
           properties: { ...element.properties, startConnection: start, endConnection: end, routeNodes3d: built.nodes,
             networkLevelPlan: { version: 2, generated: true, transitionStyle: 'vertical-riser', preferCornerRisers, id: plan.id, corridorElevationMm: corridor,
               ...(plan.deferRiserTurnOptimization ? { deferRiserTurnOptimization: true } : {}),
+              ...(plan.flatPending ? { flatPending: true } : {}),
               gasElevationMm: plan.gasElevationMm, liquidElevationMm: plan.liquidElevationMm,
-              clearGapMm: plan.clearGapMm, arrangement: plan.gasElevationMm >= plan.liquidElevationMm ? 'gas-above' : 'liquid-above' },
+              clearGapMm: plan.clearGapMm, arrangement: sideBySide ? 'side-by-side' : plan.gasElevationMm >= plan.liquidElevationMm ? 'gas-above' : 'liquid-above' },
           } } };
       };
       const levelled = session ? session.memo(LEVELLED_PIPES, element, [session.identity(entry), plan.id, num(corridor),
         num(plan.gasElevationMm), num(plan.liquidElevationMm), num(plan.clearGapMm), num(start?.elevationMm), num(end?.elevationMm),
-        String(preferCornerRisers), plan.deferRiserTurnOptimization ? 'defer' : '', settingsKey].join('|'), level) : level();
+        String(preferCornerRisers), plan.deferRiserTurnOptimization ? 'defer' : '', plan.flatPending ? 'flat' : '', num(pairExtent), settingsKey].join('|'), level) : level();
       if (levelled.issue) { issues.push(levelled.issue); continue; }
       result.push(levelled.element!);
     } else if (element.type === 'refrigerant-branch-kit' && element.properties.networkLevelLocked !== true) {
@@ -771,7 +791,30 @@ function applyPreparedNetworkPipeLevels(elements: HvacElement[], plan: NetworkPi
       result.push(session ? session.memo(LEVELLED_KITS, element, num(corridor), level) : level());
     }
   }
+  // A side-by-side network already grown (an edit after Auto route): its dips, re-made for these levels.
+  if (sideBySide && !plan.flatPending && !issues.length) return { elements: settleSideBySide(result, plan.settings, plan.gasElevationMm), issues };
   return { elements: result, issues };
+}
+
+/** How far a side-by-side pair's liquid dips under its gas: clear of it, and deep enough for two full bends (mm, to 5). */
+export function pairDipMm(gasRadiusMm: number, liquidRadiusMm: number, settings: PipeRoutingSettings): { dipMm: number; bendMm: number } {
+  const bendMm = riserBendExtentMm(liquidRadiusMm, settings);
+  return { dipMm: Math.ceil(Math.max(gasRadiusMm + liquidRadiusMm + Math.max(0, settings.defaultPipeGapMm), 2 * bendMm) / 5) * 5, bendMm };
+}
+
+/** The liquid of a side-by-side network dipped where it meets the gas, and the network no longer waiting for that. */
+export function settleSideBySide(elements: readonly HvacElement[], settings: PipeRoutingSettings, level: number): HvacElement[] {
+  const radius = (service: Service) => Math.max(1, ...elements.filter(element => element.type === 'refrigerant-pipe')
+    .map(element => resolveRefrigerantPipeSpec(element.properties)).filter(spec => spec.lineKind === service).map(spec => spec.outerDiameterMm / 2));
+  const dipped = withPairDips(elements, {
+    corridorZ: level, ...pairDipMm(radius('gas'), radius('liquid'), settings), kitClearanceMm: settings.defaultBranchKitClearanceMm,
+  });
+  return dipped.map(element => {
+    const plan = record(element.properties.networkLevelPlan);
+    if (plan.flatPending !== true) return element;
+    const { flatPending: _settled, ...rest } = plan;
+    return { ...element, properties: { ...element.properties, networkLevelPlan: rest } };
+  });
 }
 
 export function isNetworkLevelPlanCurrent(plan: NetworkPipeLevelPlan, scene: HvacElement[]): boolean {

@@ -866,11 +866,14 @@ function findNetworkPipeClashes(scene: HvacElement[], proposed: HvacElement[], r
       .map(previous => previous.key);
   };
   const found = new Map<string, NetworkPipeClash>();
+  // A side-by-side network still growing: where its liquid meets its gas it dips under it when grown (pairDips.ts), and the check runs again then.
+  const flatPending = new Set(afterElements.filter(element => (element.properties.networkLevelPlan as { flatPending?: unknown } | undefined)?.flatPending === true).map(element => element.id));
   for (let i = 0; i < after.length; i += 1) {
     const a = after[i]!;
     for (let j = i + 1; j < after.length && after[j]!.bounds.minX <= a.bounds.maxX; j += 1) {
       const b = after[j]!;
       if ((!proposedIds.has(a.id) && !proposedIds.has(b.id)) || !overlaps(a.bounds, b.bounds)) continue;
+      if (a.service !== b.service && flatPending.has(a.id) && flatPending.has(b.id)) continue;
       const required = a.radius + b.radius;
       const adapters = cachedEquipmentAdapters(a, b);
       const trimA = { start: 0, end: a.total }; const trimB = { start: 0, end: b.total };

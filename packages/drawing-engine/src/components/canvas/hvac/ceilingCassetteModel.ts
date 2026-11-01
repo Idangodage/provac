@@ -40,6 +40,8 @@ export interface CeilingCassettePipePortSpec {
   bandColor: string;
   /** Along the port's axis from x. */
   bandOffsetX: number;
+  /** The refrigerant line the maker specifies (copper OD, mm), where the drawn stub is another size. */
+  pipeDiameterMm?: number;
   /** Outward along local x: +1 (default) or −1 (a maker's stub on the −x side). */
   axis?: 1 | -1;
   /** The maker's 3D model already shows this stub or hose: the 3D draws nothing over it. */
@@ -173,6 +175,7 @@ export function buildCeilingCassetteModel(element: CassetteElement): CeilingCass
       joint: connection.joint,
       bandRadius: geometry.radius + 1.5,
       bandOffsetX: (geometry.collarLength + geometry.length) * 0.7,
+      ...(connection.pipeDiameterMm ? { pipeDiameterMm: connection.pipeDiameterMm } : {}),
     });
   };
   add('gas', unitConnectionOf(maker, 'gas'));

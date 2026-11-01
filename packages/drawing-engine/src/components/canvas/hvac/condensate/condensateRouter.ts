@@ -44,6 +44,10 @@ export interface RouterServiceLine {
   a: Point2D;
   b: Point2D;
   halfWidthMm: number;
+  /** The run's true stretches, for its level where a route crosses it (absent: the level is not judged). */
+  segments3d?: ReadonlyArray<{ a: { x: number; y: number; z: number }; b: { x: number; y: number; z: number } }>;
+  /** A refrigerant line: it may hop over a drain where its centre can rise this far (mm), by at least `minRiseMm`. */
+  hop?: { topMm: number; minRiseMm: number };
 }
 
 export interface RouterTreeSegment {
@@ -80,8 +84,8 @@ export interface CondensateRouteRequest {
   walls: readonly RouterWall[];
   services: readonly RouterServiceLine[];
   costs: CondensateRouteCosts;
-  /** Gravity check at a candidate target given the branch plan length so far. */
-  acceptTarget?: (target: RouteTarget, pathLengthMm: number) => boolean;
+  /** Gravity check at a candidate target given the branch plan length so far, and how far below its best level the route holds it (mm). */
+  acceptTarget?: (target: RouteTarget, pathLengthMm: number, heldDownMm?: number) => boolean;
   /** The highest the drain can be after this much of its route (mm): what a low body is judged against. Absent: every body blocks. */
   levelAt?: (pathLengthMm: number) => number;
   marginMm?: number;
@@ -235,8 +239,31 @@ interface EdgeInfo {
   cost: number;
   walls: Array<{ wallId: string; point: Point2D }>;
   crossings: Array<{ serviceId: string; point: Point2D }>;
+  /** The levels of what it crosses here, and how far above or below them the drain keeps. */
+  levels: Array<{ zMin: number; zMax: number; gapMm: number; hop?: RouterServiceLine['hop'] }>;
 }
 
+/** How high a crossed run is where a route crosses it (the stretches within its half width of that point). */
+function serviceLevelAt(line: RouterServiceLine, point: Point2D): EdgeInfo['levels'][number] | null {
+  if (!line.segments3d) return null;
+  let zMin = Number.POSITIVE_INFINITY;
+  let zMax = Number.NEGATIVE_INFINITY;
+  for (const { a, b } of line.segments3d) {
+    if (pointToSegmentPlanDistance(point, a, b) > line.halfWidthMm) continue;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / Math.max(dx * dx + dy * dy, EPS)));
+    const planar = dx * dx + dy * dy > EPS;
+    const low = planar ? a.z + (b.z - a.z) * t : Math.min(a.z, b.z);
+    const high = planar ? low : Math.max(a.z, b.z);
+    zMin = Math.min(zMin, low);
+    zMax = Math.max(zMax, high);
+  }
+  return zMin <= zMax ? { zMin, zMax, gapMm: line.halfWidthMm, ...(line.hop ? { hop: line.hop } : {}) } : null;
+}
+
+/** A route held down by less than this more than another is taken for it, in the search's memory (mm). */
+const HELD_DOWN_STEP_MM = 25;
 /** The search area's margin round the branch's ends when the caller sets none (mm). */
 const LOCAL_MARGIN_MM = 1500;
 /** The next margin tried when the local area has no route at all (mm). */
@@ -443,6 +470,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     }
     const walls: EdgeInfo['walls'] = [];
     const crossings: EdgeInfo['crossings'] = [];
+    const levels: EdgeInfo['levels'] = [];
     let cost = length;
     if (!blocked) {
       for (const wall of request.walls) {
@@ -457,6 +485,8 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
         if (hit && serviceLength > EPS) {
           // Parallel runs never intersect properly; a proper hit is a crossing.
           crossings.push({ serviceId: service.id, point: hit.point });
+          const level = request.levelAt ? serviceLevelAt(service, hit.point) : null;
+          if (level) levels.push(level);
           continue;
         }
         if (serviceLength <= EPS) continue;
@@ -477,7 +507,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
         + walls.length * costs.wallPenaltyMm
         + crossings.length * costs.crossingPenaltyMm;
     }
-    const info = { blocked, overZ, cost, walls, crossings };
+    const info = { blocked, overZ, cost, walls, crossings, levels };
     edgeCache.set(key, info);
     return info;
   };
@@ -496,18 +526,21 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     return value;
   };
 
-  interface State { node: number; heading: number; g: number; length: number; bends: number; parent: State | null; terminal: RouteTarget | null }
+  /** `heldDown`: how far below its best level the route holds the drain, having had to pass under a run (mm). */
+  interface State { node: number; heading: number; g: number; length: number; bends: number; heldDown: number; parent: State | null; terminal: RouteTarget | null }
   const heap = new MinHeap<State>();
   const bestG = new Map<number, number>();
+  // Held down further is a different place to be: it may not clear what lies ahead (in steps of a body's clearance).
+  const stateKey = (node: number, heading: number, heldDown: number) => (node * 4 + heading) * 64 + Math.min(63, Math.ceil(heldDown / HELD_DOWN_STEP_MM));
   const startHeading = snapHeading(request.startHeading);
-  const startState: State = { node: startNode, heading: startHeading, g: 0, length: 0, bends: 0, parent: null, terminal: null };
+  const startState: State = { node: startNode, heading: startHeading, g: 0, length: 0, bends: 0, heldDown: 0, parent: null, terminal: null };
   heap.push(heuristic(startNode), startState);
-  bestG.set(startNode * 4 + startHeading, 0);
+  bestG.set(stateKey(startNode, startHeading, 0), 0);
   let rejected: State | null = null;
   let expanded = 0;
 
   const tryTerminal = (state: State, target: RouteTarget, extraCost: number): void => {
-    const accepted = request.acceptTarget ? request.acceptTarget(target, state.length) : true;
+    const accepted = request.acceptTarget ? request.acceptTarget(target, state.length, state.heldDown) : true;
     const terminal: State = { ...state, g: state.g + extraCost, terminal: target };
     if (accepted) heap.push(terminal.g, terminal);
     else if (!rejected || terminal.g < rejected.g) rejected = terminal;
@@ -518,7 +551,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
   while (heap.size && expanded < maxExpanded) {
     const state = heap.pop()!;
     if (state.terminal) return buildRoute(state, true);
-    const key = state.node * 4 + state.heading;
+    const key = stateKey(state.node, state.heading, state.heldDown);
     if ((bestG.get(key) ?? Number.POSITIVE_INFINITY) < state.g - 1e-9) continue;
     expanded += 1;
     const ix = Math.floor(state.node / ny);
@@ -535,9 +568,21 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
       const turned = state.parent !== null || heading !== startHeading ? heading !== state.heading : false;
       const g = state.g + edge.cost + (turned ? costs.bendPenaltyMm : 0);
       const length = state.length + Math.hypot(gridX[ix]! - gridX[jx]!, gridY[iy]! - gridY[jy]!);
+      // What it crosses on this edge: over a run it still clears, else under it, which holds the drain down from here on.
+      let heldDown = state.heldDown;
+      if (edge.levels.length) {
+        const best = request.levelAt!(length);
+        for (const { zMin, zMax, gapMm, hop } of edge.levels) {
+          const level = best - heldDown;
+          if (level >= zMax + gapMm) continue;
+          // The line can rise over the drain here (gravity has priority: a hop is proposed once the profile is solved).
+          if (hop && Math.max(level + gapMm, zMax + hop.minRiseMm) <= hop.topMm) continue;
+          heldDown = Math.max(heldDown, best - (zMin - gapMm));
+        }
+      }
       // Only as far as the drain, falling all the way, is still high enough (where it is at its lowest on this edge).
-      if (edge.overZ > Number.NEGATIVE_INFINITY && request.levelAt!(length) < edge.overZ - 1e-6) continue;
-      const nextState: State = { node: next, heading, g, length, bends: state.bends + (turned ? 1 : 0), parent: state, terminal: null };
+      if (edge.overZ > Number.NEGATIVE_INFINITY && request.levelAt!(length) - heldDown < edge.overZ - 1e-6) continue;
+      const nextState: State = { node: next, heading, g, length, bends: state.bends + (turned ? 1 : 0), heldDown, parent: state, terminal: null };
       if (next === sinkNode) {
         tryTerminal(nextState, { kind: 'sink', point: sink! }, 0);
         continue;
@@ -549,7 +594,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
         continue;
       }
       if (tree.length && onTree(nodePoint(next))) continue; // on the network but not admissible
-      const nextKey = next * 4 + heading;
+      const nextKey = stateKey(next, heading, heldDown);
       if (g < (bestG.get(nextKey) ?? Number.POSITIVE_INFINITY) - 1e-9) {
         bestG.set(nextKey, g);
         heap.push(g + heuristic(next), nextState);

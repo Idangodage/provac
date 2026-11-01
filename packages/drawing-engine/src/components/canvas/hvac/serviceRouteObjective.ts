@@ -27,6 +27,8 @@ export interface ServiceRouteDiagnostics {
   /** Clear of known unresolved contacts; proposed hops still require approval. */
   physicallyFeasible: boolean;
   pendingHopCount: number;
+  /** Refrigerant mains below the ceiling, in the rooms (m, to the half metre): a last resort. */
+  mainsBelowCeilingM: number;
   complete: boolean;
   costComparableToBaseline: boolean;
   refrigerantCostBasis: 'project-cost' | 'relative-material-index' | 'selected-line-length';
@@ -175,6 +177,7 @@ export function rankServiceRouteCandidates(
       requiredObligations: required, servedObligations: served, unservedObligations: unserved,
       unresolvedClashCount, blockingIssueCount, physicallyFeasible: unresolvedClashCount === 0 && blockingIssueCount === 0,
       pendingHopCount: new Set(result.condensate?.hopProposals.map(proposal => proposal.key) ?? []).size,
+      mainsBelowCeilingM: Math.round((result.refrigerantBelowCeilingMm ?? 0) / 500) / 2,
       complete: unserved.length === 0
         && (!(result.services.gas || result.services.liquid) || result.refrigerant?.complete === true)
         && (!result.services.condensate || Boolean(result.condensate
@@ -189,6 +192,7 @@ export function rankServiceRouteCandidates(
       || compare(Number(!a.complete), Number(!b.complete))
       || compare(a.unservedObligations.length, b.unservedObligations.length)
       || compare(a.pendingHopCount, b.pendingHopCount)
+      || compare(a.mainsBelowCeilingM, b.mainsBelowCeilingM)
       || textCompare(JSON.stringify(a.servedObligations), JSON.stringify(b.servedObligations))
       || (a.costComparableToBaseline && b.costComparableToBaseline ? compare(a.preferenceScore, b.preferenceScore) : 0)
       || compare(a.unresolvedClashCount, b.unresolvedClashCount)

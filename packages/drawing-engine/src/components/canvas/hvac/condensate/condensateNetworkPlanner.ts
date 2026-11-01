@@ -41,6 +41,7 @@ import { maxFeasibleSlope, solveProfile, type ProfileNode, type ProfileSolution 
 import { condensateSegmentDistance, riserTopBelowPipe } from './condensateRiserClearance';
 import { routeCondensateBranch, type RouteTarget, type RouterBox, type RouterServiceLine, type RouterTreeSegment } from './condensateRouter';
 import type { CondensateDesignSettings } from './condensateSettings';
+import type { Point3 } from './condensateTypes';
 import { condensateSocketExitLength } from './condensateSocketClearance';
 
 // ---------------------------------------------------------------------------
@@ -231,7 +232,7 @@ interface RouterContext {
 function buildRouterContext(environment: CondensateEnvironment, defaultRadius: number, overLowBodies: boolean): RouterContext {
   const { settings } = environment;
   const inflate = settings.equipmentClearanceMm + defaultRadius;
-  const overGap = defaultRadius + settings.refrigerantClearanceMm;
+  const overGap = defaultRadius + DRAIN_GAP_MM;
   const casings = new Map(environment.solids.filter(solid => solid.mark === 'equipment casing').map(solid => [solid.elementId, solid]));
   const sourceBox = (raw: RouterBox): RouterBox => {
     const casing = casings.get(raw.id);
@@ -261,7 +262,8 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
   // many short chords become two or three), as wide as the run plus that tolerance. Risers (no plan length) and every
   // crossing's heights are taken from the exact segments (crossing windows), never from these lines.
   const services: RouterServiceLine[] = [];
-  let chain: { elementId: string; radiusMm: number; points: Point2D[] } | null = null;
+  let chain: { elementId: string; service: string; radiusMm: number; points: Point2D[]; segments3d: Array<{ a: Point3; b: Point3 }> } | null = null;
+  const ceilingLimit = getActivePipeRoutingSettings().ceilingLimitMm;
   const flush = () => {
     if (!chain) return;
     const points = simplifyPolylineWithin(chain.points, SERVICE_PLAN_TOLERANCE_MM);
@@ -270,6 +272,9 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
       services.push({
         id: `${chain.elementId}#${services.length}`, a: points[index - 1]!, b: points[index]!,
         halfWidthMm: chain.radiusMm + defaultRadius + settings.refrigerantClearanceMm + SERVICE_PLAN_TOLERANCE_MM,
+        segments3d: chain.segments3d,
+        // Up to the soffit, by two of its bends at least.
+        ...(chain.service !== 'drain' ? { hop: { topMm: ceilingLimit - chain.radiusMm, minRiseMm: 4 * chain.radiusMm } } : {}),
       });
     }
     chain = null;
@@ -280,8 +285,9 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
     const last = chain?.points.at(-1);
     if (!chain || chain.elementId !== segment.elementId || !last || distance(last, a) > 0.5) {
       flush();
-      chain = { elementId: segment.elementId, radiusMm: segment.radiusMm, points: [a] };
+      chain = { elementId: segment.elementId, service: segment.service, radiusMm: segment.radiusMm, points: [a], segments3d: [] };
     }
+    chain.segments3d.push({ a: segment.a, b: segment.b });
     chain.radiusMm = Math.max(chain.radiusMm, segment.radiusMm);
     if (distance(chain.points.at(-1)!, b) >= 0.5) chain.points.push(b);
   }
@@ -1067,15 +1073,16 @@ function findCrossingWindows(
         if (planDistanceAt(a, b, m1, c, d) <= planDistanceAt(a, b, m2, c, d)) hi = m2; else lo = m1;
       }
       const tMin = (lo + hi) / 2;
-      if (planDistanceAt(a, b, tMin, c, d) > required) continue;
-      if (inOwnConnectionZone(service, { x: a.x + (b.x - a.x) * tMin, y: a.y + (b.y - a.y) * tMin })) continue;
+      // In its own connection zone a line owes the drain no gap, only that they do not touch.
+      const need = inOwnConnectionZone(service, { x: a.x + (b.x - a.x) * tMin, y: a.y + (b.y - a.y) * tMin }) ? radius + service.radiusMm : required;
+      if (planDistanceAt(a, b, tMin, c, d) > need) continue;
       const edge = (from: number, to: number) => {
-        if (planDistanceAt(a, b, to, c, d) <= required) return to;
+        if (planDistanceAt(a, b, to, c, d) <= need) return to;
         let inside = from;
         let outside = to;
         for (let iteration = 0; iteration < 40; iteration += 1) {
           const mid = (inside + outside) / 2;
-          if (planDistanceAt(a, b, mid, c, d) <= required) inside = mid; else outside = mid;
+          if (planDistanceAt(a, b, mid, c, d) <= need) inside = mid; else outside = mid;
         }
         return outside;
       };
@@ -1099,7 +1106,7 @@ function findCrossingWindows(
         services: [service],
         zMin: Math.min(...zs),
         zMax: Math.max(...zs),
-        requiredMm: required,
+        requiredMm: need,
         condensateRadiusMm: radius,
       });
     }
@@ -1147,7 +1154,7 @@ function findLowBodyWindows(
         upId: node.id, downId: down.id, a: { ...a }, b: { ...b }, t1, t2,
         point: { x: a.x + (b.x - a.x) * mid, y: a.y + (b.y - a.y) * mid },
         services: [{ elementId: body.id, service: 'duct', a: { x: body.minX, y: body.minY, z: body.maxZ }, b: { x: body.maxX, y: body.maxY, z: body.maxZ }, radiusMm: 0, connectedUnitIds: [] }],
-        zMin: body.minZ, zMax: body.maxZ, requiredMm: radius + settings.refrigerantClearanceMm, condensateRadiusMm: radius,
+        zMin: body.minZ, zMax: body.maxZ, requiredMm: radius + DRAIN_GAP_MM, condensateRadiusMm: radius,
       });
     }
   }
@@ -1551,8 +1558,8 @@ function planNetworks(scene: HvacElement[], options: CondensatePlanOptions, rout
         })).zLow
         : new Map<string, number>();
       const join = joinDropMm(settings);
-      const acceptTarget = (target: RouteTarget, pathLength: number) => {
-        const available = unitPlan.headTopZ - minSlope * (pathLength + unitPlan.stubLength);
+      const acceptTarget = (target: RouteTarget, pathLength: number, heldDownMm = 0) => {
+        const available = unitPlan.headTopZ - heldDownMm - minSlope * (pathLength + unitPlan.stubLength);
         if (target.kind === 'sink') {
           const needed = sinkLowerZ(sink, lower) + (net.hasInflow() ? join : 0);
           return available >= needed - 1e-6;
@@ -1592,8 +1599,14 @@ function planNetworks(scene: HvacElement[], options: CondensatePlanOptions, rout
         levelAt: (pathLengthMm: number) => unitPlan.headTopZ - minSlope * (pathLengthMm + unitPlan.stubLength),
       };
       const obstacles = [...router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), ...keepOut];
-      const route = (spots.length ? routeCondensateBranch({ ...request, obstacles: [...obstacles, ...spots] }) : null)
-        ?? routeCondensateBranch({ ...request, obstacles });
+      const search = (levels: boolean) => {
+        const asked = levels ? request : { ...request, levelAt: undefined };
+        return (spots.length ? routeCondensateBranch({ ...asked, obstacles: [...obstacles, ...spots] }) : null)
+          ?? routeCondensateBranch({ ...asked, obstacles });
+      };
+      // Where no route keeps its fall past what it crosses, the plain search's: its crossings are then judged (a hop, or why not).
+      let route = search(true);
+      if (!route?.accepted) route = search(false) ?? route;
       if (!route || !route.accepted) {
         const shortfall = route
           ? Math.max(0, sinkLowerZ(sink, lower) - (unitPlan.headTopZ - minSlope * (route.lengthMm + unitPlan.stubLength)))
@@ -1739,7 +1752,7 @@ function planNetworks(scene: HvacElement[], options: CondensatePlanOptions, rout
     // and the windows already inserted further downstream.
     const unitPorts = new Map(net.units.map((unit) => [unit.plan.source.unitId, unit.plan.source.point]));
     // (A drain drawn by hand near a body is not held off it: only one over it in plan.)
-    const lowBodies = overLowBodies ? findLowBodyWindows(net, environment.obstacles, base.sizes, settings, options.fixedNetwork ? 0 : settings.refrigerantClearanceMm) : [];
+    const lowBodies = overLowBodies ? findLowBodyWindows(net, environment.obstacles, base.sizes, settings, options.fixedNetwork ? 0 : DRAIN_GAP_MM) : [];
     const windows = mergeCrossingWindows([...findCrossingWindows(net, coordinatedServices, base.sizes, settings, unitPorts), ...lowBodies])
       .sort((a, b) => a.upId.localeCompare(b.upId) || b.t1 - a.t1);
     const initial = solved.solution;

@@ -7,6 +7,7 @@ import { selectBranchKit } from '../../../vrf/rules/branch-selection';
 import { buildVrfGeometrySnapshot } from '../../../vrf/rules/document-validation-adapter';
 import { selectPipeSize } from '../../../vrf/rules/pipe-sizing';
 import { analyzeRouteElevation } from '../../../vrf/rules/route-elevation';
+import { mainAboveTheUnit } from '../../../vrf/rules/validation-engine';
 import {
   isVerifiedManufacturerValue,
   PROJECT_FALLBACK_RULE_PROFILE,
@@ -642,8 +643,12 @@ export function evaluateAutoRouteDocument(
       : profile.routeLimits.maximumHeightDifferenceMm, `The outdoor-to-indoor height difference for ${path.indoorUnitId} exceeds the profile limit.`);
   }
   if (paths.some((path) => path.equivalentLengthMm === null)) advisory.add('Equivalent length is incomplete until model-specific bend and fitting allowances are supplied.');
-  const elevationReversalCount = paths.reduce((sum, path) => sum + measurements.pathElevation(path).elevationReversals, 0);
-  const lowPocketPaths = paths.filter((path) => measurements.pathElevation(path).lowPockets.length > 0);
+  // Oil comes back in the gas line: the liquid's low points and dips (a side-by-side pair's) are not judged.
+  const oilPaths = paths.filter((path) => path.lineKind !== 'liquid');
+  // (A main above the units, risen to and fallen from, is the arrangement: not a reversal.)
+  const elevationReversalCount = oilPaths.filter((path) => !mainAboveTheUnit(path.points))
+    .reduce((sum, path) => sum + measurements.pathElevation(path).elevationReversals, 0);
+  const lowPocketPaths = oilPaths.filter((path) => measurements.pathElevation(path).lowPockets.length > 0);
   if (lowPocketPaths.length > 0) advisory.add('The complete elevation profile contains a low pocket; review model-specific oil-return requirements.');
   if (options.elevationPolicy !== 'existing-layout') {
     for (const path of lowPocketPaths.filter((candidate) => candidate.lineKind === 'gas')) {
