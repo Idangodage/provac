@@ -169,7 +169,7 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
           <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
             Fitting view
             <select aria-label="Fitting view" value={settings.fittingDisplay}
-              onChange={event => setSettings({ fittingDisplay: event.target.value as 'copper' | 'insulated' })}
+              onChange={event => setSettings({ fittingDisplay: event.target.value as 'copper' | 'insulated', fittingDisplayChosen: true })}
               className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-800">
               <option value="copper">Copper detail</option>
               <option value="insulated">Insulated</option>

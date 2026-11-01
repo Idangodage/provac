@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../../data/ac-equipment-library';
 import type { HvacElement, Point2D } from '../../../../types';
@@ -9,6 +9,7 @@ import { buildRefrigerantPipeElements, getRefrigerantPipeBundleSnapTargets } fro
 import { buildHvacElementMesh } from './buildHvacElementMesh';
 import { flareNutAcrossFlatsMm, trimPolylineStart, unitJointBareLengthMm } from './refrigerantUnitJointMeshes';
 
+beforeEach(() => setActivePipeRoutingSettings({ ...DEFAULT_PIPE_ROUTING_SETTINGS, fittingDisplay: 'copper', fittingDisplayChosen: true }));
 afterEach(() => setActivePipeRoutingSettings(DEFAULT_PIPE_ROUTING_SETTINGS));
 
 function unit(definitionId: string): HvacElement {

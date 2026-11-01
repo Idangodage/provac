@@ -142,7 +142,7 @@ export function ductRunMeshes(root: THREE.Object3D, runId: string): THREE.Mesh[]
   const group = root.children.find((object) => object.userData.hvacElementId === runId && object.userData.hvacElementType === 'duct' && object.visible);
   const meshes: THREE.Mesh[] = [];
   group?.traverse((object) => {
-    if (object instanceof THREE.Mesh && object.visible) meshes.push(object);
+    if (object instanceof THREE.Mesh && object.visible && object.name !== 'duct-supports') meshes.push(object);
   });
   return meshes;
 }

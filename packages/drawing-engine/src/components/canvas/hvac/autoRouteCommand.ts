@@ -16,7 +16,7 @@ export interface AutoRouteSource {
 /** Store a value snapshot: in-place edits must also invalidate a worker result. */
 export function autoRouteSourceSignature(source: AutoRouteSource): string {
   // Inspection covers do not change the physical network being calculated.
-  const { fittingDisplay: _presentation, ...routingSettings } = source.settings;
+  const { fittingDisplay: _presentation, fittingDisplayChosen: _chosen, ...routingSettings } = source.settings;
   return JSON.stringify([source.scene, routingSettings, source.profile ?? null, source.walls]);
 }
 

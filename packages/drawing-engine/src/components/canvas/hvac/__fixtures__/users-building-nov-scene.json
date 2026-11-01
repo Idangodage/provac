@@ -1,0 +1,2504 @@
+{
+ "note": "The user's building, exported 1 November 2026: three FDUM ducted units, three FDT28 cassettes, an FDC280 outside and one floor gully. What Auto route made is left out; `asApplied` counts what it had made.",
+ "exportedAt": "2026-11-01T16:04:57.776Z",
+ "hvacElements": [
+  {
+   "id": "1793543961545-wsnkw2x30",
+   "type": "ceiling-cassette-ac",
+   "category": "indoor-unit",
+   "subtype": "maco-vrf-glb",
+   "modelLabel": "MHI FDT28KXZE1",
+   "position": {
+    "x": 14938.94312693554,
+    "y": 2885.502753938623
+   },
+   "rotation": 270,
+   "width": 1043,
+   "depth": 950,
+   "height": 272,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "MHI 4-Way Cassette — FDT28KXZE1 (3D)",
+   "roomId": "1793543932446-faimpthdk",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "vrf-fdt28kxze1",
+    "source": "ifc-glb",
+    "modelUrl": "/models/vrf/maco-vrf-fdt28kxze1.glb",
+    "modelCode": "FDT28KXZE1",
+    "manufacturer": "Mitsubishi Heavy Industries",
+    "model": "FDT28KXZE1",
+    "capacityKw": 2.8,
+    "mountingType": "ceiling-cassette",
+    "orientationSetBy": "auto-route"
+   }
+  },
+  {
+   "id": "1793543963296-jv8q5og3g",
+   "type": "ceiling-cassette-ac",
+   "category": "indoor-unit",
+   "subtype": "maco-vrf-glb",
+   "modelLabel": "MHI FDT28KXZE1",
+   "position": {
+    "x": 13259.791150987918,
+    "y": 7625.959372432554
+   },
+   "rotation": 180,
+   "width": 1043,
+   "depth": 950,
+   "height": 272,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "MHI 4-Way Cassette — FDT28KXZE1 (3D)",
+   "roomId": "1793543935029-84p6v2xmi",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "vrf-fdt28kxze1",
+    "source": "ifc-glb",
+    "modelUrl": "/models/vrf/maco-vrf-fdt28kxze1.glb",
+    "modelCode": "FDT28KXZE1",
+    "manufacturer": "Mitsubishi Heavy Industries",
+    "model": "FDT28KXZE1",
+    "capacityKw": 2.8,
+    "mountingType": "ceiling-cassette",
+    "orientationSetBy": "auto-route"
+   }
+  },
+  {
+   "id": "1793543964472-iv1imx6jc",
+   "type": "ceiling-cassette-ac",
+   "category": "indoor-unit",
+   "subtype": "maco-vrf-glb",
+   "modelLabel": "MHI FDT28KXZE1",
+   "position": {
+    "x": 18297.24707883078,
+    "y": 7709.861259485545
+   },
+   "rotation": 180,
+   "width": 1043,
+   "depth": 950,
+   "height": 272,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "MHI 4-Way Cassette — FDT28KXZE1 (3D)",
+   "roomId": "1793543935029-84p6v2xmi",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "vrf-fdt28kxze1",
+    "source": "ifc-glb",
+    "modelUrl": "/models/vrf/maco-vrf-fdt28kxze1.glb",
+    "modelCode": "FDT28KXZE1",
+    "manufacturer": "Mitsubishi Heavy Industries",
+    "model": "FDT28KXZE1",
+    "capacityKw": 2.8,
+    "mountingType": "ceiling-cassette",
+    "orientationSetBy": "auto-route"
+   }
+  },
+  {
+   "id": "1793543982297-gl7h5arnb",
+   "type": "ducted-ac",
+   "category": "indoor-unit",
+   "subtype": "maco-vrf-glb",
+   "modelLabel": "MHI FDUM140KXE6F",
+   "position": {
+    "x": 5802.895253210527,
+    "y": 3840.472567995017
+   },
+   "rotation": 0,
+   "width": 1684,
+   "depth": 802,
+   "height": 300,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "MHI Ducted Indoor — FDUM140KXE6F (3D)",
+   "roomId": "1793543930187-es92xr9de",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "vrf-fdum140kxe6f",
+    "source": "ifc-glb",
+    "modelUrl": "/models/vrf/maco-vrf-fdum140kxe6f.glb",
+    "modelCode": "FDUM140KXE6F",
+    "manufacturer": "Mitsubishi Heavy Industries",
+    "model": "FDUM140KXE6F",
+    "capacityKw": 14,
+    "heatingCapacityKw": 16,
+    "mountingType": "ducted",
+    "airflowM3min": {
+     "p-hi": 39,
+     "hi": 32,
+     "me": 26,
+     "lo": 20
+    },
+    "maxEspPa": 100,
+    "airDataSource": "mhi-kx-db-175",
+    "refrigerantType": "R410A",
+    "refrigerantGasPipeDiameterMm": 15.88,
+    "refrigerantLiquidPipeDiameterMm": 9.52,
+    "drainPipeDiameter1Mm": 32,
+    "airSystemTag": "DU-1"
+   }
+  },
+  {
+   "id": "1793543986569-fgtiy2td6",
+   "type": "ducted-ac",
+   "category": "indoor-unit",
+   "subtype": "maco-vrf-glb",
+   "modelLabel": "MHI FDUM160KXE6F",
+   "position": {
+    "x": 23559.92739885662,
+    "y": 12146.759386241023
+   },
+   "rotation": 0,
+   "width": 1684,
+   "depth": 802,
+   "height": 300,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "MHI Ducted Indoor — FDUM160KXE6F (3D)",
+   "roomId": "1793543953392-90u35rpgw",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "vrf-fdum160kxe6f",
+    "source": "ifc-glb",
+    "modelUrl": "/models/vrf/maco-vrf-fdum140kxe6f.glb",
+    "modelCode": "FDUM160KXE6F",
+    "manufacturer": "Mitsubishi Heavy Industries",
+    "model": "FDUM160KXE6F",
+    "capacityKw": 16,
+    "heatingCapacityKw": 18,
+    "mountingType": "ducted",
+    "airflowM3min": {
+     "p-hi": 48,
+     "hi": 35,
+     "me": 28,
+     "lo": 22
+    },
+    "maxEspPa": 100,
+    "airDataSource": "mhi-kx-db-175",
+    "refrigerantType": "R410A",
+    "refrigerantGasPipeDiameterMm": 15.88,
+    "refrigerantLiquidPipeDiameterMm": 9.52,
+    "drainPipeDiameter1Mm": 32,
+    "airSystemTag": "DU-2"
+   }
+  },
+  {
+   "id": "1793543992849-y4413zfwn",
+   "type": "ducted-ac",
+   "category": "indoor-unit",
+   "subtype": "maco-vrf-glb",
+   "modelLabel": "MHI FDUM140KXE6F",
+   "position": {
+    "x": 5664.179383671631,
+    "y": 9634.903152681914
+   },
+   "rotation": 0,
+   "width": 1684,
+   "depth": 802,
+   "height": 300,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "MHI Ducted Indoor — FDUM140KXE6F (3D)",
+   "roomId": "1793543942420-c97byrj9s",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "vrf-fdum140kxe6f",
+    "source": "ifc-glb",
+    "modelUrl": "/models/vrf/maco-vrf-fdum140kxe6f.glb",
+    "modelCode": "FDUM140KXE6F",
+    "manufacturer": "Mitsubishi Heavy Industries",
+    "model": "FDUM140KXE6F",
+    "capacityKw": 14,
+    "heatingCapacityKw": 16,
+    "mountingType": "ducted",
+    "airflowM3min": {
+     "p-hi": 39,
+     "hi": 32,
+     "me": 26,
+     "lo": 20
+    },
+    "maxEspPa": 100,
+    "airDataSource": "mhi-kx-db-175",
+    "refrigerantType": "R410A",
+    "refrigerantGasPipeDiameterMm": 15.88,
+    "refrigerantLiquidPipeDiameterMm": 9.52,
+    "drainPipeDiameter1Mm": 32,
+    "airSystemTag": "DU-3"
+   }
+  },
+  {
+   "id": "1793543998202-4sco4e4eb",
+   "type": "diffuser",
+   "category": "air-terminal",
+   "subtype": "square-4way",
+   "modelLabel": "Square 4-way ceiling diffuser Ø200",
+   "position": {
+    "x": 2142.624311880395,
+    "y": 7651.663691704505
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 335,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "SAD-1",
+   "roomId": "1793543942420-c97byrj9s",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-square-595-200",
+    "terminal": {
+     "service": "supply",
+     "mount": "lay-in",
+     "neckDiameterMm": 200,
+     "plenumHeightMm": 300,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "square-4way",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 35,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543992849-y4413zfwn"
+    }
+   }
+  },
+  {
+   "id": "1793543999529-xe7rcsngj",
+   "type": "diffuser",
+   "category": "air-terminal",
+   "subtype": "square-4way",
+   "modelLabel": "Square 4-way ceiling diffuser Ø200",
+   "position": {
+    "x": 10473.424812575462,
+    "y": 7651.663691704505
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 335,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "SAD-2",
+   "roomId": "1793543942420-c97byrj9s",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-square-595-200",
+    "terminal": {
+     "service": "supply",
+     "mount": "lay-in",
+     "neckDiameterMm": 200,
+     "plenumHeightMm": 300,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "square-4way",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 35,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543992849-y4413zfwn"
+    }
+   }
+  },
+  {
+   "id": "1793544013970-8v00sxj7i",
+   "type": "diffuser",
+   "category": "air-terminal",
+   "subtype": "square-4way",
+   "modelLabel": "Square 4-way ceiling diffuser Ø200",
+   "position": {
+    "x": 2193.5887410146734,
+    "y": 1565.0981177401557
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 335,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "SAD-3",
+   "roomId": "1793543930187-es92xr9de",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-square-595-200",
+    "terminal": {
+     "service": "supply",
+     "mount": "lay-in",
+     "neckDiameterMm": 200,
+     "plenumHeightMm": 300,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "square-4way",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 35,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543982297-gl7h5arnb"
+    }
+   }
+  },
+  {
+   "id": "1793544015226-heoqh4ygg",
+   "type": "diffuser",
+   "category": "air-terminal",
+   "subtype": "square-4way",
+   "modelLabel": "Square 4-way ceiling diffuser Ø200",
+   "position": {
+    "x": 10443.74643771874,
+    "y": 1533.2653643057674
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 335,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "SAD-4",
+   "roomId": "1793543930187-es92xr9de",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-square-595-200",
+    "terminal": {
+     "service": "supply",
+     "mount": "lay-in",
+     "neckDiameterMm": 200,
+     "plenumHeightMm": 300,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "square-4way",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 35,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543982297-gl7h5arnb"
+    }
+   }
+  },
+  {
+   "id": "1793544018241-qmgzxlcgc",
+   "type": "return-grille",
+   "category": "air-terminal",
+   "subtype": "return-egg-crate",
+   "modelLabel": "Egg-crate return grille Ø250",
+   "position": {
+    "x": 2002.4653966894825,
+    "y": 6467.342146635925
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 380,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "RAG-1",
+   "roomId": "1793543930187-es92xr9de",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-return-eggcrate-595-250",
+    "terminal": {
+     "service": "return",
+     "mount": "lay-in",
+     "neckDiameterMm": 250,
+     "plenumHeightMm": 350,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "return-egg-crate",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 30,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543982297-gl7h5arnb"
+    }
+   }
+  },
+  {
+   "id": "1793544019458-uy4q09juo",
+   "type": "return-grille",
+   "category": "air-terminal",
+   "subtype": "return-egg-crate",
+   "modelLabel": "Egg-crate return grille Ø250",
+   "position": {
+    "x": 10507.45421916047,
+    "y": 6308.178379463983
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 380,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "RAG-2",
+   "roomId": "1793543930187-es92xr9de",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-return-eggcrate-595-250",
+    "terminal": {
+     "service": "return",
+     "mount": "lay-in",
+     "neckDiameterMm": 250,
+     "plenumHeightMm": 350,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "return-egg-crate",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 30,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543982297-gl7h5arnb"
+    }
+   }
+  },
+  {
+   "id": "1793544027594-nn1z7op03",
+   "type": "return-grille",
+   "category": "air-terminal",
+   "subtype": "return-egg-crate",
+   "modelLabel": "Egg-crate return grille Ø250",
+   "position": {
+    "x": 2002.4653966894825,
+    "y": 11656.080956441187
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 380,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "RAG-3",
+   "roomId": "1793543942420-c97byrj9s",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-return-eggcrate-595-250",
+    "terminal": {
+     "service": "return",
+     "mount": "lay-in",
+     "neckDiameterMm": 250,
+     "plenumHeightMm": 350,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "return-egg-crate",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 30,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543992849-y4413zfwn"
+    }
+   }
+  },
+  {
+   "id": "1793544028978-lqxgxgb9f",
+   "type": "return-grille",
+   "category": "air-terminal",
+   "subtype": "return-egg-crate",
+   "modelLabel": "Egg-crate return grille Ø250",
+   "position": {
+    "x": 10539.308109881338,
+    "y": 11751.57921674435
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 380,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "RAG-4",
+   "roomId": "1793543942420-c97byrj9s",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-return-eggcrate-595-250",
+    "terminal": {
+     "service": "return",
+     "mount": "lay-in",
+     "neckDiameterMm": 250,
+     "plenumHeightMm": 350,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "return-egg-crate",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 30,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543992849-y4413zfwn"
+    }
+   }
+  },
+  {
+   "id": "1793544070780-k965anpl5",
+   "type": "diffuser",
+   "category": "air-terminal",
+   "subtype": "square-4way",
+   "modelLabel": "Square 4-way ceiling diffuser Ø200",
+   "position": {
+    "x": 11986.464695626131,
+    "y": 11208.360708412753
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 335,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "SAD-5",
+   "roomId": "1793543953392-90u35rpgw",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-square-595-200",
+    "terminal": {
+     "service": "supply",
+     "mount": "lay-in",
+     "neckDiameterMm": 200,
+     "plenumHeightMm": 300,
+     "spigotSide": "front",
+     "spigotLengthMm": 60,
+     "kind": "square-4way",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 35,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543986569-fgtiy2td6"
+    }
+   }
+  },
+  {
+   "id": "1793544071964-zpl1t2qug",
+   "type": "diffuser",
+   "category": "air-terminal",
+   "subtype": "square-4way",
+   "modelLabel": "Square 4-way ceiling diffuser Ø200",
+   "position": {
+    "x": 20169.093175917405,
+    "y": 11288.924242732517
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 335,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "SAD-6",
+   "roomId": "1793543953392-90u35rpgw",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-square-595-200",
+    "terminal": {
+     "service": "supply",
+     "mount": "lay-in",
+     "neckDiameterMm": 200,
+     "plenumHeightMm": 300,
+     "spigotSide": "right",
+     "spigotLengthMm": 60,
+     "kind": "square-4way",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 35,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543986569-fgtiy2td6"
+    }
+   }
+  },
+  {
+   "id": "1793544073028-a1219bmt9",
+   "type": "diffuser",
+   "category": "air-terminal",
+   "subtype": "square-4way",
+   "modelLabel": "Square 4-way ceiling diffuser Ø200",
+   "position": {
+    "x": 21297.731586992064,
+    "y": 6535.675717866288
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 335,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "SAD-7",
+   "roomId": "1793543953392-90u35rpgw",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-square-595-200",
+    "terminal": {
+     "service": "supply",
+     "mount": "lay-in",
+     "neckDiameterMm": 200,
+     "plenumHeightMm": 300,
+     "spigotSide": "right",
+     "spigotLengthMm": 60,
+     "kind": "square-4way",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 35,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543986569-fgtiy2td6"
+    }
+   }
+  },
+  {
+   "id": "1793544074116-alub4dn0q",
+   "type": "diffuser",
+   "category": "air-terminal",
+   "subtype": "square-4way",
+   "modelLabel": "Square 4-way ceiling diffuser Ø200",
+   "position": {
+    "x": 30770.23253708295,
+    "y": 6455.112183546524
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 335,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "SAD-8",
+   "roomId": "1793543953392-90u35rpgw",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-square-595-200",
+    "terminal": {
+     "service": "supply",
+     "mount": "lay-in",
+     "neckDiameterMm": 200,
+     "plenumHeightMm": 300,
+     "spigotSide": "front",
+     "spigotLengthMm": 60,
+     "kind": "square-4way",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 35,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543986569-fgtiy2td6"
+    }
+   }
+  },
+  {
+   "id": "1793544079564-o9hxhfuht",
+   "type": "return-grille",
+   "category": "air-terminal",
+   "subtype": "return-egg-crate",
+   "modelLabel": "Egg-crate return grille Ø250",
+   "position": {
+    "x": 20128.784661236168,
+    "y": 15317.100958720846
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 380,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "RAG-6",
+   "roomId": "1793543953392-90u35rpgw",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-return-eggcrate-595-250",
+    "terminal": {
+     "service": "return",
+     "mount": "lay-in",
+     "neckDiameterMm": 250,
+     "plenumHeightMm": 350,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "return-egg-crate",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 30,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543986569-fgtiy2td6"
+    }
+   }
+  },
+  {
+   "id": "1793544081299-uhz07d7d8",
+   "type": "return-grille",
+   "category": "air-terminal",
+   "subtype": "return-egg-crate",
+   "modelLabel": "Egg-crate return grille Ø250",
+   "position": {
+    "x": 30770.23253708295,
+    "y": 15478.22802736038
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 380,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "RAG-7",
+   "roomId": "1793543953392-90u35rpgw",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-return-eggcrate-595-250",
+    "terminal": {
+     "service": "return",
+     "mount": "lay-in",
+     "neckDiameterMm": 250,
+     "plenumHeightMm": 350,
+     "spigotSide": "left",
+     "spigotLengthMm": 60,
+     "kind": "return-egg-crate",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 30,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543986569-fgtiy2td6"
+    }
+   }
+  },
+  {
+   "id": "1793544091620-7o5c85fyj",
+   "type": "return-grille",
+   "category": "air-terminal",
+   "subtype": "return-egg-crate",
+   "modelLabel": "Egg-crate return grille Ø250",
+   "position": {
+    "x": 11881.333763626695,
+    "y": 15523.258844242147
+   },
+   "rotation": 0,
+   "width": 595,
+   "depth": 595,
+   "height": 380,
+   "elevation": 2400,
+   "mountType": "ceiling",
+   "label": "RAG-8",
+   "roomId": "1793543953392-90u35rpgw",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "terminal-return-eggcrate-595-250",
+    "terminal": {
+     "service": "return",
+     "mount": "lay-in",
+     "neckDiameterMm": 250,
+     "plenumHeightMm": 350,
+     "spigotSide": "back",
+     "spigotLengthMm": 60,
+     "kind": "return-egg-crate",
+     "faceWidthMm": 595,
+     "faceDepthMm": 595,
+     "faceHeightMm": 30,
+     "plenumWidthMm": 530,
+     "plenumDepthMm": 530
+    },
+    "source": "terminal-catalog-typical",
+    "airSystem": {
+     "unitId": "1793543986569-fgtiy2td6"
+    }
+   }
+  },
+  {
+   "id": "1793544096516-3kr7oik8o",
+   "type": "outdoor-unit",
+   "category": "outdoor-unit",
+   "subtype": "maco-vrf-glb",
+   "modelLabel": "MHI FDC280KXZPE1",
+   "position": {
+    "x": 10165.26109303342,
+    "y": 13450.824246471964
+   },
+   "rotation": 0,
+   "width": 970,
+   "depth": 450,
+   "height": 1505,
+   "elevation": 0,
+   "mountType": "floor",
+   "label": "MHI Outdoor VRF — FDC280KXZPE1 (3D)",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "vrf-fdc280kxzpe1",
+    "source": "ifc-glb",
+    "modelUrl": "/models/vrf/maco-vrf-fdc280kxzpe1.glb",
+    "modelCode": "FDC280KXZPE1",
+    "manufacturer": "Mitsubishi Heavy Industries",
+    "model": "FDC280KXZPE1",
+    "capacityKw": 28,
+    "mountingType": "outdoor"
+   }
+  },
+  {
+   "id": "1793544105668-9hzqrtne4",
+   "type": "condensate-gully",
+   "category": "accessory",
+   "subtype": "floor-gully",
+   "modelLabel": "Floor gully + tundish",
+   "position": {
+    "x": 20464.041765063477,
+    "y": 6158.1631637233895
+   },
+   "rotation": 0,
+   "width": 200,
+   "depth": 200,
+   "height": 60,
+   "elevation": 0,
+   "mountType": "floor",
+   "label": "Floor Gully / Floor Drain",
+   "roomId": "1793543935029-84p6v2xmi",
+   "supplyZoneRatio": 0.5,
+   "properties": {
+    "definitionId": "condensate-floor-gully",
+    "terminationKind": "floor-gully",
+    "inletElevationMm": 50,
+    "airBreakMm": 25,
+    "terminalTrap": "tundish"
+   }
+  }
+ ],
+ "walls": [
+  {
+   "id": "1793543929944-etienlpbf",
+   "startPoint": {
+    "x": 1650,
+    "y": 1050
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 1050
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543929947-statbndmv",
+    "1793543929946-v4cvx9r52",
+    "1793543932440-oh0cadcx4"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 1650,
+     "y": 1125
+    },
+    "end": {
+     "x": 11600,
+     "y": 1125
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 1650,
+     "y": 975
+    },
+    "end": {
+     "x": 11600,
+     "y": 975
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543929944-om4b7m9al",
+    "b": "1793543929944-fffqis971",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543929946-udenktexf",
+   "startPoint": {
+    "x": 11600,
+    "y": 7350
+   },
+   "endPoint": {
+    "x": 1650,
+    "y": 7350
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543932441-kc4oqsa3r",
+    "1793543935025-bmy4zjeca",
+    "1793543929947-statbndmv",
+    "1793543940000-jsnvpea00"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 11600,
+     "y": 7275
+    },
+    "end": {
+     "x": 1650,
+     "y": 7275
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 11600,
+     "y": 7425
+    },
+    "end": {
+     "x": 1650,
+     "y": 7425
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543929946-46gsuyx1h",
+    "b": "1793543929946-cbrqp6tyd",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543929946-v4cvx9r52",
+   "startPoint": {
+    "x": 11600,
+    "y": 1050
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 5950
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543929944-etienlpbf",
+    "1793543932440-oh0cadcx4",
+    "1793543932441-kc4oqsa3r",
+    "1793543932441-vt3abo2i6"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 11525,
+     "y": 1050
+    },
+    "end": {
+     "x": 11525,
+     "y": 5950
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 11675,
+     "y": 1050
+    },
+    "end": {
+     "x": 11675,
+     "y": 5950
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543929944-fffqis971",
+    "b": "1793543932441-ksblu79vs",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543929947-statbndmv",
+   "startPoint": {
+    "x": 1650,
+    "y": 7350
+   },
+   "endPoint": {
+    "x": 1650,
+    "y": 1050
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543929946-udenktexf",
+    "1793543940000-jsnvpea00",
+    "1793543929944-etienlpbf"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 1725,
+     "y": 7350
+    },
+    "end": {
+     "x": 1725,
+     "y": 1050
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 1575,
+     "y": 7350
+    },
+    "end": {
+     "x": 1575,
+     "y": 1050
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543929946-cbrqp6tyd",
+    "b": "1793543929944-om4b7m9al",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543932440-oh0cadcx4",
+   "startPoint": {
+    "x": 11600,
+    "y": 1050
+   },
+   "endPoint": {
+    "x": 19050,
+    "y": 1050
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543929944-etienlpbf",
+    "1793543929946-v4cvx9r52",
+    "1793543932441-i5ps0x76q"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 11600,
+     "y": 1125
+    },
+    "end": {
+     "x": 19050,
+     "y": 1125
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 11600,
+     "y": 975
+    },
+    "end": {
+     "x": 19050,
+     "y": 975
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543929944-fffqis971",
+    "b": "1793543932440-vz46b3ibq",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543932441-i5ps0x76q",
+   "startPoint": {
+    "x": 19050,
+    "y": 1050
+   },
+   "endPoint": {
+    "x": 19050,
+    "y": 5950
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543932440-oh0cadcx4",
+    "1793543932441-vt3abo2i6",
+    "1793543935024-1sp8ys0f3"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 18975,
+     "y": 1050
+    },
+    "end": {
+     "x": 18975,
+     "y": 5950
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 19125,
+     "y": 1050
+    },
+    "end": {
+     "x": 19125,
+     "y": 5950
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543932440-vz46b3ibq",
+    "b": "1793543932441-qh4rno5qu",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543932441-kc4oqsa3r",
+   "startPoint": {
+    "x": 11600,
+    "y": 5950
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 7350
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543929946-v4cvx9r52",
+    "1793543932441-vt3abo2i6",
+    "1793543929946-udenktexf",
+    "1793543935025-bmy4zjeca"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 11525,
+     "y": 5950
+    },
+    "end": {
+     "x": 11525,
+     "y": 7350
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 11675,
+     "y": 5950
+    },
+    "end": {
+     "x": 11675,
+     "y": 7350
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543932441-ksblu79vs",
+    "b": "1793543929946-46gsuyx1h",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543932441-vt3abo2i6",
+   "startPoint": {
+    "x": 19050,
+    "y": 5950
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 5950
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543932441-i5ps0x76q",
+    "1793543935024-1sp8ys0f3",
+    "1793543929946-v4cvx9r52",
+    "1793543932441-kc4oqsa3r"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 19050,
+     "y": 5875
+    },
+    "end": {
+     "x": 11600,
+     "y": 5875
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 19050,
+     "y": 6025
+    },
+    "end": {
+     "x": 11600,
+     "y": 6025
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543932441-qh4rno5qu",
+    "b": "1793543932441-ksblu79vs",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543935024-1sp8ys0f3",
+   "startPoint": {
+    "x": 19050,
+    "y": 5950
+   },
+   "endPoint": {
+    "x": 20850,
+    "y": 5950
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543932441-i5ps0x76q",
+    "1793543932441-vt3abo2i6",
+    "1793543935024-ff438gcjm",
+    "1793543953388-qhkxsersz"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 19050,
+     "y": 6025
+    },
+    "end": {
+     "x": 20850,
+     "y": 6025
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 19050,
+     "y": 5875
+    },
+    "end": {
+     "x": 20850,
+     "y": 5875
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543932441-qh4rno5qu",
+    "b": "1793543935024-02586t2nv",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543935024-ff438gcjm",
+   "startPoint": {
+    "x": 20850,
+    "y": 5950
+   },
+   "endPoint": {
+    "x": 20850,
+    "y": 10700
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543935024-1sp8ys0f3",
+    "1793543953388-qhkxsersz",
+    "1793543935024-ickmka3cz"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 20775,
+     "y": 5950
+    },
+    "end": {
+     "x": 20775,
+     "y": 10700
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 20925,
+     "y": 5950
+    },
+    "end": {
+     "x": 20925,
+     "y": 10700
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543935024-02586t2nv",
+    "b": "1793543935024-e6xl88ofk",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543935024-ickmka3cz",
+   "startPoint": {
+    "x": 20850,
+    "y": 10700
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 10700
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543935024-ff438gcjm",
+    "1793543935025-bmy4zjeca",
+    "1793543942416-a2gn6fz5n"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 20850,
+     "y": 10625
+    },
+    "end": {
+     "x": 11600,
+     "y": 10625
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 20850,
+     "y": 10775
+    },
+    "end": {
+     "x": 11600,
+     "y": 10775
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543935024-e6xl88ofk",
+    "b": "1793543935024-y9o658t3e",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543935025-bmy4zjeca",
+   "startPoint": {
+    "x": 11600,
+    "y": 10700
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 7350
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "structural",
+   "connectedWalls": [
+    "1793543935024-ickmka3cz",
+    "1793543942416-a2gn6fz5n",
+    "1793543929946-udenktexf",
+    "1793543932441-kc4oqsa3r"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 11675,
+     "y": 10700
+    },
+    "end": {
+     "x": 11675,
+     "y": 7350
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 11525,
+     "y": 10700
+    },
+    "end": {
+     "x": 11525,
+     "y": 7350
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543935024-y9o658t3e",
+    "b": "1793543929946-46gsuyx1h",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543940000-jsnvpea00",
+   "startPoint": {
+    "x": 1650,
+    "y": 7350
+   },
+   "endPoint": {
+    "x": 1650,
+    "y": 12730.66307834835
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "partition",
+   "connectedWalls": [
+    "1793543929946-udenktexf",
+    "1793543929947-statbndmv",
+    "1793543941440-rd9wy15p5"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 1575,
+     "y": 7350
+    },
+    "end": {
+     "x": 1575,
+     "y": 12730.66307834835
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 1725,
+     "y": 7350
+    },
+    "end": {
+     "x": 1725,
+     "y": 12730.66307834835
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543929946-cbrqp6tyd",
+    "b": "1793543940000-kc0z41c99",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543941440-rd9wy15p5",
+   "startPoint": {
+    "x": 1650,
+    "y": 12730.66307834835
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 12730.66307834835
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "partition",
+   "connectedWalls": [
+    "1793543940000-jsnvpea00",
+    "1793543942416-a2gn6fz5n",
+    "1793543945880-uouq33jik"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 1650,
+     "y": 12805.66307834835
+    },
+    "end": {
+     "x": 11600,
+     "y": 12805.66307834835
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 1650,
+     "y": 12655.66307834835
+    },
+    "end": {
+     "x": 11600,
+     "y": 12655.66307834835
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543940000-kc0z41c99",
+    "b": "1793543941440-tk3h3vut4",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543942416-a2gn6fz5n",
+   "startPoint": {
+    "x": 11600,
+    "y": 12730.66307834835
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 10700
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "partition",
+   "connectedWalls": [
+    "1793543941440-rd9wy15p5",
+    "1793543945880-uouq33jik",
+    "1793543935024-ickmka3cz",
+    "1793543935025-bmy4zjeca"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 11675,
+     "y": 12730.66307834835
+    },
+    "end": {
+     "x": 11675,
+     "y": 10700
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 11525,
+     "y": 12730.66307834835
+    },
+    "end": {
+     "x": 11525,
+     "y": 10700
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543941440-tk3h3vut4",
+    "b": "1793543935024-y9o658t3e",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543945880-uouq33jik",
+   "startPoint": {
+    "x": 11600,
+    "y": 12730.66307834835
+   },
+   "endPoint": {
+    "x": 11600,
+    "y": 16452.86550901411
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "partition",
+   "connectedWalls": [
+    "1793543941440-rd9wy15p5",
+    "1793543942416-a2gn6fz5n",
+    "1793543948369-fzrnlur3j"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 11525,
+     "y": 12730.66307834835
+    },
+    "end": {
+     "x": 11525,
+     "y": 16452.86550901411
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 11675,
+     "y": 12730.66307834835
+    },
+    "end": {
+     "x": 11675,
+     "y": 16452.86550901411
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543941440-tk3h3vut4",
+    "b": "1793543945880-j5uqwalmq",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543948369-fzrnlur3j",
+   "startPoint": {
+    "x": 11600,
+    "y": 16452.86550901411
+   },
+   "endPoint": {
+    "x": 31950,
+    "y": 16452.86550901411
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "partition",
+   "connectedWalls": [
+    "1793543945880-uouq33jik",
+    "1793543951577-dr0elwdkf"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 11600,
+     "y": 16527.86550901411
+    },
+    "end": {
+     "x": 31950,
+     "y": 16527.86550901411
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 11600,
+     "y": 16377.865509014111
+    },
+    "end": {
+     "x": 31950,
+     "y": 16377.865509014111
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543945880-j5uqwalmq",
+    "b": "1793543948369-hiwm7p07x",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543951577-dr0elwdkf",
+   "startPoint": {
+    "x": 31950,
+    "y": 16452.86550901411
+   },
+   "endPoint": {
+    "x": 31950,
+    "y": 5950
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "partition",
+   "connectedWalls": [
+    "1793543948369-fzrnlur3j",
+    "1793543953388-qhkxsersz"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 32025,
+     "y": 16452.86550901411
+    },
+    "end": {
+     "x": 32025,
+     "y": 5950
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 31875,
+     "y": 16452.86550901411
+    },
+    "end": {
+     "x": 31875,
+     "y": 5950
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543948369-hiwm7p07x",
+    "b": "1793543951577-wuuibcclr",
+    "justification": "center"
+   }
+  },
+  {
+   "id": "1793543953388-qhkxsersz",
+   "startPoint": {
+    "x": 31950,
+    "y": 5950
+   },
+   "endPoint": {
+    "x": 20850,
+    "y": 5950
+   },
+   "thickness": 150,
+   "centerlineOffset": 0,
+   "material": "brick",
+   "layer": "partition",
+   "connectedWalls": [
+    "1793543951577-dr0elwdkf",
+    "1793543935024-1sp8ys0f3",
+    "1793543935024-ff438gcjm"
+   ],
+   "openings": [],
+   "interiorLine": {
+    "start": {
+     "x": 31950,
+     "y": 5875
+    },
+    "end": {
+     "x": 20850,
+     "y": 5875
+    }
+   },
+   "exteriorLine": {
+    "start": {
+     "x": 31950,
+     "y": 6025
+    },
+    "end": {
+     "x": 20850,
+     "y": 6025
+    }
+   },
+   "startBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "endBevel": {
+    "outerOffset": 0,
+    "innerOffset": 0
+   },
+   "properties3D": {
+    "height": 2700,
+    "baseElevation": 0,
+    "layerCount": 1,
+    "materialId": "exterior-brick-200"
+   },
+   "graph": {
+    "a": "1793543951577-wuuibcclr",
+    "b": "1793543935024-02586t2nv",
+    "justification": "center"
+   }
+  }
+ ],
+ "rooms": [
+  {
+   "id": "1793543932446-faimpthdk",
+   "name": "Open Space 2",
+   "roomType": "Open Space",
+   "vertices": [
+    {
+     "x": 18975,
+     "y": 5875
+    },
+    {
+     "x": 11675,
+     "y": 5875
+    },
+    {
+     "x": 11675,
+     "y": 1125
+    },
+    {
+     "x": 18975,
+     "y": 1125
+    }
+   ],
+   "holes": [],
+   "wallIds": [
+    "1793543929946-v4cvx9r52",
+    "1793543932440-oh0cadcx4",
+    "1793543932441-i5ps0x76q",
+    "1793543932441-vt3abo2i6"
+   ],
+   "area": 34675000,
+   "perimeter": 24100,
+   "centroid": {
+    "x": 15325,
+    "y": 3500
+   },
+   "properties3D": {
+    "ceilingHeight": 2700,
+    "floorElevation": 0,
+    "slabThickness": 150
+   }
+  },
+  {
+   "id": "1793543935029-84p6v2xmi",
+   "name": "Open Space 3",
+   "roomType": "Open Space",
+   "vertices": [
+    {
+     "x": 20775,
+     "y": 10625
+    },
+    {
+     "x": 11675,
+     "y": 10625
+    },
+    {
+     "x": 11675,
+     "y": 6025
+    },
+    {
+     "x": 20775,
+     "y": 6025
+    }
+   ],
+   "holes": [],
+   "wallIds": [
+    "1793543932441-kc4oqsa3r",
+    "1793543932441-vt3abo2i6",
+    "1793543935024-1sp8ys0f3",
+    "1793543935024-ff438gcjm",
+    "1793543935024-ickmka3cz",
+    "1793543935025-bmy4zjeca"
+   ],
+   "area": 41860000,
+   "perimeter": 27400,
+   "centroid": {
+    "x": 16225,
+    "y": 8325
+   },
+   "properties3D": {
+    "ceilingHeight": 2700,
+    "floorElevation": 0,
+    "slabThickness": 150
+   }
+  },
+  {
+   "id": "1793543942420-c97byrj9s",
+   "name": "Open Space 4",
+   "roomType": "Open Space",
+   "vertices": [
+    {
+     "x": 11525,
+     "y": 12655.66
+    },
+    {
+     "x": 1725,
+     "y": 12655.66
+    },
+    {
+     "x": 1725,
+     "y": 7425
+    },
+    {
+     "x": 11525,
+     "y": 7425
+    }
+   ],
+   "holes": [],
+   "wallIds": [
+    "1793543929946-udenktexf",
+    "1793543935025-bmy4zjeca",
+    "1793543940000-jsnvpea00",
+    "1793543941440-rd9wy15p5",
+    "1793543942416-a2gn6fz5n"
+   ],
+   "area": 51260468,
+   "perimeter": 30061.32,
+   "centroid": {
+    "x": 6625,
+    "y": 10040.33
+   },
+   "properties3D": {
+    "ceilingHeight": 2700,
+    "floorElevation": 0,
+    "slabThickness": 150
+   }
+  },
+  {
+   "id": "1793543930187-es92xr9de",
+   "name": "Open Space 1",
+   "roomType": "Open Space",
+   "vertices": [
+    {
+     "x": 11525,
+     "y": 7275
+    },
+    {
+     "x": 1725,
+     "y": 7275
+    },
+    {
+     "x": 1725,
+     "y": 1125
+    },
+    {
+     "x": 11525,
+     "y": 1125
+    }
+   ],
+   "holes": [],
+   "wallIds": [
+    "1793543929944-etienlpbf",
+    "1793543929946-udenktexf",
+    "1793543929946-v4cvx9r52",
+    "1793543929947-statbndmv",
+    "1793543932441-kc4oqsa3r"
+   ],
+   "area": 60270000,
+   "perimeter": 31900,
+   "centroid": {
+    "x": 6625,
+    "y": 4200
+   },
+   "properties3D": {
+    "ceilingHeight": 2700,
+    "floorElevation": 0,
+    "slabThickness": 150
+   }
+  },
+  {
+   "id": "1793543953392-90u35rpgw",
+   "name": "Open Space 5",
+   "roomType": "Open Space",
+   "vertices": [
+    {
+     "x": 31875,
+     "y": 16377.87
+    },
+    {
+     "x": 11675,
+     "y": 16377.87
+    },
+    {
+     "x": 11675,
+     "y": 10775
+    },
+    {
+     "x": 20925,
+     "y": 10775
+    },
+    {
+     "x": 20925,
+     "y": 6025
+    },
+    {
+     "x": 31875,
+     "y": 6025
+    }
+   ],
+   "holes": [],
+   "wallIds": [
+    "1793543935024-ff438gcjm",
+    "1793543935024-ickmka3cz",
+    "1793543942416-a2gn6fz5n",
+    "1793543945880-uouq33jik",
+    "1793543948369-fzrnlur3j",
+    "1793543951577-dr0elwdkf",
+    "1793543953388-qhkxsersz"
+   ],
+   "area": 165190474,
+   "perimeter": 61105.740000000005,
+   "centroid": {
+    "x": 21491.666666666668,
+    "y": 11059.29
+   },
+   "properties3D": {
+    "ceilingHeight": 2700,
+    "floorElevation": 0,
+    "slabThickness": 150
+   }
+  }
+ ],
+ "pipeRoutingSettings": {
+  "fittingDisplay": "copper",
+  "minimumFieldBendRadiusMm": 0,
+  "defaultPipeGapMm": 25.4,
+  "minimumPortStubMm": 200,
+  "defaultWallClearanceMm": 50,
+  "defaultUnitClearanceMm": 100,
+  "defaultBranchKitClearanceMm": 300,
+  "minBranchKitSpacingMm": 500,
+  "zOffsetClearanceMm": 75,
+  "zOffsetStartDistanceMm": 60,
+  "bendRadiusFactor": 1,
+  "scaleMmPerPx": 0.26458333333333334,
+  "snapRadiusPx": 15,
+  "defaultPipeElevationMm": 2600,
+  "ceilingLimitMm": 2900,
+  "floorLimitMm": 150,
+  "bypassFittingAngleDeg": 45,
+  "clashMergeWindowMm": 320,
+  "autoBypassOnCommit": false,
+  "enableRealTeeTopology": true,
+  "connectionRatioMinPercent": 50,
+  "connectionRatioMaxPercent": 130,
+  "autoTurnCassettes": true,
+  "cassetteConnectionClearanceMm": 300,
+  "autoTurnMinGainMm": 300,
+  "autoTurnMinGainPercent": 5
+ },
+ "condensateSettings": {
+  "minSlopePercent": 1,
+  "preferredSlopePercent": 2,
+  "pipeSystem": "bs-en-1329",
+  "insulationThicknessMm": 9,
+  "ceilingPlaneMm": null,
+  "soffitMm": null,
+  "envelopeClearanceMm": 25,
+  "refrigerantClearanceMm": 50,
+  "equipmentClearanceMm": 60,
+  "pumpPolicy": "always",
+  "defaultPumpMaxLiftMm": 600,
+  "liftMaxHorizontalMm": 300,
+  "liftMarginMm": 50,
+  "mainBelowPortsMm": 100,
+  "maxUnitRunMm": 20000,
+  "junctionSpacingMm": 300,
+  "joinSocketAllowanceMm": 20,
+  "groupedMainMinOuterDiameterMm": null,
+  "capacityTable": [
+   {
+    "maxCapacityKw": 70.3,
+    "minInnerDiameterMm": 19.05
+   },
+   {
+    "maxCapacityKw": 140.7,
+    "minInnerDiameterMm": 25.4
+   },
+   {
+    "maxCapacityKw": 316.5,
+    "minInnerDiameterMm": 31.75
+   },
+   {
+    "maxCapacityKw": 439.6,
+    "minInnerDiameterMm": 38.1
+   },
+   {
+    "maxCapacityKw": 879.2,
+    "minInnerDiameterMm": 50.8
+   }
+  ],
+  "condensateLitresPerHourPerKw": 0.5,
+  "manningN": 0.009,
+  "maxFillRatio": 0.5,
+  "supportSpacingHorizontalMm": 1000,
+  "supportSpacingVerticalMm": 1500,
+  "supportNearFittingMm": 300,
+  "cleanoutMaxSpacingMm": 15000,
+  "airVentForPumpedMains": true,
+  "trapNegativePressureUnits": true,
+  "trapSealMarginMm": 25,
+  "airBreakMm": 25,
+  "bendPenaltyMm": 400,
+  "wallPenetrationPenaltyMm": 1500,
+  "refrigerantCrossingPenaltyMm": 600,
+  "corridorBonusRatio": 0.12,
+  "gullyCandidateCount": 3,
+  "showFallTags": true,
+  "showLevelTags": true,
+  "showHangers": false
+ },
+ "ductSettings": {
+  "gaugeMode": "smacna",
+  "supplyPressureClassPa": 500,
+  "returnPressureClassPa": 250,
+  "sectionLengthMm": 1200,
+  "minMakeUpPieceMm": 200,
+  "availableSheetThicknessesMm": [
+   0.5,
+   0.6,
+   0.7,
+   0.75,
+   1,
+   1.25,
+   1.5
+  ],
+  "jointSystem": "auto",
+  "washersPerBolt": 2,
+  "longitudinalSeam": "pittsburgh",
+  "coilWidthMm": 1250,
+  "elbowStyle": "auto",
+  "elbowCentrelineRatio": 1.5,
+  "elbowNeckMm": 50,
+  "vaneType": "auto",
+  "transitionTaperDeg": 14,
+  "transitionMaxDivergingIncludedDeg": 45,
+  "transitionMaxConvergingIncludedDeg": 60,
+  "transitionMaxEccentricDeg": 30,
+  "aspectRatioAdvisory": 4,
+  "tapCollarMm": 100,
+  "vcdLengthMm": 150,
+  "tapWindowMarginMm": 50,
+  "roundSeam": "spiral",
+  "roundVelocityBand": "medium",
+  "roundSectionLengthMm": 3000,
+  "conicalFlareMm": 50,
+  "flexibleConnectorAtUnit": true,
+  "connectorFabricMm": 102,
+  "connectorMetalMm": 76,
+  "hangerSpacingMm": 2400,
+  "hangerRodOffsetMm": 50,
+  "trapezeOverhangMm": 50,
+  "hangerJointClearanceMm": 150,
+  "hangerFromUnitMm": 300,
+  "minimumRod": "M8",
+  "riserSupportIntervalMm": 3660,
+  "soffitMm": null,
+  "defaultConstruction": "gi-bare",
+  "nbrSupplyThicknessMm": 25,
+  "nbrReturnThicknessMm": 19,
+  "nbrAdhesiveM2PerL": 8,
+  "nbrWastePercent": 10,
+  "flexMaxLengthMm": 1500,
+  "flexType": "nm-il",
+  "flexJacketMm": 25,
+  "terminalHangerWires": false,
+  "autoFrictionSupplyPaPerM": 0.8,
+  "autoFrictionReturnPaPerM": 0.6,
+  "autoMaxVelocityTrunkMs": 10.8,
+  "autoMaxVelocityBranchMs": 8.6,
+  "autoMaxVelocityRunoutMs": 5.4,
+  "autoMaxNeckVelocitySupplyMs": 2.8,
+  "autoMaxNeckVelocityReturnMs": 3.4,
+  "autoDiffuserDropPa": 15,
+  "autoGrilleDropPa": 10,
+  "filterG4RatedDropPa": 40,
+  "filterM5RatedDropPa": 60,
+  "filterRatedVelocityMs": 2.5,
+  "filterDesignFactor": 1.5,
+  "returnSupplyMinGapMm": 1500,
+  "autoAssignWallPenaltyMm": 4000,
+  "autoAssignOverloadMm": 2500,
+  "farAssignmentExtraMm": 6000,
+  "farAssignmentRatio": 2,
+  "showAirSystems": false,
+  "penetrationClearanceMm": 25,
+  "fireDamperPolicy": "none",
+  "fireDamperSleeveExtensionMm": 100,
+  "autoRoundSizesMm": [
+   100,
+   125,
+   150,
+   160,
+   200,
+   250,
+   300,
+   315,
+   355,
+   400,
+   450,
+   500,
+   560,
+   630,
+   710,
+   800,
+   900,
+   1000
+  ],
+  "autoReducerStepMm": 100,
+  "rectStepMm": 50,
+  "sizeSeries": "metric",
+  "autoExactTerminals": 8,
+  "autoTimeBudgetMs": 300000,
+  "autoChooseSpigotSide": true,
+  "defaultCollarEntry": "side",
+  "autoRoundMainStyles": [
+   "round-conical",
+   "round-tee",
+   "round-lateral"
+  ],
+  "autoAllowWye": true,
+  "autoSizingMethod": "constant-friction",
+  "autoNecksFollowAirflow": true,
+  "unitSystem": "si",
+  "designCriteria": {
+   "room": "open-office",
+   "location": "suspended"
+  },
+  "econCurrency": "USD",
+  "econSheetPerKg": 1.6,
+  "econFabricationRectPerM2": 14,
+  "econFabricationSpiralPerM2": 6,
+  "econFittingFactor": 2.5,
+  "econInstallPerM2": 9,
+  "econInsulationPerM2": 18,
+  "econFlexPerM": 7,
+  "econDamperEach": 25,
+  "econPenetrationEach": 40,
+  "econFireDamperEach": 160,
+  "econAccessDoorEach": 45,
+  "econAttenuatorEach": 180,
+  "econFilterEach": 18,
+  "econHangerEach": 14,
+  "econJointPerM": 5,
+  "econElectricityPerKWh": 0.15,
+  "econHoursPerYear": 3000,
+  "econFanEfficiency": 0.45,
+  "econLifeYears": 15,
+  "econDiscountPercent": 6,
+  "econEscalationPercent": 2,
+  "showSizeTags": true,
+  "showJointTicks": true,
+  "showPieceMarks": false,
+  "showSupports": true
+ }
+}

@@ -79,7 +79,7 @@ describe('production C x C elbow pipe assemblies', () => {
 
   it('changes only fitting cover visibility between copper and insulated display', () => {
     const pipe = single([{ x: 0, y: 0 }, { x: 700, y: 0 }, { x: 700, y: 900 }]);
-    setActivePipeRoutingSettings({ ...DEFAULT_PIPE_ROUTING_SETTINGS, fittingDisplay: 'copper' });
+    setActivePipeRoutingSettings({ ...DEFAULT_PIPE_ROUTING_SETTINGS, fittingDisplay: 'copper', fittingDisplayChosen: true });
     const exposed = buildHvacElementMesh(pipe, { allElements: [pipe] })!;
     setActivePipeRoutingSettings({ ...DEFAULT_PIPE_ROUTING_SETTINGS, fittingDisplay: 'insulated' });
     const insulated = buildHvacElementMesh(pipe, { allElements: [pipe] })!;

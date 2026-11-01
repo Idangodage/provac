@@ -423,8 +423,9 @@ export function planDuctSupports(
     const f = Math.min(1, Math.max(0, (station - piece.stationStartMm) / length));
     const sheet = piece.sheetThicknessMm ?? 1;
     const isRound = piece.diameterMm !== undefined;
-    const width = isRound ? piece.diameterMm! + ((piece.endDiameterMm ?? piece.diameterMm!) - piece.diameterMm!) * f : Math.max(piece.widthMm, piece.endWidthMm);
-    const height = isRound ? width : Math.max(piece.heightMm, piece.endHeightMm);
+    // A transition's bar fits the section where it hangs, not its wider end.
+    const width = isRound ? piece.diameterMm! + ((piece.endDiameterMm ?? piece.diameterMm!) - piece.diameterMm!) * f : piece.widthMm + (piece.endWidthMm - piece.widthMm) * f;
+    const height = isRound ? width : piece.heightMm + (piece.endHeightMm - piece.heightMm) * f;
     const outerWidth = width + 2 * sheet + 2 * insulation;
     const outerHeight = height + 2 * sheet + 2 * insulation;
     const point = add(piece.start, scale(sub(piece.end, piece.start), f));

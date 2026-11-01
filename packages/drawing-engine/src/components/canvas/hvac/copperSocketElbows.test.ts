@@ -39,7 +39,10 @@ describe('copper CxC dimensional profiles', () => {
   });
   it('restores a valid fitting presentation from saved and legacy settings', () => {
     expect(resolvePipeRoutingSettings({ fittingDisplay: 'insulated' }).fittingDisplay).toBe('insulated');
-    expect(resolvePipeRoutingSettings({}).fittingDisplay).toBe('copper');
-    expect(resolvePipeRoutingSettings({ fittingDisplay: 'unknown' as 'copper' }).fittingDisplay).toBe('copper');
+    expect(resolvePipeRoutingSettings({}).fittingDisplay).toBe('insulated');
+    // Saved while Copper detail was the default, nobody having chosen it: Insulated. Chosen by hand: kept.
+    expect(resolvePipeRoutingSettings({ fittingDisplay: 'copper' }).fittingDisplay).toBe('insulated');
+    expect(resolvePipeRoutingSettings({ fittingDisplay: 'copper', fittingDisplayChosen: true }).fittingDisplay).toBe('copper');
+    expect(resolvePipeRoutingSettings({ fittingDisplay: 'unknown' as 'copper' }).fittingDisplay).toBe('insulated');
   });
 });

@@ -28,7 +28,7 @@ export interface CondensateElementCommand {
 
 /** Signature over everything the generator reads (display-only routing fields excluded). */
 export function condensateSourceSignature(source: CondensateCommandSource): string {
-  const { fittingDisplay: _display, ...routing } = source.routingSettings;
+  const { fittingDisplay: _display, fittingDisplayChosen: _chosen, ...routing } = source.routingSettings;
   const walls = source.walls.map((wall) => [wall.id, wall.startPoint, wall.endPoint, wall.thickness, wall.properties3D?.height, wall.properties3D?.baseElevation]);
   const rooms = source.rooms.map((room) => [room.id, room.properties3D?.ceilingHeight]);
   return hashCondensateText(JSON.stringify([source.scene, source.settings, routing, walls, rooms]));

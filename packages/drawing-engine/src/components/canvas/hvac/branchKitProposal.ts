@@ -457,6 +457,8 @@ function placeKitOnLineSegment(params: PlaceKitParams): BranchKitGhost | null {
       branchKitSnapProjectedDistanceMm: clampedStation,
       routeClass: 'branch',
       branchKitSelectionStatus: 'layout-only',
+      // Every kit is covered with its moulded insulation on site, as the lines it joins.
+      insulated: true,
     },
   };
 

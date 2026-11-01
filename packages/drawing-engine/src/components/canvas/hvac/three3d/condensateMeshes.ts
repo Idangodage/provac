@@ -346,7 +346,7 @@ function addHangers(group: THREE.Group, element: HvacElement, spec: CondensatePi
 }
 
 /** Builds a condensate run in WORLD coordinates (the caller's group sits at the origin). */
-export function addCondensatePipeMeshes(group: THREE.Group, element: HvacElement): void {
+export function addCondensatePipeMeshes(group: THREE.Group, element: HvacElement, options: { showSupports?: boolean } = {}): void {
   const spec = readCondensatePipeSpec(element);
   const nodes = spec.routeNodes3d.length >= 2
     ? spec.routeNodes3d
@@ -366,7 +366,7 @@ export function addCondensatePipeMeshes(group: THREE.Group, element: HvacElement
     const collar = cylinderBetween(first.clone().addScaledVector(direction, -2), first.clone().addScaledVector(direction, 22), radius * 1.05, CONDENSATE_3D_COLORS.pvc, 'condensate-pipe-socket');
     if (collar) group.add(collar);
   }
-  addHangers(group, element, spec, radius);
+  if (options.showSupports !== false) addHangers(group, element, spec, radius);
   for (const fitting of spec.fittings) addFittingMesh(group, fitting, radius);
   // Open ends left by deleted pieces (a gap the run remembers): an amber band round each, as the plan marks it.
   const gaps = readDrainGaps(element);

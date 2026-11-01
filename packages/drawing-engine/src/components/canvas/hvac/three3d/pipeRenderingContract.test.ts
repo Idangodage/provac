@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { HvacElement } from '../../../../types';
-import { getActivePipeRoutingSettings, setActivePipeRoutingSettings } from '../pipeRoutingSettings';
+import { DEFAULT_PIPE_ROUTING_SETTINGS, getActivePipeRoutingSettings, setActivePipeRoutingSettings } from '../pipeRoutingSettings';
 import {
   buildRefrigerantPipeElement,
   buildRefrigerantPipePairElement,
@@ -24,6 +24,10 @@ function insulationMeshes(element: HvacElement): THREE.Mesh<THREE.BufferGeometry
 }
 
 describe('pipe rendering connection and service contract', () => {
+  // These pin the Copper detail view (the bare fittings).
+  beforeEach(() => setActivePipeRoutingSettings({ ...DEFAULT_PIPE_ROUTING_SETTINGS, fittingDisplay: 'copper', fittingDisplayChosen: true }));
+  afterEach(() => setActivePipeRoutingSettings(DEFAULT_PIPE_ROUTING_SETTINGS));
+
   it('preserves a saved formed-tube bend radius when document routing defaults change', () => {
     const previous = getActivePipeRoutingSettings();
     const base = materialize(buildRefrigerantPipeElement([

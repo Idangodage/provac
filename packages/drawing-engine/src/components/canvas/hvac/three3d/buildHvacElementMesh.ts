@@ -32,6 +32,7 @@ import {
   buildRefrigerantPipeVisual,
   findNearestRefrigerantPipeBundleSegmentTarget,
   resolveInlineBranchKitCenter,
+  DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM,
 } from "../refrigerantPipePairModel";
 import type {
   RefrigerantPipeEndpointRenderState,
@@ -1189,8 +1190,8 @@ function addCeilingCassetteVisibleModel(
 ): void {
   const cassette = buildCeilingCassetteModel(element);
   const hasCatalogModel = options?.catalogModelLoaded === true;
-  const bodyOpacity = hasCatalogModel ? 0.5 : 1;
-  const topOpacity = hasCatalogModel ? 0.62 : 1;
+  const bodyOpacity = 1;
+  const topOpacity = 1;
   const panelLift = hasCatalogModel ? 1.6 : 0;
   const detailLift = hasCatalogModel ? 2.4 : 0;
 
@@ -1429,7 +1430,6 @@ function addCeilingCassetteVisibleModel(
       {
         bevelEnabled: false,
         curveSegments: 8,
-        opacity: hasCatalogModel ? 0.86 : 1,
         renderOrder: 31,
       },
     ),
@@ -2426,6 +2426,19 @@ export function buildHvacElementMesh(
         }
 
         addBands(line.bands, z);
+
+        // Kits ship with a moulded cover: in the Insulated view it hides the copper, as thick as the pipes it joins.
+        if (getActivePipeRoutingSettings().fittingDisplay === 'insulated') {
+          const cover = (tubeDiameterMm: number) => tubeDiameterMm / 2 + DEFAULT_REFRIGERANT_PIPE_INSULATION_THICKNESS_MM;
+          const serviceColor = REFRIGERANT_PIPE_3D_COLORS[lineKind];
+          addRouteTube([inletPoints[0]!, runEnd], z, cover(line.mainTube.outerDiameterMm), serviceColor, 18, lineKind);
+          if (inletPoints.length >= 2) {
+            addRouteTube(inletPoints, z, cover(line.inletTube.outerDiameterMm), serviceColor, 18, lineKind);
+          }
+          if (branchPoints.length >= 1) {
+            addRouteTube([{ x: branchPoints[0]!.x, y: runStart.y }, ...branchPoints], z, cover(line.branchTube.outerDiameterMm), serviceColor, 18, lineKind);
+          }
+        }
       };
 
       if (renderGasLine) {
@@ -2517,7 +2530,7 @@ export function buildHvacElementMesh(
       // World-space geometry: sloped drains and terminations carry absolute Z.
       group.position.set(0, 0, 0);
       group.rotation.set(0, 0, 0);
-      if (normalizedType === "condensate-pipe") addCondensatePipeMeshes(group, effectiveElement);
+      if (normalizedType === "condensate-pipe") addCondensatePipeMeshes(group, effectiveElement, { showSupports: context.ductSettings?.showSupports !== false });
       else addCondensateGullyMeshes(group, effectiveElement);
       break;
     }

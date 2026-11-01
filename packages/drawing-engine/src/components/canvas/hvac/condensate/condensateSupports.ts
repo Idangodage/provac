@@ -65,6 +65,11 @@ export function layoutCondensateSupports(
     segmentStart = a;
     const plan = Math.hypot(b.x - a.x, b.y - a.y);
     const vertical = plan < Math.abs(b.z - a.z);
+    // A short piece between two bends (a riser, a jog, a stub) hangs from the supports just past its bends.
+    if (span < 2 * settings.supportNearFittingMm) {
+      station += span;
+      continue;
+    }
     const spacing = vertical ? settings.supportSpacingVerticalMm : settings.supportSpacingHorizontalMm;
     // A support just clear of each end joint, then evenly within the span.
     const near = Math.min(settings.supportNearFittingMm, span / 2);

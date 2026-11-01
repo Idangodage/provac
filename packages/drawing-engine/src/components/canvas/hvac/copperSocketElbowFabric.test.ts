@@ -1,5 +1,5 @@
 import type * as fabric from 'fabric';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HvacElement, Point2D } from '../../../types';
 import { MM_TO_PX } from '../scale';
@@ -31,6 +31,8 @@ function equalPoints(a: Point2D[], b: Point2D[]): boolean {
   return a.length === b.length && a.every((point, index) => Math.hypot(point.x - b[index]!.x, point.y - b[index]!.y) < 1e-6);
 }
 
+// These previews are of the Copper detail view unless a test asks otherwise.
+beforeEach(() => setActivePipeRoutingSettings({ ...DEFAULT_PIPE_ROUTING_SETTINGS, fittingDisplay: 'copper', fittingDisplayChosen: true }));
 afterEach(() => setActivePipeRoutingSettings(DEFAULT_PIPE_ROUTING_SETTINGS));
 
 describe('Fabric copper socket elbow placement previews', () => {

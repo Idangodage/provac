@@ -52,6 +52,11 @@ export const DEFAULT_PIPE_ROUTING_ELEVATION_MM = 2600;
 export interface PipeRoutingSettings {
   /** Inspection presentation only; fitting insulation is still part of the installation. */
   fittingDisplay: 'copper' | 'insulated';
+  /**
+   * The Fitting view was chosen by hand. A drawing saved while Copper detail was
+   * the default says 'copper' without anyone having asked for it.
+   */
+  fittingDisplayChosen: boolean;
   /** Verified profile constraint; a smaller unqualified socket elbow is not substituted. */
   minimumFieldBendRadiusMm: number;
   /** Clear gap between the *insulated* gas and liquid pipes of one bundle. */
@@ -120,7 +125,8 @@ export interface PipeRoutingSettings {
  * pixel-identical until a value is explicitly changed.
  */
 export const DEFAULT_PIPE_ROUTING_SETTINGS: PipeRoutingSettings = {
-  fittingDisplay: 'copper',
+  fittingDisplay: 'insulated',
+  fittingDisplayChosen: false,
   minimumFieldBendRadiusMm: 0,
   defaultPipeGapMm: DEFAULT_REFRIGERANT_PIPE_GAP_MM, // 1" = 25.4 mm
   minimumPortStubMm: 200,
@@ -167,7 +173,11 @@ export function resolvePipeRoutingSettings(
     (key) => {
       const value = partial[key];
       if (key === "fittingDisplay") {
-        if (value === 'copper' || value === 'insulated') merged.fittingDisplay = value;
+        if (value === 'insulated' || (value === 'copper' && partial.fittingDisplayChosen === true)) merged.fittingDisplay = value;
+        return;
+      }
+      if (key === "fittingDisplayChosen") {
+        if (typeof value === "boolean") merged.fittingDisplayChosen = value;
         return;
       }
       if (key === "bypassFittingAngleDeg") {
