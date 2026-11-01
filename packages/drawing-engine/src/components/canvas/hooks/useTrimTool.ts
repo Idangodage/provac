@@ -32,7 +32,8 @@ import {
 export interface UseTrimToolOptions {
   fabricRef: React.RefObject<FabricCanvas | null>;
   walls: Wall[];
-  updateWall: (id: string, updates: Partial<Wall>, options?: { skipHistory?: boolean }) => void;
+  /** Moves only this wall's end: neighbours at the other side of a shared node stay put. */
+  wallGraphMoveEnd: (wallId: string, end: 'start' | 'end', to: Point2D, options?: { skipHistory?: boolean }) => void;
   addWall: (params: { startPoint: Point2D; endPoint: Point2D; thickness?: number }) => string;
   deleteWall: (id: string, options?: { skipHistory?: boolean }) => void;
   connectWalls: (wallId: string, otherWallId: string) => void;
@@ -209,7 +210,7 @@ export function useTrimTool(options: UseTrimToolOptions): UseTrimToolResult {
   const {
     fabricRef,
     walls,
-    updateWall,
+    wallGraphMoveEnd,
     deleteWall,
     setTool,
     detectRooms,
@@ -369,7 +370,7 @@ export function useTrimTool(options: UseTrimToolOptions): UseTrimToolResult {
         deleteWall(wall.id, { skipHistory: true });
         setProcessingStatus('Wall deleted (would be too short after trim).', false);
       } else {
-        updateWall(wall.id, { endPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
+        wallGraphMoveEnd(wall.id, 'end', { ...candidate.intersectionPoint }, { skipHistory: true });
         setProcessingStatus(
           `Trimmed wall to ${Math.round(newLength)} mm.`,
           false
@@ -382,7 +383,7 @@ export function useTrimTool(options: UseTrimToolOptions): UseTrimToolResult {
         deleteWall(wall.id, { skipHistory: true });
         setProcessingStatus('Wall deleted (would be too short after trim).', false);
       } else {
-        updateWall(wall.id, { startPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
+        wallGraphMoveEnd(wall.id, 'start', { ...candidate.intersectionPoint }, { skipHistory: true });
         setProcessingStatus(
           `Trimmed wall to ${Math.round(newLength)} mm.`,
           false
@@ -393,7 +394,7 @@ export function useTrimTool(options: UseTrimToolOptions): UseTrimToolResult {
     clearPreview();
     detectRooms({ debounce: true });
     saveToHistory('Trim wall');
-  }, [clearPreview, deleteWall, detectRooms, findWallAtPoint, saveToHistory, setProcessingStatus, updateWall, walls]);
+  }, [clearPreview, deleteWall, detectRooms, findWallAtPoint, saveToHistory, setProcessingStatus, wallGraphMoveEnd, walls]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent): boolean => {
     if (e.key === 'Escape') {

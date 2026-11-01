@@ -130,6 +130,8 @@ export interface UseSelectModeOptions {
    * the drop point. Runs the full post-edit pipeline internally.
    */
   wallGraphMoveNode?: (nodeId: string, to: Point2D, weld?: boolean) => void;
+  /** After a wall drag: settle whatever it left touching into real junctions. */
+  wallGraphCommitDrag?: () => void;
   saveToHistory: (action: string) => void;
   setProcessingStatus: (status: string, isProcessing: boolean) => void;
   onDragStateChange?: (isDragging: boolean) => void;
@@ -692,6 +694,7 @@ export function useSelectMode({
   detectRooms,
   regenerateElevations,
   wallGraphMoveNode,
+  wallGraphCommitDrag,
   saveToHistory,
   setProcessingStatus,
   onDragStateChange,
@@ -739,6 +742,7 @@ export function useSelectMode({
     detectRooms,
     regenerateElevations,
     wallGraphMoveNode,
+    wallGraphCommitDrag,
     saveToHistory,
     setProcessingStatus,
     onDragStateChange,
@@ -776,6 +780,7 @@ export function useSelectMode({
       detectRooms,
       regenerateElevations,
       wallGraphMoveNode,
+      wallGraphCommitDrag,
       saveToHistory,
       setProcessingStatus,
       onDragStateChange,
@@ -801,6 +806,7 @@ export function useSelectMode({
     detectRooms,
     regenerateElevations,
     wallGraphMoveNode,
+    wallGraphCommitDrag,
     saveToHistory,
     setProcessingStatus,
     onDragStateChange,
@@ -3558,6 +3564,7 @@ export function useSelectMode({
         mode === 'room-move' ||
         mode === 'endpoint';
       if (affectsWallGeometry) {
+        optionsRef.current.wallGraphCommitDrag?.();
         optionsRef.current.detectRooms();
         optionsRef.current.regenerateElevations();
       }

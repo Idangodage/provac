@@ -143,7 +143,9 @@ import {
   wallGraphFromLegacyWalls,
   type MirrorCallbacks,
 } from '../wallcore/legacyBridge';
+import { COLLINEAR_EPS } from '../wallcore/tolerances';
 import type { Vec2 as WallVec2 } from '../wallcore/vec2';
+import { edgesAtNode, mergeStraightWallsAt, normalizeWallGraph } from '../wallcore/wallGraph';
 import type { WallEdge2, WallGraphDoc } from '../wallcore/wallModel';
 import {
   addWallChain as coreAddWallChain,
@@ -151,6 +153,7 @@ import {
   flipWallJustification as coreFlipWallJustification,
   mergeAtNode as coreMergeAtNode,
   moveWallEdges as coreMoveWallEdges,
+  moveWallEnd as coreMoveWallEnd,
   moveWallNode as coreMoveWallNode,
   setWallLength as coreSetWallLength,
   setWallParams as coreSetWallParams,
@@ -1983,6 +1986,10 @@ export interface DrawingState {
     }>,
   ) => string[];
   wallGraphMoveNode: (nodeId: string, to: Point2D, weld?: boolean) => void;
+  /** Move only this wall's end, leaving any neighbours sharing its node where they are (trim, extend). */
+  wallGraphMoveEnd: (wallId: string, end: 'start' | 'end', to: Point2D, options?: { skipHistory?: boolean }) => void;
+  /** After a drag has moved walls frame by frame: settle what it left touching into real junctions. */
+  wallGraphCommitDrag: () => void;
   wallGraphMoveEdges: (edgeIds: string[], delta: Point2D) => void;
   wallGraphSetParams: (
     edgeIds: string[],
@@ -2220,12 +2227,27 @@ export interface DrawingState {
 
 const WALL_GRAPH_IDS = { newId: generateId };
 
+/** What a wall the graph creates carries beyond its edge. */
+interface NewWallAttributes {
+  layer?: Wall['layer'];
+  partitionMode?: Wall['partitionMode'];
+  properties3D?: Partial<Wall3D>;
+}
+
 /** Mirror callbacks: how a graph edge materialises as a legacy Wall. */
-function buildWallMirrorCallbacks(get: () => DrawingState): MirrorCallbacks<Wall> {
+function buildWallMirrorCallbacks(
+  get: () => DrawingState,
+  newWall: NewWallAttributes = {},
+  onOpeningMoved?: MirrorCallbacks<Wall>['onOpeningMoved'],
+): MirrorCallbacks<Wall> {
   return {
     createWall: (edge, start, end) => {
       const thickness = clampThickness(edge.thickness);
       const material = (edge.material as Wall['material']) ?? 'brick';
+      const materialId = edge.materialId ?? getDefaultMaterialIdForWallMaterial(material);
+      // Binding only fills in what a wall lacks, so what this edge asks for must already be on the
+      // wall. The default thermal assembly belongs to the default material; any other builds its own.
+      const { thermalAssembly, ...defaults3D } = DEFAULT_WALL_3D;
       const base: Wall = {
         id: edge.id,
         startPoint: { x: start[0], y: start[1] },
@@ -2233,48 +2255,152 @@ function buildWallMirrorCallbacks(get: () => DrawingState): MirrorCallbacks<Wall
         thickness,
         centerlineOffset: 0,
         material,
-        layer: 'partition',
+        layer: newWall.layer ?? 'partition',
+        partitionMode: newWall.partitionMode,
         interiorLine: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
         exteriorLine: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
         startBevel: { ...DEFAULT_BEVEL_CONTROL },
         endBevel: { ...DEFAULT_BEVEL_CONTROL },
         connectedWalls: [],
         openings: [],
-        properties3D: { ...DEFAULT_WALL_3D },
+        properties3D: {
+          ...defaults3D,
+          ...(materialId === DEFAULT_WALL_3D.materialId ? { thermalAssembly } : {}),
+          layerCount: get().wallSettings.defaultLayerCount ?? DEFAULT_WALL_LAYER_COUNT,
+          ...newWall.properties3D,
+          materialId,
+          height: edge.height,
+          baseElevation: edge.baseOffset,
+        } as Wall3D,
       };
-      const materialId = edge.materialId ?? getDefaultMaterialIdForWallMaterial(material);
       return bindWallAttributes(rebuildWallGeometry(base), {
-        materialId,
-        height: edge.height,
-        baseElevation: edge.baseOffset,
-        layerCount: get().wallSettings.defaultLayerCount ?? DEFAULT_WALL_LAYER_COUNT,
         thermalResistance:
           getArchitecturalMaterial(materialId)?.thermalResistance ??
           DEFAULT_WALL_3D.thermalResistance,
       });
     },
-    rebuildGeometry: (wall) => rebuildWallGeometry(wall),
+    rebuildGeometry: (wall) => bindWallAttributes(rebuildWallGeometry(wall), wall.properties3D),
+    onOpeningMoved,
   };
 }
 
+interface WallGraphOperationOptions {
+  skipHistory?: boolean;
+  skipRoomDetection?: boolean;
+  skipElevationRegeneration?: boolean;
+  newWall?: NewWallAttributes;
+  /** The walls already moved before this commit (a drag): check them all, not just what changes here. */
+  normalizeAll?: boolean;
+}
+
+function wallEdgeFingerprints(doc: WallGraphDoc): Map<string, string> {
+  return new Map(Object.values(doc.edges).map((edge) => {
+    const a = doc.nodes[edge.a]?.p;
+    const b = doc.nodes[edge.b]?.p;
+    return [edge.id, `${a?.[0]},${a?.[1]},${b?.[0]},${b?.[1]},${edge.thickness},${edge.justification}`];
+  }));
+}
+
 /**
- * Run one wall-graph command: derive the graph from the mirrored walls,
- * mutate topology via wallcore, mirror back, then the standard post-wall-edit
- * pipeline (rooms, elevations, history) — same tail as the legacy addWall.
+ * Run one wall-graph command: derive the graph from the mirrored walls, mutate
+ * topology via wallcore, normalize what it touched, mirror back, then the standard
+ * post-wall-edit pipeline (rooms, elevations, history). Every wall edit ends here,
+ * so every wall in the drawing is always in the graph and always truly joined.
  */
 function applyWallGraphOperation(
   get: () => DrawingState,
   set: (partial: Partial<DrawingState>) => void,
   label: string,
   mutate: (draft: WallGraphDoc) => void,
+  options: WallGraphOperationOptions = {},
 ): void {
-  const graph = wallGraphFromLegacyWalls(get().walls, WALL_GRAPH_IDS);
+  const previous = get();
+  const graph = wallGraphFromLegacyWalls(previous.walls, WALL_GRAPH_IDS);
+  const before = wallEdgeFingerprints(graph);
+  const valenceBefore = new Map(Object.keys(graph.nodes).map((nodeId) => [nodeId, edgesAtNode(graph, nodeId).length]));
   mutate(graph);
-  const walls = legacyWallsFromGraph(graph, get().walls, buildWallMirrorCallbacks(get));
-  set({ walls });
-  get().detectRooms();
-  get().regenerateElevations();
-  get().saveToHistory(label);
+
+  const after = wallEdgeFingerprints(graph);
+  const dirty = options.normalizeAll
+    ? undefined
+    : new Set([...after].filter(([edgeId, print]) => before.get(edgeId) !== print).map(([edgeId]) => edgeId));
+  const replaced = normalizeWallGraph(graph, WALL_GRAPH_IDS, dirty);
+  // A wall that left a junction: two matching straight walls remaining there are one wall again.
+  for (const [nodeId, valence] of valenceBefore) {
+    if (valence <= 2 || !graph.nodes[nodeId]) continue;
+    const merged = mergeStraightWallsAt(graph, nodeId, COLLINEAR_EPS);
+    if (merged) replaced.set(merged.goes, merged.stays);
+  }
+
+  const moved: Array<{ openingId: string; movedMm: number }> = [];
+  const walls = legacyWallsFromGraph(
+    graph,
+    previous.walls,
+    buildWallMirrorCallbacks(get, options.newWall, (openingId, movedMm) => moved.push({ openingId, movedMm })),
+  );
+
+  // Selection and links follow walls that were absorbed, and let go of walls that are gone.
+  const survivors = new Set(walls.map((wall) => wall.id));
+  const gone = new Set(previous.walls.map((wall) => wall.id).filter((id) => !survivors.has(id)));
+  const resolve = (id: string) => resolveWallReplacementId(id, replaced);
+  const remapIds = (ids: string[]) =>
+    gone.size === 0
+      ? ids
+      : dedupeWallIds(ids.map(resolve).filter((id) => !gone.has(id)));
+  set({
+    walls,
+    selectedIds: remapIds(previous.selectedIds),
+    selectedElementIds: remapIds(previous.selectedElementIds),
+    hoveredElementId: previous.hoveredElementId && gone.has(resolve(previous.hoveredElementId))
+      ? null
+      : previous.hoveredElementId && resolve(previous.hoveredElementId),
+    ...(replaced.size > 0
+      ? {
+          dimensions: previous.dimensions.map((dimension) => ({
+            ...dimension,
+            linkedWallIds: Array.isArray(dimension.linkedWallIds)
+              ? dedupeWallIds(dimension.linkedWallIds.map(resolve))
+              : dimension.linkedWallIds,
+          })),
+        }
+      : {}),
+  });
+  if (moved.length > 0) {
+    const worst = Math.round(Math.max(...moved.map((entry) => entry.movedMm)));
+    get().setProcessingStatus(
+      moved.length === 1
+        ? `A door or window moved ${worst} mm so the new wall does not cut through it.`
+        : `${moved.length} doors or windows moved, up to ${worst} mm, so the new wall does not cut through them.`,
+      false,
+    );
+  }
+  if (!options.skipRoomDetection) get().detectRooms();
+  if (!options.skipElevationRegeneration) get().regenerateElevations();
+  if (!options.skipHistory) get().saveToHistory(label);
+}
+
+/** Whichever walls a move touches: walls sharing a node with a moved end follow it, as the graph says they must. */
+function moveSharedWallNodes(walls: Wall[], explicitlyMoved: ReadonlySet<string>): Wall[] {
+  const moves = new Map<string, Point2D>();
+  for (const wall of walls) {
+    if (!wall.graph || !explicitlyMoved.has(wall.id)) continue;
+    moves.set(wall.graph.a, wall.startPoint);
+    moves.set(wall.graph.b, wall.endPoint);
+  }
+  if (moves.size === 0) return walls;
+  return walls.map((wall) => {
+    if (!wall.graph || explicitlyMoved.has(wall.id)) return wall;
+    const start = moves.get(wall.graph.a);
+    const end = moves.get(wall.graph.b);
+    const startMoved = start && !pointsNear(start, wall.startPoint, 0);
+    const endMoved = end && !pointsNear(end, wall.endPoint, 0);
+    if (!startMoved && !endMoved) return wall;
+    return rebuildWallGeometry({
+      ...wall,
+      startPoint: startMoved ? { ...start } : wall.startPoint,
+      endPoint: endMoved ? { ...end } : wall.endPoint,
+    });
+  });
 }
 
 // =============================================================================
@@ -3175,132 +3301,55 @@ export const useDrawingStore = create<DrawingState>()(
       },
 
       addWall: (params, options) => {
-        const id = generateId();
-        const thickness = clampThickness(params.thickness ?? 150);
         const material = params.material ?? 'brick';
-        const layer = params.layer ?? 'partition';
-        const partitionMode = params.partitionMode;
-        const existingWalls = get().walls;
-        const trimmedEndpoints = autoTrimWallEndpoints(
-          params.startPoint,
-          params.endPoint,
-          existingWalls
-        );
-        const connectedWallIds = Array.from(
-          new Set([
-            ...findWallsTouchingPoint(trimmedEndpoints.startPoint, existingWalls),
-            ...findWallsTouchingPoint(trimmedEndpoints.endPoint, existingWalls),
-          ])
-        );
-
-        // Compute offset lines
-        const dx = trimmedEndpoints.endPoint.x - trimmedEndpoints.startPoint.x;
-        const dy = trimmedEndpoints.endPoint.y - trimmedEndpoints.startPoint.y;
-        const length = Math.sqrt(dx * dx + dy * dy) || 1;
-        const perpX = -dy / length;
-        const perpY = dx / length;
-        const halfThickness = thickness / 2;
-
-        const wall: Wall = {
-          id,
-          startPoint: { ...trimmedEndpoints.startPoint },
-          endPoint: { ...trimmedEndpoints.endPoint },
-          thickness,
-          centerlineOffset: 0,
-          material,
-          layer,
-          partitionMode,
-          interiorLine: {
-            start: {
-              x: trimmedEndpoints.startPoint.x + perpX * halfThickness,
-              y: trimmedEndpoints.startPoint.y + perpY * halfThickness,
-            },
-            end: {
-              x: trimmedEndpoints.endPoint.x + perpX * halfThickness,
-              y: trimmedEndpoints.endPoint.y + perpY * halfThickness,
-            },
+        const { height, baseElevation, materialId, ...attributes3D } = params.properties3D ?? {};
+        const { startPoint, endPoint } = autoTrimWallEndpoints(params.startPoint, params.endPoint, get().walls);
+        let created: string[] = [];
+        applyWallGraphOperation(
+          get,
+          set,
+          'Add wall',
+          (draft) => {
+            created = coreAddWallChain(
+              draft,
+              [[startPoint.x, startPoint.y], [endPoint.x, endPoint.y]],
+              {
+                thickness: clampThickness(params.thickness ?? 150),
+                height: height ?? get().wallSettings.defaultHeight ?? DEFAULT_WALL_HEIGHT,
+                baseOffset: baseElevation ?? 0,
+                justification: 'center',
+                material,
+                materialId: materialId ?? getDefaultMaterialIdForWallMaterial(material),
+              },
+              WALL_GRAPH_IDS,
+            );
           },
-          exteriorLine: {
-            start: {
-              x: trimmedEndpoints.startPoint.x - perpX * halfThickness,
-              y: trimmedEndpoints.startPoint.y - perpY * halfThickness,
-            },
-            end: {
-              x: trimmedEndpoints.endPoint.x - perpX * halfThickness,
-              y: trimmedEndpoints.endPoint.y - perpY * halfThickness,
-            },
+          {
+            ...options,
+            newWall: { layer: params.layer ?? 'partition', partitionMode: params.partitionMode, properties3D: attributes3D },
           },
-          startBevel: { ...DEFAULT_BEVEL_CONTROL },
-          endBevel: { ...DEFAULT_BEVEL_CONTROL },
-          connectedWalls: connectedWallIds,
-          openings: [],
-          properties3D: { ...DEFAULT_WALL_3D },
-        };
-        const materialId = getDefaultMaterialIdForWallMaterial(wall.material);
-        const boundWall = bindWallAttributes(wall, {
-          materialId,
-          height: get().wallSettings.defaultHeight ?? DEFAULT_WALL_HEIGHT,
-          layerCount: get().wallSettings.defaultLayerCount ?? DEFAULT_WALL_LAYER_COUNT,
-          thermalResistance: getArchitecturalMaterial(materialId)?.thermalResistance ?? DEFAULT_WALL_3D.thermalResistance,
-          ...(params.properties3D ?? {}),
-        });
-        let effectiveWallId = id;
-
-        set((state) => {
-          const nextWalls = [
-            ...state.walls.map((existingWall) => {
-              if (
-                connectedWallIds.includes(existingWall.id) &&
-                !existingWall.connectedWalls.includes(id)
-              ) {
-                return {
-                  ...existingWall,
-                  connectedWalls: [...existingWall.connectedWalls, id],
-                };
-              }
-              return existingWall;
-            }),
-            boundWall,
-          ];
-          const collapsed = collapseCoincidentWallOverlaps({
-            walls: cleanupStraightWallRuns(nextWalls, id),
-            rooms: state.rooms,
-            dimensions: state.dimensions,
-            selectedElementIds: state.selectedElementIds,
-            selectedIds: state.selectedIds,
-            hoveredElementId: state.hoveredElementId,
-          });
-          effectiveWallId = resolveWallReplacementId(id, collapsed.replacementMap);
-
-          return {
-            walls: collapsed.walls,
-            rooms: collapsed.rooms,
-            dimensions: collapsed.dimensions,
-            selectedElementIds: collapsed.selectedElementIds,
-            selectedIds: collapsed.selectedIds,
-            hoveredElementId: collapsed.hoveredElementId,
-          };
-        });
-        if (effectiveWallId === boundWall.id) {
+        );
+        const walls = get().walls;
+        for (const id of created) {
+          const wall = walls.find((candidate) => candidate.id === id);
+          if (!wall) continue;
           attributeChangeObserver.notify({
             entity: 'wall',
-            entityId: boundWall.id,
+            entityId: wall.id,
             previousValue: null,
-            nextValue: boundWall.properties3D,
+            nextValue: wall.properties3D,
             source: 'binding',
             timestamp: Date.now(),
           });
         }
-        if (!options?.skipRoomDetection) {
-          get().detectRooms();
-        }
-        if (!options?.skipElevationRegeneration) {
-          get().regenerateElevations();
-        }
-        if (!options?.skipHistory) {
-          get().saveToHistory('Add wall');
-        }
-        return effectiveWallId;
+        // Drawn exactly over a wall already there, the new wall is that wall.
+        return created.find((id) => walls.some((wall) => wall.id === id))
+          ?? walls.find((wall) => (
+            (pointsNear(wall.startPoint, startPoint) && pointsNear(wall.endPoint, endPoint)) ||
+            (pointsNear(wall.startPoint, endPoint) && pointsNear(wall.endPoint, startPoint))
+          ))?.id
+          ?? created[0]
+          ?? '';
       },
 
       // ── Wall graph (NEW shared-node wall system — see src/wallcore) ──────
@@ -3308,34 +3357,73 @@ export const useDrawingStore = create<DrawingState>()(
 
       wallGraphAddChain: (points, params) => {
         let created: string[] = [];
+        const { activeTool, wallSettings } = get();
+        const partitionTool = isPartitionWallTool(activeTool);
         const material = params?.material ?? 'brick';
         const materialId = params?.materialId ?? (
-          material === get().wallSettings.defaultMaterial
-            ? get().wallSettings.defaultMaterialId
+          material === wallSettings.defaultMaterial
+            ? wallSettings.defaultMaterialId
             : getDefaultMaterialIdForWallMaterial(material as WallMaterial)
         );
-        applyWallGraphOperation(get, set, 'Draw wall', (draft) => {
-          created = coreAddWallChain(
-            draft,
-            points.map((p): WallVec2 => [p.x, p.y]),
-            {
-              thickness: clampThickness(params?.thickness ?? 150),
-              height: params?.height ?? get().wallSettings.defaultHeight ?? DEFAULT_WALL_HEIGHT,
-              baseOffset: 0,
-              justification: params?.justification ?? 'center',
-              material,
-              materialId,
+        applyWallGraphOperation(
+          get,
+          set,
+          'Draw wall',
+          (draft) => {
+            created = coreAddWallChain(
+              draft,
+              points.map((p): WallVec2 => [p.x, p.y]),
+              {
+                thickness: clampThickness(params?.thickness ?? 150),
+                height: params?.height ?? (
+                  partitionTool
+                    ? resolvePartitionHeightMm(wallSettings.partitionMode, wallSettings.defaultHeight)
+                    : wallSettings.defaultHeight ?? DEFAULT_WALL_HEIGHT
+                ),
+                baseOffset: 0,
+                justification: params?.justification ?? 'center',
+                material,
+                materialId,
+              },
+              WALL_GRAPH_IDS,
+            );
+          },
+          {
+            newWall: {
+              layer: partitionTool ? 'partition' : wallSettings.defaultLayer,
+              partitionMode: partitionTool ? wallSettings.partitionMode : undefined,
             },
-            WALL_GRAPH_IDS,
-          );
-        });
-        return created;
+          },
+        );
+        // Drawn exactly over a wall already there, the new piece did not survive.
+        return created.filter((id) => get().walls.some((wall) => wall.id === id));
       },
 
       wallGraphMoveNode: (nodeId, to, weld) =>
-        applyWallGraphOperation(get, set, 'Move wall corner', (draft) =>
-          coreMoveWallNode(draft, nodeId, [to.x, to.y], { weld }, WALL_GRAPH_IDS),
+        applyWallGraphOperation(
+          get,
+          set,
+          'Move wall corner',
+          (draft) => coreMoveWallNode(draft, nodeId, [to.x, to.y], { weld }, WALL_GRAPH_IDS),
+          { normalizeAll: true },
         ),
+
+      wallGraphMoveEnd: (wallId, end, to, options) =>
+        applyWallGraphOperation(
+          get,
+          set,
+          'Move wall end',
+          (draft) => coreMoveWallEnd(draft, wallId, end === 'start' ? 'a' : 'b', [to.x, to.y], WALL_GRAPH_IDS),
+          { ...options },
+        ),
+
+      wallGraphCommitDrag: () =>
+        applyWallGraphOperation(get, set, 'Move walls', () => undefined, {
+          skipHistory: true,
+          skipRoomDetection: true,
+          skipElevationRegeneration: true,
+          normalizeAll: true,
+        }),
 
       wallGraphMoveEdges: (edgeIds, delta) =>
         applyWallGraphOperation(get, set, 'Move walls', (draft) =>
@@ -3367,15 +3455,53 @@ export const useDrawingStore = create<DrawingState>()(
           coreMergeAtNode(draft, nodeId);
         }),
 
-      wallGraphDelete: (edgeIds) =>
-        applyWallGraphOperation(get, set, 'Delete wall', (draft) =>
-          coreDeleteWalls(draft, edgeIds),
-        ),
+      wallGraphDelete: (edgeIds) => get().deleteWalls(edgeIds),
 
       updateWall: (id, updates, options) => {
         const safeUpdates = updates.thickness !== undefined
           ? { ...updates, thickness: clampThickness(updates.thickness) }
           : updates;
+        // Reshaping a wall in the graph moves its shared nodes, so its neighbours follow and it
+        // stays truly joined. A drag frame only updates coordinates; the drop commits through the graph.
+        const graphWall = get().walls.find((wall) => wall.id === id);
+        if (
+          graphWall?.graph &&
+          options?.source !== 'drag' &&
+          (safeUpdates.startPoint || safeUpdates.endPoint || safeUpdates.thickness !== undefined)
+        ) {
+          const { startPoint, endPoint, thickness, ...rest } = safeUpdates;
+          if (Object.keys(rest).length > 0) {
+            get().updateWall(id, rest, { ...options, skipHistory: true, skipRoomDetection: true, skipElevationRegeneration: true });
+          }
+          const nodes = graphWall.graph;
+          applyWallGraphOperation(
+            get,
+            set,
+            'Update wall',
+            (draft) => {
+              if (startPoint) coreMoveWallNode(draft, nodes.a, [startPoint.x, startPoint.y]);
+              if (endPoint) coreMoveWallNode(draft, nodes.b, [endPoint.x, endPoint.y]);
+              if (thickness !== undefined) coreSetWallParams(draft, [id], { thickness });
+            },
+            {
+              skipHistory: options?.skipHistory,
+              skipRoomDetection: options?.skipRoomDetection,
+              skipElevationRegeneration: options?.skipElevationRegeneration,
+            },
+          );
+          const updated = get().walls.find((wall) => wall.id === id);
+          if (updated) {
+            attributeChangeObserver.notify({
+              entity: 'wall',
+              entityId: id,
+              previousValue: graphWall.properties3D,
+              nextValue: updated.properties3D,
+              source: options?.source ?? 'ui',
+              timestamp: Date.now(),
+            });
+          }
+          return;
+        }
         let previousValue: Wall3D | null = null;
         let nextValue: Wall3D | null = null;
         let effectiveWallId = id;
@@ -3425,10 +3551,15 @@ export const useDrawingStore = create<DrawingState>()(
             nextValue = reboundWall.properties3D;
             return reboundWall;
           });
-          const cleanedWalls = geometryChanged
-            ? cleanupStraightWallRuns(nextWalls, id)
+          // Walls in the graph are tidied by normalizing it; these old passes would break their identity.
+          const legacyTidy = geometryChanged && !graphWall?.graph;
+          const movedWalls = graphWall?.graph && (safeUpdates.startPoint || safeUpdates.endPoint)
+            ? moveSharedWallNodes(nextWalls, new Set([id]))
             : nextWalls;
-          const collapsed = geometryChanged
+          const cleanedWalls = legacyTidy
+            ? cleanupStraightWallRuns(movedWalls, id)
+            : movedWalls;
+          const collapsed = legacyTidy
             ? collapseCoincidentWallOverlaps({
               walls: cleanedWalls,
               rooms: state.rooms,
@@ -3505,6 +3636,59 @@ export const useDrawingStore = create<DrawingState>()(
           });
         });
 
+        // As in updateWall: outside a drag, reshaping walls in the graph goes through the graph.
+        if (options?.source !== 'drag') {
+          const reshaped = get().walls.filter((wall) => {
+            const wallUpdates = mergedUpdates.get(wall.id);
+            return wall.graph && wallUpdates && (
+              wallUpdates.startPoint || wallUpdates.endPoint || wallUpdates.thickness !== undefined
+            );
+          });
+          if (reshaped.length > 0) {
+            const previous3D = new Map(reshaped.map((wall) => [wall.id, wall.properties3D]));
+            const rest = [...mergedUpdates].flatMap(([id, wallUpdates]) => {
+              const { startPoint: _start, endPoint: _end, thickness: _thickness, ...others } = wallUpdates;
+              const defined = Object.entries(others).filter(([, value]) => value !== undefined);
+              return defined.length > 0 ? [{ id, updates: Object.fromEntries(defined) as Partial<Wall> }] : [];
+            });
+            if (rest.length > 0) {
+              get().updateWalls(rest, { ...options, skipHistory: true, skipRoomDetection: true, skipElevationRegeneration: true });
+            }
+            applyWallGraphOperation(
+              get,
+              set,
+              'Update walls',
+              (draft) => {
+                for (const wall of reshaped) {
+                  const wallUpdates = mergedUpdates.get(wall.id)!;
+                  if (wallUpdates.startPoint) coreMoveWallNode(draft, wall.graph!.a, [wallUpdates.startPoint.x, wallUpdates.startPoint.y]);
+                  if (wallUpdates.endPoint) coreMoveWallNode(draft, wall.graph!.b, [wallUpdates.endPoint.x, wallUpdates.endPoint.y]);
+                  if (wallUpdates.thickness !== undefined) coreSetWallParams(draft, [wall.id], { thickness: wallUpdates.thickness });
+                }
+              },
+              {
+                skipHistory: options?.skipHistory,
+                skipRoomDetection: options?.skipRoomDetection,
+                skipElevationRegeneration: options?.skipElevationRegeneration,
+              },
+            );
+            const currentWalls = get().walls;
+            previous3D.forEach((previousValue, wallId) => {
+              const nextWall = currentWalls.find((wall) => wall.id === wallId);
+              if (!nextWall) return;
+              attributeChangeObserver.notify({
+                entity: 'wall',
+                entityId: wallId,
+                previousValue,
+                nextValue: nextWall.properties3D,
+                source: options?.source ?? 'ui',
+                timestamp: Date.now(),
+              });
+            });
+            return;
+          }
+        }
+
         let geometryChanged = false;
         let elevationChanged = false;
         const previousValues = new Map<string, Wall3D>();
@@ -3546,13 +3730,19 @@ export const useDrawingStore = create<DrawingState>()(
             return reboundWall;
           });
 
-          if (geometryChanged && options?.source !== 'drag') {
+          // Walls in the graph are tidied by normalizing it; these old passes would break their identity.
+          const legacyTidy = geometryChanged && nextWalls.some((wall) => !wall.graph);
+          if (legacyTidy && options?.source !== 'drag') {
             mergedUpdates.forEach((_wallUpdates, wallId) => {
               nextWalls = cleanupStraightWallRuns(nextWalls, wallId);
             });
           }
+          nextWalls = moveSharedWallNodes(
+            nextWalls,
+            new Set([...mergedUpdates].filter(([, wallUpdates]) => wallUpdates.startPoint || wallUpdates.endPoint).map(([id]) => id)),
+          );
 
-          const collapsed = geometryChanged
+          const collapsed = legacyTidy
             ? collapseCoincidentWallOverlaps({
               walls: nextWalls,
               rooms: state.rooms,
@@ -3732,6 +3922,14 @@ export const useDrawingStore = create<DrawingState>()(
         const wallToDelete = get().walls.find((wall) => wall.id === id);
         if (!wallToDelete) return;
         const deletedWallIds = new Set([id]);
+
+        if (wallToDelete.graph) {
+          set((state) => ({ dimensions: removeDimensionsLinkedToWallIds(state.dimensions, deletedWallIds) }));
+          applyWallGraphOperation(get, set, 'Delete wall', (draft) => coreDeleteWalls(draft, [id]), {
+            skipHistory: options?.skipHistory,
+          });
+          return;
+        }
 
         set((state) => ({
           walls: state.walls
@@ -4279,6 +4477,11 @@ export const useDrawingStore = create<DrawingState>()(
       deleteWalls: (ids) => {
         const idsSet = new Set(ids);
         const deletedWalls = get().walls.filter((wall) => idsSet.has(wall.id));
+        if (deletedWalls.length > 0 && deletedWalls.every((wall) => wall.graph)) {
+          set((state) => ({ dimensions: removeDimensionsLinkedToWallIds(state.dimensions, idsSet) }));
+          applyWallGraphOperation(get, set, 'Delete walls', (draft) => coreDeleteWalls(draft, ids));
+          return;
+        }
         set((state) => ({
           walls: state.walls
             .filter((w) => !idsSet.has(w.id))
@@ -4502,7 +4705,8 @@ export const useDrawingStore = create<DrawingState>()(
       selectWallSegmentAtPoint: (wallId, point) => {
         const currentState = get();
         const sourceWall = currentState.walls.find((wall) => wall.id === wallId);
-        if (!sourceWall) {
+        // A wall in the graph is already split wherever another joins it.
+        if (!sourceWall || sourceWall.graph) {
           return wallId;
         }
 
@@ -4536,7 +4740,7 @@ export const useDrawingStore = create<DrawingState>()(
       selectWallSegmentWithinInterval: (wallId, startPoint, endPoint) => {
         const currentState = get();
         const sourceWall = currentState.walls.find((wall) => wall.id === wallId);
-        if (!sourceWall) {
+        if (!sourceWall || sourceWall.graph) {
           return wallId;
         }
 
@@ -5440,15 +5644,15 @@ export const useDrawingStore = create<DrawingState>()(
             symbols: Array.isArray(data.symbols) ? data.symbols : [],
             hvacElements: importedHvacElements,
             drawingImportSerial: get().drawingImportSerial + 1,
-            // Normalize through the wall-graph mirror: stamps graph identity
-            // (one-time endpoint-weld migration for legacy docs, wall ids kept),
-            // so the plan renders solver-true straight from load, same source
-            // of truth as 3D.
-            walls: legacyWallsFromGraph(
-              wallGraphFromLegacyWalls(attributeHydration.walls, WALL_GRAPH_IDS),
-              attributeHydration.walls,
-              buildWallMirrorCallbacks(get),
-            ),
+            // Normalize through the wall-graph mirror: stamps graph identity (one-time
+            // migration for legacy docs) and turns walls that only touch into real
+            // junctions, so the plan renders solver-true straight from load, same
+            // source of truth as 3D. Most walls keep their id; doors stay on their walls.
+            walls: (() => {
+              const graph = wallGraphFromLegacyWalls(attributeHydration.walls, WALL_GRAPH_IDS);
+              normalizeWallGraph(graph, WALL_GRAPH_IDS);
+              return legacyWallsFromGraph(graph, attributeHydration.walls, buildWallMirrorCallbacks(get));
+            })(),
             rooms: attributeHydration.rooms,
             sectionLines: importedSectionLines,
             elevationViews: importedElevationViews,

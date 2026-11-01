@@ -29,8 +29,8 @@ import {
 export interface UseExtendToolOptions {
   fabricRef: React.RefObject<FabricCanvas | null>;
   walls: Wall[];
-  updateWall: (id: string, updates: Partial<Wall>, options?: { skipHistory?: boolean }) => void;
-  connectWalls: (wallId: string, otherWallId: string) => void;
+  /** Moves only this wall's end, and joins it to whatever it reaches. */
+  wallGraphMoveEnd: (wallId: string, end: 'start' | 'end', to: Point2D, options?: { skipHistory?: boolean }) => void;
   setTool: (tool: DrawingTool) => void;
   detectRooms: (options?: { debounce?: boolean }) => void;
   saveToHistory: (action: string) => void;
@@ -209,8 +209,7 @@ export function useExtendTool(options: UseExtendToolOptions): UseExtendToolResul
   const {
     fabricRef,
     walls,
-    updateWall,
-    connectWalls,
+    wallGraphMoveEnd,
     setTool,
     detectRooms,
     saveToHistory,
@@ -507,11 +506,7 @@ export function useExtendTool(options: UseExtendToolOptions): UseExtendToolResul
     const candidate = resolveCandidateAtPoint(scenePoint);
     if (!candidate) return;
 
-    if (candidate.endpoint === 'start') {
-      updateWall(candidate.wall.id, { startPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
-    } else {
-      updateWall(candidate.wall.id, { endPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
-    }
+    wallGraphMoveEnd(candidate.wall.id, candidate.endpoint, { ...candidate.intersectionPoint }, { skipHistory: true });
 
     if (
       candidate.mode === 'both' &&
@@ -519,14 +514,9 @@ export function useExtendTool(options: UseExtendToolOptions): UseExtendToolResul
       Number.isFinite(candidate.targetExtensionLength) &&
       (candidate.targetExtensionLength ?? 0) > MIN_EXTENSION_MM
     ) {
-      if (candidate.targetEndpoint === 'start') {
-        updateWall(candidate.targetWall.id, { startPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
-      } else {
-        updateWall(candidate.targetWall.id, { endPoint: { ...candidate.intersectionPoint } }, { skipHistory: true });
-      }
+      wallGraphMoveEnd(candidate.targetWall.id, candidate.targetEndpoint, { ...candidate.intersectionPoint }, { skipHistory: true });
     }
 
-    connectWalls(candidate.wall.id, candidate.targetWall.id);
     clearPreview();
     detectRooms({ debounce: true });
     saveToHistory(candidate.mode === 'both' ? 'Extend walls to junction' : 'Extend wall');
@@ -539,12 +529,11 @@ export function useExtendTool(options: UseExtendToolOptions): UseExtendToolResul
     );
   }, [
     clearPreview,
-    connectWalls,
     detectRooms,
     resolveCandidateAtPoint,
     saveToHistory,
     setProcessingStatus,
-    updateWall,
+    wallGraphMoveEnd,
   ]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent): boolean => {
