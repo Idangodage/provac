@@ -29,6 +29,7 @@
  */
 import type { HvacElement, Point2D } from '../../../../types';
 import { getProtectedPipeNodeIndexes } from '../../hybrid/hybridPipeEditing';
+import { buildingCeiling } from '../buildingSection';
 import { createCondensateEditSession, followCondensateDrains, isUnitBranchSpec, type CondensateEditContext } from '../condensate/condensateEditing';
 import { fixedPrefixLength, translateRouteInterior, type PlanRoute } from '../condensate/condensateRouteOps';
 import { getCondensateOwnership, isCondensatePipe } from '../condensate/condensateTypes';
@@ -813,20 +814,16 @@ export function hvacMoveChanges(plan: HvacMovePlan): boolean {
 }
 
 /**
- * The void units and ducts move up and down in: the ceiling where the air
- * terminals sit (else the rooms' ceilings, the cassettes' faces, 2400 mm), up
- * to the soffit.
+ * The void units and ducts move up and down in: the ceiling as the building's
+ * section has it (what sits flush with it says, not the ducted units moving in
+ * it), up to the soffit.
  */
 export function resolveHvacCeilingVoid(
   scene: readonly HvacElement[],
   rooms: ReadonlyArray<{ properties3D?: { ceilingHeight?: number } | null }>,
   soffitMm: number,
 ): HvacCeilingVoid {
-  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
-  const terminals = scene.filter((element) => element.type === 'diffuser' || element.type === 'return-grille').map((element) => element.elevation);
-  const roomCeilings = rooms.map((room) => room.properties3D?.ceilingHeight).filter((value): value is number => Number.isFinite(value));
-  const cassettes = scene.filter((element) => element.type === 'ceiling-cassette-ac').map((element) => element.elevation);
-  const ceilingMm = terminals.length ? median(terminals) : roomCeilings.length ? median(roomCeilings) : cassettes.length ? median(cassettes) : 2400;
+  const { ceilingMm } = buildingCeiling(scene.filter((element) => element.type !== 'ducted-ac'), rooms);
   return { ceilingMm, soffitMm: Math.max(ceilingMm, soffitMm) };
 }
 

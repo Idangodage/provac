@@ -3,6 +3,8 @@
  * (so it reflects field edits, not only what the generator produced).
  */
 import type { HvacElement } from '../../../../types';
+import { drainFittingsAsBuilt } from '../buildingSection';
+import { getActiveDuctBuilding, type DuctWall } from '../duct/ductBuilding';
 import { inchFractionText, toDisplay, toDisplayText, unitLabel, type HvacUnitSystem } from '../units/hvacUnits';
 
 import { getCondensatePipeSystem } from './condensatePipeCatalog';
@@ -49,6 +51,7 @@ function length3(nodes: Array<{ x: number; y: number; z: number }>): number {
 export function buildCondensateBom(
   elements: readonly HvacElement[],
   settings: CondensateDesignSettings,
+  walls: readonly DuctWall[] = getActiveDuctBuilding().walls,
 ): CondensateBomRow[] {
   const pipes = elements.filter(isCondensatePipe);
   const pipeRows = new Map<string, { system: string; size: string; lengthMm: number; insulationMm: number; insulationThickness: number }>();
@@ -64,7 +67,7 @@ export function buildCondensateBom(
     row.lengthMm += length;
     if (spec.insulationThicknessMm > 0) row.insulationMm += length;
     pipeRows.set(key, row);
-    for (const fitting of spec.fittings) {
+    for (const fitting of drainFittingsAsBuilt(spec.fittings, walls)) {
       const fittingKey = `${fitting.kind}|${fitting.nominalSize}`;
       fittingRows.set(fittingKey, (fittingRows.get(fittingKey) ?? 0) + 1);
     }

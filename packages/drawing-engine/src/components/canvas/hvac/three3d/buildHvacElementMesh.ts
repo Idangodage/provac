@@ -51,6 +51,7 @@ import {
   buildSweptTubeGeometry,
   unionGeometries,
 } from "./pipeJointGeometry";
+import { addPipeWallSleeves } from "./pipeWallSleeves";
 import { addRefrigerantAccessoryMeshes } from "./refrigerantAccessoryMeshes";
 import {
   addRefrigerantUnitJoint,
@@ -2592,6 +2593,7 @@ export function buildHvacElementMesh(
           });
         addRefrigerantAccessoryMeshes(group, effectiveElement, context.allElements);
         addPipeOpenEndBands(group, effectiveElement, points, outerRadius);
+        addPipeWallSleeves(group, points, outerRadius);
         break;
       }
       const insulation = createTubeAlongPoints(trimRunEnds(points, joints.startBareMm, joints.endBareMm), outerRadius,
@@ -2625,6 +2627,7 @@ export function buildHvacElementMesh(
       // The line's inline accessories (valves, strainers, sight glasses, unions) on its straights.
       addRefrigerantAccessoryMeshes(group, effectiveElement, context.allElements);
       addPipeOpenEndBands(group, effectiveElement, points, outerRadius);
+      addPipeWallSleeves(group, points, outerRadius);
       break;
     }
     case "duct": {

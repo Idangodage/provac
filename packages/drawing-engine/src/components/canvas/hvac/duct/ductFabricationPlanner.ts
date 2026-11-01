@@ -15,6 +15,7 @@
  * its split outlets.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { buildingSoffitMm } from '../buildingSection';
 import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
 import { activeRoutingSession } from '../routingSession';
 
@@ -1592,7 +1593,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       if (port?.vertical) {
         // A top collar: the runout comes down into it, straight for its lead and bending at a diameter at least, so the
         // void must hold it above the collar (its jacket too).
-        const soffit = settings.soffitMm ?? getActivePipeRoutingSettings().ceilingLimitMm;
+        const soffit = buildingSoffitMm(getActivePipeRoutingSettings(), settings.soffitMm);
         const jacket = settings.flexType === 'nm-il' ? settings.flexJacketMm : 0;
         const needed = port.lip.z + FLEX_STRAIGHT_LEAD_MM + FLEX_RULES.minBendDiameters * diameter + diameter / 2 + jacket;
         if (needed > soffit + 0.5) {

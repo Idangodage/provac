@@ -12,8 +12,10 @@
 import * as THREE from 'three';
 
 import type { HvacElement } from '../../../../types';
+import { drainFittingsAsBuilt } from '../buildingSection';
 import { readDrainGaps } from '../condensate/condensateCut';
 import { layoutCondensateSupports } from '../condensate/condensateSupports';
+import { getActiveDuctBuilding } from '../duct/ductBuilding';
 import {
   CONDENSATE_TUNDISH_HEIGHT_MM,
   readCondensateGullySpec,
@@ -367,7 +369,7 @@ export function addCondensatePipeMeshes(group: THREE.Group, element: HvacElement
     if (collar) group.add(collar);
   }
   if (options.showSupports !== false) addHangers(group, element, spec, radius);
-  for (const fitting of spec.fittings) addFittingMesh(group, fitting, radius);
+  for (const fitting of drainFittingsAsBuilt(spec.fittings, getActiveDuctBuilding().walls)) addFittingMesh(group, fitting, radius);
   // Open ends left by deleted pieces (a gap the run remembers): an amber band round each, as the plan marks it.
   const gaps = readDrainGaps(element);
   const points = nodes.map(vec);

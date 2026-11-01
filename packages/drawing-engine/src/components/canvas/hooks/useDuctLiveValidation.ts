@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react';
 
 import type { HvacElement, Room } from '../../../types';
 import type { VrfValidationReport } from '../../../vrf/rules';
+import { checkWallsReachSoffit } from '../hvac/buildingSection';
+import { isCondensatePipe } from '../hvac/condensate/condensateTypes';
 import { checkAirSystems } from '../hvac/duct/ductAirSystemChecks';
 import type { DuctBuilding } from '../hvac/duct/ductBuilding';
 import type { DuctDesignSettings } from '../hvac/duct/ductSettings';
 import { isDuctTerminalElement } from '../hvac/duct/ductTerminals';
+import { resolveSoffitZ } from '../hvac/duct/ductSupports';
 import { isDuctElement } from '../hvac/duct/ductTypes';
 import { validateDuctRuns } from '../hvac/duct/ductValidation';
 
@@ -15,10 +18,10 @@ const EMPTY: VrfValidationReport = { issues: [], commitBlocked: false, counts: {
 const NO_ROOMS: ReadonlyArray<Pick<Room, 'id' | 'vertices' | 'name'>> = [];
 
 /**
- * Debounced duct design checks (DU_*) with the air-system checks; silent (and
- * free) until a duct or an air terminal exists. `building` (the walls the runs
- * pass through, which the plans read, and which price the far-unit check)
- * re-runs them when a wall changes.
+ * Debounced duct design checks (DU_*) with the air-system checks and whether
+ * the walls reach the soffit; silent (and free) until a duct, a pipe, a drain or
+ * an air terminal exists. `building` (the walls the runs pass through, which the
+ * plans read, and which price the far-unit check) re-runs them when a wall changes.
  */
 export function useDuctLiveValidation(
   elements: readonly HvacElement[],
@@ -28,13 +31,15 @@ export function useDuctLiveValidation(
 ): VrfValidationReport {
   const [report, setReport] = useState<VrfValidationReport>(EMPTY);
   useEffect(() => {
-    if (!elements.some((element) => isDuctElement(element) || isDuctTerminalElement(element))) {
+    if (!elements.some((element) => isDuctElement(element) || isDuctTerminalElement(element) || isCondensatePipe(element) || element.type === 'refrigerant-pipe')) {
       setReport((current) => (current.issues.length ? EMPTY : current));
       return undefined;
     }
     const timer = setTimeout(() => {
       try {
-        setReport(validateDuctRuns(elements, settings, checkAirSystems(elements, settings, rooms, building?.walls)));
+        setReport(validateDuctRuns(elements, settings, [
+          ...checkAirSystems(elements, settings, rooms, building?.walls), ...checkWallsReachSoffit(building?.walls ?? [], resolveSoffitZ(settings)),
+        ]));
       } catch (error) {
         setReport({
           issues: [{

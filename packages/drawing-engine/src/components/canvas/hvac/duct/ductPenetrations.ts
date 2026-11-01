@@ -56,7 +56,7 @@ function cross(o: Point2D, a: Point2D, b: Point2D): number {
 }
 
 /** Where segment ab properly crosses segment cd, as the parameter along ab (null if they do not). */
-function crossingParameter(a: Point2D, b: Point2D, c: Point2D, d: Point2D): number | null {
+export function crossingParameter(a: Point2D, b: Point2D, c: Point2D, d: Point2D): number | null {
   const d1 = cross(c, d, a);
   const d2 = cross(c, d, b);
   const d3 = cross(a, b, c);

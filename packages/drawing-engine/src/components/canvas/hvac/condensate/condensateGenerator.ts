@@ -3,6 +3,7 @@
  * result for the worker, the preview overlay and the apply command.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { ductWallsFromWalls } from '../duct/ductBuilding';
 
 import { buildCondensateBom, type CondensateBomRow } from './condensateBom';
 import { buildCondensatePlanElements } from './condensateElements';
@@ -101,6 +102,6 @@ export function generateCondensateNetwork(scene: HvacElement[], options: Condens
       crossings: crossings.length,
       hops: plan.hopProposals.length,
     },
-    bom: buildCondensateBom([...elementsToAdd, ...gullies], options.settings),
+    bom: buildCondensateBom([...elementsToAdd, ...gullies], options.settings, ductWallsFromWalls(options.walls ?? [])),
   };
 }

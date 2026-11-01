@@ -518,7 +518,8 @@ export const MIN_WALL_HEIGHT = 100;
 export const MAX_WALL_HEIGHT = 10000;
 export const MIN_U_VALUE = 0.1;
 export const MAX_U_VALUE = 10;
-export const DEFAULT_WALL_HEIGHT = 2700;
+/** Up to the default soffit (pipeRoutingRules' DEFAULT_CEILING_LIMIT_MM), so services in the void pass through a wall, not over it. */
+export const DEFAULT_WALL_HEIGHT = 2900;
 export const PARTITION_HALF_HEIGHT = 1219.2;
 export const PARTITION_TOP_CLEARANCE = 250;
 export const DEFAULT_ROOM_HEIGHT = 2700;

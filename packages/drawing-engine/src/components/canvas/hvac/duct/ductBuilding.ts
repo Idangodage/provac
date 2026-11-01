@@ -9,7 +9,7 @@
  * change (like the active duct settings). The auto layout sets and restores it
  * around its own work, so a Web Worker sees the building it was sent.
  */
-import type { Point2D, Room, Wall } from '../../../../types';
+import { DEFAULT_WALL_HEIGHT, type Point2D, type Room, type Wall } from '../../../../types';
 
 /** A wall as ducts see it (mm). */
 export interface DuctWall {
@@ -24,6 +24,8 @@ export interface DuctWall {
   structural: boolean;
   /** What it is built of, for the penetration schedule (absent when the drawing does not say). */
   material?: 'brick' | 'concrete' | 'partition';
+  /** Stops short of the soffit by design: a half-height or top-clearance partition. */
+  lowByDesign?: boolean;
 }
 
 export interface DuctRoomOutline {
@@ -42,9 +44,9 @@ export interface DuctBuilding {
 export const EMPTY_DUCT_BUILDING: DuctBuilding = { walls: [], rooms: [], revision: 0 };
 
 /** The height walls are taken to have when the drawing gives none (mm). */
-export const DEFAULT_DUCT_WALL_HEIGHT_MM = 2700;
+export const DEFAULT_DUCT_WALL_HEIGHT_MM = DEFAULT_WALL_HEIGHT;
 
-type WallSource = Pick<Wall, 'id' | 'startPoint' | 'endPoint' | 'thickness'> & Partial<Pick<Wall, 'material' | 'layer' | 'properties3D'>>;
+type WallSource = Pick<Wall, 'id' | 'startPoint' | 'endPoint' | 'thickness'> & Partial<Pick<Wall, 'material' | 'layer' | 'properties3D' | 'partitionMode'>>;
 
 /** The drawing's walls as ducts see them. */
 export function ductWallsFromWalls(walls: readonly WallSource[]): DuctWall[] {
@@ -56,6 +58,7 @@ export function ductWallsFromWalls(walls: readonly WallSource[]): DuctWall[] {
       baseZ, topZ: baseZ + height,
       structural: wall.layer === 'structural' || (wall.material !== undefined && wall.material !== 'partition'),
       ...(wall.material ? { material: wall.material } : {}),
+      ...(wall.partitionMode === 'half' || wall.partitionMode === 'top' ? { lowByDesign: true } : {}),
     };
   });
 }

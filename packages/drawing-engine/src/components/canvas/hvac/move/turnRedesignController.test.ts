@@ -14,7 +14,8 @@ import { isDuctElement, readDuctRunSpec } from '../duct/ductTypes';
 import { hvacMoveCommand, planHvacMove } from './hvacMoveModel';
 import { cancelTurnRedesign, redesignAfterTurn, turnedBy, turnRedesignNote, useTurnRedesignStore } from './turnRedesignController';
 
-const settings = resolveDuctSettings({ soffitMm: 3000 });
+// (A gentle taper: the collar transitions these re-routes are judged against are long.)
+const settings = resolveDuctSettings({ soffitMm: 3000, transitionTaperDeg: 14 });
 const unit: HvacElement = {
   id: 'fdum', type: 'ducted-ac', position: { x: 0, y: 0 }, rotation: 0, width: 1084, depth: 697, height: 300,
   elevation: 2400, mountType: 'ceiling', label: 'FDUM22', supplyZoneRatio: 0.5,

@@ -5529,6 +5529,9 @@ export const useDrawingStore = create<DrawingState>()(
             ...DEFAULT_WALL_SETTINGS,
             ...importedWallSettings,
           } as WallSettings;
+          // 2700 mm was the default wall height until walls reached the soffit: a document saved with it did not
+          // choose it. Its walls keep their height (the checks flag them); new ones take today's default.
+          if ((importedWallSettings as Partial<WallSettings>).defaultHeight === 2700) nextWallSettings.defaultHeight = DEFAULT_WALL_HEIGHT;
           if (
             typeof (importedWallSettings as Partial<WallSettings>).defaultMaterialId !== 'string' ||
             !getArchitecturalMaterial(nextWallSettings.defaultMaterialId)

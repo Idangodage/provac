@@ -1,5 +1,5 @@
 import type * as fabric from 'fabric';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HvacElement, Point2D } from '../../../types';
 
@@ -35,6 +35,8 @@ function named(objects: fabric.Object[], name: string): fabric.Object[] {
   return objects.filter(object => (object as fabric.Object & { name?: string }).name === name);
 }
 
+// (The fittings these tests count are drawn in the Copper detail view.)
+beforeEach(() => setActivePipeRoutingSettings({ ...DEFAULT_PIPE_ROUTING_SETTINGS, fittingDisplay: 'copper', fittingDisplayChosen: true }));
 afterEach(() => setActivePipeRoutingSettings(DEFAULT_PIPE_ROUTING_SETTINGS));
 
 describe('plan projection of a corner riser', () => {

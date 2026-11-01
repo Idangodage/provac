@@ -23,7 +23,9 @@ export type VrfValidationFix =
   /** Condensate issues: re-run the condensate generator (preview, then apply). */
   | { kind: 'regenerate-condensate' }
   /** Air terminals served by far units: re-solve them with the balanced assignment (one undo). */
-  | { kind: 'reassign-far-terminals'; terminalIds: string[] };
+  | { kind: 'reassign-far-terminals'; terminalIds: string[] }
+  /** Walls that stop under the soffit: raise them to it (one undo). */
+  | { kind: 'raise-walls-to-soffit'; wallIds: string[]; soffitMm: number };
 
 export interface VrfValidationIssue {
   id: string;

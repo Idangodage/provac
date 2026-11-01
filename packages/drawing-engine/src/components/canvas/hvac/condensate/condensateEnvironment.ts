@@ -10,6 +10,7 @@
  * overridden in the condensate settings.
  */
 import type { HvacElement, Point2D, Room, Wall } from '../../../../types';
+import { buildingCeiling, buildingSoffitMm } from '../buildingSection';
 import { getActiveDuctSettings } from '../duct/ductSettings';
 import { solidBoxesInScene, type DuctBox } from '../duct/ductVolumes';
 import { listNetworkPipeLanes } from '../networkPipeClearance';
@@ -149,28 +150,10 @@ export function deriveCondensateEnvelope(
   routingSettings: Pick<PipeRoutingSettings, 'ceilingLimitMm'>,
   rooms: readonly Room[] = [],
 ): CondensateEnvelope {
-  let ceilingPlane: number;
-  let derivation: string;
-  const cassettes = scene.filter((element) => element.type === 'ceiling-cassette-ac').map((element) => element.elevation);
-  const ducted = scene.filter((element) => element.type === 'ducted-ac').map((element) => element.elevation);
-  const roomCeilings = rooms.map((room) => room.properties3D?.ceilingHeight).filter((value): value is number => Number.isFinite(value));
-  if (settings.ceilingPlaneMm !== null) {
-    ceilingPlane = settings.ceilingPlaneMm;
-    derivation = 'ceiling plane from condensate settings';
-  } else if (cassettes.length) {
-    ceilingPlane = median(cassettes)!;
-    derivation = `ceiling plane from ${cassettes.length} ceiling cassette${cassettes.length === 1 ? '' : 's'}`;
-  } else if (ducted.length) {
-    ceilingPlane = Math.min(...ducted);
-    derivation = `ceiling plane below ${ducted.length} ducted unit${ducted.length === 1 ? '' : 's'}`;
-  } else if (roomCeilings.length) {
-    ceilingPlane = median(roomCeilings)!;
-    derivation = 'ceiling plane from room ceiling heights';
-  } else {
-    ceilingPlane = 2400;
-    derivation = 'default ceiling plane';
-  }
-  const soffit = settings.soffitMm ?? routingSettings.ceilingLimitMm;
+  const { ceilingMm: ceilingPlane, derivation } = settings.ceilingPlaneMm !== null
+    ? { ceilingMm: settings.ceilingPlaneMm, derivation: 'ceiling plane from condensate settings' }
+    : buildingCeiling(scene, rooms);
+  const soffit = buildingSoffitMm(routingSettings, settings.soffitMm);
   const soffitNote = settings.soffitMm !== null ? 'soffit from condensate settings' : 'soffit = routing ceiling limit';
   const voidFloor = ceilingPlane + settings.envelopeClearanceMm;
   const voidTop = Math.max(voidFloor, soffit - settings.envelopeClearanceMm);

@@ -31,6 +31,7 @@ import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
 import { describeJoint } from './ductGauge';
 import { ductLegs } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
+import { refrigerantPenetrationBomRows, servicePenetrations, servicePenetrationScheduleRows } from '../servicePenetrations';
 import { ductPenetrationSchedule, ductPenetrationScheduleToCsv } from './ductPenetrationSchedule';
 import { penetrationHasFireDamper } from './ductPenetrations';
 import { defaultPlenumSize } from './ductPlenum';
@@ -905,13 +906,19 @@ export function DuctSystemsSection() {
     hvacElements: state.hvacElements, ductSettings: state.ductSettings, setDuctSettings: state.setDuctSettings,
   }), shallow);
   const plans = usePlans();
-  const bom = useMemo(() => buildDuctBom(
+  const building = useDuctBuilding();
+  const pipePenetrations = useMemo(() => servicePenetrations(hvacElements, building), [hvacElements, building]);
+  const bom = useMemo(() => [...buildDuctBom(
     plans,
     plans.map((plan) => getDuctSupportPlan(plan, hvacElements, ductSettings)),
     hvacElements.filter(isDuctTerminalElement),
-  ), [plans, hvacElements, ductSettings]);
+  ), ...refrigerantPenetrationBomRows(pipePenetrations)], [plans, hvacElements, ductSettings, pipePenetrations]);
   const schedule = useMemo(() => buildDuctFabricationSchedule(plans), [plans]);
-  const penetrationRows = useMemo(() => ductPenetrationSchedule(plans, new Map(hvacElements.map((element) => [element.id, element.label || element.id]))), [plans, hvacElements]);
+  const penetrationRows = useMemo(() => {
+    const labels = new Map(hvacElements.map((element) => [element.id, element.label || element.id]));
+    const rows = ductPenetrationSchedule(plans, labels);
+    return [...rows, ...servicePenetrationScheduleRows(pipePenetrations, labels, rows.length)];
+  }, [plans, hvacElements, pipePenetrations]);
   const [stockDraft, setStockDraft] = useState<string | null>(null);
   const pressureWarning = (value: number) => (DUCT_SUPPORTED_PRESSURE_CLASSES_PA.some((pa) => value <= pa) ? null
     : <span className="ml-1 text-[10px] text-red-600">unsupported (&gt;500 Pa)</span>);
@@ -1178,7 +1185,7 @@ export function DuctSystemsSection() {
         <details data-testid="duct-penetration-schedule">
           <summary className="cursor-pointer text-xs font-medium text-slate-700">Wall penetrations, builder&apos;s work ({penetrationRows.length})</summary>
           <table className="w-full text-[11px]">
-            <thead><tr className="text-left text-slate-500"><th>Ref</th><th>Run</th><th>Wall</th><th>Duct</th><th>Opening</th><th>BOD</th><th>FD</th></tr></thead>
+            <thead><tr className="text-left text-slate-500"><th>Ref</th><th>Run</th><th>Wall</th><th>Service</th><th>Opening</th><th>Bottom</th><th>FD</th></tr></thead>
             <tbody>
               {penetrationRows.map((row) => (
                 <tr key={row.ref} className="border-t border-slate-100">

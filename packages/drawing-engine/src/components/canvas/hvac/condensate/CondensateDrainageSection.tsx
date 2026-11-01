@@ -14,6 +14,7 @@ import { applyAutoRoutePreview, discardAutoRoutePreview, runAutoRoute } from '..
 import { fromDisplay, slopeText, toDisplay, toDisplayText, unitLabel } from '../units/hvacUnits';
 import { useHvacUnitSystem } from '../units/useHvacUnits';
 
+import { useDuctBuilding } from '../duct/useDuctBuilding';
 import { buildCondensateBom, condensateBomRowIn, condensateBomToCsv } from './condensateBom';
 import { drainNetworksOffSeries, resizeDrainNetworksToSeries } from './condensateEditController';
 import { deriveCondensateEnvelope } from './condensateEnvironment';
@@ -142,7 +143,9 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
   const ip = system === 'ip';
 
   const envelope = useMemo(() => deriveCondensateEnvelope(hvacElements, settings, routing, rooms), [hvacElements, settings, routing, rooms]);
-  const committedBom = useMemo(() => buildCondensateBom(hvacElements.filter(isCondensateElement), settings), [hvacElements, settings]);
+  // (Its sleeves stand where the walls hold the pipe: a raised wall changes it.)
+  const { walls } = useDuctBuilding();
+  const committedBom = useMemo(() => buildCondensateBom(hvacElements.filter(isCondensateElement), settings, walls), [hvacElements, settings, walls]);
   const bom = preview?.bom ?? committedBom;
   const gullyCount = hvacElements.filter((element) => element.type === 'condensate-gully').length;
   // (While a run goes on, what it shows is only to look at: Apply and Discard wait for its answer.)

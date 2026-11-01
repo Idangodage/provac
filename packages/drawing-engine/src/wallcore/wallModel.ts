@@ -71,7 +71,7 @@ export interface WallParams {
 
 export const DEFAULT_WALL_PARAMS: WallParams = Object.freeze({
   thickness: 200,
-  height: 2700,
+  height: 2900,
   baseOffset: 0,
   justification: 'center',
   material: 'generic',

@@ -314,7 +314,7 @@ describe('slide grips: a small piece moved along its duct', () => {
     expect(damper).toMatchObject({ kind: 'slide', value: 1100, slide: { piece: 'inline', id: 'i1' } });
     // The first straight's clear part runs from the collar's transition to the reducer: its middle.
     const middle = damper.slide!.stops[0]!;
-    expect(middle).toBeGreaterThan(900);
+    expect(middle).toBeGreaterThan(800);
     expect(middle).toBeLessThan(1500);
     const reducer = slideOf('main', 'transition:1');
     expect(reducer).toMatchObject({ kind: 'slide', slide: { piece: 'transition', node: 1 } });

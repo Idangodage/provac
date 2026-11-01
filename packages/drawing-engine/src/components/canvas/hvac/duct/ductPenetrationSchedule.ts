@@ -1,7 +1,8 @@
 /**
  * Builders' work for duct wall penetrations: the BOM rows (sleeves, packing
  * and sealant or fire-stop, fire dampers with their access doors) and the
- * penetration schedule a builder sets the openings out from (CSV).
+ * penetration schedule a builder sets the openings out from (CSV), which also
+ * lists the pipes' (servicePenetrations.ts).
  */
 import type { DuctBomRow } from './ductBom';
 import type { DuctFabricationPlan } from './ductFabricationPlanner';

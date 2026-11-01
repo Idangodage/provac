@@ -32,6 +32,7 @@ import { UnitTurnGhosts } from '../UnitTurnGhosts';
 import { useDuctGapStore } from '../duct/ductGapController';
 import { openEndsMarkup, segmentFocusMarkup } from '../duct/ductOverlayMarkup';
 import type { ScreenRect } from '../duct/popoverPlacement';
+import { useDuctBuilding } from '../duct/useDuctBuilding';
 import { pickWithModifier } from '../segments/piecePicking';
 import { domainOf, focusId, useSegmentUiStore, type SegmentFocus } from '../segments/segmentUiStore';
 
@@ -180,16 +181,17 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
     else useSegmentUiStore.getState().pin(focus);
   }, [pieceFocusAt]);
 
+  const { walls: buildingWalls } = useDuctBuilding();
   const committed = useMemo(() => hvacElements
     .filter(isCondensatePipe)
     .map((element) => {
-      const presentation = buildCondensatePlanPresentation(element);
+      const presentation = buildCondensatePlanPresentation(element, buildingWalls);
       return presentation ? Object.assign(presentation, { element }) : null;
     })
-    .filter((entry): entry is CondensatePlanPresentation & { element: HvacElement } => entry !== null), [hvacElements]);
+    .filter((entry): entry is CondensatePlanPresentation & { element: HvacElement } => entry !== null), [hvacElements, buildingWalls]);
   const gullies = useMemo(() => hvacElements.filter(isCondensateGully), [hvacElements]);
   const previewViews = useMemo(() => (preview?.elementsToAdd ?? [])
-    .map(buildCondensatePlanPresentation)
+    .map((element) => buildCondensatePlanPresentation(element))
     .filter((entry): entry is CondensatePlanPresentation => entry !== null), [preview]);
   const replaced = useMemo(() => new Set(preview?.removeElementIds ?? []), [preview]);
   // The selected drain run (one at a time) is editable while no Auto route preview is open.
@@ -228,7 +230,7 @@ export const CondensateOverlay = forwardRef<CondensateOverlayHandle, CondensateO
     : null), [dragResult, cardPreview]);
   const editIds = useMemo(() => new Set(editResult ? [...editResult.elements.map((element) => element.id), ...editResult.removeIds] : []), [editResult]);
   const editViews = useMemo(() => (editResult?.elements ?? [])
-    .map(buildCondensatePlanPresentation)
+    .map((element) => buildCondensatePlanPresentation(element))
     .filter((entry): entry is CondensatePlanPresentation => entry !== null), [editResult]);
   const slackLookup = useMemo(() => {
     const map = new Map<string, number>();

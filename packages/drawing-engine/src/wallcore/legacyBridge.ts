@@ -49,7 +49,7 @@ export interface LegacyWallLike {
   openings?: LegacyOpeningLike[];
 }
 
-export const DEFAULT_LEGACY_WALL_HEIGHT = 2700;
+export const DEFAULT_LEGACY_WALL_HEIGHT = 2900;
 
 /**
  * Reconstruct/migrate the wall graph from a legacy mirror.

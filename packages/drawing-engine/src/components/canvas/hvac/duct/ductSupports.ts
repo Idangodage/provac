@@ -16,6 +16,7 @@
  * Table 4-3M member for its length and load. Rods run up to the soffit.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { buildingSoffitMm } from '../buildingSection';
 import { getActivePipeRoutingSettings } from '../pipeRoutingSettings';
 
 import { tapAttachment } from './ductBranches';
@@ -145,7 +146,7 @@ function insulationAllowanceKg(piece: DuctPiece): number {
 }
 
 export function resolveSoffitZ(settings: Pick<DuctDesignSettings, 'soffitMm'>): number {
-  return settings.soffitMm ?? getActivePipeRoutingSettings().ceilingLimitMm;
+  return buildingSoffitMm(getActivePipeRoutingSettings(), settings.soffitMm);
 }
 
 export function planDuctSupports(

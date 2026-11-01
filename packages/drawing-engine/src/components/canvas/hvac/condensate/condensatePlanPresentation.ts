@@ -4,6 +4,8 @@
  * overlay only paints what this returns, so it is testable without a DOM.
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { drainFittingsAsBuilt } from '../buildingSection';
+import { getActiveDuctBuilding, type DuctWall } from '../duct/ductBuilding';
 
 import { formatFallRatio } from './condensateSettings';
 import { condensateInsulatedRadiusMm, readCondensatePipeSpec, type CondensateFitting, type CondensatePipeSpec, type Point3 } from './condensateTypes';
@@ -45,7 +47,7 @@ function planDistance(a: Point2D, b: Point2D): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
-export function buildCondensatePlanPresentation(element: HvacElement): CondensatePlanPresentation | null {
+export function buildCondensatePlanPresentation(element: HvacElement, walls: readonly DuctWall[] = getActiveDuctBuilding().walls): CondensatePlanPresentation | null {
   const spec = readCondensatePipeSpec(element);
   const nodes: Point3[] = spec.routeNodes3d.length >= 2
     ? spec.routeNodes3d
@@ -105,7 +107,7 @@ export function buildCondensatePlanPresentation(element: HvacElement): Condensat
     runs,
     path,
     verticals,
-    fittings: spec.fittings,
+    fittings: drainFittingsAsBuilt(spec.fittings, walls),
     fallTag,
     levelTags,
   };

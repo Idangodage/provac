@@ -21,6 +21,8 @@
  * PURE: elements in, pieces out (cached per element).
  */
 import type { HvacElement, Point2D } from '../../../../types';
+import { drainFittingsAsBuilt } from '../buildingSection';
+import { getActiveDuctBuilding } from '../duct/ductBuilding';
 import type { SegmentFocus } from '../segments/segmentUiStore';
 
 import {
@@ -261,7 +263,7 @@ function buildRun(element: HvacElement): CondensateRun | null {
 
   // ---- Its rodding eyes, air vents and wall sleeves, where they sit along it.
   const reach = Math.max(30, 2.5 * radiusMm);
-  for (const fitting of spec.fittings) {
+  for (const fitting of drainFittingsAsBuilt(spec.fittings, getActiveDuctBuilding().walls)) {
     const kind: CondensatePieceKind | null = fitting.kind === 'cleanout' ? 'eye' : fitting.kind === 'air-vent' ? 'vent' : fitting.kind === 'wall-sleeve' ? 'sleeve' : null;
     if (!kind) continue;
     const at = project(nodes, fitting.point);

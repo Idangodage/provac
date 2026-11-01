@@ -122,6 +122,7 @@ import { dismissGap, proposeGap, useDuctGapStore, type GapDomain } from "./canva
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
+import { raisedWallUpdates } from "./canvas/hvac/buildingSection";
 import { getDuctSupportPlan, resolveSoffitZ } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg, type DuctPoint3 } from "./canvas/hvac/duct/ductTypes";
@@ -2812,6 +2813,12 @@ export function DrawingCanvas({
       if (issue.fix?.kind === "regenerate-condensate") {
         // Condensate fixes re-run the generator; the user reviews and applies.
         runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope: "drawing", profile: vrfRuleProfile });
+        return;
+      }
+      if (issue.fix?.kind === "raise-walls-to-soffit") {
+        const state = useSmartDrawingStore.getState();
+        state.updateWalls(raisedWallUpdates(state.walls, issue.fix.wallIds, issue.fix.soffitMm));
+        setProcessingStatus(`${issue.fix.wallIds.length} wall${issue.fix.wallIds.length === 1 ? "" : "s"} raised to the soffit: services crossing them have their sleeves. One undo reverts it.`, false);
         return;
       }
       if (issue.fix?.kind === "reassign-far-terminals") {

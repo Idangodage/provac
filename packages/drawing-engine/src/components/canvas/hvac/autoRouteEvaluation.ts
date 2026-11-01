@@ -516,6 +516,9 @@ function wallCrossings(runs: PipeRun[], walls: Wall[], measurements: EvaluationM
         const u = ((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)) / denominator;
         if (t < 0 || t > 1 || u < 0 || u > 1) continue;
         const point = { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y), z: a.z + t * (b.z - a.z) };
+        // Above the wall's top the pair passes over it.
+        const base = wall.properties3D?.baseElevation ?? 0;
+        if (point.z >= base + (wall.properties3D?.height ?? Number.POSITIVE_INFINITY) || point.z <= base) continue;
         const existing = intersections.get(wall.id) ?? [];
         if (!existing.some((entry) => distance(entry, point) < 1)) existing.push(point);
         intersections.set(wall.id, existing);
@@ -649,7 +652,7 @@ export function evaluateAutoRouteDocument(
   }
   const branchPairCount = Math.max(branches.filter((branch) => branch.lineKind === 'gas').length, branches.filter((branch) => branch.lineKind === 'liquid').length);
   const wallCrossingCount = wallCrossings(runs, options.walls ?? [], measurements);
-  if (wallCrossingCount) advisory.add(`${wallCrossingCount} plan wall crossing${wallCrossingCount === 1 ? '' : 's'} need opening coordination; wall construction, heights and available sleeves are not verified.`);
+  if (wallCrossingCount) advisory.add(`${wallCrossingCount} wall crossing${wallCrossingCount === 1 ? '' : 's'} of the pair need opening coordination: each line's sleeve is on the penetration schedule; wall construction and any fire rating are not verified.`);
   const rates = options.rates;
   const validRates = rates && typeof rates.currency === 'string' && rates.currency.trim().length > 0
     && [rates.gasPipePerMetre, rates.liquidPipePerMetre, rates.elbowEach, rates.branchPairEach, rates.riserEach].every(finiteNonnegative);
