@@ -154,6 +154,8 @@ function pipeEntry(element: HvacElement): PipeEntry {
 
 interface Terminal { service: Service; level: number; outdoor: boolean; id: string }
 
+const INSULATION_BOTH_SIDES_MM = 50.8;
+
 /** Both vertical elbows and protected straights must fit the complete cup
  * mouths. An uninsulated pipe's small envelope is not a fitting takeoff. */
 function riserBendExtentMm(radius: number, settings: PipeRoutingSettings,
@@ -161,6 +163,26 @@ function riserBendExtentMm(radius: number, settings: PipeRoutingSettings,
   const socket = finite(pipeDiameterMm) ? resolveCopperSocketElbow(pipeDiameterMm, 90) : null;
   return Math.max(1, radius * 2 * settings.bendRadiusFactor, settings.minimumFieldBendRadiusMm,
     minimumBendRadiusMm, socket?.centerToFaceMm ?? 0);
+}
+
+/**
+ * The corridor that passes under everything above `lowestZ`: as high as it can go, gas on top as in a compact pair,
+ * while each indoor unit's riser keeps room for its two full-radius bends. Sized for the largest pipe on the system.
+ */
+export function corridorUnder(lowestZ: number, outdoor: RefrigerantPipeBundleConnection, indoors: readonly RefrigerantPipeBundleConnection[],
+  settings: PipeRoutingSettings): { gas: number; liquid: number } {
+  const largest = (read: (port: RefrigerantPipeBundleConnection) => number | undefined, fallback: number) =>
+    Math.max(...[outdoor, ...indoors].map(port => read(port) ?? fallback));
+  const gasPipe = largest(port => port.gasOuterDiameterMm, 15.875);
+  const liquidPipe = largest(port => port.liquidOuterDiameterMm, 9.525);
+  const gasRadius = (gasPipe + INSULATION_BOTH_SIDES_MM) / 2;
+  const liquidRadius = (liquidPipe + INSULATION_BOTH_SIDES_MM) / 2;
+  const rise = (radius: number, pipe: number) => 2 * riserBendExtentMm(radius, settings, pipe);
+  const gas = Math.min(lowestZ - gasRadius - settings.defaultPipeGapMm,
+    ...indoors.map(port => port.gasElevationMm - rise(gasRadius, gasPipe)));
+  const separation = gasRadius + liquidRadius + Math.max(0, settings.defaultPipeGapMm, settings.zOffsetClearanceMm);
+  const liquid = Math.min(gas - separation, ...indoors.map(port => port.liquidElevationMm - rise(liquidRadius, liquidPipe)));
+  return { gas, liquid };
 }
 
 function collectTerminals(entries: PipeEntry[], scope: HvacElement[], start: RefrigerantPipeBundleConnection): Terminal[] {
@@ -223,6 +245,8 @@ export interface NetworkPipeLevelOptions {
   /** Layouts whose new branch approach failed; try the next feasible corridor. */
   excludedLevels?: Array<{ gas: number; liquid: number }>;
   deferRiserTurnOptimization?: boolean;
+  /** The corridor to use instead of searching for one (see corridorUnder); it must still fit. */
+  corridor?: { gas: number; liquid: number };
 }
 
 const levelPlanCache = new WeakMap<HvacElement[], Map<string, NetworkPipeLevelPlan>>();
@@ -363,6 +387,10 @@ function computeNetworkPipeLevels(scene: HvacElement[], options: NetworkPipeLeve
   if (established && !legacyWideCorridor) {
     const gas = metadata.gasElevationMm; const liquid = metadata.liquidElevationMm;
     if (finite(gas) && finite(liquid)) preferExisting(gas, liquid);
+  }
+  if (options.corridor) {
+    candidates.length = 0;
+    preferExisting(options.corridor.gas, options.corridor.liquid);
   }
   let best = candidates[0] ?? null;
   if (!best) issues.push('The required insulated service separation does not fit the available levels and authored/locked routes. Review the network corridor instead of adding local offsets.');

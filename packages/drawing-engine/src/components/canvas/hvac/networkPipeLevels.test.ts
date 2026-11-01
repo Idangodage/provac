@@ -5,6 +5,7 @@ import type { HvacElement, Point2D } from '../../../types';
 import {
   applyNetworkPipeLevels,
   buildNetworkLevelRoute,
+  corridorUnder,
   isNetworkLevelPlanCurrent,
   planNetworkPipeLevels,
 } from './networkPipeLevels';
@@ -362,5 +363,43 @@ describe('network level source snapshots', () => {
   it('rejects newly connected members whose equipment loads were absent from the preview', () => {
     const result = plan(scene);
     expect(isNetworkLevelPlanCurrent(result, [...scene, pipe('new-connected-line', 'gas', 2700)])).toBe(false);
+  });
+});
+
+describe('a corridor under the ducts', () => {
+  const port = (gas: number, liquid: number, gasMm = 19.05, liquidMm = 9.525): RefrigerantPipeBundleConnection => ({
+    ...bundle, connectionKind: 'unit-port', gasElevationMm: gas, liquidElevationMm: liquid, gasOuterDiameterMm: gasMm, liquidOuterDiameterMm: liquidMm,
+  });
+  const outdoor = port(1437, 1318);
+
+  it('runs as high as it can under the lowest duct, gas on top, a separation apart', () => {
+    const { gas, liquid } = corridorUnder(2400, outdoor, [port(2900, 2900)], settings);
+    // The gas pipe's insulation (19.05 + 2 x 25.4) and the gap, under the duct.
+    expect(gas).toBeCloseTo(2400 - 69.85 / 2 - settings.defaultPipeGapMm, 6);
+    expect(gas - liquid).toBeCloseTo(69.85 / 2 + 60.325 / 2 + Math.max(settings.defaultPipeGapMm, settings.zOffsetClearanceMm), 6);
+  });
+
+  it("goes lower when a unit's riser needs the room for its two bends", () => {
+    const free = corridorUnder(2400, outdoor, [port(2900, 2900)], settings);
+    const low = corridorUnder(2400, outdoor, [port(2900, 2900), port(free.gas + 20, 2900)], settings);
+    expect(low.gas).toBeLessThan(free.gas - 20);
+    expect(low.gas - low.liquid).toBeCloseTo(free.gas - free.liquid, 6);
+  });
+
+  it('is sized for the largest pipe on the system, the outdoor unit included', () => {
+    const small = corridorUnder(2400, outdoor, [port(2900, 2900, 12.7)], settings);
+    const large = corridorUnder(2400, port(1437, 1318, 28.58), [port(2900, 2900, 12.7)], settings);
+    expect(large.gas).toBeLessThan(small.gas);
+  });
+
+  it('is the corridor the level planner uses when given, and only if it fits', () => {
+    const scene = [pipe('gas', 'gas', 2700), pipe('liquid', 'liquid', 2550)];
+    const base = { gasHostId: 'gas', liquidHostId: 'liquid', startBundle: bundle, gasHostElevationMm: 2700, liquidHostElevationMm: 2550, settings };
+    const fits = planNetworkPipeLevels(scene, { ...base, corridor: { gas: 2300, liquid: 2100 } });
+    expect(fits.feasible).toBe(true);
+    expect(fits).toMatchObject({ gasElevationMm: 2300, liquidElevationMm: 2100 });
+    // Too close together for the pair: no other corridor is taken instead.
+    const tooClose = planNetworkPipeLevels(scene, { ...base, corridor: { gas: 2300, liquid: 2290 } });
+    expect(tooClose.feasible).toBe(false);
   });
 });

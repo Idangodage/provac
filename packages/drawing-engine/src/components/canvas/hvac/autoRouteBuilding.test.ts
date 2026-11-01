@@ -6,9 +6,9 @@
  * off the plan (43.457 mm per pixel).
  *
  * "As drawn" is the screenshot: the FDU224 turned away from its terminals, too
- * few terminals, no drain pump on the FDU224. "Put right" is the same building
- * after the fixes Auto route offers: the FDU224 turned 180°, six + five Ø300
- * terminals on it and three + three on each FDUM140, its drain pump fitted.
+ * few terminals. "Put right" is the same building after the fixes Auto route
+ * offers: the FDU224 turned 180°, six + five Ø300 terminals on it and three +
+ * three on each FDUM140.
  *
  * Minutes of routing, so it runs only on request (with the duct benchmark):
  * `AUTO_ROUTE_BUILDING=1 npx vitest run src/components/canvas/hvac/autoRouteBuilding.test.ts`.
@@ -75,7 +75,7 @@ describe.runIf(ENABLED)("the user's building through Auto route", () => {
     // 61.6 kW of indoor units on a 28 kW outdoor unit: said, without blocking anything.
     expect(Math.round(result.refrigerant?.connectionRatios?.[0]?.percent ?? 0)).toBe(220);
     expect(drain(result, USERS_BUILDING_IDS.bottomLeft)?.status).toBe('pumped');
-    expect(drain(result, USERS_BUILDING_IDS.fdu224)).toMatchObject({ status: 'infeasible', pumpWouldHelp: true });
+    expect(drain(result, USERS_BUILDING_IDS.fdu224)?.status).toBe('pumped');
     expect(previewClashes(result)).toEqual([]);
     expect((result.blockingIssues ?? []).filter((issue) => /intersects/.test(issue))).toEqual([]);
   }, 1_500_000);

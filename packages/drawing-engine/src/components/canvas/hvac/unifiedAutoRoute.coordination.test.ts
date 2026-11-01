@@ -93,3 +93,35 @@ describe('mixed-service routing portfolio', () => {
     expect(scene).toEqual(original);
   }, 30000);
 });
+
+describe('the drain drop and the refrigerant main', () => {
+  it('keeps the main off the drop into a gully on its way, and proposes no reserved body', async () => {
+    const indoor: HvacElement = {
+      id: 'indoor', type: 'ceiling-cassette-ac', category: 'indoor-unit', position: { x: 1000, y: 3000 }, rotation: 0, width: 600, depth: 600, height: 250,
+      elevation: 2400, mountType: 'ceiling', label: 'Cassette', supplyZoneRatio: 0, properties: { capacityKw: 2.8 },
+    };
+    const outdoor: HvacElement = {
+      id: 'outdoor', type: 'outdoor-unit', category: 'outdoor-unit', position: { x: 9000, y: 3000 }, rotation: 180, width: 900, depth: 450, height: 1200, elevation: 0,
+      mountType: 'floor', label: 'Outdoor', supplyZoneRatio: 0, properties: {},
+    };
+    const clear = await planUnifiedAutoRoute([indoor, outdoor], { services: { gas: true, liquid: true, condensate: false },
+      refrigerant: { settings: routing, objective: 'balanced' }, condensate: { settings: condensate } });
+    // Where the main runs with no gully: a floor gully right there, on its longest straight.
+    const gas = clear.refrigerant!.elementsToAdd.find((element) => element.type === 'refrigerant-pipe' && element.properties.lineKind === 'gas')!;
+    const nodes = gas.properties.routeNodes3d as Array<{ x: number; y: number; z: number }>;
+    const spans = nodes.slice(1).map((node, index) => ({ a: nodes[index]!, b: node, length: Math.hypot(node.x - nodes[index]!.x, node.y - nodes[index]!.y) }));
+    const longest = spans.reduce((best, span) => (span.length > best.length ? span : best));
+    const at = { x: (longest.a.x + longest.b.x) / 2, y: (longest.a.y + longest.b.y) / 2 };
+    const sink: HvacElement = {
+      id: 'gully', type: 'condensate-gully', position: { x: at.x - 100, y: at.y - 100 }, rotation: 0, width: 200, depth: 200, height: 60, elevation: 0,
+      mountType: 'floor', label: 'Gully', supplyZoneRatio: 0, properties: { terminationKind: 'floor-gully', inletElevationMm: 50 },
+    };
+    const result = await planUnifiedAutoRoute([indoor, outdoor, sink], { services: { gas: true, liquid: true, condensate: true },
+      refrigerant: { settings: routing, objective: 'balanced' }, condensate: { settings: condensate } });
+    expect(result.refrigerant!.unconnectedIndoorIds).toEqual([]);
+    expect(result.clashes.filter((clash) => !clash.resolvedByHop)).toEqual([]);
+    expect(result.condensate!.perUnit.map((unit) => unit.status)).not.toContain('infeasible');
+    expect(result.refrigerant!.elementsToAdd.some((element) => element.id.startsWith('reserved-drain-drop'))).toBe(false);
+    expect(unifiedRouteCommand(result).add?.some((element) => element.id.startsWith('reserved-drain-drop'))).toBe(false);
+  }, 240_000);
+});

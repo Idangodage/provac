@@ -4,6 +4,7 @@ import type { HvacElement } from '../../../types';
 import { buildVrfDocumentFromHvacElements } from '../../../vrf/domain';
 
 import { planAutoRouteNetwork } from './autoRouteNetwork';
+import { buildStraightGiDuctElement } from './giDuctModel';
 import { DEFAULT_PIPE_ROUTING_SETTINGS } from './pipeRoutingSettings';
 
 function equipment(id: string, x: number, y: number, outdoor = false): HvacElement {
@@ -82,4 +83,36 @@ describe('automatic network completeness', () => {
       expect(ports.every(port => port.isConnected), unit.id).toBe(true);
     }
   }, 180000);
+});
+
+describe('a duct across the main\'s way', () => {
+  // (Its connections low, as usual: a main under the ducts is then no low pocket.)
+  const source = { ...equipment('outdoor', 8000, 4300, true), elevation: 0 };
+  const far = equipment('far-cassette', 800, 500);
+  const near = equipment('near-cassette', 6500, 1500);
+  const duct = (elevationMm: number) => ({ id: 'duct', rotation: 0, supplyZoneRatio: 0,
+    ...buildStraightGiDuctElement([{ x: 4000, y: -60000 }, { x: 4000, y: 60000 }], { ductKind: 'supply', outerWidthMm: 800, outerHeightMm: 700, elevationMm }) }) as HvacElement;
+  const options = { settings: DEFAULT_PIPE_ROUTING_SETTINGS, objective: 'balanced' as const };
+  const levels = (element: HvacElement | undefined) => {
+    const plan = element?.properties.networkLevelPlan as { gasElevationMm?: number; liquidElevationMm?: number } | undefined;
+    return { gas: plan?.gasElevationMm ?? Number.NaN, liquid: plan?.liquidElevationMm ?? Number.NaN };
+  };
+
+  it('with a unit left beyond the duct, the main is laid under it and reaches every unit', async () => {
+    const scene = [source, far, near, duct(1900)];
+    const result = await planAutoRouteNetwork(scene, options);
+    expect(result.unconnectedIndoorIds, result.issues.join('\n')).toEqual([]);
+    const { gas, liquid } = levels(result.elementsToAdd.find((element) => element.type === 'refrigerant-pipe'));
+    // Under the duct's underside, insulation and all, the two services a corridor apart.
+    expect(Math.max(gas, liquid) + 70 / 2).toBeLessThanOrEqual(1900);
+    expect(Math.abs(gas - liquid)).toBeGreaterThanOrEqual(100);
+  });
+
+  it('with no duct in the way nothing changes: the units\' own height, no second search', async () => {
+    const clear = await planAutoRouteNetwork([source, far, near], options);
+    const above = await planAutoRouteNetwork([source, far, near, duct(3000)], options);
+    expect(clear.unconnectedIndoorIds).toEqual([]);
+    expect(levels(above.elementsToAdd.find((element) => element.type === 'refrigerant-pipe'))).toEqual(levels(clear.elementsToAdd.find((element) => element.type === 'refrigerant-pipe')));
+    expect(above.elementsToAdd.length).toBe(clear.elementsToAdd.length);
+  });
 });

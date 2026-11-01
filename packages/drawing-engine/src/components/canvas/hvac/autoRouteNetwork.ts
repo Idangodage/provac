@@ -8,8 +8,9 @@ import { buildBranchKitInsertion, getBranchKitApproachRouteOptions, proposeBranc
 import { connectionRatioMessage, connectionRatioProblems, type ConnectionRatio } from './connectionRatio';
 import { coordinatedBranchApproachStations } from './coordinatedBranchStations';
 import { getActiveDuctSettings, setActiveDuctSettings, type DuctDesignSettings } from './duct/ductSettings';
+import { ductBoxesInScene } from './duct/ductVolumes';
 import { hasNewNetworkPipeClash } from './networkPipeClearance';
-import { applyNetworkPipeLevels, hasNetworkCornerRiser, planNetworkPipeLevels } from './networkPipeLevels';
+import { applyNetworkPipeLevels, corridorUnder, hasNetworkCornerRiser, planNetworkPipeLevels } from './networkPipeLevels';
 import { buildNetworkRiserRefinements } from './networkRiserRefinement';
 import { findObstacleAwareOrthogonalRoute, type ObstacleAwareOrthogonalRoute,
   type ObstacleAwareOrthogonalRouteOptions, type OrthogonalRouteObstacle } from './obstacleAwareOrthogonalRoute';
@@ -449,7 +450,7 @@ export function aggregateAutoRouteMetrics(evaluations: Evaluation[]): Evaluation
     totalCapacityIndex: values.some(value => value.totalCapacityIndex === null) ? null : sum('totalCapacityIndex') };
 }
 function seedNetwork(scene: HvacElement[], system: System, indoor: Unit, allUnits: Unit[], options: AutoRouteNetworkOptions, seedIndex: number,
-  stats: SearchStats): HvacElement[] | null {
+  stats: SearchStats, corridor?: GrowNetworkTask['corridor']): HvacElement[] | null {
   const gasDiameter = Math.max(system.outdoor.port.gasOuterDiameterMm ?? 15.875, indoor.port.gasOuterDiameterMm ?? 15.875);
   const liquidDiameter = Math.max(system.outdoor.port.liquidOuterDiameterMm ?? 9.525, indoor.port.liquidOuterDiameterMm ?? 9.525);
   const physicalRadius = (Math.max(gasDiameter, liquidDiameter) + 50.8) * options.settings.bendRadiusFactor;
@@ -467,7 +468,7 @@ function seedNetwork(scene: HvacElement[], system: System, indoor: Unit, allUnit
     if (pipes.length !== 2) return null;
     const plan = planNetworkPipeLevels([...scene, ...pipes], { gasHostId: pipes[0]!.id, liquidHostId: pipes[1]!.id,
       gasHostElevationMm: indoor.port.gasElevationMm, liquidHostElevationMm: indoor.port.liquidElevationMm,
-      startBundle: indoor.port, settings: options.settings, deferRiserTurnOptimization: true });
+      startBundle: indoor.port, settings: options.settings, deferRiserTurnOptimization: true, ...(corridor ? { corridor } : {}) });
     if (!plan.feasible) { recordRejections(stats, plan.issues); return null; }
     let leveled = applyNetworkPipeLevels(pipes, plan);
     recordRejections(stats, leveled.issues);
@@ -794,6 +795,8 @@ export interface GrowNetworkTask {
   options: Omit<AutoRouteNetworkOptions, 'onProgress'>;
   /** The duct settings the clash check plans duct bodies with (the run's). */
   ductSettings: DuctDesignSettings;
+  /** The main's levels when it has to pass under the ducts (see planNetwork); otherwise chosen from the units'. */
+  corridor?: { gas: number; liquid: number };
 }
 
 /** What a start grew (null: nothing feasible): the elements it added in scene order, and what its search rejected. */
@@ -817,7 +820,7 @@ export function growNetwork(task: GrowNetworkTask): GrownNetwork {
   const baselineIds = new Set(baseline.map(element => element.id));
   const grow = (): Candidate | null => {
     const seed = ordered.find(unit => unit.element.id === task.seedId)!;
-    const seeded = seedNetwork(baseline, system, seed, allUnits, options, task.seedIndex, stats);
+    const seeded = seedNetwork(baseline, system, seed, allUnits, options, task.seedIndex, stats, task.corridor);
     if (!seeded) return null;
     const seedEvaluation = evaluation(seeded, system, [seed.element.id], options);
     stats.evaluatedCandidates += 1;
@@ -915,8 +918,8 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
       const ordered = [...available].sort((a, b) => distance(b.port.point, system.outdoor.port.point) - distance(a.port.point, system.outdoor.port.point) || a.element.id.localeCompare(b.element.id));
       const seeds = [...new Map([ordered[0]!, ordered[1] ?? ordered[0]!, ordered.at(-1)!].map(unit => [unit.element.id, unit])).values()];
       const { onProgress, ...startOptions } = options;
-      const startTask = (seed: Unit, seedIndex: number, nearestFirst: boolean): ParallelTask<'grow-network'> => ({ kind: 'grow-network',
-        input: { baseline, system, allUnits, ordered, seedId: seed.element.id, seedIndex, nearestFirst, options: startOptions, ductSettings: getActiveDuctSettings() } });
+      const startTask = (seed: Unit, seedIndex: number, nearestFirst: boolean, corridor?: GrowNetworkTask['corridor']): ParallelTask<'grow-network'> => ({ kind: 'grow-network',
+        input: { baseline, system, allUnits, ordered, seedId: seed.element.id, seedIndex, nearestFirst, options: startOptions, ductSettings: getActiveDuctSettings(), ...(corridor ? { corridor } : {}) } });
       /** Shows the furthest any running start has got. */
       const reporter = (count: number, stage: string) => {
         const reached = new Array<number>(count).fill(0);
@@ -952,6 +955,20 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
       for (const grown of await Promise.all(again)) {
         mergeSearchStats(searchStats, grown.stats);
         if (grown.network && better(grown.network, best)) best = grown.network;
+      }
+      // The starts above choose the main's height from the units' without looking at the ducts, so it can stop at the
+      // first duct across its way. With a unit still left out, two more starts lay it under them, at one height throughout.
+      const reached = best;
+      const boxes = ordered.some(unit => !reached?.connected.includes(unit.element.id)) ? ductBoxesInScene(baseline, getActiveDuctSettings()) : [];
+      if (boxes.length) {
+        const corridor = corridorUnder(Math.min(...boxes.map(box => box.bounds.minZ)), system.outdoor.port, ordered.map(unit => unit.port), options.settings);
+        const underSeeds = [...new Map([ordered[0]!, ordered[1] ?? ordered[0]!].map(unit => [unit.element.id, unit])).values()];
+        const under = await runner.all(underSeeds.map((seed, index) => startTask(seed, seeds.length + 2 + index, index === 1, corridor)),
+          reporter(underSeeds.length, 'Laying a main under the ducts'));
+        for (const grown of under) {
+          mergeSearchStats(searchStats, grown.stats);
+          if (grown.network && better(grown.network, best)) best = grown.network;
+        }
       }
       const previousIndoorIds = new Set([...existingCircuit.indoorIds,
         ...workingScene.filter(element => removableSet.has(element.id)).flatMap(element => ownership(element)?.indoorUnitIds ?? [])]);

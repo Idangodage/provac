@@ -71,8 +71,9 @@ describe('Auto route steps', () => {
   }, 60_000);
 
   it('works out again only what a change reaches', async () => {
+    // (Not the drains' insulation or size: the refrigerant keeps off their drops, so those reach it too.)
     const settings = request.options.condensate.settings;
-    const options = { ...request.options, condensate: { ...request.options.condensate, settings: { ...settings, insulationThicknessMm: settings.insulationThicknessMm + 3 } } };
+    const options = { ...request.options, condensate: { ...request.options.condensate, settings: { ...settings, bendPenaltyMm: settings.bendPenaltyMm + 500 } } };
     const { runner, kinds } = countingRunner();
     let steps: AutoRouteStepMemo | undefined;
     const again = await withTaskRunner(runner, () => planUnifiedAutoRoute(request.scene, { ...options, previous: memo, onMemo: (remembered) => { steps = remembered; } }));

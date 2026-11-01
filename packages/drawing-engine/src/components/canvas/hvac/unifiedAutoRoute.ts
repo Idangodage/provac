@@ -35,6 +35,7 @@ import { incompleteDuctRouteRefusal, incompleteServiceRouteRefusal } from './aut
 import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork } from './autoRouteEvaluation';
 import { aggregateAutoRouteMetrics, planAutoRouteNetwork, replaceableGeneratedRefrigerantIds, type AutoRouteNetworkOptions, type AutoRouteNetworkResult } from './autoRouteNetwork';
 import { incompleteCondensateRefusal } from './condensate/condensateCommand';
+import { reservedDrainDrops } from './condensate/condensateDropReservation';
 import { replaceableCondensatePipeIds } from './condensate/condensateEnvironment';
 import { generateCondensateNetwork, type CondensateGenerationResult } from './condensate/condensateGenerator';
 import type { CondensateDesignSettings } from './condensate/condensateSettings';
@@ -479,7 +480,9 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
   let refrigerant: AutoRouteNetworkResult | null = null;
   if (wantsRefrigerant) {
     progress({ stage: 'Routing refrigerant', completed: 0, total: 0, step: 'refrigerant' });
-    const refrigerantScene = scene.filter((element) => !replacedDrains.has(element.id));
+    // The drains follow, but where they end is fixed: the main keeps off their drops, as it can move and they cannot.
+    const refrigerantScene = [...scene.filter((element) => !replacedDrains.has(element.id)),
+      ...(services.condensate ? reservedDrainDrops(scene, { ...options.condensate, topZ: options.refrigerant.settings.ceilingLimitMm }) : [])];
     const paired = await remembered('refrigerant', [refrigerantScene, options.refrigerant, options.duct?.settings], () => planAutoRouteNetwork(refrigerantScene, {
       ...options.refrigerant,
       onProgress: (step) => progress({ stage: `Refrigerant: ${step.stage}`, completed: step.completed, total: step.total, step: 'refrigerant' }),
