@@ -38,6 +38,7 @@ export function findNodeNear(
   let bestD = eps;
   for (const n of Object.values(doc.nodes)) {
     if (n.id === excludeId) continue;
+    if (Math.abs(n.p[0] - p[0]) > eps || Math.abs(n.p[1] - p[1]) > eps) continue;
     const d = dist2(n.p, p);
     if (d <= bestD) {
       bestD = d;
@@ -290,10 +291,17 @@ function bodyJoinOf(
   wall: WallEdge2,
   incident: readonly WallEdge2[],
 ): { kind: 'end'; nodeId: WallEntityId; rank: number } | { kind: 'body'; t: number; rank: number } | null {
-  if (incident.some((e) => e.id === wall.id)) return null;
+  if (wall.a === node.id || wall.b === node.id) return null;
   const a = nodePos(doc, wall.a);
+  const b = nodePos(doc, wall.b);
+  // Most walls are nowhere near: reject them without working out directions.
+  const reachOut = wall.thickness + WELD_EPS;
+  if (
+    node.p[0] < Math.min(a[0], b[0]) - reachOut || node.p[0] > Math.max(a[0], b[0]) + reachOut ||
+    node.p[1] < Math.min(a[1], b[1]) - reachOut || node.p[1] > Math.max(a[1], b[1]) + reachOut
+  ) return null;
   const u = edgeDirection(doc, wall);
-  const length = edgeLength(doc, wall);
+  const length = dist2(a, b);
   const d = sub2(node.p, a);
   const along = dot2(d, u);
   const across = dot2(d, perp2(u));
@@ -315,15 +323,32 @@ function bodyJoinOf(
 /** A wall ending inside another wall's body joins it for real. */
 function joinNodesToBodies(doc: WallGraphDoc, ids: WallIdSource, dirty: Set<WallEntityId>): boolean {
   let changed = false;
+  // Rebuilt only after a join: an edit touches few walls, and a drawing can hold thousands.
+  let walls: WallEdge2[] = [];
+  let dirtyWalls: WallEdge2[] = [];
+  let incidentByNode = new Map<WallEntityId, WallEdge2[]>();
+  const refresh = () => {
+    walls = Object.values(doc.edges).sort(byId);
+    dirtyWalls = walls.filter((wall) => dirty.has(wall.id));
+    incidentByNode = new Map();
+    for (const wall of walls) {
+      for (const nodeId of [wall.a, wall.b]) {
+        const incident = incidentByNode.get(nodeId);
+        if (incident) incident.push(wall);
+        else incidentByNode.set(nodeId, [wall]);
+      }
+    }
+  };
+  refresh();
+
   for (const node of Object.values(doc.nodes).sort(byId)) {
     if (!doc.nodes[node.id]) continue;
-    const incident = edgesAtNode(doc, node.id);
-    if (incident.length === 0) continue;
-    const nodeDirty = incident.some((e) => dirty.has(e.id));
+    const incident = incidentByNode.get(node.id);
+    if (!incident) continue;
+    const candidates = incident.some((e) => dirty.has(e.id)) ? walls : dirtyWalls;
 
     let best: { wall: WallEdge2; join: NonNullable<ReturnType<typeof bodyJoinOf>> } | null = null;
-    for (const wall of Object.values(doc.edges).sort(byId)) {
-      if (!nodeDirty && !dirty.has(wall.id)) continue;
+    for (const wall of candidates) {
       const join = bodyJoinOf(doc, node, wall, incident);
       if (join && (!best || join.rank < best.join.rank)) best = { wall, join };
     }
@@ -334,14 +359,15 @@ function joinNodesToBodies(doc: WallGraphDoc, ids: WallIdSource, dirty: Set<Wall
       const target = best.join.nodeId;
       mergeNodeInto(doc, node.id, target);
       for (const e of edgesAtNode(doc, target)) dirty.add(e.id);
-      continue;
+    } else {
+      const a = nodePos(doc, best.wall.a);
+      const b = nodePos(doc, best.wall.b);
+      const { t } = best.join;
+      node.p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      splitEdgeAt(doc, best.wall, t, ids, node);
+      for (const e of edgesAtNode(doc, node.id)) dirty.add(e.id);
     }
-    const a = nodePos(doc, best.wall.a);
-    const b = nodePos(doc, best.wall.b);
-    const { t } = best.join;
-    node.p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    splitEdgeAt(doc, best.wall, t, ids, node);
-    for (const e of edgesAtNode(doc, node.id)) dirty.add(e.id);
+    refresh();
   }
   return changed;
 }
@@ -350,23 +376,31 @@ function joinNodesToBodies(doc: WallGraphDoc, ids: WallIdSource, dirty: Set<Wall
 function splitCrossings(doc: WallGraphDoc, ids: WallIdSource, dirty: Set<WallEntityId>): boolean {
   let changed = false;
   const queue = [...dirty].sort();
+  let walls = Object.values(doc.edges).sort(byId);
   while (queue.length > 0) {
     const edge = doc.edges[queue.pop()!];
     if (!edge) continue;
-    for (const other of Object.values(doc.edges).sort(byId)) {
+    const ea = nodePos(doc, edge.a);
+    const eb = nodePos(doc, edge.b);
+    for (const other of walls) {
       if (other.id === edge.id || sharesNode(edge, other)) continue;
-      const ea = nodePos(doc, edge.a);
-      const eb = nodePos(doc, edge.b);
-      const hit = segSegIntersect2(ea, eb, nodePos(doc, other.a), nodePos(doc, other.b));
+      const fa = nodePos(doc, other.a);
+      const fb = nodePos(doc, other.b);
+      if (
+        Math.max(fa[0], fb[0]) < Math.min(ea[0], eb[0]) || Math.min(fa[0], fb[0]) > Math.max(ea[0], eb[0]) ||
+        Math.max(fa[1], fb[1]) < Math.min(ea[1], eb[1]) || Math.min(fa[1], fb[1]) > Math.max(ea[1], eb[1])
+      ) continue;
+      const hit = segSegIntersect2(ea, eb, fa, fb);
       if (!hit) continue;
       const clearOfEnds = (x: Vec2, y: Vec2) => dist2(hit.p, x) > WELD_EPS && dist2(hit.p, y) > WELD_EPS;
-      if (!clearOfEnds(ea, eb) || !clearOfEnds(nodePos(doc, other.a), nodePos(doc, other.b))) continue;
+      if (!clearOfEnds(ea, eb) || !clearOfEnds(fa, fb)) continue;
       const node = splitEdgeAt(doc, other, hit.tb, ids);
       splitEdgeAt(doc, edge, hit.ta, ids, node);
       for (const piece of edgesAtNode(doc, node.id)) {
         dirty.add(piece.id);
         queue.push(piece.id);
       }
+      walls = Object.values(doc.edges).sort(byId);
       changed = true;
       break;
     }

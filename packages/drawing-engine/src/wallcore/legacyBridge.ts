@@ -117,8 +117,8 @@ export function wallGraphFromLegacyWalls(
 export interface MirrorCallbacks<W extends LegacyWallLike> {
   /** Create a brand-new legacy wall for an edge the mirror has never seen. */
   createWall(edge: WallEdge2, start: Vec2, end: Vec2): W;
-  /** Recompute derived legacy geometry (offset lines, bevel normalization). */
-  rebuildGeometry(wall: W): W;
+  /** Recompute derived legacy geometry (offset lines, bevel normalization); `previous` is this wall before the edit. */
+  rebuildGeometry(wall: W, previous?: W): W;
   /** A door or window had to shift to stay whole on the piece of wall it now sits on. */
   onOpeningMoved?(openingId: string, movedMm: number): void;
 }
@@ -238,7 +238,7 @@ export function legacyWallsFromGraph<W extends LegacyWallLike>(
       : { ...callbacks.createWall(edge, start, end), graph: meta };
     const openings = rehosted?.get(edge.id);
     const withConnections = { ...base, connectedWalls: connected, ...(openings ? { openings } : {}) } as W;
-    out.push(callbacks.rebuildGeometry(withConnections));
+    out.push(callbacks.rebuildGeometry(withConnections, prevById.get(edge.id)));
   }
   return out;
 }

@@ -145,7 +145,7 @@ import {
 } from '../wallcore/legacyBridge';
 import { COLLINEAR_EPS } from '../wallcore/tolerances';
 import type { Vec2 as WallVec2 } from '../wallcore/vec2';
-import { edgesAtNode, mergeStraightWallsAt, normalizeWallGraph } from '../wallcore/wallGraph';
+import { mergeStraightWallsAt, normalizeWallGraph } from '../wallcore/wallGraph';
 import type { WallEdge2, WallGraphDoc } from '../wallcore/wallModel';
 import {
   addWallChain as coreAddWallChain,
@@ -2279,7 +2279,17 @@ function buildWallMirrorCallbacks(
           DEFAULT_WALL_3D.thermalResistance,
       });
     },
-    rebuildGeometry: (wall) => bindWallAttributes(rebuildWallGeometry(wall), wall.properties3D),
+    // Binding recomputes what derives from a wall's shape; most walls in an edit did not change.
+    rebuildGeometry: (wall, previous) => (
+      previous
+      && pointsNear(previous.startPoint, wall.startPoint, 0)
+      && pointsNear(previous.endPoint, wall.endPoint, 0)
+      && previous.thickness === wall.thickness
+      && previous.properties3D.height === wall.properties3D.height
+      && previous.properties3D.materialId === wall.properties3D.materialId
+        ? rebuildWallGeometry(wall)
+        : bindWallAttributes(rebuildWallGeometry(wall), wall.properties3D)
+    ),
     onOpeningMoved,
   };
 }
@@ -2291,6 +2301,15 @@ interface WallGraphOperationOptions {
   newWall?: NewWallAttributes;
   /** The walls already moved before this commit (a drag): check them all, not just what changes here. */
   normalizeAll?: boolean;
+}
+
+function wallNodeValences(doc: WallGraphDoc): Map<string, number> {
+  const valences = new Map<string, number>();
+  for (const edge of Object.values(doc.edges)) {
+    valences.set(edge.a, (valences.get(edge.a) ?? 0) + 1);
+    valences.set(edge.b, (valences.get(edge.b) ?? 0) + 1);
+  }
+  return valences;
 }
 
 function wallEdgeFingerprints(doc: WallGraphDoc): Map<string, string> {
@@ -2317,7 +2336,7 @@ function applyWallGraphOperation(
   const previous = get();
   const graph = wallGraphFromLegacyWalls(previous.walls, WALL_GRAPH_IDS);
   const before = wallEdgeFingerprints(graph);
-  const valenceBefore = new Map(Object.keys(graph.nodes).map((nodeId) => [nodeId, edgesAtNode(graph, nodeId).length]));
+  const valenceBefore = wallNodeValences(graph);
   mutate(graph);
 
   const after = wallEdgeFingerprints(graph);
@@ -2326,8 +2345,8 @@ function applyWallGraphOperation(
     : new Set([...after].filter(([edgeId, print]) => before.get(edgeId) !== print).map(([edgeId]) => edgeId));
   const replaced = normalizeWallGraph(graph, WALL_GRAPH_IDS, dirty);
   // A wall that left a junction: two matching straight walls remaining there are one wall again.
-  for (const [nodeId, valence] of valenceBefore) {
-    if (valence <= 2 || !graph.nodes[nodeId]) continue;
+  for (const [nodeId, valence] of wallNodeValences(graph)) {
+    if (valence !== 2 || (valenceBefore.get(nodeId) ?? 0) <= 2) continue;
     const merged = mergeStraightWallsAt(graph, nodeId, COLLINEAR_EPS);
     if (merged) replaced.set(merged.goes, merged.stays);
   }

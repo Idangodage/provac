@@ -172,6 +172,11 @@ function detectEnclosedRoomCandidatesFromWalls(walls: Wall[]): EnclosedRoomCandi
   if (walls.length < 3) return [];
 
   const wallFeatures = walls.map(wallContactFeature);
+  const wallFeatureBounds = wallFeatures.map((feature) => (
+    feature
+      ? boundsForPoints((feature.geometry.coordinates[0] as number[][]).map(([x, y]) => ({ x, y })))
+      : null
+  ));
   const mergedWalls = drawnWallBodies(walls);
   if (mergedWalls.length === 0) return [];
 
@@ -209,10 +214,16 @@ function detectEnclosedRoomCandidatesFromWalls(walls: Wall[]): EnclosedRoomCandi
     const roomFeature = makePolygonFeature(outer, holes);
     if (!roomFeature) return;
 
+    // Most walls are nowhere near this room: only the rest need the exact test.
+    const roomBounds = boundsForPoints(outer);
     const wallIds = walls
-      .filter((wall, index) => {
+      .filter((_wall, index) => {
         const wallFeature = wallFeatures[index];
-        return wallFeature ? booleanIntersects(roomFeature, wallFeature) : false;
+        const wallBounds = wallFeatureBounds[index];
+        if (!wallFeature || !wallBounds) return false;
+        const apart = wallBounds.minX > roomBounds.maxX || wallBounds.maxX < roomBounds.minX
+          || wallBounds.minY > roomBounds.maxY || wallBounds.maxY < roomBounds.minY;
+        return !apart && booleanIntersects(roomFeature, wallFeature);
       })
       .map((wall) => wall.id);
     if (wallIds.length < 3) return;
