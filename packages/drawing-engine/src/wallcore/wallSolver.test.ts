@@ -133,19 +133,25 @@ describe('wallSolver goldens (reference join snapshots)', () => {
     });
   }
 
-  it('sharp 10° elbow bevels instead of spiking (miter limit 2×t)', () => {
+  it('sharp 10° elbow: true inner corner, outer corner bevels instead of spiking (miter limit 2×t)', () => {
     const a = degToRad(10);
     const t = 200;
     const r = solveWalls({
       nodes: [N('n0', 0, 0), N('nx', 3000, 0), N('na', 3000 * Math.cos(a), 3000 * Math.sin(a))],
       edges: [E('ex', 'n0', 'nx', t), E('ea', 'n0', 'na', t)],
     });
-    // only the node-end corners (aL/aR — both edges start at n0) are join-controlled
-    for (const f of r.footprints) {
-      for (const c of [f.corners[0], f.corners[3]]) {
-        expect(dist2(c, [0, 0])).toBeLessThanOrEqual(2 * t + 1e-6);
-      }
-    }
+    // Deliberately differs from the reference: the inner corner is where the two
+    // faces really meet, far along both walls. It lies inside them, so it cannot spike.
+    const reach = (t / 2) / Math.sin(a / 2);
+    const x = fp(r, 'ex');
+    const inner = x[0]!;
+    expect(dist2(inner, [0, 0])).toBeCloseTo(reach, 6);
+    expect(inner[1]).toBeCloseTo(t / 2, 6);
+    expect(dist2(fp(r, 'ea')[3]!, inner)).toBeLessThan(1e-9); // the same exact point on both walls
+    // The outer corner would run far behind the node, so it stops at the node and is bevelled.
+    expect(dist2(x[3]!, [0, 0])).toBeLessThanOrEqual(2 * t);
+    expect(dist2(fp(r, 'ea')[0]!, [0, 0])).toBeLessThanOrEqual(2 * t);
+    expect(r.wedges).toHaveLength(1);
   });
 
   it('T-junction: through-wall face stays straight, wedge fills the core', () => {

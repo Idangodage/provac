@@ -137,7 +137,9 @@ export function unionWallRings(rings: readonly Ring[]): WallPolygonSet {
     })
     .filter((path) => path.length >= 3 && pathArea(path) !== 0);
   if (paths.length === 0) return { polygons: [], exact: true };
-  const polygons = runClipper(ClipType.Union, paths);
+  let polygons = runClipper(ClipType.Union, paths);
+  // Clipper can rarely hand back two polygons sharing an edge, which would draw a false seam; a second pass joins them.
+  if (polygons && polygons.length > 1) polygons = runClipper(ClipType.Union, polygons.flat().map(toPath)) ?? polygons;
   return polygons
     ? { polygons, exact: true }
     : { polygons: rings.map((ring) => [positiveRing(ring)]), exact: false };

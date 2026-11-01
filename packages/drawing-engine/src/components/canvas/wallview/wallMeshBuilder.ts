@@ -65,14 +65,15 @@ export function buildWallChunkGeometry(
   for (const w of solve.wedges) {
     const poly = normalizeCcw(w.polygon);
     if (poly.length < 3) continue;
+    const materialOwner = w.edgeId ?? w.nodeId;
     prisms.push({
       entityId: w.nodeId,
       polygon: poly,
       z0: levelElevation + w.baseOffset,
       z1: levelElevation + w.baseOffset + w.height,
-      materialIndex: options.materialIndexByEntityId?.get(w.nodeId) ?? 0,
-      topMaterialIndex: options.topMaterialIndexByEntityId?.get(w.nodeId)
-        ?? options.materialIndexByEntityId?.get(w.nodeId) ?? 0,
+      materialIndex: options.materialIndexByEntityId?.get(materialOwner) ?? 0,
+      topMaterialIndex: options.topMaterialIndexByEntityId?.get(materialOwner)
+        ?? options.materialIndexByEntityId?.get(materialOwner) ?? 0,
     });
   }
 
