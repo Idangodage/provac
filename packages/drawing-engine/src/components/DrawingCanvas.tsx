@@ -193,6 +193,7 @@ import {
   restoreCanvasRenderScheduler,
 } from "./canvas/renderScheduler";
 import { buildViewportTransform } from "./canvas/viewTransform";
+import { wallDebugReport } from "./canvas/wall/wallDebugReport";
 
 export type { DrawingCanvasProps } from "./DrawingCanvas.types";
 
@@ -1000,6 +1001,16 @@ export function DrawingCanvas({
       getRooms: () => useSmartDrawingStore.getState().rooms.map((room) => ({ id: room.id, name: room.name, vertices: room.vertices, designCriteria: room.designCriteria ?? null })),
       /** Wall centre lines and thicknesses (scripted auto-layout checks). */
       getWalls: () => useSmartDrawingStore.getState().walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
+      /** The solved walls as every view sees them: bodies, junction cores and each wall's selection shape. */
+      getWallReport: () => wallDebugReport(useSmartDrawingStore.getState().walls, useSmartDrawingStore.getState().rooms.length),
+      updateWall: (id: string, updates: Partial<Wall>) => useSmartDrawingStore.getState().updateWall(id, updates, { skipHistory: true }),
+      setWallHeight: (ids: string[], height: number) => useSmartDrawingStore.getState().wallGraphSetParams(ids, { height }),
+      /** Exports the document and opens it again, as saving and reopening does, without writing to the saved project. */
+      roundTripDocument: () => {
+        const store = useSmartDrawingStore.getState();
+        store.importFromJSON(store.exportToJSON());
+        return true;
+      },
       /**
        * One wall committed as the wall tool commits it (one undo), for scripted checks. The canvas tool also splits
        * the walls it meets at a T, and room detection then loses the rooms either side; this path keeps the rooms.
