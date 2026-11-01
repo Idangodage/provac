@@ -47,6 +47,7 @@ import { MM_TO_PX } from '../scale';
 import { renderWallOpenings } from './OpeningRenderer';
 import type { RoomBoundarySelectionSegment } from './RoomBoundarySelection';
 import {
+  computeWallBodyPolygon,
   computeWallPolygon,
   wallBounds,
   refreshOffsetLines, // [PATCH APPLIED]
@@ -383,6 +384,11 @@ export class WallRenderer {
     if (Math.abs(previousWall.thickness - nextWall.thickness) > 0.0001) return true;
     if (Math.abs((previousWall.centerlineOffset ?? 0) - (nextWall.centerlineOffset ?? 0)) > 0.0001) return true;
     if (previousWall.material !== nextWall.material || previousWall.layer !== nextWall.layer) return true;
+    if (
+      previousWall.graph?.a !== nextWall.graph?.a ||
+      previousWall.graph?.b !== nextWall.graph?.b ||
+      previousWall.graph?.justification !== nextWall.graph?.justification
+    ) return true;
     if (!this.stringArraysEqual(previousWall.connectedWalls, nextWall.connectedWalls)) return true;
     if (!this.wallBevelEqual(previousWall.startBevel, nextWall.startBevel)) return true;
     if (!this.wallBevelEqual(previousWall.endBevel, nextWall.endBevel)) return true;
@@ -798,6 +804,9 @@ export class WallRenderer {
         connectedWalls: wall.connectedWalls,
         startBevel: wall.startBevel ?? null,
         endBevel: wall.endBevel ?? null,
+        graph: wall.graph ?? null,
+        height: wall.properties3D?.height,
+        baseElevation: wall.properties3D?.baseElevation,
       }))
     );
   }
@@ -965,7 +974,9 @@ export class WallRenderer {
         componentWalls
       )
       : computeWallPolygon(wall, joins);
-    interactionVertices = validateWallPolygon(interactionVertices, wall); // [PATCH APPLIED]
+    if (!wall.graph) {
+      interactionVertices = validateWallPolygon(interactionVertices, wall); // [PATCH APPLIED]
+    }
     this.wallInteractionPolygons.set(
       wall.id,
       interactionVertices.map((vertex) => ({ ...vertex }))
@@ -985,10 +996,9 @@ export class WallRenderer {
     (fillPolygon as NamedObject).name = 'wallFill';
     this.annotateWallTarget(fillPolygon, wall.id);
 
-    const interiorStart = canvasVertices[0];
-    const interiorEnd = canvasVertices[1];
-    const exteriorEnd = canvasVertices[2];
-    const exteriorStart = canvasVertices[3];
+    // A wall's solved shape can have more than four corners; these strokes follow its four-sided body.
+    const [interiorStart, interiorEnd, exteriorEnd, exteriorStart] =
+      (wall.graph ? computeWallBodyPolygon(wall) : interactionVertices).map((v) => this.toCanvasPoint(v));
 
     const interiorBoundary = new fabric.Line(
       [interiorStart.x, interiorStart.y, interiorEnd.x, interiorEnd.y],
@@ -2335,6 +2345,7 @@ export class WallRenderer {
       this.wallObjects.forEach((obj) => this.removeFabricObject(obj));
       this.wallObjects.clear();
       this.wallData.clear();
+      this.wallInteractionPolygons.clear();
 
       this.controlPointObjects.forEach((controls) => {
         controls.forEach((control) => this.removeFabricObject(control));
@@ -2346,7 +2357,8 @@ export class WallRenderer {
       primeWallSelectionGeometryInBackground(walls);
 
       // [PATCH APPLIED] Use pre-computed joins if available, otherwise compute fresh
-      const joinsMap = precomputedJoinsMap ?? refreshAllWalls(walls); // [PATCH APPLIED]
+      // (walls in the graph take their joins from the solve, not from this heuristic)
+      const joinsMap = precomputedJoinsMap ?? (walls.every((wall) => wall.graph) ? new Map<string, JoinData[]>() : refreshAllWalls(walls)); // [PATCH APPLIED]
       const componentWallsByWallId = this.rebuildMergedComponents(walls);
 
       for (const wall of walls) {
@@ -2381,7 +2393,9 @@ export class WallRenderer {
     try {
       const allWalls = Array.from(this.wallData.values());
       const componentWallsByWallId = this.rebuildMergedComponents(allWalls);
-      const joinsMap = refreshPartialWallGeometry(new Set<string>(), targetWallIds, allWalls);
+      const joinsMap = allWalls.every((wall) => wall.graph)
+        ? new Map<string, JoinData[]>()
+        : refreshPartialWallGeometry(new Set<string>(), targetWallIds, allWalls);
 
       targetWallIds.forEach((wallId) => {
         const wall = this.wallData.get(wallId);
@@ -2478,7 +2492,9 @@ export class WallRenderer {
           changedWallIds.add(wallId);
         }
       });
-      const joinsMap = refreshPartialWallGeometry(changedWallIds, rerenderWallIds, walls);
+      const joinsMap = walls.every((wall) => wall.graph)
+        ? new Map<string, JoinData[]>()
+        : refreshPartialWallGeometry(changedWallIds, rerenderWallIds, walls);
 
       rerenderWallIds.forEach((wallId) => {
         const wall = nextWallsById.get(wallId);

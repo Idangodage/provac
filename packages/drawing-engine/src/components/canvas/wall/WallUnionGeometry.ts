@@ -1,10 +1,8 @@
 import { polygon } from '@turf/turf';
 
 import type { JoinData, Point2D, Wall } from '../../../types';
-import { generateId } from '../../../utils/geometry';
-import { wallGraphFromLegacyWalls } from '../../../wallcore/legacyBridge';
+import { solveWallList } from '../../../wallcore/solvedWalls';
 import type { Vec2 } from '../../../wallcore/vec2';
-import { solveWallGraphDoc } from '../../../wallcore/wallSolver';
 import { unionWallRings } from '../../../wallcore/wallUnion';
 
 import { computeWallBodyPolygon } from './WallGeometry';
@@ -73,6 +71,9 @@ function wallUnionSignature(walls: Wall[]): string {
       connectedWalls: wall.connectedWalls,
       startBevel: wall.startBevel ?? null,
       endBevel: wall.endBevel ?? null,
+      graph: wall.graph ?? null,
+      height: wall.properties3D?.height,
+      baseElevation: wall.properties3D?.baseElevation,
     }))
   );
 }
@@ -969,8 +970,7 @@ function unionWallComponent(
  * bevels past the miter limit, and T/X junction cores are already exact.
  */
 function computeSolverUnionComponents(walls: Wall[]): WallUnionComponent[] {
-  const doc = wallGraphFromLegacyWalls(walls, { newId: generateId });
-  const solve = solveWallGraphDoc(doc);
+  const { doc, solve } = solveWallList(walls);
 
   // Union-find over graph node ids → connected components.
   const parent = new Map<string, string>();

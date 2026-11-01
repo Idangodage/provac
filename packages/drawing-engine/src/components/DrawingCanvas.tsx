@@ -1002,7 +1002,10 @@ export function DrawingCanvas({
       /** Wall centre lines and thicknesses (scripted auto-layout checks). */
       getWalls: () => useSmartDrawingStore.getState().walls.map((wall) => ({ id: wall.id, startPoint: wall.startPoint, endPoint: wall.endPoint, thickness: wall.thickness })),
       /** The solved walls as every view sees them: bodies, junction cores and each wall's selection shape. */
-      getWallReport: () => wallDebugReport(useSmartDrawingStore.getState().walls, useSmartDrawingStore.getState().rooms.length),
+      getWallReport: () => {
+        const state = useSmartDrawingStore.getState();
+        return { ...wallDebugReport(state.walls, state.rooms.length, state.selectedIds), activeTool: state.activeTool };
+      },
       updateWall: (id: string, updates: Partial<Wall>) => useSmartDrawingStore.getState().updateWall(id, updates, { skipHistory: true }),
       setWallHeight: (ids: string[], height: number) => useSmartDrawingStore.getState().wallGraphSetParams(ids, { height }),
       /** Exports the document and opens it again, as saving and reopening does, without writing to the saved project. */

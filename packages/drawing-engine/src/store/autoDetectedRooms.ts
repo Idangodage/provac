@@ -5,14 +5,14 @@ import {
 } from '@turf/turf';
 
 import { bindRoomGeometryTo3D } from '../attributes';
-import { computeSelectableWallPolygon } from '../components/canvas/wall/WallSelectionGeometry';
 import { computeWallUnionRenderData } from '../components/canvas/wall/WallUnionGeometry';
 import type { Point2D, Room, Room3D, RoomDesignCriteria, RoomType, Wall } from '../types';
 import { DEFAULT_ROOM_3D } from '../types/wall';
 import { generateId, isPointInPolygon } from '../utils/geometry';
 import { GeometryEngine } from '../utils/geometry-engine';
 import type { Vec2 } from '../wallcore/vec2';
-import { subtractWallPolygons, unionWallRings, type WallPolygon } from '../wallcore/wallUnion';
+import { halfWidths } from '../wallcore/wallSolver';
+import { subtractWallPolygons, type WallPolygon } from '../wallcore/wallUnion';
 
 import {
   inferRoomType,
@@ -23,6 +23,7 @@ import {
 
 const MIN_ENCLOSED_ROOM_AREA_MM2 = 10_000;
 const ENCLOSURE_BOUNDS_PADDING_MM = 500;
+const WALL_CONTACT_MARGIN_MM = 1;
 
 function polygonAreaWithHoles(vertices: Point2D[], holes: Point2D[][] = []): number {
   return GeometryEngine.calculateRoomAreaMm2({ vertices, holes });
@@ -101,22 +102,31 @@ function pointsFromPolygon(rings: WallPolygon): Point2D[][] {
   return rings.map((ring) => ring.map(([x, y]) => ({ x, y })));
 }
 
-function computeWallBodyPolygon(wall: Wall): Point2D[] {
-  return [
-    { ...wall.interiorLine.start },
-    { ...wall.interiorLine.end },
-    { ...wall.exteriorLine.end },
-    { ...wall.exteriorLine.start },
-  ];
+/** The walls exactly as the plan draws them, junction cores included, so no room can leak through a junction. */
+function drawnWallBodies(walls: Wall[]): WallPolygon[] {
+  return computeWallUnionRenderData(walls).components.flatMap((component) =>
+    component.polygons.map((polygon) => polygon.map(ringFromPoints)),
+  );
 }
 
-function computeEnclosureWallPolygons(walls: Wall[]): Point2D[][] {
-  try {
-    const renderData = computeWallUnionRenderData(walls);
-    return walls.map((wall) => computeSelectableWallPolygon(wall, renderData.joinsMap, walls));
-  } catch {
-    return walls.map((wall) => computeWallBodyPolygon(wall));
-  }
+/**
+ * A wall's whole rectangle, a little larger all round: rooms come off the boolean
+ * grid, so a room's edge could otherwise miss the wall it runs along by a grid step.
+ */
+function wallContactFeature(wall: Wall): any | null {
+  const dx = wall.endPoint.x - wall.startPoint.x;
+  const dy = wall.endPoint.y - wall.startPoint.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0) return null;
+  const u = { x: dx / length, y: dy / length };
+  const n = { x: -u.y, y: u.x };
+  const { hl, hr } = halfWidths({ thickness: wall.thickness, justification: wall.graph?.justification ?? 'center' });
+  const at = (along: number, across: number): Point2D => ({
+    x: wall.startPoint.x + u.x * along + n.x * across,
+    y: wall.startPoint.y + u.y * along + n.y * across,
+  });
+  const m = WALL_CONTACT_MARGIN_MM;
+  return makePolygonFeature([at(-m, hl + m), at(length + m, hl + m), at(length + m, -hr - m), at(-m, -hr - m)]);
 }
 
 function boundsForPoints(points: Point2D[]): { minX: number; minY: number; maxX: number; maxY: number } {
@@ -161,14 +171,11 @@ interface EnclosedRoomCandidate {
 function detectEnclosedRoomCandidatesFromWalls(walls: Wall[]): EnclosedRoomCandidate[] {
   if (walls.length < 3) return [];
 
-  const wallPolygons = computeEnclosureWallPolygons(walls);
-  const wallFeatures = wallPolygons.map((polygonVertices) => makePolygonFeature(polygonVertices));
-  if (!wallFeatures.some(Boolean)) return [];
+  const wallFeatures = walls.map(wallContactFeature);
+  const mergedWalls = drawnWallBodies(walls);
+  if (mergedWalls.length === 0) return [];
 
-  const mergedWalls = unionWallRings(wallPolygons.map(ringFromPoints));
-  if (!mergedWalls.exact || mergedWalls.polygons.length === 0) return [];
-
-  const allPoints = wallPolygons.flat();
+  const allPoints = mergedWalls.flat(2).map(([x, y]) => ({ x, y }));
   const rawBounds = boundsForPoints(allPoints);
   // Whole millimetres: exactly on the boolean grid, so the outside space can be recognised by touching them.
   const bounds = {
@@ -184,7 +191,7 @@ function detectEnclosedRoomCandidatesFromWalls(walls: Wall[]): EnclosedRoomCandi
       [bounds.maxX, bounds.maxY],
       [bounds.minX, bounds.maxY],
     ]]],
-    mergedWalls.polygons,
+    mergedWalls,
   );
   if (!emptySpaces.exact) return [];
 

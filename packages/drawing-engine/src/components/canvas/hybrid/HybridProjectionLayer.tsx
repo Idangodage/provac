@@ -28,7 +28,6 @@ import type {
   Wall,
   WallColorMode,
 } from "../../../types";
-import { generateId } from "../../../utils/geometry";
 import {
   beginDrag,
   createWorkplane,
@@ -42,8 +41,7 @@ import {
   type SnapType,
 } from "../../../vrf/interaction/snap-manager";
 import { resolveViewManipulationPolicy, type InteractionViewMode } from "../../../vrf/interaction/view-manipulation-policy";
-import { wallGraphFromLegacyWalls } from "../../../wallcore/legacyBridge";
-import { solveWallGraphDoc } from "../../../wallcore/wallSolver";
+import { solveWallList } from "../../../wallcore/solvedWalls";
 import { computeBoardGridSteps } from "../board/boardGridMath";
 import { useDuctNetworkFocusStore, type DuctNetworkFocus } from "../hvac/duct/ductNetworkFocusStore";
 import { domainOf, focusId, useDuctSegmentUiStore, type DuctSegmentFocus } from "../hvac/duct/ductSegmentUiStore";
@@ -597,8 +595,7 @@ function createWallChunkGroup(
   wallColorMode: WallColorMode,
 ): WallChunkGroupData | null {
   if (walls.length === 0) return null;
-  const graph = wallGraphFromLegacyWalls(walls, { newId: generateId });
-  const solve = solveWallGraphDoc(graph);
+  const { doc: graph, solve } = solveWallList(walls);
   if (solve.footprints.length === 0) return null;
 
   // Material slots are stable regardless of wall iteration order. Edge

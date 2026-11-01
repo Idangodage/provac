@@ -20,7 +20,6 @@ import {
   type WallIdSource,
   type WallJustification,
 } from './wallModel';
-import { solveWallGraphDoc, type EdgeFootprint } from './wallSolver';
 
 /** Graph identity stamped onto mirrored legacy walls. */
 export interface WallGraphMeta {
@@ -110,13 +109,6 @@ export interface MirrorCallbacks<W extends LegacyWallLike> {
   createWall(edge: WallEdge2, start: Vec2, end: Vec2): W;
   /** Recompute derived legacy geometry (offset lines, bevel normalization). */
   rebuildGeometry(wall: W): W;
-  /**
-   * Stamp the SOLVED footprint corners `[aLeft, bLeft, bRight, aRight]` onto
-   * the mirrored wall (interior line = aL→bL, exterior = aR→bR), so the 2D
-   * renderer draws the exact mitred/bevelled body the solver produced — the
-   * same geometry the 3D prisms use.
-   */
-  applyFootprint?(wall: W, corners: EdgeFootprint['corners']): W;
 }
 
 /**
@@ -131,9 +123,6 @@ export function legacyWallsFromGraph<W extends LegacyWallLike>(
 ): W[] {
   const prevById = new Map(prevWalls.map((w) => [w.id, w]));
   const edges = Object.values(doc.edges).sort((x, y) => (x.id < y.id ? -1 : 1));
-  const solvedCorners = callbacks.applyFootprint
-    ? new Map(solveWallGraphDoc(doc).footprints.map((f) => [f.edgeId, f.corners]))
-    : null;
 
   // shared-node adjacency → connectedWalls
   const edgesByNode = new Map<WallEntityId, WallEntityId[]>();
@@ -176,12 +165,7 @@ export function legacyWallsFromGraph<W extends LegacyWallLike>(
         }
       : { ...callbacks.createWall(edge, start, end), graph: meta };
     const withConnections = { ...base, connectedWalls: connected } as W;
-    let rebuilt = callbacks.rebuildGeometry(withConnections);
-    const corners = solvedCorners?.get(edge.id);
-    if (corners && callbacks.applyFootprint) {
-      rebuilt = callbacks.applyFootprint(rebuilt, corners);
-    }
-    out.push(rebuilt);
+    out.push(callbacks.rebuildGeometry(withConnections));
   }
   return out;
 }

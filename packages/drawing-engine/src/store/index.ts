@@ -2254,21 +2254,6 @@ function buildWallMirrorCallbacks(get: () => DrawingState): MirrorCallbacks<Wall
       });
     },
     rebuildGeometry: (wall) => rebuildWallGeometry(wall),
-    // Solver footprint [aL, bL, bR, aR] → mitred interior (aL→bL) and
-    // exterior (aR→bR) lines, so every 2D consumer (fill quad, boundary
-    // strokes, hit polygon) draws the exact solved body — same geometry as
-    // the 3D prisms.
-    applyFootprint: (wall, corners) => ({
-      ...wall,
-      interiorLine: {
-        start: { x: corners[0][0], y: corners[0][1] },
-        end: { x: corners[1][0], y: corners[1][1] },
-      },
-      exteriorLine: {
-        start: { x: corners[3][0], y: corners[3][1] },
-        end: { x: corners[2][0], y: corners[2][1] },
-      },
-    }),
   };
 }
 
@@ -5456,9 +5441,9 @@ export const useDrawingStore = create<DrawingState>()(
             hvacElements: importedHvacElements,
             drawingImportSerial: get().drawingImportSerial + 1,
             // Normalize through the wall-graph mirror: stamps graph identity
-            // (one-time endpoint-weld migration for legacy docs, wall ids kept)
-            // and solver-mitred interior/exterior lines, so the plan renders
-            // solver-true straight from load — same source of truth as 3D.
+            // (one-time endpoint-weld migration for legacy docs, wall ids kept),
+            // so the plan renders solver-true straight from load, same source
+            // of truth as 3D.
             walls: legacyWallsFromGraph(
               wallGraphFromLegacyWalls(attributeHydration.walls, WALL_GRAPH_IDS),
               attributeHydration.walls,

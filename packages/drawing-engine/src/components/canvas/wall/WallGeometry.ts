@@ -360,9 +360,8 @@ export function computeWallBodyPolygon(wall: Wall): Point2D[] {
 export function computeWallPolygon(wall: Wall, joins?: JoinData[]): Point2D[] {
   const JOIN_ENDPOINT_TOLERANCE = 2;
   const basePolygon = computeWallBodyPolygon(wall);
-  // Wall-graph walls (src/wallcore) carry solver-mitred interior/exterior
-  // lines stamped by the mirror bridge — the base quad IS the exact footprint;
-  // legacy endpoint-join adjustments would fight the solved corners.
+  // Wall-graph walls (src/wallcore) get their joins from the solver, with their
+  // neighbours in view (solveWallList); this wall alone only knows its square body.
   if (wall.graph) {
     return basePolygon;
   }

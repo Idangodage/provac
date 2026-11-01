@@ -62,6 +62,15 @@ import type { UseExtendToolResult } from "./useExtendTool";
 import type { UseOffsetToolResult } from "./useOffsetTool";
 import type { UseTrimToolResult } from "./useTrimTool";
 
+/**
+ * A wall's Fabric group is hit by its bounding box, which for an angled wall spans
+ * its neighbours and empty floor. Only the wall's real shape decides what a click
+ * hit (WallRenderer.getWallIdAtPoint); its door and window symbols still count directly.
+ */
+function isWallBodyGroup(target: fabric.Object | null | undefined): boolean {
+  return Boolean((target as { name?: string } | null | undefined)?.name?.startsWith("wall-"));
+}
+
 // =============================================================================
 // Options
 // =============================================================================
@@ -1157,16 +1166,18 @@ export function useCanvasEventBinding(
           };
           return Boolean(typed.isDimensionControl);
         }) ?? null;
+      const precisionHitTarget = isWallBodyGroup(hitTarget) ? null : hitTarget;
       const targetMeta = getTargetMeta(
-        hitTarget,
+        precisionHitTarget,
       );
       const directWallId =
         candidateTargets
+          .filter((target) => !isWallBodyGroup(target))
           .map((target) => resolveWallIdFromTarget(target))
           .find((entry): entry is string => Boolean(entry)) ??
-        resolveWallIdFromTarget(hitTarget);
+        resolveWallIdFromTarget(precisionHitTarget);
       const clickedWallId =
-        directWallId ?? wallRenderer?.getWallIdAtPoint(wallPointMm) ?? null;
+        wallRenderer?.getWallIdAtPoint(wallPointMm) ?? directWallId ?? null;
       const clickedRoomId =
         roomRendererRef.current?.getRoomIdAtPoint(wallPointMm) ??
         resolveRoomIdFromTarget(hitTarget);
@@ -1235,7 +1246,7 @@ export function useCanvasEventBinding(
         return;
       }
       const dimensionHandled = handleDimensionSelectMouseDown(
-        prioritizedDimensionControlTarget ?? hitTarget,
+        prioritizedDimensionControlTarget ?? precisionHitTarget,
         wallPointMm,
         addToSelection,
       );
@@ -1246,7 +1257,7 @@ export function useCanvasEventBinding(
       }
       setPersistentRoomControlId(null);
       handleSelectMouseDown(
-        hitTarget,
+        precisionHitTarget,
         wallPointMm,
         addToSelection,
       );
@@ -1306,10 +1317,10 @@ export function useCanvasEventBinding(
         target ?? null,
       );
       const targetObjectId = resolveObjectIdFromTarget(target ?? null);
-      const directWallId = resolveWallIdFromTarget(target ?? null);
+      const directWallId = resolveWallIdFromTarget(isWallBodyGroup(target) ? null : target ?? null);
       const clickedWallId = wallPointMm
-        ? (directWallId ?? wallRenderer?.getWallIdAtPoint(wallPointMm) ?? null)
-        : directWallId;
+        ? (wallRenderer?.getWallIdAtPoint(wallPointMm) ?? directWallId)
+        : resolveWallIdFromTarget(target ?? null);
       if (!targetSectionLineId && !targetObjectId && clickedWallId) {
         event.preventDefault();
         event.stopPropagation();
@@ -1375,7 +1386,7 @@ export function useCanvasEventBinding(
         return;
       }
 
-      const wallId = resolveWallIdFromTarget(target ?? null);
+      const wallId = wallPointMm ? null : resolveWallIdFromTarget(target ?? null);
       if (!wallId) {
         closeWallContextMenu();
         closeDimensionContextMenu();

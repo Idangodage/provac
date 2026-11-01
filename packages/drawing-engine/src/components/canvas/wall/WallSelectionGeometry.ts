@@ -28,6 +28,7 @@ import { featureCollection, multiPolygon, polygon, union } from '@turf/turf';
 
 import type { JoinData, Point2D, Room, Wall } from '../../../types';
 import { GeometryEngine } from '../../../utils/geometry-engine';
+import { solveWallList } from '../../../wallcore/solvedWalls';
 
 import {
   computeWallBodyPolygon,
@@ -1840,6 +1841,12 @@ export function computeSelectableWallPolygon(
   joinsMap: Map<string, JoinData[]>,
   componentWalls: Wall[]
 ): Point2D[] {
+  // A wall in the graph is selected as what the solve gives it, the same body both views draw.
+  const solved = wall.graph ? solveWallList(componentWalls).footprints.get(wall.id) : undefined;
+  if (solved) {
+    return solved.outline.map(([x, y]) => ({ x, y }));
+  }
+
   const basePolygon = computeWallBodyPolygon(wall);
   const selectionPolygon = computeWallPolygon(wall, joinsMap.get(wall.id));
   if (selectionPolygon.length !== 4 || isPolygonSelfIntersecting(selectionPolygon)) {
@@ -1909,6 +1916,9 @@ export function getWallSelectionGeometrySignature(walls: Wall[]): string {
       connectedWalls: wall.connectedWalls,
       startBevel: wall.startBevel ?? null,
       endBevel: wall.endBevel ?? null,
+      graph: wall.graph ?? null,
+      height: wall.properties3D?.height,
+      baseElevation: wall.properties3D?.baseElevation,
     }))
   );
   wallSelectionSignatureCache.set(walls, signature);
