@@ -29,6 +29,7 @@
 
 import type { Point2D, Wall, SnapResult, EndpointSnapResult, WallSettings } from '../../../types';
 import { ANGLE_CONSTRAINTS } from '../../../types/wall';
+import { halfWidths } from '../../../wallcore/wallSolver';
 import { MM_TO_PX } from '../scale';
 import {
   segmentIntersection,
@@ -357,6 +358,55 @@ export function snapToWallBodyCenterline(
   return closest;
 }
 
+/**
+ * A click inside a wall's body means that wall, at any zoom: it joins on the
+ * centerline, or at the wall's end when within half a thickness of it. Pixel
+ * tolerances only decide about points outside the wall.
+ */
+export function snapInsideWallBody(
+  point: Point2D,
+  walls: Wall[],
+  excludeWallId?: string
+): EndpointSnapResult | null {
+  let closest: EndpointSnapResult | null = null;
+  let closestAcross = Number.POSITIVE_INFINITY;
+
+  for (const wall of walls) {
+    if (wall.id === excludeWallId) continue;
+
+    const dx = wall.endPoint.x - wall.startPoint.x;
+    const dy = wall.endPoint.y - wall.startPoint.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 0) continue;
+    const ux = dx / length;
+    const uy = dy / length;
+    const along = (point.x - wall.startPoint.x) * ux + (point.y - wall.startPoint.y) * uy;
+    const across = (point.y - wall.startPoint.y) * ux - (point.x - wall.startPoint.x) * uy;
+    const { hl, hr } = halfWidths({
+      thickness: wall.thickness,
+      justification: wall.graph?.justification ?? 'center',
+    });
+    if (along < 0 || along > length || across > hl || across < -hr) continue;
+    if (Math.abs(across) >= closestAcross) continue;
+
+    closestAcross = Math.abs(across);
+    const reach = wall.thickness / 2;
+    const endpoint = along <= reach ? 'start' : length - along <= reach ? 'end' : 'midpoint';
+    closest = {
+      snappedPoint: endpoint === 'start'
+        ? { ...wall.startPoint }
+        : endpoint === 'end'
+          ? { ...wall.endPoint }
+          : { x: wall.startPoint.x + ux * along, y: wall.startPoint.y + uy * along },
+      wallId: wall.id,
+      endpoint,
+      distance: Math.abs(across),
+    };
+  }
+
+  return closest;
+}
+
 // =============================================================================
 // [NEW] Intersection Snapping
 // =============================================================================
@@ -554,7 +604,24 @@ export function snapWallPoint(
     });
   }
 
-  // 4. Perpendicular snap (priority 70, only when drawing from startPoint)
+  // 3b. Inside a wall's body (priority 75): that wall, at any zoom. With wall snaps
+  // switched off (tolerance 0) the user is placing the point freely.
+  const insideSnap = settings.endpointSnapTolerance > 0
+    ? snapInsideWallBody(point, walls, excludeWallId)
+    : null;
+  if (insideSnap) {
+    candidates.push({
+      point: insideSnap.snappedPoint,
+      type: 'endpoint',
+      wallId: insideSnap.wallId,
+      endpoint: insideSnap.endpoint === 'midpoint' ? undefined : insideSnap.endpoint,
+      distance: insideSnap.distance,
+      priority: 75,
+    });
+  }
+
+  // 4. Perpendicular snap (priority 70, only when drawing from startPoint;
+  // onto the wall the point is inside, it is the better join on that same centerline)
   if (startPoint) {
     const perpSnap = snapToPerpendicular(
       point, startPoint, walls, settings.endpointSnapTolerance * 1.5, zoom, excludeWallId
@@ -565,7 +632,7 @@ export function snapWallPoint(
         type: 'endpoint',
         wallId: perpSnap.wallId,
         distance: perpSnap.distance,
-        priority: 70,
+        priority: insideSnap?.wallId === perpSnap.wallId ? 76 : 70,
         guides: [perpSnap.guideLine],
       });
     }
