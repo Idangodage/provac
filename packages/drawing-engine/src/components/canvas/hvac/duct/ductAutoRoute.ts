@@ -25,6 +25,7 @@
  * Walls are routing obstacles and are checked again on the finished geometry.
  */
 import type { HvacElement, Point2D, RoomDesignCriteria } from '../../../../types';
+import type { UnitKept, UnitTurn } from '../unitOrientation';
 
 import { assignmentOptions, assignmentProblemFromScene, solveAirSystemAssignment } from './airSystemAssignment';
 import { listAirPorts } from './ductAirPorts';
@@ -105,7 +106,7 @@ export interface AutoRouteDuctUnit {
  * for the unit's airflow (each neck within its velocity limit).
  */
 export type AutoRouteDuctAdvice =
-  | { kind: 'turn-unit'; angleDeg: 90 | 180 | 270; message: string }
+  | { kind: 'turn-unit'; angleDeg: 90 | 180 | 270; ahead: number; aheadNow: number; total: number; message: string }
   | { kind: 'add-terminals'; service: DuctService; neckMm: number; total: number; current: number; airflowM3h: number; message: string };
 
 /** The advice for one unit, from its terminals, its airflow and what the design found. */
@@ -116,7 +117,7 @@ export function unitAdvice(unit: HvacElement, terminals: readonly HvacElement[],
     const turn = unitTurnToFaceTerminals(unit, terminals);
     if (turn) {
       const after = turn.ahead === turn.total ? `all ${turn.total} of its terminals are` : `${turn.ahead} of its ${turn.total} terminals are`;
-      advice.push({ kind: 'turn-unit', angleDeg: turn.angleDeg,
+      advice.push({ kind: 'turn-unit', angleDeg: turn.angleDeg, ahead: turn.ahead, aheadNow: turn.aheadNow, total: turn.total,
         message: `Turn ${tag} ${turn.angleDeg}°: ${after} then ahead of their collars (${turn.aheadNow === 0 ? 'none are' : `${turn.aheadNow} ${turn.aheadNow === 1 ? 'is' : 'are'}`} now).` });
     }
   }
@@ -143,6 +144,15 @@ export interface AutoRouteDuctResult {
   issues: string[];
   /** Explicitly selected, unserved terminals with no assignable unit/collar. */
   unservedTerminalIds?: string[];
+  /** The ducted units turned to face their terminals (this result is designed with them turned), and those kept as placed. */
+  unitTurns?: { turns: UnitTurn[]; kept: UnitKept[] };
+}
+
+/** Why a unit keeps no ducts, in a sentence: what its checks say first (its notes start with the advice). */
+export function ductLeftOutReason(unit: Pick<AutoRouteDuctUnit, 'diagnostics' | 'notes' | 'advice'>): string {
+  const error = unit.diagnostics?.find((issue) => issue.severity === 'error');
+  return error?.message ?? unit.notes.find((note) => !unit.advice?.some((entry) => entry.message === note)) ?? unit.notes[0]
+    ?? 'No duct layout could be built for its terminals.';
 }
 
 export interface AutoRouteDuctProgress {

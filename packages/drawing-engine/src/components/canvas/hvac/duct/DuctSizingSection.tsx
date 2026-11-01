@@ -83,6 +83,7 @@ const SET_BY_GROUP: Record<DuctSectionSetBy, { swatch: string; legend: string }>
   aspect: { swatch: 'bg-slate-300', legend: 'size rule' },
   'take-off': { swatch: 'bg-teal-500', legend: 'fitting' },
   split: { swatch: 'bg-teal-500', legend: 'fitting' },
+  transition: { swatch: 'bg-teal-500', legend: 'fitting' },
   downstream: { swatch: 'bg-teal-500', legend: 'fitting' },
   carried: { swatch: 'bg-teal-500', legend: 'fitting' },
   neck: { swatch: 'bg-violet-400', legend: 'terminal' },

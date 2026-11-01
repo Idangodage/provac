@@ -20,7 +20,8 @@ import { defaultSizingBasis, linkSizingBasis } from './ductSystemSizing';
 import { terminalEnvelope, terminalSpigotPort, typicalTerminalSpec } from './ductTerminals';
 import { readDuctRunSpec, roundLeg, type DuctLeg } from './ductTypes';
 
-const settings = resolveDuctSettings({});
+// A gentle taper: long collar transitions, which is what these tests' take-offs are placed against.
+const settings = resolveDuctSettings({ transitionTaperDeg: 14 });
 const unit: HvacElement = {
   id: 'u', type: 'ducted-ac', position: { x: -542, y: -348.5 }, rotation: 0, width: 1084, depth: 697, height: 300,
   elevation: 2400, mountType: 'ceiling', label: 'FDUM22', supplyZoneRatio: 0.5, roomId: 'r', properties: { modelCode: 'FDUM22KXE6F-W' },

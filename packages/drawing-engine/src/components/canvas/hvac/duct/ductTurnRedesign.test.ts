@@ -21,7 +21,8 @@ import {
 import { isDuctElement, readDuctRunSpec, roundLeg } from './ductTypes';
 import { findDuctClashes } from './ductVolumes';
 
-const settings = resolveDuctSettings({ soffitMm: 3000 });
+// (A gentle taper: the collar transitions these re-routes are judged against are long.)
+const settings = resolveDuctSettings({ soffitMm: 3000, transitionTaperDeg: 14 });
 const STAMP = '2026-10-19T00:00:00.000Z';
 
 const unit: HvacElement = {

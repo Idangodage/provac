@@ -12,13 +12,15 @@
  *    transfer path, which the drawing does not model);
  *  - DU_SYSTEM_FAR: served by a unit far farther than another in its room
  *    (airSystemAssignment.farAssignments; the fix re-solves it, balanced);
- *  - DU_TERMINAL_UNASSIGNED (information): a terminal in no system.
+ *  - DU_TERMINAL_NOT_DUCTED: in a system, but no duct reaches it (with the
+ *    reason, when Auto route left its unit out and said why);
+ *  - DU_TERMINAL_UNASSIGNED: in no system, so no unit serves it either.
  */
 import type { HvacElement, Point2D, Room } from '../../../../types';
 import type { VrfValidationFix, VrfValidationIssue } from '../../../../vrf/rules';
 
 import { farAssignments, type AssignmentWall } from './airSystemAssignment';
-import { airSystemMembers, analyseAirSystems, roomIdOf, terminalTagOf, type AirSystem } from './ductAirSystems';
+import { airSystemMembers, analyseAirSystems, readDuctLeftOutReason, roomIdOf, terminalTagOf, type AirSystem } from './ductAirSystems';
 import { footprintCorners } from './ductAutoContext';
 import type { DuctDesignSettings } from './ductSettings';
 import { isDuctTerminalElement, readDuctTerminalSpec } from './ductTerminals';
@@ -70,7 +72,13 @@ const metres = (mm: number) => (mm / 1000).toFixed(1);
 
 function systemIssues(system: AirSystem, tagsByUnit: ReadonlyMap<string, string>, roomNames: ReadonlyMap<string, string>): VrfValidationIssue[] {
   const out: VrfValidationIssue[] = [];
+  const leftOut = readDuctLeftOutReason(system.unit);
   for (const member of airSystemMembers(system)) {
+    if (!member.connection) {
+      out.push(issue('warning', 'DU_TERMINAL_NOT_DUCTED', member.terminal.id,
+        `${member.tag} has no duct: no air from ${system.tag} reaches it.${leftOut ? ` Auto route left ${system.tag} out: ${leftOut}` : ''}`,
+        leftOut ? `Put that right and run Auto route again, or draw its duct.` : `Run Auto route for ${system.tag}, or draw its duct.`));
+    }
     if (member.mismatch && member.connection) {
       out.push(issue('error', 'DU_SYSTEM_MISMATCH', member.terminal.id,
         `${member.tag} is assigned to ${system.tag}, but its duct comes from ${tagsByUnit.get(member.connection.unitId) ?? 'another unit'}.`,
@@ -159,8 +167,8 @@ export function checkAirSystems(
   }
   for (const terminal of analysis.unassigned) {
     const spec = readDuctTerminalSpec(terminal);
-    issues.push(issue('information', 'DU_TERMINAL_UNASSIGNED', terminal.id,
-      `${spec ? terminalTagOf(terminal, spec) : terminal.label} belongs to no air system.`, 'Assign it to the ducted unit that serves it.'));
+    issues.push(issue('warning', 'DU_TERMINAL_UNASSIGNED', terminal.id,
+      `${spec ? terminalTagOf(terminal, spec) : terminal.label} belongs to no air system: no unit serves it, and no duct reaches it.`, 'Assign it to the ducted unit that serves it.'));
   }
   return issues;
 }

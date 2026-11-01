@@ -246,7 +246,7 @@ export const DEFAULT_DUCT_SETTINGS: DuctDesignSettings = {
   elbowCentrelineRatio: ELBOW_RULES.defaultCentrelineRatio,
   elbowNeckMm: 50,
   vaneType: 'auto',
-  transitionTaperDeg: 14,
+  transitionTaperDeg: 22,
   transitionMaxDivergingIncludedDeg: TRANSITION_LIMITS.concentricDivergingIncludedDeg,
   transitionMaxConvergingIncludedDeg: TRANSITION_LIMITS.concentricConvergingIncludedDeg,
   transitionMaxEccentricDeg: TRANSITION_LIMITS.eccentricMaxDeg,
@@ -365,7 +365,7 @@ export const DUCT_RULE_SOURCES: Partial<Record<keyof DuctDesignSettings, DuctRul
   elbowCentrelineRatio: { sourceId: 'smacna-1995', reference: 'Fig. 2-2 RE1, p.2.3', verified: true, note: 'Centreline R = 3W/2 unless otherwise specified; R/W 0.5 only up to 5 m/s.' },
   elbowNeckMm: practice('Straight neck on each elbow end for its flange.'),
   vaneType: { sourceId: 'smacna-1995', reference: 'Fig. 2-3 (p.2.5), Fig. 2-4 (p.2.6)', verified: true, note: 'Schedule and spans are SMACNA; auto picks the lightest vane that spans the height (practice).' },
-  transitionTaperDeg: practice('Design taper within the SMACNA limits.'),
+  transitionTaperDeg: practice('Design taper just inside the SMACNA limit (22.5° a side, 45° included).'),
   transitionMaxDivergingIncludedDeg: { sourceId: 'smacna-1995', reference: 'Fig. 2-7, p.2.9', verified: true, note: 'Concentric: 45° included diverging.' },
   transitionMaxConvergingIncludedDeg: { sourceId: 'smacna-1995', reference: 'Fig. 2-7, p.2.9', verified: true, note: 'Concentric: 60° included converging.' },
   transitionMaxEccentricDeg: { sourceId: 'smacna-1995', reference: 'Fig. 2-7, p.2.9', verified: true, note: 'Eccentric: 30° max.' },
@@ -527,14 +527,19 @@ function resolveSheetStock(value: unknown): number[] {
  * unsupported ones explicitly rather than silently clamping them).
  */
 /**
- * A saved document's duct settings. 20 s was the default time per unit until it
- * decided designs on a slow computer (a laptop on battery reached it): a document
- * saved with it did not choose it, and takes today's default.
+ * A saved document's duct settings. Two former defaults a document saved with
+ * them did not choose, and take today's: 20 s, the time per unit until it decided
+ * designs on a slow computer (a laptop on battery reached it); and a 14° design
+ * taper, until it made every collar's transition 1.7 to 1.9 m long, and left
+ * units with no layout their collar had the room for.
  */
 export function savedDuctSettings(saved: Partial<DuctDesignSettings>): DuctDesignSettings {
-  if (saved.autoTimeBudgetMs !== 20000) return resolveDuctSettings(saved);
-  const { autoTimeBudgetMs: _former, ...rest } = saved;
-  return resolveDuctSettings(rest);
+  const { autoTimeBudgetMs, transitionTaperDeg, ...rest } = saved;
+  return resolveDuctSettings({
+    ...rest,
+    ...(autoTimeBudgetMs !== undefined && autoTimeBudgetMs !== 20000 ? { autoTimeBudgetMs } : {}),
+    ...(transitionTaperDeg !== undefined && transitionTaperDeg !== 14 ? { transitionTaperDeg } : {}),
+  });
 }
 
 export function resolveDuctSettings(input?: Partial<DuctDesignSettings> | null): DuctDesignSettings {

@@ -124,7 +124,8 @@ describe('a system rectangular throughout', () => {
   }, 120000);
 
   it('where the terminals leave no room for its branches\' square-to-rounds, a rectangular main with round branches instead, and it says so', () => {
-    const result = design('rectangular', DEFAULT_DUCT_SETTINGS, scene, generateAutoDuctInShape);
+    // (At a gentle taper: at today's the square-to-rounds fit these terminals.)
+    const result = design('rectangular', resolveDuctSettings({ transitionTaperDeg: 14 }), scene, generateAutoDuctInShape);
     expect(result.shape).toBe('rect');
     expect(result.designs[result.selected]!.errors).toBe(0);
     expect(result.issues[0]).toMatchObject({ code: 'DU_AUTO_SHAPE', severity: 'info' });

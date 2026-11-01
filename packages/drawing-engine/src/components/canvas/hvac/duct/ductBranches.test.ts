@@ -48,9 +48,9 @@ describe('transitions', () => {
     const element = run('r', at([{ x: 0, y: -3000 }, { x: 0, y: -3000 }]), [{ widthMm: 674, heightMm: 164 }, { widthMm: 500, heightMm: 164 }]);
     const plan = planOf(element, [unit, element]);
     const transition = plan.pieces.find((piece) => piece.kind === 'transition')!;
-    // Half-width change 87 mm at 14° → slope ceil(348.9 / 10) × 10 = 350, plus two 50 mm necks.
-    expect(transition.transition!.slopeMm).toBe(350);
-    expect(transition.lengthMm).toBe(450);
+    // Half-width change 87 mm at 22° → slope ceil(215.3 / 10) × 10 = 220, plus two 50 mm necks.
+    expect(transition.transition!.slopeMm).toBe(220);
+    expect(transition.lengthMm).toBe(320);
     expect(`${transition.widthMm}×${transition.heightMm} → ${transition.endWidthMm}×${transition.endHeightMm}`).toBe('674×164 → 500×164');
     expect(transition.stationStartMm).toBeCloseTo(3000, 6);
     expect(transition.transition!.widthSense).toBe('contracting');

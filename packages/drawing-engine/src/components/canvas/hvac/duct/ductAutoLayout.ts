@@ -62,7 +62,7 @@ import { legNormal } from './ductBranches';
 import { ductWallsFromInputs, withActiveDuctBuilding, type DuctRoomOutline, type DuctWall, type DuctWallInput } from './ductBuilding';
 import { buildDuctRunDraft, buildDuctRunDraftElement, type DuctDraftOrigin, type DuctDraftPoint } from './ductDraft';
 import { EMPTY_COST, energyPricePerPa, formatCost, priceDuctPlans, type DuctCostBreakdown } from './ductEconomics';
-import { planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
+import { planDuctRunSpec, transitionMinLengthMm, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductRunElementWithSpec } from './ductFollow';
 import { ductBranchesOf } from './ductNetwork';
 import { wallCrossingRule } from './ductPenetrations';
@@ -1207,13 +1207,35 @@ const TRUNK_HEIGHTS_PRICED = 8;
 const TRUNK_HEIGHT_OPTIONS = 3;
 
 /**
+ * The width a run's first section needs for the transition off its collar to keep within the SMACNA limits in the
+ * length the leg gives it, when it is over them now (the route was laid for the section it had before constant
+ * friction narrowed it); null when it is within, or widening does not help.
+ */
+function firstSectionWidthToFit(plan: DuctFabricationPlan | undefined, settings: DuctDesignSettings): number | null {
+  if (!plan?.issues.some((issue) => issue.code === 'DU_TRANSITION_ANGLE' && issue.legIndex === 0)) return null;
+  const piece = plan.pieces.find((candidate) => candidate.kind === 'transition');
+  if (!piece || piece.legIndex !== 0 || !(piece.endWidthMm < piece.widthMm)) return null;
+  const lengthMm = piece.stationEndMm - piece.stationStartMm;
+  const to = (widthMm: number): DuctLeg => (isRoundLeg({ widthMm: piece.endWidthMm, heightMm: piece.endHeightMm, ...(piece.endDiameterMm ? { diameterMm: piece.endDiameterMm } : {}) })
+    ? roundLeg(widthMm) : { widthMm, heightMm: piece.endHeightMm });
+  const collar: DuctLeg = { widthMm: piece.widthMm, heightMm: piece.heightMm };
+  const step = ductRectStepMm(settings);
+  const flowAlongPath = plan.spec.service === 'supply';
+  for (let width = piece.endWidthMm + step; width < piece.widthMm; width += step) {
+    if (transitionMinLengthMm(collar, to(width), settings, flowAlongPath) <= lengthMm + 0.5) return width;
+  }
+  return null;
+}
+
+/**
  * A verified option sized again by constant friction at `basis` (the route
  * kept), verified again exactly as the optimiser's own: plans, clashes, walls,
  * pressure, price. With `trunkHeights`, the trunk is also sized at each of
  * those heights (one height through it, the width reducing) and the cheapest
  * kept: fewer errors first, then the lower first cost, a tie to fewer pieces.
  * A height whose sizes come out as those of one already priced (the take-offs
- * raising a low trunk to the same sections) is not verified again.
+ * raising a low trunk to the same sections) is not verified again. A size whose
+ * collar transition does not fit its leg is tried wider (firstSectionWidthToFit).
  */
 function constantFrictionOption(
   ctx: ServiceCtx, option: ServiceOption, basis: DuctSystemSizing, terminalAirflows: AutoDuctRequest['terminalAirflows'], trunkHeights = false,
@@ -1221,8 +1243,9 @@ function constantFrictionOption(
   const root = option.runs.find((run) => readDuctRunSpec(run)?.start.kind === 'unit-port');
   if (!root) return option;
   const scene = [...withReplaced(ctx.baseScene, option.terminalUpdates), ...option.runs];
-  const size = (trunkHeightMm?: number) => sizeDuctSystem(scene, root.id, {
+  const size = (trunkHeightMm?: number, firstSectionMinWidthMm?: number) => sizeDuctSystem(scene, root.id, {
     basis, ...(terminalAirflows ? { terminalAirflows } : {}), verify: false, ...(trunkHeightMm !== undefined ? { trunkHeightMm } : {}),
+    ...(firstSectionMinWidthMm !== undefined ? { firstSectionMinWidthMm } : {}),
   }, ctx.settings);
   const sizesOf = (sized: ReturnType<typeof size>) => sized.report.sections.map((section) => `${section.runId}:${section.fromMm}:${legLabel(section.section)}`).join('|');
   const verify = (sized: ReturnType<typeof size>) => {
@@ -1235,7 +1258,14 @@ function constantFrictionOption(
     cost.total += option.design?.penalty ?? 0;
     return { sized, runs, verified, cost, pieces: verified.plans.reduce((sum, plan) => sum + plan.pieces.length, 0) };
   };
-  let chosen = verify(size());
+  const verifyFitted = (sized: ReturnType<typeof size>, trunkHeightMm?: number) => {
+    const trial = verify(sized);
+    const width = firstSectionWidthToFit(trial.verified.plans.find((plan) => plan.elementId === root.id), ctx.settings);
+    if (width === null) return trial;
+    const wider = verify(size(trunkHeightMm, width));
+    return wider.verified.errors < trial.verified.errors ? wider : trial;
+  };
+  let chosen = verifyFitted(size());
   if (trunkHeights) {
     // The economical trunk height: the standard heights that fit the void, each priced (sheet, fabrication,
     // insulation, reducers and fittings); the cheapest is kept.
@@ -1257,7 +1287,7 @@ function constantFrictionOption(
         const sizes = sizesOf(sized);
         if (priced.has(sizes)) continue;
         priced.add(sizes);
-        const trial = verify(sized);
+        const trial = verifyFitted(sized, height);
         const better = trial.verified.errors !== chosen.verified.errors ? trial.verified.errors < chosen.verified.errors
           : Math.abs(trial.cost.total - chosen.cost.total) > 1e-6 ? trial.cost.total < chosen.cost.total : trial.pieces < chosen.pieces;
         if (better) chosen = trial;

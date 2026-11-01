@@ -9,7 +9,7 @@ import type { HvacElement } from '../../../types';
 import type { ManufacturerRuleProfile } from '../../../vrf/rules';
 
 import { autoRouteSourceSignature, prepareAutoRouteCommand } from './autoRouteCommand';
-import { incompleteServiceRouteRefusal, leftOutParts, partialApplyRefusal } from './autoRouteCompleteness';
+import { incompleteServiceRouteRefusal, leftOutParts, partialApplyRefusal, withDuctLeftOutReasons } from './autoRouteCompleteness';
 import { effectiveAutoRouteSettings, type AutoRouteCostRates } from './autoRouteEvaluation';
 import { autoRouteEstimator } from './autoRouteProgress';
 import { condensateSourceSignature, prepareCondensateCommand, type CondensateCommandSource } from './condensate/condensateCommand';
@@ -137,7 +137,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
           gullyIds: selection.filter((element) => element.type === 'condensate-gully').map((element) => element.id),
         } : {}),
       },
-      // Auto-turn: 4-way cassettes turned for shorter runs first (Route defaults).
+      // Auto-turn: 4-way cassettes turned for shorter runs first, ducted units to face their terminals (Route defaults).
       orientation: autoTurnSettingsOf(state.pipeRoutingSettings),
       ...(lastSteps && !options.inlineTasks ? { previous: lastSteps } : {}),
       // Always passed: every step plans duct bodies with the document's duct settings.
@@ -230,7 +230,7 @@ export function applyAutoRoutePreview(options: { completeOnly?: boolean } = {}):
   }
   let add: HvacElement[] = [];
   const removeIds: string[] = [];
-  // The cassettes Auto route turned, first: everything after is laid to them as turned.
+  // The units Auto route turned, first: everything after is laid to them as turned.
   let updates: HvacElementUpdate[] = unitTurnCommandUpdates(unified.orientation);
 
   const ducts = unified.ducts;
@@ -283,7 +283,7 @@ export function applyAutoRoutePreview(options: { completeOnly?: boolean } = {}):
     profile: previewProfile, walls: state.walls,
   });
   if (issues.length) return refuse(`Nothing was applied. ${issues[0]}`);
-  state.commitHvacElementCommand('Auto route', { add, removeIds, updates, selectedIds: [] });
+  state.commitHvacElementCommand('Auto route', { add, removeIds, updates: withDuctLeftOutReasons(updates, state.hvacElements, unified.ducts), selectedIds: [] });
   const refrigerantUnits = unified.refrigerant?.connectedIndoorIds.length ?? 0;
   const refrigerantChanged = Boolean(unified.refrigerant && (unified.refrigerant.elementsToAdd.length
     || unified.refrigerant.removeElementIds.length || unified.refrigerant.updates.length));
@@ -292,7 +292,7 @@ export function applyAutoRoutePreview(options: { completeOnly?: boolean } = {}):
   const ductUnits = unified.ducts?.units.filter((unit) => unit.status === 'designed').length ?? 0;
   const turnedUnits = unified.orientation?.turns.length ?? 0;
   const parts = [
-    turnedUnits ? `${turnedUnits} cassette${turnedUnits === 1 ? '' : 's'} turned for shorter runs` : null,
+    turnedUnits ? `${turnedUnits} unit${turnedUnits === 1 ? '' : 's'} turned` : null,
     ductRuns ? `${ductRuns} duct run${ductRuns === 1 ? '' : 's'} for ${ductUnits} unit${ductUnits === 1 ? '' : 's'}` : null,
     unified.refrigerant && !refrigerantChanged ? 'refrigerant unchanged' : null,
     refrigerantChanged ? `${refrigerantUnits} unit${refrigerantUnits === 1 ? '' : 's'} on refrigerant` : null,

@@ -56,7 +56,7 @@ import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
 import { inRoutingSession } from './routingSession';
 import { rankServiceRouteCandidates, type ServiceRouteCandidate, type ServiceRouteObjective } from './serviceRouteObjective';
 import { applyServiceRouteCommand, serviceRouteCommitDiagnostics, type ServiceRouteCommand, type ServiceRouteIssue } from './serviceRouteValidation';
-import { applyUnitTurns, planUnitOrientations, unitRuns, type AutoTurnSettings, type UnitKept, type UnitTurn } from './unitOrientation';
+import { applyUnitTurns, planDuctedUnitTurns, planUnitOrientations, unitRuns, type AutoTurnSettings, type UnitKept, type UnitTurn } from './unitOrientation';
 
 export interface AutoRouteServices {
   gas: boolean;
@@ -331,9 +331,32 @@ export function unifiedRouteCommand(result: Pick<UnifiedAutoRouteResult, 'ducts'
   };
 }
 
-/** The updates that turn an Auto route's turned cassettes (their rotation, and who set it). */
+/** The updates that turn an Auto route's turned units (their rotation, and who set it). */
 export function unitTurnCommandUpdates(orientation: UnifiedAutoRouteResult['orientation']): HvacElementUpdate[] {
   return (orientation?.units ?? []).map((unit) => ({ id: unit.id, updates: { rotation: unit.rotation, properties: unit.properties } }));
+}
+
+/**
+ * The duct design with the units it could not design turned to face their terminals, as far as that gets them
+ * designed: a unit a turn does not help stays as placed, with the advice it had.
+ */
+function withDuctedUnitsTurned(
+  scene: HvacElement[], asPlaced: AutoRouteDuctResult, design: (from: HvacElement[]) => AutoRouteDuctResult,
+  options: { walls: readonly Wall[]; replaceable: ReadonlySet<string> },
+): AutoRouteDuctResult {
+  const planned = planDuctedUnitTurns(scene, asPlaced.units, options);
+  const asPlacedWithKept = planned.kept.length ? { ...asPlaced, unitTurns: { turns: [], kept: planned.kept } } : asPlaced;
+  if (!planned.turns.length) return asPlacedWithKept;
+  const designedIn = (result: AutoRouteDuctResult) => result.units.filter((unit) => unit.status === 'designed').map((unit) => unit.unitId);
+  let turns = planned.turns;
+  let turned = design(applyUnitTurns(scene, turns));
+  const helped = turns.filter((turn) => designedIn(turned).includes(turn.unitId));
+  if (!helped.length) return asPlacedWithKept;
+  if (helped.length < turns.length) {
+    turns = helped;
+    turned = design(applyUnitTurns(scene, turns));
+  }
+  return designedIn(turned).length > designedIn(asPlaced).length ? { ...turned, unitTurns: { turns, kept: planned.kept } } : asPlacedWithKept;
 }
 
 /** Every run a turned cassette had is replaced (its ports moved: a run kept would no longer reach it). */
@@ -430,7 +453,7 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
   let originalScene = drawnScene;
   let orientation: UnifiedAutoRouteResult['orientation'];
   if (options.orientation?.enabled && (wantsRefrigerant || services.condensate)) {
-    progress({ stage: 'Turning cassettes for shorter runs', completed: 0, total: 0, step: 'turns' });
+    progress({ stage: 'Turning units for shorter runs', completed: 0, total: 0, step: 'turns' });
     const replaceable = new Set([
       ...(services.condensate ? replaceableCondensatePipeIds(drawnScene, options.condensate.settings, options.condensate) : []),
       ...(services.gas && services.liquid ? replaceableGeneratedRefrigerantIds(drawnScene, options.refrigerant) : []),
@@ -468,9 +491,23 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
   if (routeDucts) {
     progress({ stage: 'Designing ducts', completed: 0, total: 0, step: 'ducts' });
     const wanted = { supply: Boolean(services.supplyDuct), return: Boolean(services.returnDuct) };
-    ducts = await remembered('ducts', [ductScene, wanted, options.duct], () => planAutoRouteDucts(ductScene, wanted, options.duct!,
-      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total, step: 'ducts' })));
+    // What a turn would take with it: the runs this Auto route replaces anyway.
+    const replaceable = options.orientation?.enabled ? [...replacedDrains, ...replaceableRefrigerant,
+      ...(options.duct!.rebuildExisting ? ductScene.filter(isDuctElement).map((element) => element.id) : [])].sort() : null;
+    const designDucts = (from: HvacElement[]) => planAutoRouteDucts(from, wanted, options.duct!,
+      (step) => progress({ stage: `Ducts: ${step.stage}`, completed: step.completed, total: step.total, step: 'ducts' }));
+    ducts = await remembered('ducts', [ductScene, wanted, options.duct, replaceable], () => {
+      const asPlaced = designDucts(ductScene);
+      return replaceable ? withDuctedUnitsTurned(ductScene, asPlaced, designDucts, { walls: options.condensate.walls ?? [], replaceable: new Set(replaceable) }) : asPlaced;
+    });
     issues.push(...ducts.issues);
+    if (ducts.unitTurns) {
+      // They stay turned for every step below, and in what is applied.
+      originalScene = applyUnitTurns(originalScene, ducts.unitTurns.turns);
+      const turns = [...(orientation?.turns ?? []), ...ducts.unitTurns.turns];
+      const turned = new Set(turns.map((turn) => turn.unitId));
+      orientation = { turns, kept: [...(orientation?.kept ?? []), ...ducts.unitTurns.kept], units: originalScene.filter((element) => turned.has(element.id)) };
+    }
     lap('ducts');
     if (wantsRefrigerant || services.condensate) options.onPartial?.({ services, ducts, refrigerant: null, condensate: null, clashes: [], issues: [...issues], ...(orientation ? { orientation } : {}) });
   }
@@ -585,7 +622,7 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
   if (orientation?.turns.length && !turnsHold(drawnScene, result, orientation.turns)) {
     const unturned = await planUnifiedAutoRoute(drawnScene, { ...options, orientation: { ...options.orientation!, enabled: false } });
     steps.push({ step: 'unturned', ms: unturned.timings?.totalMs ?? 0 });
-    return { ...unturned, issues: [...unturned.issues, 'Cassettes were not turned: a run they keep would no longer reach them.'],
+    return { ...unturned, issues: [...unturned.issues, 'Units were not turned: a run they keep would no longer reach them.'],
       timings: { totalMs: clockMs() - runStarted, steps } };
   }
   options.onMemo?.(memo);

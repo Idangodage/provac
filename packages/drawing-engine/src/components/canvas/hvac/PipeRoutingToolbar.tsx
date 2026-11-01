@@ -178,8 +178,8 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
           <p className="max-w-80 text-[11px] leading-4 text-slate-400">90° and 45° turns use C×C socket elbows where they fit. Copper detail hides fitting covers for inspection. Planning profiles still need project part selection.</p>
           <div className="space-y-2 border-t border-slate-100 pt-2.5" data-testid="auto-turn-settings">
             <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
-              Auto route turns 4-way cassettes for shorter runs
-              <input type="checkbox" aria-label="Auto route turns 4-way cassettes" checked={settings.autoTurnCassettes}
+              Auto route turns units: 4-way cassettes for shorter runs, ducted units to face their terminals
+              <input type="checkbox" aria-label="Auto route turns units" checked={settings.autoTurnCassettes}
                 onChange={(event) => setSettings({ autoTurnCassettes: event.target.checked })} />
             </label>
             {settings.autoTurnCassettes ? (

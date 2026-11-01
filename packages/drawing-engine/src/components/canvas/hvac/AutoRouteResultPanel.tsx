@@ -208,12 +208,12 @@ export function AutoRouteResultPanel({ result, approved, toggleHop, onRouteAgain
         detail="connections proposed" blocked={condensate.metrics.unitsConnected < condensate.metrics.unitsTotal} />}
     </div>
 
-    {result.orientation?.turns.length ? <section aria-label="Cassettes turned" data-testid="auto-route-turns" className="space-y-1 rounded-lg border border-teal-200 bg-teal-50/50 p-2">
-      <p className="flex items-center gap-1 font-semibold text-teal-900"><RotateCw size={12} aria-hidden="true" />Turned for shorter runs
+    {result.orientation?.turns.length ? <section aria-label="Units turned" data-testid="auto-route-turns" className="space-y-1 rounded-lg border border-teal-200 bg-teal-50/50 p-2">
+      <p className="flex items-center gap-1 font-semibold text-teal-900"><RotateCw size={12} aria-hidden="true" />Units turned
         <span className="ml-auto rounded-full bg-teal-100 px-2 text-[11px]">{result.orientation.turns.length}</span></p>
       {result.orientation.turns.map(turn => <p key={turn.unitId} className="text-[11px]" data-testid="auto-route-turn">{units.text(unitTurnText(turn))}</p>)}
       {result.orientation.kept.length ? <p className="text-[11px] text-slate-500">Kept as placed: {result.orientation.kept.map(entry => `${entry.label} (${entry.reason})`).join('; ')}.</p> : null}
-      <p className="text-[10px] text-slate-400">Turned with the routes (one undo). A 4-way cassette throws the same air at every quarter turn.</p>
+      <p className="text-[10px] text-slate-400">Turned with the routes (one undo). A 4-way cassette throws the same air at every quarter turn; a ducted unit's collars then face its terminals.</p>
     </section> : result.orientation?.kept.length ? <p className="text-[11px] text-slate-500" data-testid="auto-route-kept">
       <RotateCw size={11} className="mr-1 inline" aria-hidden="true" />Not turned: {result.orientation.kept.map(entry => `${entry.label} (${entry.reason})`).join('; ')}.</p> : null}
 

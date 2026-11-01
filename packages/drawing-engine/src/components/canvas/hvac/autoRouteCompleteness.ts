@@ -1,3 +1,7 @@
+import type { HvacElement } from '../../../types';
+
+import { DUCT_LEFT_OUT_REASON, readDuctLeftOutReason } from './duct/ductAirSystems';
+import { ductLeftOutReason } from './duct/ductAutoRoute';
 import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
 
 type ServiceProposal = Pick<UnifiedAutoRouteResult, 'services' | 'ducts' | 'refrigerant' | 'condensate'>;
@@ -12,6 +16,28 @@ export function incompleteDuctRouteRefusal(result: Pick<ServiceProposal, 'servic
   if (failed) return `No viable duct layout for ${failed} unit${failed === 1 ? '' : 's'}. Resolve duct issues, or turn off ducts and route again.`;
   const unserved = result.ducts?.unservedTerminalIds?.length ?? 0;
   return unserved ? `${unserved} selected air terminal${unserved === 1 ? ' has' : 's have'} no duct route. Review their ducted unit and terminal assignments.` : null;
+}
+
+/**
+ * A unit left without ducts keeps the reason, for the checks on its terminals; a unit now designed loses it.
+ * Folded into the update a turned unit already has (the store takes one update per element, and merges properties).
+ */
+export function withDuctLeftOutReasons<U extends { id: string; updates: Partial<HvacElement> }>(
+  updates: readonly U[], scene: readonly HvacElement[], ducts: UnifiedAutoRouteResult['ducts'],
+): Array<U | { id: string; updates: Partial<HvacElement> }> {
+  const out: Array<U | { id: string; updates: Partial<HvacElement> }> = [...updates];
+  for (const unit of ducts?.units ?? []) {
+    const element = scene.find((candidate) => candidate.id === unit.unitId);
+    if (!element) continue;
+    const reason = unit.status === 'designed' ? null : ductLeftOutReason(unit);
+    if (reason === readDuctLeftOutReason(element)) continue;
+    const at = out.findIndex((entry) => entry.id === unit.unitId);
+    const earlier = at >= 0 ? out[at]!.updates : {};
+    const next = { id: unit.unitId, updates: { ...earlier, properties: { ...earlier.properties, [DUCT_LEFT_OUT_REASON]: reason ?? undefined } } };
+    if (at >= 0) out[at] = next;
+    else out.push(next);
+  }
+  return out;
 }
 
 /** A part a partial apply leaves out: a duct unit with no layout, a terminal no duct reaches, a unit off the refrigerant or with no drain route. */

@@ -42,6 +42,14 @@ export function isAirSystemUnit(element: Pick<HvacElement, 'type'>): boolean {
   return element.type === 'ducted-ac';
 }
 
+/** On a ducted unit: why Auto route left it without ducts, for the checks (set when the rest is applied, cleared when it is designed). */
+export const DUCT_LEFT_OUT_REASON = 'ductLeftOutReason';
+
+export function readDuctLeftOutReason(unit: Pick<HvacElement, 'properties'>): string | null {
+  const reason = unit.properties?.[DUCT_LEFT_OUT_REASON];
+  return typeof reason === 'string' && reason ? reason : null;
+}
+
 /** The unit a terminal is assigned to (its "served by"), or null. */
 export function readAirSystemAssignment(terminal: Pick<HvacElement, 'properties'>): string | null {
   const raw = terminal.properties.airSystem as { unitId?: unknown } | null | undefined;

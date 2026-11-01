@@ -190,7 +190,7 @@ export function systemTerminalAirflows(
 /** What fixed a section's size. */
 export type DuctSectionSetBy =
   | 'friction' | 'velocity' | 'capped' | 'neck' | 'minimum' | 'aspect'
-  | 'take-off' | 'split' | 'downstream' | 'carried' | 'no-flow' | 'locked' | 'runout' | 'drawn';
+  | 'take-off' | 'split' | 'transition' | 'downstream' | 'carried' | 'no-flow' | 'locked' | 'runout' | 'drawn';
 
 export const DUCT_SECTION_SET_BY_LABELS: Record<DuctSectionSetBy, string> = {
   friction: 'friction rate',
@@ -201,6 +201,7 @@ export const DUCT_SECTION_SET_BY_LABELS: Record<DuctSectionSetBy, string> = {
   aspect: 'aspect limit',
   'take-off': 'take-off fit',
   split: 'split fit',
+  transition: 'transition fit',
   downstream: 'section downstream',
   carried: 'carried on',
   'no-flow': 'no airflow',
@@ -306,6 +307,8 @@ export interface DuctSystemSizingInput {
    * stretch at its height as drawn.
    */
   trunkHeightMm?: number;
+  /** The first section off the collar at least this wide (a wider main, for its transition to fit the leg it has). */
+  firstSectionMinWidthMm?: number;
   /** Check the fan's ESP here (default true); a caller that checks a whole design (both services) passes false. */
   espCheck?: boolean;
 }
@@ -720,6 +723,11 @@ export function sizeDuctSystem(
       if (start.style === 'shoe-45' || start.style === 'straight' || isRoundMainTapStyle(start.style)) node.styles.set(tap.child.id, 'spin-in');
       raise(j, { height: ceilStep(d + 50) }, 'take-off', `the take-off to ${label} (Ø${d} + 50)`);
     });
+
+    if (node === root && input.firstSectionMinWidthMm !== undefined) {
+      const width = ceilStep(input.firstSectionMinWidthMm);
+      raise(0, { width, diameter: width }, 'transition', 'the transition from the collar, in the length the leg gives it');
+    }
 
     // ---- Nothing grows downstream (a flat bottom: the height never rises either) ----
     // From the last section with air: past the last take-off the main carries nothing and follows the section before

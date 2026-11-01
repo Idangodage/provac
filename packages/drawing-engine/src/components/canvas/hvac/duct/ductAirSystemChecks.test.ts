@@ -42,10 +42,12 @@ describe('air-system design checks', () => {
     expect(outlineGapMm(a, a.map((p) => ({ x: p.x + 50, y: p.y + 50 })))).toBe(0);
   });
 
-  it('a clean system raises nothing but its terminals in no system', () => {
+  it('a system not yet ducted raises nothing but that: each terminal no duct reaches, and the one in no system', () => {
     const scene = [unit('u1', 0), terminal('sad-1', { x: -1500, y: -3000 }, supply, 'u1'), terminal('sad-2', { x: 1500, y: -3000 }, supply, 'u1'),
       terminal('rag-1', { x: 0, y: 2500 }, ret, 'u1'), terminal('rag-9', { x: 3500, y: 2500 }, ret, null)];
-    expect(codes(checkAirSystems(scene, settings, rooms))).toEqual(['information:DU_TERMINAL_UNASSIGNED:rag-9']);
+    expect(codes(checkAirSystems(scene, settings, rooms))).toEqual([
+      'warning:DU_TERMINAL_NOT_DUCTED:sad-1', 'warning:DU_TERMINAL_NOT_DUCTED:sad-2', 'warning:DU_TERMINAL_NOT_DUCTED:rag-1', 'warning:DU_TERMINAL_UNASSIGNED:rag-9',
+    ]);
   });
 
   it('flags a terminal ducted from another unit, or by a duct of the other service', () => {

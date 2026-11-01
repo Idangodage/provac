@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * Under a 4-way cassette's Rotation: who set it. Turned by hand, Auto route
- * keeps it as it is, until [Let Auto route turn it] (one undo). Turned by
- * Auto route, it says so.
+ * Under a 4-way cassette's or a ducted unit's Rotation: who set it. Turned by
+ * hand, Auto route keeps it as it is, until [Let Auto route turn it] (one undo).
+ * Turned by Auto route, it says so.
  */
 import { RotateCw } from 'lucide-react';
 import React from 'react';
@@ -15,7 +15,8 @@ import { isFourWayCassette, ORIENTATION_SET_BY } from './unitOrientation';
 
 export function AutoTurnNote({ element }: { element: HvacElement }) {
   const commit = useSmartDrawingStore((state) => state.commitHvacElementCommand);
-  if (!isFourWayCassette(element)) return null;
+  const ducted = element.type === 'ducted-ac';
+  if (!isFourWayCassette(element) && !ducted) return null;
   const setBy = element.properties?.[ORIENTATION_SET_BY];
   if (setBy === 'user') {
     return (
@@ -34,7 +35,8 @@ export function AutoTurnNote({ element }: { element: HvacElement }) {
   }
   return (
     <p className="text-[11px] text-slate-400" data-testid="auto-turn-note" data-set-by={setBy === 'auto-route' ? 'auto-route' : 'none'}>
-      {setBy === 'auto-route' ? 'Turned by Auto route for shorter pipe and drain runs.' : 'Auto route may turn it a quarter for shorter pipe and drain runs.'}
+      {ducted ? (setBy === 'auto-route' ? 'Turned by Auto route to face its terminals.' : 'Auto route turns it if its terminals are behind its collars.')
+        : setBy === 'auto-route' ? 'Turned by Auto route for shorter pipe and drain runs.' : 'Auto route may turn it a quarter for shorter pipe and drain runs.'}
     </p>
   );
 }

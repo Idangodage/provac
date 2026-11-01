@@ -17,6 +17,11 @@
  *    of walls and equipment.
  *  - Turned only for a real gain: at least `minGainMm`, and `minGainPercent` of
  *    the approach as placed.
+ *
+ * A ducted unit is turned for its air, not its pipes: a duct leaves a collar
+ * forwards, so one whose terminals are behind its collars gets no layout. When
+ * the duct step reports that (planDuctedUnitTurns), the unit is turned the way
+ * it advises, on the same terms, and kept turned only if it is then designed.
  * Pure.
  */
 import type { HvacElement, Point2D, Wall } from '../../../types';
@@ -24,8 +29,10 @@ import type { HvacElement, Point2D, Wall } from '../../../types';
 import { getIndoorUnitDrainPort } from './condensate/condensatePorts';
 import type { CondensateDesignSettings } from './condensate/condensateSettings';
 import { isCondensateGully, isCondensatePipe, readCondensateGullySpec, readCondensatePipeSpec } from './condensate/condensateTypes';
+import type { AutoRouteDuctUnit } from './duct/ductAutoRoute';
 import { ductWallsFromWalls } from './duct/ductBuilding';
-import { boxOf, cardinalOf, frame, planObstacles } from './duct/ductCollarReroute';
+import { boxOf, cardinalOf, footprintOf, frame, planObstacles } from './duct/ductCollarReroute';
+import { isDuctElement, readDuctRunSpec } from './duct/ductTypes';
 import { findObstacleAwareOrthogonalRoute } from './obstacleAwareOrthogonalRoute';
 import type { PipeRoutingSettings } from './pipeRoutingSettings';
 import { getRefrigerantPipeBundleSnapTargets, resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
@@ -65,6 +72,8 @@ export interface UnitTurn {
   after: UnitApproach;
   /** What it saves (mm); null when, as placed, its connections had no room. */
   gainMm: number | null;
+  /** A ducted unit: its terminals ahead of their collars, before and after, of how many. */
+  terminalsAhead?: { before: number; after: number; total: number };
 }
 
 export interface UnitKept {
@@ -142,12 +151,16 @@ export function autoTurnSettingsOf(settings: Pick<PipeRoutingSettings, 'autoTurn
   };
 }
 
-/** The runs connected to `unitId`: its refrigerant lines and its drain branch. */
+/** The runs connected to `unitId`: its refrigerant lines, its drain branch and the ducts on its collars. */
 export function unitRuns(scene: readonly HvacElement[], unitId: string): HvacElement[] {
   return scene.filter((element) => {
     if (element.type === 'refrigerant-pipe') {
       const spec = resolveRefrigerantPipeSpec(element.properties);
       return spec.startConnection?.sourceElementId === unitId || spec.endConnection?.sourceElementId === unitId;
+    }
+    if (isDuctElement(element)) {
+      const start = readDuctRunSpec(element)?.start;
+      return start?.kind === 'unit-port' && start.unitId === unitId;
     }
     return isCondensatePipe(element) && readCondensatePipeSpec(element).drainStart?.unitId === unitId;
   });
@@ -281,6 +294,49 @@ export function planUnitOrientations(scene: readonly HvacElement[], options: Uni
   return { turns, kept };
 }
 
+/**
+ * The ducted units to turn: those the duct step could not design and advises to turn (terminals behind their
+ * collars), when they are free to turn as a cassette is and their body fits there. A half turn keeps the footprint.
+ */
+export function planDuctedUnitTurns(
+  scene: readonly HvacElement[],
+  units: ReadonlyArray<Pick<AutoRouteDuctUnit, 'unitId' | 'status' | 'advice'>>,
+  options: { walls: readonly Wall[]; replaceable: ReadonlySet<string> },
+): { turns: UnitTurn[]; kept: UnitKept[] } {
+  const turns: UnitTurn[] = [];
+  const kept: UnitKept[] = [];
+  const walls = ductWallsFromWalls(options.walls);
+  for (const entry of units) {
+    const advice = entry.status === 'kept' ? entry.advice?.find((item) => item.kind === 'turn-unit') : undefined;
+    const unit = advice?.kind === 'turn-unit' ? scene.find((element) => element.id === entry.unitId) : undefined;
+    if (advice?.kind !== 'turn-unit' || !unit) continue;
+    const label = labelOf(unit);
+    if (unit.properties?.[ORIENTATION_SET_BY] === 'user') { kept.push({ unitId: unit.id, label, reason: 'turned by hand' }); continue; }
+    if (unit.properties?.locked === true) { kept.push({ unitId: unit.id, label, reason: 'locked' }); continue; }
+    if (unitRuns(scene, unit.id).some((run) => !options.replaceable.has(run.id))) {
+      kept.push({ unitId: unit.id, label, reason: 'its ducts, pipes or drain are kept as they are' });
+      continue;
+    }
+    if (advice.angleDeg !== 180) {
+      const body = boxOf(footprintOf(turnedUnit(unit, advice.angleDeg)));
+      const bandTop = unit.elevation + unit.height;
+      const inTheWay = planObstacles(scene, new Set([unit.id]), walls).some((obstacle) => {
+        if (obstacle.zMin >= bandTop || obstacle.zMax <= unit.elevation) return false;
+        const other = obstacle.shape.kind === 'leg' ? boxOf([obstacle.shape.a, obstacle.shape.b], obstacle.shape.halfWidthMm) : boxOf(obstacle.shape.corners);
+        return other.minX < body.maxX && body.minX < other.maxX && other.minY < body.maxY && body.minY < other.maxY;
+      });
+      if (inTheWay) { kept.push({ unitId: unit.id, label, reason: 'its body would not fit turned' }); continue; }
+    }
+    const fromDeg = normalisedDeg(unit.rotation ?? 0);
+    turns.push({
+      unitId: unit.id, label, angleDeg: advice.angleDeg, fromDeg, toDeg: normalisedDeg(fromDeg + advice.angleDeg),
+      before: { refrigerantMm: null, drainMm: null }, after: { refrigerantMm: null, drainMm: null }, gainMm: null,
+      terminalsAhead: { before: advice.aheadNow, after: advice.ahead, total: advice.total },
+    });
+  }
+  return { turns, kept };
+}
+
 function isOutdoorObstacle(scene: readonly HvacElement[], ownerId: string): boolean {
   return scene.some((element) => element.id === ownerId && element.type === 'outdoor-unit');
 }
@@ -297,6 +353,10 @@ export function unitTurnText(turn: UnitTurn): string {
   const drain = saved(turn.before.drainMm, turn.after.drainMm);
   const gains = [pipes ? `pipes ${pipes}` : null, drain ? `drain ${drain}` : null].filter(Boolean);
   const how = turn.angleDeg === 90 ? '90° clockwise' : turn.angleDeg === 270 ? '90° anticlockwise' : `${turn.angleDeg}°`;
+  if (turn.terminalsAhead) {
+    const { before, after, total } = turn.terminalsAhead;
+    return `${turn.label} turned ${how}: ${after === total ? `all ${total}` : `${after} of ${total}`} terminals ahead of its collars (${before === 0 ? 'none' : before} before)`;
+  }
   return `${turn.label} turned ${how}: ${turn.gainMm === null ? 'its connections had no room as placed'
     : gains.length ? `${gains.join(', ')} shorter` : `${(turn.gainMm / 1000).toFixed(2)} m shorter`}`;
 }
