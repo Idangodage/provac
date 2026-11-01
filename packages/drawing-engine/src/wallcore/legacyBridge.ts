@@ -10,11 +10,13 @@
  * metadata) migrate once: endpoints weld into shared nodes (WELD_EPS) but
  * bodies are NOT retro-split, so old drawings keep their wall ids/openings.
  */
+import { OPENING_EDGE_MARGIN } from './tolerances';
 import { dist2, type Vec2 } from './vec2';
 import { findNodeNear } from './wallGraph';
 import {
   createEmptyWallGraph,
   type WallEdge2,
+  type WallEdgeSource,
   type WallEntityId,
   type WallGraphDoc,
   type WallIdSource,
@@ -28,6 +30,13 @@ export interface WallGraphMeta {
   justification: WallJustification;
 }
 
+/** A door or window: `position` is the distance of its centre from the wall's start. */
+export interface LegacyOpeningLike {
+  id: string;
+  position: number;
+  width: number;
+}
+
 /** The minimal legacy-wall surface the bridge reads/writes (structural typing). */
 export interface LegacyWallLike {
   id: string;
@@ -37,6 +46,7 @@ export interface LegacyWallLike {
   material: string;
   properties3D?: { height?: number; baseElevation?: number; materialId?: string };
   graph?: WallGraphMeta;
+  openings?: LegacyOpeningLike[];
 }
 
 export const DEFAULT_LEGACY_WALL_HEIGHT = 2700;
@@ -109,11 +119,69 @@ export interface MirrorCallbacks<W extends LegacyWallLike> {
   createWall(edge: WallEdge2, start: Vec2, end: Vec2): W;
   /** Recompute derived legacy geometry (offset lines, bevel normalization). */
   rebuildGeometry(wall: W): W;
+  /** A door or window had to shift to stay whole on the piece of wall it now sits on. */
+  onOpeningMoved?(openingId: string, movedMm: number): void;
+}
+
+/**
+ * Doors and windows of walls this operation split or merged, on their new pieces.
+ * Each stays on the piece holding its centre and is never lost: if a new wall end
+ * lands on it, it moves the minimum needed to stay whole, or to the longest piece
+ * when its own cannot hold it. Only new ends push: a door already close to the
+ * wall's own end, as the user placed it, stays where it is.
+ */
+function rehostOpenings(
+  doc: WallGraphDoc,
+  prevById: ReadonlyMap<string, LegacyWallLike>,
+  onMoved: MirrorCallbacks<LegacyWallLike>['onOpeningMoved'],
+): Map<WallEntityId, LegacyOpeningLike[]> {
+  const rehosted = new Map<WallEntityId, LegacyOpeningLike[]>();
+  const piecesByWall = new Map<WallEntityId, Array<{ edgeId: WallEntityId; source: WallEdgeSource }>>();
+  for (const [edgeId, sources] of Object.entries(doc.sources ?? {})) {
+    if (!doc.edges[edgeId]) continue;
+    rehosted.set(edgeId, []);
+    for (const source of sources) {
+      const pieces = piecesByWall.get(source.wallId);
+      if (pieces) pieces.push({ edgeId, source });
+      else piecesByWall.set(source.wallId, [{ edgeId, source }]);
+    }
+  }
+
+  for (const [wallId, pieces] of piecesByWall) {
+    const openings = prevById.get(wallId)?.openings ?? [];
+    if (openings.length === 0) continue;
+    const wallEnd = Math.max(...pieces.map(({ source }) => source.toMm));
+    const longestFirst = [...pieces].sort((x, y) => (y.source.toMm - y.source.fromMm) - (x.source.toMm - x.source.fromMm));
+    for (const opening of openings) {
+      const centre = opening.position;
+      const halfWidth = opening.width / 2;
+      const range = ({ fromMm, toMm }: WallEdgeSource): [number, number] => [
+        fromMm > 0 ? fromMm + halfWidth + OPENING_EDGE_MARGIN : Math.min(centre, halfWidth),
+        toMm < wallEnd ? toMm - halfWidth - OPENING_EDGE_MARGIN : Math.max(centre, wallEnd - halfWidth),
+      ];
+      const home = pieces.find(({ source }) => centre >= source.fromMm && centre < source.toMm)
+        ?? longestFirst[0]!;
+      const fits = (candidate: typeof home) => {
+        const [lo, hi] = range(candidate.source);
+        return lo <= hi;
+      };
+      const piece = [home, ...longestFirst].find(fits) ?? longestFirst[0]!;
+      const [lo, hi] = range(piece.source);
+      const settled = lo <= hi
+        ? Math.min(hi, Math.max(lo, centre))
+        : (piece.source.fromMm + piece.source.toMm) / 2; // nowhere can hold it whole: it still is not deleted
+      const { offsetMm, reversed } = piece.source;
+      rehosted.get(piece.edgeId)!.push({ ...opening, position: reversed ? offsetMm - settled : offsetMm + settled });
+      if (Math.abs(settled - centre) > 0.5) onMoved?.(opening.id, Math.abs(settled - centre));
+    }
+  }
+  return rehosted;
 }
 
 /**
  * Mirror the graph into the legacy wall array. Edges keep their legacy wall
- * (openings, bevels, 3D attributes preserved) whenever the id survives;
+ * (openings, bevels, 3D attributes preserved) whenever the id survives, and a
+ * new piece of a split wall is still that wall in everything but its extent;
  * `connectedWalls` is derived from TRUE shared-node adjacency.
  */
 export function legacyWallsFromGraph<W extends LegacyWallLike>(
@@ -123,6 +191,7 @@ export function legacyWallsFromGraph<W extends LegacyWallLike>(
 ): W[] {
   const prevById = new Map(prevWalls.map((w) => [w.id, w]));
   const edges = Object.values(doc.edges).sort((x, y) => (x.id < y.id ? -1 : 1));
+  const rehosted = doc.sources ? rehostOpenings(doc, prevById, callbacks.onOpeningMoved) : null;
 
   // shared-node adjacency → connectedWalls
   const edgesByNode = new Map<WallEntityId, WallEntityId[]>();
@@ -145,10 +214,13 @@ export function legacyWallsFromGraph<W extends LegacyWallLike>(
       new Set([...(edgesByNode.get(edge.a) ?? []), ...(edgesByNode.get(edge.b) ?? [])]),
     ).filter((id) => id !== edge.id);
 
-    const prev = prevById.get(edge.id);
+    const sources = doc.sources?.[edge.id];
+    const prev = prevById.get(edge.id)
+      ?? sources?.map((source) => prevById.get(source.wallId)).find((wall) => wall !== undefined);
     const base: W = prev
       ? {
           ...prev,
+          id: edge.id,
           startPoint: { x: start[0], y: start[1] },
           endPoint: { x: end[0], y: end[1] },
           thickness: edge.thickness,
@@ -164,7 +236,8 @@ export function legacyWallsFromGraph<W extends LegacyWallLike>(
           graph: meta,
         }
       : { ...callbacks.createWall(edge, start, end), graph: meta };
-    const withConnections = { ...base, connectedWalls: connected } as W;
+    const openings = rehosted?.get(edge.id);
+    const withConnections = { ...base, connectedWalls: connected, ...(openings ? { openings } : {}) } as W;
     out.push(callbacks.rebuildGeometry(withConnections));
   }
   return out;

@@ -18,6 +18,12 @@ export const GEOM_EPS = 1e-6;
 /** Cross product of two unit directions below which walls count as parallel. */
 export const PARALLEL_CROSS_EPS = 1e-9;
 
+/** A wall ending inside another joins it only if it meets it at more than this; near-parallel walls just lie side by side. */
+export const MIN_TEE_ANGLE = (5 * Math.PI) / 180; // 5°
+
+/** Normalizing a wall graph settles in a few passes; this only guards against a pathological drawing. */
+export const MAX_NORMALIZE_PASSES = 12;
+
 /** Miter limit: corners running behind the node past 2× the thicker wall get beveled. */
 export const MITER_LIMIT_FACTOR = 2;
 

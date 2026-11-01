@@ -38,10 +38,26 @@ export interface WallEdge2 {
   materialId?: string;
 }
 
+/**
+ * Which stretch of which wall an edge now carries, while one operation splits or
+ * merges walls. The mirror reads it to keep doors, windows and attributes on the
+ * right piece. Positions are mm along a centerline, from that wall's start.
+ */
+export interface WallEdgeSource {
+  wallId: WallEntityId;
+  fromMm: number;
+  toMm: number;
+  /** Position p on the source wall is `offsetMm + p` along this edge, or `offsetMm − p` when reversed. */
+  offsetMm: number;
+  reversed: boolean;
+}
+
 /** The persisted wall graph — plain records, order-independent semantics. */
 export interface WallGraphDoc {
   nodes: Record<WallEntityId, WallNode2>;
   edges: Record<WallEntityId, WallEdge2>;
+  /** Filled in while an operation runs, for the edges it split or merged. Never saved. */
+  sources?: Record<WallEntityId, WallEdgeSource[]>;
 }
 
 export interface WallParams {

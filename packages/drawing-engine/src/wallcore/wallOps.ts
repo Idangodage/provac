@@ -4,15 +4,17 @@
  * reference (weld/split/crossings maintained INSIDE the op so every route gets
  * identical behaviour). The host store wraps these in its own history entries.
  */
-import { angleDelta, normalizeAngle } from './angle';
 import { COLLINEAR_EPS, WELD_EPS } from './tolerances';
 import { add2, dist2, type Vec2 } from './vec2';
 import {
   addSegmentWithCrossings,
+  createNode,
   deleteWallEdges,
   edgesAtNode,
   findEdgeNear,
   findNodeNear,
+  mergeNodeInto,
+  mergeStraightWallsAt,
   nodePos,
   resolvePointToNode,
   splitEdgeAt,
@@ -67,16 +69,33 @@ export function moveWallNode(
     }
   }
   if (!targetId) return;
-  for (const e of edgesAtNode(doc, node.id)) {
-    const other = e.a === node.id ? e.b : e.a;
-    if (other === targetId) {
-      delete doc.edges[e.id]; // zero-length after weld
-      continue;
-    }
-    if (e.a === node.id) e.a = targetId;
-    else e.b = targetId;
+  mergeNodeInto(doc, node.id, targetId);
+}
+
+/**
+ * Move one wall's end without taking its neighbours along (trim, extend): the
+ * end leaves a node it shares and gets its own. Normalizing then welds or tees it
+ * at wherever it lands.
+ */
+export function moveWallEnd(
+  doc: WallGraphDoc,
+  edgeId: WallEntityId,
+  end: 'a' | 'b',
+  to: Vec2,
+  ids: WallIdSource,
+): void {
+  const edge = doc.edges[edgeId];
+  if (!edge) return;
+  const nodeId = end === 'a' ? edge.a : edge.b;
+  const node = doc.nodes[nodeId];
+  if (!node) return;
+  if (edgesAtNode(doc, nodeId).length === 1) {
+    node.p = to;
+    return;
   }
-  delete doc.nodes[node.id];
+  const own = createNode(doc, to, ids);
+  if (end === 'a') edge.a = own.id;
+  else edge.b = own.id;
 }
 
 /** thickness/height/justification/… on one or more edges. */
@@ -143,25 +162,7 @@ export function splitWall(
 
 /** Dissolve a 2-valence collinear node (merge two segments into one). */
 export function mergeAtNode(doc: WallGraphDoc, nodeId: WallEntityId): boolean {
-  const node = doc.nodes[nodeId];
-  if (!node) return false;
-  const incident = edgesAtNode(doc, nodeId);
-  if (incident.length !== 2) return false;
-  const [e1, e2] = incident as [WallEdge2, WallEdge2];
-  const p = node.p;
-  const o1 = nodePos(doc, e1.a === nodeId ? e1.b : e1.a);
-  const o2 = nodePos(doc, e2.a === nodeId ? e2.b : e2.a);
-  const a1 = Math.atan2(p[1] - o1[1], p[0] - o1[0]);
-  const a2 = Math.atan2(o2[1] - p[1], o2[0] - p[0]);
-  if (angleDelta(normalizeAngle(a1), normalizeAngle(a2)) > COLLINEAR_EPS) return false;
-  if (e1.thickness !== e2.thickness || e1.justification !== e2.justification) return false;
-  // extend e1 to e2's far node, drop e2 + the node
-  const far2 = e2.a === nodeId ? e2.b : e2.a;
-  if (e1.a === nodeId) e1.a = far2;
-  else e1.b = far2;
-  delete doc.edges[e2.id];
-  delete doc.nodes[nodeId];
-  return true;
+  return mergeStraightWallsAt(doc, nodeId, COLLINEAR_EPS) !== null;
 }
 
 /** Delete wall edges (orphaned nodes GC'd with them). */

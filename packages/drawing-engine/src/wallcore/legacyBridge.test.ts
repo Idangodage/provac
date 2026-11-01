@@ -48,13 +48,104 @@ describe('graph → legacy mirror', () => {
     const gen = ids('g');
     addWallChain(doc, [[0, 0], [4000, 0]], DEFAULT_WALL_PARAMS, gen);
     const mirrored = legacyWallsFromGraph(doc, [], callbacks);
-    const decorated = mirrored.map((w) => ({ ...w, openings: ['door-1'] }));
+    const door = { id: 'door-1', position: 1000, width: 900 };
+    const decorated = mirrored.map((w) => ({ ...w, openings: [door] }));
 
     const corner = findNodeNear(doc, [4000, 0], 1)!;
     moveWallNode(doc, corner.id, [4200, 500]);
     const next = legacyWallsFromGraph(doc, decorated, callbacks);
     expect(next[0]!.endPoint).toEqual({ x: 4200, y: 500 });
-    expect((next[0] as { openings?: string[] }).openings).toEqual(['door-1']); // survived
+    expect(next[0]!.openings).toEqual([door]); // survived
+  });
+
+  describe('a split wall keeps everything it carried', () => {
+    const hostWith = (openings: LegacyWallLike['openings'], extra: Record<string, unknown> = {}) => {
+      const doc = createEmptyWallGraph();
+      const gen = ids('h');
+      const [hostId] = addWallChain(doc, [[0, 0], [6000, 0]], DEFAULT_WALL_PARAMS, gen);
+      const walls = legacyWallsFromGraph(doc, [], callbacks).map((w) => ({ ...w, openings, ...extra }));
+      const graph = wallGraphFromLegacyWalls(walls, gen);
+      return { hostId: hostId!, walls, graph, gen };
+    };
+    const atWorld = (wall: LegacyWallLike, position: number) => {
+      const length = Math.hypot(wall.endPoint.x - wall.startPoint.x, wall.endPoint.y - wall.startPoint.y);
+      return wall.startPoint.x + ((wall.endPoint.x - wall.startPoint.x) * position) / length;
+    };
+
+    it('the longer piece stays the same wall; doors stay where they are in the room', () => {
+      const { hostId, walls, graph, gen } = hostWith([
+        { id: 'near', position: 1000, width: 900 },
+        { id: 'far', position: 5000, width: 900 },
+      ]);
+      addWallChain(graph, [[4000, 0], [4000, 3000]], DEFAULT_WALL_PARAMS, gen);
+      const next = legacyWallsFromGraph(graph, walls, callbacks);
+      const kept = next.find((w) => w.id === hostId)!;
+      expect(kept.endPoint.x).toBe(4000);
+      expect(kept.openings?.map((o) => o.id)).toEqual(['near']);
+      expect(kept.openings![0]!.position).toBe(1000);
+      const other = next.find((w) => w.openings?.some((o) => o.id === 'far'))!;
+      expect(other.id).not.toBe(hostId);
+      expect(atWorld(other, other.openings![0]!.position)).toBeCloseTo(5000, 6);
+    });
+
+    it('the new piece is that wall in everything but its extent', () => {
+      const { hostId, walls, graph, gen } = hostWith([], { layer: 'structural', custom: 'keep me' });
+      addWallChain(graph, [[1000, 0], [1000, 3000]], DEFAULT_WALL_PARAMS, gen);
+      const pieces = legacyWallsFromGraph(graph, walls, callbacks).filter((w) => w.startPoint.y === 0 && w.endPoint.y === 0);
+      expect(pieces).toHaveLength(2);
+      expect(pieces.map((w) => w.id)).toContain(hostId);
+      for (const piece of pieces) {
+        expect((piece as { layer?: string }).layer).toBe('structural');
+        expect((piece as { custom?: string }).custom).toBe('keep me');
+      }
+    });
+
+    it('a door a new wall lands on stays whole: it moves the minimum and says so', () => {
+      const { walls, graph, gen } = hostWith([{ id: 'door', position: 2000, width: 900 }]);
+      addWallChain(graph, [[2200, 0], [2200, 3000]], DEFAULT_WALL_PARAMS, gen);
+      const moved: Array<[string, number]> = [];
+      const next = legacyWallsFromGraph(graph, walls, {
+        ...callbacks,
+        onOpeningMoved: (id, mm) => moved.push([id, mm]),
+      });
+      const host = next.find((w) => w.openings?.length)!;
+      const centre = atWorld(host, host.openings![0]!.position);
+      // Centre was left of the new wall: 450 half-width + 50 margin clear of x = 2200.
+      expect(centre).toBeCloseTo(1700, 6);
+      expect(moved).toEqual([['door', 300]]);
+    });
+
+    it('a door its own piece cannot hold goes to the longest piece, never deleted', () => {
+      const { walls, graph, gen } = hostWith([{ id: 'door', position: 300, width: 900 }]);
+      addWallChain(graph, [[600, 0], [600, 3000]], DEFAULT_WALL_PARAMS, gen);
+      const next = legacyWallsFromGraph(graph, walls, callbacks);
+      const hosts = next.filter((w) => w.openings?.length);
+      expect(hosts).toHaveLength(1);
+      expect(hosts[0]!.startPoint.x).toBe(600);
+      expect(atWorld(hosts[0]!, hosts[0]!.openings![0]!.position)).toBeCloseTo(1100, 6);
+    });
+
+    it('a door already close to the wall’s own end is not pushed by a split elsewhere', () => {
+      const { hostId, walls, graph, gen } = hostWith([{ id: 'door', position: 460, width: 900 }]);
+      addWallChain(graph, [[4000, 0], [4000, 3000]], DEFAULT_WALL_PARAMS, gen);
+      const moved: string[] = [];
+      const next = legacyWallsFromGraph(graph, walls, { ...callbacks, onOpeningMoved: (id) => moved.push(id) });
+      expect(next.find((w) => w.id === hostId)!.openings![0]!.position).toBe(460);
+      expect(moved).toEqual([]);
+    });
+
+    it('splitting twice in one operation still lands each door on its own piece', () => {
+      const { walls, graph, gen } = hostWith([
+        { id: 'a', position: 500, width: 600 },
+        { id: 'b', position: 2500, width: 600 },
+        { id: 'c', position: 5500, width: 600 },
+      ]);
+      addWallChain(graph, [[1500, -1000], [1500, 1000]], DEFAULT_WALL_PARAMS, gen);
+      addWallChain(graph, [[4000, -1000], [4000, 1000]], DEFAULT_WALL_PARAMS, gen);
+      const next = legacyWallsFromGraph(graph, walls, callbacks);
+      const seen = next.flatMap((w) => (w.openings ?? []).map((o) => [o.id, Math.round(atWorld(w, o.position))]));
+      expect(seen.sort()).toEqual([['a', 500], ['b', 2500], ['c', 5500]]);
+    });
   });
 });
 
