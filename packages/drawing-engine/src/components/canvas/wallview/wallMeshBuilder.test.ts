@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { sequentialWallIds, createEmptyWallGraph, DEFAULT_WALL_PARAMS } from '../../../wallcore/wallModel';
 import { addWallChain } from '../../../wallcore/wallOps';
-import { solveWallGraphDoc } from '../../../wallcore/wallSolver';
+import { solveWallGraphDoc, solveWalls, type SolverNode } from '../../../wallcore/wallSolver';
 
 import { buildWallChunkGeometry } from './wallMeshBuilder';
 
@@ -123,6 +123,29 @@ describe('wall chunk geometry (reference wallMesh port)', () => {
         positions.getZ(index + 1) - positions.getZ(index),
       ];
       expect(delta.filter((value) => Math.abs(value) > 0.001)).toHaveLength(1);
+    }
+  });
+
+  it('builds every random junction: one bad corner must never take down the 3D scene', () => {
+    let seed = 12345;
+    const random = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+    const thicknesses = [100, 150, 200, 230, 300];
+    for (let run = 0; run < 600; run += 1) {
+      const nodes: SolverNode[] = [{ id: 'P', p: [0, 0] }];
+      const edges = Array.from({ length: 2 + Math.floor(random() * 5) }, (_, k) => {
+        const angle = random() * Math.PI * 2;
+        nodes.push({ id: `n${k}`, p: [3000 * Math.cos(angle), 3000 * Math.sin(angle)] });
+        return {
+          id: `e${k}`,
+          a: 'P',
+          b: `n${k}`,
+          thickness: thicknesses[Math.floor(random() * thicknesses.length)]!,
+          justification: 'center' as const,
+          height: 2700,
+          baseOffset: 0,
+        };
+      });
+      expect(() => buildWallChunkGeometry(solveWalls({ nodes, edges }), 0)).not.toThrow();
     }
   });
 

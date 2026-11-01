@@ -1,10 +1,7 @@
 import {
   booleanIntersects,
-  difference,
-  featureCollection,
   pointOnFeature,
   polygon as turfPolygon,
-  union,
 } from '@turf/turf';
 
 import { bindRoomGeometryTo3D } from '../attributes';
@@ -14,6 +11,8 @@ import type { Point2D, Room, Room3D, RoomDesignCriteria, RoomType, Wall } from '
 import { DEFAULT_ROOM_3D } from '../types/wall';
 import { generateId, isPointInPolygon } from '../utils/geometry';
 import { GeometryEngine } from '../utils/geometry-engine';
+import type { Vec2 } from '../wallcore/vec2';
+import { subtractWallPolygons, unionWallRings, type WallPolygon } from '../wallcore/wallUnion';
 
 import {
   inferRoomType,
@@ -82,18 +81,6 @@ function closeRing(vertices: Point2D[]): number[][] {
   return ring;
 }
 
-function openRing(ring: number[][]): Point2D[] {
-  if (ring.length === 0) return [];
-  const opened = ring.map(([x, y]) => ({ x, y }));
-  if (opened.length < 2) return opened;
-  const first = opened[0];
-  const last = opened[opened.length - 1];
-  if (Math.abs(first.x - last.x) < 0.000001 && Math.abs(first.y - last.y) < 0.000001) {
-    opened.pop();
-  }
-  return opened;
-}
-
 function makePolygonFeature(vertices: Point2D[], holes: Point2D[][] = []): any | null {
   if (vertices.length < 3) return null;
   try {
@@ -106,15 +93,12 @@ function makePolygonFeature(vertices: Point2D[], holes: Point2D[][] = []): any |
   }
 }
 
-function extractPolygons(geometry: any): Point2D[][][] {
-  if (!geometry) return [];
-  if (geometry.type === 'Polygon') {
-    return [geometry.coordinates.map(openRing)];
-  }
-  if (geometry.type === 'MultiPolygon') {
-    return geometry.coordinates.map((polygon: number[][][]) => polygon.map(openRing));
-  }
-  return [];
+function ringFromPoints(points: Point2D[]): Vec2[] {
+  return points.map((point): Vec2 => [point.x, point.y]);
+}
+
+function pointsFromPolygon(rings: WallPolygon): Point2D[][] {
+  return rings.map((ring) => ring.map(([x, y]) => ({ x, y })));
 }
 
 function computeWallBodyPolygon(wall: Wall): Point2D[] {
@@ -178,49 +162,35 @@ function detectEnclosedRoomCandidatesFromWalls(walls: Wall[]): EnclosedRoomCandi
   if (walls.length < 3) return [];
 
   const wallPolygons = computeEnclosureWallPolygons(walls);
-  const wallFeatures = wallPolygons
-    .map((polygonVertices) => makePolygonFeature(polygonVertices))
-    .filter((feature): feature is any => Boolean(feature));
-  if (wallFeatures.length === 0) return [];
+  const wallFeatures = wallPolygons.map((polygonVertices) => makePolygonFeature(polygonVertices));
+  if (!wallFeatures.some(Boolean)) return [];
 
-  const mergedWalls = wallFeatures.length === 1
-    ? wallFeatures[0]
-    : (() => {
-        try {
-          return union(featureCollection(wallFeatures as any)) as any;
-        } catch {
-          return null;
-        }
-      })();
-  if (!mergedWalls) return [];
+  const mergedWalls = unionWallRings(wallPolygons.map(ringFromPoints));
+  if (!mergedWalls.exact || mergedWalls.polygons.length === 0) return [];
 
   const allPoints = wallPolygons.flat();
   const rawBounds = boundsForPoints(allPoints);
+  // Whole millimetres: exactly on the boolean grid, so the outside space can be recognised by touching them.
   const bounds = {
-    minX: rawBounds.minX - ENCLOSURE_BOUNDS_PADDING_MM,
-    minY: rawBounds.minY - ENCLOSURE_BOUNDS_PADDING_MM,
-    maxX: rawBounds.maxX + ENCLOSURE_BOUNDS_PADDING_MM,
-    maxY: rawBounds.maxY + ENCLOSURE_BOUNDS_PADDING_MM,
+    minX: Math.floor(rawBounds.minX) - ENCLOSURE_BOUNDS_PADDING_MM,
+    minY: Math.floor(rawBounds.minY) - ENCLOSURE_BOUNDS_PADDING_MM,
+    maxX: Math.ceil(rawBounds.maxX) + ENCLOSURE_BOUNDS_PADDING_MM,
+    maxY: Math.ceil(rawBounds.maxY) + ENCLOSURE_BOUNDS_PADDING_MM,
   };
-  const boundsFeature = makePolygonFeature([
-    { x: bounds.minX, y: bounds.minY },
-    { x: bounds.maxX, y: bounds.minY },
-    { x: bounds.maxX, y: bounds.maxY },
-    { x: bounds.minX, y: bounds.maxY },
-  ]);
-  if (!boundsFeature) return [];
-
-  let emptySpaces: any | null = null;
-  try {
-    emptySpaces = difference(featureCollection([boundsFeature, mergedWalls] as any)) as any;
-  } catch {
-    emptySpaces = null;
-  }
-  if (!emptySpaces) return [];
+  const emptySpaces = subtractWallPolygons(
+    [[[
+      [bounds.minX, bounds.minY],
+      [bounds.maxX, bounds.minY],
+      [bounds.maxX, bounds.maxY],
+      [bounds.minX, bounds.maxY],
+    ]]],
+    mergedWalls.polygons,
+  );
+  if (!emptySpaces.exact) return [];
 
   const candidatesBySignature = new Map<string, EnclosedRoomCandidate>();
 
-  extractPolygons(emptySpaces.geometry).forEach((rings) => {
+  emptySpaces.polygons.map(pointsFromPolygon).forEach((rings) => {
     const outer = rings[0] ?? [];
     const holes = rings.slice(1).filter((ring) => ring.length >= 3);
     if (outer.length < 3) return;

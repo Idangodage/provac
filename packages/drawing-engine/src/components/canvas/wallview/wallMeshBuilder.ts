@@ -8,12 +8,12 @@
  * hybrid scene renders it through the permanent mirror view basis exactly like
  * every other model mesh — never mutate it for view reasons.
  */
-import { featureCollection, polygon, union } from '@turf/turf';
 import * as THREE from "three";
 
 import type { Vec2 } from "../../../wallcore/vec2";
 import type { WallEntityId } from "../../../wallcore/wallModel";
 import { polygonArea, type WallSolveResult } from "../../../wallcore/wallSolver";
+import { unionWallRings } from "../../../wallcore/wallUnion";
 import { wallSideTextureU } from '../wall/wallThreeVisual';
 
 export interface WallChunkData {
@@ -176,16 +176,10 @@ function buildPrismBoundaryEdges(prisms: Prism[]): THREE.BufferGeometry {
   const edgePositions: number[] = [];
   for (const band of bands.values()) {
     const first = band[0]!;
-    const polygons = band.map((prism) => polygon([[...prism.polygon, prism.polygon[0]!].map((point) => [...point])]));
-    const merged = polygons.length === 1 ? polygons[0]! : union(featureCollection(polygons));
-    if (!merged) continue;
-    const components = merged.geometry.type === 'Polygon'
-      ? [merged.geometry.coordinates]
-      : merged.geometry.coordinates;
-    for (const rings of components) {
-      const shape = new THREE.Shape(rings[0]!.slice(0, -1).map((point) => new THREE.Vector2(point[0], point[1])));
+    for (const rings of unionWallRings(band.map((prism) => prism.polygon)).polygons) {
+      const shape = new THREE.Shape(rings[0]!.map((point) => new THREE.Vector2(point[0], point[1])));
       for (const ring of rings.slice(1)) {
-        shape.holes.push(new THREE.Path(ring.slice(0, -1).map((point) => new THREE.Vector2(point[0], point[1]))));
+        shape.holes.push(new THREE.Path(ring.map((point) => new THREE.Vector2(point[0], point[1]))));
       }
       const boundary = new THREE.ExtrudeGeometry(shape, { depth: first.z1 - first.z0, bevelEnabled: false, steps: 1, curveSegments: 1 });
       boundary.translate(0, 0, first.z0);

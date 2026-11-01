@@ -1,10 +1,11 @@
-import type { multiPolygon} from '@turf/turf';
-import { featureCollection, polygon, union } from '@turf/turf';
+import { polygon } from '@turf/turf';
 
 import type { JoinData, Point2D, Wall } from '../../../types';
 import { generateId } from '../../../utils/geometry';
 import { wallGraphFromLegacyWalls } from '../../../wallcore/legacyBridge';
+import type { Vec2 } from '../../../wallcore/vec2';
 import { solveWallGraphDoc } from '../../../wallcore/wallSolver';
+import { unionWallRings } from '../../../wallcore/wallUnion';
 
 import { computeWallBodyPolygon } from './WallGeometry';
 import { computeWallJoinMap, computeWallJoinMapWithShadows } from './WallJoinNetwork';
@@ -23,8 +24,6 @@ const WALL_UNIFORMITY_TOLERANCE_MM = 0.5;
 type Endpoint = 'start' | 'end';
 type RingCoordinate = number[];
 type PolygonFeature = ReturnType<typeof polygon>;
-type PolygonGeometry = PolygonFeature['geometry'];
-type MultiPolygonGeometry = ReturnType<typeof multiPolygon>['geometry'];
 
 interface EndpointFace {
   anchor: Point2D;
@@ -595,16 +594,6 @@ function buildConnectedComponents(
   return components;
 }
 
-function extractPolygons(
-  geometry: PolygonGeometry | MultiPolygonGeometry
-): Point2D[][][] {
-  if (geometry.type === 'Polygon') {
-    return [geometry.coordinates.map(openRing)];
-  }
-
-  return geometry.coordinates.map((polygon) => polygon.map(openRing));
-}
-
 function endpointKey(wallId: string, endpoint: Endpoint): string {
   return `${wallId}:${endpoint}`;
 }
@@ -938,16 +927,12 @@ function featureUnionPolygons(features: PolygonFeature[]): Point2D[][][] {
     return [features[0].geometry.coordinates.map(openRing)];
   }
 
-  try {
-    const merged = union(featureCollection(features));
-    if (merged && (merged.geometry.type === 'Polygon' || merged.geometry.type === 'MultiPolygon')) {
-      return extractPolygons(merged.geometry);
-    }
-  } catch {
-    // Fall through to the per-feature polygons below.
-  }
-
-  return features.map((feature) => feature.geometry.coordinates.map(openRing));
+  const rings = features.map((feature) =>
+    openRing(feature.geometry.coordinates[0]).map((point): Vec2 => [point.x, point.y])
+  );
+  return unionWallRings(rings).polygons.map((rawPolygon) =>
+    rawPolygon.map((ring) => ring.map(([x, y]) => ({ x, y })))
+  );
 }
 
 function unionWallComponent(

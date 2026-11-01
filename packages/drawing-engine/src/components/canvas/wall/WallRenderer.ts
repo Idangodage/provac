@@ -676,9 +676,11 @@ export class WallRenderer {
     clipPathData?: string
   ): void {
     const visualFill = this.resolveWallVisualFill(wall);
+    // Non-zero: holes wind against their outer ring, and should the union ever
+    // hand back raw overlapping pieces they still fill solid, never cut holes.
     const fillPath = new fabric.Path(pathData, {
       fill: visualFill,
-      fillRule: 'evenodd',
+      fillRule: 'nonzero',
       stroke: 'transparent',
       strokeWidth: 0,
       strokeLineJoin: 'miter',
@@ -687,7 +689,7 @@ export class WallRenderer {
       objectCaching: typeof visualFill === 'string',
       clipPath: clipPathData
         ? new fabric.Path(clipPathData, {
-            fillRule: 'evenodd',
+            fillRule: 'nonzero',
             absolutePositioned: true,
           })
         : undefined,

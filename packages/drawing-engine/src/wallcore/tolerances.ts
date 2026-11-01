@@ -18,6 +18,12 @@ export const GEOM_EPS = 1e-6;
 /** Miter limit: joins whose miter length exceeds 2× max thickness get beveled. */
 export const MITER_LIMIT_FACTOR = 2;
 
+/** Polygon booleans run on this integer grid: 100 per mm = 0.01 mm. */
+export const CLIP_GRID_PER_MM = 100;
+
+/** Boolean results narrower than this on average are grid debris, not geometry. */
+export const MIN_CLIP_RING_WIDTH_MM = 0.05;
+
 /** Minimum room area to keep in room detection: 0.1 m² in mm². */
 export const MIN_ROOM_AREA = 0.1 * 1e6; // mm²
 
