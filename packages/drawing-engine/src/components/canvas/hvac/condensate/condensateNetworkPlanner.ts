@@ -76,6 +76,8 @@ export interface CondensateCrossing {
   serviceZMax: number;
   requiredClearanceMm: number;
   networkId: string;
+  /** Over a duct or air terminal, not a crossing of pipes. */
+  overBody?: boolean;
 }
 
 export interface RefrigerantHopProposal {
@@ -226,9 +228,10 @@ interface RouterContext {
   walls: Array<{ id: string; a: Point2D; b: Point2D }>;
 }
 
-function buildRouterContext(environment: CondensateEnvironment, defaultRadius: number): RouterContext {
+function buildRouterContext(environment: CondensateEnvironment, defaultRadius: number, overLowBodies: boolean): RouterContext {
   const { settings } = environment;
   const inflate = settings.equipmentClearanceMm + defaultRadius;
+  const overGap = defaultRadius + settings.refrigerantClearanceMm;
   const casings = new Map(environment.solids.filter(solid => solid.mark === 'equipment casing').map(solid => [solid.elementId, solid]));
   const sourceBox = (raw: RouterBox): RouterBox => {
     const casing = casings.get(raw.id);
@@ -244,6 +247,7 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
   const inflated = environment.obstacles.map((obstacle) => ({
     minZ: obstacle.minZ,
     maxZ: obstacle.maxZ,
+    passAt: overLowBodies && obstacle.crossable ? obstacle.maxZ + overGap : null,
     raw: { id: obstacle.id, minX: obstacle.minX, minY: obstacle.minY, maxX: obstacle.maxX, maxY: obstacle.maxY },
     padded: {
       id: obstacle.id,
@@ -292,7 +296,7 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
       const upper = source ? Math.min(environment.envelope.voidTopMm - defaultRadius, source.z + pumpLift) : environment.envelope.voidTopMm;
       return inflated
         .filter(({ raw, minZ, maxZ }) => raw.id !== gullyId && (raw.id === unitId || maxZ + inflate > lower && minZ - inflate < upper))
-        .map(({ raw, padded }) => (raw.id === unitId ? sourceBox(raw) : padded));
+        .map(({ raw, padded, passAt }) => (raw.id === unitId ? sourceBox(raw) : passAt !== null && passAt <= upper ? { ...padded, passOverAtZ: passAt } : padded));
     },
     services,
     walls: environment.walls.map((wall) => ({ id: wall.id, a: wall.a, b: wall.b })),
@@ -729,7 +733,7 @@ function insertBranch(
         const entry = add(target.point, scale(flow, leadIn));
         const blocked = obstacles.some((box) => {
           const mid = { x: (bend.x + entry.x) / 2, y: (bend.y + entry.y) / 2 };
-          return mid.x > box.minX && mid.x < box.maxX && mid.y > box.minY && mid.y < box.maxY;
+          return box.passOverAtZ === undefined && mid.x > box.minX && mid.x < box.maxX && mid.y > box.minY && mid.y < box.maxY;
         })
           // The shifted junction must not sit inside another service's footprint either.
           || services.some((service) => distance(service.a, service.b) > 1
@@ -1103,6 +1107,53 @@ function findCrossingWindows(
   return mergeCrossingWindows(windows);
 }
 
+/**
+ * Where a run passes over a duct or air terminal: a crossing window that holds it above the body. A drain the search
+ * sent over one has the fall for it. `planPadMm` beyond the run's radius: how near in plan a body counts.
+ */
+function findLowBodyWindows(
+  net: NetBuilder,
+  obstacles: CondensateEnvironment['obstacles'],
+  sizes: Map<string, CondensatePipeSize>,
+  settings: CondensateDesignSettings,
+  planPadMm: number,
+): CrossingWindow[] {
+  const windows: CrossingWindow[] = [];
+  const bodies = obstacles.filter((obstacle) => obstacle.crossable);
+  for (const node of net.nodes.values()) {
+    if (node.edge !== 'run' || !node.down) continue;
+    const down = net.nodes.get(node.down)!;
+    const a = node.point;
+    const b = down.point;
+    if (distance(a, b) < 1) continue;
+    const radius = radiusOf(sizes.get(node.id) ?? DEFAULT_NOMINAL, settings);
+    const pad = radius + planPadMm;
+    for (const body of bodies) {
+      let t1 = 0;
+      let t2 = 1;
+      for (const [from, delta, min, max] of [[a.x, b.x - a.x, body.minX - pad, body.maxX + pad], [a.y, b.y - a.y, body.minY - pad, body.maxY + pad]] as const) {
+        if (Math.abs(delta) < 1e-9) {
+          if (from <= min || from >= max) { t2 = -1; break; }
+          continue;
+        }
+        const enter = (min - from) / delta;
+        const leave = (max - from) / delta;
+        t1 = Math.max(t1, Math.min(enter, leave));
+        t2 = Math.min(t2, Math.max(enter, leave));
+      }
+      if (t2 <= t1 + 1e-9) continue;
+      const mid = (t1 + t2) / 2;
+      windows.push({
+        upId: node.id, downId: down.id, a: { ...a }, b: { ...b }, t1, t2,
+        point: { x: a.x + (b.x - a.x) * mid, y: a.y + (b.y - a.y) * mid },
+        services: [{ elementId: body.id, service: 'duct', a: { x: body.minX, y: body.minY, z: body.maxZ }, b: { x: body.maxX, y: body.maxY, z: body.maxZ }, radiusMm: 0, connectedUnitIds: [] }],
+        zMin: body.minZ, zMax: body.maxZ, requiredMm: radius + settings.refrigerantClearanceMm, condensateRadiusMm: radius,
+      });
+    }
+  }
+  return windows;
+}
+
 // ---------------------------------------------------------------------------
 // Solve one network
 // ---------------------------------------------------------------------------
@@ -1216,11 +1267,23 @@ export function planCondensateNetwork(scene: HvacElement[], options: CondensateP
   }
 }
 
+/**
+ * The drains may pass over low ducts and terminals where they are still high enough. The profile solver has the last
+ * word on each crossing; where that leaves a unit out, the routes that keep round every body are tried too.
+ */
 function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, routing: PipeRoutingSettings): CondensateNetworkPlan {
+  const environment = options.environment ?? buildCondensateEnvironment(scene, { ...options, routingSettings: routing });
+  const over = planNetworks(scene, options, routing, environment, true);
+  if (options.fixedNetwork || !over.perUnit.some((unit) => unit.status === 'infeasible')) return over;
+  const round = planNetworks(scene, options, routing, environment, false);
+  const connected = (plan: CondensateNetworkPlan) => plan.perUnit.filter((unit) => unit.status === 'gravity' || unit.status === 'pumped').length;
+  return connected(round) > connected(over) ? round : over;
+}
+
+function planNetworks(scene: HvacElement[], options: CondensatePlanOptions, routing: PipeRoutingSettings, environment: CondensateEnvironment, overLowBodies: boolean): CondensateNetworkPlan {
   const settings = options.settings;
   const idFactory = options.idFactory ?? defaultIdFactory();
   const progress = options.onProgress ?? (() => undefined);
-  const environment = options.environment ?? buildCondensateEnvironment(scene, { ...options, routingSettings: routing });
   const issues: string[] = [];
   let sizeFloors: ReadonlyMap<string, number> = new Map();
   const perUnit: CondensateUnitResult[] = environment.skipped.map((skip) => ({
@@ -1253,7 +1316,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
   }
 
   const defaultRadius = radiusOf(DEFAULT_NOMINAL, settings);
-  const router = buildRouterContext(environment, defaultRadius);
+  const router = buildRouterContext(environment, defaultRadius, overLowBodies);
   // The environment may be cached by an edit session. Keep coordination state
   // local, and publish each solved sink network to subsequent searches.
   const coordinatedServices = [...environment.services];
@@ -1297,6 +1360,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         walls: router.walls,
         services: router.services,
         costs,
+        levelAt: (pathLengthMm) => unitPlan.headTopZ - minSlope * (pathLengthMm + unitPlan.stubLength),
       });
       if (!route) continue;
       const length = route.lengthMm + unitPlan.stubLength;
@@ -1525,6 +1589,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         services: router.services,
         costs,
         acceptTarget,
+        levelAt: (pathLengthMm: number) => unitPlan.headTopZ - minSlope * (pathLengthMm + unitPlan.stubLength),
       };
       const obstacles = [...router.obstaclesFor(unitPlan.source.unitId, sink.gullyId), ...keepOut];
       const route = (spots.length ? routeCondensateBranch({ ...request, obstacles: [...obstacles, ...spots] }) : null)
@@ -1673,7 +1738,9 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
     // Far end of each edge first: a split always lands between the edge's up node
     // and the windows already inserted further downstream.
     const unitPorts = new Map(net.units.map((unit) => [unit.plan.source.unitId, unit.plan.source.point]));
-    const windows = findCrossingWindows(net, coordinatedServices, base.sizes, settings, unitPorts)
+    // (A drain drawn by hand near a body is not held off it: only one over it in plan.)
+    const lowBodies = overLowBodies ? findLowBodyWindows(net, environment.obstacles, base.sizes, settings, options.fixedNetwork ? 0 : settings.refrigerantClearanceMm) : [];
+    const windows = mergeCrossingWindows([...findCrossingWindows(net, coordinatedServices, base.sizes, settings, unitPorts), ...lowBodies])
       .sort((a, b) => a.upId.localeCompare(b.upId) || b.t1 - a.t1);
     const initial = solved.solution;
     for (const window of windows) {
@@ -1693,8 +1760,10 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         return zUp + (zDown - zUp) * ((window.t1 + window.t2) / 2);
       })();
       const includesDrain = window.services.some((service) => service.service === 'drain');
+      const includesBody = window.services.some((service) => service.service === 'duct');
       const serviceKind = window.services.every((service) => service.service === 'drain') ? 'drain'
-        : includesDrain ? 'service' : 'refrigerant';
+        : window.services.every((service) => service.service === 'duct') ? 'duct'
+          : includesDrain || includesBody ? 'service' : 'refrigerant';
       const serviceLabel = elementIds.length > 1 ? `${serviceKind} runs ${elementIds.join(', ')}` : `${serviceKind} ${elementIds[0]}`;
       const below = window.zMin - window.requiredMm;
       const above = window.zMax + window.requiredMm;
@@ -1729,8 +1798,8 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         const reset = solveNetwork(net, base);
         if (!('failure' in reset)) solved = reset;
         // Gravity drains cannot take a refrigerant hop, including a merged
-        // crossing window containing both a drain and refrigerant lines.
-        relation = includesDrain ? 'unresolved' : 'hop';
+        // crossing window containing both a drain and refrigerant lines; a duct cannot hop at all.
+        relation = includesDrain || includesBody ? 'unresolved' : 'hop';
       }
       const zHere = (() => {
         const zs = ids.map((id) => (solved as NetworkSolveResult).solution.zHigh.get(id) ?? currentZ);
@@ -1747,6 +1816,7 @@ function planWithRouting(scene: HvacElement[], options: CondensatePlanOptions, r
         serviceZMax: window.zMax,
         requiredClearanceMm: window.requiredMm,
         networkId: net.networkId,
+        ...(serviceKind === 'duct' ? { overBody: true } : {}),
       });
       if (relation === 'hop') {
         // One hop per refrigerant line in the window; each clears the drain by its own radius.

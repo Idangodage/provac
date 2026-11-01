@@ -58,12 +58,12 @@ describe('condensate integration', () => {
   });
 
   it('presents fall tags, invert levels and downstream arrows in plan', () => {
-    const presentation = generated.map(buildCondensatePlanPresentation).find((entry) => entry && entry.runs.length && entry.fallTag)!;
+    const presentation = generated.map((element) => buildCondensatePlanPresentation(element)).find((entry) => entry && entry.runs.length && entry.fallTag)!;
     expect(presentation.fallTag!.text).toMatch(/^CD 32 · 1:\d+ [→←]$/);
     expect(presentation.levelTags[0]!.text).toMatch(/^IL \d+$/);
     const arrows = condensateFlowArrows(presentation.runs, 500, 100);
     expect(arrows.length).toBeGreaterThan(0);
-    const drop = generated.map(buildCondensatePlanPresentation).find((entry) => entry?.spec.segmentRole === 'drop');
+    const drop = generated.map((element) => buildCondensatePlanPresentation(element)).find((entry) => entry?.spec.segmentRole === 'drop');
     expect(drop?.verticals[0]?.direction).toBe('down');
   });
 });

@@ -28,6 +28,8 @@ export interface RouterBox {
   maxY: number;
   /** Exact rotated source footprint; the bounds above still supply grid stations. */
   oriented?: { centre: Point2D; axis: Point2D; halfLength: number; halfWidth: number };
+  /** A low body: a route may pass over it where the drain's centreline can be at or above this level (mm). */
+  passOverAtZ?: number;
 }
 
 export interface RouterWall {
@@ -80,6 +82,8 @@ export interface CondensateRouteRequest {
   costs: CondensateRouteCosts;
   /** Gravity check at a candidate target given the branch plan length so far. */
   acceptTarget?: (target: RouteTarget, pathLengthMm: number) => boolean;
+  /** The highest the drain can be after this much of its route (mm): what a low body is judged against. Absent: every body blocks. */
+  levelAt?: (pathLengthMm: number) => number;
   marginMm?: number;
   maxGridNodes?: number;
   maxExpandedStates?: number;
@@ -226,6 +230,8 @@ function manhattanToSegment(point: Point2D, a: Point2D, b: Point2D): number {
 
 interface EdgeInfo {
   blocked: boolean;
+  /** The level the drain must hold along this edge to pass over the low bodies under it. */
+  overZ: number;
   cost: number;
   walls: Array<{ wallId: string; point: Point2D }>;
   crossings: Array<{ serviceId: string; point: Point2D }>;
@@ -328,12 +334,19 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
   }
   gridX.sort((a, b) => a - b);
   gridY.sort((a, b) => a - b);
-  // Keep at most maxGridNodes by thinning lines far from any terminal.
+  // Keep at most maxGridNodes by thinning lines far from any terminal. The branch's ends and the network's own lines
+  // stay: with those gone a branch cannot land on the main where it first meets it, and runs on beside it to a line left.
+  const keepX = new Set([start.x, ...(sink ? [sink.x] : []), ...tree.flatMap((segment) => [ROUND(segment.a.x), ROUND(segment.b.x)])]);
+  const keepY = new Set([start.y, ...(sink ? [sink.y] : []), ...tree.flatMap((segment) => [ROUND(segment.a.y), ROUND(segment.b.y)])]);
+  const thin = (values: number[], keep: Set<number>) => values.filter((value, index) => keep.has(value) || index % 2 === 0 || index === values.length - 1);
   while (gridX.length * gridY.length > maxGridNodes && (gridX.length > 8 || gridY.length > 8)) {
-    const thin = (values: number[], keep: Set<number>) => values.filter((value, index) => keep.has(value) || index % 2 === 0 || index === values.length - 1);
-    const keepX = new Set([start.x, ...(sink ? [sink.x] : [])]);
-    const keepY = new Set([start.y, ...(sink ? [sink.y] : [])]);
+    const before = gridX.length * gridY.length;
     if (gridX.length >= gridY.length) gridX = thin(gridX, keepX); else gridY = thin(gridY, keepY);
+    // (All kept, along the longer side: the other side thins.)
+    if (gridX.length * gridY.length === before) {
+      if (gridX.length >= gridY.length) gridY = thin(gridY, keepY); else gridX = thin(gridX, keepX);
+      if (gridX.length * gridY.length === before) break;
+    }
   }
   const nx = gridX.length;
   const ny = gridY.length;
@@ -398,8 +411,14 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     const along = horizontal ? rowBoxes[from % ny]! : columnBoxes[Math.floor(from / ny)]!;
     const low = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
     const high = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
-    let blocked = along.some((box) => (horizontal ? high > box.minX + EPS && low < box.maxX - EPS : high > box.minY + EPS && low < box.maxY - EPS))
-      || rotated.some((box) => segmentHitsBox(a, b, box));
+    let blocked = rotated.some((box) => segmentHitsBox(a, b, box));
+    let overZ = Number.NEGATIVE_INFINITY;
+    for (const box of along) {
+      if (blocked) break;
+      if (!(horizontal ? high > box.minX + EPS && low < box.maxX - EPS : high > box.minY + EPS && low < box.maxY - EPS)) continue;
+      if (box.passOverAtZ !== undefined && request.levelAt) overZ = Math.max(overZ, box.passOverAtZ);
+      else blocked = true;
+    }
     const edgeMinX = Math.min(a.x, b.x); const edgeMaxX = Math.max(a.x, b.x);
     const edgeMinY = Math.min(a.y, b.y); const edgeMaxY = Math.max(a.y, b.y);
     // Never run along or through the network already built (only arrive on it).
@@ -451,12 +470,14 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
         }
       }
       const onCorridor = horizontal ? corridorYSet.has(a.y) : corridorXSet.has(a.x);
+      // Over a low body it crosses, not runs along: each mm costs as much as running in a service's footprint.
+      if (overZ > Number.NEGATIVE_INFINITY) overlap += length;
       cost = length * (onCorridor ? 1 - costs.corridorBonusRatio : 1)
         + overlap * costs.overlapPenaltyRatio
         + walls.length * costs.wallPenaltyMm
         + crossings.length * costs.crossingPenaltyMm;
     }
-    const info = { blocked, cost, walls, crossings };
+    const info = { blocked, overZ, cost, walls, crossings };
     edgeCache.set(key, info);
     return info;
   };
@@ -514,6 +535,8 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
       const turned = state.parent !== null || heading !== startHeading ? heading !== state.heading : false;
       const g = state.g + edge.cost + (turned ? costs.bendPenaltyMm : 0);
       const length = state.length + Math.hypot(gridX[ix]! - gridX[jx]!, gridY[iy]! - gridY[jy]!);
+      // Only as far as the drain, falling all the way, is still high enough (where it is at its lowest on this edge).
+      if (edge.overZ > Number.NEGATIVE_INFINITY && request.levelAt!(length) < edge.overZ - 1e-6) continue;
       const nextState: State = { node: next, heading, g, length, bends: state.bends + (turned ? 1 : 0), parent: state, terminal: null };
       if (next === sinkNode) {
         tryTerminal(nextState, { kind: 'sink', point: sink! }, 0);

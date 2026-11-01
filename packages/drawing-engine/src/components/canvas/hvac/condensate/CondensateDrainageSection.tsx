@@ -213,9 +213,9 @@ export function CondensateDrainageSection({ profile }: { profile?: ManufacturerR
               {network.gullyLabel}: {network.unitIds.length} unit{network.unitIds.length === 1 ? '' : 's'}, main fall {formatFallRatio(network.mainSlopePercent)} ({ip ? slopeText(network.mainSlopePercent) : `${network.mainSlopePercent.toFixed(2)} %`})
             </p>
           ))}
-          {preview.crossings.length ? (
+          {preview.crossings.some((c) => !c.overBody) ? (
             <p className="text-xs text-slate-600">
-              Refrigerant crossings: {preview.crossings.filter((c) => c.relation === 'below').length} below, {preview.crossings.filter((c) => c.relation === 'above').length} above, {preview.hopProposals.length} need a hop.
+              Refrigerant crossings: {preview.crossings.filter((c) => !c.overBody && c.relation === 'below').length} below, {preview.crossings.filter((c) => !c.overBody && c.relation === 'above').length} above, {preview.hopProposals.length} need a hop.
             </p>
           ) : null}
           {preview.hopProposals.length ? (

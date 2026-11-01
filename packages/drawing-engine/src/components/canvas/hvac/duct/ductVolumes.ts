@@ -65,6 +65,38 @@ function box(elementId: string, mark: string, a: Vec3, b: Vec3, halfWidth: numbe
   };
 }
 
+/**
+ * A split fitting's body: where its legs part on the main, and each leg to its
+ * outlet (a bullhead's outlets are faces of its body). An outlet's branch meets
+ * it there, which is no clash (splitContact).
+ */
+function splitBoxes(elementId: string, piece: DuctPiece, insulationMm: number): DuctBox[] {
+  const split = piece.split!;
+  const skin = (piece.sheetThicknessMm ?? 1) + insulationMm;
+  const main = split.parentSection;
+  const widthOf = (section: { widthMm: number; diameterMm?: number }) => section.diameterMm ?? section.widthMm;
+  const halfHeight = (main.diameterMm ?? main.heightMm) / 2;
+  const z = split.bottomZ + halfHeight;
+  const at = (point: Point2D): Vec3 => ({ x: point.x, y: point.y, z });
+  const boxes: DuctBox[] = [];
+  const body = (a: Point2D, b: Point2D, widthMm: number) => {
+    const next = box(elementId, piece.mark, at(a), at(b), widthMm / 2 + skin, halfHeight + skin);
+    if (next) boxes.push(next);
+  };
+  const reach = split.style === 'bullhead' ? split.depthMm : split.neckMm;
+  body(split.origin, { x: split.origin.x + split.direction.x * reach, y: split.origin.y + split.direction.y * reach }, widthOf(main));
+  for (const branch of split.branches) {
+    if (branch.elbow) {
+      body(branch.elbow.startPoint, branch.elbow.corner, widthOf(branch.leg));
+      body(branch.elbow.corner, branch.elbow.endPoint, widthOf(branch.leg));
+    } else if (split.style === 'wye') {
+      body(split.origin, branch.outlet.point, Math.max(widthOf(main), widthOf(branch.section)));
+    }
+    if (branch.transition) body(branch.transition.start, branch.transition.end, Math.max(widthOf(branch.transition.from), widthOf(branch.transition.to)));
+  }
+  return boxes;
+}
+
 /** A piece's centreline as 3D points, and the width axis to hold (vertical-plane pieces). */
 function pieceCentreline(piece: DuctPiece): { points: Vec3[]; across?: Point2D } | null {
   if (piece.kind === 'flex' && piece.flex) {
@@ -109,6 +141,10 @@ export function ductBoxesOf(plan: DuctFabricationPlan): DuctBox[] {
   if (cached) return cached;
   const boxes: DuctBox[] = [];
   for (const piece of plan.pieces) {
+    if (piece.kind === 'split' && piece.split) {
+      boxes.push(...splitBoxes(plan.elementId, piece, plan.insulationMm));
+      continue;
+    }
     const line = pieceCentreline(piece);
     if (!line) continue;
     const t = piece.sheetThicknessMm ?? 1;
@@ -339,6 +375,12 @@ function attachmentContact(plan: DuctFabricationPlan, candidate: DuctBox, parent
     && Math.hypot(start.x - plan.tap.wallPoint.x, start.y - plan.tap.wallPoint.y) <= 5;
 }
 
+/** A split's body and the first piece of a branch off it: they meet at the outlet. */
+function splitContact(parent: DuctFabricationPlan, parentBox: DuctBox, child: DuctFabricationPlan, childBox: DuctBox): boolean {
+  return child.spec.start.kind === 'split-branch' && ductParentRunId(child.spec) === parent.elementId
+    && parent.pieces.find((piece) => piece.mark === parentBox.mark)?.kind === 'split' && child.pieces[0]?.mark === childBox.mark;
+}
+
 /** Carve only the initial straight collar corridor out of its owning casing.
  * A connected run coming back through that same unit is still an obstruction. */
 function afterUnitCollar(candidate: DuctBox, plan: DuctFabricationPlan, body: DuctBox): DuctBox | null {
@@ -434,6 +476,7 @@ export function findDuctClashes(
       search: for (const boxA of boxesByRun.get(a.id)!) {
         for (const boxB of boxesByRun.get(b.id)!) {
           if (attachmentContact(plansByRun.get(a.id)!, boxA, b.id) || attachmentContact(plansByRun.get(b.id)!, boxB, a.id)) continue;
+          if (splitContact(plansByRun.get(a.id)!, boxA, plansByRun.get(b.id)!, boxB) || splitContact(plansByRun.get(b.id)!, boxB, plansByRun.get(a.id)!, boxA)) continue;
           if (boxesOverlap(boxA, boxB)) {
             clashes.push({ ductId: a.id, mark: boxA.mark, otherId: b.id, kind: 'duct', point: scale(add(boxA.centre, boxB.centre), 0.5) });
             break search;

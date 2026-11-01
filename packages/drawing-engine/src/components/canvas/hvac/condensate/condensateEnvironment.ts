@@ -69,6 +69,8 @@ export interface PlanObstacle {
   maxZ: number;
   /** Clearance applies (equipment) or the raw box is used (the source unit's own body). */
   kind: 'equipment' | 'source-body' | 'stack';
+  /** A duct or air terminal: a drain high enough may pass over it. A unit's casing keeps its access. */
+  crossable?: boolean;
 }
 
 export interface WallBarrier {
@@ -332,6 +334,7 @@ export function buildCondensateEnvironment(
   const obstacles: PlanObstacle[] = solids.map((solid) => ({
     id: solid.elementId, ...solid.bounds,
     kind: sourceIds.has(solid.elementId) ? 'source-body' : 'equipment',
+    ...(solid.mark !== 'equipment casing' ? { crossable: true } : {}),
   }));
   for (const element of scene) {
     // Branch kits have their own tube model rather than an equipment box.
