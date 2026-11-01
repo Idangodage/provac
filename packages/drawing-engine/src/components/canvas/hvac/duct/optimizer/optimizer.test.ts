@@ -214,6 +214,31 @@ describe('sizing DP: exact against brute force', () => {
     const narrow = designWithNarrowTail(149);
     expect(sizeDesign(narrow.design, narrow.model, grid)).toBeNull();
   });
+
+  it('a cap after the last take-off: air left rounding just below zero does not lose the design', () => {
+    const t3 = terminal('t3', at(frame, 3800, 2300), { x: -frame.t.x, y: -frame.t.y });
+    const capCtx = contextFor([unit, t1, t3], ['t1', 't3'], settings);
+    const [first, second] = capCtx.terminals as [TerminalCtx, TerminalCtx];
+    // Taken off in turn, these shares leave −2.8e-14 m³/h: no air, not a flow with no velocity.
+    const shares = [200, 1000 / 6] as const;
+    expect(shares[0] + shares[1] - shares[0] - shares[1]).toBeLessThan(0);
+    const branch = (key: string, end: TerminalCtx, airflowM3h: number, station: number): RunDesign => ({
+      key, start: { kind: 'tap' }, vertices: [{ x: station, y: 0 }, { x: station, y: end.lip.y - 700 }], taps: [],
+      end: { kind: 'terminal', terminal: { ...end, airflowM3h } }, airflowM3h: 0, allFlex: false,
+    });
+    const main: RunDesign = {
+      key: 'r', start: { kind: 'unit' }, vertices: [{ x: 0, y: 0 }, { x: 4600, y: 0 }],
+      taps: [
+        { station: 2000, side: 1, child: branch('a', first, shares[0], 2000) },
+        { station: 3800, side: 1, child: branch('b', second, shares[1], 3800) },
+      ],
+      end: { kind: 'cap' }, airflowM3h: 0, allFlex: false,
+    };
+    computeFlows(main);
+    const frontier = sizeDesign({ ...design, root: main }, new SizingModel(capCtx, 'round', capCtx.airflowM3h), grid);
+    expect(frontier).not.toBeNull();
+    expect(frontierPoints(frontier!.cost).length).toBeGreaterThan(0);
+  });
 });
 
 /** The runout the DP prices for a run's end (the same flex curve the planner draws). */

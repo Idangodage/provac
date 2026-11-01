@@ -186,7 +186,8 @@ function planSegments(run: RunDesign, children: RunState[], model: SizingModel):
   const flowsBefore: number[] = [];
   for (const tap of taps) {
     flowsBefore.push(flow);
-    flow -= tap.child.airflowM3h;
+    // (Rounding can leave a residue just below zero after the last take-off: that is no air, and a negative flow has no velocity.)
+    flow = Math.max(0, flow - tap.child.airflowM3h);
     flowsAfter.push(flow);
   }
   const bounds: Array<{ at: number; room: number }> = [];
