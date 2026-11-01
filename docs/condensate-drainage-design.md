@@ -98,7 +98,11 @@ ASTM Sch 40 PVC (`condensatePipeCatalog.ts`).
 Order and why:
 1. **Refrigerant** first (most constrained: unit ports, branch kits). Drains this run will
    regenerate (`replaceableCondensatePipeIds`) are removed from its scene, so refrigerant never
-   bends around pipes that are about to be replaced; existing drains stay obstacles.
+   bends around pipes that are about to be replaced; existing drains stay obstacles. The vertical
+   drop into each termination is reserved in that scene (`reservedDrainDrops`), as a body it reads and
+   never proposes: a termination fixes the drop's plan point, so a drain cannot move out of a main's
+   way, while a main laid first can move if it knows. On the user's building the gas main passed
+   53 mm from the gully's drop, the 7-unit layout clashed, and the drainage-first one with 5 units won.
 2. **Condensate** on the scene *with* the proposed refrigerant (`applyRefrigerantProposal`), gravity
    priority: below → above → refrigerant hop proposal.
 3. **Audit** (`auditServiceClashes`): new refrigerant against everything (network clearance, new

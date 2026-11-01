@@ -120,19 +120,27 @@ Left out of the plan, with the reason:
   start needed first was the first spare unit; the others only slowed the rest. More than four workers gain
   nothing on this kind of laptop: with six, the same work took 2.1 times the CPU.
 
-### Found on the way, not changed (they would change answers)
+### Found on the way, fixed afterwards (they changed answers, so not in this work)
 
-- **Two units unconnected on the building as drawn** and as advised: `autoRouteBuilding.test.ts` fails on
-  those two cases, on the original code too. It starts at b142c6d (27 October, field pipes start on the maker's
-  stubs): 7 of 7 before it, 5 of 7 now.
-- **A flow residue drops designs.** A run's airflow less its terminals' can round to just below zero
-  (−7×10⁻¹⁴ m³/h with 54.54 m³/h shares), `velocityMs` gives NaN, and a design ending in a cap just past its
-  last take-off is silently discarded, depending on rounding. Of ten common airflows split equally, 11 terminals
-  round below zero on seven, 9 terminals on three, 7 terminals on one. Clamping the flow at zero (one line in
-  `planSegments`), tried on a copy: the 9 benchmark cases stay exactly as they are and the two duct test files with
-  larger units pass. A ducted unit with 9 + 9 terminals in a test drawing gets the better supply design it had been
-  losing (first cost 4,583 to 4,386, life-cycle cost 4,839 to 4,600, supply index path 27.7 to 20.7 Pa); with 3, 4, 6, 7,
-  11 and 12 terminals its cost, layouts and index path do not change.
+- **Two units unconnected on the building as drawn** and as advised: `autoRouteBuilding.test.ts` failed on
+  those two cases, on the original code too. It started at b142c6d (27 October, field pipes start on the maker's
+  stubs): 7 of 7 before it, 5 of 7 after. Fixed by keeping the main off the drain drops and laying it under the ducts when
+  a unit is left out: see `hvac-network-level-research.md` and `condensate-drainage-design.md`. All 3 cases pass.
+- **A flow residue dropped designs.** A run's airflow less its terminals' can round to just below zero
+  (−7×10⁻¹⁴ m³/h with 54.54 m³/h shares), `velocityMs` gave NaN, and a design ending in a cap just past its
+  last take-off was silently discarded, depending on rounding. Of ten common airflows split equally, 11 terminals
+  round below zero on seven, 9 terminals on three, 7 terminals on one. The flow is now clamped at zero in `planSegments`.
+  A ducted unit with 9 + 9 terminals in a test drawing gets the better supply design it had been losing (first
+  cost 4,583 to 4,386, life-cycle cost 4,839 to 4,600, supply index path 27.7 to 20.7 Pa).
+
+What the two fixes changed, against the original code in Chrome: of the 9 benchmark answers only the building as
+drawn (5 of 7 units to 7 of 7, and 39.6 s to 28.2 s, as it no longer needs the second layout; the others took the same time
+within noise); of the 36 option variants one, the put-right building with round ducts (another start won with
+the main off the drop: all units connected either way, 10 m less pipe on each line); of the 18 earlier real drawings
+none but a count of candidates tried on 2, whose left-out unit the new starts could not reach either. One state on the way
+through the app's advice (the FDU224 turned, its terminals not yet added) still leaves 1 unit out: its 7-unit layout has a
+drain against a gas main with no room for a hop, and a clash-free layout outranks a complete one with a clash, as before.
+Once the terminals are added, all 7 connect.
 
 ### Repeating the measurements
 

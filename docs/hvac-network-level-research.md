@@ -106,6 +106,14 @@ If a candidate corner rise introduces interference, Auto route and branch propos
 
 Regression coverage includes rising/falling and reversed routes, rotated and offset paired lanes, both terminal ends, insufficient socket/height space, production sampled paths, preservation of authored risers, and actual 3D meshes with exactly two catalog 90-degree elbows and unchanged endpoints. Flat guides skip circular-arc matching.
 
+## A main under the ducts (2026-11-01)
+
+The corridor is chosen from the terminals' levels, without looking at the ducts, and each main has one corridor with no local hops. So a main can stop at the first duct across its way. The user's building as advised left its three ducted units unconnected: a start from a cassette settled at gas 2424 and liquid 2567 mm, inside the ducts' band, and every route of a start from a ducted unit ran into them. It worked before the maker's stubs (b142c6d) and on the put-right variant only by luck: a level derived from a terminal happened to pass under every duct.
+
+When the usual starts still leave a unit out and the drawing has duct or air-terminal bodies, two more starts lay the main under them (`corridorUnder`, option `corridor` of the level planner): gas on top, just below the lowest body, liquid a corridor's separation lower, both low enough for every unit's riser to keep its two full-radius bends. The corridor must still fit, and no other is taken instead: left to the usual ranking, a band excluded from the search gave mains at the outdoor unit's 1.44 m, through the rooms. A start only wins with more units connected, or the same units at a better score. Nothing more runs when every unit is in, so a complete layout does not change.
+
+Known limits. On the user's building these mains run at gas 2340 and liquid 2197 mm, below a 2400 mm ceiling line, as the put-right layout already did (2355 and 2215 mm). Staying above the ceiling needs each pipe to hop each duct locally, which this one-corridor engine does not do. The corridor goes under the ducts, never over them, even where there is height above: with the outdoor unit's connections above the corridor it would be a low pocket, the evaluation refuses it, and the unit stays left out with its reason.
+
 ## Verification completed
 
 - Drawing engine: **594 tests across 81 files passed**, including both service orders, locked boundaries, mixed terminal heights, actual rotated port geometry, branch socket approaches, repeated insertions, neighboring-station recovery on the same physical hosts, neighboring connection rebinding, new pipe interference, stale settings and repeated rejected commits.
