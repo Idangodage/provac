@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { snapWallPoint } from '../components/canvas/wall/WallSnapping';
 import { computeWallUnionRenderData } from '../components/canvas/wall/WallUnionGeometry';
+import { DEFAULT_DIMENSION_SETTINGS } from '../types';
 
+import { buildMergedAutoManagedDimensions } from './autoManagedDimensions';
 import { useDrawingStore } from './index';
 
 const store = () => useDrawingStore.getState();
@@ -51,6 +53,91 @@ describe('rooms read the walls as they are drawn', () => {
     store().wallGraphAddChain([pt(0, 0), pt(5000, 700), pt(5300, 4100), pt(-200, 3700), pt(0, 0)], { thickness: 200 });
     await settle(1);
     expect(store().rooms[0]!.wallIds).toHaveLength(4);
+  });
+});
+
+describe('auto dimensions on plain rooms did not move', () => {
+  // The values are what the code before the junction work gave for these plans once a
+  // render and a fresh room detection had happened. A tee no longer has to wait for those.
+  const autoDimensions = () =>
+    buildMergedAutoManagedDimensions({
+      walls: store().walls,
+      rooms: store().rooms,
+      dimensionSettings: { ...DEFAULT_DIMENSION_SETTINGS },
+      dimensions: [],
+    });
+  const box = (minX: number, minY: number, maxX: number, maxY: number) =>
+    boxOf(minX, minY, maxX, maxY).map(([x, y]) => pt(x, y));
+
+  const plans: [string, { points: { x: number; y: number }[]; thickness: number }[], number, number[]][] = [
+    ['one room', [{ points: box(0, 0, 6000, 4000), thickness: 200 }], 1, [3800, 3800, 5800, 5800]],
+    [
+      'two rooms',
+      [
+        { points: box(0, 0, 6000, 4000), thickness: 200 },
+        { points: [pt(3000, 0), pt(3000, 4000)], thickness: 200 },
+      ],
+      2,
+      [2900, 2900, 2900, 2900, 3800, 3800],
+    ],
+    [
+      'a thin partition in thick walls',
+      [
+        { points: box(0, 0, 8000, 5000), thickness: 300 },
+        { points: [pt(5000, 0), pt(5000, 5000)], thickness: 100 },
+      ],
+      2,
+      [2850, 2850, 4700, 4700, 4850, 4850],
+    ],
+    [
+      'an L plan',
+      [{ points: [pt(0, 0), pt(8000, 0), pt(8000, 3000), pt(4000, 3000), pt(4000, 6000), pt(0, 6000), pt(0, 0)], thickness: 200 }],
+      1,
+      [2800, 3000, 3800, 4000, 5800, 7800],
+    ],
+    [
+      'three rooms',
+      [
+        { points: box(0, 0, 9000, 6000), thickness: 200 },
+        { points: [pt(4500, 0), pt(4500, 6000)], thickness: 200 },
+        { points: [pt(4500, 3000), pt(9000, 3000)], thickness: 150 },
+      ],
+      3,
+      [2900, 2900, 4400, 4400, 4400, 4400, 5800],
+    ],
+    [
+      'an angled room',
+      [{ points: [pt(0, 0), pt(5000, 700), pt(5300, 4100), pt(-200, 3700), pt(0, 0)], thickness: 200 }],
+      1,
+      [3216.18, 3498.35, 4860.34, 5298.87],
+    ],
+  ];
+
+  it.each(plans)('%s', async (_name, chains, rooms, expected) => {
+    chains.forEach((chain) => store().wallGraphAddChain(chain.points, { thickness: chain.thickness }));
+    await settle(rooms);
+    const values = autoDimensions().map((dimension) => dimension.value).sort((a, b) => a - b);
+    expect(values).toHaveLength(expected.length);
+    expected.forEach((value, index) => expect(values[index]).toBeCloseTo(value, 1));
+  });
+
+  it('a partition splits the run at its centreline and is not dimensioned itself', async () => {
+    store().wallGraphAddChain(box(0, 0, 6000, 4000), { thickness: 200 });
+    store().wallGraphAddChain([pt(3000, 0), pt(3000, 4000)], { thickness: 200 });
+    await settle(2);
+    const spans = autoDimensions()
+      .map((dimension) => dimension.points.flatMap((point) => [point.x, point.y]).join(' '))
+      .sort();
+    expect(spans).toEqual(
+      [
+        '100 100 3000 100',
+        '3000 100 5900 100',
+        '3000 3900 100 3900',
+        '5900 3900 3000 3900',
+        '100 3900 100 100',
+        '5900 100 5900 3900',
+      ].sort()
+    );
   });
 });
 
