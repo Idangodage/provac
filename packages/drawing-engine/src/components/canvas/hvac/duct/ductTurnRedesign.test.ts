@@ -105,7 +105,7 @@ const redesign = (scene: readonly HvacElement[], target: TurnRedesignTarget) => 
 // ---- An Auto-ducted FDUM22: three diffusers ahead of its supply collar. ----
 const terminals = [terminal('sd1', at(2400, 1500), { x: -t.x, y: -t.y }), terminal('sd2', at(2400, -1500), t), terminal('sd3', at(4300, 0), { x: -n.x, y: -n.y })];
 const request: AutoDuctRequest = {
-  unitId: 'fdum', terminalIds: ['sd1', 'sd2', 'sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: false,
+  unitId: 'fdum', terminalIds: ['sd1', 'sd2', 'sd3'], fanSpeed: 'hi', layout: 'auto', shape: 'optimal', services: { supply: true, return: false }, rebuildExisting: false,
 };
 const designed = applyDesign([unit, ...terminals], generateAutoDuct([unit, ...terminals], request, settings));
 

@@ -2644,15 +2644,16 @@ export function buildHvacElementMesh(
     }
     case "ducted-ac": {
       const ducted = buildDuctedIndoorUnitModel(effectiveElement);
-      const shellCornerRadius = Math.min(ducted.baseWidth, ducted.baseDepth) * 0.03;
+      const shell = ducted.shell;
       group.add(
         createRoundedLocalExtrudedMesh(
-          ducted.baseWidth,
-          ducted.baseDepth,
-          ducted.unitHeight,
-          shellCornerRadius,
+          shell.width,
+          shell.depth,
+          shell.height,
+          shell.cornerRadius,
           DUCTED_INDOOR_UNIT_COLOR_PALETTE.shell,
-          new THREE.Vector3(0, 0, ducted.unitHeight / 2),
+          new THREE.Vector3(shell.x, shell.y, shell.z),
+          { bevelEnabled: false },
         ),
       );
       group.add(

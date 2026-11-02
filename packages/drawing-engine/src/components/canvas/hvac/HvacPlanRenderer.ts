@@ -92,6 +92,8 @@ type HvacGroup = fabric.Group & {
   id?: string;
   name?: string;
   hvacElementId?: string;
+  /** Fabric's content centre relative to the ducted unit's model origin. */
+  modelCenterOffsetPx?: Point2D;
 };
 
 interface SyncHvacElementsOptions {
@@ -414,10 +416,19 @@ export class HvacPlanRenderer {
   private placeGroupAt(id: string, element: HvacElement | undefined): void {
     const group = this.groups.get(id);
     if (!group || !element) return;
-    const center = toCanvas(elementCenter(element));
-    group.set({ left: center.x, top: center.y, angle: element.rotation ?? 0 });
-    group.setCoords();
+    this.placeGroupAtElement(group, element);
     group.set("dirty", true);
+  }
+
+  private placeGroupAtElement(
+    group: HvacGroup,
+    element: Pick<HvacElement, "position" | "width" | "depth" | "rotation">,
+  ): void {
+    const center = toCanvas(elementCenter(element));
+    const rotation = element.rotation ?? 0;
+    const offset = rotatePoint(group.modelCenterOffsetPx ?? { x: 0, y: 0 }, rotation);
+    group.set({ left: center.x + offset.x, top: center.y + offset.y, angle: rotation });
+    group.setCoords();
   }
 
   private annotate(
@@ -3465,6 +3476,10 @@ export class HvacPlanRenderer {
           : "rgba(255,255,255,0.42)";
 
         background.set({
+          left: toPx(ducted.shell.x),
+          top: toPx(ducted.shell.y),
+          width: toPx(ducted.shell.width),
+          height: toPx(ducted.shell.depth),
           fill: shellFill,
           stroke: shellStroke,
           strokeWidth: 1.3,
@@ -3472,16 +3487,6 @@ export class HvacPlanRenderer {
           ry: Math.max(6, toPx(ducted.casingInset.cornerRadius * 1.4)),
         });
         background.set("strokeDashArray", null);
-        // A unit with maker data: the shell is its casing and hanger plates; its stubs and hose stand out of it.
-        const makerCasing = unitConnectionsFor(element)?.casing;
-        if (makerCasing) {
-          background.set({
-            left: toPx(makerCasing.centre.x),
-            top: toPx(makerCasing.centre.y),
-            width: toPx(makerCasing.width + 24),
-            height: depthPx,
-          });
-        }
 
         const renderRect = (
           spec: {
@@ -3639,6 +3644,7 @@ export class HvacPlanRenderer {
                 stroke: undefined,
                 strokeWidth: 0,
               },
+              `hvac-air-port-${port.kind}-mouth`,
             );
             renderRect(
               { ...collarCentre, ...size(collarDepthMm), cornerRadius: 2 },
@@ -3655,6 +3661,7 @@ export class HvacPlanRenderer {
                   : "rgba(185,28,28,0.52)",
                 strokeWidth: 1,
               },
+              `hvac-air-port-${port.kind}-collar`,
             );
           });
         }
@@ -3793,6 +3800,7 @@ export class HvacPlanRenderer {
                   : "rgba(185,28,28,0.52)",
                 strokeWidth: Math.max(toPx(opening.collarThickness), 1),
               },
+              `hvac-air-port-${opening.kind}-collar`,
             );
           }
         });
@@ -3820,9 +3828,26 @@ export class HvacPlanRenderer {
           0.9,
         );
 
+        const makerCasing = unitConnectionsFor(element)?.casing;
         ducted.pipePorts.forEach((port) => {
           // Offsets run outward along the port's axis from where it leaves the casing (port.x).
           const axis = port.axis ?? 1;
+          if (makerCasing) {
+            // The catalog's factory neck runs from the main casing to the
+            // service connector. Keep the connector's field anchor intact:
+            // its root can be beyond the casing (69 mm on the larger FDUM).
+            const faceX = makerCasing.centre.x + axis * makerCasing.width / 2;
+            const neckLength = (port.x - faceX) * axis;
+            if (neckLength > 0) {
+              renderRect({
+                x: (faceX + port.x) / 2, y: port.y,
+                width: neckLength, depth: port.radius * 2, cornerRadius: 0,
+              }, {
+                fill: options.valid ? port.color : "rgba(185,28,28,0.52)",
+                strokeWidth: 0,
+              }, `hvac-pipe-port-${port.kind}-neck`);
+            }
+          }
           const at = (offsetMm: number): number => port.x + axis * offsetMm;
           const pipeEndOffsetMm =
             port.collarLength + port.length - port.flangeThickness * 0.15;
@@ -4263,6 +4288,15 @@ export class HvacPlanRenderer {
       objectCaching: false,
     }) as HvacGroup;
 
+    if (isDuctedUnit) {
+      // Group layout recentres children around their combined bounds. A title,
+      // side connection tags or a maker's offset casing makes those bounds
+      // asymmetric. Retain that offset so the original model origin (also used
+      // by air/pipe ports) stays at the unit footprint centre at every turn.
+      const contentCenter = group.getRelativeCenterPoint();
+      group.modelCenterOffsetPx = { x: contentCenter.x, y: contentCenter.y };
+    }
+
     if (inlineResultWithModel) {
       const centerMm = subtractPoints(
         inlineResultWithModel.anchorPoint,
@@ -4291,12 +4325,7 @@ export class HvacPlanRenderer {
         });
       }
     } else {
-      const center = toCanvas(elementCenter(element));
-      group.set({
-        left: center.x,
-        top: center.y,
-        angle: element.rotation ?? 0,
-      });
+      this.placeGroupAtElement(group, element);
     }
     group.setCoords();
 

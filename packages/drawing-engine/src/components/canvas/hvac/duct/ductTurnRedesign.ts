@@ -39,7 +39,7 @@
 import type { HvacElement } from '../../../../types';
 
 import { withSystemAssignments } from './ductAirSystems';
-import { autoDuctTerminalUpdates, terminalSpigotUpdates, type AutoDuctRequest, type AutoDuctResult, type AutoDuctSizingBases } from './ductAutoLayout';
+import { DEFAULT_AUTO_DUCT_SHAPE, autoDuctTerminalUpdates, terminalSpigotUpdates, type AutoDuctRequest, type AutoDuctResult, type AutoDuctSizingBases } from './ductAutoLayout';
 import { formatCost, priceDuctPlans } from './ductEconomics';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
@@ -172,7 +172,7 @@ const SHAPE_NOUNS: Record<DuctSystemShape, string> = { rectangular: 'rectangular
  * of shapes, with what to say when that one is taken.
  */
 export function turnRedesignAttempts(target: TurnRedesignTarget): Array<{ request: TurnRedesignTarget['request']; note: string | null }> {
-  const shape = target.request.shape ?? 'optimal';
+  const shape = target.request.shape ?? DEFAULT_AUTO_DUCT_SHAPE;
   if (shape === 'optimal') return [{ request: target.request, note: null }];
   return [
     { request: target.request, note: null },

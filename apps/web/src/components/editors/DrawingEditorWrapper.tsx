@@ -126,31 +126,33 @@ export default function DrawingEditorWrapper({
   );
 
   return (
-    <div className="fixed inset-0 z-[60] flex h-screen w-screen flex-col bg-[#f6f1e7]">
+    <div className="fixed inset-0 z-[60] flex h-dvh w-screen flex-col overflow-hidden bg-[#f6f1e7]">
       {/* Navigation Header */}
-      <div className="flex h-12 items-center justify-between gap-3 border-b border-amber-200/70 bg-white px-3">
-        <div className="flex min-w-0 items-center gap-3">
+      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-amber-200/70 bg-white px-2 sm:px-3">
+        <div className="flex min-w-0 items-center gap-2">
           <Link
             href={`/projects/${projectId}`}
-            className="inline-flex items-center gap-1.5 rounded-md border border-amber-200/80 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-amber-50 hover:text-slate-900"
+            aria-label="Back to project"
+            title="Back to project"
+            className="inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-amber-200/80 px-2 text-xs font-medium text-slate-600 hover:bg-amber-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             <ArrowLeft size={14} />
-            Back to Project
+            <span className="hidden sm:inline">Back to Project</span>
           </Link>
           <div className="hidden h-5 w-px bg-amber-200/80 sm:block" />
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-400 text-[10px] font-bold text-amber-950">
               PX
             </div>
-            <div className="min-w-0 leading-tight">
+            <div className="flex min-w-0 items-center gap-2 leading-tight">
               <div className="truncate text-xs font-semibold text-slate-900">
                 {projectName || "Untitled Project"}
               </div>
-              <div className="text-[10px] text-slate-500">Smart Drawing</div>
+              <span className="hidden shrink-0 border-l border-slate-200 pl-2 text-[10px] text-slate-500 md:inline">Smart Drawing</span>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           {saveError && (
             <span
               className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-medium text-red-600"
@@ -159,21 +161,18 @@ export default function DrawingEditorWrapper({
               Save failed
             </span>
           )}
-          <div className="hidden items-center gap-2 text-xs text-slate-500 lg:flex">
-            <span className="px-2 py-1 rounded-full border border-amber-200/80 bg-amber-50">
-              {projectName || "Untitled Document"}
-            </span>
-          </div>
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-md border border-amber-200/80 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-amber-50"
+            aria-label="Share drawing"
+            title="Share drawing"
+            className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md border border-amber-200/80 px-2 text-xs font-medium text-slate-700 hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             <Share2 size={14} />
-            Share
+            <span className="hidden sm:inline">Share</span>
           </button>
           <Link
             href={`/projects/${projectId}/boq`}
-            className="inline-flex items-center gap-1.5 rounded-md bg-amber-400 px-2.5 py-1 text-xs font-semibold text-amber-950 hover:bg-amber-300"
+            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-amber-400 px-2.5 text-xs font-semibold text-amber-950 hover:bg-amber-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             Next: BOQ
             <ArrowRight size={14} />

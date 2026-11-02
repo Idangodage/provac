@@ -27,7 +27,7 @@ import {
 } from './condensate/condensatePreviewStore';
 import { formatFallRatio } from './condensate/condensateSettings';
 import { AUTO_DUCT_SHAPE_OPTIONS } from './duct/DuctAutoCard';
-import type { AutoDuctShape } from './duct/ductAutoLayout';
+import { DEFAULT_AUTO_DUCT_SHAPE, type AutoDuctShape } from './duct/ductAutoLayout';
 import { FAN_SPEED_LABELS, FAN_SPEEDS, type FanSpeed } from './duct/ductSizing';
 import { wantsDucts, type AutoRouteServices } from './unifiedAutoRoute';
 import { fromDisplay, toDisplay } from './units/hvacUnits';
@@ -78,7 +78,7 @@ const ALL_SERVICES: AutoRouteServices = { gas: true, liquid: true, condensate: t
 function ServiceChip({ tick, checked, disabled, onToggle, duct }: { tick: ServiceTick; checked: boolean; disabled: boolean; onToggle: () => void; duct: boolean }) {
   return (
     <label title={tick.hint}
-      className={`flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-1 text-xs transition-colors ${checked ? 'border-slate-300 bg-white text-slate-800 shadow-sm' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+      className={`inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-md border px-1.5 text-xs transition-colors focus-within:ring-2 focus-within:ring-teal-600 ${checked ? 'border-slate-300 bg-white text-slate-800 shadow-sm' : 'border-transparent text-slate-500 hover:bg-white hover:text-slate-700'}`}>
       <input type="checkbox" className="h-3.5 w-3.5 accent-teal-700" checked={checked} disabled={disabled} onChange={onToggle} aria-label={tick.aria} />
       {duct
         ? <span className={`inline-block h-2.5 w-3.5 rounded-[2px] border-[1.5px] ${tick.swatch} ${checked ? '' : 'opacity-50'}`} aria-hidden="true" />
@@ -109,7 +109,7 @@ function AutoRouteProgressBar({ progress }: { progress: CondensateProgress }) {
   );
 }
 
-export function AutoRouteAction({ profile, disabled = false }: { profile?: ManufacturerRuleProfile; disabled?: boolean }) {
+export function AutoRouteAction({ profile, disabled = false, docked = false }: { profile?: ManufacturerRuleProfile; disabled?: boolean; docked?: boolean }) {
   const shown = useCondensatePreviewStore((state) => state.unified);
   const running = useCondensatePreviewStore((state) => state.running);
   // While it runs the overlays show what has finished; the review, the details and Apply wait for the whole answer.
@@ -124,7 +124,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
   const setDuctSettings = useSmartDrawingStore((state) => state.setDuctSettings);
   const setCondensateSettings = useSmartDrawingStore((state) => state.setCondensateSettings);
   const [services, setServices] = useState<AutoRouteServices>(ALL_SERVICES);
-  const [ductShape, setDuctShape] = useState<AutoDuctShape>('optimal');
+  const [ductShape, setDuctShape] = useState<AutoDuctShape>(DEFAULT_AUTO_DUCT_SHAPE);
   const [ductFanSpeed, setDuctFanSpeed] = useState<FanSpeed>('hi');
   const [ductRebuild, setDuctRebuild] = useState(false);
   const [objective, setObjective] = useState<Objective>('balanced');
@@ -142,6 +142,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
 
   useEffect(() => { setServices(readStoredAutoRouteServices()); }, []);
   useLayoutEffect(() => {
+    if (docked) return;
     const place = () => {
       if (!anchorRef.current || !panelRef.current) return;
       const anchor = anchorRef.current.getBoundingClientRect();
@@ -151,7 +152,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
     place();
     window.addEventListener('resize', place);
     return () => window.removeEventListener('resize', place);
-  }, [showOptions, showDetails, unified]);
+  }, [docked, showOptions, showDetails, unified]);
 
   const toggleService = (key: ServiceKey) => {
     const next = { ...services, [key]: !services[key] };
@@ -217,7 +218,8 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
   }, [unified, running, ductsNeedAttention, applyReason]);
 
   return (
-    <div ref={anchorRef} className="relative flex flex-wrap items-center gap-1.5" data-testid="auto-route-action"
+    // Docked controls share the routing row; expanded panels take its full width.
+    <div ref={anchorRef} className={docked ? 'contents' : 'relative flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1'} data-testid="auto-route-action"
       onKeyDown={(event) => {
         if (event.key !== 'Escape') return;
         event.preventDefault();
@@ -226,13 +228,13 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
         else { setShowOptions(false); setShowDetails(false); }
       }}>
       <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1" role="group" aria-label="Services to route">
-        <span className="flex items-center gap-0.5 rounded-lg bg-slate-50 p-0.5" role="group" aria-label="Ducts">
+        <span className="flex min-w-0 max-w-full flex-wrap items-center gap-0.5 rounded-md bg-slate-50" role="group" aria-label="Ducts">
           <span className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400" aria-hidden="true">Duct</span>
           {DUCT_TICKS.map((tick) => (
             <ServiceChip key={tick.key} tick={tick} duct checked={Boolean(services[tick.key])} disabled={running} onToggle={() => toggleService(tick.key)} />
           ))}
         </span>
-        <span className="flex items-center gap-0.5 rounded-lg bg-slate-50 p-0.5" role="group" aria-label="Pipes">
+        <span className="flex min-w-0 max-w-full flex-wrap items-center gap-0.5 rounded-md bg-slate-50" role="group" aria-label="Pipes">
           <span className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400" aria-hidden="true">Pipe</span>
           {PIPE_TICKS.map((tick) => (
             <ServiceChip key={tick.key} tick={tick} duct={false} checked={Boolean(services[tick.key])} disabled={running} onToggle={() => toggleService(tick.key)} />
@@ -241,7 +243,7 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
       </span>
       <button type="button" onClick={running ? cancelAutoRoute : route} disabled={(disabled || nothingTicked) && !running}
         title={nothingTicked ? 'Tick at least one service' : 'Route the ticked services together (ducts, then refrigerant, then condensate), clash-checked against each other; preview before applying'}
-        className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-teal-800 disabled:opacity-40">
+        className="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-teal-700 px-2.5 text-xs font-medium text-white hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-1 disabled:opacity-40">
         {running ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
         {running ? 'Cancel' : unified ? 'Route again' : 'Auto route'}
       </button>
@@ -249,53 +251,58 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
         <>
           <button type="button" onClick={() => applyAutoRoutePreview()} disabled={!hasChanges || Boolean(applyReason)}
             title={applyReason ?? (hasChanges ? 'Commit every ticked service (and the approved hops) as one undo step' : 'Nothing to apply — open the status for the reason')}
-            className="inline-flex items-center gap-1 rounded-lg bg-sky-700 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-800 disabled:opacity-40">
+            className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-sky-700 px-2.5 text-xs font-medium text-white hover:bg-sky-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600 focus-visible:ring-offset-1 disabled:opacity-40">
             <Check size={13} /> Apply
           </button>
           <button type="button" onClick={discardAutoRoutePreview}
-            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100">
+            className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-xs text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600">
             <X size={13} /> Discard
           </button>
         </>
       ) : null}
       <button type="button" aria-label="Auto route options" aria-expanded={showOptions} disabled={running}
-        onClick={() => { setShowOptions(!showOptions); setShowDetails(false); }} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 disabled:opacity-40">
+        onClick={() => { setShowOptions(!showOptions); setShowDetails(false); }} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:opacity-40">
         <SlidersHorizontal size={14} />
       </button>
       {running && progress ? <AutoRouteProgressBar progress={progress} /> : null}
       {status ? (
-        <span role="status" aria-live="polite" className="min-w-0">
-          <button type="button" onClick={() => { if (unified) { setShowOptions(false); setShowDetails(!showDetails); } }} aria-expanded={showDetails}
-            className={`flex max-w-[24rem] items-center gap-1 px-1 text-left text-xs ${applyReason || ductsNeedAttention ? 'text-amber-800' : 'text-slate-600'} ${unified ? 'hover:underline' : ''}`} title={status}>
+        <span role="status" aria-live="polite" className={docked ? 'min-w-0 flex-1 basis-8' : 'min-w-0 max-w-[24rem]'}>
+          {unified ? <button type="button" onClick={() => { setShowOptions(false); setShowDetails(!showDetails); }} aria-expanded={showDetails}
+            className={`flex min-h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${applyReason || ductsNeedAttention ? 'text-amber-800' : 'text-slate-600'}`} title={status}>
             {!running && (applyReason || ductsNeedAttention) ? <AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> : null}
             <span className="truncate">{status}</span>
             {unified && !running ? <ChevronDown size={13} className="shrink-0" aria-hidden="true" /> : null}
-          </button>
+          </button> : <span className="block truncate px-1 text-xs leading-7 text-slate-600" title={status}>{status}</span>}
         </span>
       ) : null}
 
       {showOptions || showDetails ? (
-        <div ref={panelRef} style={{ left: panelLeft }}
-          className="absolute top-full z-30 mt-2 max-h-[min(78vh,720px)] w-[400px] max-w-[calc(100vw-24px)] space-y-3 overflow-auto rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-lg">
+        <div ref={panelRef} style={docked ? undefined : { left: panelLeft }}
+          className={docked
+            ? 'relative mt-1 w-full max-w-4xl basis-full rounded-lg border border-slate-200 bg-slate-50/60 p-3 text-xs'
+            : 'absolute top-full z-30 mt-2 max-h-[min(78vh,720px)] w-[400px] max-w-[calc(100vw-24px)] space-y-3 overflow-auto rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-lg'}>
           <div className="sticky -top-3 z-10 -mx-3 -mt-3 flex items-center justify-between border-b border-slate-100 bg-white px-3 py-2 font-semibold text-slate-800">
             {showOptions ? 'Auto route options' : 'Auto route result'}
-            <button type="button" aria-label="Close" onClick={() => { setShowOptions(false); setShowDetails(false); }} className="p-1 text-slate-400"><X size={14} /></button>
+            <button type="button" aria-label="Close" onClick={() => { setShowOptions(false); setShowDetails(false); }} className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"><X size={14} /></button>
           </div>
           {showOptions ? (
-            <>
-              <label className="block space-y-1 text-slate-600">
+            <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] items-start gap-x-4 gap-y-3 [&_fieldset]:min-w-0 [&_select]:max-w-full [&_select]:min-w-0">
+              <label className="col-span-full block space-y-1 text-slate-600">
                 <span>Units</span>
                 <select value={scope} onChange={(event) => setScope(event.target.value as 'drawing' | 'selection')} className="w-full rounded-md border border-slate-200 p-2">
                   <option value="drawing">All units in the drawing</option>
                   <option value="selection">Selected units (and their selected gullies, diffusers, grilles)</option>
                 </select>
               </label>
-              <ol className="space-y-0.5 rounded-md bg-slate-50 p-2 leading-4 text-slate-500">
+              <details className="col-span-full rounded-md bg-slate-100/70 px-2 text-slate-600">
+              <summary className="min-h-7 cursor-pointer py-1 leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600">Routing order &amp; clash checks</summary>
+              <ol className="space-y-0.5 pb-2 leading-4 text-slate-500">
                 <li><span className="font-medium text-slate-600">1 · Ducts</span> — each ducted unit to its terminals, the optimiser's best life-cycle design.</li>
                 <li><span className="font-medium text-slate-600">2 · Refrigerant</span> — around the ducts; gas and liquid as a pair (one ticked keeps room for the other).</li>
                 <li><span className="font-medium text-slate-600">3 · Condensate</span> — falls to its gullies around both (below, else above, else a hop you approve).</li>
                 <li>Everything new is clash-checked in 3D against the rest before you apply.</li>
               </ol>
+              </details>
               <fieldset className="space-y-2" disabled={!ductsTicked}>
                 <legend className="font-medium text-slate-700">Ducts</legend>
                 <div className="space-y-1 text-slate-600">
@@ -396,8 +403,8 @@ export function AutoRouteAction({ profile, disabled = false }: { profile?: Manuf
                   </select>
                 </label>
               </fieldset>
-              <button type="button" onClick={route} disabled={nothingTicked} className="w-full rounded-lg bg-teal-700 py-2 font-medium text-white hover:bg-teal-800 disabled:opacity-40">Auto route</button>
-            </>
+              <button type="button" onClick={route} disabled={nothingTicked} className="col-span-full h-7 w-full rounded-md bg-teal-700 font-medium text-white hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-1 disabled:opacity-40">Auto route</button>
+            </div>
           ) : unified ? (
             <AutoRouteResultPanel result={unified} approved={approved} toggleHop={toggleHop} onRouteAgain={route} />
           ) : null}

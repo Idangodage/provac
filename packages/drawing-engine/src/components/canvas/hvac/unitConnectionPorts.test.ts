@@ -109,7 +109,7 @@ describe('the maker body', () => {
   it('fits the drawn ducted body to the maker casing, and its casing is what pipes keep out of', () => {
     const unit = place('vrf-fdum140kxe6f');
     const model = buildDuctedIndoorUnitModel(unit);
-    expect(model.casingInset.x).toBeCloseTo(-58, 6);
+    expect(model.casingInset.x).toBeCloseTo(-127, 6);
     expect(model.casingInset.width).toBeCloseTo(1370, 6);
     expect(model.baseWidth).toBe(1684);
     // The model's own flare stubs are missing: drawn from the maker's data.
@@ -117,6 +117,6 @@ describe('the maker body', () => {
     const body = equipmentBoxOf(unit)!;
     expect(body.halfLength).toBeCloseTo(685, 6);
     expect(body.halfWidth).toBeCloseTo(370, 6);
-    expect(body.centre.x).toBeCloseTo(5000 - 58, 6);
+    expect(body.centre.x).toBeCloseTo(5000 - 127, 6);
   });
 });

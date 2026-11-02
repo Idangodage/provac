@@ -15,7 +15,7 @@ import { autoRouteEstimator } from './autoRouteProgress';
 import { condensateSourceSignature, prepareCondensateCommand, type CondensateCommandSource } from './condensate/condensateCommand';
 import { useCondensatePreviewStore } from './condensate/condensatePreviewStore';
 import { buildRefrigerantHopUpdates } from './condensate/refrigerantHopProposal';
-import { terminalSpigotUpdates, type AutoDuctShape } from './duct/ductAutoLayout';
+import { DEFAULT_AUTO_DUCT_SHAPE, terminalSpigotUpdates, type AutoDuctShape } from './duct/ductAutoLayout';
 import { ductSourceSignature } from './duct/ductAutoRoute';
 import { ductWallInputs } from './duct/ductBuilding';
 import type { FanSpeed } from './duct/ductSizing';
@@ -143,7 +143,7 @@ export function runAutoRoute(options: AutoRouteRunOptions): void {
       // Always passed: every step plans duct bodies with the document's duct settings.
       duct: {
         settings: state.ductSettings,
-        shape: options.duct?.shape ?? 'optimal',
+        shape: options.duct?.shape ?? DEFAULT_AUTO_DUCT_SHAPE,
         fanSpeed: options.duct?.fanSpeed ?? 'hi',
         rebuildExisting: options.duct?.rebuildExisting ?? false,
         scope: options.scope,

@@ -164,6 +164,8 @@ export interface DuctedIndoorUnitModelSpec {
   liquidPipeDiameterMm: number;
   drainPipeDiameterMm: number;
   staticPressureFactor: number;
+  /** Outer casing and sheet flange, excluding air collars and side service connections. */
+  shell: DuctedIndoorUnitBoxSpec;
   casingInset: DuctedIndoorUnitBoxSpec;
   returnSection: DuctedIndoorUnitBoxSpec;
   fanSection: DuctedIndoorUnitBoxSpec;
@@ -329,6 +331,15 @@ export function buildDuctedIndoorUnitModel(
     : buildProportionedDuctedModel(element);
   return {
     ...model,
+    ...(casing ? {
+      shell: {
+        ...model.shell,
+        x: casing.centre.x,
+        y: casing.centre.y,
+        width: casing.flange?.width ?? casing.width,
+        depth: casing.flange?.depth ?? casing.depth,
+      },
+    } : {}),
     pipePorts: makerPipePorts(element, model.pipePorts) ?? model.pipePorts,
   };
 }
@@ -364,6 +375,7 @@ function shiftDuctedModel(
 ): DuctedIndoorUnitModelSpec {
   return {
     ...model,
+    shell: shiftBox(model.shell, by),
     casingInset: shiftBox(model.casingInset, by),
     returnSection: shiftBox(model.returnSection, by),
     fanSection: shiftBox(model.fanSection, by),
@@ -426,6 +438,16 @@ function buildProportionedDuctedModel(
   const unitHeight = Math.max(160, element.height);
   const minBaseDimension = Math.min(baseWidth, baseDepth);
   const staticPressureFactor = clampValue(staticPressurePa / 50, 0.8, 1.8);
+
+  const shell: DuctedIndoorUnitBoxSpec = {
+    x: 0,
+    y: 0,
+    z: unitHeight / 2,
+    width: baseWidth,
+    depth: baseDepth,
+    height: unitHeight,
+    cornerRadius: minBaseDimension * 0.03,
+  };
 
   const casingInset: DuctedIndoorUnitBoxSpec = {
     x: 0,
@@ -745,6 +767,7 @@ function buildProportionedDuctedModel(
     liquidPipeDiameterMm,
     drainPipeDiameterMm,
     staticPressureFactor,
+    shell,
     casingInset,
     returnSection,
     fanSection,

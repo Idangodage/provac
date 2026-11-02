@@ -46,7 +46,7 @@ const scene = [unit, ...row];
 /** The same row 4,000 mm out: room for a rectangular branch's square-to-round before each runout. */
 const roomy = [unit, ...rowAt(4000)];
 
-function design(shape: AutoDuctShape, settings = DEFAULT_DUCT_SETTINGS, drawing: readonly HvacElement[] = scene, generate = generateAutoDuct) {
+function design(shape: AutoDuctShape | undefined, settings = DEFAULT_DUCT_SETTINGS, drawing: readonly HvacElement[] = scene, generate = generateAutoDuct) {
   return generate(drawing, {
     unitId: 'fdum', terminalIds: ['d1', 'd2', 'd3', 'd4'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false },
     rebuildExisting: false, shape, sizing: { supply: defaultSizingBasis(settings, 'supply', null, 'hi') },
@@ -96,8 +96,8 @@ describe('the project\'s sizing and fabrication settings', () => {
 });
 
 describe('a system rectangular throughout', () => {
-  it('rectangular branches off shoe take-offs or Y splits; at each terminal a square-to-round to its neck, then its flexible runout', () => {
-    const result = design('rectangular', DEFAULT_DUCT_SETTINGS, roomy);
+  it('defaults to rectangular branches off shoe take-offs or Y splits, with a square-to-round before each flexible runout', () => {
+    const result = design(undefined, DEFAULT_DUCT_SETTINGS, roomy);
     expect(result.shape).toBe('rectangular');
     expect(result.runs.length).toBeGreaterThan(0);
     expect(result.designs[result.selected]!.errors).toBe(0);

@@ -16,12 +16,12 @@ const basis: DuctSystemSizing = {
 
 describe('auto duct preview input matching', () => {
   it('allows reordered terminal selections and default shape without invalidating the preview', () => {
-    expect(sameAutoDuctInputs(request, { ...request, terminalIds: ['b', 'a', 'a'], shape: 'optimal' })).toBe(true);
+    expect(sameAutoDuctInputs(request, { ...request, terminalIds: ['b', 'a', 'a'], shape: 'rectangular' })).toBe(true);
   });
 
   it.each([
     { airflowM3h: 1000 }, { fanSpeed: 'lo' as const }, { layout: 'trunk' as const },
-    { shape: 'round' as const }, { services: { supply: false, return: true } },
+    { shape: 'round' as const }, { shape: 'optimal' as const }, { shape: 'rect' as const }, { services: { supply: false, return: true } },
     { terminalIds: ['a'] }, { rebuildExisting: true }, { terminalAirflows: { a: 200 } },
   ])('requires regeneration when a routing or airflow input changes: %j', (change) => {
     expect(sameAutoDuctInputs(request, { ...request, ...change })).toBe(false);

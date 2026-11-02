@@ -25,6 +25,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import { useSmartDrawingStore } from '../../../store';
 import type { HvacElement, Point2D } from '../../../types';
@@ -227,6 +228,8 @@ interface PipeStudioOverlayProps {
   showEndpointHandles?: boolean;
   showInsertHandles?: boolean;
   showRoutingToolbar?: boolean;
+  /** Reserved editor chrome outside the model viewport; omitted in standalone overlays. */
+  routingToolbarHost?: HTMLElement | null;
   directSegmentEditing?: boolean;
   pipeToolActive: boolean;
   /** Global Lines selector — decides pair vs single gas/liquid when pulling from a kit port. */
@@ -552,6 +555,7 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
       showEndpointHandles = true,
       showInsertHandles = true,
       showRoutingToolbar = true,
+      routingToolbarHost,
       directSegmentEditing = false,
       pipeToolActive,
       ruleProfile,
@@ -2108,21 +2112,23 @@ export const PipeStudioOverlay = forwardRef<PipeStudioOverlayHandle, PipeStudioO
   const handleR = hpx(6.5);
   const handleHit = hpx(11);
   const insR = hpx(5);
+  const routingToolbar = (showRoutingToolbar || placingKit) && ((enabled && autoRoutePreviewOpen) || (canInteract && (pipeToolActive || placingKit
+    || pipes.some((pipe) => selectedSet.has(pipe.id))
+    || (selectionHitTesting && hvacElements.some(element => element.type === 'outdoor-unit' || element.type === 'condensate-gully' || element.type === 'ducted-ac'))))) ? (
+    <PipeRoutingToolbar
+      ruleProfile={ruleProfile}
+      drawing={pipeToolActive}
+      placingKit={placingKit}
+      kitKind={kitKind}
+      onKitKindChange={setKitKind}
+      onPlaceKit={placingKit ? () => { setPlacingKit(false); setKitGhost(null); } : startPlaceKit}
+      docked={Boolean(routingToolbarHost)}
+    />
+  ) : null;
 
   return (
     <div className="absolute left-0 top-0 z-[8]" style={{ width, height, pointerEvents: 'none' }}>
-      {(showRoutingToolbar || placingKit) && ((enabled && autoRoutePreviewOpen) || (canInteract && (pipeToolActive || placingKit
-        || pipes.some((pipe) => selectedSet.has(pipe.id))
-        || (selectionHitTesting && hvacElements.some(element => element.type === 'outdoor-unit' || element.type === 'condensate-gully' || element.type === 'ducted-ac'))))) ? (
-        <PipeRoutingToolbar
-          ruleProfile={ruleProfile}
-          drawing={pipeToolActive}
-          placingKit={placingKit}
-          kitKind={kitKind}
-          onKitKindChange={setKitKind}
-          onPlaceKit={placingKit ? () => { setPlacingKit(false); setKitGhost(null); } : startPlaceKit}
-        />
-      ) : null}
+      {routingToolbarHost ? createPortal(routingToolbar, routingToolbarHost) : routingToolbarHost === undefined ? routingToolbar : null}
       {canInteract && placingKit ? (
         <div
           style={{

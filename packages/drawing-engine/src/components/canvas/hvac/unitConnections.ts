@@ -51,7 +51,13 @@ export interface UnitConnectionSet {
    * The unit's solid body in plan (unit frame), when the footprint also spans
    * its stubs, hose, hanger plates or panel rim: what field pipes keep out of.
    */
-  casing?: { centre: Point2D; width: number; depth: number };
+  casing?: {
+    centre: Point2D;
+    width: number;
+    depth: number;
+    /** Outer sheet-flange dimensions in plan, excluding the projecting air collars. */
+    flange?: { width: number; depth: number };
+  };
   connections: readonly UnitConnection[];
 }
 
@@ -75,8 +81,8 @@ const FDUM22: UnitConnectionSet = {
   source: 'maker-3d',
   reference: 'MEPcontent MACO VRF model FDUM22KXE6F-W (measured)',
   footprintMm: { width: 1084, depth: 697, height: 300 },
-  // 750 × 635 (MHI KX-DB-175) from x −492.5 to its connection face at 258; hanger plates either side.
-  casing: { centre: { x: -117.25, y: 0 }, width: 750, depth: 635 },
+  // GLB casing faces x −492…258; outer sheet flanges x −512…278, y ±318.5.
+  casing: { centre: { x: -117, y: 0 }, width: 750, depth: 635, flange: { width: 790, depth: 637 } },
   connections: [
     { kind: 'gas', y: -152.5, z: 175, axis: 1, rootX: 288, tipX: 316, outerDiameterMm: 26, joint: 'flare', inModel: true },
     { kind: 'liquid', y: -191.5, z: 105, axis: 1, rootX: 288, tipX: 325, outerDiameterMm: 9.6, joint: 'flare', inModel: true },
@@ -90,10 +96,11 @@ const FDUM140: UnitConnectionSet = {
   source: 'maker-3d',
   reference: 'MEPcontent MACO VRF model and IFC connectors FDUM140KXE6F (measured)',
   footprintMm: { width: 1684, depth: 802, height: 300 },
-  // 1370 × 740 (MHI KX-DB-175) ending at its connection face, x 627.
-  casing: { centre: { x: -58, y: 0 }, width: 1370, depth: 740 },
+  // GLB casing faces x −812…558; outer sheet flanges x −832…578, y ±371.
+  // The hose root at x 627 belongs to the service assembly, not the casing face.
+  casing: { centre: { x: -127, y: 0 }, width: 1370, depth: 740, flange: { width: 1410, depth: 742 } },
   connections: [
-    // The model marks the flare connections on the casing face (x 627); the IFC connectors stand 69 and 59 mm out.
+    // Service connector roots at x 627; the authored field tips stand 69 and 59 mm farther out.
     { kind: 'gas', y: -97, z: 145.5, axis: 1, rootX: 627, tipX: 696, outerDiameterMm: 15.88, joint: 'flare', inModel: false },
     { kind: 'liquid', y: -35, z: 95.5, axis: 1, rootX: 627, tipX: 686, outerDiameterMm: 9.52, joint: 'flare', inModel: false },
     { kind: 'drain', y: -263.5, z: 187.6, axis: 1, rootX: 627, tipX: 842, outerDiameterMm: 53, joint: 'hose', inModel: true },

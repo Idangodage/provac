@@ -17,6 +17,8 @@ interface PipeRoutingToolbarProps {
   kitKind: 'gas' | 'liquid' | 'both';
   onKitKindChange: (kind: 'gas' | 'liquid' | 'both') => void;
   onPlaceKit: () => void;
+  /** Render in the editor's reserved header rather than over its model. */
+  docked?: boolean;
 }
 
 export interface PipeDrawingControlsProps {
@@ -99,7 +101,7 @@ function DefaultDistance({ label, value, min, max, onCommit, unit = 'mm', badge 
   return (
     <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
       <span>{label}{badge ? <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-600" title={badge}>practice</span> : null}</span>
-      <span className="flex items-center gap-1.5 text-slate-400">
+      <span className="flex shrink-0 items-center gap-1.5 text-slate-400">
         <input
           type="number" min={min} max={max} step="any" value={draft}
           onChange={(event) => setDraft(event.target.value)}
@@ -109,7 +111,7 @@ function DefaultDistance({ label, value, min, max, onCommit, unit = 'mm', badge 
             if (event.key === 'Enter') event.currentTarget.blur();
             if (event.key === 'Escape') { event.preventDefault(); setDraft(String(value)); }
           }}
-          className="w-20 rounded-md border border-slate-200 px-2 py-1.5 text-right text-slate-800 outline-none focus:border-teal-500"
+          className="h-7 w-20 rounded-md border border-slate-200 px-2 text-right text-slate-800 outline-none focus:border-teal-500"
         />
         {unit}
       </span>
@@ -117,8 +119,7 @@ function DefaultDistance({ label, value, min, max, onCommit, unit = 'mm', badge 
   );
 }
 
-/** Only model-backed controls belong on the drawing surface. Advanced defaults
- * are disclosed on demand; each numeric change commits once, on blur/Enter. */
+/** Advanced defaults are disclosed on demand; each numeric change commits once, on blur/Enter. */
 export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
   const settings = useSmartDrawingStore((state) => state.pipeRoutingSettings);
   const setSettings = useSmartDrawingStore((state) => state.setPipeRoutingSettings);
@@ -127,28 +128,31 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
 
   return (
     <div
-      className="absolute left-3 top-12 max-w-[calc(100%-24px)] rounded-xl border border-slate-200 bg-white/95 text-slate-700 shadow-sm backdrop-blur"
+      className={props.docked
+        ? 'w-full min-w-0 border-b border-slate-200 bg-white text-slate-700'
+        : 'absolute left-3 top-12 max-w-[calc(100%-24px)] rounded-xl border border-slate-200 bg-white/95 text-slate-700 shadow-sm backdrop-blur'}
       style={{ pointerEvents: 'auto', zIndex: 20 }}
       onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
       data-testid="pipe-routing-toolbar"
     >
-      <div role="toolbar" aria-label="Refrigerant routing" className="flex flex-wrap items-center gap-2 p-2">
-        <span className="px-1 text-xs font-semibold">Refrigerant</span>
+      <div className={props.docked ? 'flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1' : ''}>
+      <div role="toolbar" aria-label="Refrigerant routing" className={props.docked ? 'flex max-w-full flex-wrap items-center gap-1' : 'flex flex-wrap items-center gap-1 p-1.5'}>
+        <span className="px-1 text-xs font-semibold">{props.docked ? 'Routing' : 'Refrigerant'}</span>
         {props.drawing ? <PipeDrawingControls /> : null}
-        <button type="button" aria-expanded={showDefaults} onClick={() => setShowDefaults(!showDefaults)}
-          className="rounded-lg px-2 py-1.5 text-xs hover:bg-slate-100">
+        <button type="button" aria-expanded={showDefaults} aria-controls="pipe-route-defaults" onClick={() => setShowDefaults(!showDefaults)}
+          className={`inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${showDefaults ? 'bg-slate-100 text-slate-900' : 'hover:bg-slate-100'}`}>
           Route defaults <span aria-hidden="true">{showDefaults ? '▴' : '▾'}</span>
         </button>
         <button type="button" aria-pressed={props.placingKit} onClick={props.onPlaceKit}
           title="Place a copper branch fitting at an open compatible pipe end"
-          className={`rounded-lg px-2.5 py-1.5 text-xs font-medium ${props.placingKit ? 'bg-teal-700 text-white' : 'bg-amber-50 text-amber-800 hover:bg-amber-100'}`}>
+          className={`inline-flex h-7 shrink-0 items-center whitespace-nowrap rounded-md px-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${props.placingKit ? 'bg-teal-700 text-white' : 'bg-amber-50 text-amber-800 hover:bg-amber-100'}`}>
           {props.placingKit ? 'Cancel placement' : 'Branch kit'}
         </button>
         {props.placingKit ? (
           <select aria-label="Branch kit services" value={props.kitKind}
             onChange={(event) => props.onKitKindChange(event.target.value as 'gas' | 'liquid' | 'both')}
-            className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs">
+            className="h-7 max-w-full rounded-md border border-slate-200 bg-white px-2 text-xs">
             <option value="both">Gas + liquid kits</option>
             <option value="gas">Gas kit</option>
             <option value="liquid">Liquid kit</option>
@@ -156,12 +160,14 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
         ) : null}
       </div>
       {/* One Auto route for every service; the ticks double as the colour legend. */}
-      <div role="toolbar" aria-label="Auto route" className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-2 py-1.5">
-        <AutoRouteAction profile={props.ruleProfile} disabled={props.placingKit} />
+      <div role="toolbar" aria-label="Auto route" className={props.docked ? 'contents' : 'flex flex-wrap items-center gap-1.5 border-t border-slate-100 p-1.5'}>
+        <AutoRouteAction profile={props.ruleProfile} disabled={props.placingKit} docked={props.docked} />
+      </div>
       </div>
       {showDefaults ? (
-        <div className="space-y-2.5 border-t border-slate-100 p-3">
-          <p className="max-w-80 text-xs leading-5 text-slate-500">Defaults for new routes. Equipment connections keep their actual port levels.</p>
+        <div id="pipe-route-defaults" className="border-t border-slate-100 bg-slate-50/60 px-3 py-2">
+          <div className="grid max-w-4xl grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] items-start gap-x-6 gap-y-2 [&_select]:h-7 [&_select]:max-w-full [&_select]:min-w-0 [&_select]:py-0 [&_input[type=checkbox]]:shrink-0">
+          <p className="col-span-full text-xs leading-4 text-slate-500">Defaults for new routes. Equipment connections keep their actual port levels.</p>
           <DefaultDistance label="Clear gap outside insulation" value={settings.defaultPipeGapMm} min={0} max={600} onCommit={update('defaultPipeGapMm')} />
           <DefaultDistance label="Clearance at service crossings" value={settings.zOffsetClearanceMm} min={0} max={600} onCommit={update('zOffsetClearanceMm')} />
           <DefaultDistance label="Free route level above floor" value={settings.defaultPipeElevationMm} min={0} max={100000} onCommit={update('defaultPipeElevationMm')} />
@@ -175,7 +181,7 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
               <option value="insulated">Insulated</option>
             </select>
           </label>
-          <p className="max-w-80 text-[11px] leading-4 text-slate-400">90° and 45° turns use C×C socket elbows where they fit. Copper detail hides fitting covers for inspection. Planning profiles still need project part selection.</p>
+          <p className="col-span-full text-[11px] leading-4 text-slate-500">90° and 45° turns use C×C socket elbows where they fit. Copper detail hides fitting covers for inspection. Planning profiles still need project part selection.</p>
           <DefaultDistance label="Straight off a branch kit" value={settings.defaultBranchKitClearanceMm} min={0} max={2000} onCommit={update('defaultBranchKitClearanceMm')}
             badge="Auto route keeps it and the checks ask for it, until the maker's figure is loaded." />
           <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
@@ -187,7 +193,7 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
               <option value="stacked">Stacked, gas over liquid</option>
             </select>
           </label>
-          <div className="space-y-2 border-t border-slate-100 pt-2.5" data-testid="auto-turn-settings">
+          <div className="col-span-full grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] items-start gap-x-6 gap-y-2 border-t border-slate-200 pt-2" data-testid="auto-turn-settings">
             <label className="flex items-center justify-between gap-4 text-xs text-slate-600">
               Auto route turns units: 4-way cassettes for shorter runs, ducted units to face their terminals
               <input type="checkbox" aria-label="Auto route turns units" checked={settings.autoTurnCassettes}
@@ -201,9 +207,10 @@ export function PipeRoutingToolbar(props: PipeRoutingToolbarProps) {
                   onCommit={update('autoTurnMinGainMm')} badge="A turn must be worth it: practice threshold." />
                 <DefaultDistance label="…and at least" value={settings.autoTurnMinGainPercent} min={0} max={100} unit="%"
                   onCommit={update('autoTurnMinGainPercent')} badge="Of the approach as placed: practice threshold." />
-                <p className="max-w-80 text-[11px] leading-4 text-slate-400">Quarter turns on the unit's centre, square to the ceiling grid. Units turned by hand, locked, or piped by hand are kept.</p>
+                <p className="col-span-full text-[11px] leading-4 text-slate-500">Quarter turns on the unit's centre, square to the ceiling grid. Units turned by hand, locked, or piped by hand are kept.</p>
               </>
             ) : null}
+          </div>
           </div>
         </div>
       ) : null}

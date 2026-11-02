@@ -124,6 +124,8 @@ export const AUTO_DUCT_LAYOUT_LABELS: Record<AutoDuctLayoutKind, string> = {
 
 /** The system's shape: rectangular throughout, a rectangular main with round branches, round, or the optimiser's choice per stretch. */
 export type AutoDuctShape = ShapeMode;
+/** New duct designs start with rectangular rigid ducts; other shapes remain explicit choices. */
+export const DEFAULT_AUTO_DUCT_SHAPE: AutoDuctShape = 'rectangular';
 export const AUTO_DUCT_SHAPE_LABELS: Record<AutoDuctShape, string> = { rectangular: 'Rectangular', rect: 'Rect + round', round: 'Round', optimal: 'Optimal' };
 
 export interface AutoDuctRequest {
@@ -137,7 +139,7 @@ export interface AutoDuctRequest {
   services: { supply: boolean; return: boolean };
   /** Replace the duct already on a collar (the run and its branches). */
   rebuildExisting: boolean;
-  /** The system's shape (default: the optimiser chooses). */
+  /** The system's shape (default: rectangular throughout). */
   shape?: AutoDuctShape;
   /** The drawing's walls: the ducts stay clear of them (a duct through a wall needs a sleeve and a reason). */
   walls?: ReadonlyArray<AutoDuctWall>;
@@ -426,7 +428,7 @@ function placed(origin: DuctDraftOrigin | null): PlacedOrigin | null {
 
 /** A branch from the origin `makeOrigin` gives for its first section (a spigot's height depends on it). */
 function buildBranch(ctx: ServiceCtx, makeOrigin: (first: DuctLeg) => DuctDraftOrigin | null, terminal: TerminalCtx, scene: HvacElement[], build: Build): HvacElement | null {
-  const choices = [terminal, ...(terminal.variants ?? []).filter((variant) => variant.spec.spigotSide !== terminal.spec.spigotSide)].slice(0, 3);
+  const choices = [terminal, ...(terminal.variants ?? []).filter((variant) => variant.spec.spigotSide !== terminal.spec.spigotSide)];
   let best: { run: HvacElement; terminal: TerminalCtx; notes: AutoDuctIssue[]; errors: number; warnings: number; length: number; pressure: number } | null = null;
   for (const choice of choices) {
     const trial: Build = { extra: build.extra, notes: [] };
@@ -440,7 +442,7 @@ function buildBranch(ctx: ServiceCtx, makeOrigin: (first: DuctLeg) => DuctDraftO
     const errors = issues.filter((issue) => issue.severity === 'error').length + (crossesOwnPlenum ? 1 : 0);
     const warnings = issues.filter((issue) => issue.severity === 'warning').length;
     // A valid placed spigot can still force a curled runout. Compare every
-    // bounded side using actual fabricated length, including curved flex,
+    // feasible side using actual fabricated length, including curved flex,
     // rather than stopping at the first side without a fabrication error.
     const length = plan.pieces.reduce((sum, piece) => sum + piece.lengthMm, 0);
     const pressure = systemPressure([plan], new Map([[choice.element.id, choice.airflowM3h]]), ctx.settings, ctx.service).indexPa;
@@ -591,11 +593,11 @@ function tapWindowMm(terminal: TerminalCtx, settings: DuctDesignSettings): numbe
 }
 
 /**
- * Take-off stations on a trunk polyline: each terminal's projection on the
- * leg nearest to it, kept clear of the start, the elbows and the end, and
- * spaced by their windows. The last leg is trimmed to just past its last tap.
+ * Take-off stations on a trunk polyline: choose the terminal inlet and its
+ * nearest feasible leg together, then keep each window clear of the start,
+ * elbows, end and neighbouring windows. The last leg ends just past its last tap.
  */
-function placeTaps(
+export function placeTaps(
   plan: TrunkRunPlan,
   widthMm: number,
   settings: DuctDesignSettings,
@@ -616,29 +618,38 @@ function placeTaps(
   }));
   const taps: TapPlan[] = [];
   for (const terminal of plan.terminals) {
-    // Aim at a point a runout's length in front of the spigot, so the branch meets it square.
-    const front = { x: terminal.lip.x + terminal.normal.x * RUNOUT_TARGETS_MM[0]!, y: terminal.lip.y + terminal.normal.y * RUNOUT_TARGETS_MM[0]! };
     let best: { tap: TapPlan; cost: number } | null = null;
-    legs.forEach((leg, legIndex) => {
-      const { from, to } = intervals[legIndex]!;
-      if (to - from < tapWindowMm(terminal, settings)) return;
-      const along = dot(sub(front, leg.start), leg.direction);
-      const bounded = (value: number) => Math.min(Math.max(value, from + tapWindowMm(terminal, settings) / 2), to - tapWindowMm(terminal, settings) / 2);
-      const stations = [...new Set([bounded(along), ...alternateStations(leg.start, leg.direction, terminal).map(bounded)])];
-      for (const station of stations) {
-        const point = { x: leg.start.x + leg.direction.x * station, y: leg.start.y + leg.direction.y * station };
-        const across = dot(sub(terminal.lip, point), legNormal(leg.direction));
-        // A spigot facing away from the trunk needs the branch to go round it.
-        const facing = dot(terminal.normal, legNormal(leg.direction)) * Math.sign(across || 1) < 0 ? 0 : 1500;
-        const side = across >= 0 ? 1 : -1;
-        const normal = legNormal(leg.direction);
-        const wall = { x: point.x + normal.x * side * (widthMm / 2), y: point.y + normal.y * side * (widthMm / 2) };
-        const stubEnd = { x: wall.x + normal.x * side * branchStubMm(settings), y: wall.y + normal.y * side * branchStubMm(settings) };
-        const blocked = stubBlocked(wall, stubEnd, terminal) ? 20000 : 0;
-        const cost = Math.abs(along - station) + Math.abs(across) + facing + blocked;
-        if (!best || cost < best.cost) best = { tap: { terminal, legIndex, station, side: across >= 0 ? 1 : -1 }, cost };
-      }
-    });
+    // Project every permitted inlet, not just the placed one. Rotating only
+    // after selecting a tap leaves that tap displaced along the main, or on
+    // a more distant leg, to suit an inlet the branch no longer uses.
+    const variants = terminal.variants?.length ? terminal.variants : [terminal];
+    for (const variant of variants) {
+      const choice = { ...variant, variants: terminal.variants };
+      const front = { x: choice.lip.x + choice.normal.x * RUNOUT_TARGETS_MM[0]!, y: choice.lip.y + choice.normal.y * RUNOUT_TARGETS_MM[0]! };
+      legs.forEach((leg, legIndex) => {
+        const { from, to } = intervals[legIndex]!;
+        if (to - from < tapWindowMm(choice, settings)) return;
+        const along = dot(sub(front, leg.start), leg.direction);
+        const bounded = (value: number) => Math.min(Math.max(value, from + tapWindowMm(choice, settings) / 2), to - tapWindowMm(choice, settings) / 2);
+        const stations = [...new Set([bounded(along), ...alternateStations(leg.start, leg.direction, choice).map(bounded)])];
+        for (const station of stations) {
+          const point = { x: leg.start.x + leg.direction.x * station, y: leg.start.y + leg.direction.y * station };
+          const normal = legNormal(leg.direction);
+          const across = dot(sub(choice.lip, point), normal);
+          // A spigot facing away from the trunk needs the branch to go round it.
+          const facing = dot(choice.normal, normal) * Math.sign(across || 1) < 0 ? 0 : 1500;
+          const side = across >= 0 ? 1 : -1;
+          const wall = { x: point.x + normal.x * side * (widthMm / 2), y: point.y + normal.y * side * (widthMm / 2) };
+          const stubEnd = { x: wall.x + normal.x * side * branchStubMm(settings), y: wall.y + normal.y * side * branchStubMm(settings) };
+          const blocked = stubBlocked(wall, stubEnd, choice) ? 20000 : 0;
+          const cost = Math.abs(along - station) + Math.abs(across) + facing + blocked;
+          const keepsPlacedSide = choice.turnedTo === undefined && best?.tap.terminal.turnedTo !== undefined;
+          if (!best || cost < best.cost - 1e-6 || (Math.abs(cost - best.cost) <= 1e-6 && keepsPlacedSide)) {
+            best = { tap: { terminal: choice, legIndex, station, side }, cost };
+          }
+        }
+      });
+    }
     if (!best) return null;
     taps.push((best as { tap: TapPlan }).tap);
   }
@@ -1468,7 +1479,7 @@ export function chooseRectangularDesign(rectangular: AutoDuctResult, alternative
  */
 export function generateAutoDuctInShape(scene: readonly HvacElement[], request: AutoDuctRequest, settings: DuctDesignSettings): AutoDuctResult {
   const result = generateAutoDuct(scene, request, settings);
-  if (request.shape !== 'rectangular') return result;
+  if ((request.shape ?? DEFAULT_AUTO_DUCT_SHAPE) !== 'rectangular') return result;
   return chooseRectangularDesign(result, generateAutoDuct(scene, { ...request, shape: 'rect' }, settings));
 }
 
@@ -1530,7 +1541,7 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
   // Unique across calls in the same millisecond (Auto route designs several units in a row).
   const stamp = `${Date.now().toString(36)}${(generation += 1).toString(36)}`;
   const ids = () => `duct-auto-${stamp}-${(counter += 1)}`;
-  const shape: AutoDuctShape = request.shape ?? 'optimal';
+  const shape: AutoDuctShape = request.shape ?? DEFAULT_AUTO_DUCT_SHAPE;
   const result: AutoDuctResult = {
     unitId: request.unitId, unitLabel: unit?.label || unit?.modelLabel || 'Unit', fanSpeed: request.fanSpeed,
     airflowM3h: null, airflowSource: null, maxEspPa: null, requiredEspPa: null, services: [], runs: [], removeIds: [], terminalUpdates: [], issues: [],

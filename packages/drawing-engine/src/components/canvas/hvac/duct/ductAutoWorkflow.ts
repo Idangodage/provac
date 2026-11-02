@@ -1,4 +1,4 @@
-import type { AutoDuctRequest } from './ductAutoLayout';
+import { DEFAULT_AUTO_DUCT_SHAPE, type AutoDuctRequest } from './ductAutoLayout';
 import type { DuctSystemSizing } from './ductTypes';
 
 function sizingInput(basis: DuctSystemSizing | undefined) {
@@ -12,7 +12,7 @@ function sizingInput(basis: DuctSystemSizing | undefined) {
 export function sameAutoDuctInputs(left: AutoDuctRequest, right: AutoDuctRequest): boolean {
   const input = (request: AutoDuctRequest) => [
     request.unitId, [...new Set(request.terminalIds)].sort(), request.fanSpeed, request.airflowM3h ?? null,
-    request.layout, request.shape ?? 'optimal', request.services.supply, request.services.return,
+    request.layout, request.shape ?? DEFAULT_AUTO_DUCT_SHAPE, request.services.supply, request.services.return,
     request.rebuildExisting,
     sizingInput(request.sizing?.supply), sizingInput(request.sizing?.return),
     Object.entries(request.terminalAirflows ?? {}).sort(([a], [b]) => a.localeCompare(b)),

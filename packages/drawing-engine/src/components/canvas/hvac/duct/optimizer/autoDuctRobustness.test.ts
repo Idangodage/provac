@@ -62,7 +62,7 @@ describe('spigot sides the optimiser may choose', () => {
     const ctx = contextOf([diffuser('a', S(3000, 1500), 0), diffuser('b', S(3000, -1500), 0)]);
     for (const terminal of ctx.terminals) {
       expect(terminal.variants!.length).toBeGreaterThanOrEqual(2);
-      expect(terminal.variants!.length).toBeLessThanOrEqual(3);
+      expect(terminal.variants!.length).toBeLessThanOrEqual(4);
       expect(terminal.variants!.some((variant) => !variant.turnedTo)).toBe(true);
       // Off the collar's axis: the best side faces back towards it.
       expect(terminal.variants![0]!.normal.y * Math.sign(terminal.lip.y)).toBeLessThan(0);

@@ -148,9 +148,9 @@ const SPIGOT_FRONT_MM = 400;
  * face: those with room in front of them (a runout can come in square — no
  * equipment, other terminals included, within the neck's half and a margin
  * for `SPIGOT_FRONT_MM`), the most promising first (facing the collar's axis,
- * where trunks run, or back towards the unit), plus the placed side when it
- * has room. Keeping that side matters near or behind the collar: the two
- * preferred sides can both face away from the router's forward grid. The
+ * where trunks run, or back towards the unit). Every clear side stays in the
+ * search: the closest trunk may run in front of or beyond the terminal,
+ * independently of the unit's axis. The
  * placed side alone for other faces, or when no side has room.
  */
 export function spigotVariants(frame: Frame, terminal: TerminalCtx, enabled: boolean, obstacles: ServiceCtx['obstacles'] = []): TerminalCtx[] {
@@ -160,7 +160,10 @@ export function spigotVariants(frame: Frame, terminal: TerminalCtx, enabled: boo
   // A side picked by hand stays (the terminal's Spigot side).
   if (terminal.element.properties?.spigotSideSetBy === 'user') return [placed];
   if (!enabled || (!top && !TURNABLE.has(terminal.spec.kind))) return [placed];
-  const centre = top ? terminal.lip : { x: terminal.lip.x - terminal.normal.x * 300, y: terminal.lip.y - terminal.normal.y * 300 };
+  const centre = toLocal(frame, {
+    x: terminal.element.position.x + terminal.element.width / 2,
+    y: terminal.element.position.y + terminal.element.depth / 2,
+  });
   const onAxis = Math.abs(centre.y) < 150;
   const towardAxis = onAxis ? null : { x: 0, y: -Math.sign(centre.y) };
   const score = (normal: Point2D) => (towardAxis
@@ -173,16 +176,14 @@ export function spigotVariants(frame: Frame, terminal: TerminalCtx, enabled: boo
     const a = side.lip;
     const b = { x: a.x + side.normal.x * SPIGOT_FRONT_MM, y: a.y + side.normal.y * SPIGOT_FRONT_MM };
     return obstacles.every((box) => box.id === own
+      || box.zMax <= side.port.lip.z - pad || box.zMin >= side.port.lip.z + pad
       || Math.max(a.x, b.x) + pad <= box.minX || Math.min(a.x, b.x) - pad >= box.maxX
       || Math.max(a.y, b.y) + pad <= box.minY || Math.min(a.y, b.y) - pad >= box.maxY);
   };
   const available = SIDES.flatMap((side) => terminalWithSide(frame, terminal, side) ?? [])
     .filter(roomInFront)
     .sort((a, b) => score(b.normal) - score(a.normal));
-  const sides = available.slice(0, 2);
-  const placedAvailable = available.find((side) => !side.turnedTo);
-  if (placedAvailable && !sides.includes(placedAvailable)) sides.push(placedAvailable);
-  return sides.length ? sides : [placed];
+  return available.length ? available : [placed];
 }
 
 export interface ServiceCtx {

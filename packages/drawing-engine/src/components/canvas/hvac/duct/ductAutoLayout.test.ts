@@ -56,7 +56,7 @@ function terminal(id: string, centre: Point2D, facing: Point2D, kind: DuctTermin
 }
 
 const request = (terminalIds: string[], overrides: Partial<AutoDuctRequest> = {}): AutoDuctRequest => ({
-  unitId: 'fdum', terminalIds, fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: true }, rebuildExisting: false, ...overrides,
+  unitId: 'fdum', terminalIds, fanSpeed: 'hi', layout: 'auto', shape: 'optimal', services: { supply: true, return: true }, rebuildExisting: false, ...overrides,
 });
 
 const errorsOf = (result: AutoDuctResult) => [...result.issues, ...result.services.flatMap((service) => service.issues)].filter((issue) => issue.severity === 'error');

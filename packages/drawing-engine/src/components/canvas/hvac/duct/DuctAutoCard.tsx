@@ -43,7 +43,7 @@ import {
   generateAutoDuctPreview,
   resizeAutoDuctPreview,
 } from './ductAutoController';
-import { AUTO_DUCT_LAYOUT_LABELS, type AutoDuctLayoutChoice, type AutoDuctRequest, type AutoDuctResult, type AutoDuctShape, type AutoDuctSizingBases } from './ductAutoLayout';
+import { AUTO_DUCT_LAYOUT_LABELS, DEFAULT_AUTO_DUCT_SHAPE, type AutoDuctLayoutChoice, type AutoDuctRequest, type AutoDuctResult, type AutoDuctShape, type AutoDuctSizingBases } from './ductAutoLayout';
 import { isAutoDuctPreviewCurrent, useDuctAutoPreviewStore } from './ductAutoPreviewStore';
 import { sameAutoDuctInputs } from './ductAutoWorkflow';
 import { formatCost, type DuctCostBreakdown } from './ductEconomics';
@@ -253,7 +253,7 @@ export function DuctAutoCard() {
   const { result, message, running, request, resizing } = preview;
   const cardRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<AutoDuctLayoutChoice>('auto');
-  const [shape, setShape] = useState<AutoDuctShape>('optimal');
+  const [shape, setShape] = useState<AutoDuctShape>(DEFAULT_AUTO_DUCT_SHAPE);
   /** The terminals' collars for this design: as each is set, or all on their sides, or all on top. */
   const [collarEntry, setCollarEntry] = useState<'as-set' | 'side' | 'top'>('as-set');
   const [rebuild, setRebuild] = useState(false);

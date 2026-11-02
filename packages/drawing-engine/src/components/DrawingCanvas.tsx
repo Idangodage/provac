@@ -417,6 +417,7 @@ export function DrawingCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const snapOverlayRef = useRef<HTMLCanvasElement>(null); // [SNAP WIRE] overlay for snap indicators
   const outerRef = useRef<HTMLDivElement>(null);
+  const [routingToolbarHost, setRoutingToolbarHost] = useState<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const fabricRef = useRef<fabric.Canvas | null>(null);
   const roomRendererRef = useRef<RoomRenderer | null>(null);
@@ -914,7 +915,7 @@ export function DrawingCanvas({
       generateCondensate: (scope: 'drawing' | 'selection' = 'drawing') => runAutoRoute({ services: { gas: false, liquid: false, condensate: true }, scope, profile: vrfRuleProfile }),
       /** One Auto route for the ticked services (preview; apply with applyAutoRoute). */
       autoRoute: (services: { gas: boolean; liquid: boolean; condensate: boolean; supplyDuct?: boolean; returnDuct?: boolean }, scope: 'drawing' | 'selection' = 'drawing',
-        duct?: { shape: 'rect' | 'round' | 'optimal'; fanSpeed: 'p-hi' | 'hi' | 'me' | 'lo'; rebuildExisting: boolean }, inlineTasks = false) =>
+        duct?: { shape: 'rectangular' | 'rect' | 'round' | 'optimal'; fanSpeed: 'p-hi' | 'hi' | 'me' | 'lo'; rebuildExisting: boolean }, inlineTasks = false) =>
         runAutoRoute({ services, scope, profile: vrfRuleProfile, duct, inlineTasks }),
       /** The finished proposal (null while a run is under way, though the overlays show what has finished). */
       getAutoRoutePreview: () => {
@@ -3820,9 +3821,15 @@ export function DrawingCanvas({
   // ---------------------------------------------------------------------------
 
   return (
+    <div className={`flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden ${className}`}>
+      {/* Routing owns layout space, so neither its service controls nor its
+          expanded settings cover the drawing or inherit the plan's 3D tilt. */}
+      <div ref={setRoutingToolbarHost} data-testid="drawing-routing-dock"
+        className="relative z-[35] max-h-[45%] shrink-0 overflow-y-auto overscroll-contain empty:hidden" />
     <div
       ref={outerRef}
-      className={`relative w-full h-full overflow-hidden ${className}`}
+      data-testid="drawing-viewport"
+      className="relative min-h-0 w-full flex-1 overflow-hidden"
     >
       <div
         ref={(el) => {
@@ -3920,6 +3927,7 @@ export function DrawingCanvas({
             showInsertHandles={false}
             directSegmentEditing
             showRoutingToolbar={tool !== "refrigerant-pipe" && !hvacElements.some(element => selectedIds.includes(element.id) && isRefrigerantPipeElementType(element.type))}
+            routingToolbarHost={routingToolbarHost}
             pipeToolActive={tool === "refrigerant-pipe"}
             pipeLineMode={refrigerantPipeLineMode}
             hvacElements={pipeDisplayElements}
@@ -4363,6 +4371,7 @@ polar°        ${tiltDebug.polarDeg.toFixed(1)}
 center mm     ${tiltDebug.cx.toFixed(0)}, ${tiltDebug.cy.toFixed(0)}`}
         </div>
       )}
+    </div>
     </div>
   );
 }

@@ -163,7 +163,7 @@ function RibbonButton({
       onClick={onClick}
       disabled={disabled}
       className={
-        `inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ` +
+        `inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ` +
         `${toneClasses[tone]} ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`
       }
     >
@@ -191,8 +191,9 @@ function ToggleChip({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-pressed={active}
       className={
-        `inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium transition-colors ` +
+        `inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ` +
         `${active ? 'bg-amber-200 text-amber-900 border-amber-300' : 'bg-white text-slate-600 border-amber-200/80 hover:bg-amber-50'} ` +
         `${disabled ? 'opacity-60 cursor-not-allowed' : ''}`
       }
@@ -220,7 +221,7 @@ function RibbonIconButton({
       onClick={onClick}
       disabled={disabled}
       title={label}
-      className={`inline-flex h-7 w-7 items-center justify-center rounded-md border border-amber-200/80 bg-white text-slate-700 transition-colors hover:bg-amber-50 ${
+      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-amber-200/80 bg-white text-slate-700 transition-colors hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
         disabled ? 'opacity-60 cursor-not-allowed' : ''
       }`}
     >
@@ -392,7 +393,6 @@ function BoardGridSettings({
 }
 
 function EditorRibbon({
-  projectId,
   onExportJSON,
   onExportSVG,
   onExportPNG,
@@ -425,7 +425,6 @@ function EditorRibbon({
   onDisplayUnitChange,
   readOnly,
 }: {
-  projectId?: string;
   onExportJSON: () => void;
   onExportSVG: () => void;
   onExportPNG: () => void;
@@ -469,8 +468,8 @@ function EditorRibbon({
   const pageHeightMm = Math.round((pageConfig.height / PX_PER_INCH) * MM_PER_INCH);
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-amber-200/70 bg-[#fff3d6] px-3 py-1.5">
-      <div className="flex items-center gap-2">
+    <div aria-label="Drawing controls" className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-amber-200/70 bg-[#fff3d6] px-2 py-1">
+      <div className="flex items-center gap-1">
         <RibbonButton icon={<Upload size={14} />} label="Import" onClick={onImport} />
         <RibbonButton icon={<Download size={14} />} label="JSON" onClick={onExportJSON} />
         <RibbonIconButton icon={<Download size={14} />} label="Export SVG" onClick={onExportSVG} />
@@ -484,31 +483,31 @@ function EditorRibbon({
             tone="accent"
           />
         )}
+        {saveState === 'saved' && lastSavedAt && <span className="px-1 text-[10px] text-slate-500" title={`Saved ${lastSavedAt}`}>Saved</span>}
+        {saveState === 'error' && <span className="px-1 text-[10px] text-red-600">Save failed</span>}
       </div>
 
-      <div className="h-5 w-px bg-amber-200/80" />
-
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 border-l border-amber-200/80 pl-2">
         <RibbonIconButton icon={<RotateCcw size={14} />} label="Undo" onClick={onUndo} disabled={!canUndo} />
         <RibbonIconButton icon={<RotateCw size={14} />} label="Redo" onClick={onRedo} disabled={!canRedo} />
         <RibbonIconButton icon={<ZoomOut size={14} />} label="Zoom out" onClick={onZoomOut} />
         <RibbonIconButton icon={<ZoomIn size={14} />} label="Zoom in" onClick={onZoomIn} />
         <RibbonIconButton icon={<Home size={14} />} label="Reset view" onClick={onResetView} />
-        <span className="px-1 text-[11px] font-semibold text-slate-600">{Math.round(zoomLevel * 100)}%</span>
+        <span className="min-w-9 px-1 text-[11px] font-semibold tabular-nums text-slate-600">{Math.round(zoomLevel * 100)}%</span>
       </div>
 
-      <div className="h-5 w-px bg-amber-200/80" />
-
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1 border-l border-amber-200/80 pl-2">
         <ToggleChip icon={<Grid3X3 size={14} />} label="Grid" active={showGrid} onClick={onToggleGrid} />
         <ToggleChip icon={<Move size={14} />} label="Snap" active={snapToGrid} onClick={onToggleSnap} />
         <ToggleChip icon={<Ruler size={14} />} label="Rulers" active={showRulers} onClick={onToggleRulers} />
-        <div className="ml-2 flex items-center gap-2">
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-l border-amber-200/80 pl-2">
+        <label className="flex min-w-0 items-center gap-1.5">
           <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Page</span>
           <select
             value={currentLayoutId}
             onChange={(e) => onPageChange(e.target.value)}
-            className="h-7 rounded-md border border-amber-200/80 bg-white px-2 text-[10px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300"
+            className="h-7 w-44 min-w-0 max-w-full rounded-md border border-amber-200/80 bg-white px-1.5 text-[11px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300"
           >
             {pageLayouts.map((layout) => (
               <option key={layout.id} value={layout.id}>
@@ -517,13 +516,13 @@ function EditorRibbon({
             ))}
             <option value="custom">Custom ({pageWidthMm}x{pageHeightMm} mm)</option>
           </select>
-        </div>
-        <div className="ml-2 flex items-center gap-2">
+        </label>
+        <label className="flex items-center gap-1.5">
           <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Scale</span>
           <select
             value={scalePreset}
             onChange={(e) => onScaleChange(e.target.value)}
-            className="h-7 rounded-md border border-amber-200/80 bg-white px-2 text-[10px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300"
+            className="h-7 rounded-md border border-amber-200/80 bg-white px-1.5 text-[11px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300"
           >
             {SCALE_PRESETS.map((preset) => (
               <option key={preset} value={preset}>
@@ -531,21 +530,21 @@ function EditorRibbon({
               </option>
             ))}
           </select>
-        </div>
-        <div className="ml-2 flex items-center gap-2">
+        </label>
+        <label className="flex items-center gap-1.5">
           <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Unit</span>
           <select
             value={displayUnit}
             onChange={(e) => onDisplayUnitChange(e.target.value as DisplayUnit)}
-            className="h-7 rounded-md border border-amber-200/80 bg-white px-2 text-[10px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300"
+            className="h-7 rounded-md border border-amber-200/80 bg-white px-1.5 text-[11px] font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-300"
           >
             <option value="mm">mm</option>
             <option value="cm">cm</option>
             <option value="m">m</option>
             <option value="ft-in">ft-in</option>
           </select>
-        </div>
-        <div className="ml-2">
+        </label>
+        <div>
           <BoardGridSettings
             boardSettings={boardSettings}
             displayUnit={displayUnit}
@@ -555,21 +554,6 @@ function EditorRibbon({
         </div>
       </div>
 
-      <div className="flex-1" />
-
-      <div className="hidden items-center gap-3 text-xs text-slate-500 lg:flex">
-        {projectId && (
-          <span>
-            Project: <span className="font-medium text-slate-700">{projectId}</span>
-          </span>
-        )}
-        <span>
-          Scale: <span className="font-medium text-slate-700">{scalePreset}</span>
-        </span>
-        {saveState === 'saving' && <span>Saving changes...</span>}
-        {saveState === 'saved' && lastSavedAt && <span>Saved {lastSavedAt}</span>}
-        {saveState === 'error' && <span className="text-red-600">Save failed</span>}
-      </div>
     </div>
   );
 }
@@ -598,7 +582,7 @@ function EditorFooter({
   const cursorY = fromMillimeters(mousePosition.y * PX_TO_MM, displayUnit);
 
   return (
-    <div className="flex h-7 items-center justify-between border-t border-amber-200/70 bg-[#fffaf0] px-3 text-[11px] text-slate-600">
+    <div className="flex h-6 shrink-0 items-center justify-between border-t border-amber-200/70 bg-[#fffaf0] px-2 text-[11px] text-slate-600">
       <div className="flex items-center gap-3">
         <span>Elements: {elementCount}</span>
         <span>|</span>
@@ -1276,9 +1260,8 @@ export function SmartDrawingEditor({
   }, [loadData]);
 
   return (
-    <div className={`flex h-full flex-col overflow-hidden bg-[#f6f1e7] ${className}`}>
+    <div className={`flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[#f6f1e7] ${className}`}>
       <EditorRibbon
-        projectId={projectId}
         onExportJSON={handleExportJSON}
         onExportSVG={handleExportSVG}
         onExportPNG={handleExportPNG}
@@ -1334,7 +1317,7 @@ export function SmartDrawingEditor({
         readOnly={readOnly}
       />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {showLeftPanel && (
           <aside
             ref={leftPanelRef}
@@ -1619,10 +1602,8 @@ export function SmartDrawingEditor({
         )}
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex h-10 items-center gap-2 border-b border-amber-200/70 bg-[#fef9ec] px-2">
-            <div className="min-w-0 flex-1 self-stretch">
-              <AttributeQuickToolbar className="h-full w-full !px-0" keepSpaceWhenHidden />
-            </div>
+          <div className="shrink-0 border-b border-amber-200/70 bg-[#fef9ec] px-2 empty:hidden" data-testid="drawing-context-toolbar">
+            <AttributeQuickToolbar className="!h-8 w-full !px-0" />
           </div>
 
           <DrawingCanvas

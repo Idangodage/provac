@@ -39,7 +39,7 @@ function terminal(id: string, centre: Point2D, facing: Point2D): HvacElement {
 // ---- An Auto-ducted FDUM22 (DU-1): three diffusers ahead of its supply collar. ----
 const bare = [unit, terminal('sd1', at(2400, 1500), { x: -t.x, y: -t.y }), terminal('sd2', at(2400, -1500), t), terminal('sd3', at(4300, 0), { x: -n.x, y: -n.y })];
 const first = generateAutoDuct(bare, {
-  unitId: 'fdum', terminalIds: ['sd1', 'sd2', 'sd3'], fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: false,
+  unitId: 'fdum', terminalIds: ['sd1', 'sd2', 'sd3'], fanSpeed: 'hi', layout: 'auto', shape: 'optimal', services: { supply: true, return: false }, rebuildExisting: false,
 }, settings);
 const designedRuns = stampDesignedAt(withInitialSizingRecords({
   fanSpeed: first.fanSpeed, airflowM3h: first.airflowM3h, airflowSource: first.airflowSource,

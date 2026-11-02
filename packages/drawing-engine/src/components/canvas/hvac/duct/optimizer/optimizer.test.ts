@@ -47,7 +47,7 @@ function terminal(id: string, centre: Point2D, facing: Point2D): HvacElement {
   };
 }
 const request = (ids: string[], overrides: Partial<AutoDuctRequest> = {}): AutoDuctRequest => ({
-  unitId: 'fdum', terminalIds: ids, fanSpeed: 'hi', layout: 'auto', services: { supply: true, return: false }, rebuildExisting: false, ...overrides,
+  unitId: 'fdum', terminalIds: ids, fanSpeed: 'hi', layout: 'auto', shape: 'optimal', services: { supply: true, return: false }, rebuildExisting: false, ...overrides,
 });
 function contextFor(scene: HvacElement[], ids: string[], settings: DuctDesignSettings): ServiceCtx {
   let ctx: ServiceCtx | null = null;
