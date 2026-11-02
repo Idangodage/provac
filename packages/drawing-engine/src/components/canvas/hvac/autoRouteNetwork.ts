@@ -3,9 +3,9 @@ import { buildVrfDocumentFromHvacElements } from '../../../vrf/domain';
 import { PROJECT_FALLBACK_RULE_PROFILE, type ManufacturerRuleProfile } from '../../../vrf/rules';
 
 import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork, type AutoRouteCostRates } from './autoRouteEvaluation';
-import { buildingCeiling } from './buildingSection';
 import { directBranchApproachStations } from './branchApproachStations';
 import { buildBranchKitInsertion, getBranchKitApproachRouteOptions, proposeBranchKit, type BranchKitProposal } from './branchKitProposal';
+import { buildingCeiling } from './buildingSection';
 import { connectionRatioMessage, connectionRatioProblems, type ConnectionRatio } from './connectionRatio';
 import { coordinatedBranchApproachStations } from './coordinatedBranchStations';
 import { getActiveDuctSettings, setActiveDuctSettings, type DuctDesignSettings } from './duct/ductSettings';
@@ -32,6 +32,8 @@ import { ALL_PIPE_PORT_TYPES } from './unitPipePortModel';
 export interface AutoRouteNetworkProgress { completed: number; total: number; stage: string }
 export interface AutoRouteNetworkOptions {
   settings: PipeRoutingSettings;
+  /** Set while a side-by-side network grows (its one level): each step is judged as it will be built, its liquid dipped. */
+  sideBySideLevelMm?: number;
   profile?: ManufacturerRuleProfile;
   objective: 'balanced' | 'cost' | 'fewest-fittings';
   rates?: AutoRouteCostRates;
@@ -313,6 +315,20 @@ function crossesEquipment(pipes: HvacElement[], units: Unit[]): boolean {
   }
   return false;
 }
+/** A side-by-side network as it will be built (its liquid dipped under its gas), for the checks while it grows. */
+function asBuilt(elements: HvacElement[], options: Pick<AutoRouteNetworkOptions, 'settings' | 'sideBySideLevelMm'>): HvacElement[] {
+  return options.sideBySideLevelMm === undefined ? elements : settleSideBySide(elements, options.settings, options.sideBySideLevelMm);
+}
+/**
+ * Side by side, whether a network chosen on the checks while it grows (its gas and liquid not yet apart) is clear as it
+ * will be built: a gas riser beside the liquid main cannot be dipped round. Run on a choice, not on every candidate.
+ */
+function clearAsBuilt(scene: HvacElement[], baselineIds: Set<string>, against: HvacElement[], allUnits: Unit[],
+  options: Pick<AutoRouteNetworkOptions, 'settings' | 'sideBySideLevelMm'>): boolean {
+  if (options.sideBySideLevelMm === undefined) return true;
+  const built = asBuilt(scene.filter(element => !baselineIds.has(element.id)), options);
+  return !crossesEquipment(built, allUnits) && !hasNewNetworkPipeClash(against, built);
+}
 function applyInsertion(scene: HvacElement[], insertion: NonNullable<ReturnType<typeof buildBranchKitInsertion>>): HvacElement[] {
   const removed = new Set(insertion.removeElementIds);
   const updates = new Map(insertion.updates?.map(element => [element.id, element]));
@@ -373,6 +389,7 @@ function refineCandidateRisers(candidate: Candidate, baselineIds: Set<string>, s
         || rated.metrics.bendCount >= initialBendCount
         || rated.metrics.verticalTravelMm > best.evaluation.metrics.verticalTravelMm + 1e-5
         || rated.metrics.elevationReversalCount > best.evaluation.metrics.elevationReversalCount) continue;
+      if (!clearAsBuilt(nextScene, baselineIds, baseline, allUnits, options)) continue;
       best = { ...best, scene: nextScene, evaluation: rated };
       improved = true;
       for (const element of updates) currentById.set(element.id, element);
@@ -474,7 +491,8 @@ function seedNetwork(scene: HvacElement[], system: System, indoor: Unit, allUnit
     let leveled = applyNetworkPipeLevels(pipes, plan);
     recordRejections(stats, leveled.issues);
     if (leveled.issues.length || leveled.elements.length !== 2) return null;
-    if (crossesEquipment(leveled.elements, allUnits) || hasNewNetworkPipeClash(scene, leveled.elements)) {
+    const built = asBuilt(leveled.elements, options);
+    if (crossesEquipment(built, allUnits) || hasNewNetworkPipeClash(scene, built)) {
       if (!hasNetworkCornerRiser(leveled.elements)) return null;
       // A clearance problem on one service must not add an elbow to its clear
       // partner. Compare service-specific and paired fallbacks at the same
@@ -483,8 +501,8 @@ function seedNetwork(scene: HvacElement[], system: System, indoor: Unit, allUnit
       let fallbackScore = Infinity;
       for (const cornerRisersByService of [{ gas: false, liquid: true }, { gas: true, liquid: false }, { gas: false, liquid: false }]) {
         const trial = applyNetworkPipeLevels(pipes, { ...plan, cornerRisersByService });
-        if (trial.issues.length || trial.elements.length !== 2 || crossesEquipment(trial.elements, allUnits)
-          || hasNewNetworkPipeClash(scene, trial.elements)) continue;
+        const trialBuilt = trial.issues.length || trial.elements.length !== 2 ? null : asBuilt(trial.elements, options);
+        if (!trialBuilt || crossesEquipment(trialBuilt, allUnits) || hasNewNetworkPipeClash(scene, trialBuilt)) continue;
         const rated = evaluation([...scene, ...trial.elements], system, [indoor.element.id], options);
         if (!rated.feasible) continue;
         if (!fallback || rated.score < fallbackScore) { fallback = trial; fallbackScore = rated.score; }
@@ -575,7 +593,7 @@ function attachUnit(candidate: Candidate, baselineIds: Set<string>, system: Syst
     noteUnitRejection(stats, unit.element.id, 'clash');
     return false;
   };
-  let best: Candidate | null = null;
+  const fits: Candidate[] = [];
   const stations = exactStations ?? branchStations(candidate.scene, generatedIds, unit.port, options.settings);
   const primary = stations.filter(station => station.primary);
   const fallback = stations.filter(station => !station.primary);
@@ -654,11 +672,18 @@ function attachUnit(candidate: Candidate, baselineIds: Set<string>, system: Syst
     const rated = evaluation(nextScene, system, connected, options);
     stats.evaluatedCandidates += 1;
     if (!rated.feasible) { recordRejections(stats, rated.hardIssues); continue; }
-    const next: Candidate = { scene: nextScene, connected, evaluation: rated,
-      attachment: { parent: candidate, unit, proposal, station, kitElementIds: insertion.kitElementIds } };
-    if (better(next, best)) best = next;
+    fits.push({ scene: nextScene, connected, evaluation: rated,
+      attachment: { parent: candidate, unit, proposal, station, kitElementIds: insertion.kitElementIds } });
   }
-  return best;
+  // The best, as one after another (the first of equals); side by side, the best that is clear as built.
+  while (fits.length) {
+    let pick = 0;
+    for (let index = 1; index < fits.length; index += 1) if (better(fits[index]!, fits[pick]!)) pick = index;
+    const [chosen] = fits.splice(pick, 1);
+    if (clearAsBuilt(chosen!.scene, baselineIds, originalScene, allUnits, options)) return chosen!;
+    noteUnitRejection(stats, unit.element.id, 'clash');
+  }
+  return null;
 }
 
 function hasFoldedUnitApproach(scene: HvacElement[], unitId: string): boolean {
@@ -838,7 +863,9 @@ export interface GrownNetwork {
  * duct settings are set here and put back), whether a worker runs it or not.
  */
 export function growNetwork(task: GrowNetworkTask): GrownNetwork {
-  const { baseline, system, allUnits, ordered, options } = task;
+  const { baseline, system, allUnits, ordered } = task;
+  const options = task.corridor && Math.abs(task.corridor.gas - task.corridor.liquid) <= 0.5
+    ? { ...task.options, sideBySideLevelMm: task.corridor.gas } : task.options;
   const previousRouting = getActivePipeRoutingSettings();
   const previousDucts = getActiveDuctSettings();
   setActivePipeRoutingSettings(options.settings);
@@ -1000,17 +1027,23 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
         mergeSearchStats(searchStats, grown.stats);
         if (grown.network && better(grown.network, best)) best = grown.network;
       }
-      // A unit still left out, side by side: the pair stacked instead, gas over liquid, at levels chosen from the units'.
+      // A unit still left out, side by side: the pair stacked instead, at levels chosen from the units' (the same starts:
+      // from the furthest units, then one from each unit they leave out).
       const flatReached = best;
-      let stacked = false;
       if (flat && ordered.some(unit => !flatReached?.connected.includes(unit.element.id))) {
-        stacked = true;
-        const stackedStarts = await runner.all(seeds.map((seed, seedIndex) => startTask(seed, seeds.length + 4 + seedIndex, seedIndex % 2 === 1)),
-          reporter(seeds.length, 'Comparing the pair stacked'));
-        for (const grown of stackedStarts) {
+        let stackedBest: GrownNetwork['network'] = null;
+        for (const grown of await runner.all(seeds.map((seed, seedIndex) => startTask(seed, seeds.length + 4 + seedIndex, seedIndex % 2 === 1)),
+          reporter(seeds.length, 'Comparing the pair stacked'))) {
           mergeSearchStats(searchStats, grown.stats);
-          if (grown.network && better(grown.network, best)) best = grown.network;
+          if (grown.network && better(grown.network, stackedBest)) stackedBest = grown.network;
         }
+        const stackedReached = stackedBest;
+        const stackedLeftOut = ordered.filter(unit => !stackedReached?.connected.includes(unit.element.id) && !seeds.includes(unit)).slice(0, 2);
+        for (const grown of await runner.all(stackedLeftOut.map((seed, index) => startTask(seed, seeds.length + 8 + index, false)))) {
+          mergeSearchStats(searchStats, grown.stats);
+          if (grown.network && better(grown.network, stackedBest)) stackedBest = grown.network;
+        }
+        if (stackedBest && better(stackedBest, best)) best = stackedBest;
       }
       // The starts above choose the main's height from the units' without looking at the ducts, so it can stop at the
       // first duct across its way. With a unit still left out, two more starts lay it under them, at one height throughout.
@@ -1026,7 +1059,11 @@ async function planNetwork(inputScene: HvacElement[], inputOptions: AutoRouteNet
           if (grown.network && better(grown.network, best)) best = grown.network;
         }
       }
-      if (stacked && best) issues.push(`${system.outdoor.element.label || system.outdoor.element.id}: side by side the pair could not reach every unit, so it is stacked, gas over liquid.`);
+      const arrangements = new Set(best?.generated.map(element => record(element.properties.networkLevelPlan).arrangement) ?? []);
+      if (flat && best && !arrangements.has('side-by-side')) {
+        const stacked = arrangements.has('liquid-above') ? 'liquid over gas' : 'gas over liquid';
+        issues.push(`${system.outdoor.element.label || system.outdoor.element.id}: side by side the pair could not reach every unit, so it is stacked, ${stacked}.`);
+      }
       const previousIndoorIds = new Set([...existingCircuit.indoorIds,
         ...workingScene.filter(element => removableSet.has(element.id)).flatMap(element => ownership(element)?.indoorUnitIds ?? [])]);
       const incumbentMembers = workingScene.filter(element => removableSet.has(element.id));

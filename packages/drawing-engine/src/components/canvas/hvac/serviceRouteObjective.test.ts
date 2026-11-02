@@ -108,6 +108,18 @@ describe('collective service route preference', () => {
     expect(ranked[1]!.diagnostics.physicallyFeasible).toBe(true);
   });
 
+  it('prefers mains above the ceiling with a hop to mains in the rooms without one', () => {
+    const choices = candidates();
+    const hop = { key: 'hop-a', refrigerantElementId: 'gas', point: { x: 0, y: 0 }, networkId: 'drain-network',
+      condensateZ: 2800, requiredCentrelineZ: 2900, halfWindowMm: 60, withinSoffit: true };
+    choices[0]!.result.clashes = [{ ...clash, resolvedByHop: true }];
+    choices[0]!.result.condensate!.hopProposals = [hop];
+    choices[1]!.result.refrigerantBelowCeilingMm = 12000;
+    const ranked = rankServiceRouteCandidates(choices, { objective: 'balanced' });
+    expect(ranked[0]!.key).toBe('refrigerant-first');
+    expect(ranked[1]!.diagnostics.mainsBelowCeilingM).toBe(12);
+  });
+
   it.each(['balanced', 'cost'] as ServiceRouteObjective[])('balances both services for the %s objective using one fixed baseline', (objective) => {
     const choices = candidates();
     const alternative = choices[1]!.result;

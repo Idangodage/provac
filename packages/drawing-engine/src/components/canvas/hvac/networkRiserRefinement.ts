@@ -63,7 +63,8 @@ export function buildNetworkRiserRefinements(
   for (const element of elements) {
     const properties = element.properties;
     const plan = record(properties.networkLevelPlan);
-    if (element.type !== 'refrigerant-pipe' || plan.version !== 2 || plan.generated !== true
+    // (Side by side, each unit's step stays right after its stub: the run through the void keeps the corridor level.)
+    if (element.type !== 'refrigerant-pipe' || plan.version !== 2 || plan.generated !== true || plan.arrangement === 'side-by-side'
       || !finite(plan.corridorElevationMm)
       || ['networkLevelLocked', 'routeLocked', 'routingLocked', 'locked', 'isLocked', 'reviewed', 'installationReviewed']
         .some(key => properties[key] === true)

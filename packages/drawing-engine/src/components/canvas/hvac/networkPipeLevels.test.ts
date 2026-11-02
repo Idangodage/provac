@@ -242,6 +242,20 @@ describe('terminal transitions and protected routing', () => {
     }
   });
 
+  it('side by side, steps right after a unit\'s stub, not at the corner further on', () => {
+    const unit: RefrigerantPipeConnection = { connectionKind: 'unit-port', sourceElementId: 'unit',
+      portPoint: point(0), direction: point(1), elevationMm: 2400 };
+    const route = [point(0), point(1500), point(1500, 3000)];
+    const atCorner = buildNetworkLevelRoute(route, 2700, { start: unit, radiusMm: 20, settings });
+    const atUnit = buildNetworkLevelRoute(route, 2700, { start: unit, radiusMm: 20, settings, risersAtUnits: true });
+    const step = (nodes: PipeRouteNode3D[]) => nodes.find((node, index) => index > 0 && node.z !== nodes[index - 1]!.z)!;
+    expect(step(atCorner.nodes)).toMatchObject({ x: 1500, y: 0 });
+    // The maker's straight off the port, then the riser's bend.
+    expect(step(atUnit.nodes).x).toBeLessThan(settings.minimumPortStubMm + 100);
+    expect(step(atUnit.nodes).x).toBeGreaterThanOrEqual(settings.minimumPortStubMm);
+    expect(atUnit.nodes.filter((node) => node.z === 2400).every((node) => node.x < 400)).toBe(true);
+  });
+
   it('rejects an approach too short for the socket straight and level transition', () => {
     const result = buildNetworkLevelRoute([point(0), point(400)], 2800, {
       start: field(2400, 0), radiusMm: 20, settings,

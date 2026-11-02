@@ -34,6 +34,7 @@ import { incompleteAutoRouteRefusal } from './autoRouteCommand';
 import { incompleteDuctRouteRefusal, incompleteServiceRouteRefusal } from './autoRouteCompleteness';
 import { effectiveAutoRouteSettings, evaluateAutoRouteNetwork } from './autoRouteEvaluation';
 import { aggregateAutoRouteMetrics, planAutoRouteNetwork, replaceableGeneratedRefrigerantIds, type AutoRouteNetworkOptions, type AutoRouteNetworkResult } from './autoRouteNetwork';
+import { buildingCeiling } from './buildingSection';
 import { incompleteCondensateRefusal } from './condensate/condensateCommand';
 import { reservedDrainDrops } from './condensate/condensateDropReservation';
 import { replaceableCondensatePipeIds } from './condensate/condensateEnvironment';
@@ -52,12 +53,11 @@ import type { PoolReport } from './parallel/workerPool';
 import { getAutoRouteOwnership, retainGeneratedPipeEdit } from './pipeEditRetention';
 import { getActivePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { isRefrigerantBranchKitElement, resolveRefrigerantBranchKitLineSelection } from './refrigerantBranchKitModel';
+import { refrigerantBelowCeiling } from './refrigerantCeilingCheck';
 import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
 import { inRoutingSession } from './routingSession';
 import { rankServiceRouteCandidates, type ServiceRouteCandidate, type ServiceRouteObjective } from './serviceRouteObjective';
 import { applyServiceRouteCommand, serviceRouteCommitDiagnostics, type ServiceRouteCommand, type ServiceRouteIssue } from './serviceRouteValidation';
-import { buildingCeiling } from './buildingSection';
-import { refrigerantBelowCeiling } from './refrigerantCeilingCheck';
 import { applyUnitTurns, planDuctedUnitTurns, planUnitOrientations, unitRuns, type AutoTurnSettings, type UnitKept, type UnitTurn } from './unitOrientation';
 
 export interface AutoRouteServices {
@@ -610,8 +610,10 @@ async function planUnified(drawnScene: HvacElement[], options: UnifiedAutoRouteO
     // were excluded from the routing scene above.
     alternateDrains.removeElementIds = [...replacedDrains];
     const reservedScene = [...scene.filter((element) => !replacedDrains.has(element.id)), ...alternateDrains.elementsToAdd];
-    const paired = await remembered('alternateRefrigerant', [reservedScene, options.refrigerant, options.duct?.settings], () => planAutoRouteNetwork(reservedScene, {
-      ...options.refrigerant,
+    // The drains laid first hold the high void a side-by-side pair would take, so here the pair is stacked.
+    const stackedRefrigerant = { ...options.refrigerant, settings: { ...options.refrigerant.settings, pairArrangement: 'stacked' as const } };
+    const paired = await remembered('alternateRefrigerant', [reservedScene, stackedRefrigerant, options.duct?.settings], () => planAutoRouteNetwork(reservedScene, {
+      ...stackedRefrigerant,
       onProgress: (step) => progress({ ...step, stage: `Drainage-first refrigerant: ${step.stage}`, step: 'drainage-first' }),
     }));
     const alternateRefrigerant = services.gas && services.liquid ? paired

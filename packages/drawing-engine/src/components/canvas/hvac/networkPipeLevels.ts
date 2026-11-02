@@ -1,10 +1,10 @@
 import type { HvacElement, Point2D } from '../../../types';
 
 import { resolveCopperSocketElbow, resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from './copperSocketElbows';
+import { withPairDips } from './pairDips';
 import { findSampledQuarterTurns } from './pipeRiserCornerProjection';
 import { generateRiserTurnAlternatives } from './pipeRiserOptimization';
 import { liftPipePlanRouteTo3d, normalizePipeRouteNodes3d, type PipeRouteNode3D } from './pipeRoute3d';
-import { withPairDips } from './pairDips';
 import { getActivePipeRoutingSettings, type PipeRoutingSettings } from './pipeRoutingSettings';
 import { buildRefrigerantBranchKitViewModel } from './refrigerantBranchKitModel';
 import {
@@ -558,6 +558,11 @@ export function buildNetworkLevelRoute(inputRoute: Point2D[], corridor: number, 
   includeRiserAlternatives?: boolean;
   /** The bend room both lines of a side-by-side pair take, so they step at one station (else this line's own). */
   riserExtentMm?: number;
+  /**
+   * Side by side: a unit's connection steps right after its stub, never at a corner further on, so what runs through
+   * the void runs at the corridor level and the void under it stays clear for the drains.
+   */
+  risersAtUnits?: boolean;
   settings: PipeRoutingSettings;
 }): { nodes: PipeRouteNode3D[]; issue?: string; alternativeNodes?: PipeRouteNode3D[][] } {
   // Paired physical lanes already contain sampled circular elbows. Recover
@@ -629,20 +634,33 @@ export function buildNetworkLevelRoute(inputRoute: Point2D[], corridor: number, 
       || station < startProtected - 1e-6 || station > total - endProtected + 1e-6) return null;
     return station;
   };
+  // A plan bend kept as drawn (its samples go back in below) takes its own run either side of its corner.
+  const setbackAt = (index: number): number => {
+    if (!sampledCorners || index <= 0 || index >= route.length - 1) return radius;
+    for (const corner of sampledCorners.values()) {
+      if (Math.hypot(corner.corner.x - route[index]!.x, corner.corner.y - route[index]!.y) > 1e-6) continue;
+      const tangent = inputRoute[corner.startIndex]!;
+      return Math.max(radius, Math.hypot(tangent.x - corner.corner.x, tangent.y - corner.corner.y));
+    }
+    return radius;
+  };
   // Retain the straight-span solution when a corner cannot host both elbows.
   // Reserve both bend setbacks next to plan corners and between risers. Height
   // does not consume horizontal run: a tall outdoor rise stays localized.
   const findRiser = (fromEnd: boolean, minimum: number, maximum: number): number | null => {
     const candidates: number[] = [];
     for (let i = 1; i < lengths.length; i += 1) {
-      const lo = Math.max(minimum, lengths[i - 1]! + radius * 2);
-      const hi = Math.min(maximum, lengths[i]! - radius * 2);
+      const lo = Math.max(minimum, lengths[i - 1]! + radius + setbackAt(i - 1));
+      const hi = Math.min(maximum, lengths[i]! - radius - setbackAt(i));
       if (hi >= lo - 1e-6) candidates.push(fromEnd ? hi : lo);
     }
     return candidates.length ? (fromEnd ? candidates.at(-1)! : candidates[0]!) : null;
   };
-  const startCorner = needsStart && options.preferCornerRisers !== false ? cornerStation(false) : null;
-  const endCorner = needsEnd && options.preferCornerRisers !== false ? cornerStation(true) : null;
+  const atUnit = (connection?: RefrigerantPipeConnection | null) => options.risersAtUnits === true && connection?.connectionKind === 'unit-port';
+  const startAtUnit = needsStart && atUnit(options.start);
+  const endAtUnit = needsEnd && atUnit(options.end);
+  const startCorner = needsStart && options.preferCornerRisers !== false && !startAtUnit ? cornerStation(false) : null;
+  const endCorner = needsEnd && options.preferCornerRisers !== false && !endAtUnit ? cornerStation(true) : null;
   let bestStations: { start: number; end: number; corners: number; terminalTravel: number } | null = null;
   // Jointly choose the two terminal stations. Independent corner selection can
   // put both risers at the same corner or consume the straight between them.
@@ -687,7 +705,7 @@ export function buildNetworkLevelRoute(inputRoute: Point2D[], corridor: number, 
   // The enclosing proposal still screens the resulting physical service pair
   // against equipment and pipe clearances, and can retain the straight fallback.
   let riserAlternatives: PipeRouteNode3D[][] | undefined;
-  if (options.preferCornerRisers !== false && !options.deferRiserTurnOptimization) {
+  if (options.preferCornerRisers !== false && !options.deferRiserTurnOptimization && !startAtUnit && !endAtUnit) {
     const alternatives = generateRiserTurnAlternatives(nodes, {
       bendTakeoffMm: radius,
       startStraightMm: Math.max(0, startProtected - radius),
@@ -766,7 +784,7 @@ function applyPreparedNetworkPipeLevels(elements: HvacElement[], plan: NetworkPi
       const level = (): { element?: HvacElement; issue?: string } => {
         const built = buildNetworkLevelRoute(entry.routePoints, corridor, { start, end, radiusMm: entry.radius, settings: plan.settings,
           pipeDiameterMm: entry.socketPipeDiameterMm, minimumBendRadiusMm: entry.minimumBendRadiusMm, preferCornerRisers,
-          deferRiserTurnOptimization: plan.deferRiserTurnOptimization, ...(pairExtent !== undefined ? { riserExtentMm: pairExtent } : {}) });
+          deferRiserTurnOptimization: plan.deferRiserTurnOptimization, ...(pairExtent !== undefined ? { riserExtentMm: pairExtent, risersAtUnits: true } : {}) });
         if (built.issue) return { issue: `${element.label || entry.service}: ${built.issue}` };
         const min = Math.min(...built.nodes.map(node => node.z)); const max = Math.max(...built.nodes.map(node => node.z));
         return { element: { ...element, elevation: min - entry.radius, height: max - min + entry.radius * 2,

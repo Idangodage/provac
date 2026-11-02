@@ -191,8 +191,9 @@ export function rankServiceRouteCandidates(
     return compare(Number(!a.physicallyFeasible), Number(!b.physicallyFeasible))
       || compare(Number(!a.complete), Number(!b.complete))
       || compare(a.unservedObligations.length, b.unservedObligations.length)
-      || compare(a.pendingHopCount, b.pendingHopCount)
+      // Mains above the ceiling, with a hop where one is needed, before mains in the rooms.
       || compare(a.mainsBelowCeilingM, b.mainsBelowCeilingM)
+      || compare(a.pendingHopCount, b.pendingHopCount)
       || textCompare(JSON.stringify(a.servedObligations), JSON.stringify(b.servedObligations))
       || (a.costComparableToBaseline && b.costComparableToBaseline ? compare(a.preferenceScore, b.preferenceScore) : 0)
       || compare(a.unresolvedClashCount, b.unresolvedClashCount)
