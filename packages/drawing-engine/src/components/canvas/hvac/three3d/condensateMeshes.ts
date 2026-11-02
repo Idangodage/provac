@@ -15,7 +15,6 @@ import type { HvacElement } from '../../../../types';
 import { drainFittingsAsBuilt } from '../buildingSection';
 import { readDrainGaps } from '../condensate/condensateCut';
 import { layoutCondensateSupports } from '../condensate/condensateSupports';
-import { getActiveDuctBuilding } from '../duct/ductBuilding';
 import {
   CONDENSATE_TUNDISH_HEIGHT_MM,
   readCondensateGullySpec,
@@ -24,6 +23,7 @@ import {
   type CondensatePipeSpec,
   type Point3,
 } from '../condensate/condensateTypes';
+import { getActiveDuctBuilding } from '../duct/ductBuilding';
 
 export const CONDENSATE_3D_COLORS = {
   /** Black closed-cell elastomeric insulation. */

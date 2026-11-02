@@ -10,7 +10,6 @@
 import type { HvacElement } from '../../../types';
 
 import type { DuctBomRow } from './duct/ductBom';
-
 import { normalizePipeRouteNodes3d } from './pipeRoute3d';
 import { resolveRefrigerantPipeSpec } from './refrigerantPipePairModel';
 

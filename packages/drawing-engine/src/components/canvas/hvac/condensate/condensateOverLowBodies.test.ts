@@ -5,9 +5,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { HvacElement } from '../../../../types';
 import { resolveUnitAirPorts } from '../duct/ductAirPorts';
 import { buildDuctRunDraftElement } from '../duct/ductDraft';
+import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
 import { resolveDuctSettings, setActiveDuctSettings } from '../duct/ductSettings';
 import { ductBoxesOf } from '../duct/ductVolumes';
-import { getDuctRunPlan } from '../duct/ductFabricationPlanner';
 import { DEFAULT_PIPE_ROUTING_SETTINGS, setActivePipeRoutingSettings } from '../pipeRoutingSettings';
 
 import { planCondensateNetwork } from './condensateNetworkPlanner';

@@ -4,6 +4,7 @@ import * as THREE from "three";
 
 import type { HvacElement, Point2D } from "../../../../types";
 import { markMaterialOwned } from "../../threeResourceLifecycle";
+import { buildingSoffitMm } from "../buildingSection";
 import { buildCeilingCassetteModel } from "../ceilingCassetteModel";
 import { compileCopperSocketElbowRoute } from "../copperSocketElbowRoute";
 import { resolveCopperSocketElbowMinimumRadius, usesCopperSocketElbows } from "../copperSocketElbows";
@@ -51,10 +52,9 @@ import {
   buildSweptTubeGeometry,
   unionGeometries,
 } from "./pipeJointGeometry";
-import { buildingSoffitMm } from "../buildingSection";
 import { addPipeWallSleeves } from "./pipeWallSleeves";
-import { addRefrigerantSupportMeshes } from "./refrigerantSupportMeshes";
 import { addRefrigerantAccessoryMeshes } from "./refrigerantAccessoryMeshes";
+import { addRefrigerantSupportMeshes } from "./refrigerantSupportMeshes";
 import {
   addRefrigerantUnitJoint,
   leadingPolyline,

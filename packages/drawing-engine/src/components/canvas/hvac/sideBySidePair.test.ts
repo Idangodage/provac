@@ -12,8 +12,8 @@ import { hasNewNetworkPipeClash } from './networkPipeClearance';
 import { DEFAULT_PIPE_ROUTING_SETTINGS, resolvePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
 import { checkRefrigerantAboveCeiling, refrigerantBelowCeiling } from './refrigerantCeilingCheck';
 import { getRefrigerantPipeBundleSnapTargets } from './refrigerantPipePairModel';
-import { rankServiceRouteCandidates } from './serviceRouteObjective';
 import { layoutRefrigerantSupports, refrigerantSupportBomRows } from './refrigerantSupports';
+import { rankServiceRouteCandidates } from './serviceRouteObjective';
 import { addRefrigerantSupportMeshes } from './three3d/refrigerantSupportMeshes';
 import type { UnifiedAutoRouteResult } from './unifiedAutoRoute';
 

@@ -3,15 +3,15 @@ import { useEffect, useState } from 'react';
 import type { HvacElement, Room } from '../../../types';
 import type { VrfValidationReport } from '../../../vrf/rules';
 import { checkWallsReachSoffit } from '../hvac/buildingSection';
-import { checkRefrigerantAboveCeiling } from '../hvac/refrigerantCeilingCheck';
 import { isCondensatePipe } from '../hvac/condensate/condensateTypes';
 import { checkAirSystems } from '../hvac/duct/ductAirSystemChecks';
 import type { DuctBuilding } from '../hvac/duct/ductBuilding';
 import type { DuctDesignSettings } from '../hvac/duct/ductSettings';
-import { isDuctTerminalElement } from '../hvac/duct/ductTerminals';
 import { resolveSoffitZ } from '../hvac/duct/ductSupports';
+import { isDuctTerminalElement } from '../hvac/duct/ductTerminals';
 import { isDuctElement } from '../hvac/duct/ductTypes';
 import { validateDuctRuns } from '../hvac/duct/ductValidation';
+import { checkRefrigerantAboveCeiling } from '../hvac/refrigerantCeilingCheck';
 
 export const DUCT_VALIDATION_DEBOUNCE_MS = 125;
 

@@ -18,8 +18,8 @@ import { savedDuctSettings, setActiveDuctSettings, type DuctDesignSettings } fro
 import { isDuctTerminalElement } from './duct/ductTerminals';
 import { isDuctElement, readDuctRunSpec } from './duct/ductTypes';
 import { resolvePipeRoutingSettings, setActivePipeRoutingSettings } from './pipeRoutingSettings';
-import { planUnifiedAutoRoute, unifiedRouteCommand, type UnifiedAutoRouteResult } from './unifiedAutoRoute';
 import { applyServiceRouteCommand } from './serviceRouteValidation';
+import { planUnifiedAutoRoute, unifiedRouteCommand, type UnifiedAutoRouteResult } from './unifiedAutoRoute';
 import { autoTurnSettingsOf } from './unitOrientation';
 
 const ENABLED = Boolean((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.AUTO_ROUTE_BUILDING);

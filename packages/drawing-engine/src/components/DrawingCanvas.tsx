@@ -87,6 +87,7 @@ import {
 } from "./canvas/hvac/PipeStudioOverlay";
 import { selectionAfterMarkerClick, VrfValidationOverlay } from "./canvas/hvac/VrfValidationOverlay";
 import { applyAutoRoutePreview, discardAutoRoutePreview, runAutoRoute } from "./canvas/hvac/autoRouteController";
+import { raisedWallUpdates } from "./canvas/hvac/buildingSection";
 import { CondensateEditGizmo3D } from "./canvas/hvac/condensate/CondensateEditGizmo3D";
 import { CondensateOverlay, type CondensateOverlayHandle } from "./canvas/hvac/condensate/CondensateOverlay";
 import { createCondensateSegmentProvider } from "./canvas/hvac/condensate/CondensateSegmentCard";
@@ -122,7 +123,6 @@ import { dismissGap, proposeGap, useDuctGapStore, type GapDomain } from "./canva
 import { ductSegmentFigures } from "./canvas/hvac/duct/ductSegmentFigures";
 import { ductSegments, segmentHotspot, segmentHotspot3D } from "./canvas/hvac/duct/ductSegments";
 import { setActiveDuctSettings } from "./canvas/hvac/duct/ductSettings";
-import { raisedWallUpdates } from "./canvas/hvac/buildingSection";
 import { getDuctSupportPlan, resolveSoffitZ } from "./canvas/hvac/duct/ductSupports";
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from "./canvas/hvac/duct/ductTerminals";
 import { isDuctElement, readDuctRunSpec, roundLeg, type DuctPoint3 } from "./canvas/hvac/duct/ductTypes";

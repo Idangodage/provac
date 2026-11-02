@@ -14,6 +14,8 @@ import { shallow } from 'zustand/shallow';
 
 import { useSmartDrawingStore } from '../../../../store';
 import type { HvacElement } from '../../../../types';
+import { layoutRefrigerantSupports, refrigerantSupportBomRows } from '../refrigerantSupports';
+import { refrigerantPenetrationBomRows, servicePenetrations, servicePenetrationScheduleRows } from '../servicePenetrations';
 import { pressureClassText, sizesText, type HvacQuantity } from '../units/hvacUnits';
 import { useHvacUnits } from '../units/useHvacUnits';
 
@@ -31,8 +33,6 @@ import { DUCT_VANES, type DuctVaneType } from './ductFittingRules';
 import { describeJoint } from './ductGauge';
 import { ductLegs } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
-import { layoutRefrigerantSupports, refrigerantSupportBomRows } from '../refrigerantSupports';
-import { refrigerantPenetrationBomRows, servicePenetrations, servicePenetrationScheduleRows } from '../servicePenetrations';
 import { ductPenetrationSchedule, ductPenetrationScheduleToCsv } from './ductPenetrationSchedule';
 import { penetrationHasFireDamper } from './ductPenetrations';
 import { defaultPlenumSize } from './ductPlenum';

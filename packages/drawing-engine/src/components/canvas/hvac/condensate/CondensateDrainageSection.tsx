@@ -11,10 +11,10 @@ import { shallow } from 'zustand/shallow';
 import { useSmartDrawingStore } from '../../../../store';
 import type { ManufacturerRuleProfile } from '../../../../vrf/rules';
 import { applyAutoRoutePreview, discardAutoRoutePreview, runAutoRoute } from '../autoRouteController';
+import { useDuctBuilding } from '../duct/useDuctBuilding';
 import { fromDisplay, slopeText, toDisplay, toDisplayText, unitLabel } from '../units/hvacUnits';
 import { useHvacUnitSystem } from '../units/useHvacUnits';
 
-import { useDuctBuilding } from '../duct/useDuctBuilding';
 import { buildCondensateBom, condensateBomRowIn, condensateBomToCsv } from './condensateBom';
 import { drainNetworksOffSeries, resizeDrainNetworksToSeries } from './condensateEditController';
 import { deriveCondensateEnvelope } from './condensateEnvironment';

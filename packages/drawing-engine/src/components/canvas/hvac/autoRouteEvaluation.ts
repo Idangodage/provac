@@ -7,13 +7,13 @@ import { selectBranchKit } from '../../../vrf/rules/branch-selection';
 import { buildVrfGeometrySnapshot } from '../../../vrf/rules/document-validation-adapter';
 import { selectPipeSize } from '../../../vrf/rules/pipe-sizing';
 import { analyzeRouteElevation } from '../../../vrf/rules/route-elevation';
-import { mainAboveTheUnit } from '../../../vrf/rules/validation-engine';
 import {
   isVerifiedManufacturerValue,
   PROJECT_FALLBACK_RULE_PROFILE,
   type ManufacturerRuleProfile,
   type RuleValue,
 } from '../../../vrf/rules/rule-profile';
+import { mainAboveTheUnit } from '../../../vrf/rules/validation-engine';
 
 import { routingSettingsFromRuleProfile, type PipeRoutingSettings } from './pipeRoutingSettings';
 import { bendRadiusFromDiameterMm } from './pipeTopology';
