@@ -20,10 +20,34 @@ Auto route, every service, as the app runs it (`autoRouteBuildingNov.test.ts`, g
 | Terminals with a duct | 7 / 15 (two rooms empty) | 15 / 15 |
 | Longest collar transition | 1860 mm | 1264 mm |
 | Three joints inside 500 mm | 10 places | none |
-| Drains | 58.4 m, doubled 3.5 m | 44.7 m, nothing doubled |
+| Drains | 58.4 m, doubled 3.5 m | 44.6 m, nothing doubled |
 | Clashes | 0 | 0 |
 | VRF checks shown | 39 | 20, all open on their merits (below) |
-| Auto route | — | about 60 s in plain Node |
+| Auto route | — | about 80 s in plain Node (the 1 November code: 100 s, same machine, back to back) |
+
+On the canvas, in a production build of the branch (`D:\claude-tmp-vrf-checkudit-canvas.mjs`; the drawing
+loaded through the app's own export and import): Auto route on every service in 35 s, nothing blocking Apply,
+every room ducted, all six units on refrigerant side by side at 2840 above the ceiling, all six drains, applied
+with one undo, no error in the checks; 10 of 10 checks passed and the project was put back exactly.
+
+## On the test drawings (2 November)
+
+The golden corpus (`autoRouteCorpus.golden.test.ts`, re-recorded): every drawing at least as well
+served as before, and side by side above the ceiling wherever it reaches every unit. Times are the
+golden test's (one process, frozen clock).
+
+| Drawing | Refrigerant pair | Units | Drains | Clashes | Blocking | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| cassettes-4 | side by side, 2815 | 4 / 4 | 4 / 4 | 0 | 0 | 18 s |
+| cassettes-6 | side by side, 2815 | 6 / 6 | 6 / 6 | 0 | 0 | 38 s |
+| mixed-2x3-c4 | side by side, 2840 | 6 / 6 | 6 / 6 | 0 | 0 | 68 s |
+| mixed-3x3-c6 | side by side, 2840 | 9 / 9 | 9 / 9 | 0 | 0 | 142 s |
+| building-as-drawn | side by side, 2840 | 7 / 7 | 7 / 7 | 0 | 1 (as drawn: two ducted units with no duct layout) | 155 s |
+| building-put-right | stacked 2355 / 2215, warned | 7 / 7 | 7 / 7 | 0 | 0 | 122 s |
+
+At first side by side lost every cassette layout here on the drains (never on the refrigerant):
+the drain router learnt what a high pair means (point 4), and each unit's connection now rises at
+the unit (point 2).
 
 ## What was wrong, and what was done
 
@@ -40,17 +64,32 @@ Auto route, every service, as the app runs it (`autoRouteBuildingNov.test.ts`, g
    every connection.** The pair is now laid side by side on one level, high in the void, over
    what it can clear and round what it cannot *(decided)*; both lines step at one station. Where
    the liquid would meet the gas (at a tee, on a kit's branch) it dips 125 mm under it on plumb
-   steps, two full bends each (`pairDips.ts`); the gas never dips (an oil trap). Where side by side cannot reach
-   every unit the pair is stacked, gas over liquid, and said so. A layout with mains in the rooms
-   below the ceiling ranks after any that has none; where it is the only one, it is said in the
-   preview and flagged on each run (`REFRIGERANT_BELOW_CEILING`) *(decided: a last resort with a
-   visible warning)*. Setting: Route defaults, "pair arrangement".
+   steps, two full bends each (`pairDips.ts`); the gas never dips (an oil trap). Each unit's connection
+   steps right after its stub, so what crosses the void runs at the pair's level and the void under it
+   stays free for the drains. While the network grows, the branch it takes is judged as it will be
+   built, dips included (a gas riser beside the liquid main cannot be dipped round: the next station
+   is taken). Where side by side cannot reach every unit the pair is stacked, and said so. A layout
+   with mains in the rooms below the ceiling ranks after any that has none, even one that needs a hop
+   (the order decided: round, then a local hop, then below the ceiling); where it is the only one, it is said
+   in the preview and flagged on each run (`REFRIGERANT_BELOW_CEILING`) *(decided: a last resort with
+   a visible warning)*. Setting: Route defaults, "pair arrangement".
 4. **Drains wandering and running double.** The router's grid thinning dropped the network's own
    lines, so a branch ran beside the main and hooked in further on: those lines now stay. The
    search knows how high the drain can still be along its length, so it passes over a low duct or
    terminal where it is high enough (held above it), and under a refrigerant line where it must
    (held down from there on). Where that leaves a unit out, the routes that keep round every body
-   are tried too.
+   are tried too. With the pair high in the void (2 November):
+   - a run passing *beside* a line, inside its clearance, is judged by its height as a crossing is
+     (it was not, and a drain slipped between a dipped liquid and the gas over it);
+   - a line is taken to hop only where a hop can be built: on a level leg, clear of its port stub
+     and corners by a hop's elbows, with nothing running over it (`refrigerantHopStretches`);
+   - a branch kit high in the void is passed under, not walled off floor to soffit, and a drain
+     riser under one stops below it;
+   - two lines at different levels in one crossing (a connection at its port's level over a main
+     lower down) may be threaded between, over the lower and under the upper;
+   - crossings are given their side in the order the drain meets them, from the outlet;
+   - the search keeps, at each place, only routes not beaten both on length and on height (it ran
+     out of budget on the larger drawings).
 5. **The Y fitting had no body**: routers and the clash check saw a hole there. It has one now;
    only the branches off its outlets touch it.
 6. **Heights that disagreed.** One building section (`buildingSection.ts`): the ceiling (what
@@ -93,7 +132,11 @@ Auto route, every service, as the app runs it (`autoRouteBuildingNov.test.ts`, g
   FDC280's capacity): design decisions for the user.
 - **The low main with 45° steps** the plan described (mains just above the ceiling, round the
   ducts, hopping where they must) was not built: the side-by-side main high in the void reached
-  every unit on this drawing. A void too shallow for it falls back to the stacked arrangement,
-  with the warning. The price of side by side: the liquid dips (four elbows each) at the tees,
-  and each unit's riser is longer (about 300 mm).
+  every unit on this drawing. Where tall ducts leave it no way (the corpus's building-put-right)
+  the pair is stacked below the ceiling, with the warning; that main would serve it. The price of
+  side by side: the liquid dips (four elbows each) at the tees, each unit's riser is longer (about
+  300 mm), and rising at the unit adds short insulation pieces (37 under 300 mm, against 27).
 - The drawing's walls are 2700 mm: one click in the checks raises them to the soffit.
+- **Duct hangers** (`DU_SUPPORT_RULE`, 22 warnings after Auto route): no clear hanger spot within
+  SMACNA's reach of some runout elbows and run ends. main's checker gives 19 on the same layout: it
+  comes with the short runouts to the diffusers, not with this work.

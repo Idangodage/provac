@@ -130,9 +130,18 @@ together, mains above the ceiling, stacked as the fallback, below the ceiling on
   meet (a tee, a kit's branch tube on the neighbouring lane), on plumb steps deep enough for two full bends
   (`pairDips.ts`, 125 mm for Ø9.52): every level change stays plumb or level. Every liquid kit sits at the dipped
   level. The gas never dips (an oil trap). The whole network is then checked as built.
-- Side by side leaving a unit out: the pair stacked (the levels from the units', as before), and said so; then the
-  main under the ducts. A layout with mains in the rooms below the ceiling ranks after any without
-  (`serviceRouteObjective.ts`), is said in the preview and flagged on each run (`refrigerantCeilingCheck.ts`).
+- Each unit's connection steps right after its stub (`risersAtUnits`), never at a corner further on: a connection
+  run at the port's level across the void left the drains no way under it (the void floor) and none over it. The
+  riser refinement leaves side-by-side networks alone for the same reason. A riser keeps off a plan bend kept as
+  drawn by the bend's own tangent, not only two bend radii (a riser inside a retained arc left a 21 mm back-step).
+- The network grows on the checks with the pair not yet apart; the branch it takes (and each riser refinement) is
+  then judged as built, dips included, and the next best taken when it fails (a gas riser beside the liquid main
+  cannot be dipped round). Judging every candidate so cost three times the time.
+- Side by side leaving a unit out: the pair stacked (the levels from the units', as before; the same extra starts
+  from the units left out), and said so; then the main under the ducts. A layout with mains in the rooms below the
+  ceiling ranks after any without, before the count of hops (round, then a local hop, then below the ceiling)
+  (`serviceRouteObjective.ts`), is said in the preview and flagged on each run (`refrigerantCeilingCheck.ts`). The
+  drainage-first comparison stacks the pair outright: the drains laid first hold the high void.
 - Checks. A liquid line is not judged for low points or rises and falls (the oil comes back in the gas line); a path
   that only rises to the main and falls to a unit is the arrangement, not a needless reversal.
 
@@ -140,6 +149,13 @@ On the user's drawing all six units connect at 2840 mm and the drains route unde
 drain search knows how far it is held down after passing under a line). Known limit: the high main leaves the drains
 only the room under it. With a 500 mm straight off each kit the pair wraps DU-2's drain outlet, and that drain can then
 no longer clear the ducts beyond: Auto route falls back to the stacked mains, with the warning.
+
+On the test drawings (2 November) side by side first lost every cassette layout on the drains, never on the
+refrigerant. The drain router had to learn what a high pair means: a run beside a line is judged by its height, a
+line hops only where a hop can be built (not on a stub, riser or corner, nor under another run), a high kit is passed
+under, a crossing of two levels may be threaded between, crossings are sided in the order the drain meets them, and
+the search keeps only routes not beaten on both length and height. A grid line through each hop stretch was tried and
+dropped: in a large drawing the extra lines thinned out the ones a drain needed (the user's DU-2 drain lost its way).
 
 ## Verification completed
 
