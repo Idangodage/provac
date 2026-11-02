@@ -13,7 +13,7 @@ import type { HvacElement, Point2D, Room, Wall } from '../../../../types';
 import { buildingCeiling, buildingSoffitMm } from '../buildingSection';
 import { getActiveDuctSettings } from '../duct/ductSettings';
 import { solidBoxesInScene, type DuctBox } from '../duct/ductVolumes';
-import { listNetworkPipeLanes } from '../networkPipeClearance';
+import { listNetworkPipeLanes, type NetworkPipeLaneView } from '../networkPipeClearance';
 import type { PipeRoutingSettings } from '../pipeRoutingSettings';
 
 import { closestOnSegment, distance, normalize, sub } from './condensateGeometry';
@@ -31,6 +31,7 @@ import {
   type CondensateTerminationKind,
   type Point3,
 } from './condensateTypes';
+import { refrigerantHopStretches } from './refrigerantHopProposal';
 
 export interface CondensateEnvelope {
   ceilingPlaneMm: number;
@@ -71,6 +72,8 @@ export interface PlanObstacle {
   kind: 'equipment' | 'source-body' | 'stack';
   /** A duct or air terminal: a drain high enough may pass over it. A unit's casing keeps its access. */
   crossable?: boolean;
+  /** A branch kit: a drain may pass under it (or over it), clear of its height by the refrigerant gap. */
+  passableUnder?: boolean;
 }
 
 export interface WallBarrier {
@@ -88,10 +91,76 @@ export interface ServiceSegment {
   radiusMm: number;
   /** Units this service line is connected to (its own port stubs share their connection zone). */
   connectedUnitIds: string[];
+  /** A refrigerant line: where on its plan a hop over a drain can stand (`refrigerantHopStretches`). */
+  hopStretches?: ReadonlyArray<{ a: Point2D; b: Point2D }>;
 }
 
 /** Plan radius around a drain outlet where the unit's own pipework is exempt from coordination. */
 export const UNIT_CONNECTION_ZONE_MM = 550;
+
+/** Plan margin past both radii within which a run is taken to pass over another (mm). */
+const RUN_OVER_MARGIN_MM = 10;
+
+/** Where along a stretch (mm from `a`) a segment comes within `reach` of it in plan: its distance there is convex. */
+function stretchWithinReach(a: Point2D, b: Point2D, c: Point2D, d: Point2D, reach: number): [number, number] | null {
+  const length = distance(a, b);
+  const at = (t: number) => ({ x: a.x + (b.x - a.x) * t / length, y: a.y + (b.y - a.y) * t / length });
+  const gap = (t: number) => distance(at(t), closestOnSegment(at(t), c, d).point);
+  let lo = 0;
+  let hi = length;
+  for (let iteration = 0; iteration < 40; iteration += 1) {
+    const m1 = lo + (hi - lo) / 3;
+    const m2 = hi - (hi - lo) / 3;
+    if (gap(m1) <= gap(m2)) hi = m2; else lo = m1;
+  }
+  const nearest = (lo + hi) / 2;
+  if (gap(nearest) >= reach) return null;
+  const edge = (inside: number, outside: number) => {
+    if (gap(outside) < reach) return outside;
+    for (let iteration = 0; iteration < 30; iteration += 1) {
+      const mid = (inside + outside) / 2;
+      if (gap(mid) < reach) inside = mid; else outside = mid;
+    }
+    return inside;
+  };
+  return [edge(nearest, 0), edge(nearest, length)];
+}
+
+/** A line's hop stretches less where another run passes over it in plan: a liquid dipped under its gas cannot rise into it. */
+function clearOfRunsOver(stretches: ReadonlyArray<{ a: Point2D; b: Point2D; z: number }>, lane: NetworkPipeLaneView,
+  lanes: readonly NetworkPipeLaneView[]): Array<{ a: Point2D; b: Point2D }> {
+  const clear: Array<{ a: Point2D; b: Point2D }> = [];
+  for (const stretch of stretches) {
+    const length = distance(stretch.a, stretch.b);
+    const cuts: Array<[number, number]> = [];
+    for (const other of lanes) {
+      if (other.elementId === lane.elementId || other.service === 'drain') continue;
+      const reach = lane.radiusMm + other.radiusMm + RUN_OVER_MARGIN_MM;
+      for (const segment of other.segments) {
+        if (Math.max(segment.a.z, segment.b.z) <= stretch.z + 1) continue;
+        if (Math.min(segment.a.x, segment.b.x) - reach > Math.max(stretch.a.x, stretch.b.x)
+          || Math.max(segment.a.x, segment.b.x) + reach < Math.min(stretch.a.x, stretch.b.x)
+          || Math.min(segment.a.y, segment.b.y) - reach > Math.max(stretch.a.y, stretch.b.y)
+          || Math.max(segment.a.y, segment.b.y) + reach < Math.min(stretch.a.y, stretch.b.y)) continue;
+        const span = length > 1 ? stretchWithinReach(stretch.a, stretch.b, segment.a, segment.b, reach) : null;
+        if (span) cuts.push(span);
+      }
+    }
+    cuts.sort((left, right) => left[0] - right[0]);
+    let from = 0;
+    const keep = (to: number) => {
+      if (to - from < 1) return;
+      const point = (t: number) => ({ x: stretch.a.x + (stretch.b.x - stretch.a.x) * t / length, y: stretch.a.y + (stretch.b.y - stretch.a.y) * t / length });
+      clear.push({ a: point(from), b: point(to) });
+    };
+    for (const [start, end] of cuts) {
+      if (start > from) keep(start);
+      from = Math.max(from, end);
+    }
+    keep(length);
+  }
+  return clear;
+}
 
 /** Units a refrigerant element is welded to, read from its connection records. */
 export function connectedUnitIdsOf(element: HvacElement | undefined): string[] {
@@ -137,13 +206,6 @@ export interface CondensateEnvironmentOptions {
    * (not protected by the hand-edit / retain policy) and are not obstacles.
    */
   editNetworkId?: string;
-}
-
-function median(values: number[]): number | null {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
 export function deriveCondensateEnvelope(
@@ -341,7 +403,7 @@ export function buildCondensateEnvironment(
     // Retain the conservative placement keepout until that model is queried.
     if (element.type === 'refrigerant-branch-kit') {
       obstacles.push({ id: element.id, ...unitFootprintBoundsMm(element),
-        minZ: element.elevation, maxZ: element.elevation + element.height, kind: 'equipment' });
+        minZ: element.elevation, maxZ: element.elevation + element.height, kind: 'equipment', passableUnder: true });
       continue;
     }
     if (isCondensateGully(element)) {
@@ -361,12 +423,16 @@ export function buildCondensateEnvironment(
     .map((wall) => ({ id: wall.id, a: wall.startPoint, b: wall.endPoint, thicknessMm: wall.thickness }));
 
   const byId = new Map(scene.map((element) => [element.id, element]));
-  for (const lane of listNetworkPipeLanes(scene)) {
+  const lanes = listNetworkPipeLanes(scene);
+  for (const lane of lanes) {
     // Condensate lanes are handled above: kept ones are services, replaceable ones vanish.
     if (lane.service === 'drain') continue;
-    const connectedUnitIds = connectedUnitIdsOf(byId.get(lane.elementId));
+    const element = byId.get(lane.elementId);
+    const connectedUnitIds = connectedUnitIdsOf(element);
+    const hopStretches = element?.type === 'refrigerant-pipe' ? clearOfRunsOver(refrigerantHopStretches(element, scene), lane, lanes) : undefined;
     for (const segment of lane.segments) {
-      services.push({ elementId: lane.elementId, service: lane.service, a: segment.a, b: segment.b, radiusMm: lane.radiusMm, connectedUnitIds });
+      services.push({ elementId: lane.elementId, service: lane.service, a: segment.a, b: segment.b, radiusMm: lane.radiusMm, connectedUnitIds,
+        ...(hopStretches ? { hopStretches } : {}) });
     }
   }
 

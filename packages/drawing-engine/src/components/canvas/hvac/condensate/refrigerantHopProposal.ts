@@ -97,6 +97,33 @@ function locateHop(scene: readonly HvacElement[], proposal: RefrigerantHopPropos
   };
 }
 
+/**
+ * Where on a refrigerant run a hop over a drain can stand: the plan stretches of its level legs that keep a hop's
+ * elbows clear of its port stubs and corners, the limits `spliceHop` holds a hop to (the drain's own window either
+ * side is the caller's). The drain router takes a crossing anywhere else for one this line cannot hop.
+ */
+export function refrigerantHopStretches(element: HvacElement, scene: readonly HvacElement[]): Array<{ a: Point2D; b: Point2D; z: number }> {
+  const nodes = pipeDesignSkeleton(element).nodes;
+  const spec = resolveRefrigerantPipeSpec(element.properties, scene as HvacElement[]);
+  const portStub = getActivePipeRoutingSettings().minimumPortStubMm;
+  const stretches: Array<{ a: Point2D; b: Point2D; z: number }> = [];
+  for (let index = 0; index + 1 < nodes.length; index += 1) {
+    const a = nodes[index]!;
+    const b = nodes[index + 1]!;
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (Math.abs(a.z - b.z) > 1 || length < 1) continue;
+    const startLimit = index === 0 && spec.startConnection?.connectionKind === 'unit-port' ? portStub + HOP_APPROACH_MM / 2 : CORNER_CLEARANCE_MM;
+    const endLimit = index === nodes.length - 2 && spec.endConnection?.connectionKind === 'unit-port' ? portStub + HOP_APPROACH_MM / 2 : CORNER_CLEARANCE_MM;
+    const from = startLimit + HOP_APPROACH_MM;
+    const to = length - endLimit - HOP_APPROACH_MM;
+    if (to < from) continue;
+    const ux = (b.x - a.x) / length;
+    const uy = (b.y - a.y) / length;
+    stretches.push({ a: { x: a.x + ux * from, y: a.y + uy * from }, b: { x: a.x + ux * to, y: a.y + uy * to }, z: a.z });
+  }
+  return stretches;
+}
+
 /** A hop covers every crossing of one line inside a window: [from, to] along the crossing segment. */
 interface HopSpan {
   site: HopSite;

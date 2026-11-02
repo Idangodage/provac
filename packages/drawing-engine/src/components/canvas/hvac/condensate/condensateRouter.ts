@@ -18,7 +18,7 @@
 import type { Point2D } from '../../../../types';
 import { BoxIndex, type PlanBox } from '../spatial/boxIndex';
 
-import { distance, EPS, pointToSegmentDistance as pointToSegmentPlanDistance, segmentIntersection, simplifyPolyline } from './condensateGeometry';
+import { distance, EPS, pointToSegmentDistance as pointToSegmentPlanDistance, segmentIntersection, segmentSegmentDistance, simplifyPolyline } from './condensateGeometry';
 
 export interface RouterBox {
   id: string;
@@ -30,6 +30,8 @@ export interface RouterBox {
   oriented?: { centre: Point2D; axis: Point2D; halfLength: number; halfWidth: number };
   /** A low body: a route may pass over it where the drain's centreline can be at or above this level (mm). */
   passOverAtZ?: number;
+  /** A branch kit: a route may pass under it or over it, its centreline clear of this height band by `gapMm`. */
+  clearBand?: { zMin: number; zMax: number; gapMm: number };
 }
 
 export interface RouterWall {
@@ -46,8 +48,13 @@ export interface RouterServiceLine {
   halfWidthMm: number;
   /** The run's true stretches, for its level where a route crosses it (absent: the level is not judged). */
   segments3d?: ReadonlyArray<{ a: { x: number; y: number; z: number }; b: { x: number; y: number; z: number } }>;
-  /** A refrigerant line: it may hop over a drain where its centre can rise this far (mm), by at least `minRiseMm`. */
-  hop?: { topMm: number; minRiseMm: number };
+  /**
+   * A refrigerant line: it may hop over a drain where its centre can rise this far (mm), by at least `minRiseMm`; with
+   * `stretches`, only on them (the drain's `windowMm` either side), not on a port stub, riser or corner.
+   */
+  hop?: { topMm: number; minRiseMm: number; stretches?: ReadonlyArray<{ a: Point2D; b: Point2D }>; windowMm?: number };
+  /** The drain outlets of the units it serves: within `radiusMm` of one a route beside it is not judged (the maker's connection zone). */
+  ownZone?: { ports: ReadonlyArray<Point2D>; radiusMm: number };
 }
 
 export interface RouterTreeSegment {
@@ -259,11 +266,44 @@ function serviceLevelAt(line: RouterServiceLine, point: Point2D): EdgeInfo['leve
     zMin = Math.min(zMin, low);
     zMax = Math.max(zMax, high);
   }
-  return zMin <= zMax ? { zMin, zMax, gapMm: line.halfWidthMm, ...(line.hop ? { hop: line.hop } : {}) } : null;
+  return zMin <= zMax ? { zMin, zMax, gapMm: line.halfWidthMm, ...(line.hop && hopStandsAt(line.hop, point) ? { hop: line.hop } : {}) } : null;
 }
 
-/** A route held down by less than this more than another is taken for it, in the search's memory (mm). */
-const HELD_DOWN_STEP_MM = 25;
+/**
+ * How high a run is where a route passes within its half width without crossing it (alongside it, or stopping short of
+ * it): its stretches within that width of the edge. The drain keeps over or under it there; a line cannot hop a drain
+ * that runs beside it. Not judged in the connection zone of a unit the run serves.
+ */
+function serviceLevelNear(line: RouterServiceLine, a: Point2D, b: Point2D): EdgeInfo['levels'][number] | null {
+  if (!line.segments3d) return null;
+  if (line.ownZone?.ports.some((port) => pointToSegmentPlanDistance(port, a, b) <= line.ownZone!.radiusMm)) return null;
+  let zMin = Number.POSITIVE_INFINITY;
+  let zMax = Number.NEGATIVE_INFINITY;
+  for (const segment of line.segments3d) {
+    if (segmentSegmentDistance(a, b, segment.a, segment.b) >= line.halfWidthMm) continue;
+    zMin = Math.min(zMin, segment.a.z, segment.b.z);
+    zMax = Math.max(zMax, segment.a.z, segment.b.z);
+  }
+  return zMin <= zMax ? { zMin, zMax, gapMm: line.halfWidthMm } : null;
+}
+
+/** How far off its stretches a crossing on a line's plan path is still taken to be on them (the path's tolerance, mm). */
+const HOP_STRETCH_TOLERANCE_MM = 40;
+
+/** Whether a line could hop where a route crosses it: on one of its stretches, with the drain's window either side. */
+function hopStandsAt(hop: NonNullable<RouterServiceLine['hop']>, point: Point2D): boolean {
+  if (!hop.stretches) return true;
+  const window = hop.windowMm ?? 0;
+  return hop.stretches.some(({ a, b }) => {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const length = Math.hypot(dx, dy);
+    const along = length > EPS ? ((point.x - a.x) * dx + (point.y - a.y) * dy) / length : 0;
+    if (along < window || along > length - window) return false;
+    return Math.abs(((point.x - a.x) * dy - (point.y - a.y) * dx) / Math.max(length, EPS)) <= HOP_STRETCH_TOLERANCE_MM;
+  });
+}
+
 /** The search area's margin round the branch's ends when the caller sets none (mm). */
 const LOCAL_MARGIN_MM = 1500;
 /** The next margin tried when the local area has no route at all (mm). */
@@ -440,10 +480,12 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     const high = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
     let blocked = rotated.some((box) => segmentHitsBox(a, b, box));
     let overZ = Number.NEGATIVE_INFINITY;
+    const bands: EdgeInfo['levels'] = [];
     for (const box of along) {
       if (blocked) break;
       if (!(horizontal ? high > box.minX + EPS && low < box.maxX - EPS : high > box.minY + EPS && low < box.maxY - EPS)) continue;
       if (box.passOverAtZ !== undefined && request.levelAt) overZ = Math.max(overZ, box.passOverAtZ);
+      else if (box.clearBand && request.levelAt) bands.push(box.clearBand);
       else blocked = true;
     }
     const edgeMinX = Math.min(a.x, b.x); const edgeMaxX = Math.max(a.x, b.x);
@@ -470,7 +512,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
     }
     const walls: EdgeInfo['walls'] = [];
     const crossings: EdgeInfo['crossings'] = [];
-    const levels: EdgeInfo['levels'] = [];
+    const levels: EdgeInfo['levels'] = [...bands];
     let cost = length;
     if (!blocked) {
       for (const wall of request.walls) {
@@ -498,10 +540,14 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
           const hi = Math.min(serviceLength, Math.max(sa.station, sb.station));
           if (hi > lo) overlap += hi - lo;
         }
+        if (request.levelAt && segmentSegmentDistance(a, b, service.a, service.b) < service.halfWidthMm) {
+          const level = serviceLevelNear(service, a, b);
+          if (level) levels.push(level);
+        }
       }
       const onCorridor = horizontal ? corridorYSet.has(a.y) : corridorXSet.has(a.x);
       // Over a low body it crosses, not runs along: each mm costs as much as running in a service's footprint.
-      if (overZ > Number.NEGATIVE_INFINITY) overlap += length;
+      if (overZ > Number.NEGATIVE_INFINITY || bands.length) overlap += length;
       cost = length * (onCorridor ? 1 - costs.corridorBonusRatio : 1)
         + overlap * costs.overlapPenaltyRatio
         + walls.length * costs.wallPenaltyMm
@@ -529,13 +575,24 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
   /** `heldDown`: how far below its best level the route holds the drain, having had to pass under a run (mm). */
   interface State { node: number; heading: number; g: number; length: number; bends: number; heldDown: number; parent: State | null; terminal: RouteTarget | null }
   const heap = new MinHeap<State>();
-  const bestG = new Map<number, number>();
-  // Held down further is a different place to be: it may not clear what lies ahead (in steps of a body's clearance).
-  const stateKey = (node: number, heading: number, heldDown: number) => (node * 4 + heading) * 64 + Math.min(63, Math.ceil(heldDown / HELD_DOWN_STEP_MM));
+  // At one place and heading, a route that got there for no more and is as high (the highest the drain can still be
+  // there) makes another redundant: whatever lies ahead, it clears as well. Held down further is a different place to be.
+  const fronts = new Map<number, Array<{ g: number; level: number }>>();
+  const levelOf = (state: Pick<State, 'length' | 'heldDown'>) => (request.levelAt ? request.levelAt(state.length) - state.heldDown : 0);
+  const dominated = (node: number, heading: number, g: number, level: number, strictly: boolean) => (fronts.get(node * 4 + heading) ?? [])
+    .some((entry) => (strictly
+      ? (entry.g < g - 1e-9 && entry.level >= level - 1e-6) || (entry.g <= g + 1e-9 && entry.level > level + 1e-6)
+      : entry.g <= g + 1e-9 && entry.level >= level - 1e-6));
+  const remember = (node: number, heading: number, g: number, level: number) => {
+    const key = node * 4 + heading;
+    const front = (fronts.get(key) ?? []).filter((entry) => !(g <= entry.g + 1e-9 && level >= entry.level - 1e-6));
+    front.push({ g, level });
+    fronts.set(key, front);
+  };
   const startHeading = snapHeading(request.startHeading);
   const startState: State = { node: startNode, heading: startHeading, g: 0, length: 0, bends: 0, heldDown: 0, parent: null, terminal: null };
   heap.push(heuristic(startNode), startState);
-  bestG.set(stateKey(startNode, startHeading, 0), 0);
+  remember(startNode, startHeading, 0, levelOf(startState));
   let rejected: State | null = null;
   let expanded = 0;
 
@@ -551,8 +608,7 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
   while (heap.size && expanded < maxExpanded) {
     const state = heap.pop()!;
     if (state.terminal) return buildRoute(state, true);
-    const key = stateKey(state.node, state.heading, state.heldDown);
-    if ((bestG.get(key) ?? Number.POSITIVE_INFINITY) < state.g - 1e-9) continue;
+    if (dominated(state.node, state.heading, state.g, levelOf(state), true)) continue;
     expanded += 1;
     const ix = Math.floor(state.node / ny);
     const iy = state.node % ny;
@@ -594,9 +650,9 @@ function searchCondensateBranch(request: CondensateRouteRequest): CondensateRout
         continue;
       }
       if (tree.length && onTree(nodePoint(next))) continue; // on the network but not admissible
-      const nextKey = stateKey(next, heading, heldDown);
-      if (g < (bestG.get(nextKey) ?? Number.POSITIVE_INFINITY) - 1e-9) {
-        bestG.set(nextKey, g);
+      const level = levelOf(nextState);
+      if (!dominated(next, heading, g, level, false)) {
+        remember(next, heading, g, level);
         heap.push(g + heuristic(next), nextState);
       }
     }

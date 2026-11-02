@@ -41,8 +41,8 @@ import { maxFeasibleSlope, solveProfile, type ProfileNode, type ProfileSolution 
 import { condensateSegmentDistance, riserTopBelowPipe } from './condensateRiserClearance';
 import { routeCondensateBranch, type RouteTarget, type RouterBox, type RouterServiceLine, type RouterTreeSegment } from './condensateRouter';
 import type { CondensateDesignSettings } from './condensateSettings';
-import type { Point3 } from './condensateTypes';
 import { condensateSocketExitLength } from './condensateSocketClearance';
+import type { Point3 } from './condensateTypes';
 
 // ---------------------------------------------------------------------------
 // Public result shapes
@@ -249,6 +249,8 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
     minZ: obstacle.minZ,
     maxZ: obstacle.maxZ,
     passAt: overLowBodies && obstacle.crossable ? obstacle.maxZ + overGap : null,
+    band: overLowBodies && obstacle.passableUnder
+      ? { zMin: obstacle.minZ, zMax: obstacle.maxZ, gapMm: defaultRadius + settings.refrigerantClearanceMm } : null,
     raw: { id: obstacle.id, minX: obstacle.minX, minY: obstacle.minY, maxX: obstacle.maxX, maxY: obstacle.maxY },
     padded: {
       id: obstacle.id,
@@ -262,19 +264,24 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
   // many short chords become two or three), as wide as the run plus that tolerance. Risers (no plan length) and every
   // crossing's heights are taken from the exact segments (crossing windows), never from these lines.
   const services: RouterServiceLine[] = [];
-  let chain: { elementId: string; service: string; radiusMm: number; points: Point2D[]; segments3d: Array<{ a: Point3; b: Point3 }> } | null = null;
+  let chain: { elementId: string; service: string; radiusMm: number; points: Point2D[]; segments3d: Array<{ a: Point3; b: Point3 }>;
+    hopStretches?: ReadonlyArray<{ a: Point2D; b: Point2D }>; connectedUnitIds: readonly string[] } | null = null;
+  const outlets = new Map(environment.sources.map((source) => [source.unitId, source.point]));
   const ceilingLimit = getActivePipeRoutingSettings().ceilingLimitMm;
   const flush = () => {
     if (!chain) return;
     const points = simplifyPolylineWithin(chain.points, SERVICE_PLAN_TOLERANCE_MM);
+    const ownPorts = chain.connectedUnitIds.map((unitId) => outlets.get(unitId)).filter((port): port is Point2D => port !== undefined);
     for (let index = 1; index < points.length; index += 1) {
       if (distance(points[index - 1]!, points[index]!) < 1) continue;
       services.push({
         id: `${chain.elementId}#${services.length}`, a: points[index - 1]!, b: points[index]!,
         halfWidthMm: chain.radiusMm + defaultRadius + settings.refrigerantClearanceMm + SERVICE_PLAN_TOLERANCE_MM,
         segments3d: chain.segments3d,
-        // Up to the soffit, by two of its bends at least.
-        ...(chain.service !== 'drain' ? { hop: { topMm: ceilingLimit - chain.radiusMm, minRiseMm: 4 * chain.radiusMm } } : {}),
+        ...(ownPorts.length && chain.service !== 'drain' ? { ownZone: { ports: ownPorts, radiusMm: UNIT_CONNECTION_ZONE_MM } } : {}),
+        // Up to the soffit, by two of its bends at least; only where its elbows clear its port stubs and corners.
+        ...(chain.service !== 'drain' ? { hop: { topMm: ceilingLimit - chain.radiusMm, minRiseMm: 4 * chain.radiusMm,
+          ...(chain.hopStretches ? { stretches: chain.hopStretches, windowMm: chain.radiusMm + defaultRadius + settings.refrigerantClearanceMm } : {}) } } : {}),
       });
     }
     chain = null;
@@ -285,7 +292,8 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
     const last = chain?.points.at(-1);
     if (!chain || chain.elementId !== segment.elementId || !last || distance(last, a) > 0.5) {
       flush();
-      chain = { elementId: segment.elementId, service: segment.service, radiusMm: segment.radiusMm, points: [a], segments3d: [] };
+      chain = { elementId: segment.elementId, service: segment.service, radiusMm: segment.radiusMm, points: [a], segments3d: [],
+        connectedUnitIds: segment.connectedUnitIds, ...(segment.hopStretches ? { hopStretches: segment.hopStretches } : {}) };
     }
     chain.segments3d.push({ a: segment.a, b: segment.b });
     chain.radiusMm = Math.max(chain.radiusMm, segment.radiusMm);
@@ -302,7 +310,8 @@ function buildRouterContext(environment: CondensateEnvironment, defaultRadius: n
       const upper = source ? Math.min(environment.envelope.voidTopMm - defaultRadius, source.z + pumpLift) : environment.envelope.voidTopMm;
       return inflated
         .filter(({ raw, minZ, maxZ }) => raw.id !== gullyId && (raw.id === unitId || maxZ + inflate > lower && minZ - inflate < upper))
-        .map(({ raw, padded, passAt }) => (raw.id === unitId ? sourceBox(raw) : passAt !== null && passAt <= upper ? { ...padded, passOverAtZ: passAt } : padded));
+        .map(({ raw, padded, passAt, band }) => (raw.id === unitId ? sourceBox(raw) : band ? { ...padded, clearBand: band }
+          : passAt !== null && passAt <= upper ? { ...padded, passOverAtZ: passAt } : padded));
     },
     services,
     walls: environment.walls.map((wall) => ({ id: wall.id, a: wall.a, b: wall.b })),
@@ -468,6 +477,14 @@ function clearRiserTop(
       else clear = mid;
     }
     top = Math.min(top, clear);
+  }
+  // A branch kit over the foot: the riser stops under it (a drain passes under a kit, never through it).
+  const kitGap = radius + environment.settings.refrigerantClearanceMm;
+  for (const kit of environment.obstacles) {
+    if (!kit.passableUnder || kit.maxZ + kitGap <= baseZ) continue;
+    if (foot.x <= kit.minX - kitGap || foot.x >= kit.maxX + kitGap || foot.y <= kit.minY - kitGap || foot.y >= kit.maxY + kitGap) continue;
+    if (kit.minZ - kitGap < baseZ) return null;
+    top = Math.min(top, kit.minZ - kitGap);
   }
   const ownZone = source !== undefined && distance(foot, source.point) <= UNIT_CONNECTION_ZONE_MM;
   for (const service of environment.services) {
@@ -1126,7 +1143,7 @@ function findLowBodyWindows(
   planPadMm: number,
 ): CrossingWindow[] {
   const windows: CrossingWindow[] = [];
-  const bodies = obstacles.filter((obstacle) => obstacle.crossable);
+  const bodies = obstacles.filter((obstacle) => obstacle.crossable || obstacle.passableUnder);
   for (const node of net.nodes.values()) {
     if (node.edge !== 'run' || !node.down) continue;
     const down = net.nodes.get(node.down)!;
@@ -1153,8 +1170,8 @@ function findLowBodyWindows(
       windows.push({
         upId: node.id, downId: down.id, a: { ...a }, b: { ...b }, t1, t2,
         point: { x: a.x + (b.x - a.x) * mid, y: a.y + (b.y - a.y) * mid },
-        services: [{ elementId: body.id, service: 'duct', a: { x: body.minX, y: body.minY, z: body.maxZ }, b: { x: body.maxX, y: body.maxY, z: body.maxZ }, radiusMm: 0, connectedUnitIds: [] }],
-        zMin: body.minZ, zMax: body.maxZ, requiredMm: radius + DRAIN_GAP_MM, condensateRadiusMm: radius,
+        services: [{ elementId: body.id, service: body.passableUnder ? 'kit' : 'duct', a: { x: body.minX, y: body.minY, z: body.maxZ }, b: { x: body.maxX, y: body.maxY, z: body.maxZ }, radiusMm: 0, connectedUnitIds: [] }],
+        zMin: body.minZ, zMax: body.maxZ, requiredMm: radius + (body.passableUnder ? settings.refrigerantClearanceMm : DRAIN_GAP_MM), condensateRadiusMm: radius,
       });
     }
   }
@@ -1756,6 +1773,10 @@ function planNetworks(scene: HvacElement[], options: CondensatePlanOptions, rout
     const windows = mergeCrossingWindows([...findCrossingWindows(net, coordinatedServices, base.sizes, settings, unitPorts), ...lowBodies])
       .sort((a, b) => a.upId.localeCompare(b.upId) || b.t1 - a.t1);
     const initial = solved.solution;
+    // Every window is split into its run first (far end of each edge first, as above); then they are judged as the
+    // drain meets them, from the outlets down: a crossing nearer the outlet holds the drain down for those after it,
+    // and nothing further on is given its side first (a body passed over there could leave no way under the line).
+    const placed: Array<{ window: CrossingWindow; ids: string[]; key: string; elementIds: string[]; currentZ: number }> = [];
     for (const window of windows) {
       const up = net.nodes.get(window.upId);
       if (!up?.down) continue;
@@ -1772,11 +1793,22 @@ function planNetworks(scene: HvacElement[], options: CondensatePlanOptions, rout
         const zDown = initial.zHigh.get(window.downId) ?? zUp;
         return zUp + (zDown - zUp) * ((window.t1 + window.t2) / 2);
       })();
+      placed.push({ window, ids, key, elementIds, currentZ });
+    }
+    const toOutfall = (id: string) => {
+      let length = 0;
+      for (let node = net.nodes.get(id); node?.down; node = net.nodes.get(node.down)) length += distance(node.point, net.nodes.get(node.down)!.point);
+      return length;
+    };
+    const fromOutlets = placed.map((entry) => ({ entry, reach: toOutfall(entry.ids[0]!) }))
+      .sort((left, right) => right.reach - left.reach).map(({ entry }) => entry);
+    for (const { window, ids, key, elementIds, currentZ } of fromOutlets) {
       const includesDrain = window.services.some((service) => service.service === 'drain');
-      const includesBody = window.services.some((service) => service.service === 'duct');
+      const includesBody = window.services.some((service) => service.service === 'duct' || service.service === 'kit');
       const serviceKind = window.services.every((service) => service.service === 'drain') ? 'drain'
         : window.services.every((service) => service.service === 'duct') ? 'duct'
-          : includesDrain || includesBody ? 'service' : 'refrigerant';
+          : window.services.every((service) => service.service === 'kit') ? 'branch kit'
+            : includesDrain || includesBody ? 'service' : 'refrigerant';
       const serviceLabel = elementIds.length > 1 ? `${serviceKind} runs ${elementIds.join(', ')}` : `${serviceKind} ${elementIds[0]}`;
       const below = window.zMin - window.requiredMm;
       const above = window.zMax + window.requiredMm;
@@ -1795,12 +1827,34 @@ function planNetworks(scene: HvacElement[], options: CondensatePlanOptions, rout
         solved = attempt;
         return true;
       };
+      // Lines at two levels in one window (a unit's connection at its port's level over a main lower down): the drain may
+      // thread between them, over the lower and under the upper, each by its own gap.
+      const threaded = includesBody || elementIds.length < 2 ? null : (() => {
+        const bands = elementIds.map((elementId) => {
+          const lines = window.services.filter((service) => service.elementId === elementId);
+          const zs = lines.flatMap((service) => [service.a.z, service.b.z]);
+          return { elementId, zMin: Math.min(...zs), zMax: Math.max(...zs),
+            needMm: window.condensateRadiusMm + Math.max(...lines.map((service) => service.radiusMm)) + settings.refrigerantClearanceMm };
+        }).sort((left, right) => left.zMin - right.zMin);
+        for (let split = 1; split < bands.length; split += 1) {
+          const under = bands.slice(0, split);
+          const over = bands.slice(split);
+          const lower = Math.max(...under.map((band) => band.zMax + band.needMm));
+          const upper = Math.min(...over.map((band) => band.zMin - band.needMm));
+          if (lower <= upper) return { under, over, lower, upper };
+        }
+        return null;
+      })();
       let relation: CondensateCrossing['relation'];
+      let between: NonNullable<typeof threaded> | null = null;
       const preferAbove = currentZ >= above - 1e-6;
       if (!preferAbove && tryBound({ upper: below, reason: `below ${serviceLabel}` })) relation = 'below';
       else if (tryBound({ lower: above, reason: `above ${serviceLabel}` })) relation = 'above';
       else if (tryBound({ upper: below, reason: `below ${serviceLabel}` })) relation = 'below';
-      else {
+      else if (threaded && tryBound({ lower: threaded.lower, upper: threaded.upper, reason: `between ${serviceLabel}` })) {
+        relation = 'above';
+        between = threaded;
+      } else {
         tryBound({ reason: '' });
         for (const id of ids) {
           const node = net.nodes.get(id)!;
@@ -1818,19 +1872,38 @@ function planNetworks(scene: HvacElement[], options: CondensatePlanOptions, rout
         const zs = ids.map((id) => (solved as NetworkSolveResult).solution.zHigh.get(id) ?? currentZ);
         return zs.reduce((sum, z) => sum + z, 0) / zs.length;
       })();
-      crossings.push({
-        key,
-        serviceElementId: elementIds[0]!,
-        serviceElementIds: elementIds,
-        point: window.point,
-        relation,
-        condensateZ: zHere,
-        serviceZMin: window.zMin,
-        serviceZMax: window.zMax,
-        requiredClearanceMm: window.requiredMm,
-        networkId: net.networkId,
-        ...(serviceKind === 'duct' ? { overBody: true } : {}),
-      });
+      if (between) {
+        // Threaded between: over the lower lines, under the upper ones (a crossing each way).
+        for (const [bands, side] of [[between.under, 'above'], [between.over, 'below']] as const) {
+          const ids = bands.map((band) => band.elementId).sort();
+          crossings.push({
+            key: `${ids.join('+')}@${Math.round(window.point.x / 50)},${Math.round(window.point.y / 50)}`,
+            serviceElementId: ids[0]!,
+            serviceElementIds: ids,
+            point: window.point,
+            relation: side,
+            condensateZ: zHere,
+            serviceZMin: Math.min(...bands.map((band) => band.zMin)),
+            serviceZMax: Math.max(...bands.map((band) => band.zMax)),
+            requiredClearanceMm: Math.max(...bands.map((band) => band.needMm)),
+            networkId: net.networkId,
+          });
+        }
+      } else {
+        crossings.push({
+          key,
+          serviceElementId: elementIds[0]!,
+          serviceElementIds: elementIds,
+          point: window.point,
+          relation,
+          condensateZ: zHere,
+          serviceZMin: window.zMin,
+          serviceZMax: window.zMax,
+          requiredClearanceMm: window.requiredMm,
+          networkId: net.networkId,
+          ...(serviceKind === 'duct' || serviceKind === 'branch kit' ? { overBody: true } : {}),
+        });
+      }
       if (relation === 'hop') {
         // One hop per refrigerant line in the window; each clears the drain by its own radius.
         for (const elementId of elementIds) {
