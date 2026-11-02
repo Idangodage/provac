@@ -120,10 +120,11 @@ the unit (point 2).
 ## Still open
 
 - **The straight off a branch kit.** The router and the check both read 300 mm (Route defaults).
-  500 mm (LG's 20 in, the check's former fallback) makes the pair wrap DU-2's drain outlet on the
-  user's drawing: the drain must pass under the pair and can then no longer clear the ducts
-  beyond, so Auto route falls back to mains below the ceiling. Set the maker's figure once MHI's
-  DIS kit manual confirms it; both follow.
+  500 mm (LG's 20 in, the check's former fallback) made the pair wrap DU-2's drain outlet on the
+  user's drawing on 1 November. With the drains of 2 November it works there (six units side by
+  side, six drains, and 14 checks instead of 20: the pair spacing ones fall from 7 to 1), but on
+  the test drawings it loses a drain on building-put-right and sends cassettes-6 below the
+  ceiling, so 300 stays. Set the maker's figure once MHI's DIS kit manual confirms it; both follow.
 - **Two reducers** (`diameter-mismatch`): the seed run keeps the main's 19.05 mm to DU-3's 15.88
   mm connection. Capacity sizing of each leg needs the maker's data.
 - **Seven pair spacings** (`pipe-pair-separation`): at the unit stubs the pair runs at the
