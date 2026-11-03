@@ -3704,6 +3704,138 @@ failures (`DU_FLEX_BEND` after a turn, a half turn not re-routing the trunk) tha
 - The drain tool draws on the plan (taken out in 3D, the view turns to the plan).
 - A refrigerant line drawn like another takes the sizes of the port or line it starts from (no size override).
 
+## Terminals fed from in front of their inlet (2 November 2026)
+
+**The request:** in the user's hall (one large ducted unit, eight supply diffusers below it, six return terminals
+above), Auto route in Rectangular fed two diffusers that sit right beside a trunk by a branch that rose past them and a
+flex that dropped back into the far side of their box, the inlet turned away from the trunk (a goose-neck), and called
+the design clean. "The diffuser should turn to the duct path and connect to the nearest duct, complying with technical
+aspects." Approved plan: `C:\Users\idang\.claude\plans\duct-terminal-approach.md` (all five recommended options). Built
+on Codex's uncommitted work of the same day, committed as it was (`codex/wip-2026-11-02`).
+
+**Why it happened.**
+- Rectangular throughout gave every terminal its own rectangular branch, which needs about 0.6–0.7 m off the trunk
+  before it can turn (the main's half, the shoe's collar, its damper, a lead) and a square-to-round before its runout.
+  A box 0.3 m from the trunk cannot be reached that way, and the round collar a fitter would use there was not offered
+  in that shape, so only winding routes were left.
+- No rule judged how a terminal is approached. The runout check leaves out the terminal's own box; the winding warning
+  measures from the unit's collar; Rectangular is kept on a whole-system cost ratio. A loop 13 m from the unit tripped
+  none of them.
+- The router kept, per state, the cheapest of a terminal's inlet sides, whatever node it was later taken off at, so it
+  could not know that the take-off lay behind the inlet it used.
+
+**The rule** (`ductTerminalApproach.ts`; practice: SMACNA S3.23 runouts as short as possible, ADC and the terminal
+makers a straight entry). The feed point is where a terminal's own duct leaves shared duct: a branch's start (take-off,
+split outlet, plenum spigot); for a run off the collar, its last take-off, else the collar.
+- **Fed from behind:** the feed point lies behind the inlet's face by more than the neck's diameter (the room a
+  runout's own bend takes beside the box). The duct must go round the box, or across in front of it, to come back in.
+- **Passes the inlet:** fed from one side of the inlet's axis, the duct crosses it by more than half the neck (100 mm at
+  least) and comes back from the other side.
+- A top collar takes its runout from any side and is not judged.
+
+**What does what.**
+- **Planner** (`DU_TERMINAL_APPROACH`, warning; every run, drawn or Auto): "SAD-4 is fed from behind its inlet: its duct
+  leaves 1240 mm behind the inlet's face and goes round the box. Turn its inlet to the front side, or take the duct
+  off in front of it." A side set by hand: "Its spigot side is set by hand; the front side faces the duct." A face that
+  cannot turn (a linear slot): "Take the duct off in front of its inlet." It shows as a check marker at the terminal's
+  runout (where its connection is), like any duct check.
+- **Auto verification** (`verifyRuns`): an error where the design could have turned the inlet (more than one side
+  offered), so the design ranking, the feasibility loop's cuts and the Rectangular fallback treat it as not clean; a
+  warning where the side is fixed. When nothing comes out clean, the reason reads "no duct reaches it from in front of
+  its inlet … Move it further from the duct beside it, or give it a top collar."
+- **Router** (`steinerArborescence.ts`): a single terminal whose side inlet may turn keeps a layer per inlet side as well
+  as its layer with every side, each state labelled with the side its route ends at. Wherever it joins its parent at a
+  node — a take-off, an all-flex stub, the run going on to its last terminal, a split outlet, the stub at a run's end —
+  the parent reads the cheapest route whose inlet has that node in front of it, and the walk that builds the tree
+  follows the layer it came from. Where the layer with every side already faces the node, its own route is kept, so a
+  design the rule does not touch comes out the same (checked: identical designs on the layouts it does not touch).
+  A system of one terminal runs from the collar: its route's inlet must face the collar's lip. A feed may lie up to the
+  neck's diameter behind the face, as in the check. Grouped routing (past the exact search) keeps the layers too:
+  without them the dense eleven-diffuser layout ended with two errors.
+- **Rectangular and a terminal beside a duct:** the router's all-flex stub (a spin-in, or conical on a fast main, with
+  its damper, then the flex) is offered in Rectangular only where no rectangular branch leaves that side of the node,
+  and only for a runout shorter than a straight rectangular branch to the terminal would be (the main's half, the shoe's
+  collar, damper and lead, the square-to-round and the 600 mm runout, less the round collar's reach). Its collar is
+  priced as a round collar on that main. The sizing filter keeps such trees from the rectangular router only.
+- **A straight entry preferred:** the router prices the bends a runout makes in its last three diameters once more
+  (`flexInletBendLossPa`), in its leaves and its stubs, so an inlet faces its duct where that costs about the same. The
+  reported pressure leaves it out.
+
+**Found on the way, fixed.**
+- **A shape that leaves a service out counted as clean.** Rectangular could fail to lay out the supply while the return
+  came out clean; the result was then "clean" and, having less duct, cheaper than Rect + round, so it was kept. A
+  service with no layout in a shape now makes that shape's result unclean (`cleanAutoDuct`), and Rect + round is
+  designed instead, with the card's note.
+- **Codex's uncommitted work of the same day** (offering every clear side of a square face, which this work keeps: it is
+  what lets an inlet face a duct beyond it) had broken five tests that passed at 39b86c1, and its own new test never
+  passed:
+  - *No route through a partition:* a leaf line landed inside the wall's band, its nodes were dropped, and no edge
+    crossed the wall any more. Where a system may cross walls, an edge now steps over the lines inside such a wall
+    (kept only if it is that crossing; `routingGraph.ts`), so the one-room graph is unchanged.
+  - *The wall reason named the wrong terminals:* it now names the terminals past the crossing, not every terminal the
+    crossing run serves.
+  - *The pair close to the unit no longer winds round* (the test said it still did): with every side offered and the
+    rule, each inlet faces the Y's outlet beyond it — USD 389 → 219, 5.5 m → 1.5 m of duct each. The test now asks
+    for that.
+  - *The dense eleven-diffuser layout* ran with a 1 s budget, which stopped the search before its repair rounds: the
+    design depended on the computer's speed. It runs with the default budget (84 s here; clean).
+  - *Codex's cross-trunk test* asked for one topology the optimiser does not choose; it now checks the design shown
+    (clean, every terminal fed from in front, runouts within limits, nothing moved).
+  - *A compact group gets a plenum* failed on Codex's work and passes with this one.
+
+### Verified
+
+- **The user's hall, rebuilt from the screenshot** (an FDU224, positions measured at about 25 mm per pixel across and 30
+  down; their drawing itself was not available). Rectangular, before: one supply diffuser fed from 13.3 m behind its
+  inlet — the duct ran past it, turned and came in on its far side — in a design called clean. After: every terminal fed
+  from in front, inlets turned to face their ducts, supply USD 3,262 → 3,132 and 54 → 50 Pa, return USD 3,126 → 2,942
+  and 43 → 40 Pa. Three terminals beside a trunk take a round collar and a straight flex (0.6–1.1 m); the rest keep
+  rectangular branches. The same rebuilt hall is a gated case in `autoDuctBenchmark.test.ts`.
+- **Survey of 64 designs** (the benchmark's rows, lines, grids and grids with returns, both spigot placements, plus a row
+  with one diffuser beside the trunk; Optimal and Rectangular as Auto duct asks for it): before, 8 terminals fed from
+  behind and 2 passed in designs counted clean; after, none, with no errors in any design and every terminal served.
+  33 designs identical; total first cost USD 38,384 → 38,603 (+0.6 %). Where the rule fixed a terminal, the design
+  costs more (Optimal grid 2×2 + return USD 638 → 734, 43.8 → 38.8 Pa; row of 6 USD 737 → 783). Rectangular grid 3×2 +
+  2 returns falls back to Rect + round as before (USD 1,027 → 1,033), now without a terminal fed from behind (for a
+  while it kept a "rectangular" result that had laid out the returns only; see above). Rectangular row of 6 now falls
+  back to Rect + round (USD 805, 19.6 Pa): its rectangular trees that do not wind
+  cost 1.54 times that; before, the kept rectangular design (USD 1,048, 44.4 Pa) ran 8.1 m to one diffuser and carried a
+  winding warning. A few others move by a dollar where the inlet price chose a straight entry. Time 444 → 495 s (+11 %).
+- **Unit tests:** `ductTerminalApproach` 6 (the measure; the feed of a branch, of a run's last take-off, of a collar; the
+  planner's message and advice for a turnable side, a side set by hand, a slot, a top collar; error versus warning in
+  Auto verification; the inlet price).
+- **On the canvas** (`terminal-approach.mjs`, dev server of this branch): the hall placed 60 m from the test room, Auto
+  route ducts in Rectangular, applied: 7/7 — 14 terminals each with its duct, none fed from behind or past its inlet,
+  no planner error on any of them, 11 inlets turned, no approach marker; plan and Iso pictures; the project restored
+  exactly. (The drawing's six check markers are neck-velocity warnings: the rebuilt hall puts a lot of air through each
+  Ø250 neck.) Run before the last adjustments (the one-diameter allowance, systems of one at the collar, the clean
+  check); the hall's designs come out the same after them.
+- **Benchmark gate** (`DUCT_BENCHMARK=1`): 44/44, the rebuilt hall included; the 9- and 12-terminal grids, past the
+  exact search, within their own time guard (59–68 s).
+- **Auto route golden master**, against 39b86c1 (before Codex's change and this work): refrigerant connections, drains,
+  clashes and blocking issues the same in all nine cases; in the user's building as drawn, DU-2's ducts are now designed
+  (they were left out); duct life-cycle costs 0 to +5 %. Recorded again.
+- **Full engine suite:** 343 files, 2,973 tests passed, 66 skipped (the gated ones); tsc and lint clean on the files changed.
+
+### Known limits
+
+- **The router judges a take-off at its node** on the main's centre line; the planner at the duct's wall. Where a main
+  runs across the very face of an inlet the two can differ by the main's half; the check catches it and the loop cuts it.
+- **"Passes the inlet" is checked, not built in:** the router keeps per-side layers, not per-approach ones, so a duct that
+  crosses the inlet's axis is found by verification and cut (an error where the inlet could turn).
+- **Rectangular may place a trunk close beside terminals** and feed them on round collars; that meets the rule (no
+  rectangular branch fits there) and was cheaper in every case seen, but changes which trees the router offers (row of 6).
+- **Time:** offering every side of a square face (Codex's change) grows the routing grid, and the layers per inlet side
+  add to each solve. Against 39b86c1: the dense eleven-diffuser layout 44 → 84 s (Codex's work: 89 s, ending with an
+  error; here clean); grid 3×3 23 → 72 s and 4×3 28 → 86 s (Codex's work: 31 and 75 s; these grids past the exact
+  search end with errors in every version, a known limit; leaving the per-side layers out of grouped routing brought
+  them to 33 and 66 s but left the dense layout with two errors). The benchmark's time guard for them is 150 s. Small
+  layouts take about 11 % longer than on Codex's work.
+- **A layout where obstacles force a long duct round** to a terminal's inlet can lose its only route to the rule; the
+  card then says why (move the terminal, or give it a top collar).
+- **The user's own drawing** was not available: the hall was rebuilt from the screenshot. Their export (Export → JSON)
+  would make the regression exact.
+
 ## Known limits (auto duct, 30 September 2026)
 
 - **Grids of 9 and 12 terminals** (the grouped router) still end with errors: runouts and runs of different groups keep clashing, and repair does not converge. The card and Auto route say why.
