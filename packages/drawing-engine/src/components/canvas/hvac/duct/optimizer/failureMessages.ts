@@ -3,14 +3,14 @@
  * the optimiser tried, the rule that failed most often and the terminal it
  * concerns, with what would free it — instead of a bare issue count.
  */
-import type { AutoDuctIssue, ServiceCtx, TerminalCtx } from '../ductAutoContext';
+import { toLocal, type AutoDuctIssue, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { neckVelocityMs } from '../ductSizing';
 
-import { allRuns, servedTerminals, type RunDesign } from './designTree';
+import { allRuns, servedTerminals, stationOf, type RunDesign } from './designTree';
 import type { ServiceOption, TreeFailure } from './ductOptimizer';
 import type { RoutingGraph } from './routingGraph';
 
-type Cause = 'collar' | 'runout' | 'take-off' | 'end' | 'split' | 'clash' | 'wall' | 'penetration';
+type Cause = 'collar' | 'runout' | 'take-off' | 'end' | 'split' | 'clash' | 'wall' | 'penetration' | 'approach';
 
 const CAUSE_OF_REASON: Record<string, Cause> = {
   collar: 'collar',
@@ -34,10 +34,18 @@ const CAUSE_OF_CODE: Record<string, Cause> = {
   DU_AUTO_WALL: 'wall',
   DU_PENETRATION_FITTING: 'penetration',
   DU_PENETRATION_FLEX: 'penetration',
+  DU_TERMINAL_APPROACH: 'approach',
 };
 
 function labelOf(terminal: TerminalCtx): string {
   return terminal.element.label || terminal.spec.kind;
+}
+
+/** The terminals a run serves past `at` (local frame): its take-offs further along and its end (a wall it crosses there stands between the unit and them). */
+function servedPast(run: RunDesign | undefined, at: { x: number; y: number }): TerminalCtx[] {
+  if (!run) return [];
+  const station = stationOf(run.vertices, at);
+  return servedTerminals({ ...run, taps: run.taps.filter((tap) => tap.station > station) }).slice(0, 2);
 }
 
 /** The terminals a failed run concerns: its own, or those of the take-off named. */
@@ -61,6 +69,8 @@ function sentence(cause: Cause, names: string): string {
       return `${names}: the split that would feed it has no room for its outlets. Space the terminals further apart.`;
     case 'wall':
       return `${names}: the duct would have to pass through a wall it may not cross (an exterior wall, or a wall inside a one-room system). Move it, or the unit.`;
+    case 'approach':
+      return `${names}: no duct reaches it from in front of its inlet — every route comes at it from behind its box or past it. Move it further from the duct beside it, or give it a top collar.`;
     case 'penetration':
       return `${names}: the duct reaches it through a wall, but a fitting or its flexible runout would sit in the wall there; a wall needs a plain straight through it. Move it further from the wall, or the unit.`;
     default:
@@ -114,7 +124,9 @@ export function explainNoCleanDesign(ctx: ServiceCtx, failures: readonly TreeFai
     const runs = new Map(allRuns(option.design.root).map((run) => [run.key, run]));
     for (const issue of option.issues) {
       if (issue.severity !== 'error' || !issue.runId) continue;
-      add(CAUSE_OF_CODE[issue.code], concerned(runs.get(option.runKeys.get(issue.runId) ?? ''), undefined));
+      const run = runs.get(option.runKeys.get(issue.runId) ?? '');
+      // A wall: the terminals beyond it, not those the run serves before it.
+      add(CAUSE_OF_CODE[issue.code], issue.code === 'DU_AUTO_WALL' && issue.point ? servedPast(run, toLocal(ctx.frame, issue.point)) : concerned(run, undefined));
     }
   }
   return [...tally.values()]

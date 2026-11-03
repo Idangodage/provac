@@ -185,14 +185,44 @@ export function splitOutletLossPa(style: DuctSplitStyle, outletVelocityMs: numbe
  * absolute turns, since opposite bends in an S-runout do not cancel losses.
  */
 export function flexBendLossPa(points: readonly DuctPoint3[], diameterMm: number, airflowM3h: number): number {
+  return bendLossOf(points, diameterMm, airflowM3h, Number.POSITIVE_INFINITY);
+}
+
+/** A bend that ends within this many diameters of a terminal's inlet sends the air in skewed (practice). */
+export const INLET_BEND_DIAMETERS = 3;
+
+/**
+ * The loss of the bends a runout makes in its last INLET_BEND_DIAMETERS
+ * diameters before the terminal's inlet: the price of turning into the inlet
+ * rather than entering it straight (practice: ASHRAE and the terminal makers
+ * note that a bend at a diffuser's inlet adds pressure drop and noise and
+ * skews its throw). The router counts it once more, so an inlet faces its
+ * duct where that costs about the same; reported pressure leaves it out.
+ */
+export function flexInletBendLossPa(points: readonly DuctPoint3[], diameterMm: number, airflowM3h: number): number {
+  return bendLossOf(points, diameterMm, airflowM3h, INLET_BEND_DIAMETERS * diameterMm);
+}
+
+/** The runout's bend loss, from the bends within `fromEndMm` of its end (arc length). */
+function bendLossOf(points: readonly DuctPoint3[], diameterMm: number, airflowM3h: number, fromEndMm: number): number {
   if (diameterMm <= 0 || airflowM3h <= 0) return 0;
   const section = { widthMm: diameterMm, heightMm: diameterMm, diameterMm };
   const velocityPressure = velocityPressurePa(velocityMs(section, airflowM3h));
   const frictionPerMm = frictionPaPerM(section, airflowM3h, 'flex') / 1000;
   const samples = points.filter((point, index) => index === 0
     || Math.hypot(point.x - points[index - 1]!.x, point.y - points[index - 1]!.y, point.z - points[index - 1]!.z) > 1e-6);
+  // Arc length left to the end from each sample (only needed when the bends counted stop short of the start).
+  const left = new Float64Array(samples.length);
+  if (Number.isFinite(fromEndMm)) {
+    for (let index = samples.length - 2; index >= 0; index -= 1) {
+      const a = samples[index]!;
+      const b = samples[index + 1]!;
+      left[index] = left[index + 1]! + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    }
+  }
   let loss = 0;
   for (let index = 1; index + 1 < samples.length; index += 1) {
+    if (left[index]! > fromEndMm) continue;
     const a = samples[index - 1]!;
     const b = samples[index]!;
     const c = samples[index + 1]!;

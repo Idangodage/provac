@@ -36,13 +36,14 @@
 import type { Point2D } from '../../../../../types';
 import { branchStubMm, flexClear, flexOk, runoutPath, runoutStaysOut, simplifyCollinear, type AutoDuctIssue, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { PENETRATION_JOINT_MARGIN_MM } from '../ductPenetrations';
-import { flexBendLossPa } from '../ductPressure';
+import { flexBendLossPa, flexInletBendLossPa } from '../ductPressure';
 import { maxRoundBranchMm } from '../ductRoundFittings';
 import { onStep, stepAtOrAbove } from '../ductSizeCatalog';
+import { APPROACH_BEHIND_MM } from '../ductTerminalApproach';
 import { isRoundLeg, roundLeg, type DuctLeg, type DuctTapStyle } from '../ductTypes';
 
 import { allRuns, computeFlows, runLengthMm, type DesignStart, type RunDesign, type ServiceDesign } from './designTree';
-import { DIRECTIONS, leftOf, rightOf, reverseOf, ROUTE_CLEARANCE_MM, terminalVariants, type RoutingGraph } from './routingGraph';
+import { DIRECTIONS, FRONT_REACH_MM, leftOf, rightOf, reverseOf, ROUTE_CLEARANCE_MM, terminalVariants, type RoutingGraph } from './routingGraph';
 import type { SizingModel } from './sizingModel';
 
 const INF = Number.POSITIVE_INFINITY;
@@ -287,6 +288,21 @@ interface SavedLayer {
   tailValue: Float64Array | null;
   tailLand: Int32Array | null;
   leafVariant: Int8Array | null;
+  sideLayers: SideLayer[] | null;
+  facing: FacingOut | null;
+}
+
+/** A single terminal's layer for one inlet side alone (the approach rule): its values, decisions, moves out and tail. */
+interface SideLayer { d: Float64Array; how: Int8Array; gs: Float64Array; gb: Float64Array; tailValue: Float64Array; tailLand: Int32Array }
+
+/**
+ * A single terminal under the approach rule, taken off at the node of each directed state: its moves out after
+ * a fitting and its tail, each with the layer it comes from (−1: the layer with every side; else that side's).
+ */
+interface FacingOut {
+  gs: Float64Array; gsSide: Int8Array;
+  gb: Float64Array; gbSide: Int8Array;
+  tail: Float64Array; tailSide: Int8Array; tailLand: Int32Array;
 }
 
 /**
@@ -354,7 +370,7 @@ const LEAF_STRAIGHT_MM = 400;
 /** Trees built from the best roots only (each is sized and verified; the rest cost more on the model). */
 const ROOTS_KEPT = 6;
 
-interface StubRunoutSide { length: Float64Array; bendLossPa: Float64Array }
+interface StubRunoutSide { length: Float64Array; bendLossPa: Float64Array; inletLossPa: Float64Array }
 
 /** All-flex runouts per side, geometry and fixed terminal flow, shared by every solve on the graph. */
 const STUB_GEOMETRY = new WeakMap<RoutingGraph, Map<string, StubRunoutSide[]>>();
@@ -375,6 +391,7 @@ function stubGeometry(ctx: ServiceCtx, model: SizingModel, graph: RoutingGraph, 
   const sides = terminalVariants(terminal).map((candidate) => {
     const length = new Float64Array(directed).fill(INF);
     const bendLossPa = new Float64Array(directed);
+    const inletLossPa = new Float64Array(directed);
     for (let s = 0; s < directed; s += 1) {
       const v = s >> 2;
       const dirV = DIRECTIONS[s & 3]!;
@@ -386,8 +403,9 @@ function stubGeometry(ctx: ServiceCtx, model: SizingModel, graph: RoutingGraph, 
       if (!runoutStaysOut(ctx, { x: graph.nodeX[v]!, y: graph.nodeY[v]! }, dirV, end, ctx.bottomZ, candidate, mainHalfMm)) continue;
       length[s] = fit.lengthMm;
       bendLossPa[s] = flexBendLossPa(fit.points, candidate.neck, candidate.airflowM3h);
+      inletLossPa[s] = flexInletBendLossPa(fit.points, candidate.neck, candidate.airflowM3h);
     }
-    return { length, bendLossPa };
+    return { length, bendLossPa, inletLossPa };
   });
   cache.set(key, sides);
   return sides;
@@ -460,6 +478,23 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
   const tailLand: Array<Int32Array | null> = new Array(full + 1).fill(null);
   /** Single terminals: the cheaper of the tail and going straight on as usual, per directed state. */
   const tailOrOn: Array<Float64Array | undefined> = new Array(full + 1);
+  /**
+   * The approach rule (ductTerminalApproach): a terminal whose side inlet may turn is taken off its parent (a
+   * system of one, off the collar) only where that point lies in front of the inlet its route serves, or no more
+   * than the neck's diameter behind its face. Per terminal, each inlet side's lip and normal (local frame) and that
+   * allowance; null where the rule has no choice to make (one side, or a top collar).
+   */
+  const inlets = terminals.map((terminal) => {
+    const sides = terminalVariants(terminal);
+    const allowanceMm = Math.max(APPROACH_BEHIND_MM, terminal.neck);
+    return sides.length > 1 && !terminal.port.vertical ? sides.map((side) => ({ lip: side.lip, normal: side.normal, allowanceMm })) : null;
+  });
+  /** Whether terminal i's inlet side j has the point (x, y) in front of it, within the allowance. */
+  const inFrontOf = (i: number, j: number, x: number, y: number): boolean => {
+    const inlet = inlets[i]![j]!;
+    return (x - inlet.lip.x) * inlet.normal.x + (y - inlet.lip.y) * inlet.normal.y >= -inlet.allowanceMm;
+  };
+  const inFront = (i: number, j: number, v: number): boolean => inFrontOf(i, j, graph.nodeX[v]!, graph.nodeY[v]!);
   const stubMm = branchStubMm(ctx.settings);
   /**
    * How far an all-flex branch's stub end lies from its main's centreline, as the realiser builds it: the
@@ -499,30 +534,59 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
    * Single terminal B: an all-flex branch leaving node v along d — the stub, then the runout as the
    * planner curves it, clear of other equipment — for a stub end `reach` from the node. Cached per reach.
    */
-  const stubCache = new Map<string, { value: Float64Array; variant: Int8Array }>();
-  const stubsFor = (B: number, reach: number, mainHalf: number): { value: Float64Array; variant: Int8Array } => {
-    const key = `${B}:${Math.round(reach)}:${Math.round(mainHalf)}`;
+  const stubCache = new Map<string, { value: Float64Array; variant: Int8Array; sides: Float64Array[] }>();
+  /** Per directed state: the cheapest side and its price, and each side's own price (∞ where it does not fit or face the node). */
+  const stubsFor = (B: number, reach: number, mainHalf: number, maxFlexMm = INF): { value: Float64Array; variant: Int8Array; sides: Float64Array[] } => {
+    const key = `${B}:${Math.round(reach)}:${Math.round(mainHalf)}:${Number.isFinite(maxFlexMm) ? Math.round(maxFlexMm) : ''}`;
     const cached = stubCache.get(key);
     if (cached) return cached;
-    const terminal = terminals[Math.log2(B)]!;
-    const sides = stubGeometry(ctx, model, graph, Math.log2(B), terminal, Math.round(reach), mainHalf);
+    const index = Math.log2(B);
+    const terminal = terminals[index]!;
+    const geometries = stubGeometry(ctx, model, graph, index, terminal, Math.round(reach), mainHalf);
     const value = new Float64Array(directed).fill(INF);
     const variant = new Int8Array(directed);
-    sides.forEach((geometry, side) => {
+    const sides = geometries.map((geometry, side) => {
+      const price = new Float64Array(directed).fill(INF);
       for (let s = 0; s < directed; s += 1) {
         const length = geometry.length[s]!;
-        if (!Number.isFinite(length)) continue;
+        if (!Number.isFinite(length) || length > maxFlexMm) continue;
+        // The stub leaves the main at this node: only into an inlet that has the node in front of it.
+        if (inlets[index] && !inFront(index, side, s >> 2)) continue;
         const runout = model.flex(terminal.neck, terminal.airflowM3h, length, geometry.bendLossPa[s]!);
-        const price = runout.cost + lambda * runout.loss;
-        if (price < value[s]!) { value[s] = price; variant[s] = side; }
+        price[s] = runout.cost + lambda * (runout.loss + geometry.inletLossPa[s]!);
+        if (price[s]! < value[s]!) { value[s] = price[s]!; variant[s] = side; }
       }
+      return price;
     });
-    const entry = { value, variant };
+    const entry = { value, variant, sides };
     stubCache.set(key, entry);
     return entry;
   };
+  /**
+   * Rectangular throughout, the longest runout a round collar may feed off main S to terminal B: shorter than a
+   * straight rectangular branch to it would be (the main's half, the shoe's collar, its damper and lead, the
+   * square-to-round and the shortest runout, less the round collar's own reach), so a terminal takes one only
+   * where it is too close beside the main for its rectangular branch. Unlimited in the other shapes.
+   */
+  const stubFlexCapMm = (S: number, B: number, tapMain: DuctLeg): number => {
+    const branch = layers[B]!.best;
+    if (model.shape !== 'rectangular' || !branch || isRoundLeg(branch)) return INF;
+    const neck = terminals[Math.log2(B)]!.neck;
+    const straight = layers[S]!.halfMm + model.collarLengthMm('shoe-45', branch) + model.settings.vcdLengthMm + BRANCH_LEAD_MM
+      + model.endStraightMm(branch, neck) + FRONT_REACH_MM[0]!;
+    return straight - stubReachMm(tapMain, neck);
+  };
   /** Single terminals: the spigot side each leaf state's runout serves. */
   const leafVariant: Array<Int8Array | null> = new Array(full + 1).fill(null);
+  /** Single terminals under the approach rule: a layer per inlet side, and the moves out facing their node. */
+  const sideLayers: Array<SideLayer[] | null> = new Array(full + 1).fill(null);
+  const facing: Array<FacingOut | null> = new Array(full + 1).fill(null);
+  /** Layer S's moves out after a fitting and its tail, as a parent reads them (a single terminal: facing its take-off). */
+  const gsOf = (S: number): Float64Array => facing[S]?.gs ?? GS[S]!;
+  const gbOf = (S: number): Float64Array => facing[S]?.gb ?? GB[S]!;
+  const tailOf = (S: number): Float64Array => facing[S]?.tail ?? tailValue[S]!;
+  /** Layer S's decisions: its own, or (a single terminal) one inlet side's. */
+  const howOf = (S: number, side: number): Int8Array => (side >= 0 ? sideLayers[S]![side]!.how : how[S]!);
   /** Take-off windows are sized for the widest terminal neck the service has (a conservative branch). */
   const branchNeckMm = Math.max(...terminals.map((terminal) => terminal.neck));
   const order = Array.from({ length: full }, (_, index) => index + 1).filter(inFamily).sort((a, b) => popcount(a) - popcount(b));
@@ -586,23 +650,37 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
    * the layer's own best from where that lands: the cost per directed state,
    * and the state it lands in (for the walk). Exact on the grid; cached.
    */
-  const straightCache = new Map<string, { value: Float64Array; land: Int32Array }>();
-  const straightFirst = (S: number, minMm: number, discountMm = 0): { value: Float64Array; land: Int32Array } => {
+  const straightCache = new Map<string, { value: Float64Array; land: Int32Array; side: Int8Array | null }>();
+  /** (A single terminal under the approach rule: from a route whose inlet faces the node it leaves, and which layer's.) */
+  const straightFirst = (S: number, minMm: number, discountMm = 0): { value: Float64Array; land: Int32Array; side: Int8Array | null } => {
     const key = `${S}:${Math.ceil(minMm / 25)}:${Math.ceil(discountMm / 25)}`;
     const cached = straightCache.get(key);
     if (cached) return cached;
     const layer = layers[S]!;
     const d = D[S]!;
+    const sides = sideLayers[S];
+    const index = sides ? Math.log2(S) : -1;
+    const label = leafVariant[S];
     const value = new Float64Array(directed).fill(INF);
     const land = new Int32Array(directed).fill(-1);
+    const side = sides ? new Int8Array(directed) : null;
     for (let s = 0; s < directed; s += 1) {
       const walked = straightOn(S, s, minMm, layer, discountMm);
       if (!walked) continue;
       const s3 = (walked.node * 4 + (s & 3)) * LEVELS + walked.level;
       const rest = d[s3]!;
-      if (rest < INF) { value[s] = walked.cost + rest; land[s] = s3; }
+      if (!sides) {
+        if (rest < INF) { value[s] = walked.cost + rest; land[s] = s3; }
+        continue;
+      }
+      const v = s >> 2;
+      if (rest < INF && inFront(index, label![s3]!, v)) { value[s] = walked.cost + rest; land[s] = s3; side![s] = -1; continue; }
+      sides.forEach((layerOfSide, j) => {
+        const sideRest = layerOfSide.d[s3]!;
+        if (sideRest < INF && walked.cost + sideRest < value[s]! && inFront(index, j, v)) { value[s] = walked.cost + sideRest; land[s] = s3; side![s] = j; }
+      });
     }
-    const entry = { value, land };
+    const entry = { value, land, side };
     straightCache.set(key, entry);
     return entry;
   };
@@ -653,148 +731,63 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
   }
   const signatureOf = (S: number) => dependencies.filter((entry) => (entry.set & S) === entry.set).map((entry) => entry.text).join('|');
 
-  for (const S of order) {
-    const signature = memo ? signatureOf(S) : '';
-    const saved = memo && memo.signatures.get(S) === signature ? memo.saved.get(S) : undefined;
-    if (saved) {
-      D[S] = saved.d; GS[S] = saved.gs; GB[S] = saved.gb; how[S] = saved.how; subset[S] = saved.subset;
-      layers[S] = saved.layer; tailValue[S] = saved.tailValue; tailLand[S] = saved.tailLand; leafVariant[S] = saved.leafVariant;
-      continue;
-    }
-    const single = popcount(S) === 1;
-    const index = single ? Math.log2(S) : -1;
-    const layer = layerPrice(model, flows[S]!, single ? terminals[index]!.neck : null, lambda, branchNeckMm);
-    layers[S] = layer;
+  /**
+   * Seeds a single terminal's layer: its runouts, and (where the shape allows) the run taking it off its side on
+   * a stub at its end. `side`: that inlet side's alone (a per-side layer of the approach rule); else every side,
+   * each seeded state labelled with the side its route ends at.
+   */
+  const seedSingle = (S: number, layer: LayerPrice, d: Float64Array, dec: Int8Array, label: Int8Array, side: number | null): void => {
+    const index = Math.log2(S);
     const top = topOf(layer);
-    const d = new Float64Array(states).fill(INF);
-    const dec = new Int8Array(states);
-    const sub = single ? null : new Int32Array(states);
-    if (single) {
-      const terminal = terminals[index]!;
-      // The run's last leg holds its last elbow and the end the sizing builds (leafStraightMm); whole steps
-      // below it, so no length that holds it is refused (the sizing and the realiser check the rest).
-      const endMm = layer.best ? leafStraightMm(model, layer.best, terminal.neck) : LEAF_STRAIGHT_MM;
-      const needed = Math.min(top, stepsOf(endMm));
-      const bannedLeaves = options.cuts?.leaves.get(S);
-      const variantOf = new Int8Array(states);
-      for (const leaf of graph.leaves[index]!) {
-        if (bannedLeaves?.has(leaf.node * 4 + leaf.heading)) continue;
-        const runout = model.flex(terminal.neck, terminal.airflowM3h, leaf.flexLengthMm, leaf.flexBendLossPa);
-        const value = runout.cost + lambda * runout.loss;
-        for (let c = needed; c <= top; c += 1) {
-          const s3 = (leaf.node * 4 + leaf.heading) * LEVELS + c;
-          if (value < d[s3]!) { d[s3] = value; dec[s3] = LEAF; variantOf[s3] = leaf.variant; }
-        }
-      }
-      // Or the run takes its last terminal off its side on an all-flex stub and ends in a cap just past it
-      // (a trunk with take-offs and an end cap): a fitting, so where the straight arriving is clear. (Not in a
-      // system rectangular throughout: each terminal there has its rectangular branch off a shoe.)
-      const endMain = model.shape === 'rectangular' ? null : tapMainFor(S, terminal.neck);
-      if (endMain) {
-        const neckLeg = roundLeg(terminal.neck);
-        const fit = model.tee(fittingStyle(endMain, neckLeg), neckLeg, flows[S]!, endMain, flows[S]!);
-        const fitting = fit.cost + lambda * fit.loss + model.capCost(endMain)
-          + (STUB_END_RUN_ON_MM / 1000) * model.costPerMetre(endMain);
-        const stubs = stubsFor(S, stubReachMm(endMain, terminal.neck), (endMain.diameterMm ?? endMain.widthMm) / 2);
-        const banned = options.cuts?.stubs.get(S);
-        for (let s = 0; s < directed; s += 1) {
-          const v = s >> 2;
-          if (banned?.has(v)) continue;
-          const h = s & 3;
-          const s3 = s * LEVELS + top;
-          const left = stubs.value[v * 4 + ((h + 1) & 3)]! + fitting;
-          if (left < d[s3]!) { d[s3] = left; dec[s3] = STUB_END_LEFT; }
-          const right = stubs.value[v * 4 + ((h + 3) & 3)]! + fitting;
-          if (right < d[s3]!) { d[s3] = right; dec[s3] = STUB_END_RIGHT; }
-        }
-      }
-      leafVariant[S] = variantOf;
-    } else {
-      const main = layer.best;
-      const bannedSplits = options.cuts?.splits.get(S);
-      for (let A = (S - 1) & S; A > 0; A = (A - 1) & S) {
-        const B = S ^ A;
-        if (groupMasks && (!inFamily(A) || !inFamily(B))) continue;
-        const gA = GS[A]!;
-        const gB = GS[B]!;
-        const branchLeg = layers[B]!.best;
-        let tee = INF;
-        let split = INF;
-        if (main && branchLeg) {
-          const fit = model.tee(fittingStyle(main, branchLeg), branchLeg, flows[B]!, main, flows[S]!);
-          tee = fit.cost + lambda * fit.loss;
-          const leftLeg = layers[A]!.best;
-          // A split divides the flow into two trunks; a wye on a round main may also feed single terminals
-          // (its outlets can be their neck size). A rectangular Y divides into trunks only.
-          if (leftLeg && (isRoundLeg(main) || (popcount(A) >= 2 && popcount(B) >= 2))) {
-            const fork = model.split(isRoundLeg(main) ? 'wye' : 'y', main, flows[S]!, [{ leg: leftLeg, airflowM3h: flows[A]! }, { leg: branchLeg, airflowM3h: flows[B]! }]);
-            split = fork.cost + lambda * Math.max(...fork.losses);
-          }
-        }
-        if (!Number.isFinite(tee) && !Number.isFinite(split)) continue;
-        // A main that goes on to a single terminal first runs straight far enough for its reducer.
-        const tail = popcount(A) === 1;
-        // A wye's outlets leave at 45° and square up: each runs straight for that before anything else.
-        const wye = main !== null && isRoundLeg(main);
-        const splitA = Number.isFinite(split) && wye ? straightFirst(A, wyeRoom(main!, layers[A]!.best)).value : gA;
-        const splitB = Number.isFinite(split) && wye ? straightFirst(B, wyeRoom(main!, layers[B]!.best)).value : gB;
-        // A single terminal may hang off the main on an all-flex stub, laid off this main's wall.
-        const tapMain = popcount(B) === 1 && model.shape !== 'rectangular' ? tapMainFor(S, terminals[Math.log2(B)]!.neck) : null;
-        const stubs = Number.isFinite(tee) && tapMain
-          ? stubsFor(B, stubReachMm(tapMain, terminals[Math.log2(B)]!.neck), (tapMain.diameterMm ?? tapMain.widthMm) / 2) : null;
-        const bannedTees = options.cuts?.tees.get(B);
-        const bannedStubs = options.cuts?.stubs.get(B);
-        // A take-off's branch runs straight off the main for the main's half, its collar and damper and the
-        // realiser's lead before its first fitting.
-        const bB = Number.isFinite(tee) ? teeFirst(S, B).value : GB[B]!;
-        // The hot loop (every pair of subsets × every directed state): plain arrays, nothing allocated.
-        const teeOk = Number.isFinite(tee);
-        const splitOk = Number.isFinite(split);
-        // (or, where cheaper, straight on as usual: the run need not step down — it may end on a stub and a cap)
-        const straightOf = tail ? (tailOrOn[A] ??= minOf(tailValue[A]!, gA)) : gA;
-        const stubValue = stubs ? stubs.value : null;
-        const splitCode = wye ? SPLIT_WYE : SPLIT;
-        const splitRoom = layer.halfMm + ROUTE_CLEARANCE_MM;
-        const nodes = graph.nodeCount;
-        for (let v = 0; v < nodes; v += 1) {
-          const teeHere = teeOk && !bannedTees?.has(v);
-          const stubHere = teeOk && stubValue !== null && !bannedStubs?.has(v);
-          const splitHere = splitOk && !bannedSplits?.has(v) && graph.nodeClear[v]! >= splitRoom;
-          if (!teeHere && !stubHere && !splitHere) continue;
-          const base = v * 4;
-          for (let h = 0; h < 4; h += 1) {
-            // Fittings only where the straight arriving is clear (the top level).
-            const s3 = (base + h) * LEVELS + top;
-            let best = d[s3]!;
-            let code = 0;
-            const left = base + ((h + 1) & 3);
-            const right = base + ((h + 3) & 3);
-            if (teeHere || stubHere) {
-              const straight = straightOf[base + h]!;
-              if (straight < INF) {
-                if (teeHere) {
-                  const l = straight + bB[left]! + tee;
-                  if (l < best) { best = l; code = TEE_LEFT; }
-                  const r = straight + bB[right]! + tee;
-                  if (r < best) { best = r; code = TEE_RIGHT; }
-                }
-                if (stubHere) {
-                  const l = straight + stubValue![left]! + tee;
-                  if (l < best) { best = l; code = STUB_LEFT; }
-                  const r = straight + stubValue![right]! + tee;
-                  if (r < best) { best = r; code = STUB_RIGHT; }
-                }
-              }
-            }
-            if (splitHere) {
-              const total = splitA[left]! + splitB[right]! + split;
-              if (total < best) { best = total; code = splitCode; }
-            }
-            if (code) { d[s3] = best; dec[s3] = code; sub![s3] = A; }
-          }
-        }
+    const terminal = terminals[index]!;
+    // The run's last leg holds its last elbow and the end the sizing builds (leafStraightMm); whole steps
+    // below it, so no length that holds it is refused (the sizing and the realiser check the rest).
+    const endMm = layer.best ? leafStraightMm(model, layer.best, terminal.neck) : LEAF_STRAIGHT_MM;
+    const needed = Math.min(top, stepsOf(endMm));
+    const bannedLeaves = options.cuts?.leaves.get(S);
+    for (const leaf of graph.leaves[index]!) {
+      if (side !== null && leaf.variant !== side) continue;
+      if (bannedLeaves?.has(leaf.node * 4 + leaf.heading)) continue;
+      const runout = model.flex(terminal.neck, terminal.airflowM3h, leaf.flexLengthMm, leaf.flexBendLossPa);
+      // (A runout that turns into its inlet is priced its last bends again: the inlet faces its duct where that costs about the same.)
+      const value = runout.cost + lambda * (runout.loss + (leaf.inletBendLossPa ?? 0));
+      for (let c = needed; c <= top; c += 1) {
+        const s3 = (leaf.node * 4 + leaf.heading) * LEVELS + c;
+        if (value < d[s3]!) { d[s3] = value; dec[s3] = LEAF; label[s3] = leaf.variant; }
       }
     }
+    // Or the run takes its last terminal off its side on an all-flex stub and ends in a cap just past it
+    // (a trunk with take-offs and an end cap): a fitting, so where the straight arriving is clear. (Not in a
+    // system rectangular throughout: each terminal there has its rectangular branch off a shoe.)
+    const endMain = model.shape === 'rectangular' ? null : tapMainFor(S, terminal.neck);
+    if (endMain) {
+      const neckLeg = roundLeg(terminal.neck);
+      const fit = model.tee(fittingStyle(endMain, neckLeg), neckLeg, flows[S]!, endMain, flows[S]!);
+      const fitting = fit.cost + lambda * fit.loss + model.capCost(endMain)
+        + (STUB_END_RUN_ON_MM / 1000) * model.costPerMetre(endMain);
+      const stubs = stubsFor(S, stubReachMm(endMain, terminal.neck), (endMain.diameterMm ?? endMain.widthMm) / 2);
+      const prices = side === null ? stubs.value : stubs.sides[side]!;
+      const banned = options.cuts?.stubs.get(S);
+      for (let s = 0; s < directed; s += 1) {
+        const v = s >> 2;
+        if (banned?.has(v)) continue;
+        const h = s & 3;
+        const s3 = s * LEVELS + top;
+        const leftState = v * 4 + ((h + 1) & 3);
+        const left = prices[leftState]! + fitting;
+        if (left < d[s3]!) { d[s3] = left; dec[s3] = STUB_END_LEFT; label[s3] = side ?? stubs.variant[leftState]!; }
+        const rightState = v * 4 + ((h + 3) & 3);
+        const right = prices[rightState]! + fitting;
+        if (right < d[s3]!) { d[s3] = right; dec[s3] = STUB_END_RIGHT; label[s3] = side ?? stubs.variant[rightState]!; }
+      }
+    }
+  };
+  /**
+   * The growth pass of layer S from its seeded states (each state's label carried along its route), then its
+   * moves out after a fitting (with the state each lands in) and, for a single terminal, its tail.
+   */
+  const grow = (S: number, layer: LayerPrice, d: Float64Array, dec: Int8Array, label: Int8Array | null) => {
+    const top = topOf(layer);
     // Growth, backwards from the settled states: into t = (u, dir, c') from v = the node before u.
     // Each edge's price on this layer (its length at the cheapest section its corridor takes).
     const edgeCost = new Float64Array(directed);
@@ -825,6 +818,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       if (!(edge < INF)) continue;
       const value = key + edge;
       const move = MOVE + dir;
+      const carried = label ? label[t]! : 0;
       if (cross && cross[v * 4 + dir]! >= 0) {
         // Through a wall: it arrives past the far face at one level, from any level that clears the near face.
         const e = v * 4 + dir;
@@ -832,15 +826,15 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
         const need = crossNeed(e, wallSteps);
         const into = (v * 4 + dir) * LEVELS;
         for (let c = Math.max(0, need); c <= top; c += 1) {
-          if (value < d[into + c]! - 1e-9) { d[into + c] = value; dec[into + c] = move; heap.push(value, into + c); }
+          if (value < d[into + c]! - 1e-9) { d[into + c] = value; dec[into + c] = move; if (label) label[into + c] = carried; heap.push(value, into + c); }
         }
         // A turn just before it: its elbow's reach must clear the near face too.
         if (need <= 0 && graph.nodeClear[v]! >= turnRoom) {
           const turned = value + elbowPrice;
           const l = (v * 4 + ((dir + 1) & 3)) * LEVELS + top;
-          if (turned < d[l]! - 1e-9) { d[l] = turned; dec[l] = move; heap.push(turned, l); }
+          if (turned < d[l]! - 1e-9) { d[l] = turned; dec[l] = move; if (label) label[l] = carried; heap.push(turned, l); }
           const r = (v * 4 + ((dir + 3) & 3)) * LEVELS + top;
-          if (turned < d[r]! - 1e-9) { d[r] = turned; dec[r] = move; heap.push(turned, r); }
+          if (turned < d[r]! - 1e-9) { d[r] = turned; dec[r] = move; if (label) label[r] = carried; heap.push(turned, r); }
         }
         continue;
       }
@@ -850,20 +844,23 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       for (let c = level < top ? level - steps : Math.max(0, top - steps), last = level < top ? level - steps : top; c <= last; c += 1) {
         if (c < 0) continue;
         const s3 = base + c;
-        if (value < d[s3]! - 1e-9) { d[s3] = value; dec[s3] = move; heap.push(value, s3); }
+        if (value < d[s3]! - 1e-9) { d[s3] = value; dec[s3] = move; if (label) label[s3] = carried; heap.push(value, s3); }
       }
       // A turn at v (an elbow) needs clearance there and restarts it; the corner needs room round its node.
       if (Math.min(top, steps) === level && graph.nodeClear[v]! >= turnRoom) {
         const turned = value + elbowPrice;
         const l = (v * 4 + ((dir + 1) & 3)) * LEVELS + top;
-        if (turned < d[l]! - 1e-9) { d[l] = turned; dec[l] = move; heap.push(turned, l); }
+        if (turned < d[l]! - 1e-9) { d[l] = turned; dec[l] = move; if (label) label[l] = carried; heap.push(turned, l); }
         const r = (v * 4 + ((dir + 3) & 3)) * LEVELS + top;
-        if (turned < d[r]! - 1e-9) { d[r] = turned; dec[r] = move; heap.push(turned, r); }
+        if (turned < d[r]! - 1e-9) { d[r] = turned; dec[r] = move; if (label) label[r] = carried; heap.push(turned, r); }
       }
     }
-    // The move out of (v, h) straight after a fitting there (a branch's collar and damper not counted).
+    // The move out of (v, h) straight after a fitting there (a branch's collar and damper not counted), and the
+    // state each lands in.
     const gs = new Float64Array(directed).fill(INF);
     const gb = new Float64Array(directed).fill(INF);
+    const gsFrom = new Int32Array(directed).fill(-1);
+    const gbFrom = new Int32Array(directed).fill(-1);
     for (let s = 0; s < directed; s += 1) {
       const v = s >> 2;
       const h = s & 3;
@@ -874,44 +871,235 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       if (!Number.isFinite(edge)) continue;
       if (cross && cross[s]! >= 0) {
         // Straight into a wall after the fitting: only with its reach clear of the near face.
-        const arrival = d[(u * 4 + h) * LEVELS + crossArrival(s, top, wallSteps)]!;
-        if (crossNeed(s, wallSteps) <= 0) gs[s] = edge + crossCost[s]! + arrival;
-        if (crossNeed(s, wallSteps, collarMm) <= 0) gb[s] = edge + crossCost[s]! + arrival;
+        const into = (u * 4 + h) * LEVELS + crossArrival(s, top, wallSteps);
+        const arrival = d[into]!;
+        if (crossNeed(s, wallSteps) <= 0) { gs[s] = edge + crossCost[s]! + arrival; gsFrom[s] = into; }
+        if (crossNeed(s, wallSteps, collarMm) <= 0) { gb[s] = edge + crossCost[s]! + arrival; gbFrom[s] = into; }
         continue;
       }
-      gs[s] = edge + d[(u * 4 + h) * LEVELS + arrive(top, 0, length)]!;
-      gb[s] = edge + d[(u * 4 + h) * LEVELS + arrive(top, 0, Math.max(0, length - collarMm))]!;
+      gsFrom[s] = (u * 4 + h) * LEVELS + arrive(top, 0, length);
+      gbFrom[s] = (u * 4 + h) * LEVELS + arrive(top, 0, Math.max(0, length - collarMm));
+      gs[s] = edge + d[gsFrom[s]!]!;
+      gb[s] = edge + d[gbFrom[s]!]!;
     }
+    if (popcount(S) !== 1) return { gs, gb, gsFrom, gbFrom, tailValue: null, tailLand: null };
+    // Past a take-off: straight on at least MAIN_TAIL_MM, then the layer's own best (arriving clear).
+    const value = new Float64Array(directed).fill(INF);
+    const land = new Int32Array(directed).fill(-1);
+    for (let s = 0; s < directed; s += 1) {
+      const walked = straightOn(S, s, MAIN_TAIL_MM, layer);
+      // (Past a wall the tail must still end clear for what follows.)
+      if (!walked || (walked.crossed && walked.level < top)) continue;
+      const rest = d[(walked.node * 4 + (s & 3)) * LEVELS + top]!;
+      if (rest < INF) { value[s] = walked.cost + rest; land[s] = walked.node * 4 + (s & 3); }
+    }
+    return { gs, gb, gsFrom, gbFrom, tailValue: value, tailLand: land };
+  };
+  /**
+   * A single terminal under the approach rule, taken off at the node of each directed state: the moves out after
+   * a fitting (GS, GB) and the tail, from the cheapest route whose inlet has that node in front of it. The layer
+   * with every side keeps its own choice where its route's inlet faces the node (side −1: identical trees where
+   * the rule changes nothing); else the cheapest side layer that does.
+   */
+  const facingOut = (S: number, label: Int8Array, union: ReturnType<typeof grow>, sides: readonly SideLayer[]): FacingOut => {
+    const index = Math.log2(S);
+    const top = topOf(layers[S]!);
+    const out: FacingOut = {
+      gs: new Float64Array(directed).fill(INF), gsSide: new Int8Array(directed),
+      gb: new Float64Array(directed).fill(INF), gbSide: new Int8Array(directed),
+      tail: new Float64Array(directed).fill(INF), tailSide: new Int8Array(directed), tailLand: new Int32Array(directed).fill(-1),
+    };
+    const pick = (s: number, own: number, ownState: number, ofSide: (side: SideLayer) => number): [number, number] => {
+      const v = s >> 2;
+      if (own < INF && ownState >= 0 && inFront(index, label[ownState]!, v)) return [own, -1];
+      let best = INF;
+      let which = -1;
+      sides.forEach((side, j) => {
+        const value = ofSide(side);
+        if (value < best && inFront(index, j, v)) { best = value; which = j; }
+      });
+      return [best, which];
+    };
+    for (let s = 0; s < directed; s += 1) {
+      [out.gs[s], out.gsSide[s]] = pick(s, union.gs[s]!, union.gsFrom[s]!, (side) => side.gs[s]!);
+      [out.gb[s], out.gbSide[s]] = pick(s, union.gb[s]!, union.gbFrom[s]!, (side) => side.gb[s]!);
+      const landing = union.tailLand![s]!;
+      const [tail, tailSide] = pick(s, union.tailValue![s]!, landing >= 0 ? landing * LEVELS + top : -1, (side) => side.tailValue[s]!);
+      out.tail[s] = tail;
+      out.tailSide[s] = tailSide;
+      out.tailLand[s] = tailSide < 0 ? landing : sides[tailSide]!.tailLand[s]!;
+    }
+    return out;
+  };
+
+  for (const S of order) {
+    const signature = memo ? signatureOf(S) : '';
+    const saved = memo && memo.signatures.get(S) === signature ? memo.saved.get(S) : undefined;
+    if (saved) {
+      D[S] = saved.d; GS[S] = saved.gs; GB[S] = saved.gb; how[S] = saved.how; subset[S] = saved.subset;
+      layers[S] = saved.layer; tailValue[S] = saved.tailValue; tailLand[S] = saved.tailLand; leafVariant[S] = saved.leafVariant;
+      sideLayers[S] = saved.sideLayers; facing[S] = saved.facing;
+      continue;
+    }
+    const single = popcount(S) === 1;
+    const index = single ? Math.log2(S) : -1;
+    const layer = layerPrice(model, flows[S]!, single ? terminals[index]!.neck : null, lambda, branchNeckMm);
+    layers[S] = layer;
+    const top = topOf(layer);
+    const d = new Float64Array(states).fill(INF);
+    const dec = new Int8Array(states);
+    const sub = single ? null : new Int32Array(states);
+    const label = single ? new Int8Array(states) : null;
+    if (single) {
+      seedSingle(S, layer, d, dec, label!, null);
+    } else {
+      const main = layer.best;
+      const bannedSplits = options.cuts?.splits.get(S);
+      for (let A = (S - 1) & S; A > 0; A = (A - 1) & S) {
+        const B = S ^ A;
+        if (groupMasks && (!inFamily(A) || !inFamily(B))) continue;
+        const gA = gsOf(A);
+        const gB = gsOf(B);
+        const branchLeg = layers[B]!.best;
+        let tee = INF;
+        let split = INF;
+        if (main && branchLeg) {
+          const fit = model.tee(fittingStyle(main, branchLeg), branchLeg, flows[B]!, main, flows[S]!);
+          tee = fit.cost + lambda * fit.loss;
+          const leftLeg = layers[A]!.best;
+          // A split divides the flow into two trunks; a wye on a round main may also feed single terminals
+          // (its outlets can be their neck size). A rectangular Y divides into trunks only.
+          if (leftLeg && (isRoundLeg(main) || (popcount(A) >= 2 && popcount(B) >= 2))) {
+            const fork = model.split(isRoundLeg(main) ? 'wye' : 'y', main, flows[S]!, [{ leg: leftLeg, airflowM3h: flows[A]! }, { leg: branchLeg, airflowM3h: flows[B]! }]);
+            split = fork.cost + lambda * Math.max(...fork.losses);
+          }
+        }
+        if (!Number.isFinite(tee) && !Number.isFinite(split)) continue;
+        // A main that goes on to a single terminal first runs straight far enough for its reducer.
+        const tail = popcount(A) === 1;
+        // A wye's outlets leave at 45° and square up: each runs straight for that before anything else.
+        const wye = main !== null && isRoundLeg(main);
+        const splitA = Number.isFinite(split) && wye ? straightFirst(A, wyeRoom(main!, layers[A]!.best)).value : gA;
+        const splitB = Number.isFinite(split) && wye ? straightFirst(B, wyeRoom(main!, layers[B]!.best)).value : gB;
+        // A single terminal may hang off the main on an all-flex stub, laid off this main's wall. Rectangular
+        // throughout, only where no rectangular branch leaves that side of the node (a terminal too close beside
+        // the main for one): its round collar and damper are priced as such.
+        const rectangular = model.shape === 'rectangular';
+        const tapMain = popcount(B) === 1 ? tapMainFor(S, terminals[Math.log2(B)]!.neck) : null;
+        const stubs = (rectangular || Number.isFinite(tee)) && tapMain
+          ? stubsFor(B, stubReachMm(tapMain, terminals[Math.log2(B)]!.neck), (tapMain.diameterMm ?? tapMain.widthMm) / 2, stubFlexCapMm(S, B, tapMain)) : null;
+        let stubTee = stubs ? tee : INF;
+        if (stubs && rectangular) {
+          const neckLeg = roundLeg(terminals[Math.log2(B)]!.neck);
+          const fit = main ? model.tee(fittingStyle(main, neckLeg), neckLeg, flows[B]!, main, flows[S]!) : null;
+          stubTee = fit ? fit.cost + lambda * fit.loss : INF;
+        }
+        const bannedTees = options.cuts?.tees.get(B);
+        const bannedStubs = options.cuts?.stubs.get(B);
+        // A take-off's branch runs straight off the main for the main's half, its collar and damper and the
+        // realiser's lead before its first fitting.
+        const bB = Number.isFinite(tee) ? teeFirst(S, B).value : gbOf(B);
+        // The hot loop (every pair of subsets × every directed state): plain arrays, nothing allocated.
+        const teeOk = Number.isFinite(tee);
+        const stubOk = Number.isFinite(stubTee);
+        const splitOk = Number.isFinite(split);
+        // (or, where cheaper, straight on as usual: the run need not step down — it may end on a stub and a cap)
+        const straightOf = tail ? (tailOrOn[A] ??= minOf(tailOf(A), gA)) : gA;
+        const stubValue = stubs ? stubs.value : null;
+        const splitCode = wye ? SPLIT_WYE : SPLIT;
+        const splitRoom = layer.halfMm + ROUTE_CLEARANCE_MM;
+        const nodes = graph.nodeCount;
+        for (let v = 0; v < nodes; v += 1) {
+          const teeHere = teeOk && !bannedTees?.has(v);
+          const stubHere = stubOk && stubValue !== null && !bannedStubs?.has(v);
+          const splitHere = splitOk && !bannedSplits?.has(v) && graph.nodeClear[v]! >= splitRoom;
+          if (!teeHere && !stubHere && !splitHere) continue;
+          const base = v * 4;
+          for (let h = 0; h < 4; h += 1) {
+            // Fittings only where the straight arriving is clear (the top level).
+            const s3 = (base + h) * LEVELS + top;
+            let best = d[s3]!;
+            let code = 0;
+            const left = base + ((h + 1) & 3);
+            const right = base + ((h + 3) & 3);
+            if (teeHere || stubHere) {
+              const straight = straightOf[base + h]!;
+              if (straight < INF) {
+                if (teeHere) {
+                  const l = straight + bB[left]! + tee;
+                  if (l < best) { best = l; code = TEE_LEFT; }
+                  const r = straight + bB[right]! + tee;
+                  if (r < best) { best = r; code = TEE_RIGHT; }
+                }
+                if (stubHere) {
+                  const l = straight + stubValue![left]! + stubTee;
+                  if (l < best && !(rectangular && bB[left]! < INF)) { best = l; code = STUB_LEFT; }
+                  const r = straight + stubValue![right]! + stubTee;
+                  if (r < best && !(rectangular && bB[right]! < INF)) { best = r; code = STUB_RIGHT; }
+                }
+              }
+            }
+            if (splitHere) {
+              const total = splitA[left]! + splitB[right]! + split;
+              if (total < best) { best = total; code = splitCode; }
+            }
+            if (code) { d[s3] = best; dec[s3] = code; sub![s3] = A; }
+          }
+        }
+      }
+    }
+    const grown = grow(S, layer, d, dec, label);
     D[S] = d;
-    GS[S] = gs;
-    GB[S] = gb;
+    GS[S] = grown.gs;
+    GB[S] = grown.gb;
     how[S] = dec;
     subset[S] = sub;
     if (single) {
-      // Past a take-off: straight on at least MAIN_TAIL_MM, then the layer's own best (arriving clear).
-      const value = new Float64Array(directed).fill(INF);
-      const land = new Int32Array(directed).fill(-1);
-      for (let s = 0; s < directed; s += 1) {
-        const walked = straightOn(S, s, MAIN_TAIL_MM, layer);
-        // (Past a wall the tail must still end clear for what follows.)
-        if (!walked || (walked.crossed && walked.level < top)) continue;
-        const rest = d[(walked.node * 4 + (s & 3)) * LEVELS + top]!;
-        if (rest < INF) { value[s] = walked.cost + rest; land[s] = walked.node * 4 + (s & 3); }
-      }
-      tailValue[S] = value;
-      tailLand[S] = land;
+      tailValue[S] = grown.tailValue;
+      tailLand[S] = grown.tailLand;
+      leafVariant[S] = label;
+    }
+    if (single && inlets[index]) {
+      // The approach rule: a layer per inlet side, then the moves out with the take-off at their own node.
+      const sides = inlets[index]!.map((_, side): SideLayer => {
+        const sideD = new Float64Array(states).fill(INF);
+        const sideHow = new Int8Array(states);
+        seedSingle(S, layer, sideD, sideHow, new Int8Array(states), side);
+        const sideGrown = grow(S, layer, sideD, sideHow, null);
+        return { d: sideD, how: sideHow, gs: sideGrown.gs, gb: sideGrown.gb, tailValue: sideGrown.tailValue!, tailLand: sideGrown.tailLand! };
+      });
+      sideLayers[S] = sides;
+      facing[S] = facingOut(S, label!, grown, sides);
     }
     if (memo) {
       memo.signatures.set(S, signature);
       memo.saved.set(S, {
-        d, gs, gb, how: dec, subset: sub, layer, tailValue: tailValue[S] ?? null, tailLand: tailLand[S] ?? null, leafVariant: leafVariant[S] ?? null,
+        d, gs: grown.gs, gb: grown.gb, how: dec, subset: sub, layer, tailValue: tailValue[S] ?? null, tailLand: tailLand[S] ?? null, leafVariant: leafVariant[S] ?? null,
+        sideLayers: sideLayers[S] ?? null, facing: facing[S] ?? null,
       });
     }
   }
 
   const fullLayer = layers[full]!;
   const fullTop = topOf(fullLayer);
-  const results: Array<{ root: RoutingGraph['roots'][number]; value: number; state: number; turn?: { dir: number; land: number } }> = [];
+  const results: Array<{ root: RoutingGraph['roots'][number]; value: number; state: number; side: number; turn?: { dir: number; land: number } }> = [];
+  /**
+   * A system of one terminal under the approach rule: its duct leaves the collar, so the route's inlet must face
+   * the collar's lip (the frame's origin). The layer with every side where its own choice does; else the cheapest
+   * side layer that does (−1: the layer with every side; null: none).
+   */
+  const rootSide = (s3: number): { value: number; side: number } | null => {
+    const sides = sideLayers[full];
+    const own = D[full]![s3]!;
+    if (!sides) return Number.isFinite(own) ? { value: own, side: -1 } : null;
+    if (Number.isFinite(own) && inFrontOf(0, leafVariant[full]![s3]!, 0, 0)) return { value: own, side: -1 };
+    let best: { value: number; side: number } | null = null;
+    sides.forEach((layer, j) => {
+      const value = layer.d[s3]!;
+      if (Number.isFinite(value) && (!best || value < best.value) && inFrontOf(0, j, 0, 0)) best = { value, side: j };
+    });
+    return best;
+  };
   // The shortest collar transition the trunk's sections allow (a relaxation: the sizing picks a section
   // whose transition fits, or reports the collar).
   const pricedTransition = Number.isFinite(shortestTransition) ? shortestTransition : 0;
@@ -929,19 +1117,24 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       const after = straightFirst(full, turnFirstMm);
       for (const dir of [leftOf(0), rightOf(0)]) {
         const rest = after.value[root.node * 4 + dir]!;
-        if (rest < INF) results.push({ root, value: rest + collarElbow.cost + lambda * collarElbow.loss + straight + penalty, state: -1, turn: { dir, land: after.land[root.node * 4 + dir]! } });
+        if (rest < INF) {
+          results.push({
+            root, value: rest + collarElbow.cost + lambda * collarElbow.loss + straight + penalty, state: -1,
+            side: after.side?.[root.node * 4 + dir] ?? -1, turn: { dir, land: after.land[root.node * 4 + dir]! },
+          });
+        }
       }
     }
     const clear = Math.max(0, root.outletMm - connectorMm - pricedTransition);
     // The transition's length is already counted: the first fitting needs only its own reach after it.
     const credit = Math.max(0, fullTop - Math.ceil(fullLayer.reachMm / CLEAR_STEP_MM));
     const s3 = (root.node * 4) * LEVELS + arrive(fullTop, credit, clear);
-    const value = D[full]![s3]!;
-    if (!Number.isFinite(value)) continue;
+    const entry = rootSide(s3);
+    if (!entry) continue;
     // A turn right at the root's end needs its elbow's setback clear of the collar transition.
-    const first = how[full]![s3]!;
+    const first = howOf(full, entry.side)[s3]!;
     if (first > MOVE && first < MOVE + 4 && root.outletMm < (options.rootTurnMinMm ?? 0)) continue;
-    results.push({ root, value: value + straight + penalty, state: s3 });
+    results.push({ root, value: entry.value + straight + penalty, state: s3, side: entry.side });
   }
   if (!results.length) return null;
   results.sort((a, b) => a.value - b.value);
@@ -967,7 +1160,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     }
     return free;
   };
-  for (const { root, value, state, turn } of results.slice(0, ROOTS_KEPT)) {
+  for (const { root, value, state, side: rootInlet, turn } of results.slice(0, ROOTS_KEPT)) {
     const usage: Usage = { edges: new Map(), nodes: new Map() };
     const constrain = (run: RunDesign, halfWidthMm: number, lengthMm = 0) => {
       const fromMm = runLengthMm(run);
@@ -1009,9 +1202,11 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       if (cross && cross[v * 4 + dir]! >= 0) return (u * 4 + dir) * LEVELS + crossArrival(v * 4 + dir, top, wallStepsOf(layers[S]!));
       return (u * 4 + dir) * LEVELS + arrive(top, 0, branch ? Math.max(0, length - collarMm) : length);
     };
-    const walk = (run: RunDesign, startSet: number, startState: number, from: number | null): void => {
+    /** `startSide`: for a single terminal under the approach rule, the inlet side's layer chosen (−1: its own). */
+    const walk = (run: RunDesign, startSet: number, startState: number, from: number | null, startSide = -1): void => {
       let S = startSet;
       let s3 = startState;
+      let inlet = startSide;
       if (from !== null) {
         enter(run, S, from);
         use(run, S, from, Math.floor(s3 / LEVELS) >> 2);
@@ -1022,7 +1217,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
         const v = directedS >> 2;
         const h = directedS & 3;
         push(run, v);
-        const choice = how[S]![s3]!;
+        const choice = howOf(S, inlet)[s3]!;
         const top = topOf(layers[S]!);
         if (choice >= MOVE && choice < MOVE + 4) {
           const dir = choice - MOVE;
@@ -1037,7 +1232,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
           continue;
         }
         if (choice === LEAF) {
-          run.end = { kind: 'terminal', terminal: terminalVariants(terminals[Math.log2(S)]!)[leafVariant[S]![s3]!]! };
+          run.end = { kind: 'terminal', terminal: terminalVariants(terminals[Math.log2(S)]!)[inlet >= 0 ? inlet : leafVariant[S]![s3]!]! };
           if (run.route) run.route.leaf = { node: v, heading: h, set: S };
           return;
         }
@@ -1054,7 +1249,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
           child.route = { kind: 'stub', node: v, set: S, parentSet: S, tapNodes: [] };
           child.vertices.push({ x: p.x + outDir.x * reach, y: p.y + outDir.y * reach });
           child.allFlex = true;
-          const variant = stubsFor(S, reach, (endMain.diameterMm ?? endMain.widthMm) / 2).variant[v * 4 + out]!;
+          const variant = inlet >= 0 ? inlet : stubsFor(S, reach, (endMain.diameterMm ?? endMain.widthMm) / 2).variant[v * 4 + out]!;
           child.end = { kind: 'terminal', terminal: terminalVariants(terminal)[variant]! };
           run.route?.tapNodes.push(v);
           run.taps.push({ station: runLengthMm(run), side, child });
@@ -1084,16 +1279,19 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
             const reach = stubReachMm(tapMain, terminals[Math.log2(B)]!.neck);
             child.vertices.push({ x: p.x + outDir.x * reach, y: p.y + outDir.y * reach });
             child.allFlex = true;
-            const variant = stubsFor(B, reach, (tapMain.diameterMm ?? tapMain.widthMm) / 2).variant[v * 4 + out]!;
+            const variant = stubsFor(B, reach, (tapMain.diameterMm ?? tapMain.widthMm) / 2, stubFlexCapMm(S, B, tapMain)).variant[v * 4 + out]!;
             child.end = { kind: 'terminal', terminal: terminalVariants(terminals[Math.log2(B)]!)[variant]! };
             enter(child, B, v);
           } else {
-            walkStraight(child, B, v, out, teeFirst(S, B).land[v * 4 + out]!);
+            const first = teeFirst(S, B);
+            walkStraight(child, B, v, out, first.land[v * 4 + out]!, first.side?.[v * 4 + out] ?? -1);
           }
           S = A;
-          if (popcount(A) === 1 && tailValue[A]![v * 4 + h]! <= GS[A]![v * 4 + h]!) {
+          inlet = -1;
+          if (popcount(A) === 1 && tailOf(A)[v * 4 + h]! <= gsOf(A)[v * 4 + h]!) {
             // Straight on far enough for the reducer, then on as the branch to the last terminal.
-            const landing = tailLand[A]![v * 4 + h]!;
+            const landing = (facing[A]?.tailLand ?? tailLand[A]!)[v * 4 + h]!;
+            inlet = facing[A]?.tailSide[v * 4 + h] ?? -1;
             let node = v;
             for (let step = 0; step < 10000 && node * 4 + h !== landing; step += 1) {
               const next = nb[node * 4 + h]!;
@@ -1105,6 +1303,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
             s3 = landing * LEVELS + topOf(layers[A]!);
             continue;
           }
+          inlet = facing[A]?.gsSide[v * 4 + h] ?? -1;
           const next = leave(A, v, h);
           use(run, S, v, Math.floor(next / LEVELS) >> 2);
           s3 = next;
@@ -1122,11 +1321,13 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
           constrain(run, graph.nodeClear[v]!);
           if (choice === SPLIT_WYE) {
             const main = layers[S]!.best!;
-            walkStraight(plus, A, v, leftOf(h), straightFirst(A, wyeRoom(main, layers[A]!.best)).land[v * 4 + leftOf(h)]!);
-            walkStraight(minus, B, v, rightOf(h), straightFirst(B, wyeRoom(main, layers[B]!.best)).land[v * 4 + rightOf(h)]!);
+            const plusFirst = straightFirst(A, wyeRoom(main, layers[A]!.best));
+            const minusFirst = straightFirst(B, wyeRoom(main, layers[B]!.best));
+            walkStraight(plus, A, v, leftOf(h), plusFirst.land[v * 4 + leftOf(h)]!, plusFirst.side?.[v * 4 + leftOf(h)] ?? -1);
+            walkStraight(minus, B, v, rightOf(h), minusFirst.land[v * 4 + rightOf(h)]!, minusFirst.side?.[v * 4 + rightOf(h)] ?? -1);
           } else {
-            walk(plus, A, leave(A, v, leftOf(h)), v);
-            walk(minus, B, leave(B, v, rightOf(h)), v);
+            walk(plus, A, leave(A, v, leftOf(h)), v, facing[A]?.gsSide[v * 4 + leftOf(h)] ?? -1);
+            walk(minus, B, leave(B, v, rightOf(h)), v, facing[B]?.gsSide[v * 4 + rightOf(h)] ?? -1);
           }
           return;
         }
@@ -1134,7 +1335,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
       }
     };
     /** A run that leaves `v` along `dir` straight to the state `landing` (a wye outlet), then goes on as the DP chose. */
-    const walkStraight = (run: RunDesign, S: number, v: number, dir: number, landing: number): void => {
+    const walkStraight = (run: RunDesign, S: number, v: number, dir: number, landing: number, side = -1): void => {
       enter(run, S, v);
       const target = Math.floor(landing / LEVELS);
       let node = v;
@@ -1145,7 +1346,7 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
         node = next;
         push(run, node);
       }
-      walk(run, S, landing, null);
+      walk(run, S, landing, null, side);
     };
     const rootRun = newRun({ kind: 'unit' }, { x: 0, y: 0 });
     rootRun.route = { kind: 'root', node: root.node, set: full, parentSet: full, tapNodes: [] };
@@ -1160,9 +1361,9 @@ export function steinerTrees(ctx: ServiceCtx, model: SizingModel, graph: Routing
     if (turn) {
       push(rootRun, root.node);
       constrain(rootRun, graph.nodeClear[root.node]!);
-      walkStraight(rootRun, full, root.node, turn.dir, turn.land);
+      walkStraight(rootRun, full, root.node, turn.dir, turn.land, rootInlet);
     } else {
-      walk(rootRun, full, state, null);
+      walk(rootRun, full, state, null, rootInlet);
     }
     const tidy = (run: RunDesign) => {
       run.vertices = simplifyCollinear(run.vertices);

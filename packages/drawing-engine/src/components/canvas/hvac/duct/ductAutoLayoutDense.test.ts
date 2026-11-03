@@ -29,7 +29,9 @@ describe('dense FDUM terminal layout', () => {
       properties: { terminal: spec },
     }));
     const scene = [unit, ...terminals];
-    const settings = resolveDuctSettings({ soffitMm: 3000, autoTimeBudgetMs: 1000 });
+    // The default time budget (a safety net only): a 1 s budget stopped the search before its repair rounds, so the
+    // design depended on how fast the computer was.
+    const settings = resolveDuctSettings({ soffitMm: 3000 });
     const result = generateAutoDuct(scene, {
       unitId: unit.id, terminalIds: terminals.map(terminal => terminal.id),
       services: { supply: true, return: false }, fanSpeed: 'hi', shape: 'optimal',
@@ -55,5 +57,5 @@ describe('dense FDUM terminal layout', () => {
     }
     expect(Number.isFinite(selected.requiredEspPa)).toBe(true);
     expect(selected.requiredEspPa).toBeGreaterThan(0);
-  }, 120000);
+  }, 600000);
 });

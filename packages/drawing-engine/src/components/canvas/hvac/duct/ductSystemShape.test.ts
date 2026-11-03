@@ -133,8 +133,8 @@ describe('a system rectangular throughout', () => {
   }, 240000);
 
   it('kept where it is clean at a sensible cost; past RECTANGULAR_COST_LIMIT times a rectangular main with round branches, that instead, with the figures', () => {
-    const shown = (shape: AutoDuctShape, firstCost: number, errors = 0) => ({
-      shape, runs: [unit], selected: 0, designs: [{ firstCost, errors }], issues: [], baseIssues: [], currency: 'USD',
+    const shown = (shape: AutoDuctShape, firstCost: number, errors = 0, staticServices: unknown[] = []) => ({
+      shape, runs: [unit], selected: 0, designs: [{ firstCost, errors }], issues: [], baseIssues: [], currency: 'USD', staticServices,
     }) as unknown as AutoDuctResult;
     const alternative = shown('rect', 600);
     expect(chooseRectangularDesign(shown('rectangular', 700), alternative).shape).toBe('rectangular');
@@ -150,6 +150,11 @@ describe('a system rectangular throughout', () => {
     expect(chooseRectangularDesign(shown('rectangular', 700, 2), alternative).issues[0]!.message).toMatch(/^No clean layout rectangular throughout/);
     // Neither clean: the rectangular attempt, with its own issues.
     expect(chooseRectangularDesign(shown('rectangular', 700, 2), shown('rect', 600, 1)).shape).toBe('rectangular');
+    // A service with no layout at all in this shape: what was designed is clean but not the system (and cheaper for it).
+    const partial = shown('rectangular', 400, 0, [{ service: 'supply', issues: [{ code: 'DU_AUTO_NO_LAYOUT', severity: 'error', message: 'No buildable layout for these terminals.' }] }]);
+    const instead = chooseRectangularDesign(partial, alternative);
+    expect(instead.shape).toBe('rect');
+    expect(instead.issues[0]!.message).toMatch(/^No clean layout rectangular throughout/);
   });
 });
 

@@ -9,16 +9,24 @@
  */
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { DEFAULT_AC_EQUIPMENT_LIBRARY } from '../../../../../data/ac-equipment-library';
 import type { HvacElement, Point2D } from '../../../../../types';
 import { resolveUnitAirPorts } from '../ductAirPorts';
-import { generateAutoDuct, type AutoDuctResult, type AutoDuctShape } from '../ductAutoLayout';
+import { generateAutoDuct, generateAutoDuctInShape, type AutoDuctResult, type AutoDuctShape } from '../ductAutoLayout';
 import type { DuctWallInput } from '../ductBuilding';
 import { DEFAULT_DUCT_SETTINGS } from '../ductSettings';
-import { terminalEnvelope, typicalTerminalSpec, type DuctTerminalKind } from '../ductTerminals';
+import { approachBehindLimitMm, approachPassLimitMm, terminalApproach, terminalFeed } from '../ductTerminalApproach';
+import { terminalCeilingPlane, terminalEnvelope, terminalSpigotPort, typicalTerminalSpec, type DuctTerminalKind } from '../ductTerminals';
 import { readDuctRunSpec } from '../ductTypes';
 
 /** Per layout, in the test runner (the worker is faster): a regression guard, not the product target. */
 const BUDGET_MS = 30000;
+/**
+ * Past the exact search (grids of 9 and 12): since 2 November 2026 every clear side of a square face is offered and
+ * each terminal is routed per inlet side (fed from in front of it), which grows the grouped router's work (3×3 about
+ * 72 s, 4×3 about 86 s alone, against 23 s and 28 s before). These grids end with errors in every version.
+ */
+const GROUPED_BUDGET_MS = 150000;
 
 /**
  * About 4½ minutes, and its outcome depends on the time budget, so on how
@@ -171,7 +179,7 @@ describe.runIf(ENABLED)('auto duct benchmark: every layout within the exact sear
         : '-',
     });
     expect(design, errors.join(' / ')).toBeDefined();
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expect(ms).toBeLessThan(layout.supply.length > DEFAULT_DUCT_SETTINGS.autoExactTerminals ? GROUPED_BUDGET_MS : BUDGET_MS);
     if (layout.supply.length > DEFAULT_DUCT_SETTINGS.autoExactTerminals) {
       // Past the exact search (known limit): the grouped router runs and is labelled so, and a design that is
       // not clean says why in plain terms.
@@ -190,6 +198,49 @@ describe.runIf(ENABLED)('auto duct benchmark: every layout within the exact sear
       expect(penetrations.every((penetration) => !penetration.exterior && !penetration.onFlex)).toBe(true);
     }
   }, 120_000);
+
+  it('the user\'s hall (2 Nov 2026), Rectangular: every diffuser fed from in front of its inlet, none round its box', () => {
+    // One FDU224-size unit, eight supply diffusers below it as measured off the user's screenshot; the trunk passes
+    // close beside two of them. Before the approach rule, one was fed from 13 m behind its inlet (a goose-neck).
+    const place = (definitionId: string, centre: Point2D, id: string): HvacElement => {
+      const def = DEFAULT_AC_EQUIPMENT_LIBRARY.find((entry) => entry.id === definitionId)!;
+      return {
+        id, type: def.type, category: def.equipmentCategory, subtype: def.subtype, modelLabel: def.modelLabel,
+        position: { x: centre.x - def.widthMm / 2, y: centre.y - def.depthMm / 2 }, rotation: 0,
+        width: def.widthMm, depth: def.depthMm, height: def.heightMm, elevation: def.elevationMm, mountType: def.mountType,
+        label: id, supplyZoneRatio: def.supplyZoneRatio ?? 0.5, properties: { definitionId: def.id, ...(def.defaultProperties ?? {}) },
+      } as HvacElement;
+    };
+    const hall = place('vrf-fdu224kxze1', { x: 0, y: 0 }, 'FDU');
+    const plane = terminalCeilingPlane([hall]);
+    const diffusers = ([[-5978, 2130], [13333, 2310], [-9299, 5520], [-5486, 7770], [-13555, 8010], [3592, 3660], [7429, 7410], [13161, 7290]] as const)
+      .map(([x, y], i) => ({ ...place('terminal-square-595-250', { x, y }, `SAD-${i + 1}`), elevation: plane }));
+    const elements = [hall, ...diffusers];
+    const result = generateAutoDuctInShape(elements, {
+      unitId: 'FDU', terminalIds: diffusers.map((element) => element.id), fanSpeed: 'hi', layout: 'auto',
+      services: { supply: true, return: false }, rebuildExisting: false, shape: 'rectangular',
+    }, DEFAULT_DUCT_SETTINGS);
+    const design = result.designs[result.selected]!;
+    expect(design.errors).toBe(0);
+    const updated = new Map(result.terminalUpdates.map((element) => [element.id, element]));
+    const scene = [...elements.map((element) => updated.get(element.id) ?? element), ...result.runs];
+    const plans = design.services.flatMap((service) => service.plans);
+    const fed = result.runs.flatMap((run) => {
+      const spec = readDuctRunSpec(run)!;
+      if (spec.end.kind !== 'terminal') return [];
+      const terminalId = spec.end.terminalId;
+      const spigot = terminalSpigotPort(scene.find((element) => element.id === terminalId)!)!;
+      const feed = terminalFeed(run.id, spec, scene)!;
+      const flex = plans.find((plan) => plan.elementId === run.id)!.pieces.flatMap((piece) => piece.flex?.points ?? []);
+      return [{ terminalId, approach: terminalApproach(spigot, feed.feed, [...feed.points, ...flex])!, behind: approachBehindLimitMm(spigot), limit: approachPassLimitMm(spigot) }];
+    });
+    expect(fed.map((entry) => entry.terminalId).sort()).toEqual(diffusers.map((element) => element.id).sort());
+    for (const { terminalId, approach, behind, limit } of fed) {
+      expect(approach.behindMm, terminalId).toBeLessThanOrEqual(behind);
+      expect(approach.passMm, terminalId).toBeLessThanOrEqual(limit);
+    }
+    expect(plans.flatMap((plan) => plan.issues).filter((issue) => issue.code === 'DU_TERMINAL_APPROACH')).toEqual([]);
+  }, 900_000);
 
   it('Optimal is never worse than Rectangular or Round alone (life-cycle)', () => {
     for (const layout of [LAYOUTS.find((entry) => entry.name === 'grid 2×2')!, LAYOUTS.find((entry) => entry.name === 'row of 4')!]) {

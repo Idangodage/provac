@@ -1435,7 +1435,9 @@ export function resizeAutoDuctDesign(
 
 /** Whether a result's shown design is clean: runs, and no error. */
 function cleanAutoDuct(result: AutoDuctResult): boolean {
-  return result.runs.length > 0 && (result.designs[result.selected]?.errors ?? 1) === 0;
+  return result.runs.length > 0 && (result.designs[result.selected]?.errors ?? 1) === 0
+    // A service asked for that got no layout at all in this shape: the design covers the rest only, however clean.
+    && !result.staticServices.some((service) => service.issues.some((issue) => issue.code === 'DU_AUTO_NO_LAYOUT'));
 }
 
 /**
@@ -1830,9 +1832,11 @@ function designUnitDucts(scene: readonly HvacElement[], request: AutoDuctRequest
         const shaped = shape === 'optimal' && sizeShape !== 'optimal'
           ? designs.filter((design) => design.source === 'seed' || design.router === sizeShape)
           : designs;
-        // Rectangular throughout: every terminal on its rectangular branch, so no tree with an all-flex stub (a round
-        // collar off the main) is sized in that shape.
-        const pool = sizeShape === 'rectangular' ? shaped.filter((design) => !allRuns(design.root).some((run) => run.allFlex)) : shaped;
+        // Rectangular throughout: every terminal on its rectangular branch, except one too close beside a duct for
+        // one, which the rectangular router alone takes off on a round collar (an all-flex stub). No other tree with
+        // a stub is sized in that shape.
+        const pool = sizeShape === 'rectangular'
+          ? shaped.filter((design) => design.router === 'rectangular' || !allRuns(design.root).some((run) => run.allFlex)) : shaped;
         const optimised = optimiseService(ctx, pool, sizeShape, airflow, result.maxEspPa ?? 150);
         trees += optimised.frontiers;
         realised += optimised.realised;

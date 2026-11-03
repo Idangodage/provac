@@ -53,15 +53,18 @@ export function verifyRuns(ctx: ServiceCtx, runs: readonly HvacElement[], notes:
   let warnings = notes.filter((issue) => issue.severity === 'warning').length;
   const disallowed = (plan: DuctFabricationPlan) => new Set(plan.penetrations
     .filter((penetration) => !(ctx.crossing && crossingAllowed(penetration))).map((penetration) => penetration.key));
+  // A terminal fed from behind (or past) its inlet when the design could have turned that inlet: not a clean design.
+  const turnable = new Set(ctx.terminals.filter((terminal) => (terminal.variants?.length ?? 0) > 1 && !terminal.port.vertical).map((terminal) => terminal.element.id));
   for (const plan of plans) {
     const refused = disallowed(plan);
     for (const issue of plan.issues) {
       // A crossing it may not make is reported once, below, not again for its sleeve.
       if (issue.penetrationKey && refused.has(issue.penetrationKey)) continue;
-      if (issue.severity === 'error') errors += 1;
-      else if (issue.severity === 'warning') warnings += 1;
+      const severity = issue.code === 'DU_TERMINAL_APPROACH' && plan.spec.end.kind === 'terminal' && turnable.has(plan.spec.end.terminalId) ? 'error' : issue.severity;
+      if (severity === 'error') errors += 1;
+      else if (severity === 'warning') warnings += 1;
       else continue;
-      issues.push({ code: issue.code, severity: issue.severity, message: issue.message, service: ctx.service, runId: plan.elementId, ...(issue.point ? { point: { x: issue.point.x, y: issue.point.y } } : {}) });
+      issues.push({ code: issue.code, severity, message: issue.message, service: ctx.service, runId: plan.elementId, ...(issue.point ? { point: { x: issue.point.x, y: issue.point.y } } : {}) });
     }
   }
   const newIds = new Set(runs.map((run) => run.id));

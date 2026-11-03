@@ -73,7 +73,7 @@ const SOURCE_LABEL: Record<NonNullable<AutoDuctResult['airflowSource']>, string>
 };
 
 export const AUTO_DUCT_SHAPE_OPTIONS: Array<{ key: AutoDuctShape; label: string; icon: ReactNode; hint: string }> = [
-  { key: 'rectangular', label: 'Rectangular', icon: <Square size={12} />, hint: 'Rectangular throughout: branches off 45° shoe take-offs (SMACNA Fig. 2-6) or Y splits; at each terminal a square-to-round to its neck, then its flexible runout' },
+  { key: 'rectangular', label: 'Rectangular', icon: <Square size={12} />, hint: 'Rectangular throughout: branches off 45° shoe take-offs (SMACNA Fig. 2-6) or Y splits; at each terminal a square-to-round to its neck, then its flexible runout. A terminal too close beside a duct for a rectangular branch takes a round collar and damper off it, then its runout' },
   { key: 'rect', label: 'Rect + round', icon: <Square size={12} />, hint: 'Rectangular trunks; round branches off spin-in or conical collars (SMACNA Fig. 2-6)' },
   { key: 'round', label: 'Round', icon: <Circle size={12} />, hint: 'Spiral round trunks after a square-to-round at the collar; conical taps, 90° taps, 45° laterals, wyes (Fig. 3-4 / 3-5)' },
   { key: 'optimal', label: 'Optimal', icon: <Sparkles size={12} />, hint: 'The optimiser chooses the shape of each stretch, with standard transitions where it changes' },

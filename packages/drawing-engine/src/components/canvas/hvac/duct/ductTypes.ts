@@ -207,7 +207,8 @@ const FAN_SPEED_KEYS: readonly FanSpeed[] = ['p-hi', 'hi', 'me', 'lo'];
 
 /**
  * A duct system's shape: rectangular throughout (shoe take-offs and Y splits;
- * a square-to-round before each terminal's runout), a rectangular main with
+ * a square-to-round before each terminal's runout; a round collar only for a
+ * terminal too close beside a duct for a rectangular branch), a rectangular main with
  * round branches, round throughout (spiral after the collar's square-to-round),
  * or the optimiser's choice per stretch.
  */

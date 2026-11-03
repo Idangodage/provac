@@ -21,7 +21,7 @@
 import type { Point2D } from '../../../../../types';
 import { flexClear, flexOk, toWorld, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import type { DuctWall } from '../ductBuilding';
-import { flexBendLossPa } from '../ductPressure';
+import { flexBendLossPa, flexInletBendLossPa } from '../ductPressure';
 
 import type { SizingModel } from './sizingModel';
 
@@ -37,7 +37,7 @@ const MERGE_MM = 100;
 /** Grid lines per axis at most (the router's cost grows with the node count). */
 const MAX_LINES = 30;
 /** Runout lengths tried in front of a spigot, and sideways approaches (mm, practice). */
-const FRONT_REACH_MM = [600, 800, 1000];
+export const FRONT_REACH_MM = [600, 800, 1000];
 const SIDE_REACH_MM = [700, 1000];
 
 export interface LeafCandidate {
@@ -47,6 +47,8 @@ export interface LeafCandidate {
   flexLengthMm: number;
   /** Additional curved-flex loss when geometry is known; absent on legacy/synthetic graphs. */
   flexBendLossPa?: number;
+  /** The router's extra price for turning into the inlet (its last bends counted again, Pa; ductPressure). */
+  inletBendLossPa?: number;
   /** Which of the terminal's spigot sides it serves (index into `terminalVariants`). */
   variant: number;
 }
@@ -242,10 +244,21 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
       const links: Array<[number, number, number]> = [[0, i + 1, j], [1, i, j + 1], [2, i - 1, j], [3, i, j - 1]];
       for (const [d, ni, nj] of links) {
         if (ni < 0 || nj < 0 || ni >= xs.length || nj >= ys.length) continue;
-        const other = nodeAt[ni * ys.length + nj]!;
+        let [ti, tj] = [ni, nj];
+        let other = nodeAt[ti * ys.length + tj]!;
+        // A line inside a wall the system may pass through holds no node there: the edge runs on to the next line
+        // that does (kept only if it is that crossing; anything else in its way blocks it below).
+        let stepped = false;
+        while (other < 0 && crossable.size) {
+          ti += ni - i;
+          tj += nj - j;
+          if (ti < 0 || tj < 0 || ti >= xs.length || tj >= ys.length) break;
+          other = nodeAt[ti * ys.length + tj]!;
+          stepped = true;
+        }
         if (other < 0) continue;
         const a = { x: xs[i]!, y: ys[j]! };
-        const b = { x: xs[ni]!, y: ys[nj]! };
+        const b = { x: xs[ti]!, y: ys[tj]! };
         // The edge must not cross an obstacle; its corridor is the gap to the nearest one beside it.
         let free = Number.POSITIVE_INFINITY;
         let blocked = false;
@@ -273,7 +286,7 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
           }
           free = Math.min(free, gap);
         }
-        if (blocked) continue;
+        if (blocked || (stepped && !crossed)) continue;
         if (crossed) {
           const { box, wall } = crossed;
           const half = wall.thicknessMm / 2;
@@ -319,7 +332,8 @@ export function buildRoutingGraph(ctx: ServiceCtx, model: SizingModel, fanOutlet
       const fit = model.flexRunoutCurve(end, DIRECTIONS[heading]!, spigot);
       if (!flexOk(fit, spigot, ctx.settings) || !flexClear(ctx, end, DIRECTIONS[heading]!, ctx.bottomZ, spigot)) continue;
       if (!out.some((leaf) => leaf.node === node && leaf.heading === heading && leaf.variant === variant)) out.push({
-        node, heading, flexLengthMm: fit.lengthMm, flexBendLossPa: flexBendLossPa(fit.points, spigot.neck, spigot.airflowM3h), variant,
+        node, heading, flexLengthMm: fit.lengthMm, flexBendLossPa: flexBendLossPa(fit.points, spigot.neck, spigot.airflowM3h),
+        inletBendLossPa: flexInletBendLossPa(fit.points, spigot.neck, spigot.airflowM3h), variant,
       });
     }
     return out;

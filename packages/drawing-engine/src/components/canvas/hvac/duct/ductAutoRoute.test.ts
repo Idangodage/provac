@@ -76,8 +76,8 @@ describe('Auto route: the duct step', () => {
     }
     expect(findDuctClashes(applied, DEFAULT_DUCT_SETTINGS, [])).toEqual([]);
     expect(ductWallCrossings(result.elementsToAdd, walls).size).toBe(0);
-    // (About 25 s alone; past 60 s under the full suite's load.)
-  }, 120000);
+    // (About 100 s alone since every side of a square face is offered; past 120 s under the full suite's load.)
+  }, 400000);
 
   it('designs each ducted unit for the free terminals in its room, with no errors', () => {
     const scene = [unit, sd1, sd2, sd3, elsewhere];

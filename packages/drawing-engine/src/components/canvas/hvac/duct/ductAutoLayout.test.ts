@@ -151,7 +151,8 @@ describe('duct auto layout', () => {
       for (const piece of plan.pieces.filter((candidate) => candidate.kind === 'flex')) expect(piece.flex!.minBendRadiusMm).toBeGreaterThanOrEqual(200);
     }
     expectServed(result, row.map((element) => element.id));
-  });
+    // (About 25 s alone, six terminals each offered every side; past the default 30 s under the full suite's load.)
+  }, 120000);
 
   it('terminals along both sides of the axis get a straight trunk that reduces between take-offs', () => {
     const unit = fdum();

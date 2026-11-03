@@ -117,12 +117,22 @@ describe('two diffusers close to the unit, in the project\'s 6.45 × 4.65 m room
     }
   }, 240000);
 
-  it('Round and Optimal: a pair 1.2 m out, 0.9 m either side, its spigots facing the unit, still winds round, and the card says so', () => {
+  it('Round and Optimal: a pair 1.2 m out, 0.9 m either side, its spigots facing the unit: their inlets turn to face the ducts beyond them, nothing winds round', () => {
+    // Until 2 November 2026 each duct ran past its diffuser and came back round it into the spigot facing the unit
+    // (5.5 m each, 4.4 times the straight distance, flagged as winding). Every side of a square face is now offered, and
+    // a terminal is fed from in front of the inlet it uses: each inlet turns to face the Y's outlet beyond it.
     const facing = [diffuser('d1', { x: lip.x - 900, y: lip.y - 1200 }, 180), diffuser('d2', { x: lip.x + 900, y: lip.y - 1200 }, 180)];
     for (const shape of ['round', 'optimal'] as const) {
       const { result } = design(shape, facing);
-      const winding = result.issues.filter((issue) => issue.code === 'DU_AUTO_WINDING');
-      expect(winding.map((issue) => issue.message.slice(0, 3)).sort(), shape).toEqual(['D1:', 'D2:']);
+      const kept = result.designs[result.selected]!;
+      expect(kept.errors, shape).toBe(0);
+      expect(result.issues.filter((issue) => issue.code === 'DU_AUTO_WINDING'), shape).toEqual([]);
+      expect(result.terminalUpdates.map((element) => element.id).sort(), shape).toEqual(['d1', 'd2']);
+      const plans = kept.services.flatMap((service) => service.plans);
+      expect(plans.flatMap((plan) => plan.issues).filter((issue) => issue.code === 'DU_TERMINAL_APPROACH'), shape).toEqual([]);
+      for (const plan of plans.filter((entry) => entry.spec.end.kind === 'terminal')) {
+        expect(plan.pieces.reduce((sum, piece) => sum + piece.lengthMm, 0), shape).toBeLessThan(2000);
+      }
     }
   }, 240000);
 });

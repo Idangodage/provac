@@ -79,6 +79,7 @@ import { maxRoundBranchMm, roundReducerMinLengthMm, wyeLegLengthMm, ROUND_FITTIN
 import { goredElbowPieces, SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';
 import { squareToRoundAreaMm2 } from './ductSquareToRound';
+import { approachBehindLimitMm, approachPassLimitMm, sideFacing, terminalApproach, terminalFeed, terminalInletTurnable } from './ductTerminalApproach';
 import { findTerminalPort } from './ductTerminals';
 import {
   isRoundLeg,
@@ -130,6 +131,7 @@ export type DuctIssueCode =
   | 'DU_TOP_COLLAR_VOID'
   | 'DU_TERMINAL_SIZE'
   | 'DU_TERMINAL_ALIGN'
+  | 'DU_TERMINAL_APPROACH'
   | 'DU_OPEN_END'
   | 'DU_PENETRATION_FLEX'
   | 'DU_PENETRATION_FITTING'
@@ -1581,6 +1583,8 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     const end = spec.end;
     const port = findTerminalPort(scene, end.terminalId, end.portId);
     const stored = plannedSpec.path[plannedSpec.path.length - 1]!;
+    /** The runout's samples (plan), for the approach check. */
+    let runoutPoints: Point2D[] = [];
     if (!port) {
       issues.push({ code: 'DU_STALE', severity: 'warning', point: stored, message: 'The air terminal this run serves is missing.' });
     } else if (Math.hypot(port.lip.x - stored.x, port.lip.y - stored.y) > 5) {
@@ -1609,6 +1613,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         }
       }
       const curve = flexCurve(startCentre, startDirection, endCentre, endDirection);
+      runoutPoints = curve.points.map((point) => ({ x: point.x, y: point.y }));
       practice.add(PRACTICE.flex);
       if (curve.lengthMm > settings.flexMaxLengthMm + 0.5) {
         issues.push({ code: 'DU_FLEX_LENGTH', severity: 'warning', point: stored,
@@ -1656,6 +1661,27 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       if (!square || across > 5 || (!port.vertical && Math.abs(stored.z + lastSection.heightMm / 2 - port.lip.z) > 5)) {
         issues.push({ code: 'DU_TERMINAL_ALIGN', severity: 'error', point: stored,
           message: 'Rigid duct must meet the terminal\'s spigot level, square to it and on its axis; route the last leg straight into the spigot or use a flexible runout.' });
+      }
+    }
+    // Fed from in front of its inlet, without passing it (practice: see ductTerminalApproach).
+    const terminal = port ? scene.find((element) => element.id === end.terminalId) : undefined;
+    const fed = port && terminal ? terminalFeed(elementId, plannedSpec, scene) : null;
+    const approach = port && fed ? terminalApproach(port, fed.feed, [...fed.points, ...runoutPoints]) : null;
+    if (terminal && approach) {
+      const name = terminal.label || 'The terminal';
+      const turnable = terminalInletTurnable(terminal);
+      const facing = sideFacing(terminal, approach.feed);
+      // Marked where the terminal's runout starts (its connection), not at a take-off or collar far away.
+      const at = plannedSpec.path.length >= 2 && flexTail ? plannedSpec.path[plannedSpec.path.length - 2]! : stored;
+      if (approach.behindMm > approachBehindLimitMm(port!)) {
+        const fix = turnable ? `Turn its inlet to the ${facing ?? 'side facing the duct'} side, or take the duct off in front of it.`
+          : terminal.properties.spigotSideSetBy === 'user' ? `Its spigot side is set by hand; the ${facing ?? 'other'} side faces the duct.`
+            : 'Take the duct off in front of its inlet.';
+        issues.push({ code: 'DU_TERMINAL_APPROACH', severity: 'warning', point: { x: at.x, y: at.y },
+          message: `${name} is fed from behind its inlet: its duct leaves ${Math.round(approach.behindMm)} mm behind the inlet's face and goes round the box. ${fix}` });
+      } else if (approach.passAt && approach.passMm > approachPassLimitMm(port!)) {
+        issues.push({ code: 'DU_TERMINAL_APPROACH', severity: 'warning', point: approach.passAt,
+          message: `${name}'s duct passes its inlet and comes back to it (${Math.round(approach.passMm)} mm past the inlet's axis). Bring it in from the side it comes from${turnable ? ', or turn the inlet to face it' : ''}.` });
       }
     }
   } else if (spec.end.kind === 'plenum' && lastLeg.vertical) {
