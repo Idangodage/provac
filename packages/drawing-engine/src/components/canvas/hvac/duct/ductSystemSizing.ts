@@ -58,6 +58,7 @@ import {
   SPLIT_SHARE_LIMITS,
   splitAngleOf,
   splitEnd,
+  withTapStyle,
   type DuctLeg,
   type DuctPoint3,
   type DuctRunSpec,
@@ -720,7 +721,7 @@ export function sizeDuctSystem(
         });
         if (fits) return;
       }
-      if (start.style === 'shoe-45' || start.style === 'straight' || isRoundMainTapStyle(start.style)) node.styles.set(tap.child.id, 'spin-in');
+      if (start.style === 'shoe-45' || start.style === 'straight' || start.style === 'radius' || isRoundMainTapStyle(start.style)) node.styles.set(tap.child.id, 'spin-in');
       raise(j, { height: ceilStep(d + 50) }, 'take-off', `the take-off to ${label} (Ø${d} + 50)`);
     });
 
@@ -840,7 +841,7 @@ export function sizeDuctSystem(
         return parts;
       };
       const styleOf = (j: number): DuctTapStyle => node.styles.get(node.taps[j]!.child.id) ?? (node.taps[j]!.child.spec.start as DuctTapStart).style;
-      const halves = node.taps.map((tap, j) => model.tapWindowHalfMm(styleOf(j), firstSection(tap.child), sections[j]!));
+      const halves = node.taps.map((tap, j) => model.tapWindowHalfMm(styleOf(j), firstSection(tap.child), sections[j]!, (tap.child.spec.start as DuctTapStart).radiusRatio));
       const start = spec.start;
       let startClear: number;
       if (!node.parent) {
@@ -851,7 +852,7 @@ export function sizeDuctSystem(
         startClear = (node.head ? node.head.end : connector) + transition + 50;
       } else {
         const style: DuctTapStyle = start.kind === 'tap' || start.kind === 'spigot' ? (newStarts.get(node.id)?.style ?? start.style) : 'spin-in';
-        startClear = model.collarLengthMm(style, sections[0]!) + (start.kind === 'split-branch' ? 0 : settings.vcdLengthMm) + 100;
+        startClear = model.collarLengthMm(style, sections[0]!, start.kind === 'tap' ? start.radiusRatio : undefined) + (start.kind === 'split-branch' ? 0 : settings.vcdLengthMm) + 100;
       }
       const end = spec.end;
       const endClear = end.kind === 'terminal' ? 450
@@ -978,11 +979,10 @@ export function sizeDuctSystem(
       const start = tap.child.spec.start as DuctTapStart;
       const point = tapPoints[j];
       const at = point ? locateOn(rigid, point) : null;
-      newStarts.set(tap.child.id, {
+      newStarts.set(tap.child.id, withTapStyle({
         ...start,
         ...(at ? { legIndex: at.leg, stationMm: at.along } : {}),
-        style: node.styles.get(tap.child.id) ?? start.style,
-      });
+      }, node.styles.get(tap.child.id) ?? start.style));
     });
     const path = node.flexTail ? [...rigid, spec.path[spec.path.length - 1]!] : rigid;
     const allLegs = node.flexTail ? [...legs, spec.legs[spec.legs.length - 1]!] : legs;

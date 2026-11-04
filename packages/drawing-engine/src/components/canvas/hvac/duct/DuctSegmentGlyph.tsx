@@ -16,6 +16,7 @@ const PATHS: Record<DuctOptionGlyph, string> = {
   taper: 'M3 6l14 2.5v3L3 14z',
   'tap-shoe': 'M2 12h16 M2 16h16 M7 12l3-5h5v5',
   'tap-straight': 'M2 12h16 M2 16h16 M7 12V5 M13 12V5',
+  'tap-radius': 'M2 12h1 M13.4 12H18 M2 16h16 M3 12a6 6 0 0 0 6-6V3 M13.4 12A12 12 0 0 0 15 6V3',
   'tap-spin': 'M2 12h16 M2 16h16 M7.5 12V6h5v6 M7 7h6',
   'tap-conical': 'M2 12h16 M2 16h16 M6 12l2-5h4l2 5',
   'tap-tee': 'M3 13a5 5 0 1 0 10 0a5 5 0 1 0-10 0 M13 11h5 M13 15h5',

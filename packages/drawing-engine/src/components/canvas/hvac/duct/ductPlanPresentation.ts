@@ -11,6 +11,7 @@ import { gaugeLabelForSheet } from './ductCatalog';
 import type { DuctElbow, DuctFabricationPlan, DuctJointKind, DuctPiece } from './ductFabricationPlanner';
 import { describeJoint } from './ductGauge';
 import { add, dot, ductLegs, frameToPlan, perpToward, sampleArc, scale, squareElbowGeometry, sub, unit } from './ductGeometry';
+import { radiusTakeoffOutline, radiusTakeoffShape } from './ductRadiusTakeoff';
 import type { DuctLeg } from './ductTypes';
 
 /** A place the plan's tag layout (ductTagLayout.ts) may put a tag. */
@@ -242,8 +243,14 @@ export function roundMainCollarStart(piece: DuctPiece, sheet: number): [Point2D,
   return [corner(1), corner(-1)];
 }
 
-/** Take-off: a straight collar, or a shoe with its 45° lead-in toward the parent's start. */
+/** Take-off: a straight collar, a shoe with its 45° lead-in toward the parent's start, or a radius take-off's sweep. */
 function takeoffOutline(piece: DuctPiece, sheet: number): Point2D[] {
+  if (piece.takeoff?.style === 'radius') {
+    const u = piece.direction;
+    const v = piece.takeoff.parentDirection;
+    return radiusTakeoffOutline(radiusTakeoffShape(piece.widthMm, piece.takeoff.radiusRatio), piece.lengthMm, sheet)
+      .map(({ a, b }) => add(add(piece.start, scale(u, a)), scale(v, b)));
+  }
   const half = piece.widthMm / 2 + sheet;
   const lead = piece.takeoff?.leadInMm ?? 0;
   const saddle = roundMainCollarStart(piece, sheet);

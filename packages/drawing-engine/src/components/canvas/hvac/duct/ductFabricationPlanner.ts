@@ -63,6 +63,7 @@ import {
 } from './ductGeometry';
 import { ductInsulationThicknessMm, insulationTakeoff, type DuctInsulationTakeoff } from './ductInsulation';
 import { jointHardware, roundTakeoffHardware, slipOverHardware, takeoffHardware, type JointHardware } from './ductJoints';
+import { RADIUS_TAKEOFF, radiusTakeoffRatio, radiusTakeoffShape, radiusTakeoffSheetAreaM2 } from './ductRadiusTakeoff';
 import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
 import { jogOffset, tightestOgee, type DuctOffsetGeometry } from './ductOffsets';
 import {
@@ -228,6 +229,8 @@ export interface DuctTakeoffInfo {
   openingMm?: number;
   /** Parent leg direction (the lead-in points toward its start, −d). */
   parentDirection: Point2D;
+  /** A radius take-off's r/W, in the range it is made. */
+  radiusRatio?: number;
   /** Off a round main: the main's cylinder, which the collar is cut to (its saddle). */
   roundMain?: RoundMainCylinder;
 }
@@ -1015,6 +1018,10 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         if (Math.hypot(tap.wallPoint.x - spec.path[0]!.x, tap.wallPoint.y - spec.path[0]!.y) > 5) {
           issues.push({ code: 'DU_STALE', severity: 'warning', point: spec.path[0], message: 'The parent run has moved away from this branch.' });
         }
+        if (start.style === 'radius' && radiusTakeoffRatio(start.radiusRatio) < RADIUS_TAKEOFF.tightBelowRatio - 1e-9) {
+          issues.push({ code: 'DU_ELBOW_RADIUS', severity: 'warning', point: spec.path[0],
+            message: `r/W ${radiusTakeoffRatio(start.radiusRatio)}: as on an elbow, SMACNA allows a throat this tight only up to ${ELBOW_RULES.squareThroatMaxVelocityMs} m/s (Fig. 2-2 RE1).` });
+        }
         leaving = tap.direction;
         startPieces.push({ kind: 'takeoff', lengthMm: tap.collarLengthMm, section: firstLeg });
       }
@@ -1185,16 +1192,19 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
             sheetAreaM2: metalArea, fabricAreaM2: (girth * settings.connectorFabricMm) / 1e6, massKg: massOf(metalArea, startPiece.section),
           });
         } else if (startPiece.kind === 'takeoff' && tap) {
+          const tapStart = spec.start as { style: DuctTapStyle; radiusRatio?: number };
+          const radius = tapStart.style === 'radius' ? radiusTakeoffShape(startPiece.section.widthMm, tapStart.radiusRatio) : null;
           const piece = straightPiece('takeoff', 'T', cursor, cursor + length, startPiece.section, {
             takeoff: {
-              style: (spec.start as { style: DuctTapStyle }).style, leadInMm: tap.leadInMm, parentDirection: tap.parentDirection,
+              style: tapStart.style, leadInMm: tap.leadInMm, parentDirection: tap.parentDirection,
+              ...(radius ? { radiusRatio: radius.ratio } : {}),
               ...(tap.openingDiameterMm !== null ? { openingMm: tap.openingDiameterMm } : {}),
               ...(tap.roundMain ? { roundMain: tap.roundMain } : {}),
             },
           });
-          // The shoe's lead-in adds a triangular cheek pair and a sloped wall.
-          const leadArea = tap.leadInMm > 0 ? (tap.leadInMm * tap.leadInMm + tap.leadInMm * Math.SQRT2 * startPiece.section.heightMm) / 1e6 : 0;
-          piece.sheetAreaM2 += leadArea;
+          // A radius take-off is its own developed sheet; a shoe's lead-in adds a triangular cheek pair and a sloped wall.
+          if (radius) piece.sheetAreaM2 = radiusTakeoffSheetAreaM2(radius, length, startPiece.section.heightMm);
+          else piece.sheetAreaM2 += tap.leadInMm > 0 ? (tap.leadInMm * tap.leadInMm + tap.leadInMm * Math.SQRT2 * startPiece.section.heightMm) / 1e6 : 0;
           piece.massKg = massOf(piece.sheetAreaM2, startPiece.section);
           pieces.push(piece);
         } else {
@@ -1206,6 +1216,11 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
           }));
         }
         cursor += length;
+      }
+      // A radius take-off's sweep has no shorter form: a first leg that cuts it (or its damper) is an error, not a trim.
+      if (spec.start.kind === 'tap' && spec.start.style === 'radius' && cursor < startPiecesLength - STATION_EPSILON_MM) {
+        issues.push({ code: 'DU_LEG_TOO_SHORT', severity: 'error', legIndex, point: at(leg.lengthMm / 2),
+          message: `Leg 1 is ${Math.round(startPiecesLength - cursor)} mm too short for its radius take-off${spec.start.vcd ? ' and damper' : ''}.` });
       }
     }
 
@@ -1761,8 +1776,8 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       pushJoint('tap-connection', 0, first, section, [null, first.mark],
         tap.openingDiameterMm !== null && isRoundTapStyle(start.style)
           ? roundTakeoffHardware({ sideAMm: tap.openingDiameterMm, sideBMm: tap.openingDiameterMm, pressureClassPa, washersPerBolt: settings.washersPerBolt },
-            start.style as Exclude<DuctTapStyle, 'shoe-45' | 'straight'>)
-          : takeoffHardware({ sideAMm: o.w + tap.leadInMm, sideBMm: o.h, pressureClassPa, washersPerBolt: settings.washersPerBolt }));
+            start.style as Exclude<DuctTapStyle, 'shoe-45' | 'straight' | 'radius'>)
+          : takeoffHardware({ sideAMm: o.w + tap.leadInMm - (tap.heelInMm ?? 0), sideBMm: o.h, pressureClassPa, washersPerBolt: settings.washersPerBolt }));
     } else if (spec.start.kind === 'split-branch') {
       pushJoint('flange', 0, first, section, [null, first.mark], hardwareFor(section));
     }

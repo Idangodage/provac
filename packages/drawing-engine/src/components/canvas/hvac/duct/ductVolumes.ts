@@ -14,6 +14,7 @@ import { unitConnectionsFor } from '../unitConnections';
 
 import { getDuctRunPlan, type DuctFabricationPlan, type DuctPiece } from './ductFabricationPlanner';
 import { frameToWorld, sampleArc } from './ductGeometry';
+import { radiusTakeoffSections, radiusTakeoffShape } from './ductRadiusTakeoff';
 import type { DuctDesignSettings } from './ductSettings';
 import { isDuctTerminalElement, readDuctTerminalSpec, terminalSpigotPort } from './ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec, type DuctPoint3 } from './ductTypes';
@@ -97,6 +98,28 @@ function splitBoxes(elementId: string, piece: DuctPiece, insulationMm: number): 
   return boxes;
 }
 
+/** A radius take-off's body: short boxes across its sweep, the wing past the collar's line included, then its neck. */
+function radiusTakeoffBoxes(elementId: string, piece: DuctPiece, insulationMm: number): DuctBox[] {
+  const skin = (piece.sheetThicknessMm ?? 1) + insulationMm;
+  const shape = radiusTakeoffShape(piece.widthMm, piece.takeoff!.radiusRatio);
+  const u = piece.direction;
+  const v = piece.takeoff!.parentDirection;
+  const at = (a: number, b: number): Vec3 => ({ x: piece.start.x + u.x * a + v.x * b, y: piece.start.y + u.y * a + v.y * b, z: piece.centreZ });
+  const sections = radiusTakeoffSections(shape, skin, 6);
+  const middle = (section: (typeof sections)[number]) => at((section.inner.a + section.outer.a) / 2, (section.inner.b + section.outer.b) / 2);
+  const span = (section: (typeof sections)[number]) => Math.hypot(section.outer.a - section.inner.a, section.outer.b - section.inner.b);
+  const halfHeight = piece.heightMm / 2 + skin;
+  const boxes: DuctBox[] = [];
+  sections.forEach((section, index) => {
+    const before = sections[index - 1];
+    const next = before ? box(elementId, piece.mark, middle(before), middle(section), Math.max(span(before), span(section)) / 2, halfHeight) : null;
+    if (next) boxes.push(next);
+  });
+  const neck = box(elementId, piece.mark, at(shape.throatMm, 0), at(piece.lengthMm, 0), piece.widthMm / 2 + skin, halfHeight);
+  if (neck) boxes.push(neck);
+  return boxes;
+}
+
 /** A piece's centreline as 3D points, and the width axis to hold (vertical-plane pieces). */
 function pieceCentreline(piece: DuctPiece): { points: Vec3[]; across?: Point2D } | null {
   if (piece.kind === 'flex' && piece.flex) {
@@ -143,6 +166,10 @@ export function ductBoxesOf(plan: DuctFabricationPlan): DuctBox[] {
   for (const piece of plan.pieces) {
     if (piece.kind === 'split' && piece.split) {
       boxes.push(...splitBoxes(plan.elementId, piece, plan.insulationMm));
+      continue;
+    }
+    if (piece.kind === 'takeoff' && piece.takeoff?.style === 'radius') {
+      boxes.push(...radiusTakeoffBoxes(plan.elementId, piece, plan.insulationMm));
       continue;
     }
     const line = pieceCentreline(piece);

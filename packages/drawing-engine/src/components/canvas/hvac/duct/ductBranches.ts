@@ -11,6 +11,7 @@ import type { Point2D } from '../../../../types';
 
 import { resolveVaneType, shoeLeadInMm, transitionSlopeMm, vaneCountOnDiagonal, vaneSectionsFor, type DuctVaneSpec } from './ductFittingRules';
 import { add, dot, ductLegs, radiusElbowGeometry, scale, sub, type DuctLegGeometry, type ElbowPlanGeometry } from './ductGeometry';
+import { radiusTakeoffCollarMm, radiusTakeoffShape } from './ductRadiusTakeoff';
 import { roundMainLeavingDirection, roundMainTapGeometry, wyeLegLengthMm } from './ductRoundFittings';
 import type { DuctDesignSettings } from './ductSettings';
 import {
@@ -88,13 +89,15 @@ export interface TapAttachment {
   /** Clear bottom level, shared with the parent. */
   bottomZ: number;
   leadInMm: number;
-  /** Take-off collar length along the branch (the shoe needs room for its 45° lead-in). */
+  /** Take-off collar length along the branch (a shoe needs room for its 45° lead-in, a radius take-off for its sweep). */
   collarLengthMm: number;
   /** Round collars: the opening diameter cut in the parent (the cone mouth for a conical tap). */
   openingDiameterMm: number | null;
-  /** Station range of the opening on the parent leg (lead-in included). */
+  /** Station range the take-off keeps clear on the parent leg (lead-in included). */
   openingFromMm: number;
   openingToMm: number;
+  /** A radius take-off: its heel meets the wall this far short of `openingToMm`, where the hole in the main ends. */
+  heelInMm?: number;
   /** A round main: the cylinder the collar is cut to (its saddle), for drawing the collar on the curved wall. */
   roundMain?: RoundMainCylinder;
 }
@@ -110,7 +113,7 @@ export interface RoundMainCylinder {
 
 export function tapAttachment(
   parent: DuctRunSpec,
-  tap: { legIndex: number; stationMm: number; side: DuctSide; style: DuctTapStyle },
+  tap: { legIndex: number; stationMm: number; side: DuctSide; style: DuctTapStyle; radiusRatio?: number },
   branch: DuctLeg,
   parentSheetMm: number,
   settings: Pick<DuctDesignSettings, 'tapCollarMm' | 'conicalFlareMm'>,
@@ -140,7 +143,8 @@ export function tapAttachment(
       roundMain: { diameterMm: section.diameterMm!, sheetMm: parentSheetMm, axisPoint: along, axisZ: leg.start.z + section.heightMm / 2 },
     };
   }
-  const leadInMm = tap.style === 'shoe-45' ? shoeLeadInMm(branch.widthMm) : 0;
+  const radius = tap.style === 'radius' ? radiusTakeoffShape(branch.widthMm, tap.radiusRatio) : null;
+  const leadInMm = radius ? radius.throatMm : tap.style === 'shoe-45' ? shoeLeadInMm(branch.widthMm) : 0;
   if (isRoundTapStyle(tap.style)) {
     // Round collar off the rectangular wall (SMACNA Fig. 2-6): spin-in at the branch
     // diameter, or a cone whose mouth is wider (D1 ≥ D2).
@@ -162,11 +166,19 @@ export function tapAttachment(
     parentDirection: leg.direction,
     bottomZ: leg.start.z,
     leadInMm,
-    collarLengthMm: Math.max(settings.tapCollarMm, leadInMm + 50),
+    collarLengthMm: radius ? radiusTakeoffCollarMm(radius, settings.tapCollarMm) : Math.max(settings.tapCollarMm, leadInMm + 50),
     openingDiameterMm: null,
     openingFromMm: tap.stationMm - branch.widthMm / 2 - leadInMm,
     openingToMm: tap.stationMm + branch.widthMm / 2,
+    ...(radius ? { heelInMm: radius.heelInMm } : {}),
   };
+}
+
+/** The collar a run's start takes on its first leg, where it can be longer than the project's: a radius take-off's. */
+export function startCollarMm(start: DuctRunSpec['start'], firstLeg: DuctLeg | undefined, settings: Pick<DuctDesignSettings, 'tapCollarMm'>): number {
+  return start.kind === 'tap' && start.style === 'radius' && firstLeg
+    ? radiusTakeoffCollarMm(radiusTakeoffShape(firstLeg.widthMm, start.radiusRatio), settings.tapCollarMm)
+    : settings.tapCollarMm;
 }
 
 export interface SplitOutlet {

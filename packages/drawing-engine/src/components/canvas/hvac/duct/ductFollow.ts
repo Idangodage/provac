@@ -8,7 +8,7 @@
 import type { HvacElement, Point2D } from '../../../../types';
 
 import { findAirPort } from './ductAirPorts';
-import { splitOutlet, tapAttachment } from './ductBranches';
+import { splitOutlet, startCollarMm, tapAttachment } from './ductBranches';
 import { runSectionSheetMm } from './ductGauge';
 import { ductLegs } from './ductGeometry';
 import { ductBranchesOf } from './ductNetwork';
@@ -252,7 +252,8 @@ export function reanchorBranchesKeepingEnds(
         }
         continue;
       }
-      const moved = reanchorKeepingEnd(spec, from, to, minFirstMm);
+      // (A radius take-off's collar is longer than the project's.)
+      const moved = reanchorKeepingEnd(spec, from, to, minFirstMm + startCollarMm(spec.start, spec.legs[0], settings) - settings.tapCollarMm);
       const element = ductRunElementWithSpec(branch.element, moved.spec);
       current.set(element.id, element);
       result.set(element.id, element);

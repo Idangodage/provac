@@ -15,7 +15,7 @@ import { moveDuctNetwork } from '../move/ductNetworkMove';
 
 import { findAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
-import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLegWidthMm, tapAttachment } from './ductBranches';
+import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLegWidthMm, startCollarMm, tapAttachment } from './ductBranches';
 import { accessDoorFor, getDuctRunPlan, inlineAccessoryLengthMm, planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
@@ -39,6 +39,7 @@ import {
   roundLeg,
   splitAngleOf,
   splitEnd,
+  withTapStyle,
   type DuctInlineAccessory,
   type DuctInlineKind,
   type DuctLeg,
@@ -67,7 +68,7 @@ export type DuctSegmentEdit =
   /** A node's fitting choices (null = the project's). */
   | { kind: 'node'; runId: string; node: number; override: DuctNodeOverride | null }
   /** A branch's take-off fitting, and its first leg with it (a round collar takes a round branch). */
-  | { kind: 'tap'; runId: string; style: DuctTapStyle; firstLeg?: DuctLeg }
+  | { kind: 'tap'; runId: string; style: DuctTapStyle; radiusRatio?: number; firstLeg?: DuctLeg }
   /** The volume damper after a take-off, or the flexible connector at the unit. */
   | { kind: 'start'; runId: string; vcd?: boolean; connector?: boolean }
   /** A split's style; a Y's leaving angle (90° unless given). Outlets that leave at a new angle turn, keeping their ends. */
@@ -152,7 +153,7 @@ export function tapStyleForMain(
   settings: Pick<DuctDesignSettings, 'conicalFlareMm'>,
 ): { style: DuctTapStyle } | { refused: string } {
   if (roundMain) {
-    if (style === 'shoe-45' || style === 'conical') return { style: 'round-conical' };
+    if (style === 'shoe-45' || style === 'radius' || style === 'conical') return { style: 'round-conical' };
     if (style === 'straight' || style === 'spin-in') return { style: 'round-tee' };
     return { style };
   }
@@ -326,7 +327,7 @@ function tapOnNewMain(
   const mapped = tapStyleForMain(branch.start.style, isRoundLeg(section), section, branchLegs[0]!.diameterMm ?? branchLegs[0]!.heightMm, settings);
   if ('refused' in mapped) return `${label}: ${mapped.refused}.`;
   if (mapped.style !== branch.start.style) notes.push(`${label} becomes a ${TAKEOFF_TITLES[mapped.style].toLowerCase().replace(/ \(y\)$/, '')}`);
-  return ductRunElementWithSpec(branch.element, { ...branch.spec, legs: branchLegs, start: { ...branch.start, style: mapped.style } });
+  return ductRunElementWithSpec(branch.element, { ...branch.spec, legs: branchLegs, start: withTapStyle(branch.start, mapped.style) });
 }
 
 /** Radius ratios an elbow is tightened through to fit legs the edit left too short (then turning vanes, on a 90° turn). */
@@ -548,7 +549,7 @@ function editTap(scene: readonly HvacElement[], settings: DuctDesignSettings, ed
   const parentSpec = parent ? readDuctRunSpec(parent) : null;
   if (!parent || !parentSpec) return refuse('The run this branch was taken off is missing.');
   const legs = edit.firstLeg ? [edit.firstLeg, ...spec.legs.slice(1)] : spec.legs;
-  let next: DuctRunSpec = { ...spec, legs, start: { ...spec.start, style: edit.style } };
+  let next: DuctRunSpec = { ...spec, legs, start: withTapStyle(spec.start, edit.style, edit.radiusRatio) };
   const notes = edit.firstLeg && sectionLabel(edit.firstLeg) !== sectionLabel(spec.legs[0]!)
     ? [`Its first leg becomes ${sectionLabel(edit.firstLeg)} (was ${sectionLabel(spec.legs[0]!)})`] : [];
   const changed = new Map<string, HvacElement>();
@@ -1016,7 +1017,7 @@ function reformRunout(scene: readonly HvacElement[], settings: DuctDesignSetting
   const width = rigid.diameterMm ?? rigid.widthMm;
   // A 90° elbow takes R (1.5 W) of each leg, plus its neck.
   const elbow = 1.5 * width + settings.elbowNeckMm;
-  const collar = settings.tapCollarMm + (start.vcd ? settings.vcdLengthMm : 0);
+  const collar = startCollarMm(start, spec.legs[0], settings) + (start.vcd ? settings.vcdLengthMm : 0);
   const level = (point: Point2D): DuctPoint3 => ({ x: point.x, y: point.y, z: anchor.z });
   const candidates: Array<{ spec: DuctRunSpec; length: number }> = [];
   for (const stub of [collar + elbow + 50, collar + elbow + 200]) {
@@ -1153,7 +1154,7 @@ function editRunoutLength(scene: readonly HvacElement[], settings: DuctDesignSet
   // The stub can be no shorter than its take-off's collar and damper (or than it is, which the planner already takes);
   // beyond a vertex, no shorter than an elbow's room. It runs on at most to 150 mm short of the spigot.
   const start = spec.start;
-  const fittings = (start.kind === 'tap' ? settings.tapCollarMm : 0) + ('vcd' in start && start.vcd ? settings.vcdLengthMm : 0);
+  const fittings = (start.kind === 'tap' ? startCollarMm(start, spec.legs[0], settings) : 0) + ('vcd' in start && start.vcd ? settings.vcdLengthMm : 0);
   const lo = Math.min(now, n - 3 === 0 ? fittings + 20 : 300);
   const hi = Math.max(lo, dot(sub2(lip, q), d) - 150);
   const lengthOf = (along: number) => {

@@ -43,7 +43,7 @@ export type DuctOptionGroup = 'size' | 'swap' | 'tune' | 'accessory' | 'terminal
 /** What an option's small picture shows. */
 export type DuctOptionGlyph =
   | 'rect' | 'round' | 'elbow-radius' | 'elbow-vaned' | 'elbow-gored' | 'taper'
-  | 'tap-shoe' | 'tap-straight' | 'tap-spin' | 'tap-conical' | 'tap-tee' | 'tap-lateral'
+  | 'tap-shoe' | 'tap-straight' | 'tap-radius' | 'tap-spin' | 'tap-conical' | 'tap-tee' | 'tap-lateral'
   | 'split-y' | 'split-bullhead' | 'damper' | 'connector' | 'fire-damper' | 'cap' | 'open' | 'flex' | 'terminal'
   | 'access-door' | 'attenuator';
 
@@ -73,7 +73,7 @@ export interface DuctSegmentOptionContext {
 }
 
 const TAP_GLYPH: Record<DuctTapStyle, DuctOptionGlyph> = {
-  'shoe-45': 'tap-shoe', straight: 'tap-straight', 'spin-in': 'tap-spin', conical: 'tap-conical',
+  'shoe-45': 'tap-shoe', straight: 'tap-straight', radius: 'tap-radius', 'spin-in': 'tap-spin', conical: 'tap-conical',
   'round-tee': 'tap-tee', 'round-conical': 'tap-conical', 'round-lateral': 'tap-lateral',
 };
 

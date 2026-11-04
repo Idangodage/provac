@@ -180,7 +180,7 @@ export function slipOverHardware(input: JointHardwareInput): JointHardware {
   };
 }
 
-const ROUND_TAKEOFF_LABELS: Record<Exclude<DuctTapStyle, 'shoe-45' | 'straight'>, string> = {
+const ROUND_TAKEOFF_LABELS: Record<Exclude<DuctTapStyle, 'shoe-45' | 'straight' | 'radius'>, string> = {
   'spin-in': 'Spin-in collar into parent',
   conical: 'Conical collar into parent',
   'round-tee': '90° tap into round main',
@@ -196,7 +196,7 @@ const ROUND_TAKEOFF_LABELS: Record<Exclude<DuctTapStyle, 'shoe-45' | 'straight'>
  *    the cut (the figure also allows stitch or spot welds).
  * Sealant round the opening in both cases (S3.4: saddles sealed at all pressures).
  */
-export function roundTakeoffHardware(input: JointHardwareInput, style: Exclude<DuctTapStyle, 'shoe-45' | 'straight'>): JointHardware {
+export function roundTakeoffHardware(input: JointHardwareInput, style: Exclude<DuctTapStyle, 'shoe-45' | 'straight' | 'radius'>): JointHardware {
   const roundMain = isRoundMainTapStyle(style);
   const edge = roundMain ? roundTapEdgeMm(style, input.sideAMm) : Math.PI * input.sideAMm;
   const screws = roundMain

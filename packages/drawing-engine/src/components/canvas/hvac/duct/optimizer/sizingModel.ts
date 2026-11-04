@@ -9,6 +9,7 @@ import type { Point2D } from '../../../../../types';
 import { portEntryDirection } from '../ductAirPorts';
 import { branchStubMm, dirToWorld, flexClear, flexFit, flexOk, runoutStaysOut, toWorld, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLeg, dividedFlowLegWidthMm, shoeLeadInMm } from '../ductBranches';
+import { radiusTakeoffCollarMm, radiusTakeoffShape } from '../ductRadiusTakeoff';
 import { damperCost, energyPricePerPa, fittingCost, flexCost, sectionCostPerMetre, type SectionCostContext } from '../ductEconomics';
 import { flexCurve, type DuctFlexGeometry } from '../ductFlex';
 import {
@@ -189,12 +190,13 @@ export class SizingModel {
   }
 
   /** Half the length of main a take-off occupies (its opening as the planner cuts it) plus the joint margin. */
-  tapWindowHalfMm(style: DuctTapStyle, branch: DuctLeg, main: DuctLeg): number {
+  tapWindowHalfMm(style: DuctTapStyle, branch: DuctLeg, main: DuctLeg, radiusRatio?: number): number {
     const s = this.settings;
     let half: number;
     if (isRoundLeg(main) && isRoundMainTapStyle(style)) half = roundMainTapGeometry(style, branch.diameterMm ?? branch.widthMm, s).windowHalfMm;
     else if (style === 'conical') half = (branch.widthMm + s.conicalFlareMm) / 2;
     else if (style === 'shoe-45') half = branch.widthMm / 2 + shoeLeadInMm(branch.widthMm);
+    else if (style === 'radius') half = branch.widthMm / 2 + radiusTakeoffShape(branch.widthMm, radiusRatio).throatMm;
     else half = branch.widthMm / 2;
     return half + s.tapWindowMarginMm;
   }
@@ -349,11 +351,12 @@ export class SizingModel {
   }
 
   /** Collar length of a take-off style for a branch. */
-  collarLengthMm(style: DuctTapStyle, branch: DuctLeg): number {
+  collarLengthMm(style: DuctTapStyle, branch: DuctLeg, radiusRatio?: number): number {
     const s = this.settings;
     if (isRoundMainTapStyle(style)) return roundMainTapGeometry(style, branch.diameterMm ?? branch.widthMm, s).collarLengthMm;
     if (style === 'conical') return Math.max(s.tapCollarMm, s.conicalFlareMm + 100);
     if (style === 'shoe-45') return Math.max(s.tapCollarMm, Math.max(102, branch.widthMm / 4) + 50);
+    if (style === 'radius') return radiusTakeoffCollarMm(radiusTakeoffShape(branch.widthMm, radiusRatio), s.tapCollarMm);
     return s.tapCollarMm;
   }
 

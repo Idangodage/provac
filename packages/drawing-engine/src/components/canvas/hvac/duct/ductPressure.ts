@@ -21,6 +21,7 @@
  */
 import type { DuctElbow, DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
+import { RADIUS_TAKEOFF, radiusTakeoffRatio } from './ductRadiusTakeoff';
 import type { DuctDesignSettings } from './ductSettings';
 import { frictionPaPerM, velocityMs, velocityPressurePa } from './ductSizing';
 import { splitAngleOf, type DuctLeg, type DuctPoint3, type DuctService, type DuctSplitAngle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
@@ -69,8 +70,24 @@ export const TAKEOFF_A_PRIME: Record<DuctTapStyle, number> = {
   conical: 0.4,
   'round-conical': 0.4,
   'shoe-45': 0.35,
+  // Against ASHRAE 5-22 at r/W 1.0: the table's C ≈ 0.5 at equal velocities, within about 0.2 for Vb/Vc 0.6 to 1.6.
+  radius: 0.25,
   'round-lateral': 0.6,
 };
+
+/**
+ * A radius take-off's A′ by r/W: published at 1.0 only; the rest is practice, up to the shoe's at the tightest (which
+ * has a shoe's room) and a little under it past RE1's proportions.
+ */
+export function radiusTakeoffAPrime(radiusRatio?: number): number {
+  const ratio = radiusTakeoffRatio(radiusRatio);
+  const points: Array<[number, number]> = [[RADIUS_TAKEOFF.minRatio, TAKEOFF_A_PRIME['shoe-45']], [1, TAKEOFF_A_PRIME.radius], [RADIUS_TAKEOFF.maxRatio, 0.23]];
+  const upper = points.findIndex(([x]) => ratio <= x);
+  if (upper <= 0) return points[0]![1];
+  const [x1, y1] = points[upper - 1]!;
+  const [x2, y2] = points[upper]!;
+  return y1 + ((ratio - x1) / (x2 - x1)) * (y2 - y1);
+}
 
 /** The angle a take-off's branch leaves the main at (deg). */
 export function takeoffAngleDeg(style: DuctTapStyle): number {
@@ -81,10 +98,10 @@ export function takeoffAngleDeg(style: DuctTapStyle): number {
  * Loss (Pa) from the main into a branch: ζ = A′·[1 + r² − 2r·cos α] on the
  * main's velocity pressure (Idelchik form, practice).
  */
-export function takeoffBranchLossPa(style: DuctTapStyle | 'wye', branchVelocityMs: number, mainVelocityMs: number): number {
+export function takeoffBranchLossPa(style: DuctTapStyle | 'wye', branchVelocityMs: number, mainVelocityMs: number, radiusRatio?: number): number {
   if (mainVelocityMs <= 1e-9) return FITTING_LOSS_COEFFICIENTS.takeoffTrunk * velocityPressurePa(branchVelocityMs);
   const r = branchVelocityMs / mainVelocityMs;
-  const aPrime = style === 'wye' ? 0.6 : TAKEOFF_A_PRIME[style];
+  const aPrime = style === 'wye' ? 0.6 : style === 'radius' ? radiusTakeoffAPrime(radiusRatio) : TAKEOFF_A_PRIME[style];
   const alpha = ((style === 'wye' ? 45 : takeoffAngleDeg(style)) * Math.PI) / 180;
   const zeta = aPrime * Math.max(0, 1 + r * r - 2 * r * Math.cos(alpha));
   return zeta * velocityPressurePa(mainVelocityMs);
@@ -493,7 +510,8 @@ function addPieceLoss(
     return;
   }
   if (piece.kind === 'takeoff' && !fromPlenum && run.plan.spec.start.kind === 'tap') {
-    total.fittings += takeoffBranchLossPa(run.plan.spec.start.style, velocityMs(section, flow), mainVelocityAt(tree, run));
+    const tap = run.plan.spec.start;
+    total.fittings += takeoffBranchLossPa(tap.style, velocityMs(section, flow), mainVelocityAt(tree, run), tap.radiusRatio);
     return;
   }
   const coefficient = coefficientOf(piece, fromPlenum);

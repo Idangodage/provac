@@ -253,7 +253,7 @@ export function findReattachTarget(
   element: HvacElement,
   scene: readonly HvacElement[],
   settings: DuctDesignSettings,
-  options: { style: DuctTapStyle; vcd: boolean; reachMm?: number },
+  options: { style: DuctTapStyle; radiusRatio?: number; vcd: boolean; reachMm?: number },
 ): DuctReattachTarget | null {
   const spec = readDuctRunSpec(element);
   if (!spec || spec.legacy || spec.start.kind !== 'open' || spec.path.length < 2) return null;
@@ -299,7 +299,7 @@ export function findReattachTarget(
       const from = piece.stationStartMm - legStartStation[piece.legIndex]!;
       const to = piece.stationEndMm - legStartStation[piece.legIndex]!;
       if (station < from || station > to) continue;
-      const attachment = tapAttachment(parentSpec, { legIndex: piece.legIndex, stationMm: station, side, style },
+      const attachment = tapAttachment(parentSpec, { legIndex: piece.legIndex, stationMm: station, side, style, ...(style === 'radius' ? { radiusRatio: options.radiusRatio } : {}) },
         spec.legs[0]!, sheet, settings);
       if (!attachment) continue;
       const distance = Math.abs(back);
@@ -317,7 +317,7 @@ export function findReattachTarget(
             ...spec,
             service: parentSpec.service,
             path,
-            start: { kind: 'tap', parentRunId: parent.id, legIndex: piece.legIndex, stationMm: station, side, style, vcd: options.vcd },
+            start: { kind: 'tap', parentRunId: parent.id, legIndex: piece.legIndex, stationMm: station, side, style, ...(style === 'radius' && options.radiusRatio !== undefined ? { radiusRatio: options.radiusRatio } : {}), vcd: options.vcd },
           },
         },
       };

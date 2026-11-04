@@ -9,6 +9,7 @@ import type { HvacElement, Point2D } from '../../../../types';
 
 import { findAirPort, type DuctAirPort } from './ductAirPorts';
 import { errorCodes, noNewErrors } from './ductBranchReaim';
+import { startCollarMm } from './ductBranches';
 import { planDuctRunSpec } from './ductFabricationPlanner';
 import { branchAnchor, startAnchor } from './ductFollow';
 import { cross, dot } from './ductGeometry';
@@ -72,7 +73,7 @@ export function withFlexRunout(
   const vertical = (index: number) => Math.hypot(path[index]!.x - path[index - 1]!.x, path[index]!.y - path[index - 1]!.y) < 1 && Math.abs(path[index]!.z - path[index - 1]!.z) > 1;
   const dropped = keep >= 1 && vertical(keep);
   if (dropped) keep -= 1;
-  const room = (index: number) => (index === 0 ? settings.tapCollarMm + settings.vcdLengthMm + 150 : 300);
+  const room = (index: number) => (index === 0 ? startCollarMm(spec.start, spec.legs[0], settings) + settings.vcdLengthMm + 150 : 300);
   /** Where on leg `index` (level, heading at the lip) the runout leaves; null to leave from the leg's end. */
   const leave = (index: number, upTo: (length: number) => number): DuctPoint3 | null => {
     const from = path[index]!;

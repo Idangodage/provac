@@ -36,10 +36,11 @@ export interface DuctLeg {
 
 /**
  * Take-offs: rectangular (shoe, straight) and round collars (spin-in, conical)
- * off a rectangular wall (SMACNA Fig. 2-6); round branches off a round main:
- * a 90° tap, a conical tap (Fig. 3-4 / 3-5) or a 45° lateral (Fig. 3-4).
+ * off a rectangular wall (SMACNA Fig. 2-6), the swept radius take-off
+ * (ASHRAE 5-22); round branches off a round main: a 90° tap, a conical tap
+ * (Fig. 3-4 / 3-5) or a 45° lateral (Fig. 3-4).
  */
-export type DuctTapStyle = 'shoe-45' | 'straight' | 'spin-in' | 'conical' | 'round-tee' | 'round-conical' | 'round-lateral';
+export type DuctTapStyle = 'shoe-45' | 'straight' | 'radius' | 'spin-in' | 'conical' | 'round-tee' | 'round-conical' | 'round-lateral';
 
 export const ROUND_MAIN_TAP_STYLES = ['round-conical', 'round-tee', 'round-lateral'] as const;
 export type DuctRoundMainTapStyle = (typeof ROUND_MAIN_TAP_STYLES)[number];
@@ -58,7 +59,7 @@ export function isRoundMainTapStyle(style: DuctTapStyle): style is DuctRoundMain
   return style === 'round-tee' || style === 'round-conical' || style === 'round-lateral';
 }
 
-const TAP_STYLES: readonly DuctTapStyle[] = ['shoe-45', 'straight', 'spin-in', 'conical', 'round-tee', 'round-conical', 'round-lateral'];
+const TAP_STYLES: readonly DuctTapStyle[] = ['shoe-45', 'straight', 'radius', 'spin-in', 'conical', 'round-tee', 'round-conical', 'round-lateral'];
 
 /** A round section of diameter `d`. */
 export function roundLeg(diameterMm: number): DuctLeg {
@@ -80,7 +81,16 @@ export interface DuctTapStart {
   /** Parent side the branch leaves from: +1 = left normal of the leg direction. */
   side: DuctSide;
   style: DuctTapStyle;
+  /** A radius take-off's throat radius over the branch width (r/W); absent = the default. */
+  radiusRatio?: number;
   vcd: boolean;
+}
+
+/** The tap in another style: its r/W goes when it stops being a radius take-off. */
+export function withTapStyle(start: DuctTapStart, style: DuctTapStyle, radiusRatio?: number): DuctTapStart {
+  const { radiusRatio: was, ...rest } = start;
+  const ratio = radiusRatio ?? was;
+  return { ...rest, style, ...(style === 'radius' && ratio !== undefined ? { radiusRatio: ratio } : {}) };
 }
 
 /** A branch leaving one outlet of a split at the end of a parent run. */
@@ -411,6 +421,7 @@ function readEnd(value: unknown): DuctEnd {
       legIndex: finite(candidate.legIndex) ? Math.max(0, Math.round(candidate.legIndex)) : 0,
       stationMm: candidate.stationMm, side,
       style: TAP_STYLES.includes(candidate.style as DuctTapStyle) ? candidate.style as DuctTapStyle : 'shoe-45',
+      ...(candidate.style === 'radius' && finite(candidate.radiusRatio) ? { radiusRatio: candidate.radiusRatio } : {}),
       vcd: candidate.vcd !== false,
     };
   }

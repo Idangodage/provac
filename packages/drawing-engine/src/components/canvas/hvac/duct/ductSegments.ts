@@ -92,6 +92,7 @@ function pieceEndSection(piece: DuctPiece): DuctLeg {
 export const TAKEOFF_TITLES: Record<DuctTapStyle, string> = {
   'shoe-45': '45° shoe take-off',
   straight: 'Straight take-off',
+  radius: 'Radius take-off',
   'spin-in': 'Spin-in collar',
   conical: 'Conical spin-in',
   'round-tee': '90° tee',
@@ -120,7 +121,8 @@ function describe(plan: DuctFabricationPlan, kind: DuctSegmentKind, pieces: Duct
       const takeoff = first.takeoff;
       const main = plan.tap?.parentSection;
       const mouth = takeoff?.openingMm && (takeoff.style === 'conical' || takeoff.style === 'round-conical') ? `mouth Ø${Math.round(takeoff.openingMm)} · ` : '';
-      const lead = takeoff?.leadInMm ? `lead-in ${Math.round(takeoff.leadInMm)} mm · ` : '';
+      const lead = takeoff?.style === 'radius' ? `r/W ${takeoff.radiusRatio} · throat ${Math.round(takeoff.leadInMm)} mm · `
+        : takeoff?.leadInMm ? `lead-in ${Math.round(takeoff.leadInMm)} mm · ` : '';
       const off = plan.spec.start.kind === 'spigot' ? 'off the plenum' : main ? `off ${sectionLabel(main)} main` : 'off its parent';
       return { title: takeoff ? TAKEOFF_TITLES[takeoff.style] : 'Take-off', size, detail: `${mouth}${lead}${off}` };
     }

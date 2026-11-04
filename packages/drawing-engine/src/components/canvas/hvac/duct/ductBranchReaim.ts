@@ -31,6 +31,7 @@
  */
 import type { HvacElement, Point2D } from '../../../../types';
 
+import { startCollarMm } from './ductBranches';
 import { getDuctRunPlan, planDuctRunSpec } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, startAnchor, type DuctAnchor } from './ductFollow';
 import { cross, dot, ductLegs } from './ductGeometry';
@@ -331,7 +332,7 @@ export function reaimBranch(
   return reaimRunStart({
     scene, baselineErrors: errorCodes(getDuctRunPlan(branch, scene, settings)), settings, element: branch, spec, from, to,
     slideAxis: main?.direction ?? null,
-    collarMm: (isTap ? settings.tapCollarMm : 0) + (start.vcd ? settings.vcdLengthMm : 0),
+    collarMm: (isTap ? startCollarMm(start, spec.legs[0], settings) : 0) + (start.vcd ? settings.vcdLengthMm : 0),
     companion: { element: parent, spec: parentSpec },
     // Exact: the new first leg runs straight into the route it joins (a rounded station would bend it by a hair).
     restart: (slide) => (isTap && Math.abs(slide) > 1e-6 ? { ...start, stationMm: start.stationMm + slide } : start),

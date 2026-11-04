@@ -20,6 +20,7 @@ import { ATTENUATOR_CASING_MM, getDuctRunPlan } from '../duct/ductFabricationPla
 import { FLEX_HANGER_WIRE_DIAMETER_MM, FLEX_RULES, flexPointAt, flexSupportStations, saggedFlexPoints } from '../duct/ductFlex';
 import { frameToWorld, sampleArc } from '../duct/ductGeometry';
 import { ductBranchesOf } from '../duct/ductNetwork';
+import { radiusTakeoffSections, radiusTakeoffShape, type TakeoffPoint } from '../duct/ductRadiusTakeoff';
 import { wyeLegLengthMm } from '../duct/ductRoundFittings';
 import { resolveDuctSettings, type DuctDesignSettings } from '../duct/ductSettings';
 import { squareToRoundTriangles, type SquareToRoundInput } from '../duct/ductSquareToRound';
@@ -227,13 +228,15 @@ function rectangularTakeoffOpenings(plan: DuctFabricationPlan, scene: HvacElemen
     const sheet = plan.constructionByLeg[branch.start.legIndex]?.sheetThicknessMm ?? 1;
     const tap = tapAttachment(plan.spec, branch.start, child, sheet, settings);
     if (!tap) return [];
-    const width = tap.openingToMm - tap.openingFromMm;
+    // A radius take-off's heel meets the wall short of the far cheek: the hole ends there.
+    const heelIn = tap.heelInMm ?? 0;
+    const width = tap.openingToMm - tap.openingFromMm - heelIn;
     const height = tap.openingDiameterMm ?? child.heightMm;
     return [{
       legIndex: branch.start.legIndex, side: branch.start.side,
       centre: {
-        x: tap.wallPoint.x - tap.parentDirection.x * tap.leadInMm / 2,
-        y: tap.wallPoint.y - tap.parentDirection.y * tap.leadInMm / 2,
+        x: tap.wallPoint.x - tap.parentDirection.x * (tap.leadInMm + heelIn) / 2,
+        y: tap.wallPoint.y - tap.parentDirection.y * (tap.leadInMm + heelIn) / 2,
       },
       centreZ: tap.bottomZ + height / 2, widthMm: width, heightMm: height, round: tap.openingDiameterMm !== null,
     }];
@@ -278,6 +281,66 @@ function rectangularStraightWithOpenings(piece: DuctPiece, t: number, openings: 
   const merged = mergeGeometries(parts, false);
   parts.forEach((part) => part.dispose());
   return merged;
+}
+
+/**
+ * A radius take-off's shell through its sections: flat top and bottom, the throat and heel shaded smooth so they read
+ * as one sheet, then the neck. Its foot stays open: that is the hole in the main.
+ */
+export function radiusTakeoffShell(piece: DuctPiece, t: number): THREE.BufferGeometry {
+  const takeoff = piece.takeoff!;
+  const shape = radiusTakeoffShape(piece.widthMm, takeoff.radiusRatio);
+  const u = piece.direction;
+  const v = takeoff.parentDirection;
+  const top = piece.centreZ + piece.heightMm / 2 + t;
+  const bottom = piece.centreZ - piece.heightMm / 2 - t;
+  const at = ({ a, b }: TakeoffPoint, z: number) => new THREE.Vector3(piece.start.x + u.x * a + v.x * b, piece.start.y + u.y * a + v.y * b, z);
+  const facing = ({ a, b }: TakeoffPoint, sign = 1) => new THREE.Vector3(sign * (u.x * a + v.x * b), sign * (u.y * a + v.y * b), 0);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  /** Corners in order round the quad, each with its normal; wound to face them, whichever way the frame is handed. */
+  const quad = (corners: THREE.Vector3[], faces: THREE.Vector3[]) => {
+    const across = new THREE.Vector3().crossVectors(corners[2]!.clone().sub(corners[0]!), corners[3]!.clone().sub(corners[1]!));
+    const order = across.dot(faces[0]!) < 0 ? [0, 2, 1, 0, 3, 2] : [0, 1, 2, 0, 2, 3];
+    for (const index of order) {
+      const { x, y, z } = corners[index]!;
+      const normal = faces[index]!;
+      positions.push(x, y, z);
+      normals.push(normal.x, normal.y, normal.z);
+    }
+  };
+  const flats: Array<[number, THREE.Vector3]> = [[top, new THREE.Vector3(0, 0, 1)], [bottom, new THREE.Vector3(0, 0, -1)]];
+  const sections = radiusTakeoffSections(shape, t);
+  sections.forEach((section, index) => {
+    const before = sections[index - 1];
+    if (!before) {
+      // The throat's toe, on the main's wall: as high as the skin is thick.
+      const face = facing({ a: 0, b: 1 }, -1);
+      if (section.inner.a > section.outer.a) quad([at(section.outer, bottom), at(section.inner, bottom), at(section.inner, top), at(section.outer, top)], [face, face, face, face]);
+      return;
+    }
+    for (const [z, face] of flats) quad([at(before.inner, z), at(before.outer, z), at(section.outer, z), at(section.inner, z)], [face, face, face, face]);
+    const throatBefore = facing(before.across, -1);
+    const throatNow = facing(section.across, -1);
+    quad([at(before.inner, bottom), at(section.inner, bottom), at(section.inner, top), at(before.inner, top)], [throatBefore, throatNow, throatNow, throatBefore]);
+    if (!before.onHeel) return;
+    const heelBefore = facing(before.across);
+    const heelNow = facing(section.across);
+    quad([at(before.outer, bottom), at(section.outer, bottom), at(section.outer, top), at(before.outer, top)], [heelBefore, heelNow, heelNow, heelBefore]);
+  });
+  const half = piece.widthMm / 2 + t;
+  const from = shape.throatMm;
+  const to = Math.max(from, piece.lengthMm);
+  const neck = (a: number, side: number, z: number) => at({ a, b: side * half }, z);
+  for (const [z, face] of flats) quad([neck(from, -1, z), neck(from, 1, z), neck(to, 1, z), neck(to, -1, z)], [face, face, face, face]);
+  for (const side of [-1, 1]) {
+    const face = facing({ a: 0, b: 1 }, side);
+    quad([neck(from, side, bottom), neck(to, side, bottom), neck(to, side, top), neck(from, side, top)], [face, face, face, face]);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  return geometry;
 }
 
 /**
@@ -1110,6 +1173,10 @@ function addPieceMeshes(piece: DuctPiece, t: number, metal: THREE.Material, push
       ring(piece.start, piece.widthMm, piece.heightMm), ring(at(neck), piece.widthMm, piece.heightMm),
       ring(at(piece.lengthMm - neck), piece.endWidthMm, piece.endHeightMm), ring(piece.end, piece.endWidthMm, piece.endHeightMm),
     ]));
+    return;
+  }
+  if (piece.kind === 'takeoff' && piece.takeoff?.style === 'radius') {
+    push('duct-metal', metal, radiusTakeoffShell(piece, t));
     return;
   }
   if (piece.kind === 'takeoff' && piece.takeoff && piece.takeoff.leadInMm > 0) {

@@ -345,7 +345,7 @@ function loneCandidates(
       const spec: DuctRunSpec = { ...run.spec, start: was };
       offer('reattach', `To ${parent!.label || 'its parent run'}`, spec, [ductRunElementWithSpec(run.element, spec)], [end.point, end.point]);
     } else {
-      const target = findReattachTarget(run.element, scene, settings, { style: was.kind === 'tap' ? was.style : 'shoe-45', vcd: was.vcd });
+      const target = findReattachTarget(run.element, scene, settings, { style: was.kind === 'tap' ? was.style : 'shoe-45', ...(was.kind === 'tap' && was.radiusRatio !== undefined ? { radiusRatio: was.radiusRatio } : {}), vcd: was.vcd });
       if (target) {
         const bridge = [{ x: target.wallPoint.x, y: target.wallPoint.y, z: end.point.z }, end.point];
         offer('reattach', `A take-off on ${target.parent.label || 'the run behind it'}`, target.spec, [ductRunElementWithSpec(run.element, target.spec)], bridge);
