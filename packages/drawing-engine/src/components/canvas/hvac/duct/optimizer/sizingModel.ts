@@ -9,7 +9,6 @@ import type { Point2D } from '../../../../../types';
 import { portEntryDirection } from '../ductAirPorts';
 import { branchStubMm, dirToWorld, flexClear, flexFit, flexOk, runoutStaysOut, toWorld, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
 import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLeg, dividedFlowLegWidthMm, shoeLeadInMm } from '../ductBranches';
-import { radiusTakeoffCollarMm, radiusTakeoffShape } from '../ductRadiusTakeoff';
 import { damperCost, energyPricePerPa, fittingCost, flexCost, sectionCostPerMetre, type SectionCostContext } from '../ductEconomics';
 import { flexCurve, type DuctFlexGeometry } from '../ductFlex';
 import {
@@ -22,6 +21,7 @@ import {
   takeoffBranchLossPa,
   transitionCoefficient,
 } from '../ductPressure';
+import { radiusTakeoffCollarMm, radiusTakeoffShape } from '../ductRadiusTakeoff';
 import { maxRoundBranchMm, roundMainTapGeometry, roundReducerMinLengthMm, wyeLegLengthMm } from '../ductRoundFittings';
 import { SMACNA_TABLE_3_1 } from '../ductRoundRules';
 import type { DuctDesignSettings } from '../ductSettings';

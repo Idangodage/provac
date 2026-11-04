@@ -63,7 +63,6 @@ import {
 } from './ductGeometry';
 import { ductInsulationThicknessMm, insulationTakeoff, type DuctInsulationTakeoff } from './ductInsulation';
 import { jointHardware, roundTakeoffHardware, slipOverHardware, takeoffHardware, type JointHardware } from './ductJoints';
-import { RADIUS_TAKEOFF, formatRadiusRatio, radiusTakeoffRatio, radiusTakeoffSeamRunMm, radiusTakeoffShape, radiusTakeoffSheetAreaM2 } from './ductRadiusTakeoff';
 import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
 import { jogOffset, tightestOgee, type DuctOffsetGeometry } from './ductOffsets';
 import {
@@ -76,6 +75,7 @@ import {
   type DuctWallCrossing,
 } from './ductPenetrations';
 import { checkSpigotFit, plenumGeometry, spigotAttachment } from './ductPlenum';
+import { RADIUS_TAKEOFF, formatRadiusRatio, radiusTakeoffRatio, radiusTakeoffSeamRunMm, radiusTakeoffShape, radiusTakeoffSheetAreaM2 } from './ductRadiusTakeoff';
 import { maxRoundBranchMm, roundReducerMinLengthMm, wyeLegLengthMm, ROUND_FITTING_RULES } from './ductRoundFittings';
 import { goredElbowPieces, SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';

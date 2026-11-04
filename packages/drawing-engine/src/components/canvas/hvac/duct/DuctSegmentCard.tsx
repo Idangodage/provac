@@ -376,7 +376,6 @@ function RatioEditor({ host, label, now, resting, min, sliderMax, max, ratioName
     setText(resting.toFixed(2));
     setThroat(throatText(resting));
     // (The throat follows the ratio and the section: `scale` stands for the function.)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resting, scale]);
   const setRatio = (ratio: number, from: 'ratio' | 'throat' | 'slider') => {
     const next = Math.round(clamp(ratio, min, max) * 100) / 100;

@@ -309,7 +309,6 @@ export function OptionTile<O extends SegmentOptionLike, E extends SegmentEvaluat
       data-option-tile=""
       aria-disabled={disabled || undefined}
       aria-current={option.current ? 'true' : undefined}
-      aria-label={option.title}
       className={`flex min-w-0 flex-col rounded-[10px] px-[5px] pb-[5px] pt-[3px] text-left ring-1 ring-inset transition-shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${option.current
         ? 'bg-violet-50 text-violet-700 ring-violet-200' : reason ? 'cursor-not-allowed text-slate-400 opacity-60 ring-slate-200'
           : 'bg-white text-slate-600 ring-slate-200 hover:text-violet-700 hover:shadow-[0_6px_16px_-8px_rgba(124,58,237,0.55)] hover:ring-2 hover:ring-violet-600 focus-visible:text-violet-700'}`}
