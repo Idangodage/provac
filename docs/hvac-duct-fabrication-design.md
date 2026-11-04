@@ -280,6 +280,7 @@ Each phase ends with an on-canvas check against real elements.
   - then an optional volume damper (VCD) section, 150 mm, with a locking quadrant;
   - then the branch's own sections.
 - The collar is screwed to the parent at the S1.40 spacing and sealed. A `radius` take-off has no such joint: it is made as one with its section of the main.
+- A `radius` take-off may carry its tee's lengths, `tee: { beforeMm?, afterMm?, branchMm? }` (see "A radius tee's lengths").
 - The parent gets a **tap window** (opening + lead-in + 50 mm each side). No transverse joint may fall inside it: the section layout moves the joint to the window edge. A window that overlaps an elbow, transition, connector or another window raises `DU_TAP_CLASH`.
 
 **End splits**
@@ -3930,6 +3931,55 @@ Regression drivers: slide-p3, shape-p6, duct-seg-p3, p4 and p5 pass. duct-seg-p1
 the same on main (8925097), line for line: they were written for layouts Auto route no longer gives and clicks the card
 has since changed. They are not this work's, and were left alone; what they would have covered here (a take-off swapped,
 an elbow's slider) is in `tap-radius.mjs`.
+
+## A radius tee's lengths: its main part and branch part (4 November 2026)
+
+You asked to adjust "the length of the main duct part and branch duct part" of a radius take-off, with a screenshot of
+it between its three joints. Plan `C:\Users\idang\.claude\plans\duct-tee-lengths.md`, approved with its three decisions
+(a): A and B set apart, nothing changes where nothing is set, a tee past a stock length allowed with a warning.
+
+**What it is.** A radius take-off is made as one piece with its section of the main, so it has three lengths:
+
+| | From | To |
+|---|---|---|
+| A | the branch's centre, on the main | the joint toward the main's start |
+| B | the branch's centre, on the main | the joint past the branch |
+| C | the main's outside wall, on the branch | the joint on the branch (the damper is part of it) |
+
+Each is optional on the tap start (`tee: { beforeMm?, afterMm?, branchMm? }`): an end left out is where the run's
+sections put it, so drawings made before are drawn as they were. `withTapStyle` drops the tee with the radius.
+
+**How the joints are laid.** `layoutSections` takes set joints and cuts the stretches between them on their own; with
+none its output is as it was (the golden master says so). The take-off's window on the main grows to its set joints
+(`tapWindow`), so a fitting, a neighbour, a wall or an accessory stops the tee as it does any take-off, in the tee's own
+words. The tee's piece is one, however long: past a stock section (`sectionLengthMm`) it is a warning, `DU_TEE_LONG`.
+A set joint nearer a stretch's end than the shortest piece (`minMakeUpPieceMm`) is taken into the tee, which runs right
+up to the fitting there: a joint can be put at an elbow without leaving a sliver, and the figures read where it really
+is. A sliver between two tees' joints stays an error. C runs the collar's neck on, the damper at its end.
+
+**Least lengths** (`teeLeastMm`): A, half the branch, its throat and the tap margin; B, half the branch and the margin;
+C, its sweep and neck, and the damper. Below them the edit says so; a locked branch or main refuses.
+
+**Grips.** A radius take-off pinned has its slide and three tee grips (`tee-before`, `tee-after`, `tee-branch`), on the
+plan and in 3D: on its two main joints (the main's centreline) and its branch joint. Each drags its own length, the
+main's other end held where it is (`teeWithMainEnd`), with its dimension beside the duct ("B 1,000"), snapped to 10 mm
+(Alt: 1 mm, or typed), stopped at the nearest value the rules allow and saying why. One undo each. A tee's lengths move
+no duct, so its trial edits skip the clash check, and a stop once found answers every value past it: a far drag plans in
+tens of milliseconds where it took minutes. The card keeps clear of the tee's grips, in the plan and in 3D, as of a
+straight's.
+
+**Card.** "Tee size" on the Edit tab of a radius take-off: a true-proportion sketch with A, B and C figured
+(`DuctTeeSketch`), their fields (typed, nudged, scrubbed, previewed, judged), the main part's total, and Auto, which gives
+the joints back to the sections.
+
+**Verified.** Full suite 345 files, 3,038 tests (20 new), all green; engine and web type-checks and lint
+clean; golden master unchanged (9 of 9): Auto route's results did not move. Benchmark: 29 of 44 ran and passed, then
+its test worker ran out of memory (the machine's commit at its limit with the user's own programs open); the rest did
+not run, and nothing in it sets a tee. On the real app (a worktree server): `tee-lengths.mjs` in the driver folder 22 of
+22 (grips in the plan and in 3D, the live dimension, stops at the collar's transition and at the next take-off with
+their reasons, typing, Auto, undo); `tap-radius-save.mjs` 9 of 9 (saved and reloaded, the tee comes back: one 1,350 mm
+piece on the main, the branch joint at 800 mm); regressions tap-radius 54, slide-p3 31, shape-p6 32, duct-seg-p3 21,
+p4 16, p5 15, all passing.
 
 ## Known limits (auto duct, 30 September 2026)
 
