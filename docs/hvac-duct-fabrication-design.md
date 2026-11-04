@@ -3887,7 +3887,7 @@ here (`DU_LEG_TOO_SHORT`, damper included). Under r/W 0.5 the elbow rule warns (
 crossings and neighbours are the planner's as for any take-off. Sheet: both flat faces, both cheeks and the neck, exact,
 plus four seams along the sweep and a straight's flange rolls; the shoe's triangle formula would not do.
 
-**What follows it.** The BOM line, the joint on the wall (its opening's real length), sizing (kept, r following the
+**What follows it.** The BOM line, the joint on the wall (along its foot, from the throat's toe to the heel's: frame, plan tick and hardware), sizing (kept, r following the
 width; a branch turned round becomes a spin-in, a main turned round a conical tee), the runout, re-aim and follow limits
 (its real collar, `startCollarMm`), re-attaching (keeps its ratio), clash boxes over the swept wing, insulation in plan
 and 3D, the 3D outline, picking.

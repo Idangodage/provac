@@ -1786,6 +1786,14 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
           ? roundTakeoffHardware({ sideAMm: tap.openingDiameterMm, sideBMm: tap.openingDiameterMm, pressureClassPa, washersPerBolt: settings.washersPerBolt },
             start.style as Exclude<DuctTapStyle, 'shoe-45' | 'straight' | 'radius'>)
           : takeoffHardware({ sideAMm: o.w + tap.leadInMm - (tap.heelInMm ?? 0), sideBMm: o.h, pressureClassPa, washersPerBolt: settings.washersPerBolt }));
+      if (tap.heelInMm !== undefined) {
+        // A radius take-off stands on the main along its whole foot: its joint runs from the throat's toe to the heel's.
+        const joint = joints[joints.length - 1]!;
+        const opening = section.widthMm + tap.leadInMm - tap.heelInMm;
+        joint.point = add(first.start, scale(tap.parentDirection, -(tap.leadInMm + tap.heelInMm) / 2));
+        joint.widthMm = opening;
+        joint.outerWidthMm = opening + o.w - section.widthMm;
+      }
     } else if (spec.start.kind === 'split-branch') {
       pushJoint('flange', 0, first, section, [null, first.mark], hardwareFor(section));
     }

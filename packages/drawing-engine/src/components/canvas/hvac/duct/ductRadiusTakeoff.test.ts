@@ -183,7 +183,14 @@ describe('on a main', () => {
         expect(piece.sheetAreaM2).toBeLessThan(developed + 0.2);
         expect(piece.massKg).toBeGreaterThan(0);
         expect(buildDuctFabricationSchedule([plan]).some((row) => row.kind.includes(`Radius take-off, r/W ${ratio}`))).toBe(true);
-        expect(plan.joints.find((joint) => joint.kind === 'tap-connection')?.hardware).toBeTruthy();
+        // The joint stands along its foot on the wall, from the throat's toe to the heel's foot.
+        const joint = plan.joints.find((candidate) => candidate.kind === 'tap-connection')!;
+        expect(joint.hardware).toBeTruthy();
+        expect(joint.widthMm).toBeCloseTo(300 + shape.throatMm - shape.heelInMm, 6);
+        const tap = plan.tap!;
+        const centre = (joint.point.x - tap.wallPoint.x) * tap.parentDirection.x + (joint.point.y - tap.wallPoint.y) * tap.parentDirection.y;
+        expect(centre - joint.widthMm / 2).toBeCloseTo(-150 - shape.throatMm, 6);
+        expect(centre + joint.widthMm / 2).toBeCloseTo(150 - shape.heelInMm, 6);
       }
     }
   });
