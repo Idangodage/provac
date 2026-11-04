@@ -279,7 +279,7 @@ Each phase ends with an on-canvas check against real elements.
   - a take-off collar, max(100 mm, lead-in + 50 mm) long (project practice); a `radius` take-off's lead-in is its throat radius (see "A radius take-off", below); the `shoe-45` style adds a 45° lead-in of W/4, 102 mm minimum (SMACNA Fig. 2-6), on the upstream side (toward the parent's start);
   - then an optional volume damper (VCD) section, 150 mm, with a locking quadrant;
   - then the branch's own sections.
-- The collar is screwed to the parent at the S1.40 spacing and sealed.
+- The collar is screwed to the parent at the S1.40 spacing and sealed. A `radius` take-off has no such joint: it is made as one with its section of the main.
 - The parent gets a **tap window** (opening + lead-in + 50 mm each side). No transverse joint may fall inside it: the section layout moves the joint to the window edge. A window that overlaps an elbow, transition, connector or another window raises `DU_TAP_CLASH`.
 
 **End splits**
@@ -3887,7 +3887,21 @@ here (`DU_LEG_TOO_SHORT`, damper included). Under r/W 0.5 the elbow rule warns (
 crossings and neighbours are the planner's as for any take-off. Sheet: both flat faces, both cheeks and the neck, exact,
 plus four seams along the sweep and a straight's flange rolls; the shoe's triangle formula would not do.
 
-**What follows it.** The BOM line, the joint on the wall (along its foot, from the throat's toe to the heel's: frame, plan tick and hardware), sizing (kept, r following the
+**One piece with the main.** You saw a flange at its foot and asked why it was not one body with the main. Every take-off
+had been modelled as a collar screwed and sealed onto a finished main, and the 3D drew that joint with a standard 30 mm
+flange shape. That is normal for a shoe or a straight tap (SMACNA Fig. 2-6), which stay as they are, by your decision. It
+is wrong here: the throat runs into the wall too gradually for a flange or screws, and the published fitting is a tee, as
+your picture is. So a radius take-off is made in the shop as one with its section of the main:
+
+- no `tap-connection` joint: no frame in 3D, no tick in plan, no screws in the BOM;
+- its foot is a seam: in its sheet (the seam allowance round the foot) and in the sealed seam length;
+- a flange roll only at its neck, none where a damper follows (the two come as one assembly);
+- the plan draws one body: the main's wall left open from the throat's toe to the heel's foot (`teeMouths` on the main's
+  plan), the fitting's own outline open at its foot, the insulation's line likewise (`strokes`, `insulationStrokes`);
+- the branch joins past the sweep with an ordinary joint, past the damper when it has one;
+- it stays its own piece on the card: selected, its radius changed, slid along the main.
+
+**What follows it.** The BOM line, sizing (kept, r following the
 width; a branch turned round becomes a spin-in, a main turned round a conical tee), the runout, re-aim and follow limits
 (its real collar, `startCollarMm`), re-attaching (keeps its ratio), clash boxes over the swept wing, insulation in plan
 and 3D, the 3D outline, picking.

@@ -3,6 +3,9 @@
  * radius elbow whose throat lies tangent along the main's wall; its heel, concentric with the throat, is cut by that
  * wall inside the branch's far cheek. Nothing enters the main, so it is no scoop (SMACNA Fig. 2-6 bans those).
  *
+ * It is a tee, made in the shop as one with its section of the main: the throat runs into the wall too gradually for a
+ * flange or screws, so its foot is a seam, not a joint, and the branch joins it past the sweep with an ordinary joint.
+ *
  * One shape, in the frame of the branch's centre on the main's outside wall: `a` out along the branch, `b` along the
  * main toward its end, the throat on the side of the main's start. The plan, the 3D shell, the sheet and the hole in
  * the main all read it, so the views cannot disagree.
@@ -133,6 +136,11 @@ function radiusTakeoffCheeksMm(shape: RadiusTakeoffShape, lengthMm: number): num
 /** Its sheet (m²), before seams and flanges: the flat top and bottom, the throat and heel cheeks, the neck's two cheeks. */
 export function radiusTakeoffSheetAreaM2(shape: RadiusTakeoffShape, lengthMm: number, heightMm: number): number {
   return (2 * radiusTakeoffPlanAreaMm2(shape, lengthMm) + heightMm * radiusTakeoffCheeksMm(shape, lengthMm)) / 1e6;
+}
+
+/** Its foot on the main's wall: from the throat's tangent point to where the wall cuts the heel. */
+export function radiusTakeoffFootMm(shape: RadiusTakeoffShape): number {
+  return shape.widthMm + shape.throatMm - shape.heelInMm;
 }
 
 /** The length a seam of its four panels runs on average: half its cheeks. */

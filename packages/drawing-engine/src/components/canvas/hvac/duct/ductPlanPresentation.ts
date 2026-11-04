@@ -43,8 +43,11 @@ export interface DuctPlanPresentation {
   id: string;
   service: 'supply' | 'return';
   status: 'ok' | 'error';
-  /** Closed outline per piece (for drawing and picking). */
-  piecePolygons: Array<{ mark: string; kind: DuctPiece['kind']; polygon: Point2D[] }>;
+  /**
+   * Closed outline per piece (for drawing and picking); `strokes`, its line where that is not closed all round: a radius
+   * take-off is open at its foot and the run it is one with at its mouth, so the two read as one body.
+   */
+  piecePolygons: Array<{ mark: string; kind: DuctPiece['kind']; polygon: Point2D[]; strokes?: Point2D[][] }>;
   /** Flange ticks across the duct at joints. */
   jointTicks: Array<{ a: Point2D; b: Point2D; kind: DuctJointKind }>;
   /** Zig-zag inside the connector fabric band. */
@@ -67,8 +70,9 @@ export interface DuctPlanPresentation {
    * diagonal (up) or both (down), and "▲ 600 · BOD 3269" (project convention).
    */
   risers: Array<{ box: Point2D[]; diagonals: Array<[Point2D, Point2D]>; label: string; labelPoint: Point2D; up: boolean }>;
-  /** Insulated run: the insulation's outer face around each piece (drawn dashed). */
+  /** Insulated run: the insulation's outer face around each piece (drawn dashed), with its line as a piece's `strokes` (null: closed). */
   insulationOutlines: Point2D[][];
+  insulationStrokes: Array<Point2D[][] | null>;
   /** Plenum boxes: their diagonals (the usual box symbol). */
   boxDiagonals: Array<[Point2D, Point2D]>;
   /** Fire dampers: the damper's box with one diagonal, labelled FD (the usual symbol). */
@@ -92,6 +96,44 @@ function normalOf(direction: Point2D): Point2D {
 function rectangle(start: Point2D, end: Point2D, direction: Point2D, halfWidth: number): Point2D[] {
   const n = scale(normalOf(direction), halfWidth);
   return [add(start, n), add(end, n), sub(end, n), sub(start, n)];
+}
+
+/** A closed outline's edges, the stretches `gaps` lays along them left out; null when none lies on it. */
+function outlineWithGaps(polygon: readonly Point2D[], gaps: ReadonlyArray<readonly [Point2D, Point2D]>): Point2D[][] | null {
+  const strokes: Point2D[][] = [];
+  let gapped = false;
+  polygon.forEach((a, index) => {
+    const b = polygon[(index + 1) % polygon.length]!;
+    const u = unit(sub(b, a));
+    const length = dot(sub(b, a), u);
+    const across = (point: Point2D) => Math.abs((point.x - a.x) * u.y - (point.y - a.y) * u.x);
+    const cuts = gaps.filter(([p, q]) => across(p) < 0.5 && across(q) < 0.5).map(([p, q]) => {
+      const [from, to] = [dot(sub(p, a), u), dot(sub(q, a), u)];
+      return [Math.max(0, Math.min(from, to)), Math.min(length, Math.max(from, to))] as const;
+    }).filter(([from, to]) => to > from).sort((x, y) => x[0] - y[0]);
+    let cursor = 0;
+    for (const [from, to] of cuts) {
+      gapped = true;
+      if (from > cursor) strokes.push([add(a, scale(u, cursor)), add(a, scale(u, from))]);
+      cursor = Math.max(cursor, to);
+    }
+    if (cursor < length) strokes.push([add(a, scale(u, cursor)), b]);
+  });
+  return gapped ? strokes : null;
+}
+
+/** A piece's line where a radius take-off is one with its run; null where it is closed all round. `skin` is how far the outline stands off the clear section. */
+function openStrokes(plan: DuctFabricationPlan, piece: DuctPiece, polygon: Point2D[], skin: number): Point2D[][] | null {
+  if (piece.kind === 'takeoff' && piece.takeoff?.style === 'radius') return [polygon];
+  if (piece.kind !== 'straight' || piece.vertical || piece.frame) return null;
+  const leg = ductLegs(plan.spec)[piece.legIndex];
+  const mouths = plan.teeMouths?.filter((mouth) => mouth.legIndex === piece.legIndex) ?? [];
+  if (!leg || mouths.length === 0) return null;
+  const n = normalOf(leg.direction);
+  return outlineWithGaps(polygon, mouths.map((mouth) => {
+    const wall = (station: number) => add(add(leg.start, scale(leg.direction, station)), scale(n, mouth.side * (piece.widthMm / 2 + skin)));
+    return [wall(mouth.fromMm), wall(mouth.toMm)] as const;
+  }));
 }
 
 /** A riser's plan footprint: H along its heading, W across. */
@@ -604,6 +646,19 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
   const collar = plan.pieces.find((piece) => piece.kind === 'takeoff' && piece.takeoff?.roundMain);
   const collarJoint = collar ? roundMainCollarStart(collar, collar.sheetThicknessMm ?? 1) : null;
   // Flanges only: a runout's draw bands and a terminal's spigot carry no flange tick.
+  const byMark = new Map(plan.pieces.map((piece) => [piece.mark, piece]));
+  for (const entry of piecePolygons) {
+    const piece = byMark.get(entry.mark);
+    const strokes = piece ? openStrokes(plan, piece, entry.polygon, piece.sheetThicknessMm ?? 1) : null;
+    if (strokes) entry.strokes = strokes;
+  }
+  const insulated = plan.insulationMm > 0
+    ? plan.pieces.filter((piece) => piece.kind !== 'connector' && piece.kind !== 'fire-damper').flatMap((piece) => {
+      const skin = (piece.sheetThicknessMm ?? 1) + plan.insulationMm;
+      const outline = pieceOutline(piece, skin);
+      return outline ? [{ outline, strokes: openStrokes(plan, piece, outline, skin) }] : [];
+    })
+    : [];
   const jointTicks = plan.joints.filter((joint) => !joint.vertical && joint.kind !== 'flex-connection' && joint.kind !== 'terminal-connection').map((joint) => {
     if (joint.kind === 'tap-connection' && collarJoint) return { a: collarJoint[0], b: collarJoint[1], kind: joint.kind };
     const n = normalOf(joint.direction);
@@ -706,10 +761,7 @@ export function buildDuctPlanPresentation(plan: DuctFabricationPlan): DuctPlanPr
         labelPoint: add(add(penetration.point, scale(along, half + 40)), scale(normalOf(along), -(penetration.opening.widthMm / 2 + 45))),
       };
     }),
-    insulationOutlines: plan.insulationMm > 0
-      ? plan.pieces.filter((piece) => piece.kind !== 'connector' && piece.kind !== 'fire-damper')
-        .map((piece) => pieceOutline(piece, (piece.sheetThicknessMm ?? 1) + plan.insulationMm))
-        .filter((outline): outline is Point2D[] => outline !== null)
-      : [],
+    insulationOutlines: insulated.map((entry) => entry.outline),
+    insulationStrokes: insulated.map((entry) => entry.strokes),
   };
 }

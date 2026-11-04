@@ -183,14 +183,12 @@ describe('on a main', () => {
         expect(piece.sheetAreaM2).toBeLessThan(developed + 0.2);
         expect(piece.massKg).toBeGreaterThan(0);
         expect(buildDuctFabricationSchedule([plan]).some((row) => row.kind.includes(`Radius take-off, r/W ${ratio}`))).toBe(true);
-        // The joint stands along its foot on the wall, from the throat's toe to the heel's foot.
-        const joint = plan.joints.find((candidate) => candidate.kind === 'tap-connection')!;
-        expect(joint.hardware).toBeTruthy();
-        expect(joint.widthMm).toBeCloseTo(300 + shape.throatMm - shape.heelInMm, 6);
-        const tap = plan.tap!;
-        const centre = (joint.point.x - tap.wallPoint.x) * tap.parentDirection.x + (joint.point.y - tap.wallPoint.y) * tap.parentDirection.y;
-        expect(centre - joint.widthMm / 2).toBeCloseTo(-150 - shape.throatMm, 6);
-        expect(centre + joint.widthMm / 2).toBeCloseTo(150 - shape.heelInMm, 6);
+        // Made as one with the main: no joint at its foot, a seam there; the branch joins it at its neck.
+        expect(plan.joints.some((candidate) => candidate.kind === 'tap-connection')).toBe(false);
+        expect(piece.seamLengthMm).toBeGreaterThan(2 * (300 + shape.throatMm - shape.heelInMm + 250));
+        const neck = plan.joints.find((candidate) => candidate.kind === 'flange')!;
+        expect(neck.stationMm).toBeCloseTo(piece.lengthMm, 3);
+        expect(neck.widthMm).toBe(300);
       }
     }
   });
@@ -277,6 +275,46 @@ describe('in the views', () => {
     }
   });
 
+  it('reads as one body with the main in plan: no line across its mouth, the main\'s wall open from toe to heel', () => {
+    const main = mainRun();
+    for (const side of [1, -1] as const) {
+      const branch = radiusBranch(main, { side });
+      const scene = [unit, main, branch];
+      const plan = getDuctRunPlan(branch, scene, settings)!;
+      const parent = getDuctRunPlan(main, scene, settings)!;
+      const tap = plan.tap!;
+      expect(parent.teeMouths).toEqual([{ legIndex: 0, side, fromMm: 4000 - 450, toMm: 4150 - radiusTakeoffShape(300, 1).heelInMm }]);
+      const on = (a: number, b: number) => ({ x: tap.wallPoint.x + tap.direction.x * a + tap.parentDirection.x * b, y: tap.wallPoint.y + tap.direction.y * a + tap.parentDirection.y * b });
+      const near = (strokes: Point2D[][], point: Point2D) => strokes.some((stroke) => stroke.slice(1).some((p, index) => {
+        const q = stroke[index]!;
+        const length = Math.hypot(p.x - q.x, p.y - q.y) || 1;
+        const t = Math.max(0, Math.min(1, ((point.x - q.x) * (p.x - q.x) + (point.y - q.y) * (p.y - q.y)) / (length * length)));
+        return Math.hypot(point.x - (q.x + (p.x - q.x) * t), point.y - (q.y + (p.y - q.y) * t)) < 1;
+      }));
+      const lines = buildDuctPlanPresentation(parent).piecePolygons.flatMap((polygon) => (polygon.kind === 'straight' ? polygon.strokes ?? [] : []));
+      expect(near(lines, on(0, -440))).toBe(false);
+      expect(near(lines, on(0, 0))).toBe(false);
+      expect(near(lines, on(0, 60))).toBe(false);
+      expect(near(lines, on(0, -470))).toBe(true);
+      expect(near(lines, on(0, 90))).toBe(true);
+      // The far wall stays closed.
+      expect(near(lines, on(-(600 + 2 * (parent.constructionByLeg[0]!.sheetThicknessMm ?? 1)), 0))).toBe(true);
+      const collar = buildDuctPlanPresentation(plan).piecePolygons.find((polygon) => polygon.kind === 'takeoff')!;
+      expect(near(collar.strokes!, on(0, 0))).toBe(false);
+      expect(near(collar.strokes!, on(0, -200))).toBe(false);
+      expect(near(collar.strokes!, on(350, 0))).toBe(true);
+      expect(buildDuctPlanPresentation(plan).jointTicks.some((tick) => tick.kind === 'tap-connection')).toBe(false);
+    }
+    // A shoe on the same main leaves the wall as it was.
+    const shoeOrigin = tapOrigin(main, settings, { legIndex: 0, stationMm: 4000, side: 1, style: 'shoe-45', vcd: false }, SECTION)!;
+    if (shoeOrigin.kind !== 'tap') throw new Error('Expected a take-off origin');
+    const shoe = buildDuctRunDraftElement({ origin: shoeOrigin, points: [{ x: shoeOrigin.point.x + shoeOrigin.direction.x * 1500, y: shoeOrigin.point.y + shoeOrigin.direction.y * 1500 }], legSizes: [SECTION] }, 'shoe');
+    const shoeParent = getDuctRunPlan(main, [unit, main, shoe], settings)!;
+    expect(shoeParent.teeMouths).toBeUndefined();
+    expect(buildDuctPlanPresentation(shoeParent).piecePolygons.every((polygon) => polygon.strokes === undefined)).toBe(true);
+    expect(getDuctRunPlan(shoe, [unit, main, shoe], settings)!.joints.some((joint) => joint.kind === 'tap-connection')).toBe(true);
+  });
+
   it('winds every face of its shell to face its normals, and leaves its foot open', () => {
     const main = mainRun();
     const branch = radiusBranch(main, { side: -1 });
@@ -330,7 +368,10 @@ describe('in the views', () => {
     const reach = [box.min, box.max].map((corner) => (corner.x - tap.wallPoint.x) * tap.parentDirection.x + (corner.y - tap.wallPoint.y) * tap.parentDirection.y);
     expect(Math.min(...reach)).toBeCloseTo(-450, 0);
     expect(Math.max(...reach)).toBeCloseTo(150 + 26, 0);
-    expect(buildDuctPlanPresentation(insulated).insulationOutlines.length).toBeGreaterThan(0);
+    const presentation = buildDuctPlanPresentation(insulated);
+    expect(presentation.insulationOutlines.length).toBeGreaterThan(0);
+    expect(presentation.insulationStrokes.length).toBe(presentation.insulationOutlines.length);
+    expect(presentation.insulationStrokes.some((strokes) => strokes !== null)).toBe(true);
     geometry.dispose();
   });
 });

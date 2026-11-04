@@ -75,7 +75,7 @@ import {
   type DuctWallCrossing,
 } from './ductPenetrations';
 import { checkSpigotFit, plenumGeometry, spigotAttachment } from './ductPlenum';
-import { RADIUS_TAKEOFF, formatRadiusRatio, radiusTakeoffRatio, radiusTakeoffSeamRunMm, radiusTakeoffShape, radiusTakeoffSheetAreaM2 } from './ductRadiusTakeoff';
+import { RADIUS_TAKEOFF, formatRadiusRatio, radiusTakeoffFootMm, radiusTakeoffRatio, radiusTakeoffSeamRunMm, radiusTakeoffShape, radiusTakeoffSheetAreaM2 } from './ductRadiusTakeoff';
 import { maxRoundBranchMm, roundReducerMinLengthMm, wyeLegLengthMm, ROUND_FITTING_RULES } from './ductRoundFittings';
 import { goredElbowPieces, SMACNA_TABLE_3_1 } from './ductRoundRules';
 import type { DuctDesignSettings } from './ductSettings';
@@ -93,6 +93,7 @@ import {
   type DuctLeg,
   type DuctPoint3,
   type DuctRunSpec,
+  type DuctSide,
   type DuctTapStyle,
 } from './ductTypes';
 
@@ -301,6 +302,14 @@ export interface DuctPiece {
 
 export type DuctJointKind = 'flange' | 'unit-connection' | 'tap-connection' | 'flex-connection' | 'terminal-connection' | 'end-cap';
 
+/** Where a radius take-off is made as one with this run: the stretch of a leg's wall left open (stations on the leg). */
+export interface DuctTeeMouth {
+  legIndex: number;
+  side: DuctSide;
+  fromMm: number;
+  toMm: number;
+}
+
 export interface DuctJoint {
   id: string;
   kind: DuctJointKind;
@@ -329,6 +338,8 @@ export interface DuctFabricationPlan {
   startPort: DuctAirPort | null;
   /** Where a take-off branch leaves its parent (branch runs only). */
   tap: TapAttachment | null;
+  /** Its radius take-offs (absent when it has none). */
+  teeMouths?: DuctTeeMouth[];
   pieces: DuctPiece[];
   joints: DuctJoint[];
   issues: DuctIssue[];
@@ -1097,6 +1108,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
   // ---- Tap windows this run carries for its own branches. ----
   const branches = ductBranchesOf(elementId, scene);
   const windowsByLeg = new Map<number, Array<{ from: number; to: number; branchId: string }>>();
+  const teeMouths: DuctTeeMouth[] = [];
   for (const branch of branches) {
     if (branch.start.kind !== 'tap') continue;
     const section = spec.legs[branch.start.legIndex];
@@ -1113,6 +1125,9 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       branchId: branch.element.id,
     });
     windowsByLeg.set(branch.start.legIndex, list);
+    if (attachment.heelInMm !== undefined) {
+      teeMouths.push({ legIndex: branch.start.legIndex, side: branch.start.side, fromMm: attachment.openingFromMm, toMm: attachment.openingToMm - attachment.heelInMm });
+    }
   }
 
   // ---- Walk the legs, laying pieces along the polyline stations. ----
@@ -1192,7 +1207,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
             sheetAreaM2: metalArea, fabricAreaM2: (girth * settings.connectorFabricMm) / 1e6, massKg: massOf(metalArea, startPiece.section),
           });
         } else if (startPiece.kind === 'takeoff' && tap) {
-          const tapStart = spec.start as { style: DuctTapStyle; radiusRatio?: number };
+          const tapStart = spec.start as { style: DuctTapStyle; radiusRatio?: number; vcd: boolean };
           const radius = tapStart.style === 'radius' ? radiusTakeoffShape(startPiece.section.widthMm, tapStart.radiusRatio) : null;
           const piece = straightPiece('takeoff', 'T', cursor, cursor + length, startPiece.section, {
             takeoff: {
@@ -1203,12 +1218,14 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
             },
           });
           if (radius) {
-            // Its own developed sheet: four panels with their seams along the sweep, and the flange rolls of a straight.
+            // Its own developed sheet, made as one with the main: four panels with their seams along the sweep, one
+            // more round its foot, and a flange roll only at its neck (past a damper, the assembly's joint is the damper's).
             const seams = seamsOf(startPiece.section, true);
             const seamRun = radiusTakeoffSeamRunMm(radius, length);
-            const rolls = flangeRollEnds(startPiece.section) * TDC_FLANGE_ROLL_MM * girthOf(startPiece.section, sheetOf(startPiece.section));
-            piece.sheetAreaM2 = radiusTakeoffSheetAreaM2(radius, length, startPiece.section.heightMm) + (seams.count * seams.allowanceMm * seamRun + rolls) / 1e6;
-            piece.seamLengthMm = seams.count * seamRun;
+            const foot = 2 * (radiusTakeoffFootMm(radius) + startPiece.section.heightMm);
+            const rolls = tapStart.vcd ? 0 : (flangeRollEnds(startPiece.section) / 2) * TDC_FLANGE_ROLL_MM * girthOf(startPiece.section, sheetOf(startPiece.section));
+            piece.sheetAreaM2 = radiusTakeoffSheetAreaM2(radius, length, startPiece.section.heightMm) + (seams.allowanceMm * (seams.count * seamRun + foot) + rolls) / 1e6;
+            piece.seamLengthMm = seams.count * seamRun + foot;
           } else {
             // A shoe's lead-in adds a triangular cheek pair and a sloped wall.
             piece.sheetAreaM2 += tap.leadInMm > 0 ? (tap.leadInMm * tap.leadInMm + tap.leadInMm * Math.SQRT2 * startPiece.section.heightMm) / 1e6 : 0;
@@ -1781,18 +1798,13 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         slipOverHardware({ sideAMm: o.w, sideBMm: o.h, pressureClassPa, washersPerBolt: settings.washersPerBolt }));
     } else if ((spec.start.kind === 'tap' || spec.start.kind === 'spigot') && tap) {
       const start = spec.start;
-      pushJoint('tap-connection', 0, first, section, [null, first.mark],
-        tap.openingDiameterMm !== null && isRoundTapStyle(start.style)
-          ? roundTakeoffHardware({ sideAMm: tap.openingDiameterMm, sideBMm: tap.openingDiameterMm, pressureClassPa, washersPerBolt: settings.washersPerBolt },
-            start.style as Exclude<DuctTapStyle, 'shoe-45' | 'straight' | 'radius'>)
-          : takeoffHardware({ sideAMm: o.w + tap.leadInMm - (tap.heelInMm ?? 0), sideBMm: o.h, pressureClassPa, washersPerBolt: settings.washersPerBolt }));
-      if (tap.heelInMm !== undefined) {
-        // A radius take-off stands on the main along its whole foot: its joint runs from the throat's toe to the heel's.
-        const joint = joints[joints.length - 1]!;
-        const opening = section.widthMm + tap.leadInMm - tap.heelInMm;
-        joint.point = add(first.start, scale(tap.parentDirection, -(tap.leadInMm + tap.heelInMm) / 2));
-        joint.widthMm = opening;
-        joint.outerWidthMm = opening + o.w - section.widthMm;
+      // (A radius take-off has none: it is made as one with the main, its foot a seam.)
+      if (start.style !== 'radius') {
+        pushJoint('tap-connection', 0, first, section, [null, first.mark],
+          tap.openingDiameterMm !== null && isRoundTapStyle(start.style)
+            ? roundTakeoffHardware({ sideAMm: tap.openingDiameterMm, sideBMm: tap.openingDiameterMm, pressureClassPa, washersPerBolt: settings.washersPerBolt },
+              start.style as Exclude<DuctTapStyle, 'shoe-45' | 'straight' | 'radius'>)
+            : takeoffHardware({ sideAMm: o.w + tap.leadInMm, sideBMm: o.h, pressureClassPa, washersPerBolt: settings.washersPerBolt }));
       }
     } else if (spec.start.kind === 'split-branch') {
       pushJoint('flange', 0, first, section, [null, first.mark], hardwareFor(section));
@@ -1899,6 +1911,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     constructionByLeg,
     startPort,
     tap,
+    ...(teeMouths.length ? { teeMouths } : {}),
     pieces,
     joints,
     issues,

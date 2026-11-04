@@ -116,7 +116,7 @@ function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
   if (piece.kind === 'attenuator') return `Sound attenuator ${Math.round(piece.lengthMm)} mm, ${piece.attenuator?.type === 'podded' ? 'round podded' : 'rectangular splitter'}`;
   if (piece.kind === 'fire-damper') return `Fire damper, curtain type, in its sleeve ${Math.round(piece.lengthMm)} mm (UL 555 / EN 1366-2; rating to the wall)`;
   if (piece.kind === 'takeoff') {
-    if (piece.takeoff?.style === 'radius') return `Radius take-off, r/W ${formatRadiusRatio(piece.takeoff.radiusRatio ?? RADIUS_TAKEOFF.defaultRatio)}, throat ${Math.round(piece.takeoff.leadInMm)} mm (ASHRAE 5-22)`;
+    if (piece.takeoff?.style === 'radius') return `Radius take-off, r/W ${formatRadiusRatio(piece.takeoff.radiusRatio ?? RADIUS_TAKEOFF.defaultRatio)}, throat ${Math.round(piece.takeoff.leadInMm)} mm, made as one with its main section (ASHRAE 5-22)`;
     return piece.takeoff && piece.takeoff.leadInMm > 0
       ? `Shoe take-off, 45° lead-in ${Math.round(piece.takeoff.leadInMm)} mm`
       : 'Straight take-off collar';

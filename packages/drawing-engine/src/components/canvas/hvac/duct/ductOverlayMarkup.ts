@@ -66,12 +66,16 @@ export function ductRunMarkup(presentation: DuctPlanPresentation, style: DuctMar
   const dash = presentation.status === 'error' || style.draft ? ` stroke-dasharray="6 4"` : '';
   const parts: string[] = [];
   parts.push(`<g data-duct-run="${escapeText(presentation.id)}"${style.draft ? ' opacity="0.9"' : ''}>`);
-  for (const outline of presentation.insulationOutlines) {
-    parts.push(`<path d="${pathData(outline, true)}" fill="rgba(17,24,39,0.06)" stroke="${COLORS.insulation}" stroke-width="0.9" stroke-dasharray="5 3" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`);
-  }
+  /** A closed shape's fill and line; `strokes` is its line where that leaves stretches of it open. */
+  const shape = (outline: readonly Point2D[], fill: string, line: string, strokes: readonly Point2D[][] | null | undefined) => (strokes
+    ? `<path d="${pathData(outline, true)}" fill="${fill}" stroke="none"/><path d="${strokes.map((stroke) => pathData(stroke)).join(' ')}" fill="none" ${line} stroke-linecap="round"/>`
+    : `<path d="${pathData(outline, true)}" fill="${fill}" ${line}/>`);
+  presentation.insulationOutlines.forEach((outline, index) => {
+    parts.push(shape(outline, 'rgba(17,24,39,0.06)', `stroke="${COLORS.insulation}" stroke-width="0.9" stroke-dasharray="5 3" vector-effect="non-scaling-stroke" stroke-linejoin="round"`, presentation.insulationStrokes[index]));
+  });
   for (const piece of presentation.piecePolygons) {
     const fill = piece.kind === 'connector' ? 'rgba(71,85,105,0.18)' : palette.fill;
-    parts.push(`<path d="${pathData(piece.polygon, true)}" fill="${fill}" stroke="${stroke}" stroke-width="${outlineWidth}" vector-effect="non-scaling-stroke" stroke-linejoin="round"${dash}/>`);
+    parts.push(shape(piece.polygon, fill, `stroke="${stroke}" stroke-width="${outlineWidth}" vector-effect="non-scaling-stroke" stroke-linejoin="round"${dash}`, piece.strokes));
   }
   for (const hatch of presentation.connectorHatch) {
     parts.push(`<path d="${pathData(hatch)}" fill="none" stroke="${COLORS.fabric}" stroke-width="0.9" vector-effect="non-scaling-stroke"/>`);
