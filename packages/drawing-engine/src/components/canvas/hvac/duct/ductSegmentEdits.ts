@@ -580,6 +580,7 @@ function editTapTee(scene: readonly HvacElement[], settings: DuctDesignSettings,
   if (spec.locked) return refuse('The run is locked: unlock it to change its tee.');
   const parent = ductParentOf(spec, scene);
   if (!parent) return refuse('The run this branch was taken off is missing.');
+  if (readDuctRunSpec(parent)?.locked) return refuse('The main is locked: unlock it to move the tee\'s joints on it.');
   const least = teeLeastMm(start, spec.legs[0]!, settings);
   if (edit.tee?.beforeMm !== undefined && edit.tee.beforeMm < least.beforeMm - 0.5) return refuse(`The main part is at least ${Math.ceil(least.beforeMm)} mm on this side: its sweep and the margin to the joint.`);
   if (edit.tee?.afterMm !== undefined && edit.tee.afterMm < least.afterMm - 0.5) return refuse(`The main part is at least ${Math.ceil(least.afterMm)} mm on this side: half the branch and the margin to the joint.`);

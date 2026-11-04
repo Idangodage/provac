@@ -14,6 +14,7 @@ import { ductRunElementWithSpec } from './ductFollow';
 import { applyDuctSegmentEdit } from './ductSegmentEdits';
 import { resolveDuctSettings } from './ductSettings';
 import { ductTeeFigures, teeWithMainEnd } from './ductTee';
+import { DuctResizeSolver, ductResizeEdit, ductResizeGrips } from '../move/ductResize';
 import { readDuctRunSpec, withTapStyle, type DuctLeg, type DuctTapStart, type DuctTeeLengths } from './ductTypes';
 
 const settings = resolveDuctSettings({ showSupports: false, jointSystem: 'tdc' });
@@ -132,13 +133,23 @@ describe('a tee with its lengths set', () => {
     };
     const reach = (lengths: DuctTeeLengths) => { const run = onLeg(lengths); return errors(main, [unit, main, run]).map((issue) => issue.message); };
     expect(reach({ beforeMm: 1490 }).join()).toMatch(/tee's main part reaches an elbow/);
+    // Up to the main's end: a joint nearer it than the shortest piece runs the tee right up to it.
     const straightEnd = 6000;
-    expect(reach({ afterMm: straightEnd - 1500 - 100 }).join()).toMatch(/leaves 100 mm of main beside it, less than the shortest piece \(300 mm\)/);
+    expect(reach({ afterMm: straightEnd - 1500 - 100 })).toEqual([]);
+    const upToEnd = onLeg({ afterMm: straightEnd - 1500 - 100 });
+    expect(ductTeeFigures([unit, main, upToEnd], settings, 'branch')!.afterMm).toBeCloseTo(straightEnd - 1500, 3);
     expect(reach({ afterMm: straightEnd - 1500 - 400 })).toEqual([]);
+    expect(ductTeeFigures([unit, main, onLeg({ afterMm: straightEnd - 1500 - 400 })], settings, 'branch')!.afterMm).toBeCloseTo(straightEnd - 1500 - 400, 3);
+    expect(reach({ afterMm: straightEnd - 1500 + 50 }).join()).toMatch(/tee's main part reaches/);
     const straight = mainRun();
     const near = tee(straight, { station: 5000, id: 'near', side: -1 });
     const far = tee(straight, { station: 4000, lengths: { afterMm: 800 } });
     expect(errors(straight, [unit, straight, near, far]).map((issue) => issue.message).join()).toMatch(/Two take-offs overlap/);
+    // Between two tees' joints: a sliver is an error; one joint shared is none.
+    const first = tee(straight, { station: 3000, id: 'first', lengths: { afterMm: 800 } });
+    const second = (beforeMm: number) => tee(straight, { station: 5000, id: 'second', side: -1, lengths: { beforeMm } });
+    expect(errors(straight, [unit, straight, first, second(1100)]).map((issue) => issue.message).join()).toMatch(/leaves 100 mm of main beside it, less than the shortest piece \(300 mm\)/);
+    expect(errors(straight, [unit, straight, first, second(1200)])).toEqual([]);
   });
 
   it('never goes below what its sweep needs, in the planner or by the edit', () => {
@@ -182,6 +193,72 @@ describe('the edit', () => {
     const branch = tee(main);
     const figures = ductTeeFigures([unit, main, branch], settings, 'branch')!;
     expect(teeWithMainEnd(figures, 'beforeMm', 800)).toEqual({ beforeMm: 800, afterMm: figures.afterMm });
+  });
+});
+
+describe('its grips', () => {
+  it('a radius take-off has its slide and its three tee ends, on its joints, each its length', () => {
+    const main = mainRun();
+    const branch = tee(main, { vcd: true, lengths: { beforeMm: 700, afterMm: 650, branchMm: 800 } });
+    const scene = [unit, main, branch];
+    const grips = ductResizeGrips(scene, settings, 'branch', 'start:takeoff');
+    expect(grips.map((grip) => grip.kind)).toEqual(['slide', 'tee-before', 'tee-after', 'tee-branch']);
+    const figures = ductTeeFigures(scene, settings, 'branch')!;
+    const [, before, after, branchEnd] = grips;
+    const along = (point: { x: number; y: number }) => (point.x - figures.centre.x) * figures.leg.direction.x + (point.y - figures.centre.y) * figures.leg.direction.y;
+    expect(along(before!.point)).toBeCloseTo(-700, 3);
+    expect(along(after!.point)).toBeCloseTo(650, 3);
+    expect(before!.value).toBeCloseTo(700, 3);
+    expect(before!.axis.x * figures.leg.direction.x + before!.axis.y * figures.leg.direction.y).toBeCloseTo(-1, 6);
+    expect(after!.axis.x * figures.leg.direction.x + after!.axis.y * figures.leg.direction.y).toBeCloseTo(1, 6);
+    const out = (branchEnd!.point.x - figures.wallPoint.x) * figures.direction.x + (branchEnd!.point.y - figures.wallPoint.y) * figures.direction.y;
+    expect(out).toBeCloseTo(800, 3);
+    expect(branchEnd!.value).toBeCloseTo(800, 3);
+    // A shoe has its slide alone.
+    const shoe = ductRunElementWithSpec(branch, { ...readDuctRunSpec(branch)!, start: withTapStyle(readDuctRunSpec(branch)!.start as DuctTapStart, 'shoe-45') });
+    expect(ductResizeGrips([unit, main, shoe], settings, 'branch', 'start:takeoff').map((grip) => grip.kind)).toEqual(['slide']);
+  });
+
+  it('each end asks its own length, the main\'s other end held where it is', () => {
+    const main = mainRun();
+    const branch = tee(main);
+    const scene = [unit, main, branch];
+    const figures = ductTeeFigures(scene, settings, 'branch')!;
+    const grips = ductResizeGrips(scene, settings, 'branch', 'start:takeoff');
+    const of = (kind: string) => grips.find((grip) => grip.kind === kind)!;
+    expect(ductResizeEdit(scene, of('tee-before'), 900)).toEqual({ kind: 'tap-tee', runId: 'branch', tee: { beforeMm: 900, afterMm: figures.afterMm } });
+    expect(ductResizeEdit(scene, of('tee-after'), 900)).toEqual({ kind: 'tap-tee', runId: 'branch', tee: { beforeMm: figures.beforeMm, afterMm: 900 } });
+    expect(ductResizeEdit(scene, of('tee-branch'), 600)).toEqual({ kind: 'tap-tee', runId: 'branch', tee: { branchMm: 600 } });
+  });
+
+  it('dragged, an end goes where it is asked; past a fitting it stops there and says why; under its least, at it', () => {
+    const main = mainRun([{ x: port.lip.x, y: port.lip.y - 3000 }, { x: port.lip.x + 6000, y: port.lip.y - 3000 }]);
+    const origin = tapOrigin(main, settings, { legIndex: 1, stationMm: 3000, side: 1, style: 'radius', vcd: false }, SECTION)!;
+    if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
+    const run = buildDuctRunDraftElement({ origin, points: [{ x: origin.point.x + origin.direction.x * 1500, y: origin.point.y + origin.direction.y * 1500 }], legSizes: [SECTION] }, 'branch');
+    const branch = ductRunElementWithSpec(run, { ...readDuctRunSpec(run)!, start: { ...(readDuctRunSpec(run)!.start as DuctTapStart), radiusRatio: 0.5 } });
+    const scene = [unit, main, branch];
+    const grips = ductResizeGrips(scene, settings, 'branch', 'start:takeoff');
+    const before = new DuctResizeSolver(scene, settings, grips.find((grip) => grip.kind === 'tee-before')!);
+    const asked = before.plan(900);
+    expect(asked.limitedBy).toBeNull();
+    expect(asked.resize.made).toBeCloseTo(900, 3);
+    expect(asked.updated.map((element) => element.id).sort()).toEqual(['branch', 'main']);
+    expect(asked.label).toBe('Tee length A 900 mm');
+    // Toward the elbow at the leg's start: it runs up to it, and no further.
+    const far = before.plan(2990);
+    expect(far.limitedBy?.reason).toMatch(/^Tee length A stops at [\d,]+ mm: the tee's main part reaches an elbow/);
+    const figures = ductTeeFigures(scene.map((element) => far.updated.find((update) => update.id === element.id) ?? element), settings, 'branch')!;
+    expect(figures.beforeMm).toBeCloseTo(far.resize.made, 3);
+    const parent = getDuctRunPlan(main, scene, settings)!;
+    // Leg 2 starts 3000 mm along the run (the first leg's length); its straight, after the elbow.
+    const legStart = 3000;
+    const straightFrom = Math.min(...parent.pieces.filter((piece) => piece.legIndex === 1 && piece.kind === 'straight').map((piece) => piece.stationStartMm)) - legStart;
+    expect(figures.beforeMm).toBeCloseTo(3000 - straightFrom, 3);
+    const tight = before.plan(300);
+    expect(tight.limitedBy?.reason).toMatch(/at least 350 mm on this side/);
+    expect(tight.resize.made).toBeGreaterThanOrEqual(350);
+    expect(tight.resize.made).toBeLessThan(360);
   });
 });
 

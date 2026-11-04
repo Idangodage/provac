@@ -794,7 +794,10 @@ export function layoutSections(
   /** Joints set where they are (a tee's): the stretches between them are cut on their own. */
   setJoints: readonly number[] = [],
 ): number[] {
-  const inside = [...setJoints].filter((joint) => joint > from + STATION_EPSILON_MM && joint < to - STATION_EPSILON_MM).sort((a, b) => a - b);
+  // A set joint nearer the stretch's ends than the shortest piece is no joint: the piece it would leave is taken into its
+  // tee, which so runs right up to the fitting (or accessory) there.
+  const inside = [...setJoints].filter((joint) => joint - from >= minMakeUpMm - STATION_EPSILON_MM && to - joint >= minMakeUpMm - STATION_EPSILON_MM)
+    .sort((a, b) => a - b);
   if (inside.length) {
     let cursor = from;
     return [...inside, to].flatMap((joint) => {

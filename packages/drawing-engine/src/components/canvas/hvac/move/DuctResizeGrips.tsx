@@ -48,6 +48,9 @@ export function cursorFor(axis: { x: number; y: number }): string {
 }
 
 export function gripName(grip: DuctResizeGrip, subject: string): string {
+  if (grip.kind === 'tee-before') return 'Tee length A: the main, from its joint to the branch\'s centre';
+  if (grip.kind === 'tee-after') return 'Tee length B: the main, from the branch\'s centre to its joint';
+  if (grip.kind === 'tee-branch') return 'Tee length C: the branch, from the main\'s side to its joint';
   if (grip.kind === 'slide') return `Place of ${subject} along its duct`;
   if (grip.kind === 'runout') return `Length of ${subject}`;
   if (grip.kind === 'width') return `${grip.round ? 'Diameter' : 'Width'} of ${subject}`;
@@ -186,6 +189,32 @@ export function DuctResizeGrips(props: {
           <g transform={`translate(${mid.x} ${mid.y}) rotate(${angle})`}>
             <rect x={-26} y={-9} width={52} height={18} rx={4} fill="#0369a1" />
             <text x={0} y={4} textAnchor="middle" fontSize={11.5} fontWeight={600} fill="#ffffff" style={{ fontFamily: 'ui-monospace, monospace' }}>{formatMm(dragging.made)}</text>
+          </g>
+        </g>
+      );
+    } else if (dragged.tee && dragging.grip.tee) {
+      // A tee's length: from where it is measured to its joint, beside the duct.
+      const tee = dragged.tee;
+      const off = tee.clearMm * k + DIMENSION_OFFSET_PX;
+      const at = (point: Point2D, distance: number) => ({ x: point.x + tee.normal.x * distance, y: point.y + tee.normal.y * distance });
+      const a = toScreen(tee.origin);
+      const b = toScreen(dragged.point);
+      const a2 = at(a, off);
+      const b2 = at(b, off);
+      let angle = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+      if (angle > 90) angle -= 180;
+      if (angle <= -90) angle += 180;
+      const mid = { x: (a2.x + b2.x) / 2, y: (a2.y + b2.y) / 2 };
+      dimension = (
+        <g data-testid="duct-resize-dimension">
+          <path d={`M${at(a, off - 22).x},${at(a, off - 22).y} L${at(a, off + 6).x},${at(a, off + 6).y} M${at(b, off - 22).x},${at(b, off - 22).y} L${at(b, off + 6).x},${at(b, off + 6).y}`}
+            stroke={COLOUR} strokeWidth={0.9} fill="none" />
+          <path d={`M${a2.x},${a2.y} L${b2.x},${b2.y}`} stroke={COLOUR} strokeWidth={1.2} fill="none" />
+          <g transform={`translate(${mid.x} ${mid.y}) rotate(${angle})`}>
+            <rect x={-34} y={-9} width={68} height={18} rx={4} fill={COLOUR} />
+            <text x={0} y={4} textAnchor="middle" fontSize={11.5} fontWeight={600} fill="#ffffff" style={{ fontFamily: 'ui-monospace, monospace' }}>
+              {{ beforeMm: 'A', afterMm: 'B', branchMm: 'C' }[tee.part]} {formatMm(dragging.made)}
+            </text>
           </g>
         </g>
       );

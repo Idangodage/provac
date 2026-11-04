@@ -60,6 +60,12 @@ function dimensionOf(scene: readonly HvacElement[], preview: DuctResizePreview, 
   const kind = preview.grip.kind;
   // A slid piece: from where its place is measured to where it is.
   if (kind === 'slide' && dragged.slide) return { a: dragged.slide.origin, b: dragged.point, label };
+  // A tee's length: from where it is measured to its joint, along the duct's top edge on its far side.
+  if (dragged.tee) {
+    const { origin, normal, clearMm, topZ, part } = dragged.tee;
+    const edge = (point: Vec3): Vec3 => ({ x: point.x + normal.x * clearMm, y: point.y + normal.y * clearMm, z: topZ });
+    return { a: edge(origin), b: edge(dragged.point), label: `${{ beforeMm: 'A', afterMm: 'B', branchMm: 'C' }[part]} ${label}` };
+  }
   if (kind === 'length-end' || kind === 'length-start') {
     if (geometry.vertical) return { a: { ...geometry.start, z: geometry.startCentreZ }, b: { ...geometry.end, z: geometry.endCentreZ }, label };
     const top = geometry.start.z + depth + spec.insulationThicknessMm;
@@ -213,7 +219,7 @@ export function DuctResizeGrips3D(props: {
             <circle cx={drawn.a.x} cy={drawn.a.y} r={2.2} fill={COLOUR} />
             <circle cx={drawn.b.x} cy={drawn.b.y} r={2.2} fill={COLOUR} />
             <g transform={`translate(${(drawn.a.x + drawn.b.x) / 2} ${(drawn.a.y + drawn.b.y) / 2}) rotate(${angle})`}>
-              <rect x={-26} y={-20} width={52} height={18} rx={4} fill={COLOUR} />
+              <rect x={-Math.max(26, drawn.label.length * 3.6 + 6)} y={-20} width={2 * Math.max(26, drawn.label.length * 3.6 + 6)} height={18} rx={4} fill={COLOUR} />
               <text x={0} y={-7} textAnchor="middle" fontSize={11.5} fontWeight={600} fill="#ffffff" style={{ fontFamily: 'ui-monospace, monospace' }}>{drawn.label}</text>
             </g>
           </g>

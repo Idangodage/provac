@@ -35,7 +35,8 @@ import { sectionLabel } from '../duct/ductSegments';
 import type { DuctDesignSettings } from '../duct/ductSettings';
 import { IMPERIAL_RECT_STEP_MM, ductRoundSizesMm, nearestStep, onStep } from '../duct/ductSizeCatalog';
 import { getDuctSupportPlan, resolveSoffitZ } from '../duct/ductSupports';
-import { isDuctElement, isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec } from '../duct/ductTypes';
+import { ductTeeFigures, teeWithMainEnd } from '../duct/ductTee';
+import { isDuctElement, isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctTeeLengths } from '../duct/ductTypes';
 import { findDuctClashes } from '../duct/ductVolumes';
 import type { CriteriaRoom } from '../duct/unitCriteria';
 import { listNetworkPipeLanes } from '../networkPipeClearance';
@@ -43,7 +44,20 @@ import { listNetworkPipeLanes } from '../networkPipeClearance';
 import { ZERO3, type Vec3 } from './ductElasticMove';
 import type { HvacMoveOutcome, HvacMovePlan } from './hvacMoveModel';
 
-export type DuctResizeGripKind = 'length-start' | 'length-end' | 'width' | 'depth' | 'runout' | 'slide';
+export type DuctResizeGripKind = 'length-start' | 'length-end' | 'width' | 'depth' | 'runout' | 'slide' | 'tee-before' | 'tee-after' | 'tee-branch';
+
+/** A radius take-off's tee end: which of its lengths the grip sets, what it holds besides, and where its length is measured. */
+export interface DuctTeeEnd {
+  part: keyof DuctTeeLengths;
+  /** The tee's lengths kept as they are while this one is set (setting a main end holds the other where it is). */
+  held: DuctTeeLengths;
+  /** Where the length is measured from (model mm): the branch's centre on the main, or the main's wall on the branch. */
+  origin: Vec3;
+  /** Where its dimension is drawn: the plan way off the duct, how far its side is from the grip's line, and the duct's top. */
+  normal: { x: number; y: number };
+  clearMm: number;
+  topZ: number;
+}
 
 /** The piece a slide grip moves along its duct. */
 export interface DuctSlide {
@@ -81,6 +95,8 @@ export interface DuctResizeGrip {
   round: boolean;
   /** A slide grip: the piece it moves along its duct (its value: the piece's place, mm from `slide.origin`). */
   slide?: DuctSlide;
+  /** A tee grip: the end of a radius take-off's tee it moves (its value: that length). */
+  tee?: DuctTeeEnd;
 }
 
 /** Snapping steps (mm). */
@@ -94,12 +110,20 @@ export function resizeSectionStepMm(settings: Pick<DuctDesignSettings, 'sizeSeri
   return settings.sizeSeries === 'imperial' ? IMPERIAL_RECT_STEP_MM : RESIZE_SECTION_STEP_MM;
 }
 /** What a value may be (mm): the card's own limits. */
-const LIMITS: Record<'length' | 'width' | 'depth' | 'diameter' | 'runout' | 'slide', [number, number]> = {
+const LIMITS: Record<'length' | 'width' | 'depth' | 'diameter' | 'runout' | 'slide' | 'tee', [number, number]> = {
   length: [MIN_STRAIGHT_MM, 60000], width: [50, 4000], depth: [50, 2000], diameter: [75, 2000], runout: [300, 3000], slide: [0, 60000],
+  // (The tee's own least lengths are the edit's to say, with the reason.)
+  tee: [1, 60000],
 };
+
+/** A grip that sets one of a radius take-off's tee lengths. */
+export function isTeeGrip(grip: Pick<DuctResizeGrip, 'kind'>): boolean {
+  return grip.kind === 'tee-before' || grip.kind === 'tee-after' || grip.kind === 'tee-branch';
+}
 
 function limitsOf(grip: Pick<DuctResizeGrip, 'kind' | 'round'>): [number, number] {
   if (grip.kind === 'slide') return LIMITS.slide;
+  if (isTeeGrip(grip)) return LIMITS.tee;
   if (grip.kind === 'runout') return LIMITS.runout;
   if (grip.kind === 'width' || grip.kind === 'depth') return grip.round ? LIMITS.diameter : LIMITS[grip.kind];
   return LIMITS.length;
@@ -139,6 +163,7 @@ export function ductResizeEdit(scene: readonly HvacElement[], grip: DuctResizeGr
   if (grip.kind === 'length-start' || grip.kind === 'length-end') {
     return { kind: 'leg-length', runId: grip.runId, legIndex: grip.legIndex, lengthMm: value, grow: grip.kind === 'length-start' ? 'start' : 'end' };
   }
+  if (grip.tee) return { kind: 'tap-tee', runId: grip.runId, tee: { ...grip.tee.held, [grip.tee.part]: value } };
   if (grip.slide) {
     if (grip.slide.piece === 'takeoff') return { kind: 'tap-station', runId: grip.runId, stationMm: value };
     if (grip.slide.piece === 'inline') return grip.slide.id ? { kind: 'inline-move', runId: grip.runId, id: grip.slide.id, stationMm: value, exact: true } : null;
@@ -257,6 +282,42 @@ function slideGrip(scene: readonly HvacElement[], settings: DuctDesignSettings, 
 }
 
 /**
+ * A radius take-off's tee ends: its two joints on the main (on the main's centreline) and its joint on the branch; each
+ * drags its own length, the main's other end held where it is. None for any other take-off.
+ */
+function teeGrips(scene: readonly HvacElement[], settings: DuctDesignSettings, runId: string, key: string): DuctResizeGrip[] {
+  const figures = ductTeeFigures(scene, settings, runId);
+  const element = scene.find((candidate) => candidate.id === runId);
+  const insulation = element ? readDuctRunSpec(element)?.insulationThicknessMm ?? 0 : 0;
+  if (!figures) return [];
+  const { leg, centre, wallPoint, direction, mainSection, firstLeg, bottomZ, start } = figures;
+  const mainZ = leg.start.z + mainSection.heightMm / 2;
+  const branchZ = bottomZ + firstLeg.heightMm / 2;
+  const onMain = (along: number): Vec3 => ({ x: centre.x + leg.direction.x * along, y: centre.y + leg.direction.y * along, z: mainZ });
+  const held = teeWithMainEnd(figures, 'beforeMm', figures.beforeMm);
+  // A main end's dimension stands off the main on the side away from the branch; the branch's, on its heel side.
+  const away = { x: -direction.x, y: -direction.y };
+  const mainEnd = (kind: 'tee-before' | 'tee-after', part: 'beforeMm' | 'afterMm', sign: 1 | -1): DuctResizeGrip => ({
+    kind, runId, legIndex: 0, key, point: onMain(sign * figures[part]), axis: { x: leg.direction.x * sign, y: leg.direction.y * sign, z: 0 }, rate: 1,
+    value: figures[part], round: false,
+    tee: { part, held, origin: onMain(0), normal: away, clearMm: mainSection.widthMm / 2 + insulation, topZ: leg.start.z + mainSection.heightMm + insulation },
+  });
+  return [
+    mainEnd('tee-before', 'beforeMm', -1),
+    mainEnd('tee-after', 'afterMm', 1),
+    {
+      kind: 'tee-branch', runId, legIndex: 0, key,
+      point: { x: wallPoint.x + direction.x * figures.branchMm, y: wallPoint.y + direction.y * figures.branchMm, z: branchZ },
+      axis: { x: direction.x, y: direction.y, z: 0 }, rate: 1, value: figures.branchMm, round: false,
+      tee: {
+        part: 'branchMm', held: { ...start.tee }, origin: { x: wallPoint.x, y: wallPoint.y, z: branchZ },
+        normal: { x: leg.direction.x, y: leg.direction.y }, clearMm: firstLeg.widthMm / 2 + insulation, topZ: bottomZ + firstLeg.heightMm + insulation,
+      },
+    },
+  ];
+}
+
+/**
  * The grips of a run's segment ("leg:2", "end:flex"): those that can move at
  * least one way (an end held at a collar, a take-off's wall or a spigot has
  * none). A locked or old run has none. `probe` false: every grip the segment
@@ -272,9 +333,12 @@ export function ductResizeGrips(scene: readonly HvacElement[], settings: DuctDes
   const both = (grip: DuctResizeGrip, step: number) => options.probe === false
     || moves(scene, settings, grip, grip.value + step) || moves(scene, settings, grip, grip.value - step);
 
-  // A piece sliding along its duct (its take-off, an accessory, a transition).
+  // A piece sliding along its duct (its take-off, an accessory, a transition); a radius take-off's tee ends too.
   const slide = slideGrip(scene, settings, runId, spec, key);
-  if (slide !== undefined) return slide && both(slide, RESIZE_LENGTH_STEP_MM) ? [slide] : [];
+  if (slide !== undefined) {
+    const tee = key === 'start:takeoff' ? teeGrips(scene, settings, runId, key) : [];
+    return [...(slide && both(slide, RESIZE_LENGTH_STEP_MM) ? [slide] : []), ...tee.filter((grip) => both(grip, RESIZE_LENGTH_STEP_MM))];
+  }
 
   if (key === 'end:flex') {
     const n = spec.path.length;
@@ -391,6 +455,9 @@ function slideSubject(slide: DuctSlide, spec: DuctRunSpec | null, terminal: Hvac
 }
 
 const formatMm = (value: number) => `${Math.round(value).toLocaleString('en-GB')} mm`;
+
+/** A tee grip's name in the readout and its stop. */
+const TEE_SUBJECTS: Record<keyof DuctTeeLengths, string> = { beforeMm: 'Tee length A', afterMm: 'Tee length B', branchMm: 'Tee length C' };
 /** A sentence as a clause after "stops at …:" (an ordinary first word lower-case, not a mark like "S-002"; no full stop). */
 const asClause = (text: string) => text.replace(/^(A |[A-Z][a-z])/, (start: string) => `${start[0]!.toLowerCase()}${start.slice(1)}`).replace(/\.$/, '');
 
@@ -443,12 +510,12 @@ export class DuctResizeSolver {
     const spec = element ? readDuctRunSpec(element) : null;
     const geometry = spec ? ductLegs(spec)[grip.legIndex] : undefined;
     const terminal = spec?.end.kind === 'terminal' ? scene.find((candidate) => candidate.id === (spec.end as { terminalId: string }).terminalId) : undefined;
-    this.subject = grip.slide
+    this.subject = grip.tee ? TEE_SUBJECTS[grip.tee.part] : grip.slide
       ? slideSubject(grip.slide, spec, terminal)
       : grip.kind === 'runout'
         ? `The runout to ${terminal?.label || 'its terminal'}`
         : `${geometry?.vertical ? 'Riser' : 'Straight'} ${grip.legIndex + 1}`;
-    this.figuresFrom = grip.slide ? null : ductSegmentFigures(scene, settings, grip.runId, grip.key, options.rooms)?.system?.indexPa ?? null;
+    this.figuresFrom = grip.slide || grip.tee ? null : ductSegmentFigures(scene, settings, grip.runId, grip.key, options.rooms)?.system?.indexPa ?? null;
   }
 
   /** The plan for a value asked: made as asked, or stopped at the nearest value the rules allow (`fine`: on a 1 mm grid). */
@@ -598,8 +665,10 @@ export class DuctResizeSolver {
     const { grip, scene, settings } = this;
     const updates = evaluation?.updates ?? [];
     const next = replaced(scene, updates);
-    // A slid accessory lands at the clear spot nearest the place asked: the readout says where it is.
+    // A slid accessory lands at the clear spot nearest the place asked, a tee's joint by a fitting runs up to it: the readout
+    // says where it is.
     if (grip.slide && evaluation) made = this.slideValue(next, made);
+    else if (grip.tee && evaluation) made = ductTeeFigures(next, settings, grip.runId)?.[grip.tee.part] ?? made;
     const outcomes = new Map<string, HvacMoveOutcome>(updates.map((element) => [element.id, { kind: element.id === grip.runId ? 'moved' : 'follows' }]));
     // The section before and as made (width and depth).
     let sections: DuctResizeOutcome['sections'] = null;
@@ -609,8 +678,8 @@ export class DuctResizeSolver {
       const after = afterElement ? readDuctRunSpec(afterElement)?.legs[grip.legIndex] : undefined;
       if (before) sections = { from: sectionLabel(before), to: sectionLabel(after ?? before) };
     }
-    // The segment's air and the fan at the value made (a slid piece changes neither).
-    const figures = grip.slide ? null : this.figuresAt(next, made);
+    // The segment's air and the fan at the value made (a slid piece and a tee's length change neither).
+    const figures = grip.slide || grip.tee ? null : this.figuresAt(next, made);
     const advisories: string[] = [];
     if (figures?.velocityStatus === 'over') {
       advisories.push(`${figures.velocityMs.toFixed(1)} m/s is over its limit of ${figures.velocityLimitMs.toFixed(1)} m/s`);
@@ -626,7 +695,7 @@ export class DuctResizeSolver {
       updated: updates, add: [], removeIds: [], outcomes,
       messages: advisories,
       infos: evaluation?.notes ?? [],
-      label: evaluation?.action || `${this.subject} ${what}`,
+      label: (grip.tee ? null : evaluation?.action) || `${this.subject} ${what}`,
       resize: {
         grip, scope, from: grip.value, asked, made, subject: this.subject, sections, figures, ...(evaluation?.refocus ? { refocus: evaluation.refocus } : {}),
       },
