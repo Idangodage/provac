@@ -18,7 +18,7 @@ export interface DuctToolState {
   /** Clear section of a new branch (height is held to the parent's). */
   branchWidthMm: number;
   branchHeightMm: number;
-  tapStyle: Extract<DuctTapStyle, 'shoe-45' | 'straight'>;
+  tapStyle: Extract<DuctTapStyle, 'shoe-45' | 'straight' | 'radius'>;
   splitStyle: DuctSplitStyle;
   /** A Y's outlets: 45° (a Y junction) or 90° (a Y split). */
   splitAngleDeg: DuctSplitAngle;

@@ -20,12 +20,14 @@ import type { HvacElement } from '../../../../types';
 
 import { getActiveDuctBuilding } from './ductBuilding';
 import { energyPricePerPa, priceDuctPlans } from './ductEconomics';
-import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
+import { getDuctRunPlan, planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { accessDoorFor } from './ductFabricationPlanner';
 import { DUCT_VANES } from './ductFittingRules';
+import { ductRunElementWithSpec } from './ductFollow';
 import { ductLegs } from './ductGeometry';
 import { ductParentOf } from './ductNetwork';
 import { penetrationHasFireDamper } from './ductPenetrations';
+import { RADIUS_TAKEOFF, formatRadiusRatio, radiusTakeoffRatio } from './ductRadiusTakeoff';
 import { aspectOf, outerHeightMm, rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
 import { applyDuctSegmentEdit, INLINE_TITLES, outletSplitShare, rigidLegIndices, type DuctSegmentEdit } from './ductSegmentEdits';
 import { ductSegmentFigures, splitAirflowShare, type DuctFigureStatus, type DuctSegmentFigures } from './ductSegmentFigures';
@@ -36,7 +38,7 @@ import { equivalentDiameterMm, sizeRectangular, sizeRound, velocityMs } from './
 import { resolveSoffitZ } from './ductSupports';
 import { DUCT_TERMINAL_NECKS_MM, TERMINAL_FACE_LABELS, TERMINAL_FACES_BY_SERVICE, terminalLabel } from './ductTerminalCatalog';
 import { readDuctTerminalSpec } from './ductTerminals';
-import { DUCT_ATTENUATOR_LENGTHS_MM, isRoundLeg, readDuctRunSpec, roundLeg, splitAngleOf, type DuctLeg, type DuctRunSpec, type DuctTapStyle } from './ductTypes';
+import { DUCT_ATTENUATOR_LENGTHS_MM, isRoundLeg, readDuctRunSpec, roundLeg, splitAngleOf, withTapStyle, type DuctLeg, type DuctRunSpec, type DuctTapStart, type DuctTapStyle } from './ductTypes';
 
 export type DuctOptionGroup = 'size' | 'swap' | 'tune' | 'accessory' | 'terminal';
 
@@ -59,6 +61,15 @@ export interface DuctSegmentOption {
   current?: boolean;
   /** Offered, but it cannot be made here: why. */
   disabledReason?: string;
+  /** A fitting told by its shape: the Swap tab shows it as a picture. */
+  tile?: DuctOptionTile;
+}
+
+export interface DuctOptionTile {
+  title: string;
+  style: DuctTapStyle;
+  widthMm: number;
+  radiusRatio?: number;
 }
 
 export type DuctOptionScope = 'leg' | 'size';
@@ -72,7 +83,7 @@ export interface DuctSegmentOptionContext {
   voidHeightMm: number;
 }
 
-const TAP_GLYPH: Record<DuctTapStyle, DuctOptionGlyph> = {
+export const TAP_GLYPH: Record<DuctTapStyle, DuctOptionGlyph> = {
   'shoe-45': 'tap-shoe', straight: 'tap-straight', radius: 'tap-radius', 'spin-in': 'tap-spin', conical: 'tap-conical',
   'round-tee': 'tap-tee', 'round-conical': 'tap-conical', 'round-lateral': 'tap-lateral',
 };
@@ -302,6 +313,75 @@ function transitionOptions(runId: string, context: DuctSegmentOptionContext, set
   return options;
 }
 
+const TILE_TITLES: Record<DuctTapStyle, string> = {
+  'shoe-45': '45° shoe', straight: 'Straight', radius: 'Radius', 'spin-in': 'Spin-in', conical: 'Conical',
+  'round-tee': '90° tee', 'round-conical': 'Conical tee', 'round-lateral': '45° lateral',
+};
+
+/** The r/W a sweep is tried at on a take-off: the published one first, then tighter where the room runs out. */
+const RADIUS_FIT_RATIOS = [1, 0.75, 0.5, 0.25] as const;
+/** The quick picks of the Edit tab's radius. */
+const RADIUS_PICKS = [0.25, 0.5, 1, 1.5] as const;
+
+/**
+ * The largest r/W that fits this take-off, the planner the judge: no more errors on the branch or its main than they
+ * have now. Null with the reason when even the tightest does not.
+ */
+function fittingRadius(
+  scene: readonly HvacElement[], settings: DuctDesignSettings, run: HvacElement, spec: DuctRunSpec, parent: HvacElement, parentSpec: DuctRunSpec, firstLeg: DuctLeg | undefined,
+): { ratio: number } | { reason: string } {
+  const start = spec.start as DuctTapStart;
+  const errorsOf = (id: string, runSpec: DuctRunSpec, within: readonly HvacElement[]) => planDuctRunSpec(id, runSpec, { settings, scene: [...within] }).issues.filter((issue) => issue.severity === 'error');
+  const before = [...errorsOf(run.id, spec, scene), ...errorsOf(parent.id, parentSpec, scene)];
+  let reason = 'there is no room for its sweep';
+  for (const ratio of RADIUS_FIT_RATIOS) {
+    const candidate: DuctRunSpec = { ...spec, ...(firstLeg ? { legs: [firstLeg, ...spec.legs.slice(1)] } : {}), start: withTapStyle(start, 'radius', ratio) };
+    const swept = ductRunElementWithSpec(run, candidate);
+    const within = scene.map((element) => (element.id === run.id ? swept : element));
+    const errors = [...errorsOf(run.id, candidate, within), ...errorsOf(parent.id, parentSpec, within)];
+    if (errors.length <= before.length) return { ratio };
+    reason = errors.find((issue) => !before.some((other) => other.message === issue.message))?.message ?? reason;
+  }
+  return { reason };
+}
+
+function radiusTakeoffOptions(scene: readonly HvacElement[], run: HvacElement, spec: DuctRunSpec, parent: HvacElement, parentSpec: DuctRunSpec, settings: DuctDesignSettings, width: number, firstLeg: DuctLeg | undefined): DuctSegmentOption[] {
+  const start = spec.start as DuctTapStart;
+  const runId = run.id;
+  const throat = (ratio: number) => Math.round(ratio * width);
+  const swept = (ratio: number) => (Math.abs(ratio - RADIUS_TAKEOFF.defaultRatio) < 1e-9 ? 'published in ASHRAE 5-22' : `throat ${throat(ratio)} mm`);
+  const tile = (radiusRatio: number): DuctOptionTile => ({ title: TILE_TITLES.radius, style: 'radius', widthMm: width, radiusRatio });
+  const base = { group: 'swap' as const, glyph: TAP_GLYPH.radius, title: TAKEOFF_TITLES.radius };
+  if (start.style === 'radius') {
+    const ratio = radiusTakeoffRatio(start.radiusRatio);
+    return [{
+      ...base, id: 'tap:radius', detail: `Swept entry, r/W ${formatRadiusRatio(ratio)}: ${swept(ratio)}`, current: true, tile: tile(ratio),
+      edit: { kind: 'tap', runId, style: 'radius', radiusRatio: ratio },
+    }];
+  }
+  const fit = fittingRadius(scene, settings, run, spec, parent, parentSpec, firstLeg);
+  const edit = (radiusRatio: number): DuctSegmentOption['edit'] => ({ kind: 'tap', runId, style: 'radius', radiusRatio, ...(firstLeg ? { firstLeg } : {}) });
+  if ('reason' in fit) {
+    return [{ ...base, id: 'tap:radius', detail: 'Swept entry', disabledReason: `No sweep fits here, even at r/W ${formatRadiusRatio(RADIUS_TAKEOFF.minRatio)}: ${fit.reason}`, tile: tile(RADIUS_TAKEOFF.minRatio), edit: edit(RADIUS_TAKEOFF.minRatio) }];
+  }
+  const tighter = fit.ratio < RADIUS_TAKEOFF.defaultRatio;
+  return [{
+    ...base, id: 'tap:radius', detail: `Swept entry, r/W ${formatRadiusRatio(fit.ratio)}: ${tighter ? `the largest that fits here, throat ${throat(fit.ratio)} mm` : swept(fit.ratio)}`,
+    tile: tile(fit.ratio), edit: edit(fit.ratio),
+  }];
+}
+
+/** The Edit tab's quick radii, on a take-off that is rectangular already. */
+function radiusPicks(runId: string, start: DuctTapStart, width: number): DuctSegmentOption[] {
+  const now = start.style === 'radius' ? radiusTakeoffRatio(start.radiusRatio) : null;
+  return RADIUS_PICKS.map((ratio) => ({
+    id: `tap-radius:${ratio}`, group: 'tune' as const, glyph: TAP_GLYPH.radius, title: formatRadiusRatio(ratio),
+    detail: `Swept entry, r/W ${formatRadiusRatio(ratio)}, throat ${Math.round(ratio * width)} mm`,
+    edit: { kind: 'tap' as const, runId, style: 'radius' as const, radiusRatio: ratio },
+    ...(now === ratio ? { current: true } : {}),
+  }));
+}
+
 function takeoffOptions(scene: readonly HvacElement[], runId: string, context: DuctSegmentOptionContext, settings: DuctDesignSettings): DuctSegmentOption[] {
   const spec = context.spec;
   const start = spec.start;
@@ -318,6 +398,7 @@ function takeoffOptions(scene: readonly HvacElement[], runId: string, context: D
     options.push({
       id: `tap:${style}`, group: 'swap', glyph: TAP_GLYPH[style], title: TAKEOFF_TITLES[style], detail: turns ? `${detail}; the branch turns with it` : detail,
       edit: { kind: 'tap', runId, style, ...(firstLeg ? { firstLeg } : {}) },
+      tile: { title: TILE_TITLES[style], style, widthMm: first.diameterMm ?? first.widthMm },
       ...(style === start.style ? { current: true } : {}),
     });
   };
@@ -342,7 +423,10 @@ function takeoffOptions(scene: readonly HvacElement[], runId: string, context: D
       const rects = rectangularEquivalents(first.diameterMm!, { maxHeightMm: Math.min(main.heightMm, context.voidHeightMm), maxAspect: settings.aspectRatioAdvisory, stepMm: ductRectStepMm(settings) });
       return rects[rects.length - 1] ?? { widthMm: first.widthMm, heightMm: Math.min(first.heightMm, main.heightMm) };
     })();
-    offer('shoe-45', `45° entry, lead-in ${Math.round(Math.max(102, rectBranch.widthMm / 4))} mm: the lowest loss (SMACNA Fig. 2-6)`, isRoundLeg(first) ? rectBranch : undefined);
+    const element = scene.find((candidate) => candidate.id === runId);
+    if (element) options.push(...radiusTakeoffOptions(scene, element, spec, parent, parentSpec, settings, rectBranch.widthMm, isRoundLeg(first) ? rectBranch : undefined));
+    if (!isRoundLeg(first)) options.push(...radiusPicks(runId, start, first.widthMm));
+    offer('shoe-45', `45° entry, lead-in ${Math.round(Math.max(102, rectBranch.widthMm / 4))} mm (SMACNA Fig. 2-6)`, isRoundLeg(first) ? rectBranch : undefined);
     offer('straight', 'square tap (SMACNA Fig. 2-6)', isRoundLeg(first) ? rectBranch : undefined);
     offer('conical', `round collar, cone mouth Ø${Math.round((roundBranch.diameterMm ?? 0) + settings.conicalFlareMm)} (SMACNA Fig. 2-6)`, isRoundLeg(first) ? undefined : roundBranch);
     offer('spin-in', 'round collar at the branch Ø (SMACNA Fig. 2-6)', isRoundLeg(first) ? undefined : roundBranch);

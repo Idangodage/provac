@@ -21,6 +21,7 @@ import type { Point2D } from '../../../../types';
 import type { DuctFabricationPlan, DuctPiece } from './ductFabricationPlanner';
 import { DUCT_VANES } from './ductFittingRules';
 import { distanceToPolygon, getDuctPlanPresentation, insidePolygon } from './ductPick';
+import { RADIUS_TAKEOFF, formatRadiusRatio } from './ductRadiusTakeoff';
 import { splitAngleOf, type DuctLeg, type DuctSplitAngle, type DuctSplitStyle, type DuctTapStyle } from './ductTypes';
 
 export type DuctSegmentKind =
@@ -121,7 +122,7 @@ function describe(plan: DuctFabricationPlan, kind: DuctSegmentKind, pieces: Duct
       const takeoff = first.takeoff;
       const main = plan.tap?.parentSection;
       const mouth = takeoff?.openingMm && (takeoff.style === 'conical' || takeoff.style === 'round-conical') ? `mouth Ø${Math.round(takeoff.openingMm)} · ` : '';
-      const lead = takeoff?.style === 'radius' ? `r/W ${takeoff.radiusRatio} · throat ${Math.round(takeoff.leadInMm)} mm · `
+      const lead = takeoff?.style === 'radius' ? `r/W ${formatRadiusRatio(takeoff.radiusRatio ?? RADIUS_TAKEOFF.defaultRatio)} · throat ${Math.round(takeoff.leadInMm)} mm · `
         : takeoff?.leadInMm ? `lead-in ${Math.round(takeoff.leadInMm)} mm · ` : '';
       const off = plan.spec.start.kind === 'spigot' ? 'off the plenum' : main ? `off ${sectionLabel(main)} main` : 'off its parent';
       return { title: takeoff ? TAKEOFF_TITLES[takeoff.style] : 'Take-off', size, detail: `${mouth}${lead}${off}` };

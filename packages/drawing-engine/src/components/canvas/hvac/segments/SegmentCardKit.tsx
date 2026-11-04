@@ -288,6 +288,59 @@ export function OptionRow<O extends SegmentOptionLike, E extends SegmentEvaluati
   );
 }
 
+/** An option as a picture of what it would put there: its name, badges and change below; it hovers, applies and steps as a row does. */
+export function OptionTile<O extends SegmentOptionLike, E extends SegmentEvaluationLike>({ option, evaluation, title, picture, badges, badgeDefs, chips, onHover, onApply }: {
+  option: O;
+  evaluation: E | undefined;
+  title: string;
+  picture: ReactNode;
+  badges: readonly string[];
+  badgeDefs: Readonly<Record<string, SegmentBadge>> | undefined;
+  chips: (evaluation: E) => ReactNode;
+  onHover: (info: HoverInfo<O, E> | null) => void;
+  onApply: (option: O) => void;
+}) {
+  const reason = option.disabledReason ?? evaluation?.refused;
+  const disabled = Boolean(reason) || option.current;
+  return (
+    <button
+      type="button"
+      data-option-row={option.id}
+      data-option-tile=""
+      aria-disabled={disabled || undefined}
+      aria-current={option.current ? 'true' : undefined}
+      aria-label={option.title}
+      className={`flex min-w-0 flex-col rounded-[10px] px-[5px] pb-[5px] pt-[3px] text-left ring-1 ring-inset transition-shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${option.current
+        ? 'bg-violet-50 text-violet-700 ring-violet-200' : reason ? 'cursor-not-allowed text-slate-400 opacity-60 ring-slate-200'
+          : 'bg-white text-slate-600 ring-slate-200 hover:text-violet-700 hover:shadow-[0_6px_16px_-8px_rgba(124,58,237,0.55)] hover:ring-2 hover:ring-violet-600 focus-visible:text-violet-700'}`}
+      title={reason ?? option.detail}
+      onPointerEnter={() => onHover({ option, evaluation })}
+      onPointerLeave={() => onHover(null)}
+      onFocus={() => onHover({ option, evaluation })}
+      onBlur={() => onHover(null)}
+      onClick={() => (disabled ? undefined : onApply(option))}
+    >
+      <span className="block h-14 w-full">{picture}</span>
+      <span className="flex min-w-0 items-center gap-[3px]">
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-slate-800">{title}</span>
+        {badges.map((badge) => {
+          const def = badgeDefs?.[badge];
+          if (!def) return null;
+          return (
+            <span key={badge} className={`shrink-0 ${def.tone}`} title={def.title}>
+              {def.icon}<span className="sr-only">{def.label}</span>
+            </span>
+          );
+        })}
+      </span>
+      <span className="mt-[2px] flex min-h-[15px] items-center">
+        {option.current ? <span className="text-[9.5px] font-semibold uppercase tracking-wide text-violet-600">current</span> : null}
+        {!option.current && evaluation && !evaluation.refused ? chips(evaluation) : null}
+      </span>
+    </button>
+  );
+}
+
 /** Quick picks as chips (taper angles, attenuator lengths, sizes): each an option, applied with a click. */
 export function ChipRow<O extends SegmentOptionLike, E extends SegmentEvaluationLike>({ options, evaluations, onHover, onApply }: {
   options: readonly O[];
@@ -323,12 +376,13 @@ export function ChipRow<O extends SegmentOptionLike, E extends SegmentEvaluation
   );
 }
 
-/** Arrow keys move between a list's option buttons. */
+/** Arrow keys move between a list's option buttons (left and right among its tiles too). */
 export function onListKey(event: ReactKeyboardEvent<HTMLElement>) {
-  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  const sideways = (event.key === 'ArrowRight' || event.key === 'ArrowLeft') && document.activeElement instanceof HTMLElement && document.activeElement.dataset.optionTile !== undefined;
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && !sideways) return;
   const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-option-row]')].filter((row) => row.offsetParent !== null);
   const index = rows.indexOf(document.activeElement as HTMLButtonElement);
-  const next = rows[(index + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length];
+  const next = rows[(index + (event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1) + rows.length) % rows.length];
   next?.focus();
   event.preventDefault();
   event.stopPropagation();

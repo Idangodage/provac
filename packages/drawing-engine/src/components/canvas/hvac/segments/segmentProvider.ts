@@ -116,8 +116,12 @@ export interface SegmentProvider<O extends SegmentOptionLike = SegmentOptionLike
   recommendedBadge?: string;
   /** A row's picture. */
   optionGlyph: (option: O) => ReactNode;
+  /** An option better told by its shape: its Swap tab tile (null: a row, as the rest). */
+  optionTile?: (option: O) => { title: string; picture: ReactNode } | null;
   /** A row's change, as chips. */
   chips: (evaluation: E) => ReactNode;
+  /** A tile's change, narrower than a row's (else `chips`). */
+  tileChips?: (evaluation: E) => ReactNode;
   /** An evaluation's one-line result. */
   result: (evaluation: E) => ReactNode;
   /** Order of a peek's quick picks after the recommended one (lower first). */

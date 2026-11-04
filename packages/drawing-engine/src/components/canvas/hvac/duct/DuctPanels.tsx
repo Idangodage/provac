@@ -78,7 +78,7 @@ function describeStart(spec: DuctRunSpec, hvacElements: readonly HvacElement[]):
   };
   if (start.kind === 'unit-port') return `unit collar (${start.portId})${start.connector ? ' + flexible connector' : ''}`;
   if (start.kind === 'tap') {
-    return `${start.style === 'shoe-45' ? 'shoe' : 'straight'} take-off on ${parentLabel(start.parentRunId)} at ${(start.stationMm / 1000).toFixed(2)} m${start.vcd ? ' + VCD' : ''}`;
+    return `${start.style === 'shoe-45' ? 'shoe' : start.style === 'radius' ? 'radius' : 'straight'} take-off on ${parentLabel(start.parentRunId)} at ${(start.stationMm / 1000).toFixed(2)} m${start.vcd ? ' + VCD' : ''}`;
   }
   if (start.kind === 'split-branch') return `split outlet of ${parentLabel(start.parentRunId)}${start.vcd ? ' + VCD' : ''}`;
   if (start.kind === 'spigot') return `${start.style} spigot on the ${start.face} face of ${parentLabel(start.parentRunId)}'s plenum${start.vcd ? ' + VCD' : ''}`;
@@ -840,7 +840,8 @@ export function DuctToolSection() {
         <input type="number" step={50} value={tool.branchHeightMm} onChange={(event) => tool.setBranchSize({ branchHeightMm: Number(event.target.value) })} className="w-16 rounded border border-slate-200 px-1 text-xs" aria-label="Branch height" />
       </Row>
       <Row label="Take-off">
-        <select value={tool.tapStyle} onChange={(event) => tool.setBranchOptions({ tapStyle: event.target.value as 'shoe-45' | 'straight' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Take-off style">
+        <select value={tool.tapStyle} onChange={(event) => tool.setBranchOptions({ tapStyle: event.target.value as 'shoe-45' | 'straight' | 'radius' })} className="rounded border border-slate-200 px-1 py-0.5 text-xs" aria-label="Take-off style">
+          <option value="radius">Radius, swept (ASHRAE 5-22)</option>
           <option value="shoe-45">Shoe, 45° lead-in</option>
           <option value="straight">Straight collar</option>
         </select>

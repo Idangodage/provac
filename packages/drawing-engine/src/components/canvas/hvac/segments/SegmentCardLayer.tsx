@@ -35,6 +35,7 @@ import type { ScreenRect } from '../duct/popoverPlacement';
 
 import {
   OptionRow,
+  OptionTile,
   PEEK_DELAY_MS,
   PEEK_GRACE_MS,
   PEEK_SWAPS,
@@ -192,6 +193,10 @@ function SegmentCard<O extends SegmentOptionLike, E extends SegmentEvaluationLik
       </>
     );
   };
+  // What is told by its shape goes first, as pictures; the rest as rows.
+  const tileOf = provider.optionTile;
+  const tiled = tileOf ? swaps.filter((option) => tileOf(option)) : [];
+  const swapRows = tileOf ? swaps.filter((option) => !tileOf(option)) : swaps;
   const hoverReason = hoverInfo ? hoverInfo.option.disabledReason ?? hoverInfo.evaluation?.refused : null;
   const hoverNotes = hoverInfo?.evaluation && !hoverInfo.evaluation.refused ? hoverInfo.evaluation.notes : [];
   return (
@@ -290,7 +295,20 @@ function SegmentCard<O extends SegmentOptionLike, E extends SegmentEvaluationLik
             ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2">
               <div role="tabpanel" data-tab-panel="edit" hidden={activeTab !== 'edit'} data-testid={`${ids}-edit`} onKeyDown={onListKey}>{editContent}</div>
-              <div role="tabpanel" data-tab-panel="swap" hidden={activeTab !== 'swap'} data-testid={`${ids}-swaps`} onKeyDown={onListKey}>{rows(swaps, true)}</div>
+              <div role="tabpanel" data-tab-panel="swap" hidden={activeTab !== 'swap'} data-testid={`${ids}-swaps`} onKeyDown={onListKey}>
+                {tiled.length ? (
+                  <div className="grid grid-cols-3 gap-[5px] pb-1 pt-px" data-testid={`${ids}-tiles`}>
+                    {tiled.map((option) => {
+                      const tile = tileOf!(option)!;
+                      return (
+                        <OptionTile key={option.id} option={option} evaluation={evaluations.get(option.id)} title={tile.title} picture={tile.picture} badges={badges.get(option.id) ?? []}
+                          badgeDefs={provider.badges} chips={provider.tileChips ?? provider.chips} onHover={hover} onApply={apply} />
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {rows(swapRows, true)}
+              </div>
               <div role="tabpanel" data-tab-panel="add" hidden={activeTab !== 'add'} data-testid={`${ids}-accessories`} onKeyDown={onListKey}>{rows(accessories, false)}</div>
             </div>
             {/* What the option under the pointer is, does and changes — one line or two, only while it is pointed at. */}

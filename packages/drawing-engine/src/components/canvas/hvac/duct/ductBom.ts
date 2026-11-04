@@ -13,6 +13,7 @@ import { VANE_RUNNER, type DuctVaneSpec } from './ductFittingRules';
 import { FLEX_HANGER_WIRE_DIAMETER_MM, FLEX_RULES } from './ductFlex';
 import { describeJoint } from './ductGauge';
 import { ductPenetrationBomRows } from './ductPenetrationSchedule';
+import { RADIUS_TAKEOFF, formatRadiusRatio } from './ductRadiusTakeoff';
 import type { DuctSupportPlan } from './ductSupports';
 import { readDuctTerminalSpec, TERMINAL_FILTER_LABELS, TERMINAL_FILTER_THICKNESS_MM, terminalLabel } from './ductTerminals';
 
@@ -115,7 +116,7 @@ function pieceDescription(piece: DuctPiece, plan: DuctFabricationPlan): string {
   if (piece.kind === 'attenuator') return `Sound attenuator ${Math.round(piece.lengthMm)} mm, ${piece.attenuator?.type === 'podded' ? 'round podded' : 'rectangular splitter'}`;
   if (piece.kind === 'fire-damper') return `Fire damper, curtain type, in its sleeve ${Math.round(piece.lengthMm)} mm (UL 555 / EN 1366-2; rating to the wall)`;
   if (piece.kind === 'takeoff') {
-    if (piece.takeoff?.style === 'radius') return `Radius take-off, r/W ${piece.takeoff.radiusRatio}, throat ${Math.round(piece.takeoff.leadInMm)} mm (ASHRAE 5-22)`;
+    if (piece.takeoff?.style === 'radius') return `Radius take-off, r/W ${formatRadiusRatio(piece.takeoff.radiusRatio ?? RADIUS_TAKEOFF.defaultRatio)}, throat ${Math.round(piece.takeoff.leadInMm)} mm (ASHRAE 5-22)`;
     return piece.takeoff && piece.takeoff.leadInMm > 0
       ? `Shoe take-off, 45° lead-in ${Math.round(piece.takeoff.leadInMm)} mm`
       : 'Straight take-off collar';

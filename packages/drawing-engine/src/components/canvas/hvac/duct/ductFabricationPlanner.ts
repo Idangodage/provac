@@ -63,7 +63,7 @@ import {
 } from './ductGeometry';
 import { ductInsulationThicknessMm, insulationTakeoff, type DuctInsulationTakeoff } from './ductInsulation';
 import { jointHardware, roundTakeoffHardware, slipOverHardware, takeoffHardware, type JointHardware } from './ductJoints';
-import { RADIUS_TAKEOFF, radiusTakeoffRatio, radiusTakeoffShape, radiusTakeoffSheetAreaM2 } from './ductRadiusTakeoff';
+import { RADIUS_TAKEOFF, formatRadiusRatio, radiusTakeoffRatio, radiusTakeoffSeamRunMm, radiusTakeoffShape, radiusTakeoffSheetAreaM2 } from './ductRadiusTakeoff';
 import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
 import { jogOffset, tightestOgee, type DuctOffsetGeometry } from './ductOffsets';
 import {
@@ -1020,7 +1020,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         }
         if (start.style === 'radius' && radiusTakeoffRatio(start.radiusRatio) < RADIUS_TAKEOFF.tightBelowRatio - 1e-9) {
           issues.push({ code: 'DU_ELBOW_RADIUS', severity: 'warning', point: spec.path[0],
-            message: `r/W ${radiusTakeoffRatio(start.radiusRatio)}: as on an elbow, SMACNA allows a throat this tight only up to ${ELBOW_RULES.squareThroatMaxVelocityMs} m/s (Fig. 2-2 RE1).` });
+            message: `r/W ${formatRadiusRatio(radiusTakeoffRatio(start.radiusRatio))}: as on an elbow, SMACNA allows a throat this tight only up to ${ELBOW_RULES.squareThroatMaxVelocityMs} m/s (Fig. 2-2 RE1).` });
         }
         leaving = tap.direction;
         startPieces.push({ kind: 'takeoff', lengthMm: tap.collarLengthMm, section: firstLeg });
@@ -1202,9 +1202,17 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
               ...(tap.roundMain ? { roundMain: tap.roundMain } : {}),
             },
           });
-          // A radius take-off is its own developed sheet; a shoe's lead-in adds a triangular cheek pair and a sloped wall.
-          if (radius) piece.sheetAreaM2 = radiusTakeoffSheetAreaM2(radius, length, startPiece.section.heightMm);
-          else piece.sheetAreaM2 += tap.leadInMm > 0 ? (tap.leadInMm * tap.leadInMm + tap.leadInMm * Math.SQRT2 * startPiece.section.heightMm) / 1e6 : 0;
+          if (radius) {
+            // Its own developed sheet: four panels with their seams along the sweep, and the flange rolls of a straight.
+            const seams = seamsOf(startPiece.section, true);
+            const seamRun = radiusTakeoffSeamRunMm(radius, length);
+            const rolls = flangeRollEnds(startPiece.section) * TDC_FLANGE_ROLL_MM * girthOf(startPiece.section, sheetOf(startPiece.section));
+            piece.sheetAreaM2 = radiusTakeoffSheetAreaM2(radius, length, startPiece.section.heightMm) + (seams.count * seams.allowanceMm * seamRun + rolls) / 1e6;
+            piece.seamLengthMm = seams.count * seamRun;
+          } else {
+            // A shoe's lead-in adds a triangular cheek pair and a sloped wall.
+            piece.sheetAreaM2 += tap.leadInMm > 0 ? (tap.leadInMm * tap.leadInMm + tap.leadInMm * Math.SQRT2 * startPiece.section.heightMm) / 1e6 : 0;
+          }
           piece.massKg = massOf(piece.sheetAreaM2, startPiece.section);
           pieces.push(piece);
         } else {

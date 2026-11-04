@@ -28,6 +28,8 @@ import {
   radiusTakeoffShape,
   radiusTakeoffSheetAreaM2,
 } from './ductRadiusTakeoff';
+import { applyDuctSegmentEdit } from './ductSegmentEdits';
+import { ductSegmentOptions, evaluateDuctSegmentOption, rankDuctOptions, type DuctOptionEvaluation, type DuctSegmentOption } from './ductSegmentOptions';
 import { ductSegmentOf } from './ductSegments';
 import { resolveDuctSettings } from './ductSettings';
 import { velocityPressurePa } from './ductSizing';
@@ -175,7 +177,10 @@ describe('on a main', () => {
         const piece = plan.pieces.find((candidate) => candidate.kind === 'takeoff')!;
         expect(piece.lengthMm).toBeCloseTo(radiusTakeoffCollarMm(shape, settings.tapCollarMm), 6);
         expect(piece.takeoff).toMatchObject({ style: 'radius', radiusRatio: ratio });
-        expect(piece.sheetAreaM2).toBeCloseTo(radiusTakeoffSheetAreaM2(shape, piece.lengthMm, 250), 6);
+        // The developed sheet, with a fitting's four seams and its flange rolls on top.
+        const developed = radiusTakeoffSheetAreaM2(shape, piece.lengthMm, 250);
+        expect(piece.sheetAreaM2).toBeGreaterThan(developed);
+        expect(piece.sheetAreaM2).toBeLessThan(developed + 0.2);
         expect(piece.massKg).toBeGreaterThan(0);
         expect(buildDuctFabricationSchedule([plan]).some((row) => row.kind.includes(`Radius take-off, r/W ${ratio}`))).toBe(true);
         expect(plan.joints.find((joint) => joint.kind === 'tap-connection')?.hardware).toBeTruthy();
@@ -344,6 +349,128 @@ describe('the air', () => {
     expect(radiusTakeoffAPrime(RADIUS_TAKEOFF.minRatio)).toBeCloseTo(TAKEOFF_A_PRIME['shoe-45'], 6);
     const values = RATIOS.map((ratio) => radiusTakeoffAPrime(ratio));
     values.slice(1).forEach((value, index) => expect(value).toBeLessThan(values[index]!));
+  });
+});
+
+describe('on the card', () => {
+  /** A terminal's run off the main: a shoe by default, its airflow set so the card has figures. */
+  function fed(main: HvacElement, options: { id: string; station: number; side: DuctSide; style?: 'shoe-45' | 'straight' | 'radius' | 'spin-in'; section?: DuctLeg; first?: number; ratio?: number }) {
+    const section = options.section ?? SECTION;
+    const style = options.style ?? 'shoe-45';
+    const origin = tapOrigin(main, settings, { legIndex: 0, stationMm: options.station, side: options.side, style, vcd: true }, section)!;
+    if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
+    const at = { x: origin.point.x + origin.direction.x * 2800, y: origin.point.y + origin.direction.y * 2800 };
+    const spec = { ...typicalTerminalSpec('square-4way', 200), designAirflowM3h: 600 };
+    const envelope = terminalEnvelope(spec);
+    const terminal: HvacElement = {
+      id: `${options.id}-t`, type: 'diffuser', position: { x: at.x - envelope.widthMm / 2, y: at.y - envelope.depthMm / 2 }, rotation: 0,
+      width: envelope.widthMm, depth: envelope.depthMm, height: envelope.heightMm, elevation: 2400, mountType: 'ceiling', label: options.id, supplyZoneRatio: 0.5, properties: { terminal: spec },
+    };
+    const lip = terminalSpigotPort(terminal)!;
+    const first = options.first ?? 1500;
+    const run = buildDuctRunDraftElement({
+      origin, points: [{ x: origin.point.x + origin.direction.x * first, y: origin.point.y + origin.direction.y * first }, { x: lip.lip.x, y: lip.lip.y, z: lip.lip.z - lip.heightMm / 2 }],
+      legSizes: [section, { widthMm: 200, heightMm: 200, diameterMm: 200 }], end: { kind: 'terminal', terminalId: terminal.id, portId: lip.portId, flex: true },
+    }, options.id);
+    const read = readDuctRunSpec(run)!;
+    return [terminal, options.ratio === undefined ? run : ductRunElementWithSpec(run, { ...read, start: { ...(read.start as DuctTapStart), radiusRatio: options.ratio } })];
+  }
+  const option = (scene: HvacElement[], id: string, optionId: string) => ductSegmentOptions(scene, settings, id, 'start:takeoff').find((candidate) => candidate.id === optionId);
+  const crowded = () => {
+    const main = mainRun();
+    return [unit, main, ...fed(main, { id: 'first', station: 5000, side: -1 }), ...fed(main, { id: 'tight', station: 5550, side: 1 }), ...fed(main, { id: 'none', station: 5960, side: -1, style: 'straight' })];
+  };
+
+  it('proposes the published radius on a shoe, first, as a picture; the shoe no longer claims the lowest loss', () => {
+    const main = mainRun();
+    const scene = [unit, main, ...fed(main, { id: 'b', station: 4000, side: 1 })];
+    const options = ductSegmentOptions(scene, settings, 'b', 'start:takeoff').filter((candidate) => candidate.group === 'swap');
+    expect(options[0]).toMatchObject({ id: 'tap:radius', title: 'Radius take-off', tile: { title: 'Radius', style: 'radius', radiusRatio: 1, widthMm: 300 } });
+    expect(options[0]!.detail).toMatch(/r\/W 1\.0: published in ASHRAE 5-22/);
+    expect(options.find((candidate) => candidate.id === 'tap:shoe-45')).toMatchObject({ current: true, tile: { title: '45° shoe' } });
+    expect(options.find((candidate) => candidate.id === 'tap:shoe-45')!.detail).not.toMatch(/lowest/);
+    expect(options.every((candidate) => candidate.tile)).toBe(true);
+  });
+
+  it('gives the air and the money, and it wins them: lower pressure, more sheet', () => {
+    const main = mainRun();
+    const scene = [unit, main, ...fed(main, { id: 'b', station: 4000, side: 1 })];
+    const options = ductSegmentOptions(scene, settings, 'b', 'start:takeoff');
+    const evaluations = new Map<string, DuctOptionEvaluation>(options.map((candidate) => [candidate.id, evaluateDuctSegmentOption(scene, settings, 'b', 'start:takeoff', candidate)]));
+    const radius = evaluations.get('tap:radius')!;
+    expect(radius.refused).toBeUndefined();
+    expect(radius.newIssues.filter((issue) => issue.severity === 'error')).toEqual([]);
+    expect(radius.deltaSegmentPa ?? radius.deltaIndexPa ?? 0).toBeLessThan(0);
+    expect(radius.deltaMassKg).toBeGreaterThan(0);
+    expect(rankDuctOptions(options, evaluations).get('tap:radius')).toContain('lowest-pressure');
+  });
+
+  it('offers the largest radius that fits, and says so', () => {
+    const radius = option(crowded(), 'tight', 'tap:radius')!;
+    expect(radius.disabledReason).toBeUndefined();
+    expect(radius.tile?.radiusRatio).toBe(0.5);
+    expect(radius.detail).toMatch(/r\/W 0\.5: the largest that fits here, throat 150 mm/);
+    expect(radius.edit).toMatchObject({ kind: 'tap', style: 'radius', radiusRatio: 0.5 });
+  });
+
+  it('greys it with the reason where no sweep fits', () => {
+    const radius = option(crowded(), 'none', 'tap:radius')!;
+    expect(radius.disabledReason).toMatch(/No sweep fits here, even at r\/W 0\.25: Two take-offs overlap/);
+  });
+
+  it('holds on a branch too short for the sweep', () => {
+    const main = mainRun();
+    const scene = [unit, main, ...fed(main, { id: 'short', station: 4000, side: 1, first: 420 })];
+    const radius = option(scene, 'short', 'tap:radius')!;
+    // Its damper takes 200 mm of the 420: a sweep fits up to 170 mm.
+    expect(radius.tile?.radiusRatio).toBeLessThan(1);
+    expect(radius.disabledReason).toBeUndefined();
+  });
+
+  it('marks it current on a radius take-off, the picks too, and every rectangular take-off has the picks', () => {
+    const main = mainRun();
+    const scene = [unit, main, ...fed(main, { id: 'b', station: 4000, side: 1, style: 'radius', ratio: 0.5 }), ...fed(main, { id: 's', station: 6000, side: 1 })];
+    expect(option(scene, 'b', 'tap:radius')).toMatchObject({ current: true, tile: { radiusRatio: 0.5 } });
+    expect(option(scene, 'b', 'tap-radius:0.5')?.current).toBe(true);
+    expect(option(scene, 'b', 'tap-radius:1')?.current).toBeUndefined();
+    expect(option(scene, 's', 'tap-radius:1')).toMatchObject({ group: 'tune', edit: { style: 'radius', radiusRatio: 1 } });
+  });
+
+  it('takes a round branch to a rectangular first leg, as a shoe does; the picks wait for it', () => {
+    const main = mainRun();
+    const round = { widthMm: 200, heightMm: 200, diameterMm: 200 };
+    const scene = [unit, main, ...fed(main, { id: 'r', station: 4000, side: 1, style: 'spin-in', section: round })];
+    const radius = option(scene, 'r', 'tap:radius')!;
+    expect((radius.edit as { firstLeg?: DuctLeg }).firstLeg?.diameterMm).toBeUndefined();
+    expect(option(scene, 'r', 'tap-radius:1')).toBeUndefined();
+  });
+
+  it('applies as one edit that keeps the branch end, and a shoe swept keeps its place', () => {
+    const main = mainRun();
+    const scene = [unit, main, ...fed(main, { id: 'b', station: 4000, side: 1 })];
+    const result = applyDuctSegmentEdit(scene, settings, { kind: 'tap', runId: 'b', style: 'radius', radiusRatio: 0.75 });
+    if ('refused' in result) throw new Error(result.refused);
+    const updated = result.updates.find((element) => element.id === 'b')!;
+    const before = readDuctRunSpec(scene.find((element) => element.id === 'b')!)!;
+    const after = readDuctRunSpec(updated)!;
+    expect(after.start).toMatchObject({ style: 'radius', radiusRatio: 0.75, stationMm: 4000 });
+    expect(after.path[after.path.length - 1]).toEqual(before.path[before.path.length - 1]);
+    expect(result.action).toBe('Duct take-off: Radius take-off, r/W 0.75');
+    const back = applyDuctSegmentEdit(result.updates.reduce((list, element) => list.map((item) => (item.id === element.id ? element : item)), scene), settings, { kind: 'tap', runId: 'b', style: 'shoe-45' });
+    if ('refused' in back) throw new Error(back.refused);
+    expect((readDuctRunSpec(back.updates.find((element) => element.id === 'b')!)!.start as DuctTapStart).radiusRatio).toBeUndefined();
+  });
+
+  it('is not offered on a round main', () => {
+    const round = { widthMm: 500, heightMm: 500, diameterMm: 500 };
+    const main = buildDuctRunDraftElement({ port, points: [{ x: port.lip.x, y: port.lip.y - 8000 }], legSizes: [round] }, 'main');
+    const branch = { widthMm: 200, heightMm: 200, diameterMm: 200 };
+    const origin = tapOrigin(main, settings, { legIndex: 0, stationMm: 4000, side: 1, style: 'round-conical', vcd: true }, branch)!;
+    if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
+    const run = buildDuctRunDraftElement({ origin, points: [{ x: origin.point.x + origin.direction.x * 1000, y: origin.point.y + origin.direction.y * 1000 }], legSizes: [branch] }, 'b');
+    const options = ductSegmentOptions([unit, main, run], settings, 'b', 'start:takeoff') as DuctSegmentOption[];
+    expect(options.some((candidate) => candidate.id === 'tap:radius')).toBe(false);
+    expect(options.find((candidate) => candidate.id === 'tap:round-conical')).toMatchObject({ current: true, tile: { title: 'Conical tee' } });
   });
 });
 

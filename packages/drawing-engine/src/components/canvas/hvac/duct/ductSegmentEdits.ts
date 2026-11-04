@@ -21,6 +21,7 @@ import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds } fro
 import { runSectionSheetMm } from './ductGauge';
 import { dot, ductLegs } from './ductGeometry';
 import { ductBranchesOf, ductParentOf, type DuctBranchRef } from './ductNetwork';
+import { formatRadiusRatio, radiusTakeoffRatio } from './ductRadiusTakeoff';
 import { maxRoundBranchMm } from './ductRoundFittings';
 import { withFlexRunout, withRigidRunout } from './ductRunouts';
 import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
@@ -562,7 +563,8 @@ function editTap(scene: readonly HvacElement[], settings: DuctDesignSettings, ed
     notes.push(`The branch turns with it: ${aimed.note}`);
   }
   changed.set(element.id, ductRunElementWithSpec(element, next));
-  return { updates: settle(scene, changed, settings, notes), notes, action: `Duct take-off: ${TAKEOFF_TITLES[edit.style]}` };
+  const named = edit.style === 'radius' ? `${TAKEOFF_TITLES.radius}, r/W ${formatRadiusRatio(radiusTakeoffRatio(edit.radiusRatio))}` : TAKEOFF_TITLES[edit.style];
+  return { updates: settle(scene, changed, settings, notes), notes, action: `Duct take-off: ${named}` };
 }
 
 function editStart(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'start' }>): DuctSegmentEditResult {

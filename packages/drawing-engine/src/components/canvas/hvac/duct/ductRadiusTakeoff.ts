@@ -46,6 +46,11 @@ export function radiusTakeoffRatio(ratio?: number): number {
   return Math.min(RADIUS_TAKEOFF.maxRatio, Math.max(RADIUS_TAKEOFF.minRatio, ratio));
 }
 
+/** A ratio as the drawing says it: 1.0, 0.75. */
+export function formatRadiusRatio(ratio: number): string {
+  return ratio.toFixed(Math.abs(ratio * 10 - Math.round(ratio * 10)) < 1e-9 ? 1 : 2);
+}
+
 export function radiusTakeoffShape(widthMm: number, ratio?: number): RadiusTakeoffShape {
   const value = radiusTakeoffRatio(ratio);
   const throatMm = value * widthMm;
@@ -119,10 +124,18 @@ export function radiusTakeoffPlanAreaMm2(shape: RadiusTakeoffShape, lengthMm: nu
   return sweep + wedge + widthMm * Math.max(0, lengthMm - r);
 }
 
-/** Its sheet (m²): the flat top and bottom, the throat and heel cheeks, the neck's two cheeks. */
-export function radiusTakeoffSheetAreaM2(shape: RadiusTakeoffShape, lengthMm: number, heightMm: number): number {
+/** The length of its cheeks: the throat, the heel to the wall, both sides of the neck. */
+function radiusTakeoffCheeksMm(shape: RadiusTakeoffShape, lengthMm: number): number {
   const { throatMm: r, heelMm: R } = shape;
-  const foot = Math.acos(r / R);
-  const cheeks = (Math.PI / 2) * r + (Math.PI / 2 - foot) * R + 2 * Math.max(0, lengthMm - r);
-  return (2 * radiusTakeoffPlanAreaMm2(shape, lengthMm) + heightMm * cheeks) / 1e6;
+  return (Math.PI / 2) * r + (Math.PI / 2 - Math.acos(r / R)) * R + 2 * Math.max(0, lengthMm - r);
+}
+
+/** Its sheet (m²), before seams and flanges: the flat top and bottom, the throat and heel cheeks, the neck's two cheeks. */
+export function radiusTakeoffSheetAreaM2(shape: RadiusTakeoffShape, lengthMm: number, heightMm: number): number {
+  return (2 * radiusTakeoffPlanAreaMm2(shape, lengthMm) + heightMm * radiusTakeoffCheeksMm(shape, lengthMm)) / 1e6;
+}
+
+/** The length a seam of its four panels runs on average: half its cheeks. */
+export function radiusTakeoffSeamRunMm(shape: RadiusTakeoffShape, lengthMm: number): number {
+  return radiusTakeoffCheeksMm(shape, lengthMm) / 2;
 }

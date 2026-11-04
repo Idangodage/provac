@@ -9,7 +9,8 @@
  *  - a straight's dimensions: its length (the run re-solved, its ends kept),
  *    and its size, round or rectangular, for the leg or every leg of its size;
  *  - an elbow's radius, a transition's taper, a take-off's or an accessory's
- *    position, an attenuator's length, an access door's size;
+ *    position, a rectangular take-off's radius (a shoe's too: sliding it sweeps
+ *    the shoe), an attenuator's length, an access door's size;
  *  - a runout's length, a terminal's neck and airflow.
  *
  * The shared card (segments/SegmentCardLayer) places it, previews and applies
@@ -39,10 +40,12 @@ import { fromDisplay, pressureClassText, sizesText, toDisplay, toDisplayText, ty
 import { useHvacUnits, type HvacUnits } from '../units/useHvacUnits';
 
 import { DuctSegmentGlyph } from './DuctSegmentGlyph';
+import { DuctTakeoffSketch } from './DuctTakeoffSketch';
 import { getActiveDuctBuilding } from './ductBuilding';
 import { commitDuctSegmentEdit } from './ductEditController';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { ductLegs } from './ductGeometry';
+import { RADIUS_TAKEOFF, formatRadiusRatio, radiusTakeoffRatio } from './ductRadiusTakeoff';
 import { rectangularEquivalents, roundEquivalents, sameSectionSize } from './ductSectionEquivalents';
 import { MIN_STRAIGHT_MM, transitionStretch } from './ductSegmentEdits';
 import { ductSegmentFigures, type DuctSegmentFigures } from './ductSegmentFigures';
@@ -52,6 +55,7 @@ import {
   rankDuctOptions,
   scopeLegs,
   segmentOptionContext,
+  TAP_GLYPH,
   type DuctOptionBadge,
   type DuctOptionEvaluation,
   type DuctOptionScope,
@@ -64,7 +68,7 @@ import { ductRectStepMm, ductRoundSizesMm } from './ductSizeCatalog';
 import { equivalentDiameterMm } from './ductSizing';
 import { ductSystemRootOfRun } from './ductSystemSizing';
 import { readDuctTerminalSpec } from './ductTerminals';
-import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec } from './ductTypes';
+import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctTapStart } from './ductTypes';
 import { designSettingsForUnit, type CriteriaRoom } from './unitCriteria';
 
 export type DuctSegmentProvider = SegmentProvider<DuctSegmentOption, DuctOptionEvaluation>;
@@ -147,8 +151,8 @@ function BuildInfo({ figures }: { figures: DuctSegmentFigures | null }) {
   );
 }
 
-/** What an option does, as chips: its change in pressure and mass, and any rule it would newly break. */
-function DeltaChips({ evaluation }: { evaluation: DuctOptionEvaluation }) {
+/** What an option does, as chips: its change in pressure and mass (`compact`: a tile's, the mass left to its result line), and any rule it would newly break. */
+function DeltaChips({ evaluation, compact = false }: { evaluation: DuctOptionEvaluation; compact?: boolean }) {
   const units = useHvacUnits();
   const chips: ReactNode[] = [];
   const pressure = evaluation.deltaIndexPa ?? evaluation.deltaSegmentPa;
@@ -158,7 +162,7 @@ function DeltaChips({ evaluation }: { evaluation: DuctOptionEvaluation }) {
       ΔP {signed(units.toDisplay('pressure', pressure), units.system === 'ip' ? 3 : 1)}
     </span>);
   }
-  if (Math.abs(evaluation.deltaMassKg) >= 0.05) {
+  if (!compact && Math.abs(evaluation.deltaMassKg) >= 0.05) {
     chips.push(<span key="kg" className="rounded bg-slate-100 px-1 tabular-nums text-slate-600" title="Change in galvanised sheet">{signed(units.toDisplay('mass', evaluation.deltaMassKg), 1)} {units.unit('mass')}</span>);
   }
   const errors = evaluation.newIssues.filter((issue) => issue.severity === 'error');
@@ -335,44 +339,60 @@ function SizeEditor({ host, segment, spec, voidHeightMm }: { host: FieldHost; se
   );
 }
 
-/** An elbow's inner radius: a slider of its ratio, and the ratio and the throat radius as numbers; release or Enter applies. */
-function RadiusEditor({ host, plan, segment }: { host: FieldHost; plan: DuctFabricationPlan; segment: DuctSegment }) {
+/**
+ * A radius as its ratio: a slider, and the ratio and the throat radius as numbers; release or Enter applies. `now` is
+ * null on a piece with no radius yet (a shoe): the control rests at `resting`, and moving it proposes one. `figure`
+ * draws what the value would build, following it, and gets null until it moves on such a piece.
+ */
+function RatioEditor({ host, label, now, resting, min, sliderMax, max, ratioName, ariaName, throatOf, ratioOf, throatRange, optionAt, hint, testId, figure, children }: {
+  host: FieldHost;
+  label: string;
+  now: number | null;
+  resting: number;
+  min: number;
+  sliderMax: number;
+  max: number;
+  ratioName: string;
+  ariaName: string;
+  throatOf: (ratio: number) => number;
+  ratioOf: (throatMm: number) => number;
+  throatRange: { min: number; max: number };
+  optionAt: (ratio: number) => DuctSegmentOption;
+  hint: (ratio: number) => string;
+  testId: string;
+  figure?: (ratio: number | null) => ReactNode;
+  children?: ReactNode;
+}) {
   const { scene, settings, focus } = host;
-  const piece = plan.pieces[segment.pieceIndices[0]!]!;
-  const elbow = piece.elbow;
-  const node = segment.nodeIndex;
-  const inPlane = elbow?.inPlaneMm ?? piece.widthMm;
-  const now = elbow && inPlane > 0 ? Math.round((elbow.centrelineRadiusMm / inPlane) * 100) / 100 : 1;
-  const [value, setValue] = useState(now);
-  const [text, setText] = useState(now.toFixed(2));
-  const [throatText, setThroatText] = useState(String(Math.max(0, Math.round(now * inPlane - inPlane / 2))));
+  const throatText = (ratio: number) => String(Math.max(0, Math.round(throatOf(ratio))));
+  const [value, setValue] = useState(resting);
+  const [moved, setMoved] = useState(false);
+  const [text, setText] = useState(resting.toFixed(2));
+  const [throat, setThroat] = useState(throatText(resting));
+  const scale = throatOf(1);
   useEffect(() => {
-    setValue(now);
-    setText(now.toFixed(2));
-    setThroatText(String(Math.max(0, Math.round(now * inPlane - inPlane / 2))));
-  }, [now, inPlane]);
-  if (!elbow || node === undefined || elbow.style === 'square-vaned') return null;
-  const round = elbow.style === 'gored';
-  const min = round ? 1 : 0.5;
-  const ratioName = round ? 'R/D' : elbow.plane === 'vertical' ? 'R/H' : 'R/W';
-  const override = plan.spec.nodeOverrides[String(node)] ?? {};
-  const optionAt = (ratio: number): DuctSegmentOption => ({
-    id: `tune:${ratio}`, group: 'tune', glyph: round ? 'elbow-gored' : 'elbow-radius', title: `${ratioName} ${ratio.toFixed(2)}`, detail: `inner radius: throat ${Math.max(0, Math.round(ratio * inPlane - inPlane / 2))} mm`,
-    edit: { kind: 'node', runId: focus.runId, node, override: { ...override, ...(round ? {} : { elbowStyle: 'radius' as const }), centrelineRatio: ratio } },
-  });
+    setValue(resting);
+    setMoved(false);
+    setText(resting.toFixed(2));
+    setThroat(throatText(resting));
+    // (The throat follows the ratio and the section: `scale` stands for the function.)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resting, scale]);
   const setRatio = (ratio: number, from: 'ratio' | 'throat' | 'slider') => {
-    const next = Math.round(clamp(ratio, min, 3) * 100) / 100;
+    const next = Math.round(clamp(ratio, min, max) * 100) / 100;
     setValue(next);
+    setMoved(true);
     if (from !== 'ratio') setText(next.toFixed(2));
-    if (from !== 'throat') setThroatText(String(Math.max(0, Math.round(next * inPlane - inPlane / 2))));
+    if (from !== 'throat') setThroat(throatText(next));
   };
-  const changed = Math.abs(value - now) > 0.001;
+  const differs = (ratio: number) => now === null || Math.abs(ratio - now) > 0.001;
+  const changed = moved && differs(value);
   const evaluation = changed ? evaluateDuctSegmentOption(scene, settings, focus.runId, focus.key, optionAt(value)) : null;
   const commit = () => {
     if (changed && evaluation && !evaluation.refused) host.onApply(optionAt(value));
   };
   const preview = (ratio: number) => {
-    if (Math.abs(ratio - now) > 0.001) {
+    if (differs(ratio)) {
       host.onPreview(optionAt(ratio));
       host.onHover({ option: optionAt(ratio), evaluation: evaluateDuctSegmentOption(scene, settings, focus.runId, focus.key, optionAt(ratio)) });
     } else {
@@ -381,12 +401,13 @@ function RadiusEditor({ host, plan, segment }: { host: FieldHost; plan: DuctFabr
     }
   };
   return (
-    <div className="rounded-lg px-1 py-1" data-testid="duct-segment-tune" onPointerLeave={() => { host.onPreview(null); host.onHover(null); }}>
+    <div className="rounded-lg px-1 py-1" data-testid={testId} onPointerLeave={() => { host.onPreview(null); host.onHover(null); }}>
+      {figure?.(now === null && !moved ? null : value)}
       <div className="flex items-center gap-2">
-        <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500">Inner radius</span>
+        <span className="w-[68px] shrink-0 text-[11px] font-medium text-slate-500">{label}</span>
         <input
-          type="range" min={min} max={2} step={0.05} value={Math.min(value, 2)} aria-label={`Elbow ${ratioName}`}
-          aria-valuetext={`throat radius ${throatText} millimetres, ${ratioName} ${value.toFixed(2)}`}
+          type="range" min={min} max={sliderMax} step={0.05} value={Math.min(value, sliderMax)} aria-label={ariaName}
+          aria-valuetext={`throat radius ${throat} millimetres, ${ratioName} ${value.toFixed(2)}`}
           className="h-1.5 min-w-0 flex-1 cursor-pointer accent-violet-600"
           onChange={(event) => {
             const next = Number.parseFloat(event.target.value);
@@ -401,23 +422,23 @@ function RadiusEditor({ host, plan, segment }: { host: FieldHost; plan: DuctFabr
         />
       </div>
       <div className="mt-1.5 flex items-center gap-1.5 pl-[76px]">
-        <Stepper label={`${ratioName} ratio`} value={text} min={min} max={3} step={0.05}
+        <Stepper label={`${ratioName} ratio`} value={text} min={min} max={max} step={0.05}
           onChange={(next) => {
             setText(next);
             const ratio = Number.parseFloat(next);
-            if (Number.isFinite(ratio) && ratio >= min && ratio <= 3) {
+            if (Number.isFinite(ratio) && ratio >= min && ratio <= max) {
               setRatio(ratio, 'ratio');
               preview(Math.round(ratio * 100) / 100);
             }
           }} onEnter={commit} width="w-11" />
         <span className="text-[10.5px] text-slate-400">{ratioName}</span>
-        <Stepper label="Throat radius" value={throatText} min={0} max={Math.round(3 * inPlane - inPlane / 2)} step={25} fineStep={5}
+        <Stepper label="Throat radius" value={throat} min={throatRange.min} max={throatRange.max} step={25} fineStep={5}
           onChange={(next) => {
-            setThroatText(next);
-            const throat = Number.parseFloat(next);
-            if (Number.isFinite(throat) && inPlane > 0) {
-              const ratio = (throat + inPlane / 2) / inPlane;
-              if (ratio >= min && ratio <= 3) {
+            setThroat(next);
+            const mm = Number.parseFloat(next);
+            if (Number.isFinite(mm) && scale > 0) {
+              const ratio = ratioOf(mm);
+              if (ratio >= min && ratio <= max) {
                 setRatio(ratio, 'throat');
                 preview(Math.round(ratio * 100) / 100);
               }
@@ -425,9 +446,64 @@ function RadiusEditor({ host, plan, segment }: { host: FieldHost; plan: DuctFabr
           }} onEnter={commit} width="w-11" />
         <span className="text-[10.5px] text-slate-400">mm</span>
       </div>
+      {children ? <div className="mt-1.5 pl-[76px]">{children}</div> : null}
       {evaluation ? <ResultRow evaluation={evaluation} result={host.result} onApply={commit} />
-        : <div className="mt-0.5 pl-[76px] text-[10.5px] text-slate-400">{round ? 'R/D 1.5 is SMACNA Table 3-1' : 'R/W 1.5 is SMACNA RE1; under 1.0 only up to 5 m/s'}</div>}
+        : <div className="mt-0.5 pl-[76px] text-[10.5px] text-slate-400">{hint(value)}</div>}
     </div>
+  );
+}
+
+/** An elbow's inner radius. */
+function RadiusEditor({ host, plan, segment }: { host: FieldHost; plan: DuctFabricationPlan; segment: DuctSegment }) {
+  const piece = plan.pieces[segment.pieceIndices[0]!]!;
+  const elbow = piece.elbow;
+  const node = segment.nodeIndex;
+  const inPlane = elbow?.inPlaneMm ?? piece.widthMm;
+  if (!elbow || node === undefined || elbow.style === 'square-vaned') return null;
+  const now = inPlane > 0 ? Math.round((elbow.centrelineRadiusMm / inPlane) * 100) / 100 : 1;
+  const round = elbow.style === 'gored';
+  const ratioName = round ? 'R/D' : elbow.plane === 'vertical' ? 'R/H' : 'R/W';
+  const override = plan.spec.nodeOverrides[String(node)] ?? {};
+  const throatOf = (ratio: number) => ratio * inPlane - inPlane / 2;
+  return (
+    <RatioEditor host={host} label="Inner radius" now={now} resting={now} min={round ? 1 : 0.5} sliderMax={2} max={3} ratioName={ratioName} ariaName={`Elbow ${ratioName}`}
+      throatOf={throatOf} ratioOf={(throat) => (throat + inPlane / 2) / inPlane} throatRange={{ min: 0, max: Math.round(throatOf(3)) }} testId="duct-segment-tune"
+      hint={() => (round ? 'R/D 1.5 is SMACNA Table 3-1' : 'R/W 1.5 is SMACNA RE1; under 1.0 only up to 5 m/s')}
+      optionAt={(ratio) => ({
+        id: `tune:${ratio}`, group: 'tune', glyph: round ? 'elbow-gored' : 'elbow-radius', title: `${ratioName} ${ratio.toFixed(2)}`, detail: `inner radius: throat ${Math.max(0, Math.round(throatOf(ratio)))} mm`,
+        edit: { kind: 'node', runId: host.focus.runId, node, override: { ...override, ...(round ? {} : { elbowStyle: 'radius' as const }), centrelineRatio: ratio } },
+      })} />
+  );
+}
+
+/** A rectangular take-off's sweep: any radius, on a shoe or a straight tap too, its true shape above the slider. */
+function TakeoffRadiusEditor({ host, start, widthMm, picks }: { host: FieldHost; start: DuctTapStart; widthMm: number; picks: ReactNode }) {
+  const units = useHvacUnits();
+  // The sketch's figures in the drawing's units; the fields hold mm, as an elbow's do.
+  const length = (mm: number) => (units.system === 'ip' ? `${(mm / 25.4).toFixed(1)} in` : String(Math.round(mm)));
+  const now = start.style === 'radius' ? radiusTakeoffRatio(start.radiusRatio) : null;
+  const { minRatio, maxRatio, tightBelowRatio, defaultRatio } = RADIUS_TAKEOFF;
+  const hint = (ratio: number) => (now === null ? 'Slide to sweep this take-off'
+    : ratio < tightBelowRatio ? `Under r/W ${formatRadiusRatio(tightBelowRatio)} only up to 5 m/s`
+      : Math.abs(ratio - defaultRatio) < 1e-9 ? 'r/W 1.0 is ASHRAE 5-22' : 'Only r/W 1.0 is published');
+  return (
+    <EditBlock title="Radius">
+      <RatioEditor host={host} label="r / W" now={now} resting={now ?? minRatio} min={minRatio} sliderMax={maxRatio} max={maxRatio} ratioName="r/W" ariaName="Take-off r/W"
+        throatOf={(ratio) => ratio * widthMm} ratioOf={(throat) => throat / widthMm} throatRange={{ min: Math.round(minRatio * widthMm), max: Math.round(maxRatio * widthMm) }}
+        hint={hint} testId="duct-segment-takeoff-radius"
+        optionAt={(ratio) => ({
+          id: `tap-radius-tune:${ratio}`, group: 'tune', glyph: 'tap-radius', title: `r/W ${formatRadiusRatio(ratio)}`, detail: `swept entry: throat ${Math.round(ratio * widthMm)} mm`,
+          edit: { kind: 'tap', runId: host.focus.runId, style: 'radius', radiusRatio: ratio },
+        })}
+        figure={(ratio) => (
+          <div className="mb-1.5 rounded-lg bg-slate-50 text-violet-700 ring-1 ring-inset ring-slate-100">
+            {ratio === null ? <DuctTakeoffSketch style={start.style} widthMm={widthMm} view="edit" length={length} className="block h-[118px] w-full" />
+              : <DuctTakeoffSketch style="radius" widthMm={widthMm} radiusRatio={ratio} view="edit" length={length} className="block h-[118px] w-full" />}
+          </div>
+        )}>
+        {picks}
+      </RatioEditor>
+    </EditBlock>
   );
 }
 
@@ -514,6 +590,11 @@ function EditPanel({ host, plan, segment, context, options }: {
             edit: { kind: 'tap-station', runId, stationMm: value },
           })} />,
       );
+    }
+    const main = parentSpec?.legs[start.legIndex];
+    const first = spec.legs[0]!;
+    if (main && !isRoundLeg(main) && !isRoundLeg(first)) {
+      blocks.push(<TakeoffRadiusEditor key="radius" host={host} start={start} widthMm={first.widthMm} picks={chipRow('tap-radius:')} />);
     }
   }
   if (segment.key.startsWith('inline:')) {
@@ -613,12 +694,15 @@ function EditPanel({ host, plan, segment, context, options }: {
   return <div className="space-y-2">{blocks}</div>;
 }
 
-/** The picture in a card's header: the segment's kind. */
-function segmentGlyph(segment: DuctSegment): Parameters<typeof DuctSegmentGlyph>[0]['glyph'] {
+/** The picture in a card's header: the segment's kind, a take-off's own fitting. */
+function segmentGlyph(segment: DuctSegment, plan: DuctFabricationPlan): Parameters<typeof DuctSegmentGlyph>[0]['glyph'] {
   switch (segment.kind) {
     case 'elbow': return segment.round ? 'elbow-gored' : 'elbow-radius';
     case 'transition': return 'taper';
-    case 'takeoff': return 'tap-spin';
+    case 'takeoff': {
+      const style = plan.pieces[segment.pieceIndices[0]!]?.takeoff?.style;
+      return style ? TAP_GLYPH[style] : 'tap-spin';
+    }
     case 'damper': return 'damper';
     case 'connector': return 'connector';
     case 'fire-damper': return 'fire-damper';
@@ -658,7 +742,7 @@ function buildDuctCardModel(scene: HvacElement[], settings: DuctDesignSettings, 
       size: sizesText(segment.size, system),
       detail: toDisplayText(segment.detail, system),
       tag: markRange(segment),
-      glyph: <DuctSegmentGlyph glyph={segmentGlyph(segment)} className="h-3.5 w-3.5" />,
+      glyph: <DuctSegmentGlyph glyph={segmentGlyph(segment, plan)} className="h-3.5 w-3.5" />,
       tone: plan.spec.service === 'return' ? 'bg-teal-50 text-teal-600' : 'bg-blue-50 text-blue-600',
       kind: segment.kind,
     },
@@ -713,7 +797,14 @@ export function createDuctSegmentProvider(settings: DuctDesignSettings, rooms: R
     badges: BADGES,
     recommendedBadge: 'recommended',
     optionGlyph: (option) => <DuctSegmentGlyph glyph={option.glyph} className="h-3.5 w-3.5" />,
+    optionTile: (option) => (option.tile ? {
+      title: option.tile.title,
+      picture: option.tile.radiusRatio !== undefined
+        ? <DuctTakeoffSketch style={option.tile.style} widthMm={option.tile.widthMm} radiusRatio={option.tile.radiusRatio} className="block h-full w-full" />
+        : <DuctTakeoffSketch style={option.tile.style} widthMm={option.tile.widthMm} className="block h-full w-full" />,
+    } : null),
     chips: (evaluation) => <DeltaChips evaluation={evaluation} />,
+    tileChips: (evaluation) => <DeltaChips evaluation={evaluation} compact />,
     result: resultLine,
     // A peek's quick swaps after the recommended one: by life-cycle cost.
     quickScore: (evaluation) => evaluation.deltaLifeCycleCost ?? 0,
