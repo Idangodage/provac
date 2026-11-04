@@ -10,7 +10,8 @@
  *    and its size, round or rectangular, for the leg or every leg of its size;
  *  - an elbow's radius, a transition's taper, a take-off's or an accessory's
  *    position, a rectangular take-off's radius (a shoe's too: sliding it sweeps
- *    the shoe), an attenuator's length, an access door's size;
+ *    the shoe), a radius take-off's tee size, an attenuator's length, an access
+ *    door's size;
  *  - a runout's length, a terminal's neck and airflow.
  *
  * The shared card (segments/SegmentCardLayer) places it, previews and applies
@@ -40,7 +41,7 @@ import { fromDisplay, pressureClassText, sizesText, toDisplay, toDisplayText, ty
 import { useHvacUnits, type HvacUnits } from '../units/useHvacUnits';
 
 import { DuctSegmentGlyph } from './DuctSegmentGlyph';
-import { DuctTakeoffSketch } from './DuctTakeoffSketch';
+import { DuctTakeoffSketch, DuctTeeSketch } from './DuctTakeoffSketch';
 import { getActiveDuctBuilding } from './ductBuilding';
 import { commitDuctSegmentEdit } from './ductEditController';
 import { getDuctRunPlan, type DuctFabricationPlan } from './ductFabricationPlanner';
@@ -67,8 +68,9 @@ import type { DuctDesignSettings } from './ductSettings';
 import { ductRectStepMm, ductRoundSizesMm } from './ductSizeCatalog';
 import { equivalentDiameterMm } from './ductSizing';
 import { ductSystemRootOfRun } from './ductSystemSizing';
+import { ductTeeFigures, teeWithMainEnd } from './ductTee';
 import { readDuctTerminalSpec } from './ductTerminals';
-import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctTapStart } from './ductTypes';
+import { isRoundLeg, readDuctRunSpec, roundLeg, type DuctLeg, type DuctRunSpec, type DuctTapStart, type DuctTeeLengths } from './ductTypes';
 import { designSettingsForUnit, type CriteriaRoom } from './unitCriteria';
 
 export type DuctSegmentProvider = SegmentProvider<DuctSegmentOption, DuctOptionEvaluation>;
@@ -506,6 +508,59 @@ function TakeoffRadiusEditor({ host, start, widthMm, picks }: { host: FieldHost;
   );
 }
 
+/**
+ * A radius take-off's tee: its lengths on the main (A, B: from the branch's centre to each joint) and on the branch (C:
+ * from the main's side to its joint), typed, nudged or scrubbed, as its grips drag them; the main's other end held where
+ * it is. Auto gives its joints back to the run's sections.
+ */
+function TeeSizeEditor({ host }: { host: FieldHost }) {
+  const { scene, settings, focus } = host;
+  const figures = ductTeeFigures(scene, settings, focus.runId);
+  if (!figures) return null;
+  const runId = focus.runId;
+  const set = figures.start.tee !== undefined;
+  const mm = (value: number) => `${Math.round(value).toLocaleString('en-GB')} mm`;
+  const field = (part: keyof DuctTeeLengths, letter: 'A' | 'B' | 'C', where: string) => (
+    <ValueField key={part} host={host} label={`${letter}  ${where}`} unit="mm" current={Math.round(figures[part])} min={Math.ceil(figures.least[part])} max={60000}
+      step={50} fineStep={10} testId={`duct-segment-tee-${letter.toLowerCase()}`} scrub
+      makeOption={(value) => ({
+        id: `tee:${part}:${value}`, group: 'tune', glyph: 'tap-radius', title: `Tee length ${letter} ${value} mm`,
+        detail: part === 'branchMm' ? 'the branch, from the main\'s side to its joint' : `the main, from the branch's centre to its joint${part === 'beforeMm' ? ' toward its start' : ''}`,
+        edit: { kind: 'tap-tee', runId, tee: part === 'branchMm' ? { ...figures.start.tee, branchMm: value } : teeWithMainEnd(figures, part, value) },
+      })} />
+  );
+  const auto: DuctSegmentOption = {
+    id: 'tee:auto', group: 'tune', glyph: 'tap-radius', title: 'Tee size automatic', detail: 'its joints where the run\'s sections put them',
+    edit: { kind: 'tap-tee', runId, tee: null },
+  };
+  return (
+    <div className="space-y-1" data-testid="duct-segment-tee">
+      <div className="flex items-center justify-between px-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Tee size</span>
+        {set ? (
+          <button type="button" data-testid="duct-segment-tee-auto" title="Back to where the run's sections put its joints"
+            className="rounded-md px-1.5 py-[1px] text-[10.5px] font-semibold text-violet-700 ring-1 ring-inset ring-violet-200 hover:bg-violet-50"
+            onPointerEnter={() => { host.onPreview(auto); host.onHover({ option: auto, evaluation: host.evaluate(auto) }); }}
+            onPointerLeave={() => { host.onPreview(null); host.onHover(null); }}
+            onClick={() => host.onApply(auto)}>Auto</button>
+        ) : (
+          <span className="rounded-md bg-slate-100 px-1.5 py-[1px] text-[10.5px] font-medium text-slate-500" title="Its joints are where the run's sections put them">Auto</span>
+        )}
+      </div>
+      <div className="mx-1 rounded-lg bg-slate-50 text-violet-700 ring-1 ring-inset ring-slate-100">
+        <DuctTeeSketch widthMm={figures.firstLeg.widthMm} mainWidthMm={figures.mainSection.widthMm} radiusRatio={figures.start.radiusRatio}
+          beforeMm={figures.beforeMm} afterMm={figures.afterMm} branchMm={figures.branchMm} className="block h-[112px] w-full" />
+      </div>
+      {field('beforeMm', 'A', 'main')}
+      {field('afterMm', 'B', 'main')}
+      {field('branchMm', 'C', 'branch')}
+      <div className="mx-1 rounded-lg bg-violet-50 px-2 py-1 text-[11px] font-semibold tabular-nums text-violet-700" data-testid="duct-segment-tee-total">
+        Main part {mm(figures.beforeMm + figures.afterMm)} · one piece with the tee
+      </div>
+    </div>
+  );
+}
+
 /** The Edit tab: the segment's own values, by kind. */
 function EditPanel({ host, plan, segment, context, options }: {
   host: FieldHost;
@@ -594,6 +649,7 @@ function EditPanel({ host, plan, segment, context, options }: {
     const first = spec.legs[0]!;
     if (main && !isRoundLeg(main) && !isRoundLeg(first)) {
       blocks.push(<TakeoffRadiusEditor key="radius" host={host} start={start} widthMm={first.widthMm} picks={chipRow('tap-radius:')} />);
+      if (start.style === 'radius') blocks.push(<TeeSizeEditor key="tee" host={host} />);
     }
   }
   if (segment.key.startsWith('inline:')) {

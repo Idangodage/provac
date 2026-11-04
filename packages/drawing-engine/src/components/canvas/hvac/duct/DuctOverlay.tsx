@@ -64,6 +64,7 @@ import { ductSegmentOfMark, polygonHotspot, segmentEnds, segmentOutlines, stretc
 import type { DuctDesignSettings } from './ductSettings';
 import { getDuctSupportPlan } from './ductSupports';
 import { estimateTagTextPx, layoutDuctTags, TAG_FONT_PX, type DuctTagSource, type PlacedDuctTag, type TagObstacle } from './ductTagLayout';
+import { ductTeeFigures, teeJointPoints } from './ductTee';
 import { isDuctTerminalElement, listTerminalPorts, readDuctTerminalSpec } from './ductTerminals';
 import { ductParentRunId, isDuctElement, readDuctRunSpec } from './ductTypes';
 import type { ScreenRect } from './popoverPlacement';
@@ -579,6 +580,19 @@ export const DuctOverlay = forwardRef<DuctOverlayHandle, DuctOverlayProps>(funct
         left: Math.min(...xs) - GRIP_CLEARANCE_PX, top: Math.min(...ys) - GRIP_CLEARANCE_PX,
         right: Math.max(...xs) + GRIP_CLEARANCE_PX, bottom: Math.max(...ys) + GRIP_CLEARANCE_PX,
       };
+    } else if (key === 'start:takeoff') {
+      // A radius take-off's tee grips sit on its three joints, on the main and the branch: its card keeps clear of them too.
+      const { hvacElements: stored, settings: current } = sceneRef.current;
+      const tee = ductTeeFigures(stored, current, runId);
+      if (tee) {
+        const around = teeJointPoints(tee).map((point) => new DOMPoint(point.x, point.y).matrixTransform(matrix));
+        const xs = [...client, ...around].map((point) => point.x);
+        const ys = [...client, ...around].map((point) => point.y);
+        avoid = {
+          left: Math.min(...xs) - GRIP_CLEARANCE_PX, top: Math.min(...ys) - GRIP_CLEARANCE_PX,
+          right: Math.max(...xs) + GRIP_CLEARANCE_PX, bottom: Math.max(...ys) + GRIP_CLEARANCE_PX,
+        };
+      }
     }
     // The leader line ends on the piece itself (a point inside its outline).
     const inside = polygons.map((polygon) => polygonHotspot(polygon)).find((point): point is Point2D => point !== null);

@@ -12,6 +12,7 @@ import { getDuctRunPlan } from '../hvac/duct/ductFabricationPlanner';
 import type { DuctSegmentFocus } from '../hvac/duct/ductSegmentUiStore';
 import { ductSegmentOf, pieceHotspot3D, segmentAtModelPoint, segmentBounds3D, segmentEnds, stretchPieceIndices, type DuctSegmentEnd } from '../hvac/duct/ductSegments';
 import type { DuctDesignSettings } from '../hvac/duct/ductSettings';
+import { ductTeeFigures, teeJointPoints } from '../hvac/duct/ductTee';
 import type { ScreenRect } from '../hvac/duct/popoverPlacement';
 import { ductPiecesOuterGeometry } from '../hvac/three3d/ductMeshes';
 import { modelPointToWorld } from '../modelSpace';
@@ -147,6 +148,9 @@ export function ductRunMeshes(root: THREE.Object3D, runId: string): THREE.Mesh[]
   return meshes;
 }
 
+/** How far a card keeps clear of a tee's grips (px), as of a straight's on the plan. */
+const TEE_GRIP_CLEARANCE_PX = 18;
+
 /**
  * A segment's box (its anchor piece's, when the focus has one) as `camera`
  * sees it, in client pixels of a canvas whose client rect is `host`; null when
@@ -180,6 +184,21 @@ export function segmentClientRect3D(
   const rect: ScreenRect = { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
   // Wholly off the drawing: no card.
   if (rect.right < host.left || rect.left > host.left + host.width || rect.bottom < host.top || rect.top > host.top + host.height) return null;
+  // A radius take-off's tee grips sit on its three joints: its card keeps clear of them.
+  const tee = focus.key === 'start:takeoff' ? ductTeeFigures(scene, settings, focus.runId) : null;
+  if (tee) {
+    const around = teeJointPoints(tee).flatMap((point) => {
+      const clipped = modelPointToWorld({ x: point.x, y: point.y }, point.z).project(camera);
+      return Number.isFinite(clipped.x) && Number.isFinite(clipped.y) && clipped.z >= -1 && clipped.z <= 1
+        ? [{ x: host.left + ((clipped.x + 1) / 2) * host.width, y: host.top + ((1 - clipped.y) / 2) * host.height }] : [];
+    });
+    if (around.length) {
+      rect.avoid = {
+        left: Math.min(rect.left, ...around.map((point) => point.x)) - TEE_GRIP_CLEARANCE_PX, top: Math.min(rect.top, ...around.map((point) => point.y)) - TEE_GRIP_CLEARANCE_PX,
+        right: Math.max(rect.right, ...around.map((point) => point.x)) + TEE_GRIP_CLEARANCE_PX, bottom: Math.max(rect.bottom, ...around.map((point) => point.y)) + TEE_GRIP_CLEARANCE_PX,
+      };
+    }
+  }
   // The leader line ends on the piece itself: inside its outline, half way up it.
   const mark = focus.anchorMark ?? (plan ? ductSegmentOf(plan, focus.key)?.marks[0] ?? null : null);
   const point = plan && mark ? pieceHotspot3D(plan, mark) : null;

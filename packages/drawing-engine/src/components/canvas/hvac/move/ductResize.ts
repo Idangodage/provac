@@ -495,6 +495,12 @@ const CLASH_OTHER: Record<string, string> = { duct: 'the duct run', terminal: 't
  */
 export class DuctResizeSolver {
   private readonly evaluations = new Map<string, Evaluation>();
+  /**
+   * A tee end's stop once found: its rules only tighten further out (a fitting, a neighbour, a wall), so a value asked
+   * beyond `blocked` stops at `clear` as well, with no trial edit (a drag far past its stop costs one search, not one per
+   * pointer move).
+   */
+  private teeStop: { clear: number; blocked: number; evaluation: Evaluation | null; reason: string | null } | null = null;
   private readonly baseErrors = new Map<string, Map<string, number>>();
   private baseClashes: Set<string> | null = null;
   private readonly figuresFrom: number | null;
@@ -534,6 +540,10 @@ export class DuctResizeSolver {
         clear = value;
       }
     }
+    const stop = this.teeStop;
+    if (stop && Math.sign(asked - from) === Math.sign(stop.blocked - from) && Math.abs(asked - from) >= Math.abs(stop.blocked - from)) {
+      return this.build(stop.clear, asked, scope, stop.evaluation, stop.reason);
+    }
     const first = this.evaluate(asked, scope);
     if (first.ok) return this.build(asked, asked, scope, first, null);
     return this.stopBetween(from, asked, asked, scope, fine, first);
@@ -557,6 +567,7 @@ export class DuctResizeSolver {
         limit = evaluation;
       }
     }
+    if (this.grip.tee && !fine) this.teeStop = { clear: lo, blocked: hi, evaluation: best, reason: limit.reason };
     return this.build(lo, asked, scope, best, limit.reason);
   }
 
@@ -614,7 +625,8 @@ export class DuctResizeSolver {
         return { ...made, ok: false, reason: asClause(error.message) };
       }
     }
-    // A clash it would make.
+    // A clash it would make (a tee's lengths only move its joints: the duct is where it was).
+    if (grip.tee) return made;
     const ids = new Set(runs.map((run) => run.id));
     const clashes = this.clashesOf(next).filter((clash) => (ids.has(clash.ductId) || ids.has(clash.otherId)) && !this.baseClashesOf().has(clash.key));
     if (clashes.length) {

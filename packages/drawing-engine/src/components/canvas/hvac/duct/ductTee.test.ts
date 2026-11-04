@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { HvacElement, Point2D } from '../../../../types';
+import { DuctResizeSolver, ductResizeEdit, ductResizeGrips } from '../move/ductResize';
 
 import { resolveUnitAirPorts } from './ductAirPorts';
 import { tapOrigin } from './ductBranchTargets';
@@ -13,8 +14,7 @@ import { getDuctRunPlan, layoutSections } from './ductFabricationPlanner';
 import { ductRunElementWithSpec } from './ductFollow';
 import { applyDuctSegmentEdit } from './ductSegmentEdits';
 import { resolveDuctSettings } from './ductSettings';
-import { ductTeeFigures, teeWithMainEnd } from './ductTee';
-import { DuctResizeSolver, ductResizeEdit, ductResizeGrips } from '../move/ductResize';
+import { ductTeeFigures, teeJointPoints, teeWithMainEnd } from './ductTee';
 import { readDuctRunSpec, withTapStyle, type DuctLeg, type DuctTapStart, type DuctTeeLengths } from './ductTypes';
 
 const settings = resolveDuctSettings({ showSupports: false, jointSystem: 'tdc' });
@@ -259,6 +259,35 @@ describe('its grips', () => {
     expect(tight.limitedBy?.reason).toMatch(/at least 350 mm on this side/);
     expect(tight.resize.made).toBeGreaterThanOrEqual(350);
     expect(tight.resize.made).toBeLessThan(360);
+  });
+  it('a drag far past its stop answers from the stop it found; nearer values are still tried', () => {
+    const main = mainRun([{ x: port.lip.x, y: port.lip.y - 3000 }, { x: port.lip.x + 6000, y: port.lip.y - 3000 }]);
+    const origin = tapOrigin(main, settings, { legIndex: 1, stationMm: 3000, side: 1, style: 'radius', vcd: false }, SECTION)!;
+    if (origin.kind !== 'tap') throw new Error('Expected a take-off origin');
+    const branch = buildDuctRunDraftElement({ origin, points: [{ x: origin.point.x + origin.direction.x * 1500, y: origin.point.y + origin.direction.y * 1500 }], legSizes: [SECTION] }, 'branch');
+    const scene = [unit, main, branch];
+    const solver = new DuctResizeSolver(scene, settings, ductResizeGrips(scene, settings, 'branch', 'start:takeoff').find((grip) => grip.kind === 'tee-before')!);
+    const first = solver.plan(2990);
+    const further = solver.plan(5000);
+    expect(further.resize.made).toBe(first.resize.made);
+    expect(further.limitedBy?.reason).toBe(first.limitedBy?.reason);
+    expect(further.updated).toBe(first.updated);
+    const nearer = solver.plan(1200);
+    expect(nearer.limitedBy).toBeNull();
+    expect(nearer.resize.made).toBeCloseTo(1200, 3);
+  });
+
+  it("gives the card the tee's joints to keep clear of, ends at its bottom and top", () => {
+    const main = mainRun();
+    const branch = tee(main, { lengths: { beforeMm: 700, afterMm: 650, branchMm: 800 } });
+    const figures = ductTeeFigures([unit, main, branch], settings, 'branch')!;
+    const points = teeJointPoints(figures);
+    expect(points).toHaveLength(12);
+    const along = (point: Point2D) => (point.x - figures.centre.x) * figures.leg.direction.x + (point.y - figures.centre.y) * figures.leg.direction.y;
+    expect(Math.min(...points.map(along))).toBeCloseTo(-700, 3);
+    expect(Math.max(...points.map(along))).toBeCloseTo(650, 3);
+    const out = Math.max(...points.map((point) => (point.x - figures.wallPoint.x) * figures.direction.x + (point.y - figures.wallPoint.y) * figures.direction.y));
+    expect(out).toBeCloseTo(800, 3);
   });
 });
 

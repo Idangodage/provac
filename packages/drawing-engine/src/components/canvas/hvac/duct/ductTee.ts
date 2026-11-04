@@ -77,6 +77,22 @@ export function ductTeeFigures(scene: readonly HvacElement[], settings: DuctDesi
   };
 }
 
+/** The tee's three joints as model points, their ends at its bottom and top: what a card beside it keeps clear of (its grips). */
+export function teeJointPoints(figures: DuctTeeFigures): Array<{ x: number; y: number; z: number }> {
+  const { leg, centre, wallPoint, direction, mainSection, firstLeg, bottomZ } = figures;
+  const across = { x: -leg.direction.y, y: leg.direction.x };
+  const ends: Point2D[] = [];
+  for (const along of [-figures.beforeMm, figures.afterMm]) {
+    const at = add(centre, scale(leg.direction, along));
+    ends.push(add(at, scale(across, mainSection.widthMm / 2)), sub(at, scale(across, mainSection.widthMm / 2)));
+  }
+  const joint = add(wallPoint, scale(direction, figures.branchMm));
+  ends.push(add(joint, scale(leg.direction, firstLeg.widthMm / 2)), sub(joint, scale(leg.direction, firstLeg.widthMm / 2)));
+  const low = Math.min(bottomZ, leg.start.z);
+  const high = Math.max(bottomZ + firstLeg.heightMm, leg.start.z + mainSection.heightMm);
+  return ends.flatMap((point) => [{ ...point, z: low }, { ...point, z: high }]);
+}
+
 /**
  * A tee with one main end set: the other is held where it is, so setting one joint never moves the other.
  */
