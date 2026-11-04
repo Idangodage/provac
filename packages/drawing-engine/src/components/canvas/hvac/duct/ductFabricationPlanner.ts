@@ -25,6 +25,7 @@ import {
   splitFitting,
   splitOutlet,
   tapAttachment,
+  tapWindow,
   type RoundMainCylinder,
   type SplitFittingGeometry,
   type TapAttachment,
@@ -140,7 +141,8 @@ export type DuctIssueCode =
   | 'DU_PENETRATION_JOINT'
   | 'DU_PENETRATION_ANGLE'
   | 'DU_PENETRATION_EXTERIOR'
-  | 'DU_INLINE_CLASH';
+  | 'DU_INLINE_CLASH'
+  | 'DU_TEE_LONG';
 
 export interface DuctIssue {
   code: DuctIssueCode;
@@ -789,7 +791,18 @@ export function layoutSections(
   sectionMm: number,
   minMakeUpMm: number,
   windows: ReadonlyArray<{ from: number; to: number }>,
+  /** Joints set where they are (a tee's): the stretches between them are cut on their own. */
+  setJoints: readonly number[] = [],
 ): number[] {
+  const inside = [...setJoints].filter((joint) => joint > from + STATION_EPSILON_MM && joint < to - STATION_EPSILON_MM).sort((a, b) => a - b);
+  if (inside.length) {
+    let cursor = from;
+    return [...inside, to].flatMap((joint) => {
+      const part = layoutSections(cursor, joint, sectionMm, minMakeUpMm, windows);
+      cursor = joint;
+      return part;
+    });
+  }
   const lengths: number[] = [];
   let cursor = from;
   let guard = 0;
@@ -800,9 +813,9 @@ export function layoutSections(
     if (remaining <= sectionMm + STATION_EPSILON_MM) next = to;
     else if (remaining - sectionMm < minMakeUpMm) next = cursor + remaining / 2;
     else next = cursor + sectionMm;
-    const inside = windows.find((window) => next > window.from + STATION_EPSILON_MM && next < window.to - STATION_EPSILON_MM);
-    if (inside && next < to - STATION_EPSILON_MM) {
-      next = inside.from - cursor >= minMakeUpMm ? inside.from : Math.min(inside.to, to);
+    const within = windows.find((window) => next > window.from + STATION_EPSILON_MM && next < window.to - STATION_EPSILON_MM);
+    if (within && next < to - STATION_EPSILON_MM) {
+      next = within.from - cursor >= minMakeUpMm ? within.from : Math.min(within.to, to);
       if (to - next > STATION_EPSILON_MM && to - next < minMakeUpMm) next = to;
     }
     lengths.push(next - cursor);
@@ -1107,7 +1120,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
 
   // ---- Tap windows this run carries for its own branches. ----
   const branches = ductBranchesOf(elementId, scene);
-  const windowsByLeg = new Map<number, Array<{ from: number; to: number; branchId: string }>>();
+  const windowsByLeg = new Map<number, Array<{ from: number; to: number; branchId: string; setJoints: number[] }>>();
   const teeMouths: DuctTeeMouth[] = [];
   for (const branch of branches) {
     if (branch.start.kind !== 'tap') continue;
@@ -1119,10 +1132,10 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
     const attachment = tapAttachment(spec, branch.start, branch.spec.legs[0]!, sheetOf(section) ?? 1, settings);
     if (!attachment) continue;
     const list = windowsByLeg.get(branch.start.legIndex) ?? [];
+    const window = tapWindow(attachment, branch.start, settings);
     list.push({
-      from: attachment.openingFromMm - settings.tapWindowMarginMm,
-      to: attachment.openingToMm + settings.tapWindowMarginMm,
-      branchId: branch.element.id,
+      from: window.from, to: window.to, branchId: branch.element.id,
+      setJoints: [window.jointFromMm, window.jointToMm].filter((joint): joint is number => joint !== undefined),
     });
     windowsByLeg.set(branch.start.legIndex, list);
     if (attachment.heelInMm !== undefined) {
@@ -1325,7 +1338,9 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
       const clashesWindow = index > 0 && window.from < windows[index - 1]!.to - STATION_EPSILON_MM;
       if (clashesFitting || clashesWindow) {
         issues.push({ code: 'DU_TAP_CLASH', severity: 'error', legIndex, point: at((window.from + window.to) / 2),
-          message: clashesWindow ? 'Two take-offs overlap on this leg.' : 'A take-off overlaps an elbow, transition or connector; move it along the run.' });
+          message: clashesWindow ? 'Two take-offs overlap on this leg.' : window.setJoints.length
+            ? 'The tee\'s main part reaches an elbow, transition or connector; shorten it or move it along the run.'
+            : 'A take-off overlaps an elbow, transition or connector; move it along the run.' });
       }
     });
     // A wall needs a plain straight through it: no fitting, no take-off, and a fire damper's whole sleeve.
@@ -1384,7 +1399,7 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         .map((entry) => ({ from: entry.from - PENETRATION_JOINT_MARGIN_MM, to: entry.to + PENETRATION_JOINT_MARGIN_MM }))]
         .sort((a, b) => a.from - b.from);
       const straights = (to: number) => {
-        const lengths = layoutSections(cursor, to, sectionLength, settings.minMakeUpPieceMm, jointWindows);
+        const lengths = layoutSections(cursor, to, sectionLength, settings.minMakeUpPieceMm, jointWindows, windows.flatMap((window) => window.setJoints));
         lengths.forEach((length, index) => {
           pieces.push(straightPiece('straight', 'S', cursor, cursor + length, section, {
             isMakeUp: length < sectionLength - STATION_EPSILON_MM && (index >= lengths.length - 2),
@@ -1436,6 +1451,24 @@ export function planDuctRunSpec(elementId: string, plannedSpec: DuctRunSpec, opt
         cursor = to;
       }
       if (straightTo > cursor + STATION_EPSILON_MM) straights(straightTo);
+      // A tee's joints are set by hand: no sliver of main left beside them, and a word where its piece outgrows a stock length.
+      const legStraights = pieces.slice(legFirstPiece).filter((piece) => piece.kind === 'straight');
+      for (const window of windows.filter((candidate) => candidate.setJoints.length)) {
+        const middle = station + (window.from + window.to) / 2;
+        const carrying = legStraights.find((piece) => piece.stationStartMm <= middle && piece.stationEndMm >= middle);
+        for (const joint of window.setJoints) {
+          const sliver = legStraights.find((piece) => piece !== carrying && piece.lengthMm < settings.minMakeUpPieceMm - STATION_EPSILON_MM
+            && (Math.abs(piece.stationStartMm - station - joint) < STATION_EPSILON_MM || Math.abs(piece.stationEndMm - station - joint) < STATION_EPSILON_MM));
+          if (sliver) {
+            issues.push({ code: 'DU_TAP_CLASH', severity: 'error', legIndex, point: at(joint),
+              message: `A joint of the tee leaves ${Math.round(sliver.lengthMm)} mm of main beside it, less than the shortest piece (${Math.round(settings.minMakeUpPieceMm)} mm).` });
+          }
+        }
+        if (carrying && carrying.lengthMm > sectionLength + STATION_EPSILON_MM) {
+          issues.push({ code: 'DU_TEE_LONG', severity: 'warning', legIndex, point: at((window.from + window.to) / 2),
+            message: `The tee's main part is ${Math.round(carrying.lengthMm)} mm, longer than a stock section (${Math.round(sectionLength)} mm).` });
+        }
+      }
     }
 
     if (endFitting?.offset) {

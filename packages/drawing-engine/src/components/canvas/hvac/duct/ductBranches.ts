@@ -24,6 +24,7 @@ import {
   type DuctSide,
   type DuctSplitAngle,
   type DuctSplitStyle,
+  type DuctTapStart,
   type DuctTapStyle,
 } from './ductTypes';
 
@@ -113,10 +114,10 @@ export interface RoundMainCylinder {
 
 export function tapAttachment(
   parent: DuctRunSpec,
-  tap: { legIndex: number; stationMm: number; side: DuctSide; style: DuctTapStyle; radiusRatio?: number },
+  tap: { legIndex: number; stationMm: number; side: DuctSide; style: DuctTapStyle } & Partial<Pick<DuctTapStart, 'radiusRatio' | 'tee' | 'vcd'>>,
   branch: DuctLeg,
   parentSheetMm: number,
-  settings: Pick<DuctDesignSettings, 'tapCollarMm' | 'conicalFlareMm'>,
+  settings: Pick<DuctDesignSettings, 'tapCollarMm' | 'conicalFlareMm' | 'vcdLengthMm'>,
 ): TapAttachment | null {
   const leg = ductLegs(parent)[tap.legIndex];
   const section = parent.legs[tap.legIndex];
@@ -166,7 +167,7 @@ export function tapAttachment(
     parentDirection: leg.direction,
     bottomZ: leg.start.z,
     leadInMm,
-    collarLengthMm: radius ? radiusTakeoffCollarMm(radius, settings.tapCollarMm) : Math.max(settings.tapCollarMm, leadInMm + 50),
+    collarLengthMm: radius ? radiusCollarMm(tap, branch, settings) : Math.max(settings.tapCollarMm, leadInMm + 50),
     openingDiameterMm: null,
     openingFromMm: tap.stationMm - branch.widthMm / 2 - leadInMm,
     openingToMm: tap.stationMm + branch.widthMm / 2,
@@ -174,11 +175,32 @@ export function tapAttachment(
   };
 }
 
+/** A radius take-off's collar: its sweep and neck, run on to a tee's branch part where that is set. */
+export function radiusCollarMm(tap: Partial<Pick<DuctTapStart, 'radiusRatio' | 'tee' | 'vcd'>>, branch: DuctLeg, settings: Pick<DuctDesignSettings, 'tapCollarMm' | 'vcdLengthMm'>): number {
+  return radiusTakeoffCollarMm(radiusTakeoffShape(branch.widthMm, tap.radiusRatio), settings.tapCollarMm, tap.tee?.branchMm, tap.vcd ? settings.vcdLengthMm : 0);
+}
+
 /** The collar a run's start takes on its first leg, where it can be longer than the project's: a radius take-off's. */
-export function startCollarMm(start: DuctRunSpec['start'], firstLeg: DuctLeg | undefined, settings: Pick<DuctDesignSettings, 'tapCollarMm'>): number {
-  return start.kind === 'tap' && start.style === 'radius' && firstLeg
-    ? radiusTakeoffCollarMm(radiusTakeoffShape(firstLeg.widthMm, start.radiusRatio), settings.tapCollarMm)
-    : settings.tapCollarMm;
+export function startCollarMm(start: DuctRunSpec['start'], firstLeg: DuctLeg | undefined, settings: Pick<DuctDesignSettings, 'tapCollarMm' | 'vcdLengthMm'>): number {
+  return start.kind === 'tap' && start.style === 'radius' && firstLeg ? radiusCollarMm(start, firstLeg, settings) : settings.tapCollarMm;
+}
+
+/** The stretch of its parent's leg a take-off keeps to itself (stations): its opening with a margin, a tee's main part where that is set. */
+export interface TapWindow {
+  from: number;
+  to: number;
+  /** A tee's joints where they are set: the window ends there, exactly. */
+  jointFromMm?: number;
+  jointToMm?: number;
+}
+
+export function tapWindow(attachment: TapAttachment, tap: Pick<DuctTapStart, 'stationMm' | 'style' | 'tee'>, settings: Pick<DuctDesignSettings, 'tapWindowMarginMm'>): TapWindow {
+  const from = attachment.openingFromMm - settings.tapWindowMarginMm;
+  const to = attachment.openingToMm + settings.tapWindowMarginMm;
+  const tee = tap.style === 'radius' ? tap.tee : undefined;
+  const jointFromMm = tee?.beforeMm === undefined ? undefined : Math.min(from, tap.stationMm - tee.beforeMm);
+  const jointToMm = tee?.afterMm === undefined ? undefined : Math.max(to, tap.stationMm + tee.afterMm);
+  return { from: jointFromMm ?? from, to: jointToMm ?? to, ...(jointFromMm !== undefined ? { jointFromMm } : {}), ...(jointToMm !== undefined ? { jointToMm } : {}) };
 }
 
 export interface SplitOutlet {

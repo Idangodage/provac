@@ -71,6 +71,17 @@ export type DuctSplitStyle = 'bullhead' | 'y' | 'wye';
 export type DuctSplitAngle = 45 | 90;
 export type DuctSide = 1 | -1;
 
+/**
+ * The lengths of a radius take-off's tee (mm): the piece it is made as one with. On the main, from the branch's centre to
+ * the joint toward the main's start, and to the joint past it; on the branch, from the main's outside wall to its joint
+ * (its damper included). An end left out is where the run's sections put it.
+ */
+export interface DuctTeeLengths {
+  beforeMm?: number;
+  afterMm?: number;
+  branchMm?: number;
+}
+
 /** A branch taken off the side of a parent run's straight leg. */
 export interface DuctTapStart {
   kind: 'tap';
@@ -83,14 +94,16 @@ export interface DuctTapStart {
   style: DuctTapStyle;
   /** A radius take-off's throat radius over the branch width (r/W); absent = the default. */
   radiusRatio?: number;
+  /** A radius take-off's lengths; absent = where the sections put its joints. */
+  tee?: DuctTeeLengths;
   vcd: boolean;
 }
 
-/** The tap in another style: its r/W goes when it stops being a radius take-off. */
+/** The tap in another style: its r/W and its tee go when it stops being a radius take-off. */
 export function withTapStyle(start: DuctTapStart, style: DuctTapStyle, radiusRatio?: number): DuctTapStart {
-  const { radiusRatio: was, ...rest } = start;
+  const { radiusRatio: was, tee, ...rest } = start;
   const ratio = radiusRatio ?? was;
-  return { ...rest, style, ...(style === 'radius' && ratio !== undefined ? { radiusRatio: ratio } : {}) };
+  return { ...rest, style, ...(style === 'radius' && ratio !== undefined ? { radiusRatio: ratio } : {}), ...(style === 'radius' && tee ? { tee } : {}) };
 }
 
 /** A branch leaving one outlet of a split at the end of a parent run. */
@@ -408,6 +421,18 @@ function dedupe(points: DuctPoint3[]): DuctPoint3[] {
   return out;
 }
 
+/** A tee's lengths, what is sound of them. */
+function readTee(value: unknown): { tee?: DuctTeeLengths } {
+  if (!value || typeof value !== 'object') return {};
+  const candidate = value as Record<string, unknown>;
+  const tee: DuctTeeLengths = {};
+  for (const key of ['beforeMm', 'afterMm', 'branchMm'] as const) {
+    const length = candidate[key];
+    if (finite(length) && length > 0) tee[key] = length;
+  }
+  return Object.keys(tee).length ? { tee } : {};
+}
+
 function readEnd(value: unknown): DuctEnd {
   if (!value || typeof value !== 'object') return { kind: 'open' };
   const candidate = value as Record<string, unknown>;
@@ -422,6 +447,7 @@ function readEnd(value: unknown): DuctEnd {
       stationMm: candidate.stationMm, side,
       style: TAP_STYLES.includes(candidate.style as DuctTapStyle) ? candidate.style as DuctTapStyle : 'shoe-45',
       ...(candidate.style === 'radius' && finite(candidate.radiusRatio) ? { radiusRatio: candidate.radiusRatio } : {}),
+      ...(candidate.style === 'radius' ? readTee(candidate.tee) : {}),
       vcd: candidate.vcd !== false,
     };
   }

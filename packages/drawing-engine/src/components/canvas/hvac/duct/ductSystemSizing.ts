@@ -841,7 +841,7 @@ export function sizeDuctSystem(
         return parts;
       };
       const styleOf = (j: number): DuctTapStyle => node.styles.get(node.taps[j]!.child.id) ?? (node.taps[j]!.child.spec.start as DuctTapStart).style;
-      const halves = node.taps.map((tap, j) => model.tapWindowHalfMm(styleOf(j), firstSection(tap.child), sections[j]!, (tap.child.spec.start as DuctTapStart).radiusRatio));
+      const halves = node.taps.map((tap, j) => model.tapWindowHalfMm(styleOf(j), firstSection(tap.child), sections[j]!, tap.child.spec.start as DuctTapStart));
       const start = spec.start;
       let startClear: number;
       if (!node.parent) {
@@ -852,7 +852,7 @@ export function sizeDuctSystem(
         startClear = (node.head ? node.head.end : connector) + transition + 50;
       } else {
         const style: DuctTapStyle = start.kind === 'tap' || start.kind === 'spigot' ? (newStarts.get(node.id)?.style ?? start.style) : 'spin-in';
-        startClear = model.collarLengthMm(style, sections[0]!, start.kind === 'tap' ? start.radiusRatio : undefined) + (start.kind === 'split-branch' ? 0 : settings.vcdLengthMm) + 100;
+        startClear = model.collarLengthMm(style, sections[0]!, start.kind === 'tap' ? start : undefined) + (start.kind === 'split-branch' ? 0 : settings.vcdLengthMm) + 100;
       }
       const end = spec.end;
       const endClear = end.kind === 'terminal' ? 450

@@ -15,7 +15,7 @@ import { moveDuctNetwork } from '../move/ductNetworkMove';
 
 import { findAirPort } from './ductAirPorts';
 import { branchTurns, errorCodes, noNewErrors, reaimBranch } from './ductBranchReaim';
-import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLegWidthMm, startCollarMm, tapAttachment } from './ductBranches';
+import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLegWidthMm, startCollarMm, tapAttachment, tapWindow } from './ductBranches';
 import { accessDoorFor, getDuctRunPlan, inlineAccessoryLengthMm, planDuctRunSpec, type DuctFabricationPlan } from './ductFabricationPlanner';
 import { branchAnchor, ductRunElementWithSpec, reanchorBranchesKeepingEnds } from './ductFollow';
 import { runSectionSheetMm } from './ductGauge';
@@ -30,6 +30,7 @@ import { sectionLabel, splitTitle, TAKEOFF_TITLES } from './ductSegments';
 import type { DuctDesignSettings } from './ductSettings';
 import { ductRectStepMm, ductRoundSizesMm } from './ductSizeCatalog';
 import { equivalentDiameterMm } from './ductSizing';
+import { teeLeastMm } from './ductTee';
 import { TERMINAL_TAG_PATTERN, terminalLabel, terminalTypeTag, typicalTerminalSpec, type DuctTerminalKind, type DuctTerminalSpigotEntry, type DuctTerminalSpigotSide } from './ductTerminalCatalog';
 import { findTerminalPort, nextTerminalTag, readDuctTerminalSpec, SQUARE_BOX_TERMINAL_KINDS, terminalEnvelope, terminalSpigotPort } from './ductTerminals';
 import {
@@ -50,6 +51,7 @@ import {
   type DuctSplitAngle,
   type DuctSplitStyle,
   type DuctTapStyle,
+  type DuctTeeLengths,
 } from './ductTypes';
 
 export type DuctSegmentEdit =
@@ -70,6 +72,8 @@ export type DuctSegmentEdit =
   | { kind: 'node'; runId: string; node: number; override: DuctNodeOverride | null }
   /** A branch's take-off fitting, and its first leg with it (a round collar takes a round branch). */
   | { kind: 'tap'; runId: string; style: DuctTapStyle; radiusRatio?: number; firstLeg?: DuctLeg }
+  /** A tee's lengths; null: back to where the sections put its joints. */
+  | { kind: 'tap-tee'; runId: string; tee: DuctTeeLengths | null }
   /** The volume damper after a take-off, or the flexible connector at the unit. */
   | { kind: 'start'; runId: string; vcd?: boolean; connector?: boolean }
   /** A split's style; a Y's leaving angle (90° unless given). Outlets that leave at a new angle turn, keeping their ends. */
@@ -224,7 +228,7 @@ function makeRoomForTaps(scene: readonly HvacElement[], changed: Map<string, Hva
       const windows = taps.filter((branch) => branch.start.kind === 'tap' && branch.start.legIndex === legIndex).flatMap((branch) => {
         const start = branch.spec.start as Extract<DuctRunSpec['start'], { kind: 'tap' }>;
         const attachment = tapAttachment(spec, start, branch.spec.legs[0]!, sheet, settings);
-        return attachment ? [{ branch, start, from: attachment.openingFromMm - settings.tapWindowMarginMm, to: attachment.openingToMm + settings.tapWindowMarginMm }] : [];
+        return attachment ? [{ branch, start, ...tapWindow(attachment, start, settings) }] : [];
       }).sort((a, b) => a.from - b.from);
       // Push each clear of the start fittings and the one before it; then, from the far end, clear of the end fittings.
       const shifts = windows.map(() => 0);
@@ -565,6 +569,28 @@ function editTap(scene: readonly HvacElement[], settings: DuctDesignSettings, ed
   changed.set(element.id, ductRunElementWithSpec(element, next));
   const named = edit.style === 'radius' ? `${TAKEOFF_TITLES.radius}, r/W ${formatRadiusRatio(radiusTakeoffRatio(edit.radiusRatio))}` : TAKEOFF_TITLES[edit.style];
   return { updates: settle(scene, changed, settings, notes), notes, action: `Duct take-off: ${named}` };
+}
+
+function editTapTee(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'tap-tee' }>): DuctSegmentEditResult {
+  const element = scene.find((candidate) => candidate.id === edit.runId);
+  const spec = element ? readDuctRunSpec(element) : null;
+  if (!element || !spec) return refuse('The run is no longer in the drawing.');
+  const start = spec.start;
+  if (start.kind !== 'tap' || start.style !== 'radius') return refuse('Only a radius take-off is a tee.');
+  if (spec.locked) return refuse('The run is locked: unlock it to change its tee.');
+  const parent = ductParentOf(spec, scene);
+  if (!parent) return refuse('The run this branch was taken off is missing.');
+  const least = teeLeastMm(start, spec.legs[0]!, settings);
+  if (edit.tee?.beforeMm !== undefined && edit.tee.beforeMm < least.beforeMm - 0.5) return refuse(`The main part is at least ${Math.ceil(least.beforeMm)} mm on this side: its sweep and the margin to the joint.`);
+  if (edit.tee?.afterMm !== undefined && edit.tee.afterMm < least.afterMm - 0.5) return refuse(`The main part is at least ${Math.ceil(least.afterMm)} mm on this side: half the branch and the margin to the joint.`);
+  if (edit.tee?.branchMm !== undefined && edit.tee.branchMm < least.branchMm - 0.5) return refuse(`The branch part is at least ${Math.ceil(least.branchMm)} mm: its sweep, neck and damper.`);
+  const { tee: _was, ...rest } = start;
+  const set = edit.tee && Object.keys(edit.tee).length ? { tee: edit.tee } : {};
+  const changed = new Map([[element.id, ductRunElementWithSpec(element, { ...spec, start: { ...rest, ...set } })]]);
+  const notes: string[] = [];
+  const updates = settle(scene, changed, settings, notes);
+  // The main's joints are its own: it goes with the edit, so a preview redraws them.
+  return { updates: updates.some((update) => update.id === parent.id) ? updates : [...updates, parent], notes, action: set.tee ? 'Tee size' : 'Tee size back to automatic' };
 }
 
 function editStart(scene: readonly HvacElement[], settings: DuctDesignSettings, edit: Extract<DuctSegmentEdit, { kind: 'start' }>): DuctSegmentEditResult {
@@ -1384,6 +1410,7 @@ export function applyDuctSegmentEdit(scene: readonly HvacElement[], settings: Du
     case 'leg-section': return editLegSection(scene, settings, edit);
     case 'node': return editNode(scene, settings, edit);
     case 'tap': return editTap(scene, settings, edit);
+    case 'tap-tee': return editTapTee(scene, settings, edit);
     case 'start': return editStart(scene, settings, edit);
     case 'split': return editSplit(scene, settings, edit);
     case 'split-share': return editSplitShare(scene, settings, edit);

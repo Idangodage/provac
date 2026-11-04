@@ -62,9 +62,10 @@ export function radiusTakeoffShape(widthMm: number, ratio?: number): RadiusTakeo
   return { widthMm, ratio: value, throatMm, heelMm, centre, heelInMm: widthMm / 2 - (centre.b + Math.sqrt(heelMm * heelMm - throatMm * throatMm)) };
 }
 
-/** Collar length: the sweep and its neck, at least the project's collar. */
-export function radiusTakeoffCollarMm(shape: RadiusTakeoffShape, tapCollarMm: number): number {
-  return Math.max(tapCollarMm, shape.throatMm + RADIUS_TAKEOFF.neckMm);
+/** Collar length: the sweep and its neck, at least the project's collar; `branchPartMm`, a tee's branch part, runs the neck on up to the damper after it. */
+export function radiusTakeoffCollarMm(shape: RadiusTakeoffShape, tapCollarMm: number, branchPartMm?: number, damperMm = 0): number {
+  const least = Math.max(tapCollarMm, shape.throatMm + RADIUS_TAKEOFF.neckMm);
+  return branchPartMm === undefined ? least : Math.max(least, branchPartMm - damperMm);
 }
 
 export interface RadiusTakeoffSection {

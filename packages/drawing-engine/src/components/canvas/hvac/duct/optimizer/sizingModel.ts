@@ -8,7 +8,7 @@
 import type { Point2D } from '../../../../../types';
 import { portEntryDirection } from '../ductAirPorts';
 import { branchStubMm, dirToWorld, flexClear, flexFit, flexOk, runoutStaysOut, toWorld, type ServiceCtx, type TerminalCtx } from '../ductAutoContext';
-import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLeg, dividedFlowLegWidthMm, shoeLeadInMm } from '../ductBranches';
+import { DIVIDED_FLOW_MIN_LEG_MM, dividedFlowLeg, dividedFlowLegWidthMm, radiusCollarMm, shoeLeadInMm } from '../ductBranches';
 import { damperCost, energyPricePerPa, fittingCost, flexCost, sectionCostPerMetre, type SectionCostContext } from '../ductEconomics';
 import { flexCurve, type DuctFlexGeometry } from '../ductFlex';
 import {
@@ -21,13 +21,13 @@ import {
   takeoffBranchLossPa,
   transitionCoefficient,
 } from '../ductPressure';
-import { radiusTakeoffCollarMm, radiusTakeoffShape } from '../ductRadiusTakeoff';
+import { radiusTakeoffShape } from '../ductRadiusTakeoff';
 import { maxRoundBranchMm, roundMainTapGeometry, roundReducerMinLengthMm, wyeLegLengthMm } from '../ductRoundFittings';
 import { SMACNA_TABLE_3_1 } from '../ductRoundRules';
 import type { DuctDesignSettings } from '../ductSettings';
 import { ductRectStepMm, ductRoundSizesMm, isOnStep, nearestStep, onStep } from '../ductSizeCatalog';
 import { frictionPaPerM, sizingLimits, velocityMs, velocityPressurePa } from '../ductSizing';
-import { isRoundLeg, isRoundMainTapStyle, roundLeg, type DuctConstruction, type DuctLeg, type DuctSplitStyle, type DuctSystemShape, type DuctTapStyle } from '../ductTypes';
+import { isRoundLeg, isRoundMainTapStyle, roundLeg, type DuctConstruction, type DuctLeg, type DuctSplitStyle, type DuctSystemShape, type DuctTapStart, type DuctTapStyle } from '../ductTypes';
 
 /** The system's shape the catalogues follow: rectangular throughout, a rectangular main with round branches, round, or mixed. */
 export type ShapeMode = DuctSystemShape;
@@ -190,15 +190,15 @@ export class SizingModel {
   }
 
   /** Half the length of main a take-off occupies (its opening as the planner cuts it) plus the joint margin. */
-  tapWindowHalfMm(style: DuctTapStyle, branch: DuctLeg, main: DuctLeg, radiusRatio?: number): number {
+  tapWindowHalfMm(style: DuctTapStyle, branch: DuctLeg, main: DuctLeg, tap?: Pick<DuctTapStart, 'radiusRatio' | 'tee'>): number {
     const s = this.settings;
     let half: number;
     if (isRoundLeg(main) && isRoundMainTapStyle(style)) half = roundMainTapGeometry(style, branch.diameterMm ?? branch.widthMm, s).windowHalfMm;
     else if (style === 'conical') half = (branch.widthMm + s.conicalFlareMm) / 2;
     else if (style === 'shoe-45') half = branch.widthMm / 2 + shoeLeadInMm(branch.widthMm);
-    else if (style === 'radius') half = branch.widthMm / 2 + radiusTakeoffShape(branch.widthMm, radiusRatio).throatMm;
+    else if (style === 'radius') half = branch.widthMm / 2 + radiusTakeoffShape(branch.widthMm, tap?.radiusRatio).throatMm;
     else half = branch.widthMm / 2;
-    return half + s.tapWindowMarginMm;
+    return Math.max(half + s.tapWindowMarginMm, style === 'radius' ? Math.max(tap?.tee?.beforeMm ?? 0, tap?.tee?.afterMm ?? 0) : 0);
   }
 
   /**
@@ -351,12 +351,12 @@ export class SizingModel {
   }
 
   /** Collar length of a take-off style for a branch. */
-  collarLengthMm(style: DuctTapStyle, branch: DuctLeg, radiusRatio?: number): number {
+  collarLengthMm(style: DuctTapStyle, branch: DuctLeg, tap?: Pick<DuctTapStart, 'radiusRatio' | 'tee' | 'vcd'>): number {
     const s = this.settings;
     if (isRoundMainTapStyle(style)) return roundMainTapGeometry(style, branch.diameterMm ?? branch.widthMm, s).collarLengthMm;
     if (style === 'conical') return Math.max(s.tapCollarMm, s.conicalFlareMm + 100);
     if (style === 'shoe-45') return Math.max(s.tapCollarMm, Math.max(102, branch.widthMm / 4) + 50);
-    if (style === 'radius') return radiusTakeoffCollarMm(radiusTakeoffShape(branch.widthMm, radiusRatio), s.tapCollarMm);
+    if (style === 'radius') return radiusCollarMm(tap ?? {}, branch, s);
     return s.tapCollarMm;
   }
 
