@@ -3903,7 +3903,8 @@ loss".
 **Left out on purpose.** Auto route keeps shoes, so Auto or Re-design again starts fresh with them; letting it choose a
 radius could follow. The shoe's and straight tap's numbers stay.
 
-**Verified.** Full suite 344 files, 3,017 tests (44 new), all green; golden master unchanged (9 of 9), so
+**Verified.** Full suite 344 files, 3,017 tests (44 new), all green (three Auto tests sit near their 30 s limit and time out
+when the machine is short of memory: run alone they pass, in the same time as on main); golden master unchanged (9 of 9), so
 Auto route's results did not move; benchmark 44 of 44; web type-check and lint clean. On the real app (a worktree server,
 `tap-radius.mjs` in the driver folder, a prepared drawing from the probe `zzRadiusScene`): 53 of 53, project restored
 exactly, no page errors: Swap tiles, hover preview by pixels in plan and in 3D, apply, undo, the slider (drag, previews
