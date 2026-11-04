@@ -60,7 +60,7 @@ Defaults are editable; each carries provenance in `ductSettings.ts`. Rule IDs re
 | Seal class | from pressure class (Table 1-2); project may force Class A | J-07 |
 | Elbow | `auto`: radius R/W 1.0 if the legs allow, else square with vanes; 50 mm necks | F-01 |
 | Transition taper | 1:4 (≈14°); limits 20° expanding / 30° contracting | F-02 |
-| Take-off | 45° shoe, lead-in max(W/4, 100 mm); VCD with locking quadrant | F-03, SMACNA §2.3 |
+| Take-off | 45° shoe, lead-in max(W/4, 100 mm); or a radius take-off, r/W 1.0 by default (0.25 to 1.5); VCD with locking quadrant | F-03, F-03R, SMACNA §2.3, ASHRAE 5-22 |
 | Unit connection | fabric connector: 100 mm fabric + 2 × 75 mm metal | C-01 |
 | Flex duct | ≤1.5 m, supports ≤1.5 m, sag ≤41.7 mm/m, draw bands, collars ≥51 mm | X-01 |
 | Hangers | pair spacing 2.4 m; sized by Table 4-1M plus load check; ≤0.61 m from each elbow, ≤1.22 m from each branch; M8 minimum | H-01, H-02 |
@@ -276,7 +276,7 @@ Each phase ends with an on-canvas check against real elements.
 - Branch start point: on the parent's outer wall at the station, leaving square to the parent.
 - Its clear bottom is level with the parent's (flat bottom). A branch taller than the parent, or wider than the parent leg can hold, raises `DU_TAP_TOO_BIG`.
 - Branch pieces start with:
-  - a take-off collar, max(100 mm, lead-in + 50 mm) long (project practice); the `shoe-45` style adds a 45° lead-in of W/4, 102 mm minimum (SMACNA Fig. 2-6), on the upstream side (toward the parent's start);
+  - a take-off collar, max(100 mm, lead-in + 50 mm) long (project practice); a `radius` take-off's lead-in is its throat radius (see "A radius take-off", below); the `shoe-45` style adds a 45° lead-in of W/4, 102 mm minimum (SMACNA Fig. 2-6), on the upstream side (toward the parent's start);
   - then an optional volume damper (VCD) section, 150 mm, with a locking quadrant;
   - then the branch's own sections.
 - The collar is screwed to the parent at the S1.40 spacing and sealed.
@@ -3835,6 +3835,86 @@ split outlet, plenum spigot); for a run off the collar, its last take-off, else 
   card then says why (move the terminal, or give it a top collar).
 - **The user's own drawing** was not available: the hall was rebuilt from the screenshot. Their export (Export → JSON)
   would make the regression exact.
+
+## A radius take-off, at any radius (4 November 2026)
+
+You asked for the swept branch of your picture ("ISR = 1") as another option on the take-off piece, "universal", with
+the radius changeable. Plan: `C:\Users\idang\.claude\plans\duct-radius-takeoff.md`, approved with all four decisions (a).
+
+**The fitting.** ASHRAE 5-22, "Tee, Diverging, Rectangular" (Idelchik Diagram 7-22): θ = 90°, r/Wb = 1.0. Fitted to your
+picture's pixels it is a radius elbow whose throat lies tangent along the main's wall, with the heel concentric (rms 0.8
+px on an 84 px branch; a straight lean fits worse), so the heel is cut by the wall inside the branch's far cheek: the
+picture's inward lean. It is drawn at r/W 0.60, and "ISR" has no published definition found; it is read as r/W = 1.
+
+| Local frame, at the branch's centre on the main's outside wall | a: out along the branch; b: along the main toward its end |
+|---|---|
+| Throat | r = ρ·W, centre (a = r, b = −(W/2 + r)), tangent to the wall |
+| Heel | R = r + W, about the same centre, cut by the wall |
+| Heel's foot | W/2 − (√(R² − r²) − W/2 − r) inside the far cheek: 0.268 W at ρ 1.0 |
+| Collar | max(project collar, r + 50 mm): the sweep, then a neck for the joint |
+| Kept clear on the main | b from −(W/2 + r) to +W/2, each side plus the tap margin (`tapWindowMarginMm`) |
+| Hole in the main | from the throat's tangent point to the heel's foot |
+
+It sits toward the parent's start, as a shoe does. That is right both ways: on supply it catches the air, on return it
+turns the air toward the unit. Flat bottom, no taller than the main, as a shoe. Nothing enters the main, so it is no
+scoop (SMACNA Fig. 2-6 bans those, and does not show this fitting). At ρ 1.0 it has RE1's proportions (centreline
+R = 3W/2).
+
+**One shape.** `ductRadiusTakeoff.ts` is pure and drives the plan outline, the 3D shell, the sheet, the hole and the
+clash boxes, so the views cannot disagree. The style is `'radius'`; `radiusRatio` sits on the tap start, absent = 1.0, so
+old drawings read as they were. `withTapStyle` drops it when the style changes.
+
+**Universal.** r/W runs 0.25 to 1.5 on any rectangular take-off: any size, either side, supply and return, plan and 3D.
+At 0.25 its window is shorter than a shoe's (375 against 402 mm on a 300 wide branch), so it fits wherever a shoe does.
+The radius is on the Edit tab of every rectangular take-off, a shoe's and a straight tap's too: sliding one sweeps it.
+
+**Air.** A′ 0.25 at r/W 1.0 against table 5-22 (C ≈ 0.5 at equal velocities, 0.34 to 0.55 for branches up to half the
+main; within about 0.2 for Vb/Vc 0.6 to 1.6). Tighter, it rises to the shoe's 0.35 at r/W 0.25; past RE1 it falls to
+0.23 at 1.5. Only the 1.0 point is published; the rest is marked practice.
+
+| Fitting | ASHRAE table | C at Vb/Vc = 1 | Engine |
+|---|---|---|---|
+| Straight tap | 5-28 | about 1.35 | 1.10 |
+| 45° entry (shoe) | 5-27 | about 0.8 | 0.70 |
+| Radius, r/W 1.0 | 5-22 | about 0.5 | 0.50 |
+
+The shoe's and straight tap's figures read low against those tables (the shoe 8 to 50 % across Vb/Vc 0.4 to 1.8). Left
+alone on purpose: correcting them moves every design's pressure and the golden results, so it should be its own change.
+The radius's figure is set so the card's comparison stays cautious: 0.71 of a shoe, against ASHRAE's 0.62.
+
+**Rules.** The planner trims a collar that runs past a short first leg; a sweep has no shorter form, so that is an error
+here (`DU_LEG_TOO_SHORT`, damper included). Under r/W 0.5 the elbow rule warns (`DU_ELBOW_RADIUS`). Windows, wall
+crossings and neighbours are the planner's as for any take-off. Sheet: both flat faces, both cheeks and the neck, exact,
+plus four seams along the sweep and a straight's flange rolls; the shoe's triangle formula would not do.
+
+**What follows it.** The BOM line, the joint on the wall (its opening's real length), sizing (kept, r following the
+width; a branch turned round becomes a spin-in, a main turned round a conical tee), the runout, re-aim and follow limits
+(its real collar, `startCollarMm`), re-attaching (keeps its ratio), clash boxes over the swept wing, insulation in plan
+and 3D, the 3D outline, picking.
+
+**The card.** Take-off fittings are picture tiles (`DuctTakeoffSketch`, true proportion, one scale): name, badges,
+pressure change, current marked; hover previews, click applies, keys step as on rows, with the same option ids
+(`optionTile` and `tileChips` on the provider, optional). Radius comes first, at the largest r/W the planner accepts here
+(1.0, 0.75, 0.5, 0.25: no more errors on the branch or its main than now), and says so when that is under 1.0; greyed with
+the reason where none fits. The slider is the elbow's, made one `RatioEditor` for both. A round branch's first leg turns
+rectangular, as the shoe row does; the branch tool's Take-off list has it too. The shoe's row no longer says "the lowest
+loss".
+
+**Left out on purpose.** Auto route keeps shoes, so Auto or Re-design again starts fresh with them; letting it choose a
+radius could follow. The shoe's and straight tap's numbers stay.
+
+**Verified.** Full suite 344 files, 3,017 tests (44 new), all green; golden master unchanged (9 of 9), so
+Auto route's results did not move; benchmark 44 of 44; web type-check and lint clean. On the real app (a worktree server,
+`tap-radius.mjs` in the driver folder, a prepared drawing from the probe `zzRadiusScene`): 53 of 53, project restored
+exactly, no page errors: Swap tiles, hover preview by pixels in plan and in 3D, apply, undo, the slider (drag, previews
+while dragged, applies on release), the throat typed, quick picks, a shoe swept from its own Edit tab, the largest that
+fits, greyed with the reason, a return run, an insulated run, the branch tool, an elbow on the shared slider, round
+collars and a round main on tiles. Saved and reloaded (`tap-radius-save.mjs`): its r/W comes back.
+
+Regression drivers: slide-p3, shape-p6, duct-seg-p3, p4 and p5 pass. duct-seg-p1, p2, v2, views and click fail, and fail
+the same on main (8925097), line for line: they were written for layouts Auto route no longer gives and clicks the card
+has since changed. They are not this work's, and were left alone; what they would have covered here (a take-off swapped,
+an elbow's slider) is in `tap-radius.mjs`.
 
 ## Known limits (auto duct, 30 September 2026)
 

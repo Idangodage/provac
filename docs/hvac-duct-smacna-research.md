@@ -284,6 +284,7 @@ Runner 38 mm minimum; runner type 1 is 0.85 mm (22 ga). The free area between do
 - Rectangular main to round branch: 45° lead-in with D1 not less than D2.
 - Round collars: conical, bellmouth, flanged, spin-in (beaded). Cut the opening accurately.
 - Do not use connections with scoops.
+- Not shown: a swept branch. It is no scoop (nothing enters the main); its source is ASHRAE 5-22, below.
 
 **Fig. 2-7 Offsets and transitions (p.2.9)**
 - Transitions may convert any combination of rectangular, round and flat oval (the figure's note).
@@ -393,6 +394,27 @@ These are the fittings for taking a branch off a **round main** and for splittin
 - A 90° tap stub is at least one spigot (51 mm) out of the main before its spigot.
 - A 45° lateral collar reaches half the branch diameter past the main wall, plus its spigot.
 - The wye's 3A/2 is read as each leg's centreline length to its outlet.
+
+### Take-off loss: ASHRAE tables against the engine (read 4 November 2026)
+
+ASHRAE, *Principles of HVAC* 9th ed., online Fitting Loss Coefficients (2021). Branch coefficient C_c,b on the main's
+velocity pressure. The engine reads ζ = A′·[1 + (Vb/Vc)² − 2(Vb/Vc)·cos α] on the same pressure (`ductPressure.ts`).
+
+| Fitting | Figure | C at Vb/Vc = 1 | Engine |
+|---|---|---|---|
+| Straight tap (SMACNA 1981, Table 10Q) | 5-28, p.42 | 1.27 to 1.40 by Qb/Qc | A′ 0.55: 1.10 |
+| 45° entry, L = 0.25 W, 3 in. min (SMACNA 1981, Table 6-10N) | 5-27, p.41 | 0.74 to 0.98 | A′ 0.35: 0.70 |
+| Radius, θ = 90°, r/Wb = 1.0 (Idelchik 1986, Diagram 7-22) | 5-22, p.37 | 0.34 to 0.55 for branches up to half the main | A′ 0.25: 0.50 |
+
+Table 5-22's row Ab/As = Ab/Ac = 0.5, Qb/Qc 0.3 to 0.8 (Vb/Vc 0.6 to 1.6): C = 0.40, 0.40, 0.48, 0.60, 0.78, 1.1. A′ 0.25
+reads 0.34, 0.41, 0.50, 0.61, 0.75, 0.89: within about 0.2. It is the only radius ASHRAE publishes. The engine's r/W 0.25
+to 1.5 is practice: up to the shoe's A′ at the tightest, 0.23 at 1.5 (`radiusTakeoffAPrime`).
+
+Open: the engine's shoe reads 8 to 50 % under table 5-27 across Vb/Vc 0.4 to 1.8, its straight tap about 20 to 30 %
+under 5-28. Left as they are: correcting them moves every design's pressure and the golden results.
+
+The fitting at r/W 1.0 has SMACNA RE1's proportions (centreline R = 3W/2), and under r/W 0.5 its throat is the tight
+throat RE1 limits to 5 m/s. "ISR", on the user's picture, has no published definition found; it is read as r/Wb.
 
 ### Flexible duct (§3.5–3.7, pp.3.15–3.21, read from the scanned PDF pages 151–157)
 
@@ -787,6 +809,7 @@ The rule IDs are referenced by `DUCT_RULE_SOURCES` in the engine.
 | F-01 | Radius elbow R/W default 1.0 (1.5 preferred); square elbows only with vanes; vane spacing by vane type. | institutional (unverified vs figure) |
 | F-02 | Transition taper default 1:4; limits 20° expanding and 30° contracting. | institutional (unverified vs figure) |
 | F-03 | Branch shoe (45° entry) lead-in max(W/4, 100 mm). | unverified |
+| F-03R | Radius take-off: r/Wb 1.0 published, a radius elbow's throat tangent to the main's wall, its heel concentric; 0.25 to 1.5 by practice. | ASHRAE 5-22; RE1 proportions |
 | F-04 | Fittings take the thickness of the larger adjoining straight; branches are reinforced like straight duct of the larger dimension. | SMACNA S1.16 |
 | C-01 | Unit connection: fabric connector, ≥63.5 mm clear between metal edges plus slack; default 100 mm fabric + 2 × 75 mm metal. | Texas State spec; practice |
 | X-01 | Flex duct: collars ≥51 mm, inserted ≥25 mm, draw bands; supports ≤1.5 m, sag ≤41.7 mm/m, length ≤1.5 m (project). | SMACNA S3.30–S3.40 |
